@@ -10,12 +10,14 @@ import { useSessionStops } from "./sessionStop";
 import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
+import { useChatChangedFiles } from "./chatChangedFiles";
+import { COMPOSER_MENTION_TRIGGERS, FileMentionMenu } from "./components/FileMentionMenu";
 import { findReferences, insertMention, referenceAlias, removeReferenceToken, type ReferenceChipModel } from "./referenceChip";
 import type { ImportContinuation, ImportJob, ResolveReferenceResult, WorkflowDraft, WorkflowRun } from "./protocol/generated/protocol";
 import { workflowNotification } from "./components/workflows/notify";
 import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, History, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, History, FileCode2, FileDiff, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
 import { continuationNotice, importedChatBadge, importSourceLabel } from "./importSources";
 import { abandonFlight, beginNewChat, beginSend, bindNewChat, markFlight, markSubmitted } from "./sendLatency";
@@ -35,6 +37,7 @@ import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
 import { ComposerContextStrip } from "./components/ComposerContextStrip";
+import { ComposerKeyHints } from "./components/ComposerKeyHints";
 import { ProjectsScreen } from "./components/ProjectsScreen";
 import { NewProjectDialog } from "./components/NewProjectDialog";
 import type { GithubRepository, QuestionAction, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
@@ -62,6 +65,7 @@ import { GitHubPane } from "./components/GitHubPane";
 import { useChatPullRequests, useSidebarPullRequests } from "./components/ChatPullRequests";
 import { ChatWorkShelf } from "./components/WorkShelf";
 import { ChatWorkPane, type WorkFocus } from "./components/WorkPane";
+import { ChatOverview } from "./components/ChatOverview";
 import { useBackgroundTaskCount } from "./components/useBackgroundTasks";
 import { backgroundWork } from "./backgroundTasks";
 import { chatPrStatus } from "./chatPullRequests";
@@ -1201,6 +1205,9 @@ function AppContent() {
     dispatchDock({ type: "open-pane", pane: "terminal" });
     return requestTerminalRun(runWorkspaceId, command);
   }, [runWorkspaceId, dispatchDock]);
+  // A turn's changes card hands off to the Changes pane, where the header's
+  // Review goes too. Stable so a settled turn's card does not redraw.
+  const reviewTurnChanges = useCallback(() => dispatchDock({ type: "open-pane", pane: "changes" }), [dispatchDock]);
   function openFileInDock(path: string, line?: number) {
     revealNonce.current += 1;
     setCodeReveal({ path, line, nonce: revealNonce.current });
@@ -1219,6 +1226,13 @@ function AppContent() {
     setAgentFocus({ sessionId, nonce: agentFocusNonce.current });
     dispatchDock({ type: "open-pane", pane: "tasks" });
   }
+  // A fan-out card's opener: the pane on its lineage, not on whichever
+  // agent's chat it last showed.
+  const showAgentsInDock = useCallback(() => {
+    agentFocusNonce.current += 1;
+    setAgentFocus({ sessionId: null, nonce: agentFocusNonce.current });
+    dispatchDock({ type: "open-pane", pane: "tasks" });
+  }, [dispatchDock]);
 
   // ── GitHub surface glue ────────────────────────────────────────────────────
   // Deep links into the GitHub dock pane (CI toasts, GitHub links clicked
@@ -1520,6 +1534,9 @@ function AppContent() {
   const notesSession = useMemo(() => notesChatId ? state.sessions.find(candidate => candidate.id === notesChatId) : undefined, [notesChatId, state.sessions]);
   const notesPending = useMemo(() => pending.filter(item => item.sessionId === notesChatId), [pending, notesChatId]);
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id), [pending, session?.id]);
+  // Chats with a send on its way: the sidebar's Running group counts them as
+  // a turn in flight, as `turnActive` below does for the open chat.
+  const sendingChatIds = useMemo(() => new Set(pending.map(item => item.sessionId)), [pending]);
   const conversationStarted = useMemo(() => {
     if (!session) return false;
     if (session.activeTurnId || session.status === "working") return true;
@@ -1735,6 +1752,8 @@ function AppContent() {
   }, [mentionQuery, workspaceFileOptions]);
   const mentionOpen = !slashToken && mentionQuery != null && fileMatches.length > 0 && !mentionDismissed;
   const mentionListRef = useRef<HTMLDivElement>(null);
+  // Files this chat already wrote, marked M or A in the menu. Read only while it is open.
+  const mentionChanges = useChatChangedFiles({ enabled: mentionOpen, sessionId: session?.id, entries: forest?.entries, activeLeafId: forest?.head?.activeEntryId, events: sessionEvents, roots: [session?.cwd, workspace?.path] });
   // #agent shortcut: leading-only, and only while the target token is being
   // typed. The host resolves the selected token again from persisted config;
   // these rows are discovery, never execution authority.
@@ -3360,6 +3379,12 @@ function AppContent() {
     title: chatName(chat),
     detail: state.workspaces.find(item => item.id === chat.workspaceId)?.title,
   })), [topSessions, state.workspaces]);
+  // What ⌘1-9 opens, in the order the jump-to-chat handler indexes.
+  const launcherNumberedChats = useMemo(() => topSessions.slice(0, 9).map(chat => ({
+    id: chat.id,
+    title: chatName(chat),
+    detail: state.workspaces.find(item => item.id === chat.workspaceId)?.title,
+  })), [topSessions, state.workspaces]);
 
   // "Remember this" on an assistant message opens Memory with the reply as a
   // draft to cut down to the one thing worth keeping. It never saves the reply:
@@ -3734,7 +3759,9 @@ function AppContent() {
     finally {setBusy(false);}
   };
   const effectiveSettings = session ? currentChatConfiguration?.settings : draftSettings.settings;
-  const accessControl = <><AccessControl disabled={busy} policy={effectiveSettings ? {...(permissionPolicy ?? {workerPromptProposalRoles:[],updatedAt:""}),autoApproveProviderPermissions:effectiveSettings.access === "full"} : undefined} onChange={mode => void changeChatOptions(mode)} />
+  // The model picker repeats the access mode in its footer.
+  const accessModeControl = <AccessControl disabled={busy} policy={effectiveSettings ? {...(permissionPolicy ?? {workerPromptProposalRoles:[],updatedAt:""}),autoApproveProviderPermissions:effectiveSettings.access === "full"} : undefined} onChange={mode => void changeChatOptions(mode)} />;
+  const accessControl = <>{accessModeControl}
     {session
       ? !session.parentSessionId && session.kind !== "worker" && <ChatToolsControl sessionId={session.id} harness={session.harness} account={session.account ?? null} />
       : draftSettings.settings && <ChatToolsControl
@@ -3793,6 +3820,9 @@ function AppContent() {
       onCloseMobile={() => setNavOpen(false)}
       chats={topSessions}
       liveAgents={liveAgents}
+      sessions={visibleSessions}
+      liveEvents={agentEvents}
+      sendingChatIds={sendingChatIds}
       subagents={subagents}
       unread={unread.byChat}
       pullRequests={sidebarPrs}
@@ -4072,6 +4102,10 @@ function AppContent() {
                   onRefreshBase={refreshWorkspaceBase}
                   onRetryWorker={retryWorkerTask}
                   onOpenAgent={showAgentInDock}
+                  workerSessions={visibleSessions}
+                  workerRuntimes={forest?.workerRuntimes}
+                  onStopWorker={stopWorker}
+                  onOpenAgents={showAgentsInDock}
                   onRetryCompaction={() => retryCompaction(session.id)}
                   pendingAdoptions={pendingAdoptions}
                   onResolveAdoption={resolveAdoption}
@@ -4086,6 +4120,7 @@ function AppContent() {
                    onFollowUp={session.kind === "harness_subagent" ? undefined : followUpToComposer}
                    onRetryTurn={session.kind === "harness_subagent" ? undefined : retryFailedTurn}
                    onEditTurn={session.kind === "harness_subagent" ? undefined : editFailedTurn}
+                   onReviewChanges={session.kind !== "harness_subagent" && hasRepo && workspace ? reviewTurnChanges : undefined}
                    onAskAside={quoted => {
                      // Selecting transcript prose and asking aside: the same
                      // side-chat contract as /btw, with the excerpt quoted as
@@ -4174,18 +4209,7 @@ function AppContent() {
                       })}
                     </div>
                   </div>}
-                  {mentionOpen && <div id="file-mention-listbox" role="listbox" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
-                    <div className="shrink-0 px-3 py-1.5 text-caption text-muted-foreground/70 border-b border-border flex items-center gap-2 font-medium">
-                      <span>Reference a file</span>
-                      <span className="normal-case tracking-normal text-muted-foreground/50">{fileMatches.length}</span>
-                    </div>
-                    <div ref={mentionListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onWheel={e => e.stopPropagation()}>
-                      {fileMatches.map((file, index) => { const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/") + 1) : ""; const base = file.slice(dir.length); return <button id={`file-mention-option-${index}`} role="option" aria-selected={index === mentionIndex} key={file} type="button" data-mention-index={index} onMouseEnter={() => setMentionIndex(index)} onMouseDown={e => { e.preventDefault(); applyFileMention(file); }} className={`min-h-11 w-full flex items-center gap-2 px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${index === mentionIndex ? "bg-accent" : "hover:bg-accent"}`}>
-                        <FileText size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-                        <span className="flex-1 min-w-0 text-meta whitespace-nowrap overflow-hidden text-ellipsis"><span className="text-muted-foreground">{dir}</span><span className="text-foreground">{base}</span></span>
-                      </button>; })}
-                    </div>
-                  </div>}
+                  {mentionOpen && <FileMentionMenu id="file-mention-listbox" optionIdPrefix="file-mention-option-" files={fileMatches} query={mentionQuery ?? ""} activeIndex={mentionIndex} changes={mentionChanges} triggers={COMPOSER_MENTION_TRIGGERS} listRef={mentionListRef} className="absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 max-h-[min(420px,55vh)]" onActiveIndexChange={setMentionIndex} onPick={applyFileMention} />}
                   {slashOpen && <div id="slash-listbox" role="listbox" aria-label="Commands and skills" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-caption text-muted-foreground/70 border-b border-border flex items-center gap-2 font-medium">
                       <span>Commands & skills</span>
@@ -4265,7 +4289,7 @@ function AppContent() {
                     header={<ChatWorkShelf sessionId={session.id} harness={session.harness} prs={chatPrs.prs} onOpen={showWorkInDock} onFix={draftPullRequestFix} />}
                     leading={contextRing}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
-                      ? <ChatModelControl adapters={adapters} accounts={providerAccounts} account={session.account ?? null} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model, account) => void changeChatModel(harness, model, account)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} speed={session.speed ?? null} onSpeedChange={speed => void changeChatSpeed(speed)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
+                      ? <ChatModelControl adapters={adapters} accounts={providerAccounts} account={session.account ?? null} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model, account) => void changeChatModel(harness, model, account)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} speed={session.speed ?? null} onSpeedChange={speed => void changeChatSpeed(speed)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} accessControl={accessModeControl} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-ui rounded-full">{harnessLabel(session.harness)}</span>}
                     accessControl={accessControl}
                     footer={<ComposerContextStrip
@@ -4283,6 +4307,7 @@ function AppContent() {
                       onRequestBranches={() => { if (workspace) void requestWorkspaceBranches(workspace.id); }}
                       onSelectBranch={branch => { if (workspace) void switchWorkspaceBranch(workspace.id, branch); }}
                       onToggleWorktree={() => { if (!workspace) return; void retargetWorkspace(workspace.id, !worktreeOn); }}
+                      trailing={<ComposerKeyHints state={turnActive ? activeAction : "idle"} />}
                     />}
                   />
                   <div className="mx-4 sm:mx-6"><ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} /></div>
@@ -4315,6 +4340,7 @@ function AppContent() {
                 onFix={draftPullRequestFix}
                 onOpenGithub={hasRepo && workspace ? (number, tab) => openGithubPane({ kind: "pull", number, tab }) : undefined}
                 onEscape={() => (document.querySelector<HTMLElement>("[data-work-shelf-open]") ?? composerRef.current)?.focus()}
+                overview={<ChatOverview session={session} workspace={hasRepo ? workspace : undefined} projectName={projectName} entries={forest?.entries} activeLeafId={forest?.head?.activeEntryId ?? null} events={sessionEvents} completion={forest?.completion} turnActive={turnActive} visible={dock.open && dock.pane === "work" && !fullscreen} onOpenPane={pane => dispatchDock({ type: "open-pane", pane })} onOpenTurn={revealEntryInConversation} />}
               />;
               if (pane === "tasks") return <TasksPane
                 key={session.id}
@@ -4374,6 +4400,7 @@ function AppContent() {
         </section>
       </> : <Welcome
         accessControl={accessControl}
+        modelAccessControl={accessModeControl}
         onVoiceSetup={() => { setSettingsSection("voice"); setView("settings"); }}
         adapters={adapters}
         harness={welcomeHarness}
@@ -4569,6 +4596,9 @@ function AppContent() {
       onSearchThisChat={() => commandRef.current("open-recall")}
       onSearchChats={searchAllChats}
       onTogglePin={id => togglePin(id, pins)}
+      onRunCommand={(id, index) => commandRef.current(id, index)}
+      dockPanes={dockPanes}
+      numberedChats={launcherNumberedChats}
     />
     {session && <ContextLensDialog open={contextLensFor === session.id} sessionId={session.id} refreshKey={session.contextPercent} onClose={() => setContextLensFor(null)} onCompact={async id => { await bridgeApi.submitInput(id, "/compact"); }} />}
   </div>;
@@ -4600,7 +4630,7 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
 
 const NEW_CHAT_VOICE_OWNER = "new-chat";
 
-function Welcome({ adapters, accounts, account, harness, model, knownLabel, loading, slashCommands, suggestionSettings, effort, onSelectEffort, speed, onSelectSpeed, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, agents, selectedAgent, onSelectAgent, defaultsNotice, onOpenAgents, onVoiceSetup }: {
+function Welcome({ adapters, accounts, account, harness, model, knownLabel, loading, slashCommands, suggestionSettings, effort, onSelectEffort, speed, onSelectSpeed, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, modelAccessControl, agents, selectedAgent, onSelectAgent, defaultsNotice, onOpenAgents, onVoiceSetup }: {
   onOpenAgents: () => void;
   agents: AgentDefinition[];
   selectedAgent: AgentDefinition | null;
@@ -4649,6 +4679,8 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
   onToggleWorktree: (draft?: string) => void;
   /** The composer's access-mode control, owned by App so both composers agree. */
   accessControl?: ReactNode;
+  /** The access mode alone, for the model picker's footer. */
+  modelAccessControl?: ReactNode;
 }) {
   // Names the owning project in the hero when one is selected, dotted-underlined.
   // Falls back to the workspace title only when it has no distinct project.
@@ -4804,7 +4836,7 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
       disabled={busy}
       // The unstarted draft is a real chat-in-waiting: let the model be chosen
       // before the first message, the same picker the session composer uses.
-      modelControl={<ChatModelControl adapters={adapters} accounts={agent ? undefined : accounts} account={account} harness={harness} model={model} knownLabel={knownLabel} loading={loading} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} allowedEfforts={agent ? WORKER_EFFORTS : undefined} onEffortChange={onSelectEffort} speed={speed} onSpeedChange={agent ? undefined : onSelectSpeed} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
+      modelControl={<ChatModelControl adapters={adapters} accounts={agent ? undefined : accounts} account={account} harness={harness} model={model} knownLabel={knownLabel} loading={loading} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} allowedEfforts={agent ? WORKER_EFFORTS : undefined} onEffortChange={onSelectEffort} speed={speed} onSpeedChange={agent ? undefined : onSelectSpeed} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} accessControl={modelAccessControl} />}
       accessControl={accessControl}
       trailing={workspace && !agent ? <SessionModeToggle value={sessionKind} onChange={onSelectSessionKind} disabled={busy || !canStartChat} describedBy={sessionModeHintId} /> : undefined}
       footer={workspaces.length > 0 ? <ComposerContextStrip
@@ -4836,7 +4868,7 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
         : workspace
         ? <span id={sessionModeHintId}><span className="font-medium text-foreground">{sessionKind === "direct" ? "Direct" : "Orchestrator"}</span> · {sessionModeDescription(sessionKind)}</span>
         : <span>{greeting.hint}</span>}
-      <span className="shrink-0"><kbd className="font-sans">↵</kbd> Send <span className="mx-1.5" aria-hidden="true">·</span><kbd className="font-sans">⇧↵</kbd> New line</span>
+      <ComposerKeyHints state="idle" className="shrink-0" />
     </div>
     {workspaces.length === 0 && <div className="mt-6 flex justify-center">
       <button type="button" onClick={onNewWorkspace} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />Add project</button>

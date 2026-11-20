@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { App } from "./App";
 import { bridgeApi } from "./api";
 import { writeActiveTurnInput } from "./activeTurnSettings";
+import { chordLabel } from "./keymap";
 
 // xterm paints to canvas, which jsdom lacks; the pane only needs to mount here.
 vi.mock("@xterm/xterm", () => ({
@@ -226,7 +227,30 @@ describe("a follow-up sent while the chat works", () => {
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)); });
     const transcript = container.querySelector("[data-conversation-content]")!;
     expect(transcript.textContent!.split("then run the linter").length - 1, "one bubble").toBe(1);
-    expect(transcript.textContent).toContain("Queued — sent when this step finishes");
+    expect(transcript.textContent).toContain("Queued · sent when this step finishes");
+  });
+});
+
+describe("the chat composer's key hints follow the turn", () => {
+  const hints = () => container.querySelector<HTMLElement>("[data-composer-keys]");
+
+  it("teaches Steer and Stop while a turn runs, Queue when the chat queues, and Send once idle", async () => {
+    const working = chatRows().findIndex(row => row.textContent?.includes("working") && !row.textContent?.includes("agent"));
+    expect(working, "the demo has a chat mid-turn").toBeGreaterThanOrEqual(0);
+    await open(working);
+    expect(hints()?.dataset.composerKeys).toBe("steer");
+    expect(hints()?.textContent).toBe(`↵Steer${chordLabel("interrupt-turn")}Stop`);
+
+    await act(async () => writeActiveTurnInput("queue"));
+    await settle(2);
+    expect(hints()?.dataset.composerKeys).toBe("queue");
+    expect(hints()?.textContent).toBe(`↵Queue${chordLabel("interrupt-turn")}Stop`);
+
+    const idle = chatRows().findIndex(row => !row.textContent?.includes("working"));
+    expect(idle, "the demo has an idle chat").toBeGreaterThanOrEqual(0);
+    await open(idle);
+    expect(hints()?.dataset.composerKeys).toBe("idle");
+    expect(hints()?.textContent).toBe("↵Send⇧↵New line");
   });
 });
 

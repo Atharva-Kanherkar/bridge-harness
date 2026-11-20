@@ -1,7 +1,7 @@
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import type { ClipboardEvent, KeyboardEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpRight, FileText, X } from "lucide-react";
+import { ArrowUpRight, X } from "lucide-react";
 import { AgentConversation } from "./AgentConversation";
 import type { PendingMessage } from "../conversation";
 import { useActiveTurnInput } from "../activeTurnSettings";
@@ -14,6 +14,8 @@ import { harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "../u
 import { bridgeApi } from "../api";
 import { usePolledSessionForest } from "../forest";
 import { applyFileMention as insertFileMention, fileMentionQuery } from "../fileMentions";
+import { useChatChangedFiles } from "../chatChangedFiles";
+import { FileMentionMenu, SIDE_CHAT_MENTION_TRIGGERS } from "./FileMentionMenu";
 import { useComposerSuggestion } from "../useComposerSuggestion";
 import { ComposerSuggestionStatus } from "./ComposerSuggestionStatus";
 import { composerSlashMatches, composerSlashToken, insertComposerSlash } from "../composerSlash";
@@ -158,6 +160,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
   // was created around is invisible, because the brief is a forest entry and
   // never a live frame.
   const forest = usePolledSessionForest(session.id);
+  const mentionChanges = useChatChangedFiles({ enabled: mentionOpen, sessionId: session.id, entries: forest?.entries, activeLeafId: forest?.head?.activeEntryId, events, roots: [session.cwd] });
 
   // A docked panel shares the page: it neither grabs focus on mount nor
   // claims Escape.
@@ -353,22 +356,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
           <ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} />
           {composerError && <p className="mb-2 px-1 text-caption text-destructive">{composerError}</p>}
           <div className="relative">
-            {mentionOpen && <div id="aside-file-mention-listbox" role="listbox" className="u-glass-popover absolute inset-x-0 bottom-full z-20 mb-2 flex max-h-[min(320px,45vh)] flex-col overflow-hidden rounded-2xl">
-              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-caption text-muted-foreground font-medium">
-                <span>Reference a file</span>
-                <span className="normal-case tracking-normal text-muted-foreground">{fileMatches.length}</span>
-              </div>
-              <div ref={mentionListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-                {fileMatches.map((file, index) => {
-                  const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/") + 1) : "";
-                  const base = file.slice(dir.length);
-                  return <button id={`aside-file-mention-option-${index}`} role="option" aria-selected={index === mentionIndex} key={file} type="button" data-mention-index={index} onMouseEnter={() => setMentionIndex(index)} onMouseDown={e => { e.preventDefault(); applyMention(file); }} className={`flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left transition-colors ${index === mentionIndex ? "bg-accent" : "hover:bg-accent"}`}>
-                    <FileText size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-                    <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-meta"><span className="text-muted-foreground">{dir}</span><span className="text-foreground">{base}</span></span>
-                  </button>;
-                })}
-              </div>
-            </div>}
+            {mentionOpen && <FileMentionMenu id="aside-file-mention-listbox" optionIdPrefix="aside-file-mention-option-" files={fileMatches} query={mentionQuery ?? ""} activeIndex={mentionIndex} changes={mentionChanges} triggers={SIDE_CHAT_MENTION_TRIGGERS} listRef={mentionListRef} className="absolute inset-x-0 bottom-full mb-2 max-h-[min(320px,45vh)]" onActiveIndexChange={setMentionIndex} onPick={applyMention} />}
             {slashOpen && <div id="aside-slash-listbox" role="listbox" className="u-glass-popover absolute inset-x-0 bottom-full z-20 mb-2 flex max-h-[min(320px,45vh)] flex-col overflow-hidden rounded-2xl">
               <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-caption text-muted-foreground font-medium">
                 <span>Commands & skills</span>

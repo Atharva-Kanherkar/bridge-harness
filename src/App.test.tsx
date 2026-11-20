@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 // xterm paints to canvas, which jsdom lacks; the pane's own suite covers the
 // terminal wiring, and here it only needs to mount.
 vi.mock("@xterm/xterm", () => ({
@@ -487,6 +487,43 @@ describe("the dock in the session view", () => {
     expect([...container.querySelectorAll("button[title]")].some(node => node.getAttribute("title") === "src/App.tsx")).toBe(true);
   });
 
+  // Contract: testing/feat-t3-inspired-chat-ui.md §H.
+  it("lists @ files name first, marks the ones this chat changed, and inserts the picked path unchanged", async () => {
+    // jsdom has no scrollIntoView; the menu keeps its active row in view with it.
+    const scrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = () => undefined;
+    onTestFinished(() => { Element.prototype.scrollIntoView = scrollIntoView; });
+    await mountApp();
+    await openWorkspaceSession("4 files");
+
+    const textarea = composer()!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(textarea, "check @to");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle(2);
+
+    const listbox = container.querySelector<HTMLElement>("#file-mention-listbox")!;
+    expect(listbox.textContent).toContain("matching “to”");
+    expect(textarea.getAttribute("aria-controls")).toBe("file-mention-listbox");
+    // The mock chat edited src/auth/tokenStore.ts in its stored history.
+    const option = [...listbox.querySelectorAll<HTMLElement>('[role="option"]')].find(row => row.title === "src/auth/tokenStore.ts")!;
+    expect(option.querySelector("[data-mention-name]")!.textContent).toBe("tokenStore.ts");
+    expect([...option.querySelectorAll("[data-mention-name] mark")].map(mark => mark.textContent)).toEqual(["to"]);
+    expect(option.querySelector("[data-mention-folder]")!.textContent).toBe("src/auth");
+    expect(option.querySelector("[data-mention-change]")!.textContent).toBe("M");
+    expect(listbox.textContent).toContain("changed in this chat");
+    expect(listbox.lastElementChild!.textContent).toBe("↵Insert#agents/commands$provider");
+
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    await settle(1);
+    expect(composer()!.value).toBe("check @src/auth/tokenStore.ts ");
+    expect(container.querySelector("#file-mention-listbox")).toBeNull();
+  });
+
   // Contract: testing/feat-dock-transcript.md §4.
   it("opens the transcript with the session's replayed events, in repo sessions and direct chats", async () => {
     await mountApp();
@@ -657,7 +694,8 @@ describe("the dock in the session view", () => {
     expect(dock.textContent).toContain(agentName("session-1w"));
     expect(dock.textContent).toContain("Implementation");
     expect(dock.textContent).toContain("Refactor the auth module to use the new token store");
-    expect(dock.textContent).toContain("WORKING");
+    // The lineage writes states in sentence case.
+    expect(dock.textContent).toContain("Working");
     // The finished verification worker is the chat's history, not a running agent.
     expect(dock.textContent).not.toContain("Verification");
     expect(dock.textContent).toContain("Update the auth serializer");

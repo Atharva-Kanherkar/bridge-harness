@@ -1,8 +1,9 @@
 // The chat's speed: standard, or a faster service tier the selected model
 // lists (Claude Code's fast mode, Codex's Fast and Ultrafast). A segmented
-// radio group under the effort control; it renders nothing for a model with
-// no faster tier, so most pickers never show it.
+// radio group in the model picker's footer; it renders nothing for a model
+// with no faster tier, so most pickers never show it.
 
+import { Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AdapterDescriptor } from "../../types";
 import type { SpeedTier } from "../../protocol/generated/protocol";
@@ -31,10 +32,9 @@ export function SpeedControl({ tiers, value, onChange, disabled }: SpeedControlP
   const current = tiers.some(tier => tier.id === value) ? value : STANDARD_SPEED;
   const inert = disabled || !onChange;
   const active = options.find(option => option.id === current);
-  return <div className="flex flex-col gap-1.5" data-testid="speed-control">
-    <div className="flex items-center gap-2">
-      <span className="text-caption font-medium text-muted-foreground">Speed</span>
-      <div role="radiogroup" aria-label="Speed" className="ml-auto flex rounded-md border border-border p-0.5">
+  return <div className="flex min-w-0 flex-col gap-1" data-testid="speed-control">
+    <div className="flex items-center">
+      <div role="radiogroup" aria-label="Speed" className="inline-flex rounded-md bg-muted p-0.5 text-caption">
         {options.map((option, i) => {
           const on = option.id === current;
           return <button
@@ -58,13 +58,13 @@ export function SpeedControl({ tiers, value, onChange, disabled }: SpeedControlP
               event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
             }}
             className={cn(
-              "rounded-sm px-2 py-0.5 text-meta font-medium transition-colors disabled:cursor-default",
-              on ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
+              "inline-flex items-center gap-1 rounded px-2 py-1 font-medium transition-colors disabled:cursor-default",
+              on ? "bg-card text-foreground shadow-xs" : "text-muted-foreground enabled:hover:text-foreground",
             )}
-          >{option.label}</button>;
+          >{option.id !== STANDARD_SPEED && <Zap size={11} aria-hidden="true" className="shrink-0" />}{option.label}</button>;
         })}
       </div>
     </div>
-    {active?.description && current !== STANDARD_SPEED && <p className="text-caption leading-4 text-muted-foreground">{active.description}</p>}
+    {active?.description && current !== STANDARD_SPEED && <p className="truncate text-caption leading-4 text-muted-foreground" title={active.description}>{active.description}</p>}
   </div>;
 }

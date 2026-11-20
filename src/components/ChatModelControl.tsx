@@ -1,12 +1,14 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
-import { Check, ChevronDown, LoaderCircle, RefreshCw, Search } from "lucide-react";
-import type { AdapterDescriptor, Harness } from "../types";
+import { Kbd } from "@/components/ui/kbd";
+import { Brain, Check, ChevronDown, LoaderCircle, RefreshCw, Search, Star } from "lucide-react";
+import type { AdapterDescriptor, Harness, ModelOption } from "../types";
 import { harnessLabel } from "../utils";
 import { accountLabel, normalizeAccount, type AccountChoice } from "../providerAccounts";
 import { HarnessMark } from "./harnessMarks";
 import { useEffortSelectorStyle } from "../theme";
-import { effortLevelsFrom } from "./effort/effortLevels";
+import { isModelFavorite, useModelFavorites, type ModelFavorite } from "../modelFavorites";
+import { effortIndex, effortLevelsFrom, effortMeaning } from "./effort/effortLevels";
 import { EffortSlider } from "./effort/EffortSlider";
 import { EffortSentence } from "./effort/EffortSentence";
 import { EffortList } from "./effort/EffortList";
@@ -87,6 +89,9 @@ export type ChatModelControlProps = {
   /** A label for `model` from an earlier catalog read, so the pill can name the
    *  model before provider discovery has landed. */
   knownLabel?: string | null;
+  /** The composer's access mode control, repeated in the picker's footer so
+   *  model, thinking, speed and access are all in reach from one place. */
+  accessControl?: ReactNode;
 };
 
 const NO_ACCOUNTS: readonly AccountChoice[] = [];
@@ -100,7 +105,7 @@ const VIEWPORT_MARGIN = 12;
  *  never flashes a spinner. */
 const MODEL_LOADING_DELAY_MS = 600;
 
-export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, accounts = NO_ACCOUNTS, account, compact, roleLabel = "Chat", maxWidthClassName = "max-w-[220px]", placement = "up", effort, allowedEfforts, onEffortChange, speed, onSpeedChange, onRefresh, loading, knownLabel }: ChatModelControlProps) {
+export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, accounts = NO_ACCOUNTS, account, compact, roleLabel = "Chat", maxWidthClassName = "max-w-[220px]", placement = "up", effort, allowedEfforts, onEffortChange, speed, onSpeedChange, onRefresh, loading, knownLabel, accessControl }: ChatModelControlProps) {
   const currentAccount = normalizeAccount(harness, account);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -223,17 +228,39 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
     };
   }, [open, placement]);
   const side = fit?.side ?? placement;
+  // Too short for the preferred minimum: the whole popover scrolls instead of
+  // crushing the list under its header.
+  const tight = !!fit && fit.maxHeight < MIN_POPOVER_HEIGHT;
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  // Closing hands focus back to the composer the picker belongs to, so typing
+  // carries on. Only when focus was inside the picker: a close the user did
+  // not drive from here must not steal it. Outside a composer (the aside's
+  // header) focus goes back to the pill that opened it.
+  const closePicker = () => {
+    const restore = !!dialogRef.current?.contains(document.activeElement);
+    setOpen(false);
+    if (!restore) return;
+    const anchor = wrapper.current;
+    const composer = anchor?.closest("[data-composer-frame]")?.querySelector<HTMLTextAreaElement>("textarea:not([disabled])");
+    (composer ?? anchor?.querySelector<HTMLButtonElement>("button:not([disabled])"))?.focus();
+  };
   // Escape closes the picker and nothing else. Captured on window so it wins
   // against modal hosts with their own window-level Escape (the aside panel
   // closes itself on Escape — without this, dismissing the picker tore down
-  // the whole aside).
+  // the whole aside). A menu the footer portalled out (access mode) closes
+  // itself first.
+  const closeRef = useRef(closePicker);
+  closeRef.current = closePicker;
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('[role="menu"]') && !dialogRef.current?.contains(target)) return;
       event.preventDefault();
       event.stopPropagation();
-      setOpen(false);
+      closeRef.current();
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
@@ -271,11 +298,11 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   // all; one that wires either shows the current level, editable or not.
   const effortSurface = effort != null || !!onEffortChange;
   const showEffort = effortLevels.length > 0 && effortSurface;
-  // The user's chosen form for the control (Settings › Appearance). The list
-  // style turns the popover into two panes, so a model can be picked and its
-  // effort set without the popover closing in between.
+  // The user's chosen form for the control (Settings › Appearance), drawn in
+  // the Thinking column. Any surface that does effort has that column, so a
+  // model can be picked and its effort set without the popover closing.
   const effortStyle = useEffortSelectorStyle();
-  const twoPane = effortStyle === "list" && effortSurface;
+  const [favorites, toggleFavorite] = useModelFavorites();
   // While the host switches to the picked model the ladder is the new model's;
   // the session's level carries over only if that ladder has it, which is the
   // backend's rule too. A level chosen here wins over both until confirmed.
@@ -307,7 +334,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
     onChange(nextHarness, nextModel, nextAccount);
     // A surface that does effort keeps the popover open so thinking can be set
     // for the new model in the same open; a plain picker closes on pick.
-    if (!effortSurface) setOpen(false);
+    if (!effortSurface) closePicker();
   };
   const q = query.trim().toLowerCase();
   const matchesQuery = (label: string) => !q || cleanModelLabel(label).toLowerCase().includes(q);
@@ -321,6 +348,256 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
     const timer = setTimeout(() => setShowAwaiting(true), MODEL_LOADING_DELAY_MS);
     return () => clearTimeout(timer);
   }, [awaitingModel]);
+
+  // One list, every harness in it. The user's own login first, then one group
+  // per extra account on the same harness, sharing its catalog. The rail
+  // beside it jumps between harnesses rather than hiding the others, so a
+  // search still finds a model wherever it lives.
+  const groups = chatAdapters
+    .flatMap(adapter => [
+      { adapter, account: null as string | null, label: adapter.label },
+      ...accounts.filter(choice => choice.harness === adapter.id).map(choice => ({ adapter, account: choice.id as string | null, label: `${adapter.label} · ${choice.label}` })),
+    ])
+    .map(({ adapter, account: groupAccount, label }) => {
+      const catalog: ModelOption[] = adapter.models.length ? adapter.models : [{ id: "", label: "Default", tier: "fast", defaultForTier: true }];
+      const groupMatches = matchesQuery(label);
+      return { adapter, groupAccount, label, models: catalog.filter(option => groupMatches || matchesQuery(option.label)) };
+    })
+    .filter(group => group.models.length > 0);
+  // Starred models, resolved against the live catalog. A favorite whose model
+  // or account is gone is skipped rather than drawn as a dead row.
+  const favoriteRows = favorites.flatMap(favorite => {
+    const adapter = chatAdapters.find(item => item.id === favorite.harness);
+    const option = adapter?.models.find(item => item.id === favorite.model);
+    if (!adapter || !option) return [];
+    const choice = favorite.account ? accounts.find(item => item.harness === adapter.id && item.id === favorite.account) : null;
+    if (favorite.account && !choice) return [];
+    const label = choice ? `${adapter.label} · ${choice.label}` : adapter.label;
+    if (!matchesQuery(label) && !matchesQuery(option.label)) return [];
+    return [{ adapter, groupAccount: favorite.account, option, accountName: choice?.label ?? null }];
+  });
+  const showFavorites = !showAwaiting && favoriteRows.length > 0;
+
+  // The rail: favorites, then one mark per harness. Which one is lit follows
+  // the list's scroll; clicking one scrolls the list to it.
+  const [section, setSection] = useState<string | null>(null);
+  const railSection = section ?? activeHarness;
+  const railItems = [
+    { section: FAVORITES_SECTION, label: "Favorites", title: "Favorites", dim: false, icon: <Star size={15} aria-hidden="true" className={cn("text-muted-foreground", favoriteRows.length > 0 && "fill-current")} /> },
+    ...chatAdapters.map(adapter => ({
+      section: adapter.id,
+      label: adapter.label,
+      title: adapter.available ? adapter.label : `${adapter.label} · unavailable`,
+      // A search that finds nothing for a harness dims its mark.
+      dim: !!q && !groups.some(group => group.adapter.id === adapter.id),
+      icon: <HarnessMark harness={adapter.id} size={16} className={adapter.available ? undefined : "opacity-40"} />,
+    })),
+  ];
+  const railTabStop = railItems.some(item => item.section === railSection) ? railSection : railItems[0]?.section;
+  const listRef = useRef<HTMLDivElement>(null);
+  // The scrollTop the picker itself last set. The scroll event that follows is
+  // ours, not the user's, and must not move the rail off what was clicked
+  // (a short last section can never scroll to the top of the list).
+  const ownScroll = useRef<number | null>(null);
+  const scrollListTo = (target: string, account?: string | null) => {
+    const list = listRef.current;
+    if (!list) return;
+    const sections = [...list.querySelectorAll<HTMLElement>("[data-section]")];
+    const element = sections.find(item => item.dataset.section === target && (account === undefined || item.dataset.account === (account ?? "")))
+      ?? sections.find(item => item.dataset.section === target);
+    if (!element) return;
+    const origin = sections[0]?.offsetTop ?? 0;
+    let top = element.offsetTop - origin;
+    // Opening on a long catalog: keep the chat's own model in view too.
+    const row = account !== undefined ? element.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')?.parentElement : null;
+    if (row && row.offsetTop + row.offsetHeight > top + list.clientHeight) top = row.offsetTop + row.offsetHeight - list.clientHeight + 8;
+    list.scrollTop = Math.max(0, top);
+    ownScroll.current = list.scrollTop;
+  };
+  const [jump, setJump] = useState<{ section: string; seq: number } | null>(null);
+  const jumpTo = (target: string) => {
+    setSection(target);
+    // Scroll after the render: the favorites hint appears or goes with the
+    // selection, and offsets read before it would be off by its height.
+    setJump(previous => ({ section: target, seq: (previous?.seq ?? 0) + 1 }));
+  };
+  useLayoutEffect(() => {
+    if (jump) scrollListTo(jump.section);
+    // scrollListTo reads only refs and the DOM.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jump]);
+  // Opening lands on the chat's own harness and account, with focus in the
+  // search box so typing filters at once.
+  useLayoutEffect(() => {
+    if (!open) { setSection(null); setJump(null); return; }
+    scrollListTo(activeHarness, activeAccount);
+    searchRef.current?.focus({ preventScroll: true });
+    // Only on open: later changes to the active model must not yank the list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+  // A new search starts at the top of what it found; clearing it goes back to
+  // the chat's own harness. Keyed on the query alone, so opening (above) is
+  // not undone by it.
+  const lastQuery = useRef(q);
+  useLayoutEffect(() => {
+    if (lastQuery.current === q) return;
+    lastQuery.current = q;
+    const list = listRef.current;
+    if (!list) return;
+    if (!q) { setSection(null); scrollListTo(activeHarness, activeAccount); return; }
+    list.scrollTop = 0;
+    ownScroll.current = 0;
+    const first = list.querySelector<HTMLElement>("[data-section]")?.dataset.section;
+    if (first) setSection(first);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q]);
+  // Lights the rail mark for the section at the top of the list.
+  const syncRail = () => {
+    const list = listRef.current;
+    if (!list) return;
+    const sections = [...list.querySelectorAll<HTMLElement>("[data-section]")];
+    if (!sections.length) return;
+    const origin = sections[0].offsetTop;
+    let current = sections[0];
+    if (list.scrollTop > 0 && list.scrollTop + list.clientHeight >= list.scrollHeight - 2) current = sections[sections.length - 1];
+    else for (const item of sections) if (item.offsetTop - origin <= list.scrollTop + 12) current = item;
+    const next = current.dataset.section;
+    if (next && next !== railSection) setSection(next);
+  };
+  const onListScroll = () => {
+    const list = listRef.current;
+    if (!list) return;
+    if (ownScroll.current !== null && Math.abs(list.scrollTop - ownScroll.current) < 2) return;
+    ownScroll.current = null;
+    syncRail();
+  };
+  // Starring the first model (or un-starring the last) adds or removes the
+  // favorites section above whatever is in view; the rail follows.
+  const lastShowFavorites = useRef(showFavorites);
+  useLayoutEffect(() => {
+    if (lastShowFavorites.current === showFavorites) return;
+    lastShowFavorites.current = showFavorites;
+    if (open) syncRail();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showFavorites]);
+
+  // Keyboard. Tab and Shift+Tab move between the columns (rail, models,
+  // thinking, footer) and wrap inside the popover; arrows move within one;
+  // Enter picks; Escape (above) closes and hands focus back to the composer.
+  // Rows and rail marks carry a roving tabindex, so Tab skips over them.
+  const onPickerKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const dialog = event.currentTarget;
+    const target = event.target as HTMLElement;
+    // Keys typed in a menu the footer portalled out (access mode) are its own.
+    if (!dialog.contains(target) || event.nativeEvent.isComposing) return;
+    if (event.key === "Tab") {
+      event.preventDefault();
+      moveAcrossColumns(dialog, target, event.shiftKey ? -1 : 1);
+      return;
+    }
+    const zone = target.closest<HTMLElement>("[data-picker-zone]")?.dataset.pickerZone;
+    if (zone === "rail") {
+      const items = [...dialog.querySelectorAll<HTMLButtonElement>("[data-rail]")];
+      const index = items.indexOf(target as HTMLButtonElement);
+      if (index < 0) return;
+      const next = event.key === "ArrowDown" ? (index + 1) % items.length
+        : event.key === "ArrowUp" ? (index - 1 + items.length) % items.length
+        : event.key === "Home" ? 0
+        : event.key === "End" ? items.length - 1
+        : null;
+      if (next !== null) {
+        event.preventDefault();
+        items[next].focus();
+        jumpTo(items[next].dataset.rail!);
+        return;
+      }
+      if (event.key === "Enter") {
+        // Into the harness's models, ready to pick.
+        event.preventDefault();
+        const picked = target.dataset.rail!;
+        jumpTo(picked);
+        const row = [...dialog.querySelectorAll<HTMLButtonElement>("[data-model-row]")].find(item => !item.disabled && item.closest<HTMLElement>("[data-section]")?.dataset.section === picked);
+        (row ?? searchRef.current)?.focus();
+        return;
+      }
+    }
+    if (zone === "models") {
+      const rows = [...dialog.querySelectorAll<HTMLButtonElement>("[data-model-row]")].filter(row => !row.disabled);
+      if (target === searchRef.current) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          (rows.find(row => row.getAttribute("aria-selected") === "true" && !row.dataset.favoriteRow) ?? rows[0])?.focus();
+        } else if (event.key === "Enter") {
+          // Never let Enter reach the composer's form: it would send the draft.
+          event.preventDefault();
+          if (q) rows[0]?.click();
+        }
+        return;
+      }
+      const index = rows.indexOf(target as HTMLButtonElement);
+      const next = index < 0 ? undefined
+        : event.key === "ArrowDown" ? rows[Math.min(rows.length - 1, index + 1)]
+        : event.key === "ArrowUp" ? index === 0 ? searchRef.current : rows[index - 1]
+        : event.key === "Home" ? rows[0]
+        : event.key === "End" ? rows[rows.length - 1]
+        : undefined;
+      if (next) { event.preventDefault(); next.focus(); return; }
+      if (index >= 0 && event.key === "Enter") { event.preventDefault(); target.click(); return; }
+    }
+    if (zone === "thinking" && event.key === "Enter") {
+      // "Use": the level is already applied as it moves; Enter keeps it and
+      // closes. A list row that was only focused is chosen first.
+      event.preventDefault();
+      const level = target.getAttribute("role") === "radio" && target.getAttribute("aria-checked") !== "true" ? target.dataset.effort : undefined;
+      if (level && !effortDisabled) changeEffort(level);
+      closePicker();
+      return;
+    }
+    // Digit shortcuts for the list style live on the popover, not the list:
+    // after a model pick focus sits on that row in the other column, and the
+    // key has to work from wherever focus is, except while typing a search.
+    if (effortStyle !== "list" || !showEffort || effortDisabled || !onEffortChange || !/^[1-9]$/.test(event.key)) return;
+    if (target instanceof HTMLInputElement) return;
+    const level = effortLevels[Number(event.key) - 1];
+    if (level) { event.preventDefault(); changeEffort(level.value); }
+  };
+
+  // Picking restarts the provider session; said once, at the foot of the
+  // Thinking column where there is room, or under the list without one.
+  const switchNote = <p className="shrink-0 px-3 pb-2 pt-1 text-caption leading-4 text-faint">Switching restarts the provider session. History stays.</p>;
+
+  const renderRow = (adapter: AdapterDescriptor, groupAccount: string | null, option: ModelOption, extra: { favoritesRow?: boolean; accountName?: string | null } = {}) => {
+    const selected = adapter.id === activeHarness && groupAccount === activeAccount && (option.id ? option.id === activeModel : !activeModel);
+    const selectable = adapter.available && option.available !== false && option.compatible !== false;
+    const label = cleanModelLabel(option.label);
+    // The fallback "Default" row has no catalog id to remember, so no star.
+    const favorite: ModelFavorite | null = option.id ? { harness: adapter.id, model: option.id, account: groupAccount } : null;
+    const starred = !!favorite && isModelFavorite(favorites, favorite);
+    return <div key={`${extra.favoritesRow ? "favorite" : "row"}:${adapter.id}:${groupAccount ?? ""}:${option.id || "default"}`} className="group/row relative">
+      <button
+        type="button" role="option" aria-selected={selected} disabled={!selectable} tabIndex={-1}
+        data-model-row="" data-favorite-row={extra.favoritesRow ? "" : undefined}
+        onClick={() => pickModel(adapter.id as Harness, option.id || null, groupAccount)}
+        className={cn("flex h-9 w-full items-center gap-2 rounded-md pl-2 text-left outline-none transition-colors focus-visible:bg-accent disabled:opacity-40", favorite ? "pr-9" : "pr-2", selected ? "bg-accent" : "hover:bg-accent", !selectable && "opacity-60")}
+      >
+        <HarnessMark harness={adapter.id} size={13} className={adapter.available ? undefined : "opacity-40"} />
+        <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-ui text-foreground">{label}</span>
+        {extra.accountName && <span className="min-w-0 shrink truncate text-caption text-faint">{extra.accountName}</span>}
+        {option.lifecycle === "preview" && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-caption text-muted-foreground font-medium">preview</span>}
+        {selected && <Check size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
+      </button>
+      {favorite && <button
+        type="button" tabIndex={-1} aria-pressed={starred}
+        aria-label={starred ? `Remove ${label} from favorites` : `Add ${label} to favorites`}
+        title={starred ? "Remove from favorites" : "Add to favorites"}
+        onClick={() => toggleFavorite(favorite)}
+        className={cn("absolute right-1.5 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-md transition-[opacity,color] hover:text-foreground", starred ? "text-muted-foreground opacity-100" : "text-muted-foreground/60 opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100")}
+      >
+        <Star size={13} aria-hidden="true" className={starred ? "fill-current" : undefined} />
+      </button>}
+    </div>;
+  };
+
   return <div ref={wrapper} className="relative">
     <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={cn("flex min-w-0 items-center gap-1.5 rounded-md transition-colors disabled:cursor-default", maxWidthClassName, compact ? "h-8 px-2 text-xs text-muted-foreground enabled:hover:bg-accent" : "h-[28px] px-2 text-meta text-foreground/90 enabled:hover:bg-accent")} title={showAwaiting ? "Loading models…" : disabled ? disabledReason ?? "Model selection is temporarily unavailable" : compactLabel} aria-expanded={open} aria-haspopup="dialog" aria-busy={showAwaiting || undefined} aria-label={showAwaiting ? `${roleLabel} model: loading` : `${roleLabel} model: ${harnessName} ${modelLabel}`}>
       {showAwaiting
@@ -330,107 +607,146 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
       <ChevronDown size={compact ? 14 : 12} className={cn("shrink-0 text-muted-foreground transition-transform", open && "rotate-180", disabled && "opacity-40")} aria-hidden="true" />
     </button>
     {open && <>
-      <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+      <div className="fixed inset-0 z-30" onClick={closePicker} />
       <div
+        ref={dialogRef}
         role="dialog" aria-label="Choose a model"
-        className={cn("@container/model-picker u-glass-popover absolute left-0 z-40 flex max-h-[420px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-border bg-popover", twoPane ? "w-[460px]" : "w-[340px]", side === "down" ? "top-full mt-2" : "bottom-full mb-2", fit && fit.maxHeight < MIN_POPOVER_HEIGHT && "overflow-y-auto")}
+        className={cn("@container/model-picker u-glass-popover absolute left-0 z-40 flex max-h-[420px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-border bg-popover", effortSurface ? "w-[460px]" : "w-[340px]", side === "down" ? "top-full mt-2" : "bottom-full mb-2", tight && "overflow-y-auto")}
         style={fit ? { maxHeight: fit.maxHeight } : undefined}
-        onKeyDown={event => {
-          // Two-pane digit shortcuts live on the popover, not the list: after a
-          // model pick focus sits on that row in the other pane, and the key
-          // has to work from wherever focus is — except while typing a search.
-          if (!twoPane || !showEffort || effortDisabled || !onEffortChange || !/^[1-9]$/.test(event.key)) return;
-          if (event.target instanceof HTMLInputElement) return;
-          const level = effortLevels[Number(event.key) - 1];
-          if (level) { event.preventDefault(); changeEffort(level.value); }
-        }}
+        onKeyDown={onPickerKeyDown}
       >
-        {/* Search header: magnifier + input, with a faint keyboard hint at the right. */}
-        <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
-          <Search size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-          <input
-            type="text"
-            value={query}
-            onChange={event => setQuery(event.target.value)}
-            placeholder="Search models"
-            aria-label="Search models"
-            className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground"
-          />
-          {onRefresh && <button type="button" disabled={refreshing} aria-label="Refresh model catalogues" title="Refresh model catalogues" onClick={() => {
-            setRefreshing(true);
-            setRefreshError(null);
-            Promise.resolve().then(onRefresh).catch(() => setRefreshError("Could not refresh models. Try again.")).finally(() => setRefreshing(false));
-          }} className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50">
-            <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
-          </button>}
+        {/* Harness rail: favorites, then each harness, lit for the section in view. */}
+        <div role="toolbar" aria-label="Harnesses" aria-orientation="vertical" data-picker-zone="rail" className="flex w-12 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-border py-2">
+          {railItems.map(item => {
+            const lit = item.section === railSection;
+            return <button
+              key={item.section} type="button" data-rail={item.section}
+              tabIndex={item.section === railTabStop ? 0 : -1}
+              aria-label={item.label} aria-current={lit || undefined} title={item.title}
+              onClick={() => jumpTo(item.section)}
+              className={cn("relative grid size-8 shrink-0 place-items-center rounded-md outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring", lit ? "bg-accent" : "hover:bg-accent", item.dim && "opacity-40")}
+            >
+              {lit && <span aria-hidden="true" className="absolute -left-2 h-4 w-0.5 rounded-full bg-foreground" />}
+              {item.icon}
+            </button>;
+          })}
         </div>
-        {refreshError && <p role="alert" className="px-3 py-2 text-xs text-destructive">{refreshError}</p>}
-        <div className={cn("flex min-h-0 flex-1 @max-[410px]/model-picker:flex-col", !twoPane && "flex-col", fit && fit.maxHeight < MIN_POPOVER_HEIGHT && "min-h-24 shrink-0")}>
-        <div role="listbox" aria-label={`${roleLabel} models`} aria-busy={switchInFlight || showAwaiting || undefined} className={cn("min-h-0 flex-1 overflow-y-auto p-1.5", twoPane && "w-[210px] flex-none border-r border-border @max-[410px]/model-picker:max-h-44 @max-[410px]/model-picker:w-full @max-[410px]/model-picker:border-r-0 @max-[410px]/model-picker:border-b", switchInFlight && "cursor-progress")}>
-          {showAwaiting
-            ? <SkeletonRows label="Loading models…" rows={4} meta={false} framed={false} className="divide-y-0" rowClassName="min-h-8 px-2 py-1.5" />
-            : chatAdapters
-            // The user's own login first, then one group per extra account on
-            // the same harness, sharing its catalog.
-            .flatMap(adapter => [
-              { adapter, account: null as string | null, label: adapter.label },
-              ...accounts.filter(choice => choice.harness === adapter.id).map(choice => ({ adapter, account: choice.id as string | null, label: `${adapter.label} · ${choice.label}` })),
-            ])
-            .map(({ adapter, account: groupAccount, label }) => {
-              const catalog = adapter.models.length ? adapter.models : [{ id: "", label: "Default", tier: "fast" as const, defaultForTier: true }];
-              const groupMatches = matchesQuery(label);
-              const models = catalog.filter(option => groupMatches || matchesQuery(option.label));
-              return { adapter, groupAccount, label, models };
-            })
-            .filter(group => group.models.length > 0)
-            .map(({ adapter, groupAccount, label, models }, index) => (
-              <div key={`${adapter.id}:${groupAccount ?? ""}`} role="group" aria-label={label}>
-                {/* Group header: a small-caps label, quiet enough to read as a
-                    section marker rather than another row competing with the
-                    models beneath it. An unavailable harness is dimmed and
-                    flagged, its rows shown but greyed. */}
-                <div className={cn("flex items-center gap-1.5 px-2 pb-1.5 pt-2", index > 0 && "mt-1 border-t border-border/60")}>
-                  <HarnessMark harness={adapter.id} size={11} className={cn("opacity-70", !adapter.available && "opacity-30")} />
-                  <span className={cn("text-caption font-medium", adapter.available ? "text-muted-foreground" : "text-muted-foreground")}>{label}</span>
-                  {adapter.capabilities.includes("reasoning") && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-caption text-muted-foreground font-medium">thinking</span>}
-                  {!adapter.available && <span className="ml-auto text-caption text-muted-foreground">unavailable</span>}
-                </div>
-                {models.map(option => {
-                  const selected = adapter.id === activeHarness && groupAccount === activeAccount && (option.id ? option.id === activeModel : !activeModel);
-                  const selectable = adapter.available && option.available !== false && option.compatible !== false;
-                  return <button key={`${adapter.id}:${groupAccount ?? ""}:${option.id || "default"}`} type="button" role="option" aria-selected={selected} disabled={!selectable} onClick={() => pickModel(adapter.id as Harness, option.id || null, groupAccount)} className={cn("flex h-9 w-full items-center gap-2 rounded-md px-2 text-left transition-colors disabled:opacity-40", selected ? "bg-accent" : "hover:bg-accent", !selectable && "opacity-60")}>
-                    <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-ui text-foreground">{cleanModelLabel(option.label)}</span>
-                    {option.lifecycle === "preview" && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-caption text-muted-foreground font-medium">preview</span>}
-                    {selected && <Check size={13} className="shrink-0 text-foreground" aria-hidden="true" />}
-                  </button>;
-                })}
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className={cn("flex min-h-0 flex-1 @max-[400px]/model-picker:flex-col", tight && "min-h-24 shrink-0")}>
+            <div data-picker-zone="models" className="flex min-h-0 min-w-0 flex-1 flex-col">
+              {/* Search header, the height of the Thinking header beside it. */}
+              <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
+                <Search size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+                <input
+                  ref={searchRef}
+                  type="text"
+                  value={query}
+                  onChange={event => setQuery(event.target.value)}
+                  placeholder="Search models…"
+                  aria-label="Search models"
+                  className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground/70"
+                />
+                {onRefresh && <button type="button" disabled={refreshing} aria-label="Refresh model catalogues" title="Refresh model catalogues" onClick={() => {
+                  setRefreshing(true);
+                  setRefreshError(null);
+                  Promise.resolve().then(onRefresh).catch(() => setRefreshError("Could not refresh models. Try again.")).finally(() => setRefreshing(false));
+                }} className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50">
+                  <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
+                </button>}
               </div>
-            ))}
-        </div>
-        {twoPane && <div className="flex min-w-0 flex-1 flex-col gap-2.5 overflow-y-auto p-3">
-          <div className="flex items-center gap-2 text-ui font-semibold text-foreground">
-            <HarnessMark harness={activeHarness} size={12} />
-            <span className="min-w-0 flex-1 truncate">{modelLabel}</span>
-            {showEffort && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-caption text-muted-foreground font-medium">thinking</span>}
+              {refreshError && <p role="alert" className="px-3 py-2 text-xs text-destructive">{refreshError}</p>}
+              <div ref={listRef} onScroll={onListScroll} role="listbox" aria-label={`${roleLabel} models`} aria-busy={switchInFlight || showAwaiting || undefined} className={cn("relative min-h-0 flex-1 overflow-y-auto p-1.5 @max-[400px]/model-picker:max-h-44", switchInFlight && "cursor-progress")}>
+                {showAwaiting
+                  ? <SkeletonRows label="Loading models…" rows={4} meta={false} framed={false} className="divide-y-0" rowClassName="min-h-8 px-2 py-1.5" />
+                  : <>
+                    {showFavorites && <div role="group" aria-label="Favorites" data-section={FAVORITES_SECTION}>
+                      <div className="flex items-center gap-1.5 px-2 pb-1.5 pt-2">
+                        <Star size={11} aria-hidden="true" className="fill-current text-muted-foreground opacity-70" />
+                        <span className="text-caption font-medium text-muted-foreground">Favorites</span>
+                      </div>
+                      {favoriteRows.map(row => renderRow(row.adapter, row.groupAccount, row.option, { favoritesRow: true, accountName: row.accountName }))}
+                    </div>}
+                    {!showFavorites && railSection === FAVORITES_SECTION && <p data-section={FAVORITES_SECTION} className="px-2 pb-2 pt-2 text-meta leading-5 text-muted-foreground">
+                      {q ? "No favorites match this search." : "No favorites yet. Star a model to keep it here."}
+                    </p>}
+                    {groups.map(({ adapter, groupAccount, label, models }, index) => (
+                      <div key={`${adapter.id}:${groupAccount ?? ""}`} role="group" aria-label={label} data-section={adapter.id} data-account={groupAccount ?? ""}>
+                        {/* Group header: a small label, quiet enough to read as a
+                            section marker rather than another row competing with
+                            the models beneath it. An unavailable harness is
+                            dimmed and flagged, its rows shown but greyed. */}
+                        <div className={cn("flex items-center gap-1.5 px-2 pb-1.5 pt-2", (index > 0 || showFavorites) && "mt-1 border-t border-border/60")}>
+                          <HarnessMark harness={adapter.id} size={11} className={cn("opacity-70", !adapter.available && "opacity-30")} />
+                          <span className="text-caption font-medium text-muted-foreground">{label}</span>
+                          {adapter.capabilities.includes("reasoning") && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-caption text-muted-foreground font-medium">thinking</span>}
+                          {!adapter.available && <span className="ml-auto text-caption text-muted-foreground">unavailable</span>}
+                        </div>
+                        {models.map(option => renderRow(adapter, groupAccount, option))}
+                      </div>
+                    ))}
+                  </>}
+              </div>
+              {!effortSurface && switchNote}
+            </div>
+            {effortSurface && <div data-picker-zone="thinking" className="flex w-44 shrink-0 flex-col border-l border-border @max-[400px]/model-picker:w-full @max-[400px]/model-picker:border-l-0 @max-[400px]/model-picker:border-t">
+              <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-border px-3 text-meta text-muted-foreground">
+                <Brain size={14} className="shrink-0" aria-hidden="true" />
+                <span className="truncate">Thinking effort</span>
+              </div>
+              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+                {showAwaiting ? null : showEffort
+                  ? effortStyle === "list"
+                    ? <div data-testid="effort-control" className="p-1.5"><EffortList {...effortProps} /></div>
+                    : <>
+                      <div data-testid="effort-control" className="h-[72px] shrink-0 px-3 pb-2 pt-2.5 [contain:layout]">
+                        {effortStyle === "sentence" ? <EffortSentence {...effortProps} /> : <EffortSlider {...effortProps} />}
+                      </div>
+                      {/* What the level means; the rail alone only says where it sits. */}
+                      <p className="px-3 text-caption leading-4 text-muted-foreground">{effortIndex(effortLevels, effortValue) >= 0 ? effortMeaning(effortValue!) : "The provider's own default."}</p>
+                    </>
+                  : <p className="px-3 py-2.5 text-meta leading-5 text-muted-foreground">No thinking control for this model.</p>}
+                <div className="mt-auto">
+                  {showEffort && effortStyle === "list" && <p className="px-3 pt-1 text-caption text-faint">1–{Math.min(9, effortLevels.length)} jumps to a level</p>}
+                  {switchNote}
+                </div>
+              </div>
+            </div>}
           </div>
-          {speedControl && <div className="border-b border-border pb-2.5">{speedControl}</div>}
-          <div className="text-caption font-medium text-muted-foreground">Thinking effort</div>
-          {showEffort
-            ? <div data-testid="effort-control"><EffortList {...effortProps} /></div>
-            : <p className="text-meta leading-5 text-muted-foreground">No thinking control for this model.</p>}
-          {showEffort && <p className="mt-auto pt-1 text-caption text-faint">1–{Math.min(9, effortLevels.length)} jumps to a level</p>}
-        </div>}
-        </div>
-        {!twoPane && showEffort && (
-          <div className="h-[72px] shrink-0 border-t border-border px-3.5 pb-2 pt-2.5 [contain:layout]" data-testid="effort-control">
-            {effortStyle === "sentence" ? <EffortSentence {...effortProps} /> : <EffortSlider {...effortProps} />}
+          {/* Footer: speed where the model has a faster tier, the access mode,
+              and the keys that move around the picker. */}
+          <div data-picker-zone="footer" className="flex min-h-11 shrink-0 border-t border-border">
+            <div className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1.5">
+              {speedControl}
+              {accessControl && <div className="ml-auto flex shrink-0 items-center">{accessControl}</div>}
+            </div>
+            <div aria-hidden="true" className={cn("flex shrink-0 items-center gap-1.5 px-3 text-caption text-faint", effortSurface && "w-44 border-l border-border @max-[400px]/model-picker:w-auto")}>
+              <Kbd>⇥</Kbd>column<Kbd className="ml-1">↵</Kbd>use
+            </div>
           </div>
-        )}
-        {!twoPane && speedControl && <div className="shrink-0 border-t border-border px-3.5 py-2.5">{speedControl}</div>}
-        <div className="shrink-0 border-t border-border px-3 py-2.5">
-          <p className="text-meta leading-4 text-faint">Switching restarts the provider session. History stays.</p>
         </div>
       </div>
     </>}
   </div>;
+}
+
+/** The rail and list section for starred models. Not a harness id: those are
+ *  plain words, and this one cannot collide with any of them. */
+const FAVORITES_SECTION = "@favorites";
+
+/** Moves focus to the next (or previous) tab stop inside the picker, wrapping
+ *  at either end. Rows, rail marks and slider ticks carry tabindex -1, so the
+ *  stops are one per column plus the footer's controls. From an element that
+ *  is not itself a stop (a row reached with the arrows), it continues from
+ *  that element's place in the document. */
+function moveAcrossColumns(dialog: HTMLElement, from: HTMLElement, step: 1 | -1) {
+  const stops = [...dialog.querySelectorAll<HTMLElement>("button, input, [tabindex]")]
+    .filter(element => element.tabIndex >= 0 && !(element as HTMLButtonElement).disabled && !element.closest('[aria-hidden="true"]'));
+  if (!stops.length) return;
+  let index = stops.indexOf(from);
+  if (index < 0) {
+    const following = stops.findIndex(stop => !!(from.compareDocumentPosition(stop) & Node.DOCUMENT_POSITION_FOLLOWING));
+    const boundary = following < 0 ? stops.length : following;
+    index = step > 0 ? boundary - 1 : boundary;
+  }
+  stops[(index + step + stops.length) % stops.length].focus();
 }

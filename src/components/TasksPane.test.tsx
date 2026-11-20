@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session, WorkerRuntimeRecord } from "../types";
 import type { QueuedWorkerRequest } from "../protocol/generated/protocol";
 import { bridgeApi } from "../api";
-import { TasksPane, activeAgentRows, descendantIds } from "./TasksPane";
+import { TasksPane, activeAgentRows, agentLineage, descendantIds, worktreeLabel } from "./TasksPane";
 import { agentName } from "./agentIdentity";
 
 // The Agents pane lists the agents this chat has running now, and pinned ones,
@@ -88,7 +88,8 @@ describe("which agents are listed", () => {
     ];
     await mount({ sessions, runtimes });
     expect(rowIds()).toEqual(["running", "asking"]);
-    expect(container.textContent).toContain("NEEDS YOU");
+    // States read in sentence case, as the lineage writes them.
+    expect(container.textContent).toContain("Needs you");
     expect(container.textContent).toContain("waiting: approval required");
   });
 
@@ -207,7 +208,7 @@ describe("a row", () => {
     expect(row.textContent).toContain("Research");
     expect(row.textContent).not.toContain("standard");
     expect(row.textContent).toContain("Rank the gateway repos");
-    expect(row.textContent).toContain("STARTING");
+    expect(row.textContent).toContain("Starting");
 
     await click(byLabel(`View ${agentName("w1")}`));
     expect(container.querySelector("b")?.textContent).toBe(agentName("w1"));
@@ -230,6 +231,107 @@ describe("a row", () => {
   });
 });
 
+// Contract: testing/feat-t3-inspired-chat-ui.md, E. The pane is the agent
+// tree: the orchestrator first, then each worker indented under whoever
+// started it, with its harness, worktree, model, state and a clock.
+describe("lineage", () => {
+  const depths = () => [...container.querySelectorAll("[data-agent-row]")].map(row => [row.getAttribute("data-agent-row"), row.getAttribute("data-depth")]);
+
+  it("orders the tree depth first, pinned siblings ahead, and indents by generation", () => {
+    const sessions = [chat, session("w1"), session("w2", { startedAt: "2026-08-25T10:01:00Z" }), session("w1a", { parentSessionId: "w1" }), session("w2a", { parentSessionId: "w2" })];
+    const rows = activeAgentRows("chat", sessions, sessions.slice(1).map(item => runtime(item.id, { parentSessionId: item.parentSessionId! })), new Set(["w2"]));
+    expect(agentLineage("chat", rows, sessions).map(row => [row.session.id, row.depth])).toEqual([["w2", 1], ["w2a", 2], ["w1", 1], ["w1a", 2]]);
+  });
+
+  it("hangs a worker whose parent is not listed from the nearest listed ancestor", () => {
+    const sessions = [chat, session("done", { status: "completed" }), session("child", { parentSessionId: "done" }), session("grand", { parentSessionId: "child" })];
+    const rows = activeAgentRows("chat", sessions, [runtime("done", { lifecycleState: "completed" }), runtime("child", { parentSessionId: "done" }), runtime("grand", { parentSessionId: "child" })], new Set());
+    expect(agentLineage("chat", rows, sessions).map(row => [row.session.id, row.depth])).toEqual([["child", 1], ["grand", 2]]);
+  });
+
+  it("never loses a row to a parent loop", () => {
+    const sessions = [chat, session("a", { parentSessionId: "b" }), session("b", { parentSessionId: "a" })];
+    const rows = [{ runtime: runtime("a"), session: sessions[1]!, pinned: false }, { runtime: runtime("b"), session: sessions[2]!, pinned: false }];
+    expect(agentLineage("chat", rows, sessions).map(row => row.session.id).sort()).toEqual(["a", "b"]);
+  });
+
+  it("draws the orchestrator on top, waiting on the workers it started", async () => {
+    const sessions = [{ ...chat, harness: "codex", model: "gpt-5.6-luna" }, session("w1", { harness: "claude", model: "opus" }), session("w2", { status: "waiting" }), session("w1a", { parentSessionId: "w1" })];
+    await mount({
+      sessions,
+      runtimes: [runtime("w1", { worktreePath: "/repo/.worktrees/deck-sidebar" }), runtime("w2", { lifecycleState: "waiting" }), runtime("w1a", { parentSessionId: "w1" })],
+    });
+    const lineage = container.querySelector("[data-lineage]")!;
+    const orchestrator = lineage.firstElementChild!;
+    expect(orchestrator.hasAttribute("data-lineage-orchestrator")).toBe(true);
+    expect(orchestrator.textContent).toContain("Orchestrator");
+    expect(orchestrator.textContent).toContain("GPT Luna · this chat");
+    // Its own workers, not its workers' workers.
+    expect(orchestrator.textContent).toContain("Waiting on 2");
+    expect(orchestrator.querySelector("svg[data-harness]")?.getAttribute("data-harness")).toBe("codex");
+    expect(depths()).toEqual([["w1", "1"], ["w1a", "2"], ["w2", "1"]]);
+    expect(container.querySelector('[data-agent-row="w1a"] > div')?.className).toContain("pl-13");
+    expect(container.querySelector("h2")?.textContent).toBe("3 workers · 2 running");
+
+    const row = container.querySelector('[data-agent-row="w1"]')!;
+    expect(row.querySelector("svg[data-harness]")?.getAttribute("data-harness")).toBe("claude");
+    expect(row.textContent).toContain(".worktrees/deck-sidebar · Opus");
+    expect(row.querySelector('[data-agent-state="working"]')?.className).toContain("text-info");
+    expect(container.querySelector('[data-agent-row="w2"] [data-agent-state="needs-you"]')?.className).toContain("text-warning");
+  });
+
+  it("says how many files a pinned finished worker changed", async () => {
+    await mount({
+      sessions: [chat, session("w1", { status: "completed" })],
+      runtimes: [runtime("w1", { lifecycleState: "completed", resultStatus: "reported", lastResult: { status: "completed", filesChanged: ["a.ts", "b.ts", "c.ts"] } })],
+      pinned: new Set(["w1"]),
+    });
+    const state = container.querySelector('[data-agent-row="w1"] [data-agent-state="done"]')!;
+    expect(state.textContent).toBe("Done · 3 files");
+    expect(state.className).toContain("text-success");
+    // Nothing is waited on once it is done.
+    expect(container.querySelector("[data-lineage-orchestrator]")?.textContent).not.toContain("Waiting on");
+  });
+
+  it("ticks each live worker's clock once a second", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    try {
+      vi.setSystemTime(Date.parse("2026-08-25T10:00:48Z"));
+      await mount({ sessions: [chat, session("w1")], runtimes: [runtime("w1")] });
+      const clock = () => container.querySelector('[data-agent-row="w1"] .tabular-nums')?.textContent;
+      expect(clock()).toBe("0:48");
+      await act(async () => { vi.advanceTimersByTime(1_000); });
+      expect(clock()).toBe("0:49");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("teaches the pane's chord and Enter on a worker", async () => {
+    await mount({ sessions: [chat, session("w1")], runtimes: [runtime("w1")] });
+    const hints = [...container.querySelectorAll("kbd")].map(kbd => kbd.textContent);
+    expect(hints).toHaveLength(2);
+    expect(hints[0]).toMatch(/6$/);
+    expect(hints[1]).toBe("↵");
+  });
+
+  it("goes back to the lineage when a focus request names no agent", async () => {
+    vi.spyOn(bridgeApi, "sessionForestDigest").mockResolvedValue("d");
+    vi.spyOn(bridgeApi, "sessionForest").mockRejectedValue(new Error("not in this test"));
+    const sessions = [chat, session("w1")];
+    await mount({ sessions, runtimes: [runtime("w1")], focus: { sessionId: "w1", nonce: 1 } });
+    expect(rowIds()).toEqual([]);
+    await mount({ sessions, runtimes: [runtime("w1")], focus: { sessionId: null, nonce: 2 } });
+    expect(rowIds()).toEqual(["w1"]);
+  });
+
+  it("shortens a worktree path to what a row has room for", () => {
+    expect(worktreeLabel("/Users/me/repo/.worktrees/deck-dock")).toBe(".worktrees/deck-dock");
+    expect(worktreeLabel("/tmp/bridge/worker-1w")).toBe("worker-1w");
+    expect(worktreeLabel(null)).toBeUndefined();
+  });
+});
+
 describe("harness subagent sessions", () => {
   it("lists runtime-free children with workers, scopes them and retains pinned outcomes", () => {
     const sessions=[chat,session("child",{kind:"harness_subagent"}),session("other",{kind:"harness_subagent",parentSessionId:"elsewhere"}),session("done",{kind:"harness_subagent",status:"completed"}),session("worker")];
@@ -245,6 +347,21 @@ describe("harness subagent sessions", () => {
     expect(container.textContent).toContain("Started by Claude in this chat.");
     expect(container.textContent).toContain("Not a Bridge worker.");
     expect(container.querySelector("textarea")).toBeNull();
+    await click(byLabel(`Stop subagent ${agentName("child")}`));
+    expect(onStopWorker).toHaveBeenCalledWith("child");
+  });
+});
+
+describe("lineage with provider subagents", () => {
+  it("lists a harness subagent in the tree as a subagent, without a runtime record", async () => {
+    const child = session("child", { kind: "harness_subagent", title: "Check authentication", harness: "claude" });
+    const onStopWorker = vi.fn().mockResolvedValue(undefined);
+    await mount({ sessions: [chat, session("w1"), child], runtimes: [runtime("w1")], onStopWorker });
+    const row = container.querySelector('[data-agent-row="child"]');
+    expect(row, "the subagent is in the lineage").toBeTruthy();
+    expect(row!.getAttribute("data-depth")).toBe("1");
+    expect(row!.textContent).toContain("Check authentication");
+    expect(container.textContent).toContain("1 worker · 1 subagent");
     await click(byLabel(`Stop subagent ${agentName("child")}`));
     expect(onStopWorker).toHaveBeenCalledWith("child");
   });

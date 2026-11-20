@@ -37,11 +37,16 @@ import { useSmoothText } from "./smoothText";
 import { CappedOutput, CommandPanel, EffectChip, toolIcon } from "./CommandOutput";
 import { backgroundOutcome, backgroundTaskKey, type BackgroundWork } from "../backgroundTasks";
 import { CHECK_LABEL } from "../transcript/checks";
+import { FanOutCard } from "./FanOutCard";
+import { fanOutWorkers, groupFanOuts, isQuietWorkerRow, summarizeFanOut, type FanOuts, type WorkerLookup } from "./workerFanOut";
+import type { WorkerRuntimeRecord } from "../types";
 
 import { PromptMutationApprovalCard } from "./PromptMutationApprovalCard";
 import { QuestionCard, type ResolveQuestion } from "./QuestionCard";
 import { useProviderUsageOverviews } from "./UsageDot";
 import { UsageResetRow } from "./UsageResetRow";
+import { TurnChangesCard, TurnEndBlock, TurnLine } from "./TurnChangesCard";
+import { describeTurnEnds, keepStable, type TurnEnd } from "../turnChanges";
 import type { InteractionResolutionResult, QuestionAction, SessionEntryWindowSummary } from "../protocol/generated/protocol";
 
 type ResolvePermission = (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
@@ -197,12 +202,22 @@ function summarize(items: ConversationItem[], live: boolean): string {
   // the repo is not "searching the web".
   let web = 0;
   const counted = new Set<string>();
+  // "Edited 4 files" names files, not calls: a file edited twice is one file,
+  // the way the turn's changes card counts it. A call without a path still
+  // counts on its own.
+  const files: Partial<Record<ToolVerb, Set<string>>> = { edit: new Set(), read: new Set() };
   for (const item of items) {
     if (!isToolItem(item)) continue;
     const call = toolCallDisplay(item);
     const identity = call.sourceCallId ?? item.identity ?? item.key;
     if (counted.has(identity)) continue;
     counted.add(identity);
+    const named = files[call.verb];
+    if (named) {
+      const file = call.path ? `path:${call.path}` : `call:${identity}`;
+      if (named.has(file)) continue;
+      named.add(file);
+    }
     counts[call.verb] += 1;
     if (call.verb === "search" && call.glyph === "globe") web += 1;
   }
@@ -859,7 +874,7 @@ const NO_ANSWER: ResolveQuestion = async () => undefined;
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeProcessEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, onRunInTerminal, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, onBackgroundWork, entryWindow, onForkSession, onRewindEntry, onRetryTurn, onEditTurn, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeProcessEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; /** Send a failed turn's message again, as it was. */ onRetryTurn?: RetryTurn; /** Put a failed turn's message back in the composer. */ onEditTurn?: (prompt: ConversationItem) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; /** Run a shell block in the chat's own terminal; without it, shell blocks offer Copy alone. */ onRunInTerminal?: RunInTerminal; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; /** Where the chat reports work its agent left running; the composer shelf and the Work pane read it. The main chat passes the global store, a Mission Control tile its own. */ onBackgroundWork?: (work: BackgroundWork) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeProcessEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, workerSessions, workerRuntimes, onStopWorker, onOpenAgents, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, onRunInTerminal, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, onBackgroundWork, entryWindow, onForkSession, onRewindEntry, onRetryTurn, onEditTurn, onReviewChanges, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeProcessEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; /** Where a fan-out card reads each worker's live state; without them it reads the transcript alone. */ workerSessions?: readonly Session[]; workerRuntimes?: readonly WorkerRuntimeRecord[]; /** Stop one worker, the way every other surface stops one. */ onStopWorker?: (childSessionId: string) => Promise<void>; /** Open the dock's Agents pane on the lineage. */ onOpenAgents?: () => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; /** Send a failed turn's message again, as it was. */ onRetryTurn?: RetryTurn; /** Put a failed turn's message back in the composer. */ onEditTurn?: (prompt: ConversationItem) => void; /** Open the Changes pane from a turn's changes card; without it the card has no Review button. */ onReviewChanges?: () => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; /** Run a shell block in the chat's own terminal; without it, shell blocks offer Copy alone. */ onRunInTerminal?: RunInTerminal; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; /** Where the chat reports work its agent left running; the composer shelf and the Work pane read it. The main chat passes the global store, a Mission Control tile its own. */ onBackgroundWork?: (work: BackgroundWork) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
   const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
   useIsomorphicLayoutEffect(() => {
     const pending = paintFrames.current;
@@ -908,6 +923,17 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const [showThinking] = useShowThinking();
   const [autoExpandEditActivity] = useAutoExpandEditActivity();
   const renderedItems = useMemo(() => groupItems(visibleItems), [visibleItems]);
+  // One card per delegation, drawn at its first worker row; the rows it holds
+  // skip their own slot. Read through context so a later worker's row moving
+  // re-draws the card even when the row it is anchored at did not change.
+  const fanOuts = useMemo(() => groupFanOuts(visibleItems), [visibleItems]);
+  const fanOutView = useMemo<FanOutView>(() => ({
+    fanOuts,
+    lookup: { sessions: workerSessions, runtimes: workerRuntimes },
+    readOnly,
+    onOpenAgents,
+    onStopWorkers: readOnly || !onStopWorker ? undefined : ids => Promise.all(ids.map(id => onStopWorker(id))).then(() => undefined),
+  }), [fanOuts, workerSessions, workerRuntimes, readOnly, onOpenAgents, onStopWorker]);
   // A thought the reader has hidden leaves no row at all once it settles:
   // drawing the empty wrapper would leave its 20px gap behind in the turn.
   // Streaming thoughts stay, because their pulsing row is the "still going"
@@ -979,6 +1005,18 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // suppress the model's own status while a new request is starting.
   const streaming = turnActive && visibleItems.some(item => item.turn === latestTurn
     && (item.status === "streaming" || item.status === "inProgress"));
+  // What closes each settled turn: its changes card and its caption, keyed by
+  // the row they follow. The running turn has neither until it settles.
+  // Unchanged ends keep the object the last render held, so a live flush
+  // never redraws a settled turn's card.
+  const heldTurnEnds = useRef<ReadonlyMap<string, TurnEnd>>(new Map());
+  const turnEnds = useMemo(() => keepStable(heldTurnEnds.current, describeTurnEnds(shownItems, visibleItems, {
+    liveTurn: turnActive ? latestTurn : null,
+    cwd: session?.cwd,
+    sessionModel: session?.model,
+    now,
+  })), [shownItems, visibleItems, turnActive, latestTurn, session?.cwd, session?.model, now]);
+  heldTurnEnds.current = turnEnds;
   const processSnapshots = useMemo(() => projectActiveProcesses(activeProcessEntries, events), [activeProcessEntries, events]);
   const processIds = useMemo(() => new Set(processSnapshots.map(item => item.identity)), [processSnapshots]);
   const snapshotSequence = Math.max(0, ...forestEntries?.map(entry => entry.sequence) ?? []);
@@ -1122,8 +1160,10 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     retryPrompt={retryFor(entry)?.prompt}
     onRetryTurn={retryFor(entry) ? onRetryTurn : undefined}
     onEditTurn={retryFor(entry) ? onEditTurn : undefined}
+    turnEnd={turnEnds.get(entry.key)}
+    onReviewChanges={!readOnly && turnEnds.has(entry.key) ? onReviewChanges : undefined}
   />;
-  return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><RuntimeActive.Provider value={runtimeActive}><FileLinkContext.Provider value={fileLinks}><ChatRunInTerminal.Provider value={onRunInTerminal ?? null}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={transcriptKey} populated={populated} signature={scrollSignature} windowStart={windowStart} total={shownItems.length} compensate={!fullTranscript} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth [overflow-anchor:none]",
+  return <FanOutContext.Provider value={fanOutView}><TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><RuntimeActive.Provider value={runtimeActive}><FileLinkContext.Provider value={fileLinks}><ChatRunInTerminal.Provider value={onRunInTerminal ?? null}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={transcriptKey} populated={populated} signature={scrollSignature} windowStart={windowStart} total={shownItems.length} compensate={!fullTranscript} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth [overflow-anchor:none]",
     // a tile is narrow at any viewport width, so compact padding cannot key off `sm:`.
     density === "compact" ? "overflow-x-hidden px-3 pb-6 pt-3" : "px-4 py-5 pb-16 sm:px-8 sm:py-6")}>
     <div data-conversation-content className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5">
@@ -1151,13 +1191,14 @@ export const AgentConversation = memo(function AgentConversation({ session, even
         {/* Hydrated rows mount in place without an entrance: they were always
             part of the conversation, they just arrived from an idle slice. */}
         {shownItems.slice(windowStart).map((entry, index) => renderEntry(entry, windowStart + index < instantBefore))}
-        {optimisticBubbles.map(bubble => <TranscriptRow key={bubble.key}><div className={BUBBLE}>
+        {optimisticBubbles.map(bubble => <TranscriptRow key={bubble.key}>
+        {bubble.delivery && <DeliveryLabel note={bubble.delivery}/>}
+        <div className={BUBBLE}>
           {bubble.text ? <MentionText text={bubble.text}/> : null}
           {bubble.attachments.length > 0 && <div className="flex flex-wrap justify-end gap-1.5 pt-1.5">
             {bubble.attachments.map((dataUri, index) => <img key={index} src={dataUri} alt={`Image you attached, still sending ${index + 1}`} className="max-h-40 rounded-xl"/>)}
           </div>}
         </div>
-        {bubble.delivery && <DeliveryLabel note={bubble.delivery}/>}
         </TranscriptRow>)}
         {startupNarration.mounted && <TranscriptRow key="working"><div className="flex justify-start"><StartupStatusRow view={startupNarration} harness={modelSwitch?.harness ?? compaction?.harness ?? session?.harness}/></div></TranscriptRow>}
         {stopping && <TranscriptRow key="stopping"><p role="status" className={`${NOTICE} border-x-info`}>Stopping…</p></TranscriptRow>}
@@ -1166,7 +1207,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
       {trailing}
       </div>
       {!readOnly && onAskAside && <AskAsideChip onAsk={onAskAside}/>}
-  </ScrollFollow></VisualActionsContext.Provider></ChatRunInTerminal.Provider></FileLinkContext.Provider></RuntimeActive.Provider></ShowThinking.Provider></TranscriptHarness.Provider>;
+  </ScrollFollow></VisualActionsContext.Provider></ChatRunInTerminal.Provider></FileLinkContext.Provider></RuntimeActive.Provider></ShowThinking.Provider></TranscriptHarness.Provider></FanOutContext.Provider>;
 });
 
 /// Whether the current document selection holds selectable prose worth asking
@@ -1627,13 +1668,20 @@ function StreamedProse({ text, streaming }: { text: string; streaming: boolean }
 /// what made a hundred-step turn stop responding. Streaming prose still
 /// re-renders on every chunk, because its text length moves.
 /// What the backend did with a message sent mid-turn: it either joined the
-/// running step or waits for it to finish. Said on the message itself, since
-/// that is what the reader is looking at.
+/// running step or waits for it to finish. Said right above the message,
+/// aligned with it, since that is what the reader is looking at.
+const DELIVERY_CAPTION: Record<DeliveryNote, string> = {
+  steered: "Steer · lands after this step",
+  queued: "Queued · sent when this step finishes",
+};
 function DeliveryLabel({ note }: { note: DeliveryNote }) {
-  return <p className="mt-1 text-right text-caption text-muted-foreground">{note === "steered" ? "Steering" : "Queued — sent when this step finishes"}</p>;
+  return <p data-delivery-caption={note} className="mb-1 flex items-center justify-end gap-1 text-caption text-muted-foreground">
+    {note === "steered" && <CornerDownRight size={12} className="shrink-0" aria-hidden="true"/>}
+    {DELIVERY_CAPTION[note]}
+  </p>;
 }
 
-const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest, onRemember, onForkSession, onRewind, rewindable }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean }) {
+const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest, onRemember, onForkSession, onRewind, rewindable, turnEnd, onReviewChanges }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; turnEnd?: TurnEnd; onReviewChanges?: () => void }) {
   const settled = item.status !== "streaming" && item.text.trim() !== "";
   const entryId = settled ? item.entryId : undefined;
   const actions = settled ? <>
@@ -1647,6 +1695,7 @@ const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest,
     // The actions sit beside the bubble, out of flow: a hidden bar must not
     // leave an empty line of padding under every message the user sent.
     return <>
+      {delivery && <DeliveryLabel note={delivery}/>}
       <div className={cn(BUBBLE, "group relative")}>
         <MentionText text={item.text}/>
         {actions && <div data-reply-actions className="absolute bottom-0 right-full mr-1 flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">{actions}</div>}
@@ -1654,7 +1703,6 @@ const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest,
           {attachments.map((dataUri, index) => <img key={index} src={dataUri} alt={`Attached image ${index + 1}`} className="max-h-40 rounded-xl"/>)}
         </div>}
       </div>
-      {delivery && <DeliveryLabel note={delivery}/>}
     </>;
   }
   // No bubble, no card: the agent writes straight onto the canvas, in body
@@ -1664,16 +1712,27 @@ const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest,
     {/* A reply whose first token has not landed is the same statement a
         streaming thought makes, so it draws the same row. */}
     {isStreamingText(item.status) && !item.text.trim() ? <ThinkingRow harness={item.harness}/> : <StreamedProse text={item.text} streaming={item.status === "streaming"} />}
-    {/* The latest reply keeps its bar in flow and visible. Older replies float
-        theirs into the gap below on hover, so a hidden bar costs no height. */}
-    {actions && <div
+    {turnEnd?.changes && <TurnChangesCard changes={turnEnd.changes} onReview={onReviewChanges} className="mt-4"/>}
+    {/* A reply that closes its turn carries the turn's caption, always shown,
+        with the actions in flow before it: shown on the latest reply, and on
+        an older one revealed on hover in the space they keep. */}
+    {turnEnd?.line ? <div data-turn-footer className="-ml-1.5 mt-1.5 flex min-h-7 min-w-0 items-center gap-0.5">
+      {actions && <div
+        data-reply-actions={latest ? "latest" : "hover"}
+        className={cn("flex items-center gap-0.5", !latest && "opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100")}
+      >{actions}</div>}
+      <TurnLine line={turnEnd.line} className="ml-1.5 min-w-0 truncate"/>
+    </div>
+    /* The latest reply keeps its bar in flow and visible. Older replies float
+       theirs into the gap below on hover, so a hidden bar costs no height. */
+    : actions && <div
       data-reply-actions={latest ? "latest" : "hover"}
       className={cn("-ml-1.5 flex items-center gap-0.5", latest
         ? "mt-1.5"
         : "absolute left-0 top-full z-10 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100")}
     >{actions}</div>}
   </div>;
-}, (previous, next) => previous.latest === next.latest && previous.delivery === next.delivery && previous.onRemember === next.onRemember && previous.onForkSession === next.onForkSession && previous.onRewind === next.onRewind && previous.rewindable === next.rewindable && sameItem(previous.item, next.item));
+}, (previous, next) => previous.latest === next.latest && previous.delivery === next.delivery && previous.onRemember === next.onRemember && previous.onForkSession === next.onForkSession && previous.onRewind === next.onRewind && previous.rewindable === next.rewindable && previous.turnEnd === next.turnEnd && previous.onReviewChanges === next.onReviewChanges && sameItem(previous.item, next.item));
 
 /// One icon in a message's action bar: 28px, with the name in a tooltip.
 function ReplyAction({ label, title, onClick, children }: { label: string; title?: string; onClick: () => void; children: ReactNode }) {
@@ -1700,9 +1759,9 @@ function CopyReplyButton({ text }: { text: string }) {
   </ReplyAction>;
 }
 
-const ItemView = memo(function ItemView({ item, sessionId, delivery, latest, readOnly, turnActive, autoExpandEditActivity, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext, retryPrompt, onRetryTurn, onEditTurn }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; readOnly?: boolean; turnActive: boolean; autoExpandEditActivity: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext; retryPrompt?: ConversationItem; onRetryTurn?: RetryTurn; onEditTurn?: (prompt: ConversationItem) => void }) {
+const ItemView = memo(function ItemView({ item, sessionId, delivery, latest, readOnly, turnActive, autoExpandEditActivity, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext, retryPrompt, onRetryTurn, onEditTurn, turnEnd, onReviewChanges }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; readOnly?: boolean; turnActive: boolean; autoExpandEditActivity: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext; retryPrompt?: ConversationItem; onRetryTurn?: RetryTurn; onEditTurn?: (prompt: ConversationItem) => void; /** What closes the turn when this row is its last; a reply draws it, `TranscriptEntry` draws it after anything else. */ turnEnd?: TurnEnd; onReviewChanges?: () => void }) {
   if (readOnly) { onResolve = () => undefined; onAnswerQuestion = () => undefined; }
-  if (item.type === "message") return <MessageRow item={item} sessionId={sessionId} delivery={delivery} latest={latest} onRemember={onRemember} onForkSession={onForkSession} onRewind={onRewind} rewindable={rewindable}/>;
+  if (item.type === "message") return <MessageRow item={item} sessionId={sessionId} delivery={delivery} latest={latest} onRemember={onRemember} onForkSession={onForkSession} onRewind={onRewind} rewindable={rewindable} turnEnd={turnEnd} onReviewChanges={onReviewChanges}/>;
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
   if (item.type === "reasoning") return <Reasoning item={item}/>;
   if (item.type === "plan") return <PlanCard item={item}/>;
@@ -1714,7 +1773,7 @@ const ItemView = memo(function ItemView({ item, sessionId, delivery, latest, rea
   if (interaction) return readOnly
     ? <fieldset disabled className="m-0 min-w-0 border-0 p-0" aria-label="Historical interaction, read-only">{interaction}</fieldset>
     : interaction;
-  if (item.type === "delegation") return <DelegationRow item={item} onOpenSession={onOpenSession} onOpenAgent={onOpenAgent} onRetryWorker={onRetryWorker}/>;
+  if (item.type === "delegation") return <DelegationSlot item={item} onOpenSession={onOpenSession} onOpenAgent={onOpenAgent} onRetryWorker={onRetryWorker}/>;
   if (item.type === "checkpoint" || item.type === "compaction" || item.type === "context-compacted" || item.type === "branch-summary") {
     // Bookkeeping reads past as a faint line. Only a failure the reader can act
     // on keeps the card, because it carries the retry.
@@ -1738,8 +1797,20 @@ const TranscriptEntry = memo(function TranscriptEntry({ entry, instant, highligh
   instant: boolean;
   highlighted: boolean;
 } & Omit<React.ComponentProps<typeof ItemView>, "item">) {
+  // A worker row its fan-out card draws has no slot of its own: an empty
+  // row would still take the column's gap.
+  const fanOutView = useContext(FanOutContext);
+  // A reply draws its turn's end beside its own actions; any other last row
+  // gets it underneath.
+  const trailingEnd = itemProps.turnEnd && (entry.kind !== "item" || entry.item.type !== "message")
+    ? <TurnEndBlock end={itemProps.turnEnd} onReview={itemProps.onReviewChanges}/>
+    : null;
+  // An absorbed worker row can still be its turn's last row; the turn's end
+  // (changes card and turn line) keeps its place instead of vanishing with it.
+  if (entry.kind === "item" && fanOutView?.fanOuts.absorbed.has(entry.item.key)) return trailingEnd ? <TranscriptRow instant={instant}>{trailingEnd}</TranscriptRow> : null;
   if (entry.kind === "group") return <TranscriptRow instant={instant}>
     <ActivityGroup items={entry.items} turnActive={itemProps.turnActive} autoExpandEditActivity={itemProps.autoExpandEditActivity}/>
+    {trailingEnd}
   </TranscriptRow>;
   if (entry.kind === "raw-group") return <TranscriptRow instant={instant}><RawEventGroup items={entry.items}/></TranscriptRow>;
   return <TranscriptRow
@@ -1750,6 +1821,7 @@ const TranscriptEntry = memo(function TranscriptEntry({ entry, instant, highligh
     className={highlighted ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
   >
     <ItemView {...itemProps} item={entry.item}/>
+    {trailingEnd}
   </TranscriptRow>;
 });
 
@@ -2210,7 +2282,37 @@ function StaleBaseCard({ item, onRefresh }: { item: ConversationItem; onRefresh?
   </div>;
 }
 
-function DelegationRow({ item, onOpenSession, onOpenAgent, onRetryWorker }: { item: ConversationItem; onOpenSession?: (sessionId: string) => void; onOpenAgent?: (childSessionId: string) => void; onRetryWorker?: (childSessionId: string) => Promise<void> }) {
+/// The fan-outs of one transcript and what their cards need from the host.
+type FanOutView = {
+  fanOuts: FanOuts;
+  lookup: WorkerLookup;
+  readOnly: boolean;
+  onOpenAgents?: () => void;
+  onStopWorkers?: (childSessionIds: string[]) => Promise<void>;
+};
+const FanOutContext = createContext<FanOutView | null>(null);
+
+type DelegationActions = { onOpenSession?: (sessionId: string) => void; onOpenAgent?: (childSessionId: string) => void; onRetryWorker?: (childSessionId: string) => Promise<void> };
+
+/// A delegation row, or, at the first worker row of a delegation, the fan-out
+/// card holding that delegation's quiet worker rows. A worker that failed keeps
+/// its own alert row where it was, with its Retry; the card only counts it.
+function DelegationSlot({ item, ...actions }: { item: ConversationItem } & DelegationActions) {
+  const view = useContext(FanOutContext);
+  const fanOut = view?.fanOuts.byHead.get(item.key);
+  const summary = useMemo(
+    () => fanOut && view ? summarizeFanOut(fanOutWorkers(fanOut, view.fanOuts.blocked, view.lookup)) : undefined,
+    [fanOut, view],
+  );
+  if (!fanOut || !summary || !view) return <DelegationRow item={item} {...actions}/>;
+  const rows = fanOut.members.filter(isQuietWorkerRow).map(member => <DelegationRow key={member.key} item={member} nested {...actions}/>);
+  return <>
+    <FanOutCard summary={summary} rows={rows.length ? rows : undefined} readOnly={view.readOnly} onOpenAgents={view.onOpenAgents} onStopWorkers={view.onStopWorkers}/>
+    {!isQuietWorkerRow(item) && <DelegationRow item={item} {...actions}/>}
+  </>;
+}
+
+function DelegationRow({ item, nested = false, onOpenSession, onOpenAgent, onRetryWorker }: { item: ConversationItem; /** Drawn inside a fan-out card rather than on the canvas. */ nested?: boolean } & DelegationActions) {
   // Every hook before the first early return: an item's facet changes under it
   // (a spawn becomes a result when the envelope lands), so the hook count must
   // not depend on which branch renders.
@@ -2272,13 +2374,13 @@ function DelegationRow({ item, onOpenSession, onOpenAgent, onRetryWorker }: { it
     />;
   }
   // The worker itself lives in the dock's Agents pane, which opens on its own
-  // when one starts. The transcript keeps one quiet line per delegation and a
-  // way back to that agent, never a live card of its own.
-  return <div className="my-3 min-w-0">
+  // when one starts. The transcript keeps one quiet line per worker and a way
+  // back to that agent; its delegation's fan-out card is what counts them.
+  return <div className={nested ? "min-w-0" : "my-3 min-w-0"}>
     <div className="flex min-w-0 items-center gap-1 -ml-2">
       <button className="min-w-0 flex-1 flex items-center gap-[9px] min-h-[30px] px-2 py-1 rounded-md text-left text-muted-foreground text-ui hover:bg-accent transition-colors" onClick={() => item.text && setOpen(value => !value)}>
         {isResult ? <CornerDownRight size={13} className="shrink-0" aria-hidden="true" /> : <GitFork size={13} className="shrink-0" aria-hidden="true" />}
-        <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-ellipsis">{item.data.harnessSubagent === true ? "Subagent" : isResult ? "Subagent finished" : "Delegated"}{titleAddsInfo(item, isResult) && <b className="text-muted-foreground font-medium"> · {item.title}</b>}</span>
+        <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-ellipsis">{item.data.harnessSubagent === true ? "Subagent" : isResult ? "Worker finished" : "Delegated"}{titleAddsInfo(item, isResult) && <b className="text-muted-foreground font-medium"> · {rowTitle(item, isResult)}</b>}</span>
         {model && <em className="hidden flex-none font-mono text-caption text-muted-foreground not-italic border border-border rounded px-1.5 py-0.5 sm:inline">{model}{effort ? ` · ${effort}` : ""}</em>}
         {item.text && <ChevronRight size={12} className={`shrink-0 transition-transform ${open ? "rotate-90" : ""}`} aria-hidden="true" />}
       </button>
@@ -2440,9 +2542,16 @@ function WorkerFailureRow({ title, summary, cause, failureClass, childSessionId,
 }
 
 function titleAddsInfo(item: ConversationItem, isResult: boolean): boolean {
-  const title = (item.title ?? "").trim();
+  const title = rowTitle(item, isResult);
   if (!title) return false;
   return isResult ? !/^worker result$/i.test(title) : true;
+}
+
+/// A spawn's title after the row's own "Delegated" verb: "Delegated to
+/// Implementation · strong" would read "Delegated · Delegated to …".
+function rowTitle(item: ConversationItem, isResult: boolean): string {
+  const title = (item.title ?? "").trim();
+  return isResult ? title : title.replace(/^delegated to\s+/i, "");
 }
 
 function stringList(value: unknown) { return Array.isArray(value) ? value.join("\n") : ""; }
