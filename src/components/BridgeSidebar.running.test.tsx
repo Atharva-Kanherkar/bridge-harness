@@ -134,6 +134,14 @@ describe("sidebar Running group", () => {
     expect(row("retry").lastElementChild?.getAttribute("data-harness")).toBe("codex");
   });
 
+  it("names the chat in full on hover without taking the chat row's title", () => {
+    mount();
+    // Hosts find a chat's own row by its title; the running row must not answer first.
+    expect(row("retry").hasAttribute("title")).toBe(false);
+    expect(row("retry").querySelector("[title]")?.getAttribute("title")).toBe("Add a retry budget · Codex");
+    expect(container.querySelector('button[title^="Add a retry budget"]')?.hasAttribute("data-running-row")).toBe(false);
+  });
+
   it("leaves out a chat whose provider is up with no turn, and hides when nothing runs", () => {
     mount({ chats: [providerUp, daemon], liveAgents: new Map(), sessions: [providerUp, daemon], liveEvents: [] });
     expect(group()).toBeNull();

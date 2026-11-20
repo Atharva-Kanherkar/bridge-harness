@@ -36,14 +36,15 @@ function RunningRow({ row, now, active, onOpen }: { row: RunningChat; now: numbe
       onClick={onOpen}
       data-running-row={row.chat.id}
       data-active={active || undefined}
-      title={`${row.chat.titleLadder?.at(-1) ?? name} · ${harnessLabel(row.chat.harness)}`}
       className={clsx(
         "flex h-11 w-full min-w-0 shrink-0 items-center gap-2 rounded-md pl-2 text-left font-sans transition-colors active:scale-[0.99]",
         active ? "bg-selection text-selection-foreground" : "hover:bg-accent",
       )}
     >
       <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
-        <span className={clsx("min-w-0 truncate text-ui leading-4 tracking-[-0.008em] text-foreground", active && "font-medium")}>{name}</span>
+        {/* The hover names the chat in full on the name itself: the row's own
+            title stays with the chat's row in its project folder. */}
+        <span title={`${row.chat.titleLadder?.at(-1) ?? name} · ${harnessLabel(row.chat.harness)}`} className={clsx("min-w-0 truncate text-ui leading-4 tracking-[-0.008em] text-foreground", active && "font-medium")}>{name}</span>
         <span className="flex min-w-0 items-center gap-1.5 text-caption leading-3.5 tracking-[-0.004em] text-muted-foreground">
           <LoaderCircle size={10} strokeWidth={2} className="shrink-0 animate-spin text-info" aria-hidden="true" />
           <span data-running-elapsed className="shrink-0 tabular-nums text-info">{formatElapsed(now - row.since)}</span>
