@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session, SessionStatus, Workspace } from "../types";
-import { chatBucket, chatName, liveAgentSessions, BRIEFING_SESSION_KIND, EXTRACTION_SESSION_KIND, EVALUATION_SESSION_KIND, CONSOLIDATION_SESSION_KIND, CONNECTOR_SESSION_KIND, CHAT_SEARCH_SESSION_KIND, CHAT_VIEW_KEY, DEFAULT_CHAT_VIEW, agentOptions, chatListTime, chatTimestamp, dayLabel, filterChats, groupChats, isHiddenSession, readChatView, statusBucket, visibleChats, writeChatView, SUGGESTION_SESSION_KIND } from "./sidebarChats";
+import { chatBucket, chatName, importedSubagents, isWorkerSession, liveAgentSessions, BRIEFING_SESSION_KIND, EXTRACTION_SESSION_KIND, EVALUATION_SESSION_KIND, CONSOLIDATION_SESSION_KIND, CONNECTOR_SESSION_KIND, CHAT_SEARCH_SESSION_KIND, CHAT_VIEW_KEY, DEFAULT_CHAT_VIEW, agentOptions, chatListTime, chatTimestamp, dayLabel, filterChats, groupChats, isHiddenSession, readChatView, statusBucket, visibleChats, writeChatView, SUGGESTION_SESSION_KIND } from "./sidebarChats";
 
 const chat = (id: string, overrides: Partial<Session> = {}): Session => ({
   id,
@@ -357,3 +357,46 @@ describe("chatName", () => {
     expect(chatName({ title: null, label: "Release notes" })).toBe("Release notes");
   });
 });
+
+describe("importedSubagents", () => {
+  const imported = (id: string, parent: string | null, startedAt: string) => chat(id, { kind: "imported", parentSessionId: parent, startedAt });
+
+  it("lists imported subagents under the chat at the top of their tree, in tree order", () => {
+    const sessions = [
+      imported("root", null, "2026-11-01T10:00:00Z"),
+      imported("late", "root", "2026-11-01T10:09:00Z"),
+      imported("early", "root", "2026-11-01T10:01:00Z"),
+      imported("nested", "early", "2026-11-01T10:02:00Z"),
+      imported("other", null, "2026-11-01T11:00:00Z"),
+    ];
+
+    const grouped = importedSubagents(sessions);
+
+    expect([...grouped.keys()]).toEqual(["root"]);
+    expect(grouped.get("root")!.map(row => [row.chat.id, row.depth])).toEqual([["early", 1], ["nested", 2], ["late", 1]]);
+  });
+
+  it("leaves Bridge's own workers and orphans out", () => {
+    const sessions = [
+      chat("live", { kind: "direct" }),
+      chat("worker", { kind: "worker", parentSessionId: "live" }),
+      imported("joined", "live", "2026-11-01T10:00:00Z"),
+      imported("orphan", "gone", "2026-11-01T10:00:00Z"),
+    ];
+
+    const grouped = importedSubagents(sessions);
+
+    expect(grouped.get("live")!.map(row => row.chat.id)).toEqual(["joined"]);
+    expect([...grouped.values()].flat().some(row => row.chat.id === "orphan" || row.chat.id === "worker")).toBe(false);
+  });
+});
+
+describe("isWorkerSession", () => {
+  it("steers Bridge's own workers, never an imported subagent", () => {
+    expect(isWorkerSession(chat("w", { kind: "worker", parentSessionId: "p" }))).toBe(true);
+    expect(isWorkerSession(chat("i", { kind: "imported", parentSessionId: "p" }))).toBe(false);
+    expect(isWorkerSession(chat("top", { kind: "imported" }))).toBe(false);
+    expect(isWorkerSession(undefined)).toBe(false);
+  });
+});
+
