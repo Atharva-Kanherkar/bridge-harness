@@ -308,9 +308,15 @@ pub fn restoration_handoff(
         .as_ref()
         .is_some_and(|(sequence, _)| tail.oldest_sequence.is_some_and(|oldest| oldest <= *sequence));
     let older = eligible_entries.saturating_sub(tail.messages);
-    let earlier = (reads_history && older > 0).then(|| {
-        crate::handoff_facts::earlier_line(older, tail.oldest_sequence.unwrap_or(past_newest))
-    });
+    // Where the rest is: older messages when the tail left some out, else the
+    // tool output no handoff carries. The wider of the two was reserved.
+    let earlier = if !reads_history {
+        None
+    } else if older > 0 {
+        Some(crate::handoff_facts::earlier_line(older, tail.oldest_sequence.unwrap_or(past_newest)))
+    } else {
+        facts.has_tool_calls.then(crate::handoff_facts::tool_output_line)
+    };
     let facts_lines = crate::handoff_facts::bound(facts.lines(first_ask_carried, earlier), reserved);
     if header.is_empty() && facts_lines.is_empty() && tail.lines.is_empty() {
         return Ok(None);
@@ -847,6 +853,7 @@ pub(crate) mod tests {
             assert!(text.lines().any(|candidate| candidate == line), "{line} missing: {text}");
         }
         assert!(!text.contains("earlier:"), "everything fit: {text}");
+        assert!(text.lines().any(|line| line == "tool output: not in this handoff; call chats_history to read it."), "{text}");
         assert!(text.find("links:").unwrap() < text.find("user.message: ship").unwrap(), "facts head the tail: {text}");
         assert_eq!((handoff.facts.file_count(), handoff.facts.links.len()), (1, 1));
     }

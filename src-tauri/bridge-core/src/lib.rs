@@ -108,6 +108,10 @@ pub mod github_policy;
 pub mod handoff;
 pub mod health;
 pub mod handoff_facts;
+#[cfg(test)]
+mod handoff_eval;
+#[cfg(test)]
+mod handoff_properties;
 pub mod history_tools;
 #[cfg(test)]
 mod history_tools_eval;

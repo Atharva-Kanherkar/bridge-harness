@@ -533,6 +533,61 @@ mod launch_tests {
     }
 
     #[test]
+    fn a_cold_start_after_a_switch_carries_facts_tools_and_the_pointer() {
+        let scratch = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let mut core = BridgeCore::for_tests(scratch.path());
+        let calls = Arc::new(Mutex::new(Calls::default()));
+        let mut registry = AdapterRegistry::empty();
+        registry
+            .register(Box::new(ClaudeStub { calls: calls.clone(), resume_fails: false, hold: Mutex::new(Vec::new()) }))
+            .unwrap();
+        core.adapter_registry = Arc::new(registry);
+        let core = Arc::new(core);
+        let session_id = core.create_chat_id(&Harness::Claude, None, None).unwrap();
+        {
+            let db = core.db.lock().unwrap();
+            let forest = SessionForest::new(&db);
+            forest.append(&session_id, EntryKind::UserMessage, json!({"text":"FIRST ASK: audit the payment retries"})).unwrap();
+            // Longer than any window's handoff budget, so the tail is cut.
+            for turn in 0..150 {
+                let kind = if turn % 2 == 0 { EntryKind::AssistantMessage } else { EntryKind::UserMessage };
+                forest.append(&session_id, kind, json!({"text": format!("turn {turn}: {}", "retry detail ".repeat(80))})).unwrap();
+            }
+            drop(forest);
+            crate::restoration::tests::tool_event(&db, &session_id, "command.started", "toolu_9", None, None, json!({"name":"Bash","input":{"command":"cargo test -p billing"}}));
+            crate::restoration::tests::tool_event(&db, &session_id, "command.completed", "toolu_9", None, Some("test result: ok"), json!({"type":"tool_result","is_error":false}));
+            crate::restoration::tests::tool_event(&db, &session_id, "file_change.completed", "exec-1", None, None, json!({"changes":[{"path":"src/billing/retry.rs"}]}));
+            crate::restoration::tests::tool_event(&db, &session_id, "command.completed", "exec-2", None, Some("https://github.com/acme/pay/pull/88"), json!({"command":"gh pr create --fill","exitCode":0}));
+            SessionForest::new(&db).append(&session_id, EntryKind::AssistantMessage, json!({"text":"opened the PR"})).unwrap();
+        }
+        crate::live_turn::start_chat(&core, session_id.clone()).unwrap();
+        let instructions = calls.lock().unwrap().started_with.clone();
+        assert_eq!(instructions.len(), 1, "a fresh, checkpoint-restored start");
+        let prompt = &instructions[0];
+        for needle in [
+            "goal: turn 149",
+            "started with: FIRST ASK: audit the payment retries",
+            "files touched: src/billing/retry.rs",
+            "links: https://github.com/acme/pay/pull/88",
+            "tools: ran `cargo test -p billing`; edited src/billing/retry.rs; ran `gh pr create --fill` (exit 0)",
+            "call chats_history with before=",
+            "assistant.message: opened the PR",
+        ] {
+            assert!(prompt.contains(needle), "{needle} missing from the handoff");
+        }
+        assert!(!prompt.contains("test result: ok"), "no tool output in the handoff");
+        let db = core.db.lock().unwrap();
+        let compactions: i64 = db
+            .query_row("SELECT count(*) FROM session_entries WHERE session_id=?1 AND kind='compaction'", params![session_id], |row| row.get(0))
+            .unwrap();
+        assert_eq!(compactions, 0);
+        drop(db);
+        let (mode, sections) = ledger(&core, &session_id);
+        assert_eq!(mode, "checkpoint_restored");
+        assert!(sections.contains("restoration_context"), "{sections}");
+    }
+
+    #[test]
     fn a_returned_thread_that_will_not_resume_is_forgotten_and_history_is_projected() {
         let (core, session_id, calls) = returned_chat(true);
         crate::live_turn::start_chat(&core, session_id.clone()).unwrap();

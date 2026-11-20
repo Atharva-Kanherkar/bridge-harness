@@ -1,0 +1,327 @@
+{
+  "about": "Labeled chats for the model-switch handoff (handoff_eval::offline). Each is shaped like a real chat in Bridge's database: Claude, Codex and OpenCode tool payloads, PR links printed by gh, edits, worker results, and a fact said early that a long chat pushes out of the incoming model's budget. {{secret:NAME}} is a credential generated at run time and planted only in tool commands and output, the surfaces this change adds; none may reach a handoff or a chats_history page. Early facts sit in a middle message or in tool output, not in the first ask (which the handoff's started-with line already carries), so reading them back needs chats_history.",
+  "windows": [
+    32000,
+    200000,
+    1050000
+  ],
+  "cases": [
+    {
+      "name": "security hunt, back and forth between Claude and Codex",
+      "steps": [
+        {
+          "user": "Hunt for data leaks in the rimo MCP."
+        },
+        {
+          "assistant": "Starting with the masked MCP tools; I will check every handler that returns customer rows."
+        },
+        {
+          "user": "Use staging only. The staging MCP endpoint is mcp-staging.internal:7443 and the code word for the report is heliotrope."
+        },
+        {
+          "claudeBash": {
+            "command": "rg -n 'customer_id' services/mcp --stats",
+            "output": "services/mcp/handlers/export.rs:41: customer_id",
+            "error": false
+          }
+        },
+        {
+          "filler": {
+            "turns": 140,
+            "bytes": 1100,
+            "text": "Checked another handler: it masks emails but returns raw phone numbers in the debug branch."
+          }
+        },
+        {
+          "claudeBash": {
+            "command": "GH_TOKEN={{secret:github}} gh issue list --repo rimo/rimo-backend --label security",
+            "output": "#9425 Mask phone numbers in export",
+            "error": false
+          }
+        },
+        {
+          "claudeEdit": {
+            "path": "services/mcp/handlers/export.rs"
+          }
+        },
+        {
+          "claudeEdit": {
+            "path": "services/mcp/handlers/debug.rs"
+          }
+        },
+        {
+          "claudeBash": {
+            "command": "cargo test -p mcp handlers::export",
+            "output": "test result: ok. 12 passed",
+            "error": false
+          }
+        },
+        {
+          "claudeBash": {
+            "command": "gh pr create --fill",
+            "output": "https://github.com/rimo/rimo-backend/pull/9443",
+            "error": false
+          }
+        },
+        {
+          "assistant": "Opened the PR with the export and debug fixes."
+        },
+        {
+          "user": "Now check whether the masked MCP still leaks prod data through the search tool."
+        }
+      ],
+      "expect": {
+        "files": [
+          "services/mcp/handlers/debug.rs",
+          "services/mcp/handlers/export.rs"
+        ],
+        "links": [
+          "https://github.com/rimo/rimo-backend/pull/9443"
+        ],
+        "fact": "mcp-staging.internal:7443",
+        "goal": "still leaks prod data through the search tool",
+        "tools": [
+          "ran `gh pr create --fill`"
+        ]
+      },
+      "secrets": [
+        "github"
+      ]
+    },
+    {
+      "name": "Codex refactor with a failing then passing test run",
+      "steps": [
+        {
+          "user": "Move the retry policy out of the billing client."
+        },
+        {
+          "assistant": "Noted from the incident review: the jitter stays at 250 ms, so the shared policy keeps that constant."
+        },
+        {
+          "filler": {
+            "turns": 90,
+            "bytes": 1500,
+            "text": "Moved another call site to the shared retry policy and kept its timeout."
+          }
+        },
+        {
+          "codexCommand": {
+            "command": "/bin/zsh -lc 'cargo test -p billing'",
+            "output": "test result: FAILED. 41 passed; 1 failed",
+            "exit": 101
+          }
+        },
+        {
+          "codexChange": {
+            "paths": [
+              "src/billing/retry.rs",
+              "src/billing/client.rs"
+            ]
+          }
+        },
+        {
+          "codexCommand": {
+            "command": "/bin/zsh -lc 'cargo test -p billing'",
+            "output": "test result: ok. 42 passed",
+            "exit": 0
+          }
+        },
+        {
+          "codexCommand": {
+            "command": "/bin/zsh -lc 'OPENAI_API_KEY={{secret:openai}} ./scripts/smoke.sh'",
+            "output": "smoke ok with key {{secret:openai}}",
+            "exit": 0
+          }
+        },
+        {
+          "codexCommand": {
+            "command": "/bin/zsh -lc 'gh pr create --fill'",
+            "output": "https://github.com/acme/pay/pull/88\n",
+            "exit": 0
+          }
+        },
+        {
+          "assistant": "Opened https://github.com/acme/pay/pull/88 with the retry policy moved."
+        },
+        {
+          "user": "Rebase it on main and resolve the conflict in client.rs."
+        }
+      ],
+      "expect": {
+        "files": [
+          "src/billing/client.rs",
+          "src/billing/retry.rs"
+        ],
+        "links": [
+          "https://github.com/acme/pay/pull/88"
+        ],
+        "fact": "the jitter stays at 250 ms",
+        "goal": "Rebase it on main",
+        "tools": [
+          "ran `gh pr create --fill` (exit 0)"
+        ]
+      },
+      "secrets": [
+        "openai"
+      ]
+    },
+    {
+      "name": "OpenCode review across two repositories",
+      "steps": [
+        {
+          "user": "Review the open PRs on kairo."
+        },
+        {
+          "opencodeShell": {
+            "command": "git branch -r --list 'origin/release/*'",
+            "output": "origin/release/2026-11 (protected: never force-push)",
+            "exit": 0
+          }
+        },
+        {
+          "opencodeShell": {
+            "command": "gh pr list --repo Atharva-Kanherkar/kairo",
+            "output": "111 finding/144\n112 finding/145",
+            "exit": 0
+          }
+        },
+        {
+          "filler": {
+            "turns": 70,
+            "bytes": 1300,
+            "text": "Read another diff hunk; the error path drops the request id."
+          }
+        },
+        {
+          "opencodeEdit": {
+            "path": "crates/gateway/src/model_info.rs"
+          }
+        },
+        {
+          "opencodeShell": {
+            "command": "cargo fmt --all -- --check",
+            "output": "Diff in crates/gateway/src/model_info.rs",
+            "exit": 1
+          }
+        },
+        {
+          "opencodeShell": {
+            "command": "curl -H 'Authorization: Bearer {{secret:anthropic}}' https://api.example.com/v1/models",
+            "output": "{\"data\":[]}",
+            "exit": 0
+          }
+        },
+        {
+          "opencodeShell": {
+            "command": "gh pr comment 113 --repo Atharva-Kanherkar/kairo --body done",
+            "output": "https://github.com/Atharva-Kanherkar/kairo/pull/113#issuecomment-1",
+            "exit": 0
+          }
+        },
+        {
+          "assistant": "Left the review on 113 and fixed the formatting in model_info.rs."
+        },
+        {
+          "user": "Check CI on 111 and 112 too."
+        }
+      ],
+      "expect": {
+        "files": [
+          "crates/gateway/src/model_info.rs"
+        ],
+        "links": [
+          "https://github.com/Atharva-Kanherkar/kairo/pull/113"
+        ],
+        "fact": "origin/release/2026-11 (protected: never force-push)",
+        "goal": "Check CI on 111 and 112",
+        "tools": [
+          "ran `gh pr comment 113"
+        ]
+      },
+      "secrets": [
+        "anthropic"
+      ]
+    },
+    {
+      "name": "orchestrator with worker results",
+      "steps": [
+        {
+          "user": "Split the importer work: one worker on Conductor, one on OpenCode. The import must never delete source sessions."
+        },
+        {
+          "worker": {
+            "summary": "Conductor import done in https://github.com/acme/bridge/pull/1093",
+            "filesChanged": [
+              "src/conductor_import/mod.rs",
+              "testing/feat-import-conductor.md"
+            ]
+          }
+        },
+        {
+          "filler": {
+            "turns": 40,
+            "bytes": 1200,
+            "text": "Reviewed the worker's diff and asked for a test on the empty workspace case."
+          }
+        },
+        {
+          "worker": {
+            "summary": "OpenCode import done in https://github.com/acme/bridge/pull/1089",
+            "filesChanged": [
+              "src/opencode_import.rs"
+            ]
+          }
+        },
+        {
+          "user": "Merge both once CI is green."
+        }
+      ],
+      "expect": {
+        "files": [
+          "src/opencode_import.rs",
+          "src/conductor_import/mod.rs",
+          "testing/feat-import-conductor.md"
+        ],
+        "links": [
+          "https://github.com/acme/bridge/pull/1089",
+          "https://github.com/acme/bridge/pull/1093"
+        ],
+        "fact": "never delete source sessions",
+        "goal": "Merge both once CI is green",
+        "tools": []
+      },
+      "secrets": []
+    },
+    {
+      "name": "a short chat that fits whole",
+      "steps": [
+        {
+          "user": "What port does the staging proxy use? It is 8443."
+        },
+        {
+          "claudeBash": {
+            "command": "grep -n listen nginx/staging.conf",
+            "output": "listen 8443 ssl;",
+            "error": false
+          }
+        },
+        {
+          "assistant": "Staging listens on 8443."
+        },
+        {
+          "user": "Thanks, write that into the runbook."
+        }
+      ],
+      "expect": {
+        "files": [],
+        "links": [],
+        "fact": "It is 8443",
+        "goal": "write that into the runbook",
+        "tools": [
+          "ran `grep -n listen nginx/staging.conf`"
+        ]
+      },
+      "secrets": []
+    }
+  ]
+}

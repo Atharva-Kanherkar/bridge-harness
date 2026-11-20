@@ -58,6 +58,8 @@ pub struct HandoffFacts {
     pub more_files: usize,
     /// Pull request and issue links, newest first.
     pub links: Vec<String>,
+    /// Whether the branch has tool calls, whose output no handoff carries.
+    pub has_tool_calls: bool,
 }
 
 impl HandoffFacts {
@@ -96,6 +98,12 @@ pub fn earlier_line(older_messages: usize, before: i64) -> String {
         if older_messages == 1 { " is" } else { "s are" },
         crate::history_tools::HISTORY,
     )
+}
+
+/// The pointer a handoff gives when it carried every message but the branch
+/// ran tools: their output is the one thing it left out.
+pub fn tool_output_line() -> String {
+    format!("tool output: not in this handoff; call {} to read it.", crate::history_tools::HISTORY)
 }
 
 /// The facts of a branch, oldest entry first.
@@ -146,7 +154,8 @@ pub fn collect(branch: &[SessionEntry]) -> HandoffFacts {
     files.truncate(MAX_FILES);
     let files = files.iter().map(|path| one_line(path, PATH_BYTES)).collect();
 
-    HandoffFacts { goal, first_ask, files, more_files, links: links(branch) }
+    let has_tool_calls = branch.iter().any(|entry| tool_facts::is_completed_tool(&entry.kind));
+    HandoffFacts { goal, first_ask, files, more_files, links: links(branch), has_tool_calls }
 }
 
 /// The newest [`MAX_LINKS`] distinct pull request and issue links, reading
@@ -343,6 +352,8 @@ mod tests {
             "earlier: 107 older messages are not in this handoff; call chats_history with before=1203 to read them, tool output included."
         );
         assert!(earlier_line(1, 5).starts_with("earlier: 1 older message is not"));
+        assert_eq!(tool_output_line(), "tool output: not in this handoff; call chats_history to read it.");
+        assert!(tool_output_line().len() < earlier_line(0, 0).len(), "the reserved pointer is the wider one");
     }
 
     #[test]
