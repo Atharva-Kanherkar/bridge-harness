@@ -157,6 +157,19 @@ fn a_subagent_session_names_its_parent_and_an_untitled_one_derives_a_title() {
 }
 
 #[test]
+fn the_first_message_in_quotes_is_opencodes_interim_title_not_a_title() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(dir.path());
+    fixture.session("ses_new", None, "/work/app", Some("\"Remember the word OSPREY-3.\""), 1);
+    fixture.row("ses_new", 1, "user", &said("Remember the word OSPREY-3."));
+    fixture.session("ses_quoted", None, "/work/app", Some("\"Quoted on purpose\""), 2);
+    fixture.row("ses_quoted", 1, "user", &said("something else"));
+
+    assert_eq!(read(&fixture, "ses_new").chat.title_source, TitleSource::Derived);
+    assert_eq!(read(&fixture, "ses_quoted").chat.title.as_deref(), Some("\"Quoted on purpose\""), "a quoted title that is not the message is a title");
+}
+
+#[test]
 fn a_1x_session_reads_from_its_messages_and_parts() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::v1_only(dir.path());

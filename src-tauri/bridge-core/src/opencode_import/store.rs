@@ -252,11 +252,16 @@ pub fn read_session(conn: &Connection, row: &SessionRow, source: &SessionSource<
         Generation::V2 => read_v2(conn, &row.id, &mut reading)?,
         Generation::V1 => read_v1(conn, &row.id, &mut reading)?,
     }
+    let first_message = reading
+        .entries
+        .iter()
+        .find(|entry| entry.kind == BundleEntryKind::UserMessage)
+        .and_then(|entry| entry.text.as_deref());
     let title = row
         .title
         .as_deref()
         .map(str::trim)
-        .filter(|title| !title.is_empty() && !is_placeholder_title(title))
+        .filter(|title| !title.is_empty() && !is_placeholder_title(title, first_message))
         .map(str::to_owned);
     let is_subagent = row.parent_id.is_some();
     let native_key = |id: &str| format!("opencode:{id}");
@@ -294,9 +299,14 @@ pub fn read_session(conn: &Connection, row: &SessionRow, source: &SessionSource<
 }
 
 /// OpenCode names a session it has not titled yet "New session - <time>"
-/// (a subagent's, "Child session - <time>").
-fn is_placeholder_title(title: &str) -> bool {
-    title.starts_with("New session - ") || title.starts_with("Child session - ")
+/// (a subagent's, "Child session - <time>"), and while its title model runs,
+/// the first message in quotes.
+fn is_placeholder_title(title: &str, first_message: Option<&str>) -> bool {
+    let quoted = title
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .is_some_and(|inner| first_message.is_some_and(|message| message.trim() == inner.trim()));
+    quoted || title.starts_with("New session - ") || title.starts_with("Child session - ")
 }
 
 fn millis(ms: i64) -> Option<String> {
