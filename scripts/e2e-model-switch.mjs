@@ -146,7 +146,7 @@ function switchNotice(sessionId) {
 
 function check(results, name, ok, detail) {
   results.push({ name, ok: Boolean(ok), detail });
-  console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? ` — ${String(detail).slice(0, 300)}` : ""}`);
+  console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? `: ${String(detail).slice(0, 300)}` : ""}`);
 }
 
 async function toolsJourney() {

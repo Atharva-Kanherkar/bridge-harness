@@ -44,6 +44,10 @@ for entry in "$root"/* "$root"/.[!.]*; do
 done
 
 cd "$root/src-tauri"
+# Each mutant rebuilds bridge-core's test binary; without debug info it links
+# in a fraction of the time. The tests named below are the ones that own the
+# changed lines, not every test in their modules.
+export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
 list=()
 if [ -n "${MUTANTS_LIST:-}" ]; then list=(--list); fi
 out="${MUTANTS_OUT:-${TMPDIR:-/tmp}/mutants-handoff}"
@@ -51,4 +55,8 @@ mkdir -p "$out"
 TMPDIR="$shim" exec cargo mutants --package bridge-core --jobs "${MUTANTS_JOBS:-4}" --output "$out" ${list[@]+"${list[@]}"} \
   --in-diff "$diff" \
   --exclude-re 'handoff_eval|handoff_properties' \
-  -- --lib -- tool_facts handoff_facts restoration provider_threads history_tools thread_carry sessions::
+  -- --lib -- tool_facts handoff_facts handoff_eval handoff_properties restoration:: provider_threads \
+  history_tools thread_carry mcp_apps::server::tests::history mcp_apps::notes_tools::tests::history \
+  sessions::tests::an_account_change sessions::tests::a_codex_account sessions::tests::a_carry \
+  sessions::tests::a_commit_with sessions::tests::opencode_account sessions::tests::a_missing_transcript \
+  sessions::tests::the_notice_says sessions::tests::account_ sessions::tests::absent_account

@@ -1,4 +1,4 @@
-# Model switch handoff, the remaining decisions — Test Contract
+# Model switch handoff, the remaining decisions: test contract
 
 Locked before implementation. The second slice of the model-switch context
 issue. The first slice (switch summaries are checkpoints, a failed summary
