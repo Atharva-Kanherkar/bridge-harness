@@ -207,6 +207,14 @@ fn normalize_claude(data: &Value) -> Vec<UsageRecord> {
         _ => None,
     };
 
+    // The turn's last main-thread request, which `result` totals cannot
+    // recover: the window used is that request's size, not the turn's sum.
+    let last_request = data.get("lastRequest").filter(|value| value.is_object());
+    let last_used = last_request
+        .and_then(|request| integer(request, &["contextUsedTokens"]))
+        .filter(|used| *used > 0);
+    let last_model = last_request.and_then(|request| string(request, &["model"]));
+
     let per_model: Vec<(String, &Value)> = data
         .get("modelUsage")
         .and_then(Value::as_object)
@@ -237,13 +245,18 @@ fn normalize_claude(data: &Value) -> Vec<UsageRecord> {
             serving_model: None,
             tokens,
             context_window_tokens: None,
-            context_used_tokens: None,
+            context_used_tokens: last_used,
             context_percent: None,
             runtime_ms,
             reported_cost_microusd: turn_cost,
             provider_record_id,
         }];
     }
+
+    // The request belongs to one model. With a single entry there is no
+    // doubt; with several, only the entry named by the request gets it, and
+    // a helper model's row stays unknown rather than borrowing the figure.
+    let only_entry = per_model.len() == 1;
 
     let every_entry_priced = per_model
         .iter()
@@ -260,7 +273,6 @@ fn normalize_claude(data: &Value) -> Vec<UsageRecord> {
                 turn_cost.map(|_| 0)
             };
             UsageRecord {
-                model: Some(model),
                 serving_model: None,
                 tokens: anthropic_tokens(
                     integer(entry, &["inputTokens", "input_tokens"]),
@@ -269,11 +281,14 @@ fn normalize_claude(data: &Value) -> Vec<UsageRecord> {
                     integer(entry, &["outputTokens", "output_tokens"]),
                 ),
                 context_window_tokens: integer(entry, &["contextWindow", "context_window"]),
-                context_used_tokens: None,
+                context_used_tokens: last_used.filter(|_| {
+                    only_entry || last_model.as_deref() == Some(model.as_str())
+                }),
                 context_percent: None,
                 runtime_ms,
                 reported_cost_microusd,
                 provider_record_id: provider_record_id.clone(),
+                model: Some(model),
             }
         })
         .collect()
@@ -281,15 +296,24 @@ fn normalize_claude(data: &Value) -> Vec<UsageRecord> {
 
 /// OpenCode `step-finish`: `tokens` plus the step's `cost`, with the model the
 /// owning message named. Input is cache-inclusive.
+///
+/// A step is one request, so its own input and output are the window it
+/// used, the same meaning as Codex's `last.total_tokens`. Without an input
+/// figure there is no window to report and the column stays `None`.
 fn normalize_opencode(data: &Value) -> Option<UsageRecord> {
     let usage = data.get("usage").filter(|usage| usage.is_object())?;
+    let input = integer(usage, &["input_tokens", "input"]);
+    let output = integer(usage, &["output_tokens", "output"]);
     let tokens = cache_inclusive_tokens(
-        integer(usage, &["input_tokens", "input"]),
+        input,
         integer(usage, &["cache_read_tokens", "cached_input_tokens"]),
         integer(usage, &["cache_write_tokens"]),
-        integer(usage, &["output_tokens", "output"]),
+        output,
         integer(usage, &["reasoning_tokens", "reasoning"]),
     );
+    let context_used_tokens = input
+        .map(|input| input.max(0).saturating_add(output.unwrap_or(0).max(0)))
+        .filter(|used| *used > 0);
     let reported_cost_microusd = decimal(data, &["cost", "costUsd", "cost_usd"]).and_then(usd_to_microusd);
     if !has_token_figures(&tokens) && reported_cost_microusd.is_none() {
         return None;
@@ -303,7 +327,7 @@ fn normalize_opencode(data: &Value) -> Option<UsageRecord> {
         serving_model: None,
         tokens,
         context_window_tokens: None,
-        context_used_tokens: None,
+        context_used_tokens,
         context_percent: None,
         runtime_ms: None,
         reported_cost_microusd,
@@ -400,6 +424,80 @@ mod tests {
             .filter(|event| event.kind == "usage.updated")
             .map(|event| event.data)
             .collect()
+    }
+
+    #[test]
+    fn claude_last_request_sets_context_used_on_its_model() {
+        let data = json!({
+            "usage": {"input_tokens": 15, "cache_read_input_tokens": 62_000, "cache_creation_input_tokens": 2_300, "output_tokens": 160},
+            "modelUsage": {
+                "claude-opus-5-5": {"inputTokens": 15, "outputTokens": 160, "cacheReadInputTokens": 62_000, "cacheCreationInputTokens": 2_300, "costUSD": 0.04, "contextWindow": 200_000},
+                "claude-haiku-5-5": {"inputTokens": 900, "outputTokens": 9, "costUSD": 0.002, "contextWindow": 200_000}
+            },
+            "lastRequest": {"model": "claude-opus-5-5", "contextUsedTokens": 32_345}
+        });
+        let records = normalize("provider.claude", &data);
+        let used = |model: &str| {
+            records
+                .iter()
+                .find(|record| record.model.as_deref() == Some(model))
+                .unwrap()
+                .context_used_tokens
+        };
+        assert_eq!(used("claude-opus-5-5"), Some(32_345));
+        assert_eq!(used("claude-haiku-5-5"), None, "a helper model never borrows the figure");
+
+        // One model: no doubt whose request it was, even if names differ.
+        let single = normalize("provider.claude", &json!({
+            "usage": {"input_tokens": 1},
+            "modelUsage": {"claude-opus-5-5[1m]": {"inputTokens": 1, "outputTokens": 1}},
+            "lastRequest": {"model": "claude-opus-5-5", "contextUsedTokens": 500}
+        }));
+        assert_eq!(single[0].context_used_tokens, Some(500));
+
+        // No per-model split: the aggregate record carries it.
+        let aggregate = normalize("provider.claude", &json!({
+            "usage": {"input_tokens": 3, "output_tokens": 2},
+            "lastRequest": {"model": "claude-opus-5-5", "contextUsedTokens": 77}
+        }));
+        assert_eq!(aggregate[0].context_used_tokens, Some(77));
+    }
+
+    #[test]
+    fn claude_without_last_request_leaves_context_used_null() {
+        for data in [
+            json!({"usage": {"input_tokens": 3}, "modelUsage": {"claude-opus-5-5": {"inputTokens": 3}}}),
+            json!({"usage": {"input_tokens": 3}, "modelUsage": {"claude-opus-5-5": {"inputTokens": 3}}, "lastRequest": null}),
+            json!({"usage": {"input_tokens": 3}, "lastRequest": {"model": "claude-opus-5-5", "contextUsedTokens": 0}}),
+        ] {
+            let records = normalize("provider.claude", &data);
+            assert!(records.iter().all(|record| record.context_used_tokens.is_none()), "{data}");
+        }
+    }
+
+    #[test]
+    fn opencode_step_reports_context_used() {
+        let record = normalize_opencode(&json!({
+            "usage": {"input_tokens": 41_000, "output_tokens": 300, "cache_read_tokens": 40_000, "cache_write_tokens": 500, "reasoning_tokens": 100},
+            "cost": 0.0,
+            "model": "glm-5.3",
+            "provider": "opencode-go"
+        }))
+        .unwrap();
+        // Input already holds both cache buckets and output holds reasoning.
+        assert_eq!(record.context_used_tokens, Some(41_300));
+        assert_eq!(normalize("provider.opencode", &json!({"usage": {"input_tokens": 10}}))[0].context_used_tokens, Some(10));
+    }
+
+    #[test]
+    fn opencode_step_without_input_leaves_context_used_null() {
+        let record = normalize_opencode(&json!({
+            "usage": {"input_tokens": null, "output_tokens": 300, "cache_read_tokens": 40_000},
+            "cost": 0.01
+        }))
+        .unwrap();
+        assert_eq!(record.context_used_tokens, None);
+        assert_eq!(record.tokens.output_tokens, Some(300), "the rest of the row is still recorded");
     }
 
     #[test]
@@ -533,6 +631,40 @@ mod tests {
             &json!({"usage":{"input_tokens":1},"messageId":"msg_1","requestId":"req_1"}),
         );
         assert_eq!(with_ids[0].provider_record_id.as_deref(), Some("msg_1:req_1"));
+    }
+
+    #[test]
+    fn the_ledger_records_of_one_claude_process_sum_to_its_last_totals() {
+        // A real chat: turn 1, a `/compact` and turn 2 in one process, with an
+        // `init` before each result. Each result holds the session totals.
+        let result = |usage: [i64; 4], model: [i64; 4], cost: f64| json!({
+            "type":"result","subtype":"success","session_id":"s",
+            "usage":{"input_tokens":usage[0],"cache_read_input_tokens":usage[1],"cache_creation_input_tokens":usage[2],"output_tokens":usage[3]},
+            "total_cost_usd":cost,
+            "modelUsage":{"claude-haiku-5-5":{"inputTokens":model[0],"outputTokens":model[1],"cacheReadInputTokens":model[2],"cacheCreationInputTokens":model[3],"costUSD":cost}}
+        });
+        let frames = [
+            result([4, 56239, 42275, 861], [2255, 878, 56239, 42275], 0.00968189),
+            result([0, 0, 0, 0], [16681, 1801, 99046, 42746], 0.012072935),
+            result([2, 17254, 26368, 81], [16683, 1882, 116300, 69114], 0.017559775),
+        ];
+        let mut state = agent::ClaudeStreamState::default();
+        let mut records = Vec::new();
+        for frame in &frames {
+            agent::normalize_claude_message_with_state(&json!({"type":"system","subtype":"init","session_id":"s"}), &mut state);
+            for data in usage_event(agent::normalize_claude_message_with_state(frame, &mut state)) {
+                records.extend(normalize("provider.claude", &data));
+            }
+        }
+        assert_eq!(records.len(), 3);
+        let sum = |pick: fn(&UsageRecord) -> Option<i64>| records.iter().filter_map(pick).sum::<i64>();
+        assert_eq!(sum(|record| record.tokens.uncached_input_tokens), 16683);
+        assert_eq!(sum(|record| record.tokens.output_tokens), 1882);
+        assert_eq!(sum(|record| record.tokens.cache_read_tokens), 116300);
+        assert_eq!(sum(|record| record.tokens.cache_write_tokens), 69114);
+        // Each row rounds its own cost to micro-USD.
+        let cost = sum(|record| record.reported_cost_microusd);
+        assert!((cost - 17_560).abs() <= 1, "{cost}");
     }
 
     #[test]

@@ -687,6 +687,18 @@ impl UsageReport {
     }
 }
 
+/// True the first time a session reports a request without a window figure.
+/// Process-wide; a restart may log a session once more, which is fine.
+fn first_missing_window_for(session_id: &str) -> bool {
+    static LOGGED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    LOGGED
+        .get_or_init(Default::default)
+        .lock()
+        .map(|mut logged| logged.insert(session_id.to_owned()))
+        .unwrap_or(false)
+}
+
 fn integer_alias(value: &Value, keys: &[&str]) -> Option<i64> {
     if let Some(found) = keys.iter().find_map(|key| value.get(*key)?.as_i64()) {
         return Some(found);
@@ -735,6 +747,17 @@ pub fn record_provider_usage(
     let records = usage::normalize(source, data);
     if records.is_empty() {
         return Ok(false);
+    }
+    if usage::UsageProvider::from_source(source) == usage::UsageProvider::OpenCode
+        && records.iter().any(|record| record.context_used_tokens.is_none())
+        && first_missing_window_for(session_id)
+    {
+        // Once per session: a server that omits the figure omits it on every
+        // step, and one line per frame would bury everything else.
+        eprintln!(
+            "[bridge] usage: OpenCode sent a step without an input token count for {session_id}; \
+             its window used stays unknown (later steps in this session are not logged)"
+        );
     }
     let prompt = match turn_id {
         Some(turn_id) => store::prompt_compilation_for_turn(db, session_id, turn_id)?,
@@ -1835,6 +1858,56 @@ mod tests {
         .unwrap();
         assert_eq!(report.cache_read_tokens, Some(12));
         assert_eq!(report.cache_write_tokens, Some(3));
+    }
+
+    #[test]
+    fn claude_usage_window_fixture_reaches_the_ledger() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../testing/fixtures/claude-usage-window.json"
+        ))
+        .unwrap();
+        let mut state = crate::agent::ClaudeStreamState::default();
+        let db = database();
+        for frame in fixture["frames"].as_array().unwrap() {
+            for event in crate::agent::normalize_claude_message_with_state(frame, &mut state) {
+                if event.kind == "usage.updated" {
+                    assert!(record_provider_usage(&db, "w", "parent", Some("turn-1"), "provider.claude", &event.data).unwrap());
+                }
+            }
+        }
+        let rows = store::usage_ledger(&db, "w", Some("parent")).unwrap();
+        let used = |model: &str| {
+            rows.iter()
+                .find(|row| row.model.as_deref() == Some(model))
+                .unwrap_or_else(|| panic!("a row for {model}"))
+                .context_used_tokens
+        };
+        assert_eq!(rows.len(), 2, "one row per model");
+        assert_eq!(used("claude-opus-5-5"), fixture["expected"]["contextUsedTokens"].as_i64());
+        assert_eq!(used("claude-haiku-5-5"), None);
+        let stored: (i64, i64) = db
+            .query_row(
+                "SELECT COUNT(context_used_tokens), MAX(context_used_tokens) FROM usage_ledger WHERE source='provider.claude'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored, (1, 32_345));
+    }
+
+    #[test]
+    fn opencode_missing_window_is_logged_once_per_session() {
+        let db = database();
+        let step = json!({"usage": {"input_tokens": null, "output_tokens": 4}, "cost": 0.0});
+        let session = format!("opencode-missing-{}", uuid::Uuid::new_v4());
+        assert!(first_missing_window_for(&session));
+        assert!(!first_missing_window_for(&session), "the second step is not logged");
+        assert!(first_missing_window_for(&format!("{session}-other")), "another session logs once too");
+        // The row is still written, with the window left unknown.
+        assert!(record_provider_usage(&db, "w", "parent", None, "provider.opencode", &step).unwrap());
+        let rows = store::usage_ledger(&db, "w", Some("parent")).unwrap();
+        assert_eq!(rows[0].context_used_tokens, None);
+        assert_eq!(rows[0].output_tokens, Some(4));
     }
 
     #[test]

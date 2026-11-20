@@ -17,7 +17,9 @@ import { stopTaskFrame, childPermissions, withChildPermissions } from "./subagen
 //
 // Config arrives as a single JSON argument (argv[2]):
 //   { sessionId, model, cwd, resume, instructions, writeMode, plugins, mcpServers,
-//     timing }  (timing: report each turn as a system/bridge_timing frame)
+//     timing, toolSelection }  (timing: report each turn as a system/bridge_timing
+//     frame. toolSelection: the servers that a chat denies and the skills that
+//     the chat keeps.)
 
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";

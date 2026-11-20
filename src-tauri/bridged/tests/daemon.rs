@@ -1208,3 +1208,63 @@ fn personal_chat_defaults_are_authenticated_revisioned_and_survive_daemon_restar
     drop(client);
     reopened.stop();
 }
+
+#[test]
+fn chat_tools_methods_answer_over_the_socket() {
+    let fixture = tempfile::tempdir().unwrap();
+    // A Codex chat that never ran. Its runtime is cold, so no read starts a
+    // process.
+    bridge_core::store::open(&fixture.path().join("bridge.db"))
+        .unwrap()
+        .execute(
+            "INSERT INTO sessions(id,harness,label,status,metric_source,kind) VALUES('chat','codex','Chat','idle','reported','direct')",
+            [],
+        )
+        .unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&running.socket_path);
+    assert!(client.handshake(&running.token).get("result").is_some());
+
+    // The create takes the field through the contract. The contract refuses
+    // a key that it does not know, before any work.
+    let create = |choice: Value| {
+        json!({"overrides": {"target": {"kind": "direct"}, "model": {"harness": "codex"}}, "expectedRevision": {"application": 0, "project": 0}, "toolSelection": choice})
+    };
+    let (forged, _) = client.call(1, "sessions/create_configured_chat", Some(create(json!({"harness": "codex", "grant": ["*"]}))));
+    assert_eq!(forged["error"]["code"], -32602, "{forged}");
+    // A choice for another harness passes the contract. The create fails in
+    // the host (the harness can be unavailable here too), and nothing commits.
+    let (refused, _) = client.call(2, "sessions/create_configured_chat", Some(create(json!({"harness": "opencode", "serversOff": ["fake"]}))));
+    assert!(refused.get("error").is_some(), "{refused}");
+    assert_ne!(refused["error"]["code"], -32602, "{refused}");
+    let (state, _) = client.call(3, "state/get_state", None);
+    let ids: Vec<&str> = state["result"]["sessions"].as_array().unwrap().iter().filter_map(|s| s["id"].as_str()).collect();
+    assert_eq!(ids, ["chat"]);
+
+    let (tools, _) = client.call(4, "sessions/get_chat_tools", Some(json!({"sessionId": "chat"})));
+    let result = &tools["result"];
+    assert_eq!((result["harness"].clone(), result["selection"]["revision"].clone()), (json!("codex"), json!(0)), "{tools}");
+    assert_eq!(result["items"][0]["id"], "codex_apps");
+    assert_eq!(result["sources"][0]["note"], "Available after the first turn");
+
+    let choice = json!({"harness": "codex", "serversOff": ["github"]});
+    let (saved, _) = client.call(5, "sessions/update_chat_tools", Some(json!({"sessionId": "chat", "expectedRevision": 0, "selection": choice})));
+    assert_eq!(saved["result"], json!({"revision": 1, "refusal": null}), "{saved}");
+    let (stale, _) = client.call(6, "sessions/update_chat_tools", Some(json!({"sessionId": "chat", "expectedRevision": 0, "selection": choice})));
+    assert!(stale["error"]["message"].as_str().unwrap().contains("changed in another window"), "{stale}");
+
+    // The saved name stays visible while the runtime is cold.
+    let (tools, _) = client.call(7, "sessions/get_chat_tools", Some(json!({"sessionId": "chat"})));
+    let result = &tools["result"];
+    assert_eq!((result["selection"]["revision"].clone(), result["selection"]["applies"].clone()), (json!(1), json!(true)), "{tools}");
+    assert_eq!(result["choice"]["serversOff"], json!(["github"]));
+    let github = result["items"].as_array().unwrap().iter().find(|item| item["id"] == "github").unwrap();
+    assert_eq!((github["state"].clone(), github["seen"].clone()), (json!("off"), json!(false)));
+
+    let (draft, _) = client.call(8, "sessions/get_chat_tools", Some(json!({"draft": {"harness": "codex"}})));
+    assert_eq!(draft["result"]["selection"]["revision"], 0, "{draft}");
+    let (neither, _) = client.call(9, "sessions/get_chat_tools", Some(json!({})));
+    assert!(neither.get("error").is_some(), "{neither}");
+    drop(client);
+    running.stop();
+}

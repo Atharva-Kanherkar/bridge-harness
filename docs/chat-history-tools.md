@@ -57,8 +57,9 @@ Access: only a top-level chat lists and calls the tools. The route answers any
 other session 403. Claude-native subagents carry the root chat's token, so the
 sidecar's PreToolUse hook denies both tools to any call with an `agent_id`.
 OpenCode denies them to read-only sessions. In Ask mode they run like the other
-Bridge reads, without a prompt. A chat gets 30 lookups per five minutes, and a
-result is at most 6,000 characters.
+Bridge reads, without a prompt. A chat gets 30 lookups per five minutes. Each
+part of a result has its own character cap, and the largest result is below the
+size ceiling of a tool reply (see [tool-result-ceiling.md](tool-result-ceiling.md)).
 
 What the tools cannot stop: an agent with a full-access shell can open
 `bridge.db` directly. The tools are the sanctioned path, and the live eval

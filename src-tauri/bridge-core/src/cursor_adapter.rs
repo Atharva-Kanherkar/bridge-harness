@@ -1307,6 +1307,7 @@ fn launch(
             // same queue the handshake filled, so anything the agent said before
             // this point arrives on the stream like everything else.
             startup_messages: Vec::new(),
+            skills_dropped: false,
         },
         established_profile,
     ))

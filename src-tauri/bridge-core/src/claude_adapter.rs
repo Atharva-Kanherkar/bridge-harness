@@ -1,5 +1,6 @@
 use crate::{
     adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest, TurnContext},
+    tool_selection::ToolLaunch,
     binary,
     context_inventory::{
         AdapterContextInventory, ContextInventoryScope, ContextLifecyclePhase, ContextObservedSize,
@@ -165,14 +166,25 @@ pub struct StartedClaude {
 }
 
 pub fn start(request: StartRequest<'_>) -> Result<StartedClaude, BridgeError> {
-    launch(request, None)
+    launch(request, None, None)
 }
 
 pub fn resume(request: ResumeRequest<'_>) -> Result<StartedClaude, BridgeError> {
     launch(
         request.as_start(),
         Some(request.provider_session_id),
+        None,
     )
+}
+
+/// `start` for an interactive chat, with the tool launch of the chat.
+pub fn start_chat(request: StartRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedClaude, BridgeError> {
+    launch(request, None, tools)
+}
+
+/// `resume` for an interactive chat, with the tool launch of the chat.
+pub fn resume_chat(request: ResumeRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedClaude, BridgeError> {
+    launch(request.as_start(), Some(request.provider_session_id), tools)
 }
 
 /// The discovery parts one launch needs, from the authority it runs under.
@@ -217,9 +229,76 @@ fn sdk_configuration_for_launch(
     discover(discovery)
 }
 
+/// The inputs of the sidecar config of one launch.
+struct SidecarConfig<'a> {
+    session_id: &'a str,
+    model: &'a str,
+    cwd: &'a str,
+    resume: bool,
+    instructions: Option<&'a str>,
+    write_mode: Option<WriteMode>,
+    network_allowed: bool,
+    output_dir: Option<String>,
+    plugins: &'a [String],
+    mcp_servers: &'a std::collections::BTreeMap<String, Value>,
+    briefing: Option<&'a Value>,
+    interactive: bool,
+    read_only: bool,
+    effort: Option<&'a str>,
+    speed: Option<&'a str>,
+    tools: Option<&'a ToolLaunch>,
+}
+
+/// The config JSON that the sidecar reads from its first argument.
+fn sidecar_config(launch: &SidecarConfig<'_>) -> Value {
+    let top_level_chat = launch.interactive && !launch.read_only && launch.briefing.is_none();
+    let mut config = json!({
+        "sessionId": launch.session_id,
+        "model": launch.model,
+        "cwd": launch.cwd,
+        "resume": launch.resume,
+        // Bridge injects the delegation protocol + worker brief as an appended
+        // system prompt so the child agent knows its single typed task.
+        "instructions": launch.instructions.map(str::trim).filter(|value| !value.is_empty()),
+        "writeMode": launch.write_mode.map(write_mode_label),
+        "networkAllowed": launch.network_allowed,
+        // Only a read-only worker has an assigned output directory. It is the
+        // one place an offline (shell-less) worker may create its declared
+        // artifact, so the sidecar policy scopes Write to exactly this root.
+        "outputDir": launch.output_dir,
+        "plugins": launch.plugins,
+        "mcpServers": launch.mcp_servers,
+        // Absent for every non-briefing session, so the sidecar's existing
+        // write-mode handling is reached by exactly the same path as before.
+        "briefing": launch.briefing,
+        // A chat the person is waiting on reports where each turn spent its
+        // time (`latency.harness`). Background runs keep their exact frames.
+        "timing": top_level_chat,
+        // The routed reasoning effort. The Claude Agent SDK takes this natively
+        // (Options.effort), so low/medium are honoured instead of being silently
+        // dropped the way the old thinking-budget mapping dropped them. The
+        // sidecar sanitizes it to the levels the SDK accepts.
+        "effort": launch.effort.map(str::trim).filter(|value| !value.is_empty()),
+        // Fast mode, already checked against the model's catalog row. The
+        // sidecar opts in through the SDK's flag settings.
+        "speed": launch.speed.map(str::trim).filter(|value| !value.is_empty()),
+    });
+    // Only a top-level chat applies its tool choice. The key goes last, so a
+    // launch without a choice keeps the config bytes of a chat with none.
+    let selection = launch
+        .tools
+        .filter(|_| top_level_chat)
+        .and_then(crate::tool_selection::claude_sidecar_selection);
+    if let (Some(selection), Some(fields)) = (selection, config.as_object_mut()) {
+        fields.insert("toolSelection".into(), selection);
+    }
+    config
+}
+
 fn launch(
     request: StartRequest<'_>,
     resume_session_id: Option<&str>,
+    tools: Option<&ToolLaunch>,
 ) -> Result<StartedClaude, BridgeError> {
     let StartRequest {
         session_id: bridge_session_id,
@@ -365,36 +444,23 @@ fn launch(
         diagnostics: sdk_configuration.diagnostics.clone(),
     };
     let context_inventory = claude_context_inventory(lifecycle_phase, &launch_configuration)?;
-    let config = json!({
-        "sessionId": session_id,
-        "model": chosen_model,
-        "cwd": cwd,
-        "resume": resume_session_id.is_some(),
-        // Bridge injects the delegation protocol + worker brief as an appended
-        // system prompt so the child agent knows its single typed task.
-        "instructions": instructions.map(str::trim).filter(|value| !value.is_empty()),
-        "writeMode": write_mode.map(write_mode_label),
-        "networkAllowed": network_allowed,
-        // Only a read-only worker has an assigned output directory. It is the
-        // one place an offline (shell-less) worker may create its declared
-        // artifact, so the sidecar policy scopes Write to exactly this root.
-        "outputDir": read_only_sandbox.map(|sandbox| sandbox.output_dir().to_string_lossy().into_owned()),
-        "plugins": launch_plugins,
-        "mcpServers": launch_mcp_servers,
-        // Absent for every non-briefing session, so the sidecar's existing
-        // write-mode handling is reached by exactly the same path as before.
-        "briefing": briefing_config,
-        // A chat the person is waiting on reports where each turn spent its
-        // time (`latency.harness`). Background runs keep their exact frames.
-        "timing": interactive && read_only_sandbox.is_none() && briefing_config.is_none(),
-        // The routed reasoning effort. The Claude Agent SDK takes this natively
-        // (Options.effort), so low/medium are honoured instead of being silently
-        // dropped the way the old thinking-budget mapping dropped them. The
-        // sidecar sanitizes it to the levels the SDK accepts.
-        "effort": effort.map(str::trim).filter(|value| !value.is_empty()),
-        // Fast mode, already checked against the model's catalog row. The
-        // sidecar opts in through the SDK's flag settings.
-        "speed": speed.map(str::trim).filter(|value| !value.is_empty()),
+    let config = sidecar_config(&SidecarConfig {
+        session_id: &session_id,
+        model: chosen_model,
+        cwd,
+        resume: resume_session_id.is_some(),
+        instructions,
+        write_mode,
+        network_allowed,
+        output_dir: read_only_sandbox.map(|sandbox| sandbox.output_dir().to_string_lossy().into_owned()),
+        plugins: &launch_plugins,
+        mcp_servers: &launch_mcp_servers,
+        briefing: briefing_config.as_ref(),
+        interactive,
+        read_only: read_only_sandbox.is_some(),
+        effort,
+        speed,
+        tools,
     });
     let mut command = crate::worker_sandbox::command(&node, read_only_sandbox)?;
     binary::hydrate_command_path(&mut command);
@@ -1849,6 +1915,101 @@ mod tests {
             ),
             AuthState::SignedIn
         );
+    }
+
+    /// The sidecar config of a launch: a top-level chat unless the flags say
+    /// otherwise.
+    fn launch_config(tools: Option<&ToolLaunch>, interactive: bool, read_only: bool, briefing: Option<&Value>) -> Value {
+        let plugins = vec!["/plugins/review".to_owned()];
+        let servers = std::collections::BTreeMap::from([(
+            "bridge".to_owned(),
+            json!({"type": "stdio", "command": "/bin/bridged"}),
+        )]);
+        sidecar_config(&SidecarConfig {
+            session_id: "claude-session-1",
+            model: "claude-sonnet-5",
+            cwd: "/work/repo",
+            resume: true,
+            instructions: Some("  Answer briefly.  "),
+            write_mode: Some(WriteMode::Shared),
+            network_allowed: true,
+            output_dir: read_only.then(|| "/out".to_owned()),
+            plugins: &plugins,
+            mcp_servers: &servers,
+            briefing,
+            interactive,
+            read_only,
+            effort: Some("high"),
+            speed: None,
+            tools,
+        })
+    }
+
+    fn chosen_launch(skills: Option<Vec<&str>>) -> ToolLaunch {
+        ToolLaunch::from_row(&crate::tool_selection::ToolSelectionRow {
+            revision: 2,
+            harness: "claude".into(),
+            account: None,
+            servers_off: vec!["claude.ai Gmail".into(), "chrome-devtools".into()],
+            codex_apps_off: false,
+            claude_skills: skills.map(|only| bridge_protocol::messages::ClaudeSkillChoice {
+                only: only.into_iter().map(str::to_owned).collect(),
+            }),
+            codex_skills_off: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn a_chat_without_a_selection_writes_the_same_sidecar_config() {
+        // The bytes of the config of this launch before tool choices existed.
+        let today = r#"{"sessionId":"claude-session-1","model":"claude-sonnet-5","cwd":"/work/repo","resume":true,"instructions":"Answer briefly.","writeMode":"Shared","networkAllowed":true,"outputDir":null,"plugins":["/plugins/review"],"mcpServers":{"bridge":{"type":"stdio","command":"/bin/bridged"}},"briefing":null,"timing":true,"effort":"high","speed":null}"#;
+        assert_eq!(launch_config(None, true, false, None).to_string(), today);
+        let worker = r#"{"sessionId":"claude-session-1","model":"claude-sonnet-5","cwd":"/work/repo","resume":true,"instructions":"Answer briefly.","writeMode":"Shared","networkAllowed":true,"outputDir":"/out","plugins":["/plugins/review"],"mcpServers":{"bridge":{"type":"stdio","command":"/bin/bridged"}},"briefing":null,"timing":false,"effort":"high","speed":null}"#;
+        assert_eq!(launch_config(None, false, true, None).to_string(), worker);
+        let briefing = json!({"allowedTools": ["mcp__notion__search"]});
+        assert!(!launch_config(None, true, false, Some(&briefing)).to_string().contains("toolSelection"));
+    }
+
+    #[test]
+    fn the_sidecar_config_carries_the_tool_selection_only_for_a_top_level_chat() {
+        let tools = chosen_launch(Some(vec!["review", "chrome-devtools-mcp:a11y-debugging"]));
+        let chosen = launch_config(Some(&tools), true, false, None);
+        assert_eq!(
+            chosen["toolSelection"],
+            json!({
+                "deniedMcpServers": ["chrome-devtools", "claude.ai Gmail"],
+                "skills": ["chrome-devtools-mcp:a11y-debugging", "review"],
+            })
+        );
+        // The choice is the last key, and each other key keeps its bytes.
+        assert_eq!(chosen.as_object().unwrap().keys().last().map(String::as_str), Some("toolSelection"));
+        let mut rest = chosen.clone();
+        rest.as_object_mut().unwrap().shift_remove("toolSelection");
+        assert_eq!(rest.to_string(), launch_config(None, true, false, None).to_string());
+
+        // Every skill: no list. No skill: an empty list, distinct from every skill.
+        let all = launch_config(Some(&chosen_launch(None)), true, false, None);
+        assert_eq!(all["toolSelection"], json!({"deniedMcpServers": ["chrome-devtools", "claude.ai Gmail"]}));
+        let none = launch_config(Some(&chosen_launch(Some(Vec::new()))), true, false, None);
+        assert_eq!(none["toolSelection"]["skills"], json!([]));
+
+        // The deny list never names the Bridge server, even in a launch built by hand.
+        let forged = ToolLaunch { servers_off: vec!["bridge".into(), " Bridge".into(), "github".into()], ..tools.clone() };
+        assert_eq!(launch_config(Some(&forged), true, false, None)["toolSelection"]["deniedMcpServers"], json!(["github"]));
+
+        // A background run, a read-only worker and a briefing apply no choice,
+        // and neither does a launch for another harness.
+        let briefing = json!({"allowedTools": ["mcp__notion__search"]});
+        let codex = ToolLaunch { harness: "codex".into(), ..tools.clone() };
+        for config in [
+            launch_config(Some(&tools), false, false, None),
+            launch_config(Some(&tools), true, true, None),
+            launch_config(Some(&tools), true, false, Some(&briefing)),
+            launch_config(Some(&codex), true, false, None),
+        ] {
+            assert!(config.get("toolSelection").is_none(), "{config}");
+        }
+        assert_eq!(launch_config(Some(&tools), false, true, None), launch_config(None, false, true, None));
     }
 }
 

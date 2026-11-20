@@ -1,4 +1,6 @@
 import { mockDefaultsView, mockSaveDefaults, mockResolveSettings, mockSessionSettings } from "./chatDefaultsMock";
+import { mockChatTools, mockSaveFirstToolChoice, mockUpdateChatTools } from "./chatToolsMock";
+import type { GetChatToolsParams, GetChatToolsResult, UpdateChatToolsParams, UpdateChatToolsResult } from "./protocol/generated/protocol";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
 import type { AppPreferences, AppPreferenceValues } from "./protocol/generated/protocol";
 import type { LimitRecoverySettings, LimitRecoveryStatus } from "./protocol/generated/protocol";
@@ -1788,6 +1790,7 @@ export const bridgeApi = {
     if (hasBackend()) return call("sessions/create_configured_chat", params);
     const settings = mockResolveSettings(mockState,mockHealth.adapters,mockConfigState.agents,params);
     const id=crypto.randomUUID();
+    if (params.toolSelection) mockSaveFirstToolChoice(id,settings.model,params.toolSelection);
     mockState.sessions.push({ id, workspaceId: params.workspaceId ?? null, harness: settings.model.harness, label: settings.target.kind === "direct" ? "Chat" : "Orchestrator", status: "idle", startedAt:null, endedAt:null, contextPercent:null,usagePercent:null,metricSource:"estimated",providerSessionId:null,activeTurnId:null,model:settings.model.model ?? null,account:normalizeAccount(settings.model.harness,settings.model.account),effort:settings.effort,requestedTier:"standard",restorationMode:"fresh",continuationFidelity:"native",title:params.title ?? null,kind:settings.target.kind === "direct" ? "direct" : "orchestrator",cwd:settings.createWorktree ? `/tmp/bridge/worktrees/${id}` : mockState.workspaces.find(w=>w.id===params.workspaceId)?.path ?? null });
     const configuration={revision:1,settings};mockSessionSettings.set(id,configuration);emitState();return {sessionId:id,state:snapshot(),configuration};
   },
@@ -1804,6 +1807,10 @@ export const bridgeApi = {
     const next={revision:current.revision+1,settings:{...current.settings,access:params.access,activeTurnInput:params.activeTurnInput}};
     mockSessionSettings.set(params.sessionId,next);emitState();return structuredClone(next);
   },
+  /** The tools of a chat, or of a draft with no chat yet. The read starts no process. */
+  chatTools: async (params: GetChatToolsParams): Promise<GetChatToolsResult> => hasBackend() ? call("sessions/get_chat_tools", params) : Promise.resolve(mockChatTools(mockState, params)),
+  /** A refusal is a result, not an error: the old choice stays. A stale revision throws. */
+  updateChatTools: async (params: UpdateChatToolsParams): Promise<UpdateChatToolsResult> => hasBackend() ? call("sessions/update_chat_tools", params) : Promise.resolve(mockUpdateChatTools(mockState, params)),
   installCodexUpdate: (): Promise<void> => hasBackend()
     ? unit(call("health/install_codex_update"))
     : Promise.reject(new Error("Codex updates require the Bridge desktop app")),

@@ -779,6 +779,28 @@ mod tests {
     }
 
     #[test]
+    fn projection_uses_stored_estimate_and_falls_back_when_null() {
+        let mut stored = entry(1, "user.message", json!({"text": "a".repeat(400)}));
+        stored.token_estimate = Some(7);
+        assert_eq!(ContextProjector::project(&[stored], 128_000).unwrap().token_estimate, 7);
+
+        // A row written before estimates existed: the payload is sized,
+        // `_bridgeRepoState` aside, exactly as before.
+        let mut legacy = entry(1, "user.message", json!({"text": "a".repeat(400)}));
+        legacy.payload["_bridgeRepoState"] = json!({"status": "clean", "branch": "b".repeat(4_000)});
+        let fallback = ContextProjector::project(&[legacy], 128_000).unwrap().token_estimate;
+        let expected_bytes = "user.message".len()
+            + serde_json::to_vec(&json!({"text": "a".repeat(400)})).unwrap().len();
+        assert_eq!(fallback, expected_bytes.div_ceil(4) as i64);
+
+        // A worker result is re-projected to its summary fields, so a stored
+        // estimate of the raw payload no longer describes it.
+        let mut worker = entry(1, "worker.result", json!({"summary": "done", "status": "completed"}));
+        worker.token_estimate = Some(9_999);
+        assert_ne!(ContextProjector::project(&[worker], 128_000).unwrap().token_estimate, 9_999);
+    }
+
+    #[test]
     fn token_estimate_is_stable_for_split_and_large_turns() {
         let mut first = entry(1, "user.message", json!({"text":"a".repeat(8_001)}));
         first.token_estimate = Some(2_100);

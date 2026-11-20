@@ -54,9 +54,6 @@ const SUMMARY_CHARS: usize = 800;
 const RECENT_MESSAGES: i64 = 4;
 const RECENT_CHARS: usize = 400;
 const WINDOW_CHARS: usize = 500;
-/// The longest result, serialized. Every part is bounded well below this; the
-/// cap is the backstop.
-pub const MAX_RESULT_CHARS: usize = 6_000;
 /// History calls one chat may make per [`CALL_WINDOW`].
 pub const MAX_CALLS: usize = 30;
 pub const CALL_WINDOW: Duration = Duration::from_secs(300);
@@ -144,6 +141,8 @@ pub fn rate_limited() -> ToolError {
 }
 
 /// Run one history tool for `caller`, the chat whose token made the call.
+/// Each part has its own cap, and the `bridge` server bounds the whole reply
+/// in [`crate::tool_limit`].
 pub fn run(db: &Connection, caller: &str, tool: &str, args: &Value, now: DateTime<Utc>) -> Result<Value, ToolError> {
     let result = match tool {
         SEARCH => search(db, caller, args, now)?,
@@ -152,7 +151,6 @@ pub fn run(db: &Connection, caller: &str, tool: &str, args: &Value, now: DateTim
             return Err(ToolError { status: 404, message: format!("unknown chat history tool \"{other}\"") });
         }
     };
-    let result = fit(result);
     #[cfg(test)]
     CAPTURED.lock().unwrap_or_else(PoisonError::into_inner).push((caller.to_owned(), result.to_string()));
     Ok(result)
@@ -171,21 +169,6 @@ pub(crate) fn captured(session_id: &str) -> Vec<String> {
         .filter(|(caller, _)| caller == session_id)
         .map(|(_, result)| result.clone())
         .collect()
-}
-
-/// Drop trailing items of the result's list until it serializes within
-/// [`MAX_RESULT_CHARS`].
-fn fit(mut result: Value) -> Value {
-    let size = |value: &Value| serde_json::to_string(value).map_or(0, |text| text.chars().count());
-    for list in ["chats", "recent", "windows"] {
-        while size(&result) > MAX_RESULT_CHARS {
-            let Some(items) = result.get_mut(list).and_then(Value::as_array_mut) else { break };
-            if items.pop().is_none() {
-                break;
-            }
-        }
-    }
-    result
 }
 
 #[derive(Debug, Deserialize)]
@@ -754,33 +737,66 @@ mod tests {
         assert!(outputs.iter().any(|output| output.contains("[secret]")), "some window reached the key");
     }
 
+    /// The cap in characters of each capped text of a reply, by its key. A
+    /// `text` is a recent message or a window, so it takes the larger cap.
+    fn cap_of(key: &str) -> Option<usize> {
+        match key {
+            "title" | "project" => Some(TITLE_CHARS),
+            "snippet" => Some(SNIPPET_CHARS),
+            "first" => Some(FIRST_CHARS),
+            "summary" => Some(SUMMARY_CHARS),
+            "text" => Some(RECENT_CHARS.max(WINDOW_CHARS)),
+            _ => None,
+        }
+    }
+
+    /// Check each capped text of `value` against its cap, then set it to its
+    /// cap in U+0001, the character with the longest JSON escape (6 bytes).
+    fn to_caps(value: &mut Value, key: &str) {
+        match value {
+            Value::Object(map) => map.iter_mut().for_each(|(key, item)| to_caps(item, key)),
+            Value::Array(items) => items.iter_mut().for_each(|item| to_caps(item, key)),
+            Value::String(text) => {
+                if let Some(cap) = cap_of(key) {
+                    assert!(text.chars().count() <= cap, "{key} is over its cap: {text}");
+                    *text = "\u{1}".repeat(cap);
+                }
+            }
+            _ => {}
+        }
+    }
+
     #[test]
-    fn output_is_bounded() {
+    fn the_largest_reply_of_each_chat_tool_is_below_the_ceiling() {
         let (_dir, db) = db();
-        let long = "lorem ipsum anchovy ".repeat(800);
+        let long = "lorem \u{1}ipsum\u{1} anchovy \"q\" ".repeat(400);
         for index in 0..12 {
             let id = format!("c{index}");
-            chat(&db, &id, "claude", &"t".repeat(300), "direct", None);
+            chat(&db, &id, "claude", &"t\u{1}".repeat(150), "direct", None);
             for _ in 0..8 {
                 say(&db, &id, "user.message", &long);
                 say(&db, &id, "assistant.message", &long);
             }
             append_session_entry(&db, &id, None, "compaction", &json!({"summary": long}), None, "eligible", None).unwrap();
         }
-        let outputs = [
-            call(&db, "me", SEARCH, json!({"query": "anchovy", "limit": 50})).unwrap(),
-            call(&db, "me", READ, json!({"id": "c0"})).unwrap(),
-            call(&db, "me", READ, json!({"id": "c0", "query": "anchovy", "limit": 50})).unwrap(),
+        let replies = [
+            (SEARCH, call(&db, "me", SEARCH, json!({"query": "anchovy", "limit": 50})).unwrap()),
+            (READ, call(&db, "me", READ, json!({"id": "c0"})).unwrap()),
+            (READ, call(&db, "me", READ, json!({"id": "c0", "query": "anchovy", "limit": 50})).unwrap()),
         ];
-        assert_eq!(outputs[0]["chats"].as_array().unwrap().len(), MAX_SEARCH_LIMIT);
-        assert!(outputs[2]["windows"].as_array().unwrap().len() <= MAX_WINDOWS);
-        for output in &outputs {
-            let size = output.to_string().chars().count();
-            assert!(size <= MAX_RESULT_CHARS, "{size} chars");
+        // Each list at the most items its cap permits.
+        assert_eq!(replies[0].1["chats"].as_array().unwrap().len(), MAX_SEARCH_LIMIT);
+        assert_eq!(replies[1].1["recent"].as_array().unwrap().len() as i64, RECENT_MESSAGES);
+        assert!(replies[1].1["first"].is_string() && replies[1].1["summary"].is_string(), "{}", replies[1].1);
+        assert_eq!(replies[2].1["windows"].as_array().unwrap().len(), MAX_WINDOWS);
+        for (tool, reply) in replies {
+            let ceiling = crate::tool_limit::limit_of(tool).unwrap().ceiling;
+            let mut largest = reply.clone();
+            to_caps(&mut largest, "");
+            let size = serde_json::to_string_pretty(&largest).unwrap().len();
+            assert!(size < ceiling, "{tool}: {size} bytes, the ceiling is {ceiling}");
+            assert!(serde_json::to_string_pretty(&reply).unwrap().len() <= size, "{tool}");
         }
-        let card = &outputs[0]["chats"][0];
-        assert!(card["title"].as_str().unwrap().chars().count() <= TITLE_CHARS);
-        assert!(card["snippet"].as_str().unwrap().chars().count() <= SNIPPET_CHARS);
     }
 
     #[test]

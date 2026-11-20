@@ -3188,6 +3188,11 @@ pub(crate) fn append_session_entry_tx(
         params![session_id],
         |row| row.get(0),
     )?;
+    // Every writer passes here, so this is the one place the estimate is
+    // derived. It reads the caller's payload, before Bridge's own
+    // `_bridgeRepoState` is added: that is bookkeeping no model reads.
+    let token_estimate =
+        token_estimate.or_else(|| crate::entry_tokens::estimate(kind, payload));
     let mut stored_payload = payload.clone();
     let object = stored_payload.as_object_mut().ok_or_else(|| {
         BridgeError::Invalid("session entry payload must be a JSON object".into())
@@ -7476,6 +7481,26 @@ mod tests {
             .map(|entry| entry.id)
             .collect();
         assert_eq!(leaves, scanned_leaf_ids(db, "s"), "{case}: leaves");
+    }
+
+    #[test]
+    fn explicit_token_estimate_wins_over_derived() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
+        let text = json!({"text": "x".repeat(40)});
+        let derived = append_session_entry(&db, "s", None, "assistant.message", &text, None, "eligible", None).unwrap();
+        let explicit = append_session_entry(&db, "s", Some(&derived.id), "assistant.message", &text, None, "eligible", Some(99)).unwrap();
+        let stored = |id: &str| -> Option<i64> {
+            db.query_row("SELECT token_estimate FROM session_entries WHERE id=?1", params![id], |row| row.get(0))
+                .unwrap()
+        };
+        // Derived from the text alone, not the stored payload, which also
+        // carries `_bridgeRepoState`.
+        assert_eq!(derived.token_estimate, Some(10));
+        assert_eq!(stored(&derived.id), Some(10));
+        assert_eq!(explicit.token_estimate, Some(99));
+        assert_eq!(stored(&explicit.id), Some(99));
     }
 
     #[test]

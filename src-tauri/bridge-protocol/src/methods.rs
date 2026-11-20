@@ -144,6 +144,8 @@ methods![
     (CreateConfiguredChat, "sessions", "create_configured_chat"),
     (GetChatSettings, "sessions", "get_chat_settings"),
     (UpdateChatOptions, "sessions", "update_chat_options"),
+    (GetChatTools, "sessions", "get_chat_tools"),
+    (UpdateChatTools, "sessions", "update_chat_tools"),
     (GetReviewerSettings, "config", "get_reviewer_settings"),
     (SaveReviewerSettings, "config", "save_reviewer_settings"),
     (GetAttributionSettings, "config", "get_attribution_settings"),

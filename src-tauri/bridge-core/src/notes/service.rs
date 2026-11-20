@@ -31,6 +31,8 @@ pub const FILE_IMPORT: &str = "file-import";
 /// The actor that owns the system database. Never a person or an agent.
 pub const SYSTEM: &str = "system";
 const PREVIEW_CHARS: usize = 280;
+/// The longest list that [`NotesService::list`] returns.
+pub const MAX_LIST_LIMIT: usize = 2000;
 
 /// Called after every committed change.
 pub type ChangeListener = Arc<dyn Fn(&NotePageChanged) + Send + Sync>;
@@ -1631,7 +1633,7 @@ impl NotesService {
             if let Some(parent) = &filter.parent_id {
                 bind(&mut sql, " AND parent_id=?", parent.clone());
             }
-            sql.push_str(&format!(" ORDER BY {}updated_at DESC, id DESC LIMIT {}", if fts.is_some() { "search.rank, " } else { "" }, filter.limit.unwrap_or(500).min(2000)));
+            sql.push_str(&format!(" ORDER BY {}updated_at DESC, id DESC LIMIT {}", if fts.is_some() { "search.rank, " } else { "" }, filter.limit.unwrap_or(500).min(MAX_LIST_LIMIT)));
             let mut statement = db.prepare(&sql)?;
             let notes = statement.query_map(rusqlite::params_from_iter(args.iter()), note_from_row)?.collect::<Result<_, _>>()?;
             Ok(notes)

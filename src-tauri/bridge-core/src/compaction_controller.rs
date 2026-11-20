@@ -1161,11 +1161,34 @@ pub fn conversation_token_estimate(
         .sum())
 }
 
+/// The whole stored payload, envelope included, as compaction has always
+/// counted it. The saved Claude session totals of a usage entry are the one
+/// part that it leaves out.
+///
+/// Deliberately not `entry.token_estimate`. That column now holds the
+/// model-readable text alone (`entry_tokens`), which is far smaller, and
+/// reading it here would move the switch-summary floor and every
+/// `tokensBefore`: a compaction change made in the name of measurement.
+/// Moving compaction onto the stored figure is its own, eval-gated decision.
 fn entry_token_estimate(entry: &SessionEntry) -> i64 {
-    entry.token_estimate.unwrap_or_else(|| {
-        let bytes = entry.payload.to_string().len() as i64;
-        (bytes + 3) / 4
-    })
+    let bytes = entry.payload.to_string().len().saturating_sub(saved_totals_bytes(entry)) as i64;
+    (bytes + 3) / 4
+}
+
+/// The bytes of the saved Claude session totals in a usage entry: the
+/// `cumulative` key, its value and one comma. A later resume reads them, but
+/// they are no context of the branch, so the estimate leaves them out.
+fn saved_totals_bytes(entry: &SessionEntry) -> usize {
+    if entry.kind != "usage.updated" {
+        return 0;
+    }
+    let Some(data) = entry.payload.get("data").and_then(Value::as_object) else {
+        return 0;
+    };
+    let Some(cumulative) = data.get("cumulative") else {
+        return 0;
+    };
+    r#""cumulative":"#.len() + cumulative.to_string().len() + usize::from(data.len() > 1)
 }
 
 #[cfg(test)]
@@ -1386,6 +1409,55 @@ mod tests {
         assert_eq!(boundary.payload["decisions"].as_array().unwrap().len(), 0);
         assert_eq!(boundary.payload["filesTouched"].as_array().unwrap().len(), 0);
         assert_eq!(boundary.payload["provenance"], "agent");
+    }
+
+    #[test]
+    fn stored_estimates_do_not_move_compaction_figures() {
+        let db = database();
+        let forest = SessionForest::new(&db);
+        let entry = forest
+            .append("s", EntryKind::UserMessage, json!({"text": "x".repeat(400)}))
+            .unwrap();
+        let stored = entry.token_estimate.expect("a user message is estimated at append");
+        let branch = forest.active_branch("s").unwrap();
+        let envelope: i64 = branch
+            .iter()
+            .map(|entry| (entry.payload.to_string().len() as i64 + 3) / 4)
+            .sum();
+        assert_eq!(active_token_estimate(&db, "s").unwrap(), envelope);
+        let conversation_envelope: i64 = branch
+            .iter()
+            .filter(|entry| CONVERSATION_KINDS.contains(&entry.kind.as_str()))
+            .map(|entry| (entry.payload.to_string().len() as i64 + 3) / 4)
+            .sum();
+        assert_eq!(conversation_token_estimate(&db, "s").unwrap(), conversation_envelope);
+        assert!(envelope > stored, "compaction still counts the envelope ({envelope}), not the text ({stored})");
+    }
+
+    /// A Claude usage entry keeps the session totals in `cumulative` for a
+    /// later resume. The estimate leaves those bytes out, so it is the same
+    /// as for the entry without them.
+    #[test]
+    fn the_saved_claude_totals_do_not_change_the_branch_estimate() {
+        let estimate = |data: Value| {
+            let db = database();
+            let mut event = crate::agent::NormalizedEvent::new("usage.updated");
+            event.data = data;
+            store::session_event(&db, "s", &event, &json!({"adapter": "claude"})).unwrap();
+            active_token_estimate(&db, "s").unwrap()
+        };
+        let share = json!({
+            "usage": {"input_tokens": 3},
+            "totalCostUsd": 0.01,
+            "modelUsage": {"claude-sonnet": {"inputTokens": 3, "outputTokens": 40, "costUSD": 0.01}}
+        });
+        let mut saved = share.clone();
+        saved["cumulative"] = json!({
+            "sessionId": "thread-0",
+            "totalCostUsd": 0.5,
+            "modelUsage": {"claude-sonnet": {"inputTokens": 300, "outputTokens": 4000, "costUSD": 0.5}}
+        });
+        assert_eq!(estimate(saved), estimate(share));
     }
 
     /// The two estimates answer different questions and must be allowed to

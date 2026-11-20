@@ -1,0 +1,182 @@
+{
+  "source": "Schema-based Claude Agent SDK replay of one tool-loop turn: two main-thread requests, one subagent request, and the result frame. Field names follow the SDK's SDKAssistantMessage (BetaMessage usage), stream_event message_start/message_delta, and SDKResultMessage modelUsage.",
+  "expected": {
+    "model": "claude-opus-5-5",
+    "contextUsedTokens": 32345,
+    "note": "The last main-thread request (msg_2): input 5 + cache read 32000 + cache write 300 + output 40. The subagent's request never counts, and the helper model's ledger row stays NULL."
+  },
+  "frames": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "sdk-session-1",
+      "model": "claude-opus-5-5"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "sdk-session-1",
+      "parent_tool_use_id": null,
+      "event": {
+        "type": "message_start",
+        "message": {
+          "id": "msg_1",
+          "model": "claude-opus-5-5",
+          "usage": {
+            "input_tokens": 10,
+            "cache_creation_input_tokens": 2000,
+            "cache_read_input_tokens": 30000,
+            "output_tokens": 1
+          }
+        }
+      }
+    },
+    {
+      "type": "assistant",
+      "session_id": "sdk-session-1",
+      "parent_tool_use_id": null,
+      "message": {
+        "id": "msg_1",
+        "model": "claude-opus-5-5",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_1",
+            "name": "Bash",
+            "input": {"command": "ls"}
+          }
+        ],
+        "usage": {
+          "input_tokens": 10,
+          "cache_creation_input_tokens": 2000,
+          "cache_read_input_tokens": 30000,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "session_id": "sdk-session-1",
+      "parent_tool_use_id": null,
+      "event": {
+        "type": "message_delta",
+        "delta": {"stop_reason": "tool_use"},
+        "usage": {"output_tokens": 120}
+      }
+    },
+    {
+      "type": "user",
+      "session_id": "sdk-session-1",
+      "parent_tool_use_id": null,
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_1",
+            "content": "Cargo.toml\nsrc\n"
+          }
+        ]
+      }
+    },
+    {
+      "type": "assistant",
+      "session_id": "sdk-session-1",
+      "parent_tool_use_id": "toolu_agent",
+      "message": {
+        "id": "msg_child",
+        "model": "claude-haiku-5-5",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Child-only answer"}],
+        "usage": {
+          "input_tokens": 900000,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "output_tokens": 9
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "session_id": "sdk-session-1",
+      "parent_tool_use_id": null,
+      "event": {
+        "type": "message_start",
+        "message": {
+          "id": "msg_2",
+          "model": "claude-opus-5-5",
+          "usage": {
+            "input_tokens": 5,
+            "cache_creation_input_tokens": 300,
+            "cache_read_input_tokens": 32000,
+            "output_tokens": 1
+          }
+        }
+      }
+    },
+    {
+      "type": "assistant",
+      "session_id": "sdk-session-1",
+      "parent_tool_use_id": null,
+      "message": {
+        "id": "msg_2",
+        "model": "claude-opus-5-5",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Two entries: Cargo.toml and src."}],
+        "usage": {
+          "input_tokens": 5,
+          "cache_creation_input_tokens": 300,
+          "cache_read_input_tokens": 32000,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "session_id": "sdk-session-1",
+      "parent_tool_use_id": null,
+      "event": {
+        "type": "message_delta",
+        "delta": {"stop_reason": "end_turn"},
+        "usage": {"output_tokens": 40}
+      }
+    },
+    {
+      "type": "result",
+      "subtype": "success",
+      "session_id": "sdk-session-1",
+      "is_error": false,
+      "result": "Two entries: Cargo.toml and src.",
+      "duration_ms": 4200,
+      "duration_api_ms": 3900,
+      "num_turns": 2,
+      "total_cost_usd": 0.0421,
+      "usage": {
+        "input_tokens": 15,
+        "cache_creation_input_tokens": 2300,
+        "cache_read_input_tokens": 62000,
+        "output_tokens": 160
+      },
+      "modelUsage": {
+        "claude-opus-5-5": {
+          "inputTokens": 15,
+          "outputTokens": 160,
+          "cacheReadInputTokens": 62000,
+          "cacheCreationInputTokens": 2300,
+          "webSearchRequests": 0,
+          "costUSD": 0.04,
+          "contextWindow": 200000
+        },
+        "claude-haiku-5-5": {
+          "inputTokens": 900000,
+          "outputTokens": 9,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.0021,
+          "contextWindow": 200000
+        }
+      }
+    }
+  ]
+}

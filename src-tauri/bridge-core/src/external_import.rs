@@ -1272,20 +1272,6 @@ fn imported_source_label(candidate: &ImportCandidate) -> String {
     )
 }
 
-fn entry_token_estimate(message: &Value) -> Option<i64> {
-    let chars = ["text", "summary"]
-        .iter()
-        .filter_map(|field| message.get(*field).and_then(Value::as_str))
-        .map(|text| text.chars().count())
-        .sum::<usize>()
-        + message
-            .pointer("/data/aggregatedOutput")
-            .and_then(Value::as_str)
-            .map(|text| text.chars().count())
-            .unwrap_or(0);
-    (chars > 0).then(|| (chars as i64 + 3) / 4)
-}
-
 /// The Bridge chat an imported child belongs under: the parent written in
 /// this import, or, when the parent was skipped as already imported or
 /// changed, the chat that parent's native session already became.
@@ -1433,6 +1419,9 @@ fn write_conversation(
         crate::session_forest::EntryKind::from_storage(kind)
             .validate_payload(&Value::Object(entry_payload.clone()))
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        // The same method as every live entry, so imported and native rows
+        // sum together.
+        let token_estimate = crate::entry_tokens::estimate(kind, message);
         transaction.execute(
             "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,semantic_schema_version,kind,
                 payload,provider_event_id,context_visibility,token_estimate,created_at)
@@ -1446,7 +1435,7 @@ fn write_conversation(
                 kind,
                 Value::Object(entry_payload).to_string(),
                 source_id,
-                entry_token_estimate(message),
+                token_estimate,
                 timestamp,
             ],
         )?;

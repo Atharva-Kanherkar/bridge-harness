@@ -158,6 +158,10 @@ pub struct BridgeCore {
     /// runtimes map — is what keeps a concurrent start from racing a
     /// teardown/commit window and orphaning a live adapter.
     pub lifecycle_claims: Mutex<HashMap<String, &'static str>>,
+    /// The tool choice that each warm chat launched with. `start_chat`
+    /// writes an entry after a launch succeeds. A send relaunches a chat
+    /// whose stored revision differs.
+    pub applied_tools: Mutex<HashMap<String, crate::tool_selection::AppliedTools>>,
     /// Serializes filesystem-changing operations with session startup per
     /// workspace. A branch switch must not race an adapter launch or editor
     /// write against the same checkout.
@@ -408,6 +412,7 @@ impl BridgeCore {
             notes: Arc::new(crate::notes::service::NotesService::open(scratch, Arc::new(|_: &str| false)).unwrap()),
             trail_reads: Default::default(),
             lifecycle_claims: Mutex::new(HashMap::new()),
+            applied_tools: Mutex::new(HashMap::new()),
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
             import_job_running: std::sync::atomic::AtomicBool::new(false),
@@ -578,6 +583,7 @@ impl BridgeCore {
             notes,
             trail_reads: Default::default(),
             lifecycle_claims: Mutex::new(HashMap::new()),
+            applied_tools: Mutex::new(HashMap::new()),
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
             import_job_running: std::sync::atomic::AtomicBool::new(false),

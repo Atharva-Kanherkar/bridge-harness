@@ -75,3 +75,5 @@ core-foundation = "0.10"
 # Property tests for the memory ledger's invariants (budget, intervals,
 # packet caps, the proposal gate on arbitrary model text).
 proptest = { version = "1", default-features = false, features = ["std"] }
+# The statement trace of a test that proves a path reads no history.
+rusqlite = { workspace = true, features = ["trace"] }

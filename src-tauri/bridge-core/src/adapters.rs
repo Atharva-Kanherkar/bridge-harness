@@ -7,6 +7,7 @@ use crate::{
     model::{AdapterDescriptor, CapabilityTier, SandboxMode},
     model_catalog::{self, CatalogCandidate},
     opencode_adapter, pi_adapter,
+    tool_selection::ToolLaunch,
     worker_sandbox::ReadOnlySandbox,
     BridgeError,
 };
@@ -117,6 +118,9 @@ impl NativeCompaction {
 }
 
 pub type InterruptRequest = Box<dyn FnOnce() -> Result<(), BridgeError> + Send>;
+/// One read of the MCP servers of a warm chat, run after the adapter map is
+/// released.
+pub type McpListRequest = Box<dyn FnOnce() -> Result<Value, BridgeError> + Send>;
 
 pub trait AdapterRuntime: Send {
     fn process_id(&self) -> u32;
@@ -188,6 +192,12 @@ pub trait AdapterRuntime: Send {
     /// Inventory or a preview read on this chat's existing MCP connection.
     fn app_control(&self, _id: &str, _request: &Value) -> Result<(), BridgeError> {
         Err(BridgeError::Invalid("This provider cannot preview personal apps".into()))
+    }
+    /// A snapshot read of the MCP server list of this chat, for the tools
+    /// picker. It runs without the adapter map. `None` when the provider has
+    /// no such list.
+    fn mcp_list_request(&self) -> Option<McpListRequest> {
+        None
     }
     /// Whether this provider can take a user message while one of its own
     /// turns is still running, and fold it into that turn.
@@ -315,6 +325,8 @@ const STDERR_LINE_MAX_BYTES: usize = 500;
 #[derive(Clone, Default)]
 pub struct StderrTail {
     lines: Arc<Mutex<std::collections::VecDeque<String>>>,
+    /// True when the reader thread read the end of the pipe.
+    closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl StderrTail {
@@ -323,9 +335,11 @@ impl StderrTail {
     pub fn capture(child: &mut std::process::Child) -> StderrTail {
         let tail = StderrTail::default();
         let Some(stderr) = child.stderr.take() else {
+            tail.closed.store(true, std::sync::atomic::Ordering::SeqCst);
             return tail;
         };
         let lines = tail.lines.clone();
+        let closed = tail.closed.clone();
         let _ = thread::Builder::new()
             .name("adapter-stderr-tail".into())
             .spawn(move || {
@@ -349,8 +363,14 @@ impl StderrTail {
                     }
                     lines.push_back(line);
                 }
+                closed.store(true, std::sync::atomic::Ordering::SeqCst);
             });
         tail
+    }
+
+    /// True when the tail holds the last line that the process wrote.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn snapshot(&self) -> Option<String> {
@@ -380,6 +400,42 @@ pub fn process_failure_context(
         (Some(status), None) => Some(format!("Provider process {status} with no stderr output")),
         (None, Some(tail)) => Some(format!("Provider stderr tail:\n{tail}")),
         (None, None) => None,
+    }
+}
+
+/// The longest wait of [`with_startup_stderr`] for the exit and for the
+/// last stderr lines.
+const STARTUP_STDERR_WAIT: Duration = Duration::from_secs(1);
+
+/// The error of a handshake that failed, with the exit status and the stderr
+/// tail of the process. A config that a provider refuses shows only on
+/// stderr, for example a Codex server key that left the config.
+pub fn with_startup_stderr(
+    error: BridgeError,
+    child: &mut std::process::Child,
+    stderr_tail: &StderrTail,
+) -> BridgeError {
+    with_startup_stderr_within(error, child, stderr_tail, STARTUP_STDERR_WAIT)
+}
+
+/// [`with_startup_stderr`] with `wait` as the longest wait.
+fn with_startup_stderr_within(
+    error: BridgeError,
+    child: &mut std::process::Child,
+    stderr_tail: &StderrTail,
+    wait: Duration,
+) -> BridgeError {
+    let deadline = std::time::Instant::now() + wait;
+    // The first line can arrive before the line that names the reason. The
+    // pipe closes only after the last line.
+    while std::time::Instant::now() < deadline
+        && !(stderr_tail.is_closed() && matches!(child.try_wait(), Ok(Some(_))))
+    {
+        thread::sleep(Duration::from_millis(10));
+    }
+    match process_failure_context(child, stderr_tail) {
+        Some(context) => BridgeError::Invalid(format!("{error}. {context}")),
+        None => error,
     }
 }
 
@@ -748,6 +804,10 @@ pub struct StartedAdapter {
     pub runtime: Box<dyn AdapterRuntime>,
     pub reader: Box<dyn BufRead + Send>,
     pub startup_messages: Vec<Value>,
+    /// True when the launch dropped the skills part of its tool launch. Only
+    /// a Codex launch drops it, when its config has a `skills` key of the
+    /// user or Bridge cannot read that config.
+    pub skills_dropped: bool,
 }
 
 pub trait HarnessAdapter: Send + Sync + Any {
@@ -766,6 +826,16 @@ pub trait HarnessAdapter: Send + Sync + Any {
         Err(BridgeError::Invalid(format!("{} cannot run a personal app courier", self.descriptor().label)))
     }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError>;
+    /// Start an interactive chat. The tool launch travels beside the request.
+    /// The default ignores it, so an adapter without tool levers starts as
+    /// before.
+    fn start_chat(&self, request: StartRequest<'_>, _tools: Option<&ToolLaunch>) -> Result<StartedAdapter, BridgeError> {
+        self.start(request)
+    }
+    /// Resume an interactive chat, with its tool launch beside the request.
+    fn resume_chat(&self, request: ResumeRequest<'_>, _tools: Option<&ToolLaunch>) -> Result<StartedAdapter, BridgeError> {
+        self.resume(request)
+    }
     fn supports_native_resume(&self) -> bool;
     /// Whether [`ResumeRequest::fork`] can fork a stored provider thread into
     /// a new one. Defaults to false: only harnesses with an explicit fork verb
@@ -788,6 +858,11 @@ pub trait HarnessAdapter: Send + Sync + Any {
     /// when the session's runtime is gone; adapters without per-session state
     /// ignore it.
     fn forget_session(&self, _provider_session_id: &str) {}
+    /// Give the normalization state of `provider_session_id` the session
+    /// totals of a stored `usage.updated` entry. `usage_event` is the stored
+    /// payload of that entry. A native resume calls this before the first
+    /// frame. Adapters whose usage needs no earlier totals ignore it.
+    fn seed_usage_totals(&self, _provider_session_id: &str, _usage_event: &Value) {}
     /// Look again at whatever decides this harness's availability.
     ///
     /// A default no-op, because most adapters read availability fresh on every
@@ -1030,7 +1105,18 @@ impl AdapterRegistry {
     pub fn start(
         &self,
         id: &str,
+        request: StartRequest<'_>,
+    ) -> Result<StartedAdapter, BridgeError> {
+        self.start_chat(id, request, None)
+    }
+
+    /// `start` for an interactive chat, with its tool launch beside the
+    /// request.
+    pub fn start_chat(
+        &self,
+        id: &str,
         mut request: StartRequest<'_>,
+        tools: Option<&ToolLaunch>,
     ) -> Result<StartedAdapter, BridgeError> {
         let adapter = self.adapters.get(id).ok_or_else(|| {
             BridgeError::Invalid(format!("No structured adapter is registered for {id}"))
@@ -1047,7 +1133,7 @@ impl AdapterRegistry {
         validate_start_compatibility(&descriptor, &request)?;
         request.effort = supported_model_effort(&descriptor, request.model, request.effort);
         request.speed = supported_model_speed(&descriptor, request.model, request.speed);
-        adapter.start(request)
+        adapter.start_chat(request, tools)
     }
 
     pub fn start_app_courier(&self, id: &str, request: StartRequest<'_>, permission: &str, server: &str) -> Result<StartedAdapter, BridgeError> {
@@ -1075,7 +1161,18 @@ impl AdapterRegistry {
     pub fn resume(
         &self,
         id: &str,
+        request: ResumeRequest<'_>,
+    ) -> Result<StartedAdapter, BridgeError> {
+        self.resume_chat(id, request, None)
+    }
+
+    /// `resume` for an interactive chat, with its tool launch beside the
+    /// request.
+    pub fn resume_chat(
+        &self,
+        id: &str,
         mut request: ResumeRequest<'_>,
+        tools: Option<&ToolLaunch>,
     ) -> Result<StartedAdapter, BridgeError> {
         let adapter = self.adapters.get(id).ok_or_else(|| {
             BridgeError::Invalid(format!("No structured adapter is registered for {id}"))
@@ -1096,7 +1193,7 @@ impl AdapterRegistry {
         request.speed = supported_model_speed(&descriptor, request.model, request.speed);
         let wanted = request.provider_session_id.to_owned();
         let fork = request.fork;
-        let mut started = adapter.resume(request)?;
+        let mut started = adapter.resume_chat(request, tools)?;
         // A plain resume must come back on the session it asked for. Anything
         // else would carry the chat on in another conversation: stop it, and
         // let the caller's fallback restore from Bridge's own history. A fork
@@ -1139,6 +1236,12 @@ impl AdapterRegistry {
     pub fn forget_session(&self, id: &str, provider_session_id: &str) {
         if let Some(adapter) = self.adapters.get(id) {
             adapter.forget_session(provider_session_id);
+        }
+    }
+
+    pub fn seed_usage_totals(&self, id: &str, provider_session_id: &str, usage_event: &Value) {
+        if let Some(adapter) = self.adapters.get(id) {
+            adapter.seed_usage_totals(provider_session_id, usage_event);
         }
     }
 
@@ -1568,36 +1671,44 @@ impl HarnessAdapter for OpenCodeAdapter {
         }
     }
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        self.start_chat(request, None)
+    }
+    fn start_chat(&self, request: StartRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedAdapter, BridgeError> {
         self.ensure_model_is_selectable(request.model)?;
         let settings = self.settings();
-        let started = opencode_adapter::start_with_settings(request, &settings)?;
+        let started = opencode_adapter::start_chat_with_settings(request, &settings, tools)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
             startup_messages: started.startup_messages,
+            skills_dropped: false,
         })
     }
     fn start_app_courier(&self, request: StartRequest<'_>, permission: &str, server: &str) -> Result<StartedAdapter, BridgeError> {
         let started = opencode_adapter::start_courier_with_settings(request, &self.settings(), permission, server)?;
         Ok(StartedAdapter {
-            runtime: Box::new(started.runtime), reader: Box::new(started.reader), startup_messages: started.startup_messages,
+            runtime: Box::new(started.runtime), reader: Box::new(started.reader), startup_messages: started.startup_messages, skills_dropped: false,
         })
     }
     fn start_completion(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
         self.ensure_model_is_selectable(request.model)?;
         let started = opencode_adapter::start_completion_with_settings(request, &self.settings())?;
         Ok(StartedAdapter {
-            runtime: Box::new(started.runtime), reader: Box::new(started.reader), startup_messages: started.startup_messages,
+            runtime: Box::new(started.runtime), reader: Box::new(started.reader), startup_messages: started.startup_messages, skills_dropped: false,
         })
     }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        self.resume_chat(request, None)
+    }
+    fn resume_chat(&self, request: ResumeRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedAdapter, BridgeError> {
         self.ensure_model_is_selectable(request.model)?;
         let settings = self.settings();
-        let started = opencode_adapter::resume_with_settings(request, &settings)?;
+        let started = opencode_adapter::resume_chat_with_settings(request, &settings, tools)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
             startup_messages: started.startup_messages,
+            skills_dropped: false,
         })
     }
     fn supports_native_resume(&self) -> bool {
@@ -1903,19 +2014,27 @@ impl HarnessAdapter for CodexAdapter {
         });
     }
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
-        let started = codex_adapter::start(request)?;
+        self.start_chat(request, None)
+    }
+    fn start_chat(&self, request: StartRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedAdapter, BridgeError> {
+        let started = codex_adapter::start_chat(request, tools)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
             startup_messages: started.startup_messages,
+            skills_dropped: started.skills_dropped,
         })
     }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
-        let started = codex_adapter::resume(request)?;
+        self.resume_chat(request, None)
+    }
+    fn resume_chat(&self, request: ResumeRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedAdapter, BridgeError> {
+        let started = codex_adapter::resume_chat(request, tools)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
             startup_messages: started.startup_messages,
+            skills_dropped: started.skills_dropped,
         })
     }
     fn supports_native_resume(&self) -> bool {
@@ -2056,19 +2175,27 @@ impl HarnessAdapter for ClaudeAdapter {
         });
     }
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
-        let started = claude_adapter::start(request)?;
+        self.start_chat(request, None)
+    }
+    fn start_chat(&self, request: StartRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedAdapter, BridgeError> {
+        let started = claude_adapter::start_chat(request, tools)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
             startup_messages: started.startup_messages,
+            skills_dropped: false,
         })
     }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
-        let started = claude_adapter::resume(request)?;
+        self.resume_chat(request, None)
+    }
+    fn resume_chat(&self, request: ResumeRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedAdapter, BridgeError> {
+        let started = claude_adapter::resume_chat(request, tools)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
             startup_messages: started.startup_messages,
+            skills_dropped: false,
         })
     }
     fn supports_native_resume(&self) -> bool {
@@ -2092,6 +2219,19 @@ impl HarnessAdapter for ClaudeAdapter {
             return;
         }
         self.streams.lock().unwrap().remove(provider_session_id);
+    }
+    /// The SDK restores the session totals at a resume, so the first result
+    /// of the new process is a share of one turn only after this seed.
+    fn seed_usage_totals(&self, provider_session_id: &str, usage_event: &Value) {
+        let Some(seed) = agent::claude_usage_seed(usage_event, provider_session_id) else {
+            return;
+        };
+        self.streams
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(provider_session_id.to_owned())
+            .or_default()
+            .seed_usage_totals(seed);
     }
 }
 
@@ -2307,6 +2447,7 @@ mod tests {
                     runtime: Box::new(Drifting { reports: self.reports, stopped: self.stopped.clone() }),
                     reader: Box::new(std::io::Cursor::new(Vec::new())),
                     startup_messages: vec![],
+                    skills_dropped: false,
                 })
             }
             fn supports_native_resume(&self) -> bool { true }
@@ -2346,6 +2487,135 @@ mod tests {
         assert_eq!((result.unwrap(), stopped), (String::new(), false), "an id reported later is not a mismatch");
     }
 
+    /// A harness without tool levers that records each start and resume.
+    struct PlainAdapter {
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl HarnessAdapter for PlainAdapter {
+        fn as_any(&self) -> &dyn Any { self }
+        fn descriptor(&self) -> AdapterDescriptor {
+            AdapterDescriptor {
+                sandbox_modes: vec![crate::model::SandboxMode::WorkspaceWrite],
+                id: "claude".into(),
+                label: "Plain".into(),
+                available: true,
+                auth_state: crate::model::AuthState::Unknown,
+                version: Some("1".into()),
+                capabilities: vec!["messages".into()],
+                unavailable_reason: None,
+                models: vec![],
+                default_model: None,
+                model_catalog: ModelCatalogDiagnostics::curated(),
+            }
+        }
+        fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+            let call = format!("start {:?} {} {:?} {}", request.session_id, request.cwd, request.instructions, request.interactive);
+            self.calls.lock().unwrap().push(call);
+            Err(BridgeError::Invalid("plain start".into()))
+        }
+        fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+            let call = format!("resume {:?} {} {} {}", request.session_id, request.provider_session_id, request.fork, request.interactive);
+            self.calls.lock().unwrap().push(call);
+            Err(BridgeError::Invalid("plain resume".into()))
+        }
+        fn supports_native_resume(&self) -> bool { true }
+        fn supports_native_fork(&self) -> bool { true }
+        fn normalize(&self, _value: &Value) -> Vec<agent::NormalizedEvent> { vec![] }
+    }
+
+    fn plain_start<'a>(write_mode: Option<WriteMode>) -> StartRequest<'a> {
+        StartRequest {
+            session_id: Some("chat-1"),
+            cwd: "/tmp/chat",
+            model: None,
+            effort: None,
+            speed: None,
+            instructions: Some("system"),
+            write_mode,
+            read_only_sandbox: None,
+            briefing: None,
+            interactive: true,
+            account: None,
+            on_progress: None,
+        }
+    }
+
+    fn plain_resume<'a>(fork: bool) -> ResumeRequest<'a> {
+        ResumeRequest {
+            session_id: Some("chat-1"),
+            provider_session_id: "thread-1",
+            fork,
+            cwd: "/tmp/chat",
+            model: None,
+            effort: None,
+            speed: None,
+            instructions: Some("system"),
+            write_mode: None,
+            read_only_sandbox: None,
+            briefing: None,
+            interactive: true,
+            account: None,
+            on_progress: None,
+        }
+    }
+
+    /// A harness without tool levers starts and resumes as before: the default
+    /// `start_chat` and `resume_chat` hand the same request to `start` and
+    /// `resume`, and the registry keeps each of its checks.
+    #[test]
+    fn the_default_start_chat_and_resume_chat_ignore_the_tool_launch() {
+        let tools = ToolLaunch {
+            revision: 3,
+            harness: "claude".into(),
+            servers_off: vec!["github".into()],
+            codex_apps_off: false,
+            claude_skills: Some(vec![]),
+            codex_skills_off: vec![],
+            effective_hash: "hash".into(),
+            stored_hash: "hash".into(),
+        };
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let plain = PlainAdapter { calls: calls.clone() };
+        let error = |result: Result<StartedAdapter, BridgeError>| result.err().map(|error| error.to_string());
+        let mut registry = AdapterRegistry::empty();
+        registry.register(Box::new(PlainAdapter { calls: calls.clone() })).unwrap();
+
+        let with_tools = [
+            error(plain.start_chat(plain_start(None), Some(&tools))),
+            error(plain.resume_chat(plain_resume(false), Some(&tools))),
+            error(registry.start_chat("claude", plain_start(None), Some(&tools))),
+            error(registry.resume_chat("claude", plain_resume(true), Some(&tools))),
+        ];
+        let recorded = std::mem::take(&mut *calls.lock().unwrap());
+        let without = [
+            error(plain.start(plain_start(None))),
+            error(plain.resume(plain_resume(false))),
+            error(registry.start("claude", plain_start(None))),
+            error(registry.resume("claude", plain_resume(true))),
+        ];
+        assert_eq!(with_tools, without);
+        assert_eq!(*calls.lock().unwrap(), recorded);
+        assert_eq!(
+            recorded,
+            [
+                "start Some(\"chat-1\") /tmp/chat Some(\"system\") true",
+                "resume Some(\"chat-1\") thread-1 false true",
+                "start Some(\"chat-1\") /tmp/chat Some(\"system\") true",
+                "resume Some(\"chat-1\") thread-1 true true",
+            ]
+        );
+        assert_eq!(with_tools[0].as_deref(), Some("plain start"));
+        assert_eq!(with_tools[3].as_deref(), Some("plain resume"));
+
+        // A tool launch does not skip a registry check: a sandbox that the
+        // harness cannot enforce still refuses before the adapter runs.
+        calls.lock().unwrap().clear();
+        let refusal = error(registry.start_chat("claude", plain_start(Some(WriteMode::Full)), Some(&tools))).unwrap();
+        assert!(refusal.contains("cannot enforce"), "{refusal}");
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn only_a_focus_accepting_harness_reports_that_it_takes_one() {
         assert!(NativeCompaction::WithFocus.is_supported());
@@ -2375,6 +2645,54 @@ mod tests {
             notify: None,
             refreshing: Arc::new(AtomicBool::new(false)),
         }));
+    }
+
+    #[test]
+    fn the_claude_seed_sets_totals_only_once_and_other_adapters_ignore_it() {
+        let models = |id: &str| Arc::new(RwLock::new(model_catalog::resolve(id, Err("not discovered".into()), &[], None, chrono::Utc::now())));
+        let claude = ClaudeAdapter { streams: Mutex::new(HashMap::new()), models: models("claude"), notify: None, refreshing: Arc::new(AtomicBool::new(false)) };
+        let result = |input: i64, cost: f64| serde_json::json!({
+            "type": "result", "subtype": "success", "session_id": "s", "usage": {"input_tokens": 1},
+            "total_cost_usd": cost, "modelUsage": {"m": {"inputTokens": input, "costUSD": cost}}
+        });
+        let stored = |input: i64, cost: f64| serde_json::json!({
+            "data": {"usage": {"input_tokens": 1}, "totalCostUsd": cost, "modelUsage": {"m": {"inputTokens": input, "costUSD": cost}}},
+            "providerMeta": {"adapter": "claude"}
+        });
+        let share = |events: Vec<agent::NormalizedEvent>| {
+            let data = events.into_iter().find(|event| event.kind == "usage.updated").unwrap().data;
+            (data["modelUsage"]["m"]["inputTokens"].as_i64().unwrap(), data["totalCostUsd"].as_f64().unwrap())
+        };
+        // The first seed sets the totals. A second seed finds them and changes nothing.
+        claude.seed_usage_totals("s", &stored(100, 1.0));
+        claude.seed_usage_totals("s", &stored(500, 5.0));
+        let (tokens, cost) = share(claude.normalize(&result(130, 1.25)));
+        assert_eq!(tokens, 30);
+        assert!((cost - 0.25).abs() < 1e-9, "{cost}");
+        // A seed after a result of this process keeps the totals of the process.
+        claude.seed_usage_totals("s", &stored(10, 0.1));
+        let (tokens, cost) = share(claude.normalize(&result(150, 1.5)));
+        assert_eq!(tokens, 20);
+        assert!((cost - 0.25).abs() < 1e-9, "{cost}");
+        // A refused seed makes no state.
+        claude.seed_usage_totals("t", &serde_json::json!({"data": {"totalCostUsd": 1.0}, "providerMeta": {"adapter": "codex"}}));
+        assert!(!claude.streams.lock().unwrap().contains_key("t"));
+
+        // Codex and OpenCode keep the default, which does nothing.
+        let codex = CodexAdapter { streams: Mutex::new(HashMap::new()), models: models("codex"), notify: None, refreshing: Arc::new(AtomicBool::new(false)) };
+        codex.seed_usage_totals("s", &stored(100, 1.0));
+        assert!(codex.streams.lock().unwrap().is_empty());
+        let opencode = OpenCodeAdapter {
+            streams: Mutex::new(HashMap::new()),
+            session_roots: Mutex::new(HashMap::new()),
+            settings: RwLock::new(Default::default()),
+            catalog: Arc::new(RwLock::new(None)),
+            catalog_error: Arc::new(RwLock::new(None)),
+            model_catalog: models("opencode"),
+            cache_path: None,
+        };
+        opencode.seed_usage_totals("s", &stored(100, 1.0));
+        assert!(opencode.streams.lock().unwrap().is_empty());
     }
 
     fn discovered(id: &str, label: &str) -> DiscoveredModel {
@@ -2872,6 +3190,40 @@ mod tests {
             context.contains("API error: connection refused"),
             "{context}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_handshake_carries_the_last_stderr_line() {
+        // The reason comes after a pause, so a wait for the first line alone
+        // would lose it.
+        let mut child = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "echo boot >&2; sleep 0.2; echo 'Error: invalid transport in mcp_servers.github' >&2; exit 1",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let tail = StderrTail::capture(&mut child);
+        // A long limit: the wait ends when the pipe closes and the child
+        // exits, so a slow machine cannot cut the tail.
+        let ended = BridgeError::Adapter("the handshake ended".into());
+        let error = with_startup_stderr_within(ended, &mut child, &tail, Duration::from_secs(60)).to_string();
+        assert!(error.contains("the handshake ended"), "{error}");
+        assert!(error.contains("exit status: 1"), "{error}");
+        assert!(error.contains("invalid transport in mcp_servers.github"), "{error}");
+
+        // A process that does not stop keeps the first error after the wait.
+        let mut silent = Command::new("/bin/sh").args(["-c", "sleep 5"]).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+        let tail = StderrTail::capture(&mut silent);
+        let error =
+            with_startup_stderr_within(BridgeError::Adapter("no reply".into()), &mut silent, &tail, Duration::from_millis(200))
+                .to_string();
+        silent.kill().unwrap();
+        silent.wait().unwrap();
+        assert!(error.contains("no reply") && !error.contains("Stderr tail"), "{error}");
     }
 
     #[cfg(unix)]
