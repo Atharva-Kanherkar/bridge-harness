@@ -257,3 +257,65 @@ fn archiving_a_bridge_workspace_still_removes_its_worktree() {
 
     assert!(!mine.exists(), "Bridge's own worktree is reclaimed as before");
 }
+
+#[test]
+fn a_worktree_entry_is_on_a_branch_only_when_git_says_so_and_it_is_not_detached() {
+    let entry = |branch: Option<&str>, detached: bool| git::GitWorktreeEntry {
+        path: PathBuf::from("/w"),
+        head: None,
+        branch: branch.map(str::to_owned),
+        bare: false,
+        detached,
+        prunable: false,
+    };
+    assert_eq!(branch_of(&entry(Some("fix"), false)), Some("fix".into()));
+    assert_eq!(branch_of(&entry(Some("fix"), true)), None, "detached wins over a stray branch line");
+    assert_eq!(branch_of(&entry(None, false)), None);
+    assert_eq!(branch_of(&entry(Some(""), false)), None);
+}
+
+#[test]
+fn empty_scripts_are_not_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let main = repo(dir.path(), "app");
+    let a = worktree(&main, &dir.path().join("ws/app/a"), "a");
+    let scratch = tempfile::tempdir().unwrap();
+    let core = core(scratch.path());
+    let mut empty = candidate(&a);
+    empty.scripts = Some(Scripts { run_mode: Some("concurrent".into()), ..Scripts::default() });
+
+    let report = adopt(&core.db, vec![empty]).unwrap();
+
+    assert_eq!(report.with_scripts, 0, "a run mode with no scripts is nothing to keep");
+    let scripts: Option<String> = core.db.lock().unwrap().query_row("SELECT scripts FROM adopted_worktrees", [], |row| row.get(0)).unwrap();
+    assert_eq!(scripts, None);
+    assert!(Scripts::default().is_empty());
+    assert!(!Scripts { archive: Some("rm -rf build".into()), ..Scripts::default() }.is_empty());
+}
+
+#[test]
+fn an_adoption_changed_bridge_only_when_a_workspace_came_or_a_chat_moved() {
+    let mut report = Report::default();
+    assert!(!report.imported_any());
+    report.already_in_bridge = 3;
+    report.left_out.insert(Reason::Missing, 2);
+    assert!(!report.imported_any(), "nothing new");
+    report.relinked_chats = 1;
+    assert!(report.imported_any());
+    report.relinked_chats = 0;
+    report.adopted.push(("w".into(), PathBuf::from("/w")));
+    assert!(report.imported_any());
+}
+
+#[test]
+fn left_out_reasons_are_counted_each() {
+    let candidates = [candidate(Path::new("/w/a")), candidate(Path::new("/w/b")), candidate(Path::new("/w/c"))];
+    let outcomes = [Outcome::LeftOut(Reason::Missing), Outcome::LeftOut(Reason::Missing), Outcome::LeftOut(Reason::NeedsBranch)];
+    let scratch = tempfile::tempdir().unwrap();
+    let core = core(scratch.path());
+
+    let report = write(&core.db.lock().unwrap(), &candidates, &outcomes).unwrap();
+
+    assert_eq!(report.left_out, BTreeMap::from([(Reason::Missing, 2), (Reason::NeedsBranch, 1)]));
+    assert!(report.adopted.is_empty());
+}

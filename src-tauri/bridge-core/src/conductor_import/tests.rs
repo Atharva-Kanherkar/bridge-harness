@@ -264,3 +264,62 @@ fn read_this_macs_conductor_database() {
     );
     assert_eq!(before, after);
 }
+
+#[test]
+fn an_empty_wal_left_behind_is_not_a_live_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let path = paths(home).store;
+    {
+        let fixture = store(home, 181);
+        fixture.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+    }
+    std::fs::write(PathBuf::from(format!("{}-wal", path.display())), b"").unwrap();
+    let before: std::collections::BTreeSet<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().flatten().map(|entry| entry.file_name()).collect();
+
+    assert_eq!(read(&path).unwrap().workspaces.len(), 3);
+
+    let after: std::collections::BTreeSet<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().flatten().map(|entry| entry.file_name()).collect();
+    assert_eq!(before, after, "no -shm appears beside it");
+}
+
+#[test]
+fn either_the_state_or_the_old_flag_marks_a_workspace_archived() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let fixture = Fixture::at(&paths(home).store, 181);
+    fixture.repo("r", "app", &home.join("code/app"), 3);
+    for (key, state, flag) in [("by-state", "archived", 0), ("by-flag", "active", 1), ("deleted", "deleted", 0), ("live", "active", 0)] {
+        fixture.insert("workspaces", &[
+            ("local_id", rusqlite::types::Value::Text(key.into())),
+            ("project_id", rusqlite::types::Value::Text("project-r".into())),
+            ("directory_name", rusqlite::types::Value::Text(key.into())),
+            ("state", rusqlite::types::Value::Text(state.into())),
+            ("DEPRECATED_archived", rusqlite::types::Value::Integer(flag)),
+        ]);
+    }
+
+    let found = from_store(&read(&fixture.path).unwrap(), &paths(home));
+
+    let archived: Vec<(&str, bool)> = found.iter().map(|candidate| (candidate.name.as_str(), candidate.archived)).collect();
+    assert_eq!(archived, vec![("by-state", true), ("by-flag", true), ("deleted", true), ("live", false)]);
+}
+
+#[test]
+fn a_multi_repo_workspaces_first_checkout_falls_back_to_the_workspace_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let fixture = Fixture::at(&paths(home).store, 181);
+    fixture.repo("r-web", "web", &home.join("code/web"), 3);
+    fixture.repo("r-api", "api", &home.join("code/api"), 3);
+    let custom = home.join("elsewhere/tokyo");
+    fixture.workspace(&Row { key: "w", repo: "r-web", directory: "tokyo", name: None, branch: Some("b"), state: "active", path: Some(&custom) });
+    fixture.checkout("w", "r-web", None, 0);
+    fixture.checkout("w", "r-api", None, 1);
+
+    let found = from_store(&read(&fixture.path).unwrap(), &paths(home));
+
+    let paths_found: Vec<PathBuf> = found.iter().map(|candidate| candidate.path.clone()).collect();
+    assert_eq!(paths_found, vec![custom, home.join("conductor/workspaces/api/tokyo")], "only the first checkout is the workspace's own folder");
+    assert_eq!(found[1].title.as_deref(), Some("tokyo (api)"));
+}

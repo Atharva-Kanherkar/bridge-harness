@@ -333,7 +333,7 @@ fn read_from(conn: &Connection) -> Result<Store, String> {
             });
         }
     }
-    let wanted = ["local_id", "id", "repository_id", "project_id", "directory_name", "workspace_name", "branch", "state", "workspace_path", "DEPRECATED_archived", "archived"];
+    let wanted = ["local_id", "id", "repository_id", "project_id", "directory_name", "workspace_name", "branch", "state", "workspace_path", "DEPRECATED_archived"];
     for row in select(conn, "workspaces", &wanted).map_err(fail)? {
         let keys: Vec<String> = ["local_id", "id"].iter().filter_map(|column| text(&row, column)).collect();
         let Some(directory) = text(&row, "directory_name") else { continue };
@@ -341,9 +341,10 @@ fn read_from(conn: &Connection) -> Result<Store, String> {
             continue;
         }
         let state = text(&row, "state").unwrap_or_default();
+        // `state` says it since the flag was retired; older rows set only the
+        // flag. Either one is enough.
         let archived = matches!(state.trim(), "archived" | "deleted")
-            || int(&row, "DEPRECATED_archived").is_some_and(|flag| flag != 0)
-            || int(&row, "archived").is_some_and(|flag| flag != 0);
+            || int(&row, "DEPRECATED_archived").is_some_and(|flag| flag != 0);
         let project_id = text(&row, "project_id");
         let repo_id = text(&row, "repository_id").or_else(|| {
             project_id.as_ref().and_then(|project| project_repos.get(project)).and_then(|repos| repos.iter().min().map(|(_, repo)| repo.clone()))
@@ -411,7 +412,6 @@ pub fn from_store(store: &Store, paths: &Paths) -> Vec<Candidate> {
     let mut out = Vec::new();
     for workspace in &store.workspaces {
         let key = workspace.keys.first().cloned().unwrap_or_default();
-        let multi = workspace.checkouts.len() > 1;
         if workspace.checkouts.is_empty() {
             let Some(repo) = workspace.repo_id.as_ref().and_then(|id| store.repos.get(id)) else { continue };
             let path = workspace.path.clone().or_else(|| workspace_folder(repo, &workspace.directory, &paths.workspaces_root));
@@ -432,7 +432,7 @@ pub fn from_store(store: &Store, paths: &Paths) -> Vec<Candidate> {
             let Some(path) = path.filter(|path| path.is_absolute()) else { continue };
             // One Bridge workspace per folder: a multi-repo workspace's other
             // checkouts are named for their repository.
-            let title = match (&workspace.name, multi && index > 0) {
+            let title = match (&workspace.name, index > 0) {
                 (Some(name), true) => Some(format!("{name} ({})", repo.name)),
                 (None, true) => Some(format!("{} ({})", workspace.directory, repo.name)),
                 (name, false) => name.clone(),

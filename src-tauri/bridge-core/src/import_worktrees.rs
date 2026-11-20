@@ -118,13 +118,22 @@ pub fn probe(path: &Path) -> Probe {
     let Ok(entries) = git::list_worktrees(&root) else {
         return Probe::NotGit;
     };
-    match entries.into_iter().find(|entry| real_path(&entry.path) == real) {
+    match entries.iter().find(|entry| real_path(&entry.path) == real) {
         None => Probe::Unregistered,
-        Some(entry) => match entry.branch.filter(|branch| !entry.detached && !branch.is_empty()) {
+        Some(entry) => match branch_of(entry) {
             Some(branch) => Probe::OnBranch { root, branch },
             None => Probe::Detached { root },
         },
     }
+}
+
+/// The branch a worktree is on, by `git worktree list --porcelain`: none when
+/// detached, even if a branch line came with it.
+fn branch_of(entry: &git::GitWorktreeEntry) -> Option<String> {
+    if entry.detached {
+        return None;
+    }
+    entry.branch.clone().filter(|branch| !branch.is_empty())
 }
 
 /// A folder's real path, or the path as given when it does not resolve.
@@ -173,10 +182,6 @@ pub struct Report {
 }
 
 impl Report {
-    pub fn left_out_total(&self) -> usize {
-        self.left_out.values().sum()
-    }
-
     /// Bridge's state changed: a workspace was added or a chat moved.
     pub fn imported_any(&self) -> bool {
         !self.adopted.is_empty() || self.relinked_chats > 0
@@ -257,17 +262,9 @@ pub fn write(db: &Connection, candidates: &[Candidate], outcomes: &[Outcome]) ->
                 continue;
             }
         };
+        // The plan was made under the same lock (see [`adopt`]), so a folder
+        // it says to adopt is not Bridge's yet.
         let path = real_path(&candidate.path).to_string_lossy().into_owned();
-        // Another adoption may have got there between the plan and now.
-        let taken: bool = transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM workspaces WHERE path=?1)",
-            params![path],
-            |row| row.get(0),
-        )?;
-        if taken {
-            report.already_in_bridge += 1;
-            continue;
-        }
         let root = root.to_string_lossy().into_owned();
         let project_name = Path::new(&root).file_name().and_then(|name| name.to_str()).unwrap_or("Repository").to_owned();
         transaction.execute(
