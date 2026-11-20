@@ -105,7 +105,7 @@ function FileMentionRow({ id, index, path, query, active, change, onHover, onPic
     data-mention-index={index}
     onMouseEnter={() => onHover(index)}
     onMouseDown={event => { event.preventDefault(); onPick(path); }}
-    className={`flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${active ? "bg-accent" : "hover:bg-accent"}`}
+    className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${active ? "bg-accent" : "hover:bg-accent"}`}
   >
     <Icon size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
     <span data-mention-name className="min-w-0 max-w-[70%] shrink-0 truncate font-mono text-meta text-foreground"><Marked text={name} range={match.name} /></span>
