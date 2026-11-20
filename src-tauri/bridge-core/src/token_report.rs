@@ -203,6 +203,9 @@ const TOOL_KINDS: [&str; 6] = [
 /// The kinds that show activity in a chat.
 const ACTIVITY_KINDS: [&str; 2] = ["user.message", "assistant.message"];
 
+/// Sessions for each window query, under the limit of SQLite variables.
+const WINDOW_CHUNK: usize = 500;
+
 /// Characters that make a command text a shell program. Quotes do not
 /// change this, so `rg 'a|b'` is `shell`.
 const SHELL_OPERATORS: [char; 10] = ['|', '&', ';', '<', '>', '(', ')', '$', '`', '\n'];
@@ -283,6 +286,7 @@ pub fn classify_shell(command: &Value) -> TokenClass {
             };
             match wrapped_script(&words) {
                 Some(script) => classify_text(script, false),
+                None if words.iter().any(|word| word.contains(&SHELL_OPERATORS[..])) => TokenClass::Shell,
                 None => classify_words(&words),
             }
         }
@@ -399,9 +403,7 @@ fn build(
         let activity = match last_activity(&transaction, &candidate.id, prefix)? {
             Activity::At(at) => Some(at),
             Activity::Unreadable => {
-                if session.is_none() {
-                    unreadable_timestamps += 1;
-                }
+                unreadable_timestamps += 1;
                 None
             }
             Activity::Absent => None,
@@ -419,11 +421,17 @@ fn build(
     });
     rows.truncate(options.top);
     let mut sessions = Vec::with_capacity(rows.len());
-    for (index, (mut row, epoch)) in rows.into_iter().enumerate() {
+    let windows = if schema.window {
+        let epochs: Vec<(&str, i64)> =
+            rows.iter().map(|(row, epoch)| (row.session_id.as_str(), *epoch)).collect();
+        windows(&transaction, &epochs)?
+    } else {
+        HashMap::new()
+    };
+    for (index, (mut row, _)) in rows.into_iter().enumerate() {
         row.rank = index + 1;
-        if schema.window {
-            (row.last_context_used, row.max_context_used) =
-                window(&transaction, &row.session_id, epoch)?;
+        if let Some(&(last, max)) = windows.get(&row.session_id) {
+            (row.last_context_used, row.max_context_used) = (last, max);
         }
         sessions.push(row);
     }
@@ -726,28 +734,38 @@ fn session_tokens(
     }
 }
 
-/// The last and the largest window of the current provider epoch, by ledger
-/// id.
-fn window(
+/// The last and the largest window of the current provider epoch of each
+/// session, by ledger id. One query reads the sessions of a chunk, because no
+/// index of the ledger starts with the session.
+fn windows(
     db: &Connection,
-    session: &str,
-    epoch: i64,
-) -> Result<(Option<i64>, Option<i64>), BridgeError> {
-    let mut statement = db.prepare(
-        "SELECT context_used_tokens FROM usage_ledger
-         WHERE session_id = ?1 AND id > ?2 AND context_used_tokens IS NOT NULL
-         ORDER BY id",
-    )?;
-    let mut rows = statement.query(params![session, epoch])?;
-    let (mut last, mut max) = (None, None);
-    while let Some(row) = rows.next()? {
-        let Some(value) = integer_at(row, 0)? else {
-            continue;
-        };
-        last = Some(value);
-        max = Some(max.map_or(value, |largest: i64| largest.max(value)));
+    sessions: &[(&str, i64)],
+) -> Result<HashMap<String, (Option<i64>, Option<i64>)>, BridgeError> {
+    let mut found: HashMap<String, (Option<i64>, Option<i64>)> = HashMap::new();
+    for chunk in sessions.chunks(WINDOW_CHUNK) {
+        let epochs: HashMap<&str, i64> = chunk.iter().copied().collect();
+        let mut statement = db.prepare(&format!(
+            "SELECT session_id, id, context_used_tokens FROM usage_ledger
+             WHERE session_id IN ({}) AND context_used_tokens IS NOT NULL
+             ORDER BY session_id, id",
+            placeholders(1, chunk.len())
+        ))?;
+        let mut rows = statement.query(params_from_iter(chunk.iter().map(|(id, _)| *id)))?;
+        while let Some(row) = rows.next()? {
+            let (Some(session), Some(entry), Some(value)) =
+                (text_at(row, 0)?, integer_at(row, 1)?, integer_at(row, 2)?)
+            else {
+                continue;
+            };
+            if !epochs.get(session.as_str()).is_some_and(|epoch| entry > *epoch) {
+                continue;
+            }
+            let slot = found.entry(session).or_insert((None, None));
+            slot.0 = Some(value);
+            slot.1 = Some(slot.1.map_or(value, |largest: i64| largest.max(value)));
+        }
     }
-    Ok((last, max))
+    Ok(found)
 }
 
 fn placeholders(first: usize, count: usize) -> String {

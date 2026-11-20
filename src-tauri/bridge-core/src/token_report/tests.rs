@@ -483,10 +483,12 @@ fn a_completion_takes_the_class_of_its_start_by_payload_item_id() {
 
 #[test]
 fn a_forked_start_and_completion_pair_without_provider_event_ids() {
-    // A fork copies these rows with the payload and no provider event id.
+    // A fork copies these rows with the payload and no provider event id. The
+    // copies count only in a fork whose source entry is absent, so the test
+    // removes that entry.
     let w = world();
     w.chat("chat-a");
-    w.put(
+    let entries = w.put(
         "chat-a",
         vec![
             row("tool.started", claude_start("toolu_1", "Grep", json!({}), "preparing")),
@@ -494,7 +496,10 @@ fn a_forked_start_and_completion_pair_without_provider_event_ids() {
             row("tool.completed", claude_result("toolu_1", "a.rs:1")).est(30),
         ],
     );
-    let tokens = w.one("chat-a");
+    w.fork("fork-a", "chat-a", &entries[2]);
+    w.db.execute("UPDATE sessions SET fork_parent_entry_id='gone' WHERE id='fork-a'", []).unwrap();
+    let tokens = w.one("fork-a");
+    assert_eq!((tokens.fork_prefix_entries, tokens.fork_prefix_unknown), (0, true));
     assert_eq!(class(&tokens, Search), 40);
     assert_eq!(class(&tokens, OtherTool), 0);
     assert_eq!(tokens.unestimated, 0);
@@ -807,6 +812,14 @@ fn any_shell_operator_is_shell_even_in_quotes() {
 }
 
 #[test]
+fn an_argv_with_an_operator_character_is_shell() {
+    for argv in [json!(["rg", "a|b", "src"]), json!(["cat", "$HOME/a"]), json!(["grep", "x(y)", "a"]), json!(["ls", "a;b"])] {
+        assert_eq!(classify_shell(&argv), Shell, "{argv}");
+    }
+    assert_eq!(classify_shell(&json!(["rg", "ab", "src"])), Search);
+}
+
+#[test]
 fn writes_and_exec_flags_are_shell() {
     for command in [
         "sed -i s/a/b/ a.rs",
@@ -985,6 +998,17 @@ fn an_unreadable_timestamp_is_not_recent_and_is_counted() {
     let report = w.run();
     assert_eq!(ids(&report), ["good"]);
     assert_eq!(report.unreadable_timestamps, 2);
+}
+
+#[test]
+fn a_single_session_report_still_counts_an_unreadable_timestamp() {
+    let w = world();
+    w.chat("bad");
+    w.put("bad", vec![msg("user.message", 1).at("last tuesday")]);
+    let report = w.run_with(|options| options.session = Some("bad".to_owned()));
+    assert_eq!(ids(&report), ["bad"]);
+    assert_eq!(report.unreadable_timestamps, 1);
+    assert_eq!(report.sessions[0].last_activity_at, None);
 }
 
 #[test]
