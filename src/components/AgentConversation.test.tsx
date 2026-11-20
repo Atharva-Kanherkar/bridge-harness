@@ -770,11 +770,11 @@ describe("AgentConversation", () => {
       },
     });
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[failed]} onRetryWorker={async () => undefined} onOpenSession={() => undefined}/>);
-    // The cause, not "Subagent finished".
+    // The cause, not "Worker finished".
     expect(html).toContain("a check the worker ran failed: cargo test store");
     expect(html).toContain("Retry this task");
     expect(html).toContain('role="alert"');
-    expect(html).not.toContain("Subagent finished");
+    expect(html).not.toContain("Worker finished");
   });
 
   it("says plainly when a worker's result could not be read, and does not dress it as a task failure", () => {
@@ -802,7 +802,8 @@ describe("AgentConversation", () => {
       data: { childSessionId: "w3", delivered: true, status: "completed", canRetry: false },
     });
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[done]} onRetryWorker={async () => undefined}/>);
-    expect(html).toContain("Subagent finished");
+    // A worker, never a "subagent": Bridge's own word for what it delegates to.
+    expect(html).toContain("Worker finished");
     expect(html).not.toContain("Retry this task");
   });
 
@@ -856,7 +857,7 @@ describe("AgentConversation", () => {
       text: "Rotation added.", data: { childSessionId: "w1", delivered: true, status: "completed" },
     });
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[spawned, result]} onOpenAgent={() => undefined}/>);
-    expect(html.split("Subagent finished").length - 1).toBe(1);
+    expect(html.split("Worker finished").length - 1).toBe(1);
     expect(html).not.toContain("Delegated");
     expect(html).toContain("Show in Agents");
   });

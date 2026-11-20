@@ -88,12 +88,12 @@ describe("the fan-out card", () => {
     // One mark per worker, in order.
     expect([...card.querySelectorAll("svg[data-harness]")].map(mark => mark.getAttribute("data-harness"))).toEqual(["claude", "codex", "claude"]);
     // Grouping keeps every row and its way into the worker's chat.
-    expect(card.textContent).toContain("Delegated to a");
-    expect(card.textContent).toContain("Delegated to b");
-    expect(card.textContent).toContain("Subagent finished");
+    expect(card.textContent).toContain("Delegated · a");
+    expect(card.textContent).toContain("Delegated · b");
+    expect(card.textContent).toContain("Worker finished");
     expect([...card.querySelectorAll("button")].filter(item => item.textContent?.includes("Show in Agents"))).toHaveLength(3);
     // Nothing is drawn twice outside the card.
-    expect(host.textContent!.split("Delegated to b").length - 1).toBe(1);
+    expect(host.textContent!.split("Delegated · b").length - 1).toBe(1);
   });
 
   it("stacks three marks, then +N", async () => {

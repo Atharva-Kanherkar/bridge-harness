@@ -2326,7 +2326,7 @@ function DelegationRow({ item, nested = false, onOpenSession, onOpenAgent, onRet
     <div className="flex min-w-0 items-center gap-1 -ml-2">
       <button className="min-w-0 flex-1 flex items-center gap-[9px] min-h-[30px] px-2 py-1 rounded-md text-left text-muted-foreground text-ui hover:bg-accent transition-colors" onClick={() => item.text && setOpen(value => !value)}>
         {isResult ? <CornerDownRight size={13} className="shrink-0" aria-hidden="true" /> : <GitFork size={13} className="shrink-0" aria-hidden="true" />}
-        <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-ellipsis">{isResult ? "Subagent finished" : "Delegated"}{titleAddsInfo(item, isResult) && <b className="text-muted-foreground font-medium"> · {item.title}</b>}</span>
+        <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-ellipsis">{isResult ? "Worker finished" : "Delegated"}{titleAddsInfo(item, isResult) && <b className="text-muted-foreground font-medium"> · {rowTitle(item, isResult)}</b>}</span>
         {model && <em className="hidden flex-none font-mono text-caption text-muted-foreground not-italic border border-border rounded px-1.5 py-0.5 sm:inline">{model}{effort ? ` · ${effort}` : ""}</em>}
         {item.text && <ChevronRight size={12} className={`shrink-0 transition-transform ${open ? "rotate-90" : ""}`} aria-hidden="true" />}
       </button>
@@ -2488,9 +2488,16 @@ function WorkerFailureRow({ title, summary, cause, failureClass, childSessionId,
 }
 
 function titleAddsInfo(item: ConversationItem, isResult: boolean): boolean {
-  const title = (item.title ?? "").trim();
+  const title = rowTitle(item, isResult);
   if (!title) return false;
   return isResult ? !/^worker result$/i.test(title) : true;
+}
+
+/// A spawn's title after the row's own "Delegated" verb: "Delegated to
+/// Implementation · strong" would read "Delegated · Delegated to …".
+function rowTitle(item: ConversationItem, isResult: boolean): string {
+  const title = (item.title ?? "").trim();
+  return isResult ? title : title.replace(/^delegated to\s+/i, "");
 }
 
 function stringList(value: unknown) { return Array.isArray(value) ? value.join("\n") : ""; }
