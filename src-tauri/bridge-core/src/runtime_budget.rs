@@ -13,7 +13,7 @@ use std::{
 };
 
 const MAX_IDLE_RUNTIMES: usize = 2;
-const IDLE_TTL: Duration = Duration::from_secs(120);
+pub(crate) const IDLE_TTL: Duration = Duration::from_secs(120);
 /// How long an open harness subagent may stay silent and still hold its chat's
 /// process. A live Claude or Codex child streams far more often than this (a
 /// single shell call is capped at ten minutes); one the provider never closed
