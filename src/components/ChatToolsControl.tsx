@@ -264,8 +264,8 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
     </button>
     <MenuPanel controller={menu} label="Tools of this chat">
       <div className="px-2 pb-1.5 pt-1">
-        <p className="text-[13px] font-medium text-foreground">Tools of this chat</p>
-        <p className="text-[11px] leading-4 text-muted-foreground">
+        <p className="text-ui font-medium text-foreground">Tools of this chat</p>
+        <p className="text-caption leading-4 text-muted-foreground">
           {props.draft ? "Leave out what this chat does not need. The chat starts with this choice." : "Leave out what this chat does not need. A change applies at the next turn."}
         </p>
         {base && leavesOut(base) && <button
@@ -274,11 +274,11 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
           tabIndex={-1}
           disabled={!!pending || disabled}
           onClick={turnAllOn}
-          className="-ml-1.5 mt-1 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-[12px] text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
+          className="-ml-1.5 mt-1 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-meta text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
         >{turningAllOn ? <Spinner className="size-3" /> : <ToggleRight size={12} aria-hidden="true" />}Turn all on</button>}
       </div>
       {notApplied && <div className="mx-1 mb-1 rounded-md bg-accent px-2 py-1.5">
-        <p role="note" className="text-[11px] leading-4 text-warning">{notApplied}</p>
+        <p role="note" className="text-caption leading-4 text-warning">{notApplied}</p>
         {/* The create refuses a draft choice for another target, so the draft can drop it. */}
         {props.draft && draftTarget && <button
           type="button"
@@ -286,22 +286,22 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
           tabIndex={-1}
           disabled={disabled}
           onClick={() => { setNotice(null); props.onChoiceChange(null); }}
-          className="mt-1 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-[12px] text-foreground transition-colors hover:bg-background/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
+          className="mt-1 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-meta text-foreground transition-colors hover:bg-background/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
         ><X size={12} aria-hidden="true" />Clear this choice</button>}
       </div>}
       {notice && <p
         role={notice.tone === "saved" ? "status" : "alert"}
-        className={cn("mx-1 mb-1 px-1 text-[11px] leading-4", notice.tone === "error" ? "text-destructive" : notice.tone === "refusal" ? "text-warning" : "text-muted-foreground")}
+        className={cn("mx-1 mb-1 px-1 text-caption leading-4", notice.tone === "error" ? "text-destructive" : notice.tone === "refusal" ? "text-warning" : "text-muted-foreground")}
       >{notice.text}</p>}
       {loading && <SkeletonRows label="Loading tools" rows={4} meta={false} trailing framed={false} rowClassName="min-h-8 px-2 py-1.5" />}
       {!data && loadError && <div className="px-2 py-1.5">
-        <p role="alert" className="text-[11px] leading-4 text-destructive">{loadError}</p>
-        <button type="button" role="menuitem" tabIndex={-1} onClick={() => void load()} className="mt-1 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-[12px] text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+        <p role="alert" className="text-caption leading-4 text-destructive">{loadError}</p>
+        <button type="button" role="menuitem" tabIndex={-1} onClick={() => void load()} className="mt-1 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-meta text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
           <RotateCw size={12} aria-hidden="true" />Try again
         </button>
       </div>}
       {data && base && <>
-        {!items.length && <p className="px-2 py-1.5 text-[12px] text-muted-foreground">
+        {!items.length && <p className="px-2 py-1.5 text-meta text-muted-foreground">
           {unitless ? data.selection.notAppliedReason ?? "Nothing to list yet." : "Nothing to list yet."}
         </p>}
         {SECTIONS.map(section => {
@@ -309,9 +309,9 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
           if (!members.length) return null;
           const groups = grouped(members);
           return <div key={section.title} role="group" aria-label={section.title} className="pb-1">
-            <p className="px-2 pb-0.5 pt-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{section.title}</p>
+            <p className="px-2 pb-0.5 pt-1.5 text-caption font-medium text-muted-foreground">{section.title}</p>
             {groups.map(([group, entries]) => <div key={group}>
-              {groups.length > 1 && <p className="px-2 pt-1 text-[11px] text-faint">{group}</p>}
+              {groups.length > 1 && <p className="px-2 pt-1 text-caption text-faint">{group}</p>}
               {entries.map(item => <ToolRow
                 key={`${item.kind}:${item.id}`}
                 item={item}
@@ -328,7 +328,7 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
         })}
         {data.sources.length > 0 && <>
           <MenuSeparator />
-          <div className="px-2 pb-1 pt-0.5 text-[11px] leading-4 text-muted-foreground">
+          <div className="px-2 pb-1 pt-0.5 text-caption leading-4 text-muted-foreground">
             <p className="font-medium">Read from</p>
             {data.sources.map(source => <p key={`${source.kind}:${source.label}`} className={cn(!source.available && "text-faint")}>
               {source.label}{source.available && source.at ? ` · ${relativeTime(source.at)}` : ""}
@@ -364,15 +364,15 @@ function ToolRow({ item, pending, busy, onSwitch, onRemove }: {
     className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
   >{pending?.on === null ? <Spinner className="size-3.5" /> : <X size={13} aria-hidden="true" />}</button>;
   const meta = <>
-    {item.fixedReason && <span className="block text-[11px] leading-4 text-muted-foreground">{item.fixedReason}</span>}
-    {figure && <span title={figure} className="block truncate text-[11px] leading-4 text-muted-foreground">{figure}</span>}
-    {!item.seen && <span className="block text-[11px] leading-4 text-faint">Saved, not listed now</span>}
+    {item.fixedReason && <span className="block text-caption leading-4 text-muted-foreground">{item.fixedReason}</span>}
+    {figure && <span title={figure} className="block truncate text-caption leading-4 text-muted-foreground">{figure}</span>}
+    {!item.seen && <span className="block text-caption leading-4 text-faint">Saved, not listed now</span>}
   </>;
   if (item.state === "fixed") {
     return <div data-tool-kind={item.kind} data-tool-item={item.id} className="flex items-start gap-2 rounded-md px-2 py-1.5">
       <Lock size={12} aria-hidden="true" className="mt-0.5 shrink-0 text-faint" />
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13px] text-foreground">{item.label}</span>
+        <span className="block truncate text-ui text-foreground">{item.label}</span>
         {meta}
       </span>
       {remove}
@@ -390,7 +390,7 @@ function ToolRow({ item, pending, busy, onSwitch, onRemove }: {
       className="flex min-h-7 min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-default disabled:hover:bg-transparent"
     >
       <span className="min-w-0 flex-1">
-        <span className={cn("block truncate text-[13px]", on ? "text-foreground" : "text-muted-foreground")}>{item.label}</span>
+        <span className={cn("block truncate text-ui", on ? "text-foreground" : "text-muted-foreground")}>{item.label}</span>
         {meta}
       </span>
       {pending?.on != null && <Spinner className="size-3.5 shrink-0 text-muted-foreground" />}
