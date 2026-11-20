@@ -198,6 +198,7 @@ pub mod store;
 pub mod usage_import;
 pub mod suggestion_engine;
 pub mod terminal_workspace;
+pub mod thread_carry;
 pub mod transcript_export;
 pub mod switch_summary;
 pub mod verification_pipeline;

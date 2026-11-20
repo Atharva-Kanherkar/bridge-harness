@@ -853,6 +853,12 @@ pub trait HarnessAdapter: Send + Sync + Any {
     fn supports_native_compaction(&self) -> bool {
         false
     }
+    /// Whether a thread of this harness can move to another account's home
+    /// and resume there: its transcript is one file Bridge can copy
+    /// ([`crate::thread_carry`]). Defaults to false.
+    fn supports_cross_account_continuation(&self) -> bool {
+        false
+    }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent>;
     /// Drop any normalization state kept for `provider_session_id`. Called
     /// when the session's runtime is gone; adapters without per-session state
@@ -1224,6 +1230,12 @@ impl AdapterRegistry {
         self.adapters
             .get(id)
             .is_some_and(|adapter| adapter.supports_native_compaction())
+    }
+
+    pub fn supports_cross_account_continuation(&self, id: &str) -> bool {
+        self.adapters
+            .get(id)
+            .is_some_and(|adapter| adapter.supports_cross_account_continuation())
     }
 
     pub fn normalize(&self, id: &str, value: &Value) -> Vec<agent::NormalizedEvent> {
@@ -2046,6 +2058,9 @@ impl HarnessAdapter for CodexAdapter {
     fn supports_native_fork(&self) -> bool {
         codex_adapter::supports_native_fork()
     }
+    fn supports_cross_account_continuation(&self) -> bool {
+        true
+    }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
         let session_key = value.get("_bridgeRootThreadId")
             .or_else(|| value.pointer("/params/threadId"))
@@ -2202,6 +2217,9 @@ impl HarnessAdapter for ClaudeAdapter {
         claude_adapter::supports_native_resume()
     }
     fn supports_native_compaction(&self) -> bool {
+        true
+    }
+    fn supports_cross_account_continuation(&self) -> bool {
         true
     }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {

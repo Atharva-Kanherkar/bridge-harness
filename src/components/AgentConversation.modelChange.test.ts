@@ -29,6 +29,12 @@ describe("modelChangeDetail", () => {
     })).toBe("window 200k · earlier thread");
   });
 
+  it("says an account change carried the same thread", () => {
+    expect(modelChangeDetail({
+      previousWindowTokens: 200_000, windowTokens: 200_000, freshProviderSession: false, carriedThread: true,
+    })).toBe("window 200k · same thread · carried to this account");
+  });
+
   it("singularizes and skips empty carries", () => {
     expect(modelChangeDetail({
       previousWindowTokens: 400_000, windowTokens: 128_000, freshProviderSession: true,

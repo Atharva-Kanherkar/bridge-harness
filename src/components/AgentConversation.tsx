@@ -1944,6 +1944,9 @@ export function modelChangeDetail(data: Record<string, unknown>): string | null 
     // was just on, so "same thread" would be wrong.
     const added = typeof data.addedEntries === "number" ? data.addedEntries : 0;
     parts.push(added > 0 ? `earlier thread · ${added} message${added === 1 ? "" : "s"} added` : "earlier thread");
+  } else if (data.carriedThread === true) {
+    // The same thread, copied into the new account's folder.
+    parts.push("same thread · carried to this account");
   } else if (data.freshProviderSession === false) {
     parts.push("same thread");
   }

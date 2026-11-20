@@ -2275,7 +2275,14 @@ pub fn update_chat_selection(
     let effort_changed = next_effort != previous_effort;
     let speed_changed = next_speed != previous_speed;
     let model_changed = change.is_some();
-    if let Some(change) = change {
+    if let Some(mut change) = change {
+        // An account change that carries the thread copies its transcript into
+        // the new account's home first, with the runtime stopped so nothing is
+        // still appending to it. A failed copy leaves an ordinary handover.
+        if change.carries_thread() {
+            core.stop_session_adapter(session_id, adapters::ShutdownReason::Replaced);
+            change.carry_thread();
+        }
         // Only a switch the next turn can natively resume skips the handover.
         // The agent resumes its own thread under the new model and keeps the
         // conversation, so asking the outgoing model to summarise would spend

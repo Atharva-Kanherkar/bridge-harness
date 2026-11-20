@@ -235,6 +235,19 @@ pub struct ChatModelChange {
     /// A thread this chat ran earlier on the target app and account. The
     /// switch goes back to it instead of starting fresh.
     returning_to: Option<RememberedThread>,
+    /// An account change on the same app whose thread moves with it: the
+    /// transcript is copied into the new account's home before the commit
+    /// ([`Self::carry_thread`]) and the next turn resumes the same thread.
+    carry: Option<PlannedCarry>,
+    /// Why a planned carry did not happen, recorded by the commit.
+    carry_failure: Option<String>,
+}
+
+/// A thread carry a switch planned, and whether its copy has run.
+#[derive(Debug, Clone)]
+struct PlannedCarry {
+    carry: crate::thread_carry::Carry,
+    copied: bool,
 }
 
 /// A provider thread under its continuation key.
@@ -263,7 +276,37 @@ impl ChatModelChange {
     /// Whether this change resumes the stored provider thread under the new
     /// model instead of handing over a summary and starting fresh.
     pub fn resumes_natively(&self) -> bool {
-        self.native_continuation || self.returning_to.is_some()
+        self.native_continuation || self.returning_to.is_some() || self.carried()
+    }
+
+    /// Whether this change plans to carry the thread to the new account.
+    pub fn carries_thread(&self) -> bool {
+        self.carry.is_some()
+    }
+
+    fn carried(&self) -> bool {
+        self.carry.as_ref().is_some_and(|planned| planned.copied)
+    }
+
+    /// Copy the thread's transcript into the new account's home, when this
+    /// change carries one. Blocking file IO: hosts call it after stopping the
+    /// chat's runtime (so nothing is appending to the transcript) and before
+    /// the commit, never under the database lock. A failed copy turns the
+    /// change into an ordinary handover, and the commit records why.
+    pub fn carry_thread(&mut self) {
+        let Some(planned) = self.carry.as_mut() else {
+            return;
+        };
+        if planned.copied {
+            return;
+        }
+        match crate::thread_carry::copy(&planned.carry) {
+            Ok(_) => planned.copied = true,
+            Err(error) => {
+                self.carry_failure = Some(error.to_string());
+                self.carry = None;
+            }
+        }
     }
 
     /// Whether this change goes back to a thread the chat ran earlier on the
@@ -740,9 +783,10 @@ impl BridgeCore {
                 harness.label()
             )));
         }
-        let (kind, previous_harness, previous_model, provider_session_id, active_turn_id, parent_session_id, previous_account, head_mode): (
+        let (kind, previous_harness, previous_model, provider_session_id, active_turn_id, parent_session_id, previous_account, head_mode, cwd): (
             String,
             String,
+            Option<String>,
             Option<String>,
             Option<String>,
             Option<String>,
@@ -750,7 +794,7 @@ impl BridgeCore {
             Option<String>,
             Option<String>,
         ) = self.db.lock().unwrap().query_row(
-            "SELECT s.kind,s.harness,s.model,s.provider_session_id,s.active_turn_id,s.parent_session_id,s.account,h.restoration_mode FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id WHERE s.id=?1",
+            "SELECT s.kind,s.harness,s.model,s.provider_session_id,s.active_turn_id,s.parent_session_id,s.account,h.restoration_mode,s.cwd FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id WHERE s.id=?1",
             params![session_id],
             |row| {
                 Ok((
@@ -762,6 +806,7 @@ impl BridgeCore {
                     row.get(5)?,
                     row.get(6)?,
                     row.get(7)?,
+                    row.get(8)?,
                 ))
             },
         )?;
@@ -858,19 +903,24 @@ impl BridgeCore {
         }
         // Two accounts continue one provider thread only when they read it from
         // the same home. One that was removed from Settings shares nothing.
+        let host = crate::provider_accounts::HostHomes::from_env();
+        let previous_record = if previous_harness == adapter_id {
+            let db = self.db.lock().unwrap();
+            previous_account
+                .as_deref()
+                .map(|id| agent_config::account(&db, &adapter_id, id))
+                .transpose()
+                .ok()
+        } else {
+            None
+        };
         let same_home = previous_account == account || {
-            let host = crate::provider_accounts::HostHomes::from_env();
             let key = |record: Option<&crate::provider_accounts::ProviderAccount>| {
                 crate::provider_accounts::continuation_key(&adapter_id, record, &host)
             };
-            let previous = {
-                let db = self.db.lock().unwrap();
-                previous_account
-                    .as_deref()
-                    .map(|id| agent_config::account(&db, &adapter_id, id))
-                    .transpose()
-            };
-            previous.is_ok_and(|previous| key(previous.as_ref()) == key(account_record.as_ref()))
+            previous_record
+                .as_ref()
+                .is_some_and(|previous| key(previous.as_ref()) == key(account_record.as_ref()))
         };
         // Native continuation is an eligibility check, not a harness
         // comparison: `start_chat` gates `RestorationPlan::Native` on the
@@ -882,6 +932,23 @@ impl BridgeCore {
             && self.adapter_registry.supports_native_resume(adapter_id.as_ref())
             && provider_session_id.is_some();
         let pending_fork = head_mode.as_deref() == Some(RestorationMode::NativeFork.as_str());
+        // An account change on the same app, between homes: the thread moves
+        // with the chat when its transcript is a file the old home still has.
+        // A removed old account shares nothing, so it carries nothing.
+        let carry = (previous_harness == adapter_id
+            && !same_home
+            && !pending_fork
+            && self.adapter_registry.supports_native_resume(adapter_id.as_ref())
+            && self.adapter_registry.supports_cross_account_continuation(adapter_id.as_ref()))
+        .then_some(())
+        .and(provider_session_id.as_deref())
+        .zip(previous_record.as_ref())
+        .and_then(|(thread, previous)| {
+            let from = crate::thread_carry::home(&adapter_id, previous.as_ref(), &host)?;
+            let to = crate::thread_carry::home(&adapter_id, account_record.as_ref(), &host)?;
+            crate::thread_carry::locate(&adapter_id, thread, &from, &to, cwd.as_deref())
+        })
+        .map(|carry| PlannedCarry { carry, copied: false });
         // A switch that leaves the current thread remembers it, and one that
         // reaches an app and account this chat already ran on goes back to
         // that thread. An unstarted aside's stored id is its source's thread,
@@ -927,6 +994,8 @@ impl BridgeCore {
             pending_fork,
             leaving,
             returning_to,
+            carry,
+            carry_failure: None,
         }))
     }
 
@@ -1471,11 +1540,23 @@ impl BridgeCore {
         &self,
         change: ChatModelChange,
     ) -> Result<AgentEvent, BridgeError> {
+        let mut change = change;
+        // A carry whose copy never ran has no transcript in the new home to
+        // resume: it takes the handover like any other account change.
+        if change.carry.as_ref().is_some_and(|planned| !planned.copied) {
+            change.carry = None;
+            change.carry_failure = Some("the transcript was not copied before the switch committed".into());
+        }
+        let thread_carried = change.carried();
         let session_id = change.session_id.as_str();
         let db = self.db.lock().unwrap();
         let transaction = db.unchecked_transaction()?;
         session_supervisor::SessionSupervisor::clear_adapter_process_in_transaction(&transaction, session_id)?;
-        if let Some(leaving) = &change.leaving {
+        if let Some(reason) = &change.carry_failure {
+            store::event(&transaction, "restoration", "session.thread_carry_failed", session_id, reason)?;
+        }
+        // A carried thread is not left: it continues under the new account.
+        if let Some(leaving) = change.leaving.as_ref().filter(|_| !thread_carried) {
             crate::provider_threads::record_left(
                 &transaction,
                 session_id,
@@ -1492,8 +1573,12 @@ impl BridgeCore {
             change.selected_model(),
             change.tier,
             (&change.previous_harness, change.previous_model.as_deref()),
-            change.native_continuation,
-            change.returning_to.as_ref().map(|thread| thread.provider_session_id.as_str()),
+            change.native_continuation || thread_carried,
+            change
+                .returning_to
+                .as_ref()
+                .filter(|_| !thread_carried)
+                .map(|thread| thread.provider_session_id.as_str()),
         )? != 1
         {
             return Err(BridgeError::Invalid(
@@ -1509,7 +1594,18 @@ impl BridgeCore {
         // What the returned thread missed while the chat ran elsewhere: owed
         // once, beside the next message, by its first native start.
         let mut returned_entries = None;
-        if let Some(thread) = &change.returning_to {
+        if thread_carried {
+            // The same thread, now under the new account's home: the next turn
+            // resumes it. `set_head_state` coalesces the `None`, which keeps
+            // the id.
+            restoration::set_head_state(
+                &transaction,
+                session_id,
+                RestorationMode::Native,
+                ResumeEligibility::Native,
+                None,
+            )?;
+        } else if let Some(thread) = &change.returning_to {
             let left_at = crate::provider_threads::find(&transaction, session_id, &thread.continuation_key)?
                 .map_or(0, |found| found.left_at_sequence);
             crate::provider_threads::mark_returned(&transaction, session_id, &thread.continuation_key)?;
@@ -1560,7 +1656,14 @@ impl BridgeCore {
         } else {
             "Chat"
         };
-        let detail = if let Some(added) = returned_entries {
+        let detail = if thread_carried {
+            format!(
+                "{subject} model changed from {} to {}. The conversation continues on the same {} session, carried to the new account.",
+                change.previous_model.as_deref().unwrap_or("automatic"),
+                change.selected_model().unwrap_or("default"),
+                change.adapter_id,
+            )
+        } else if let Some(added) = returned_entries {
             let since = match added {
                 0 => "nothing was said since then".to_owned(),
                 1 => "1 message since then is added".to_owned(),
@@ -1652,6 +1755,8 @@ impl BridgeCore {
                         "freshProviderSession": !resumes_natively,
                         // Back on a thread this chat ran earlier on that app.
                         "returnedToThread": returned_entries.is_some(),
+                        // The same thread, moved to the new account's home.
+                        "carriedThread": thread_carried,
                         // Catalog window sizes, so the divider can say how
                         // much room the incoming model has.
                         "previousWindowTokens": crate::model_catalog::context_window_tokens(
@@ -4350,6 +4455,247 @@ mod tests {
             .unwrap();
         core.commit_chat_model_change(change).unwrap();
         assert_eq!(account_and_thread(&core, &session_id).0.as_deref(), Some("personal"));
+    }
+
+    /// A stub that can carry its threads across accounts, optionally under
+    /// another harness id.
+    struct Carrying<A> {
+        inner: A,
+        id: Option<&'static str>,
+    }
+    impl<A: adapters::HarnessAdapter + 'static> adapters::HarnessAdapter for Carrying<A> {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn descriptor(&self) -> AdapterDescriptor {
+            let mut descriptor = self.inner.descriptor();
+            if let Some(id) = self.id {
+                descriptor.id = id.into();
+            }
+            descriptor
+        }
+        fn start(&self, request: adapters::StartRequest<'_>) -> Result<adapters::StartedAdapter, BridgeError> {
+            self.inner.start(request)
+        }
+        fn resume(&self, request: adapters::ResumeRequest<'_>) -> Result<adapters::StartedAdapter, BridgeError> {
+            self.inner.resume(request)
+        }
+        fn supports_native_resume(&self) -> bool {
+            true
+        }
+        fn supports_cross_account_continuation(&self) -> bool {
+            true
+        }
+        fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
+            self.inner.normalize(value)
+        }
+    }
+
+    /// Claude, Codex and an OpenCode-shaped stub that all claim the carry
+    /// capability, each with two accounts whose homes are under the scratch
+    /// folder, so nothing reads or writes a real provider home.
+    fn carry_fixture() -> (tempfile::TempDir, BridgeCore, std::path::PathBuf) {
+        let scratch = tempfile::tempdir().unwrap();
+        let homes = scratch.path().join("homes");
+        let mut core = BridgeCore::for_tests(scratch.path());
+        let mut registry = adapters::AdapterRegistry::empty();
+        registry.register(Box::new(Carrying { inner: ResumableStubAdapter, id: None })).unwrap();
+        registry
+            .register(Box::new(Carrying { inner: ResumableCodexStub(StubAdapter { catalog_empty: false, expected_model: None }), id: None }))
+            .unwrap();
+        registry
+            .register(Box::new(Carrying { inner: ResumableCodexStub(StubAdapter { catalog_empty: false, expected_model: None }), id: Some("opencode") }))
+            .unwrap();
+        core.adapter_registry = std::sync::Arc::new(registry);
+        {
+            let db = core.db.lock().unwrap();
+            let harnesses = agent_config::state(&db).unwrap().harnesses;
+            for id in ["claude", "codex", "opencode"] {
+                let home = |name: &str| homes.join(format!("{id}-{name}")).display().to_string();
+                let accounts = serde_json::json!([
+                    {"id": "work", "label": "Work", "homePath": home("work")},
+                    {"id": "personal", "label": "Personal", "homePath": home("personal")},
+                ]);
+                let mut config = harnesses.iter().find(|item| item.id == id).unwrap().clone();
+                config.advanced = serde_json::json!({"accounts": accounts});
+                config.enabled = true;
+                agent_config::save_harness(&db, config).unwrap();
+            }
+        }
+        (scratch, core, homes)
+    }
+
+    /// A chat on `harness`'s `work` account, in `/w/app`, with `thread-1`.
+    fn carry_chat(core: &BridgeCore, harness: Harness, model: &str) -> String {
+        core.create_chat(&harness, Some(model), None).unwrap();
+        let session_id = only_session_id(core);
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET account='work', cwd='/w/app' WHERE id=?1", params![session_id])
+            .unwrap();
+        set_thread(core, &session_id, "thread-1");
+        session_forest::SessionForest::new(&core.db.lock().unwrap())
+            .append(&session_id, session_forest::EntryKind::UserMessage, serde_json::json!({"text": "remember the code word heliotrope"}))
+            .unwrap();
+        session_id
+    }
+
+    fn last_event(core: &BridgeCore, kind: &str) -> Option<String> {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row("SELECT body FROM events WHERE kind=?1 ORDER BY id DESC LIMIT 1", params![kind], |row| row.get(0))
+            .optional()
+            .unwrap()
+    }
+
+    fn remembered_threads(core: &BridgeCore, session_id: &str) -> i64 {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM session_provider_threads WHERE session_id=?1", params![session_id], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn an_account_change_on_claude_carries_the_thread_and_resumes_natively() {
+        let (_scratch, core, homes) = carry_fixture();
+        let session_id = carry_chat(&core, Harness::Claude, "stub-sonnet");
+        let work = homes.join("claude-work/projects/-w-app/thread-1.jsonl");
+        let personal = homes.join("claude-personal/projects/-w-app/thread-1.jsonl");
+        std::fs::create_dir_all(work.parent().unwrap()).unwrap();
+        std::fs::write(&work, "{\"turn\":1}\n").unwrap();
+
+        let mut change = core
+            .plan_chat_selection_change(&session_id, &Harness::Claude, Some("stub-sonnet"), AccountRequest::Choose("personal"))
+            .unwrap()
+            .unwrap();
+        assert!(change.carries_thread());
+        assert!(!change.resumes_natively(), "not until the transcript is copied");
+        change.carry_thread();
+        assert!(change.resumes_natively());
+        let event = core.commit_chat_model_change(change).unwrap();
+        assert_eq!(std::fs::read_to_string(&personal).unwrap(), "{\"turn\":1}\n");
+        assert_eq!(account_and_thread(&core, &session_id), (Some("personal".into()), Some("thread-1".into())));
+        let (mode, head_thread): (String, Option<String>) = core.db.lock().unwrap()
+            .query_row("SELECT restoration_mode,native_provider_session_id FROM session_heads WHERE session_id=?1", params![session_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap();
+        assert_eq!((mode.as_str(), head_thread.as_deref()), ("native", Some("thread-1")));
+        assert_eq!(event.data["carriedThread"], true);
+        assert_eq!(event.data["freshProviderSession"], false);
+        assert!(event.data["carriedContext"].is_null(), "nothing is projected");
+        let body = last_event(&core, "session.model_changed").unwrap();
+        assert!(body.contains("continues on the same claude session, carried to the new account"), "{body}");
+        assert!(body.contains("Account changed from work to personal"), "{body}");
+        assert_eq!(remembered_threads(&core, &session_id), 0, "a carried thread is not left behind");
+        assert!(last_event(&core, "session.thread_carry_failed").is_none());
+
+        // The thread grows under the new account; going back carries it home.
+        std::fs::write(&personal, "{\"turn\":1}\n{\"turn\":2}\n").unwrap();
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options().write(true).open(&work).unwrap().set_modified(past).unwrap();
+        let mut back = core
+            .plan_chat_selection_change(&session_id, &Harness::Claude, Some("stub-opus"), AccountRequest::Choose("work"))
+            .unwrap()
+            .unwrap();
+        back.carry_thread();
+        core.commit_chat_model_change(back).unwrap();
+        assert_eq!(std::fs::read_to_string(&work).unwrap(), "{\"turn\":1}\n{\"turn\":2}\n");
+        assert_eq!(account_and_thread(&core, &session_id), (Some("work".into()), Some("thread-1".into())));
+    }
+
+    #[test]
+    fn a_codex_account_change_carries_the_rollout() {
+        let (_scratch, core, homes) = carry_fixture();
+        let session_id = carry_chat(&core, Harness::Codex, "stub-fast");
+        let rollout = "sessions/2026/11/20/rollout-2026-11-20T09-00-00-thread-1.jsonl";
+        let source = homes.join("codex-work").join(rollout);
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "{}\n").unwrap();
+        let mut change = core
+            .plan_chat_selection_change(&session_id, &Harness::Codex, Some("stub-fast"), AccountRequest::Choose("personal"))
+            .unwrap()
+            .unwrap();
+        change.carry_thread();
+        core.commit_chat_model_change(change).unwrap();
+        assert!(homes.join("codex-personal").join(rollout).is_file());
+        assert_eq!(account_and_thread(&core, &session_id), (Some("personal".into()), Some("thread-1".into())));
+    }
+
+    #[test]
+    fn a_carry_that_fails_falls_back_to_the_handover_and_is_recorded() {
+        let (_scratch, core, homes) = carry_fixture();
+        let session_id = carry_chat(&core, Harness::Claude, "stub-sonnet");
+        let work = homes.join("claude-work/projects/-w-app/thread-1.jsonl");
+        std::fs::create_dir_all(work.parent().unwrap()).unwrap();
+        std::fs::write(&work, "{}\n").unwrap();
+        let mut change = core
+            .plan_chat_selection_change(&session_id, &Harness::Claude, Some("stub-sonnet"), AccountRequest::Choose("personal"))
+            .unwrap()
+            .unwrap();
+        assert!(change.carries_thread());
+        std::fs::remove_file(&work).unwrap();
+        change.carry_thread();
+        assert!(!change.carries_thread() && !change.resumes_natively(), "a failed copy is a handover");
+        let event = core.commit_chat_model_change(change).unwrap();
+        assert_eq!(account_and_thread(&core, &session_id), (Some("personal".into()), None));
+        assert_eq!(event.data["freshProviderSession"], true);
+        assert_eq!(event.data["carriedThread"], false);
+        assert!(event.data["carriedContext"].is_object(), "the stored history is projected");
+        let failure = last_event(&core, "session.thread_carry_failed").expect("the failure is recorded");
+        assert!(failure.contains("thread-1.jsonl"), "{failure}");
+        assert_eq!(remembered_threads(&core, &session_id), 1, "the thread is remembered like any handover");
+    }
+
+    #[test]
+    fn a_commit_with_an_uncopied_carry_takes_the_handover() {
+        let (_scratch, core, homes) = carry_fixture();
+        let session_id = carry_chat(&core, Harness::Claude, "stub-sonnet");
+        let work = homes.join("claude-work/projects/-w-app/thread-1.jsonl");
+        std::fs::create_dir_all(work.parent().unwrap()).unwrap();
+        std::fs::write(&work, "{}\n").unwrap();
+        let change = core
+            .plan_chat_selection_change(&session_id, &Harness::Claude, Some("stub-sonnet"), AccountRequest::Choose("personal"))
+            .unwrap()
+            .unwrap();
+        core.commit_chat_model_change(change).unwrap();
+        assert_eq!(account_and_thread(&core, &session_id), (Some("personal".into()), None));
+        assert!(!homes.join("claude-personal/projects/-w-app/thread-1.jsonl").exists());
+        assert!(last_event(&core, "session.thread_carry_failed").unwrap().contains("not copied"));
+    }
+
+    #[test]
+    fn opencode_account_changes_never_carry() {
+        let (_scratch, core, homes) = carry_fixture();
+        let session_id = carry_chat(&core, Harness::OpenCode, "stub-fast");
+        // Even a file where a transcript would be is not a thread OpenCode reads.
+        let fake = homes.join("opencode-work/projects/-w-app/thread-1.jsonl");
+        std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
+        std::fs::write(&fake, "{}\n").unwrap();
+        let change = core
+            .plan_chat_selection_change(&session_id, &Harness::OpenCode, Some("stub-fast"), AccountRequest::Choose("personal"))
+            .unwrap()
+            .unwrap();
+        assert!(!change.carries_thread());
+        assert!(!change.resumes_natively());
+    }
+
+    #[test]
+    fn a_missing_transcript_or_a_removed_account_is_not_carried() {
+        let (_scratch, core, _homes) = carry_fixture();
+        let session_id = carry_chat(&core, Harness::Claude, "stub-sonnet");
+        let change = core
+            .plan_chat_selection_change(&session_id, &Harness::Claude, Some("stub-sonnet"), AccountRequest::Choose("personal"))
+            .unwrap()
+            .unwrap();
+        assert!(!change.carries_thread(), "no transcript in the old home");
+        core.db.lock().unwrap().execute("UPDATE sessions SET account='removed' WHERE id=?1", params![session_id]).unwrap();
+        let change = core
+            .plan_chat_selection_change(&session_id, &Harness::Claude, Some("stub-sonnet"), AccountRequest::Choose("personal"))
+            .unwrap()
+            .unwrap();
+        assert!(!change.carries_thread(), "a removed account shares nothing");
     }
 
     fn set_thread(core: &BridgeCore, session_id: &str, thread: &str) {
