@@ -3365,6 +3365,12 @@ function AppContent() {
     title: chatName(chat),
     detail: state.workspaces.find(item => item.id === chat.workspaceId)?.title,
   })), [topSessions, state.workspaces]);
+  // What ⌘1-9 opens, in the order the jump-to-chat handler indexes.
+  const launcherNumberedChats = useMemo(() => topSessions.slice(0, 9).map(chat => ({
+    id: chat.id,
+    title: chatName(chat),
+    detail: state.workspaces.find(item => item.id === chat.workspaceId)?.title,
+  })), [topSessions, state.workspaces]);
 
   // "Remember this" on an assistant message opens Memory with the reply as a
   // draft to cut down to the one thing worth keeping. It never saves the reply:
@@ -4559,6 +4565,9 @@ function AppContent() {
       onSearchThisChat={() => commandRef.current("open-recall")}
       onSearchChats={searchAllChats}
       onTogglePin={id => togglePin(id, pins)}
+      onRunCommand={(id, index) => commandRef.current(id, index)}
+      dockPanes={dockPanes}
+      numberedChats={launcherNumberedChats}
     />
     {session && <ContextLensDialog open={contextLensFor === session.id} sessionId={session.id} refreshKey={session.contextPercent} onClose={() => setContextLensFor(null)} onCompact={async id => { await bridgeApi.submitInput(id, "/compact"); }} />}
   </div>;
