@@ -613,6 +613,94 @@ const MOCK_VISUAL = {
   }],
   followUps: ["Split Sep 30 by model", "Show tokens instead"],
 };
+/** One timed turn of the session-1 demo, between the drafted reply and the app turns. */
+const retryTurnAt = (entry: SessionEntry, seconds: number): SessionEntry => ({ ...entry, createdAt: new Date(Date.parse(now) + seconds * 1000).toISOString() });
+const RETRY_PATCHES = {
+  policy: [
+    "--- a/src-tauri/bridge-core/src/policy.rs",
+    "+++ b/src-tauri/bridge-core/src/policy.rs",
+    "@@ -88,3 +88,11 @@ pub struct PolicyLimits {",
+    "     pub max_workers_per_turn: u32,",
+    "     pub max_depth: u32,",
+    "+    /// Failures a chat may absorb inside `retry_window` before it stops and asks.",
+    "+    pub retry_budget: u32,",
+    "+    pub retry_window: Duration,",
+    " }",
+    "+",
+    "+impl PolicyLimits {",
+    "+    pub const DEFAULT_RETRY_BUDGET: u32 = 3;",
+    "+    pub const DEFAULT_RETRY_WINDOW: Duration = Duration::from_secs(600);",
+    "+}",
+  ].join("\n"),
+  coordinator: [
+    "--- a/src-tauri/bridge-core/src/policy_coordinator.rs",
+    "+++ b/src-tauri/bridge-core/src/policy_coordinator.rs",
+    "@@ -212,4 +212,9 @@ impl PolicyCoordinator {",
+    "     fn on_worker_failed(&mut self, worker: &WorkerId) -> Decision {",
+    "-        self.retries.entry(worker.chat()).or_default().push(Instant::now());",
+    "-        Decision::Retry",
+    "+        let failures = self.retries.entry(worker.chat()).or_default();",
+    "+        failures.retain(|at| at.elapsed() < self.limits.retry_window);",
+    "+        failures.push(Instant::now());",
+    "+        if failures.len() as u32 >= self.limits.retry_budget {",
+    "+            return Decision::AskUser(Reason::RetryBudgetSpent);",
+    "+        }",
+    "+        Decision::Retry",
+    "     }",
+  ].join("\n"),
+  coordinatorTest: [
+    "--- a/src-tauri/bridge-core/src/policy_coordinator.rs",
+    "+++ b/src-tauri/bridge-core/src/policy_coordinator.rs",
+    "@@ -301,2 +307,15 @@ mod tests {",
+    "     use super::*;",
+    "+",
+    "+    #[test]",
+    "+    fn a_spent_retry_budget_asks_instead_of_retrying() {",
+    "+        let mut coordinator = PolicyCoordinator::with_limits(PolicyLimits::default());",
+    "+        let worker = WorkerId::test(\"w1\");",
+    "+        for _ in 0..2 {",
+    "+            assert_eq!(coordinator.on_worker_failed(&worker), Decision::Retry);",
+    "+        }",
+    "+        assert_eq!(",
+    "+            coordinator.on_worker_failed(&worker),",
+    "+            Decision::AskUser(Reason::RetryBudgetSpent),",
+    "+        );",
+    "+    }",
+    " }",
+  ].join("\n"),
+  card: [
+    "--- a/src/components/PolicyCard.tsx",
+    "+++ b/src/components/PolicyCard.tsx",
+    "@@ -41,4 +41,4 @@ export function PolicyCard({ limits }: { limits: PolicyLimits }) {",
+    "       <Row label=\"Workers per turn\" value={limits.maxWorkersPerTurn}/>",
+    "       <Row label=\"Depth\" value={limits.maxDepth}/>",
+    "-      <Row label=\"Retries\" value=\"Unlimited\"/>",
+    "+      <Row label=\"Retry budget\" value={`${limits.retryBudget} in ${minutes(limits.retryWindowSecs)}`}/>",
+    "     </dl>",
+  ].join("\n"),
+  contract: [
+    "--- /dev/null",
+    "+++ b/testing/feat-retry-budget.md",
+    "@@ -0,0 +1,6 @@",
+    "+# feat/retry-budget: Test Contract",
+    "+",
+    "+- A worker that fails three times in ten minutes stops and raises an approval card.",
+    "+- Failures older than the window do not count.",
+    "+- Routing can rank candidates but never grants an extra retry.",
+    "+- `cargo test -p bridge-core policy::` passes.",
+  ].join("\n"),
+};
+const MOCK_RETRY_TURN: SessionEntry[] = [
+  retryTurnAt(forestEntry("entry-retry-user", "session-1", 25, "user.message", { text: "Add a retry budget to the policy engine. Workers should stop retrying after three failures in ten minutes and ask me instead. Run the policy tests.", itemId: "user-retry" }, "entry-20b"), 0),
+  retryTurnAt(forestEntry("entry-retry-read", "session-1", 26, "tool.completed", { status: "completed", title: "Read policy.rs", data: { type: "readFile", path: "src-tauri/bridge-core/src/policy.rs", durationMs: 200 } }, "entry-retry-user"), 2),
+  retryTurnAt(forestEntry("entry-retry-policy", "session-1", 27, "file_change.completed", { status: "completed", title: "policy.rs", data: { path: "src-tauri/bridge-core/src/policy.rs", additions: 8, deletions: 0, durationMs: 300, patch: RETRY_PATCHES.policy } }, "entry-retry-read"), 6),
+  retryTurnAt(forestEntry("entry-retry-coordinator", "session-1", 28, "file_change.completed", { status: "completed", title: "policy_coordinator.rs", data: { path: "src-tauri/bridge-core/src/policy_coordinator.rs", additions: 7, deletions: 2, durationMs: 300, patch: RETRY_PATCHES.coordinator } }, "entry-retry-policy"), 10),
+  retryTurnAt(forestEntry("entry-retry-coordinator-test", "session-1", 29, "file_change.completed", { status: "completed", title: "policy_coordinator.rs", data: { path: "src-tauri/bridge-core/src/policy_coordinator.rs", additions: 13, deletions: 0, durationMs: 300, patch: RETRY_PATCHES.coordinatorTest } }, "entry-retry-coordinator"), 13),
+  retryTurnAt(forestEntry("entry-retry-card", "session-1", 30, "file_change.completed", { status: "completed", title: "PolicyCard.tsx", data: { path: "src/components/PolicyCard.tsx", additions: 1, deletions: 1, durationMs: 300, patch: RETRY_PATCHES.card } }, "entry-retry-coordinator-test"), 17),
+  retryTurnAt(forestEntry("entry-retry-contract", "session-1", 31, "file_change.completed", { status: "completed", title: "feat-retry-budget.md", data: { path: "testing/feat-retry-budget.md", additions: 6, deletions: 0, durationMs: 200, patch: RETRY_PATCHES.contract } }, "entry-retry-card"), 20),
+  retryTurnAt(forestEntry("entry-retry-test", "session-1", 32, "command.completed", { status: "completed", title: "cargo test -p bridge-core policy::", data: { type: "commandExecution", command: "cargo test -p bridge-core policy::", exitCode: 0, durationMs: 12_000, aggregatedOutput: "running 42 tests\n...\ntest result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 174 filtered out; finished in 11.82s" } }, "entry-retry-contract"), 22),
+  retryTurnAt(forestEntry("entry-retry-reply", "session-1", 33, "assistant.message", { text: "Added a per-chat retry budget to the policy engine. A worker that fails three times in ten minutes now stops and raises an approval card instead of retrying.\n\nThe budget lives in `PolicyLimits` next to the existing concurrency gate, so routing can still rank candidates but can never grant an extra retry. `cargo test -p bridge-core policy::` passes, 42 tests." }, "entry-retry-test"), 36),
+];
 const demoEntries: SessionEntry[] = [
   forestEntry("entry-1", "session-1", 1, "user.message", { text: "Build the structured session supervisor.", itemId: "user-1" }, null),
   forestEntry("entry-2", "session-1", 2, "checkpoint", { schemaVersion: 1, summary: "Policy and schema decisions are durable", decisions: ["SQLite is authoritative"] }, "entry-1"),
@@ -655,11 +743,16 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-18b", "session-1", 22, "user.message", { text: "Tell #dev in the deploy thread that staging is done and I'll watch errors before promoting.", itemId: "user-outgoing" }, "entry-17b"),
   forestEntry("entry-19b", "session-1", 23, "tool.completed", { status: "completed", title: "mcp__bridge__outgoing_draft", data: { type: "tool_use", name: "mcp__bridge__outgoing_draft", input: { to: { slack: { channel: "#dev", thread: "https://acme.slack.com/archives/C01/p1730000000" } }, body: "Deploy to staging is done \u2014 all checks green.", reason: "tell #dev the staging deploy finished" }, aggregatedOutput: JSON.stringify({ id: MOCK_OUTGOING_ID, state: "draft", destination: "Slack \u00b7 #dev \u00b7 thread" }) } }, "entry-18b"),
   forestEntry("entry-20b", "session-1", 24, "assistant.message", { text: "Drafted a reply for the #dev deploy thread. Edit or copy it from the card." }, "entry-19b"),
-  forestEntry("entry-raw", "session-1", 25, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-20b"),
-  forestEntry("entry-app-user", "session-1", 26, "user.message", { text: "Build me a small app to find and message a teammate on Slack.", itemId: "user-app" }, "entry-raw"),
-  forestEntry("entry-app-draft", "session-1", 27, "tool.completed", { status: "completed", title: "mcp__bridge__apps_draft", data: { type: "tool_use", name: "mcp__bridge__apps_draft", input: { name: "Slack DM" }, aggregatedOutput: JSON.stringify({ draftId: MOCK_APP_DRAFT_ID, contentHash: MOCK_APP_HASH }) } }, "entry-app-user"),
-  forestEntry("entry-app-open-user", "session-1", 28, "user.message", { text: "Message Ada that the preview is ready.", itemId: "user-app-open" }, "entry-app-draft"),
-  forestEntry("entry-app-open", "session-1", 29, "tool.completed", { status: "completed", title: "mcp__bridge__apps_open", data: { type: "tool_use", name: "mcp__bridge__apps_open", input: { app_id: "slack-dm" }, aggregatedOutput: JSON.stringify({ openId: MOCK_APP_OPEN_ID, contentHash: MOCK_APP_HASH }) } }, "entry-app-open-user")
+  // A settled turn that edits four files across three folders, one of them
+  // twice and one of them new, then answers: `bun run dev` shows the turn's
+  // changes card and the turn line under its reply. Timed, so the card's
+  // caption and the Worked for header have a real span to agree on.
+  ...MOCK_RETRY_TURN,
+  forestEntry("entry-raw", "session-1", 34, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-retry-reply"),
+  forestEntry("entry-app-user", "session-1", 35, "user.message", { text: "Build me a small app to find and message a teammate on Slack.", itemId: "user-app" }, "entry-raw"),
+  forestEntry("entry-app-draft", "session-1", 36, "tool.completed", { status: "completed", title: "mcp__bridge__apps_draft", data: { type: "tool_use", name: "mcp__bridge__apps_draft", input: { name: "Slack DM" }, aggregatedOutput: JSON.stringify({ draftId: MOCK_APP_DRAFT_ID, contentHash: MOCK_APP_HASH }) } }, "entry-app-user"),
+  forestEntry("entry-app-open-user", "session-1", 37, "user.message", { text: "Message Ada that the preview is ready.", itemId: "user-app-open" }, "entry-app-draft"),
+  forestEntry("entry-app-open", "session-1", 38, "tool.completed", { status: "completed", title: "mcp__bridge__apps_open", data: { type: "tool_use", name: "mcp__bridge__apps_open", input: { app_id: "slack-dm" }, aggregatedOutput: JSON.stringify({ openId: MOCK_APP_OPEN_ID, contentHash: MOCK_APP_HASH }) } }, "entry-app-open-user")
 ];
 // Seed memory for the mock host: a spread the Memory surface can actually
 // render — pinned + accepted + proposed records, a supersession lineage, a
