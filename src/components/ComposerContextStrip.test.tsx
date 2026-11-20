@@ -71,7 +71,7 @@ describe("ComposerContextStrip", () => {
     mount({ onSelectAgent: vi.fn() });
     const buttons = [...container.querySelector('[aria-label="Chat context"]')!.querySelectorAll("button")];
     expect(buttons).toHaveLength(4);
-    expect(buttons.every(button => button.className.includes("text-[12px]"))).toBe(true);
+    expect(buttons.every(button => button.className.includes("text-meta"))).toBe(true);
   });
 
   it("lists agents and reports the pick, or None to go back to the orchestrator", () => {

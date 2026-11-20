@@ -147,8 +147,8 @@ export function SessionToolbar({
 
       {/* Keep the task visible when the sidebar is hidden or a pane is open. */}
       <div className="min-w-0 flex-1" title={projectName ? `${projectName} / ${title}` : title}>
-        <h1 className="truncate text-[13px] font-semibold leading-4 text-foreground">{title}</h1>
-        {projectName && <p className="truncate text-[11px] leading-4 text-muted-foreground">{projectName}</p>}
+        <h1 className="truncate text-ui font-semibold leading-4 text-foreground">{title}</h1>
+        {projectName && <p className="truncate text-caption leading-4 text-muted-foreground">{projectName}</p>}
       </div>
 
       {trailTitle && onOpenTrail && (
@@ -158,21 +158,21 @@ export function SessionToolbar({
           title={`Trail: ${trailTitle}`}
           aria-label={`Open trail ${trailTitle}`}
           data-testid="trail-chip"
-          className="hidden h-6 max-w-[220px] shrink-0 items-center gap-1.5 rounded-md bg-muted px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground sm:inline-flex"
+          className="hidden h-6 max-w-[220px] shrink-0 items-center gap-1.5 rounded-md bg-muted px-2 text-caption font-medium text-muted-foreground transition-colors hover:text-foreground sm:inline-flex"
         >
           <Route size={12} strokeWidth={1.8} aria-hidden="true" />
           <span className="truncate">{trailTitle}</span>
         </button>
       )}
 
-      {sourceBadge && <span data-testid="import-source-badge" title={sourceBadge} className="hidden max-w-[260px] shrink-0 truncate rounded-full border border-border px-2 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.04em] text-muted-foreground sm:inline">{sourceBadge}</span>}
+      {sourceBadge && <span data-testid="import-source-badge" title={sourceBadge} className="hidden max-w-[260px] shrink-0 truncate rounded-full border border-border px-2 py-0.5 font-mono text-caption font-medium text-muted-foreground sm:inline">{sourceBadge}</span>}
 
       {(modelControl || tierLabel) && (
         <div className="hidden shrink-0 items-center gap-2 lg:flex">
           {modelControl}
           {tierLabel && (
             <span
-              className="max-w-[260px] truncate text-[11px] text-muted-foreground"
+              className="max-w-[260px] truncate text-caption text-muted-foreground"
               title={tierLabel}
               data-testid="tier-label"
             >
@@ -260,7 +260,7 @@ export function SessionToolbar({
         {overflowPanes.map(pane => {
           const Icon = pane.icon;
           const chordIndex = (dockPanes?.findIndex(item => item.id === pane.id) ?? 0) + 1;
-          const shortcut = <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{formatShortcut({ meta: true, alt: true }, String(chordIndex))}</span>;
+          const shortcut = <span className="shrink-0 font-mono text-micro text-muted-foreground">{formatShortcut({ meta: true, alt: true }, String(chordIndex))}</span>;
           const mark = (
             <span className="relative inline-flex shrink-0">
               <Icon size={13} strokeWidth={1.7} className={cn("text-muted-foreground", !pane.available && "opacity-40")} aria-hidden="true" />
@@ -319,7 +319,7 @@ export function SessionToolbar({
           leading={fullscreen
             ? <Minimize2 size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
             : <Maximize2 size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
-          trailing={<span className="shrink-0 font-mono text-[10px] text-muted-foreground">{formatShortcut({ meta: true, alt: true }, "F")}</span>}
+          trailing={<span className="shrink-0 font-mono text-micro text-muted-foreground">{formatShortcut({ meta: true, alt: true }, "F")}</span>}
           onClick={() => { onToggleFullscreen(); menu.close(); }}
         />
         {onOpenRouterSettings && (

@@ -154,7 +154,7 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue }: {
         {active && <Button size="xs" variant="ghost" disabled={busy} onClick={() => void act(() => bridgeApi.cancelWorkflowRun(run.id))}><Square size={11}/>Stop</Button>}
         <Button size="xs" variant="secondary" disabled={busy || !run.sessionId} onClick={() => void continueInChat()}><MessageSquare size={11}/>Continue in chat</Button>
       </>}/>
-    {run.summary && <Card className="mb-3"><p className="text-[13px] leading-relaxed text-foreground">{run.summary}</p>{run.failureCode && <p className="mt-1 font-mono text-caption text-muted-foreground">{run.failureCode}</p>}</Card>}
+    {run.summary && <Card className="mb-3"><p className="text-ui leading-relaxed text-foreground">{run.summary}</p>{run.failureCode && <p className="mt-1 font-mono text-caption text-muted-foreground">{run.failureCode}</p>}</Card>}
     <div className="rounded-xl border border-border bg-card px-4 py-2">
       {!run.sessionId && <p className="py-3 text-caption text-muted-foreground">{run.status === "skipped" ? "Skipped: another run of this workflow was still going." : "This run has not started a conversation."}</p>}
       {run.sessionId && steps.length === 0 && <p className="flex items-center gap-2 py-3 text-caption text-muted-foreground">{active && <LoaderCircle className="animate-spin" size={12}/>}{active ? "Working…" : "Nothing was recorded for this run."}</p>}
@@ -163,7 +163,7 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue }: {
           {step.icon === "ok" ? <Check size={12}/> : step.icon === "denied" ? <X size={12}/> : step.icon === "ask" ? <Bell size={12}/> : step.icon === "wait" ? <LoaderCircle size={12} className={active ? "animate-spin" : ""}/> : <MessageSquare size={12}/>}
         </div>
         <div className="min-w-0 flex-1">
-          <p className={`${step.icon === "say" ? "font-sans" : "font-mono"} text-[12px] text-foreground`}>{step.title}</p>
+          <p className={`${step.icon === "say" ? "font-sans" : "font-mono"} text-meta text-foreground`}>{step.title}</p>
           <p className="mt-0.5 whitespace-pre-wrap break-words text-caption text-muted-foreground">{step.detail}</p>
           {step.pending && <div className="mt-2.5 flex flex-wrap gap-1.5">
             <Button size="xs" disabled={busy} onClick={() => void act(() => bridgeApi.resolveApproval(run.sessionId!, step.pending!.sequence, "accept"))}><Check size={10}/>Allow once</Button>

@@ -116,7 +116,7 @@ export function VoiceSettingsPage({ onError, onChanged }: {
             {busy ? "Starting…" : active ? STATE_LABEL[status.state] : status.state === "failed" ? "Retry download" : "Download and install"}
           </GhostButton>
         </div>
-        <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">NVIDIA Open Model License. <a href="https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/" target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-foreground">Review model terms</a> before installing.</p>
+        <p className="mt-2 text-caption leading-relaxed text-muted-foreground">NVIDIA Open Model License. <a href="https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/" target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-foreground">Review model terms</a> before installing.</p>
       </SettingsBlockRow>}
       {active && <SettingsBlockRow label={STATE_LABEL[status.state]} description={`${bytes(status.downloadedBytes)} of ${bytes(status.downloadBytes)}`}>
         <progress className="h-1.5 w-full overflow-hidden rounded-full bg-muted [&::-webkit-progress-bar]:bg-muted [&::-webkit-progress-value]:rounded-full [&::-webkit-progress-value]:bg-foreground [&::-moz-progress-bar]:bg-foreground"

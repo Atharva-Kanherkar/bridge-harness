@@ -178,19 +178,19 @@ function SheetSurface({ icon: Icon, tone = "neutral", title, consequence, comman
     >
       <span aria-hidden="true" className="mx-auto mb-3 block h-1 w-8 rounded-full bg-border-card" />
       {rise(0, "flex items-start gap-3", <>
-        <span className={cn("grid size-[34px] shrink-0 place-items-center rounded-[10px]", BADGE_TONE[tone])}>
+        <span className={cn("grid size-[34px] shrink-0 place-items-center rounded-xl", BADGE_TONE[tone])}>
           <Icon size={17} strokeWidth={1.7} aria-hidden="true" />
         </span>
         <span className="min-w-0">
-          <b className="block text-[14px] font-semibold leading-snug text-foreground">{title}</b>
-          <p className="mt-0.5 text-[12px] leading-[1.5] text-muted-foreground">{consequence}</p>
-          {note && <p className="mt-0.5 text-[12px] leading-[1.5] text-muted-foreground">{note}</p>}
+          <b className="block text-body font-semibold leading-snug text-foreground">{title}</b>
+          <p className="mt-0.5 text-meta leading-[1.5] text-muted-foreground">{consequence}</p>
+          {note && <p className="mt-0.5 text-meta leading-[1.5] text-muted-foreground">{note}</p>}
         </span>
       </>)}
       {requiresBody && (readOnlyBody
         ? rise(1, "mt-3", <p
             aria-label="Comment body"
-            className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-[10px] border border-border bg-card p-3 text-[12.5px] leading-relaxed text-foreground"
+            className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-xl border border-border bg-card p-3 text-meta leading-relaxed text-foreground"
           >{body}</p>)
         : rise(1, "mt-3", <textarea
             value={body}
@@ -198,34 +198,34 @@ function SheetSurface({ icon: Icon, tone = "neutral", title, consequence, comman
             disabled={busy}
             aria-label="Comment body"
             placeholder="Write a comment…"
-            className="block min-h-24 w-full resize-none rounded-[10px] border border-input bg-background p-2.5 text-[12.5px] leading-[1.55] text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring disabled:opacity-45"
+            className="block min-h-24 w-full resize-none rounded-xl border border-input bg-background p-2.5 text-meta leading-[1.55] text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring disabled:opacity-45"
           />))}
-      {command && rise(2, "group mt-3 rounded-lg bg-muted text-[11px] text-muted-foreground", <details className="group">
+      {command && rise(2, "group mt-3 rounded-lg bg-muted text-caption text-muted-foreground", <details className="group">
         <summary className="flex cursor-pointer list-none select-none items-center gap-1.5 px-2.5 py-1.5 transition-colors hover:text-foreground">
           <ChevronRight size={11} aria-hidden="true" className="shrink-0 transition-transform duration-200 group-open:rotate-90" />
           Exact command
         </summary>
-        <code className="block break-all pb-2 pl-[26px] pr-2.5 font-mono text-[11px] text-foreground/85">{command}</code>
+        <code className="block break-all pb-2 pl-[26px] pr-2.5 font-mono text-caption text-foreground/85">{command}</code>
       </details>)}
       {rise(3, "mt-3.5 flex items-center gap-2", <>
         <button
           type="button"
           onClick={() => { if (!busy) onCancel(); }}
           disabled={busy}
-          className="inline-flex min-h-7 items-center rounded-md px-2.5 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+          className="inline-flex min-h-7 items-center rounded-md px-2.5 text-meta font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
         >
           Cancel
         </button>
-        <Kbd className="border border-border bg-transparent text-[10.5px]">esc</Kbd>
+        <Kbd className="border border-border bg-transparent text-micro">esc</Kbd>
         <span className="ml-auto" />
-        <Kbd className="border border-border bg-transparent text-[10.5px]">{modKey("↵")}</Kbd>
+        <Kbd className="border border-border bg-transparent text-micro">{modKey("↵")}</Kbd>
         <button
           type="button"
           data-confirm=""
           onClick={onConfirm}
           disabled={busy || (requiresBody && !readOnlyBody && !(body ?? "").trim())}
           className={cn(
-            "inline-flex min-h-7 items-center rounded-md px-3 text-[12px] font-medium transition-colors active:scale-[0.98] disabled:opacity-50",
+            "inline-flex min-h-7 items-center rounded-md px-3 text-meta font-medium transition-colors active:scale-[0.98] disabled:opacity-50",
             destructive ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : "bg-primary text-primary-foreground hover:bg-primary/90",
           )}
         >

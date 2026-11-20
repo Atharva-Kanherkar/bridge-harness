@@ -40,7 +40,7 @@ function PendingCard({ run, workflowName, onAnswered }: { run: WorkflowRun; work
     <div className="flex items-start gap-2.5">
       <ShieldCheck size={15} className="mt-0.5 shrink-0 text-foreground"/>
       <div className="min-w-0 flex-1">
-        <p className="text-[13px] font-semibold text-foreground">{workflowName} wants to change something</p>
+        <p className="text-ui font-semibold text-foreground">{workflowName} wants to change something</p>
         <p className="mt-0.5 text-caption text-muted-foreground">{pending ? toolLabel(pending.identity) : "Loading the request…"}</p>
         {pending && run.sessionId && <div className="mt-3 flex flex-wrap gap-1.5">
           <Button size="xs" disabled={busy} onClick={() => void answer(() => bridgeApi.resolveApproval(run.sessionId!, pending.sequence, "accept"))}><Check size={10}/>Allow once</Button>
@@ -65,24 +65,24 @@ export function WorkflowInbox({ runs, names, onOpenRun, onChanged }: {
   const waiting = runs.filter(run => run.status === "waiting_approval" || run.status === "waiting_quota");
   const results = orderResults(runs.filter(run => !["waiting_approval", "waiting_quota", "queued", "running"].includes(run.status)));
   return <div className="mt-4">
-    <p className="mb-2 text-caption font-medium uppercase tracking-[0.06em] text-muted-foreground">Needs you</p>
+    <p className="mb-2 text-caption font-medium text-muted-foreground">Needs you</p>
     {waiting.length === 0 && <p className="mb-4 text-caption text-muted-foreground">Nothing is waiting for you.</p>}
     <div className="space-y-2">{waiting.map(run => run.status === "waiting_approval"
       ? <PendingCard key={run.id} run={run} workflowName={name(run)} onAnswered={onChanged}/>
       : <button type="button" key={run.id} onClick={() => onOpenRun(run)} className="flex w-full items-center gap-2.5 rounded-xl border border-border bg-card p-3.5 text-left hover:bg-accent">
         <Clock size={14} className="shrink-0 text-muted-foreground"/>
-        <span className="text-[13px] text-foreground">{name(run)} is waiting for quota</span>
+        <span className="text-ui text-foreground">{name(run)} is waiting for quota</span>
         <span className="ml-auto text-caption text-muted-foreground">{relativeTime(run.createdAt, now)}</span>
       </button>)}</div>
-    <p className="mb-2 mt-6 text-caption font-medium uppercase tracking-[0.06em] text-muted-foreground">Results</p>
+    <p className="mb-2 mt-6 text-caption font-medium text-muted-foreground">Results</p>
     {results.length === 0 && <p className="text-caption text-muted-foreground">No runs yet.</p>}
     {results.length > 0 && <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">{results.map(run =>
       <button type="button" key={run.id} onClick={() => onOpenRun(run)} className="flex w-full items-start gap-3 px-4 py-3.5 text-left hover:bg-accent">
         <span className="mt-[5px] flex shrink-0"><Dot tone={runTone(run.status)}/></span>
         <div className="min-w-0 flex-1">
-          <p className={`text-[13px] ${run.unread ? "font-semibold" : "font-medium"} text-foreground`}>{name(run)} · {RUN_STATUS_LABEL[run.status]}{run.unread && <span className="ml-2 rounded-full bg-muted px-1.5 py-px text-[10px] font-medium uppercase tracking-[0.06em] text-muted-foreground">New</span>}</p>
+          <p className={`text-ui ${run.unread ? "font-semibold" : "font-medium"} text-foreground`}>{name(run)} · {RUN_STATUS_LABEL[run.status]}{run.unread && <span className="ml-2 rounded-full bg-muted px-1.5 py-px text-caption font-medium text-muted-foreground">New</span>}</p>
           <p className="mt-0.5 text-caption text-muted-foreground">{[run.triggerKind === "catch_up" ? `catch-up for ${run.missedSlots} missed slot${run.missedSlots === 1 ? "" : "s"}` : run.triggerKind === "manual" ? (run.dryRun ? "dry run" : "Run now") : "schedule", relativeTime(run.finishedAt ?? run.createdAt, now), run.tokens ? `${run.tokens.toLocaleString()} tokens` : null].filter(Boolean).join(" · ")}</p>
-          {run.summary && <p className="mt-1.5 line-clamp-2 text-[12px] leading-relaxed text-muted-foreground">{run.summary}</p>}
+          {run.summary && <p className="mt-1.5 line-clamp-2 text-meta leading-relaxed text-muted-foreground">{run.summary}</p>}
         </div>
       </button>)}</div>}
   </div>;
@@ -98,7 +98,7 @@ export function WorkflowRunsStrip({ runs, names, onOpenRun, variant = "card" }: 
   return <div role="group" aria-label="Workflows running" className={variant === "chips"
     ? "flex min-w-0 items-center gap-1.5 overflow-hidden"
     : "mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card px-3 py-2"}>
-    <span className={variant === "chips" ? "sr-only" : "text-caption font-medium uppercase tracking-[0.06em] text-muted-foreground"}>Workflows</span>
+    <span className={variant === "chips" ? "sr-only" : "text-caption font-medium text-muted-foreground"}>Workflows</span>
     {active.map(run => <button type="button" key={run.id} onClick={() => onOpenRun(run)} className="inline-flex max-w-48 shrink-0 items-center gap-1.5 truncate rounded-full border border-border bg-muted px-2 py-0.5 text-caption text-foreground hover:bg-accent">
       <Dot tone={runTone(run.status)}/>{names.get(run.workflowId) ?? "Workflow"} · {RUN_STATUS_LABEL[run.status]}
     </button>)}

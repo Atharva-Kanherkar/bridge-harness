@@ -9,7 +9,7 @@ import { ErrorNote } from "./parts";
 import { localTimezone, presetCron, presetFor, WEEKDAY_OPTIONS, type SchedulePreset } from "./format";
 
 const FIELD = "block text-caption font-medium text-muted-foreground";
-const SELECT = "mt-1 h-8 w-full rounded-lg border border-input bg-background dark:bg-input/32 px-2 text-[13px] text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
+const SELECT = "mt-1 h-8 w-full rounded-lg border border-input bg-background dark:bg-input/32 px-2 text-ui text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 export type EditorSubmit = { definition: WorkflowDefinition; approve: boolean; dryRun: boolean };
 
@@ -127,7 +127,7 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
             {(options?.harnesses ?? []).map(candidate => {
               const reason = harnessRefusal(options, candidate.id, composed);
               const selected = candidate.id === step.harness;
-              return <label key={candidate.id} title={reason ?? undefined} className={`flex min-w-0 items-center gap-2 px-2.5 py-1.5 text-[13px] ${selected ? "bg-accent text-foreground" : reason ? "text-muted-foreground opacity-70" : "text-foreground"}`}>
+              return <label key={candidate.id} title={reason ?? undefined} className={`flex min-w-0 items-center gap-2 px-2.5 py-1.5 text-ui ${selected ? "bg-accent text-foreground" : reason ? "text-muted-foreground opacity-70" : "text-foreground"}`}>
                 <input type="radio" name="workflow-harness" aria-label={candidate.label} disabled={!!reason || !candidate.available} checked={selected} onChange={() => updateStep({ harness: candidate.id, model: candidate.defaultModel ?? candidate.models[0]?.id ?? "" })} className="accent-foreground"/>
                 <span className="shrink-0">{candidate.label}</span>
                 <span className="ml-auto min-w-0 line-clamp-2 text-right text-caption text-muted-foreground">{reason ?? (candidate.available ? "" : "not installed")}</span>
@@ -154,7 +154,7 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
             {(options?.servers ?? []).length === 0 && <p className="px-2.5 py-2 text-caption text-muted-foreground">No connectors found in Claude's configuration.</p>}
             {(options?.servers ?? []).map(server => {
               const grant = grantFor(server.id);
-              return <div key={server.id} className="flex min-w-0 flex-wrap items-center gap-3 px-2.5 py-1.5 text-[12px] text-foreground">
+              return <div key={server.id} className="flex min-w-0 flex-wrap items-center gap-3 px-2.5 py-1.5 text-meta text-foreground">
                 <span className="min-w-0 flex-1 break-all font-mono">{server.id}{server.connected === false && <span className="ml-2 font-sans text-caption text-muted-foreground">not connected</span>}</span>
                 <label className="flex items-center gap-1.5 text-muted-foreground"><input type="checkbox" aria-label={`Read ${server.id}`} checked={grant?.read ?? false} onChange={event => {
                   const read = event.target.checked;

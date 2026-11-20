@@ -29,7 +29,7 @@ import {
 // number is partial, estimated, or de-duplicated.
 
 const CARD = "u-surface rounded-2xl p-4";
-const TABLE_HEAD = "text-left text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
+const TABLE_HEAD = "text-left text-caption font-medium text-muted-foreground";
 const NUM = "text-right tabular-nums";
 
 /// Upper bound on bounded scan batches per auto-scan. Opening Usage must not
@@ -359,7 +359,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
               <div className="min-w-0">
                 <div className="inline-flex items-center gap-2 text-ui text-foreground"><HarnessMark harness={source.agent} size={13} />{harnessLabel(source.agent)}<span className={cn("text-caption", coverageTone(source.coverageState))}>{source.origin === "dashboard" && source.coverageState === "unreadable" ? "Unavailable" : source.origin === "dashboard" && source.coverageState === "unsupported" ? "Disabled" : coverageLabel(source.coverageState)}</span></div>
                 <p className="text-caption text-muted-foreground">{source.origin === "dashboard" ? "Dashboard usage · last 30 days" : source.capability === "supported" ? "Local usage history" : "History is not available for this harness"}</p>
-                {(source.location || source.coverageReason || source.lastError) && <details className="mt-1 text-[11px] text-muted-foreground">
+                {(source.location || source.coverageReason || source.lastError) && <details className="mt-1 text-caption text-muted-foreground">
                   <summary className="w-fit cursor-pointer select-none hover:text-foreground">Technical details</summary>
                   <div className="mt-1 space-y-1 border-l border-border pl-2">
                     {source.location && <div className="break-all font-mono">{source.location}</div>}
@@ -367,7 +367,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
                   </div>
                 </details>}
               </div>
-              {source.capability === "supported" && <div className="text-right text-[11px] tabular-nums text-muted-foreground">
+              {source.capability === "supported" && <div className="text-right text-caption tabular-nums text-muted-foreground">
                 {source.origin === "dashboard" ? <>
                   {source.coverageStartAt && <div>{formatCount(source.recordsImported)} cached events</div>}
                   <div>Last update {relativeStamp(source.lastSuccessfulScanAt)}</div>
@@ -400,7 +400,7 @@ function BreakdownTables({ report, window: window_, heading }: { report: UsageRe
       <tbody>
         {report.models.length === 0 && <tr><td colSpan={4} className="py-6 text-center text-caption text-muted-foreground">No activity in this window.</td></tr>}
         {report.models.map(row => <tr key={`${row.harness}:${row.model}`} className="border-t border-border">
-          <td className="py-2"><span className="inline-flex items-center gap-2"><HarnessMark harness={row.harness} size={12} /><span className="font-mono text-caption text-foreground">{row.model}</span>{row.costSource === "unpriced" && <span className="text-[11px] text-muted-foreground">unpriced</span>}</span></td>
+          <td className="py-2"><span className="inline-flex items-center gap-2"><HarnessMark harness={row.harness} size={12} /><span className="font-mono text-caption text-foreground">{row.model}</span>{row.costSource === "unpriced" && <span className="text-caption text-muted-foreground">unpriced</span>}</span></td>
           <td className={cn("py-2 text-foreground", NUM)}>{formatUsd(row.costMicrousd)}</td>
           <td className={cn("py-2 text-muted-foreground", NUM)}>{formatPercent(row.costShare)}</td>
           <td className={cn("py-2 text-muted-foreground", NUM)}>{formatTokens(row.tokens)}</td>
@@ -489,7 +489,7 @@ function PriceSection({ report, summary, overrides, refreshing, onRefreshRates, 
         {rows.map(row => {
           const isEditing = editing === row.model;
           return <tr key={row.model} className="border-t border-border align-middle">
-            <td className="py-2"><span className="inline-flex items-center gap-2">{row.harness && <HarnessMark harness={row.harness} size={12} />}<span className="font-mono text-caption text-foreground">{row.model}</span>{row.override && !isEditing && <span className="text-[11px] text-muted-foreground">override</span>}</span></td>
+            <td className="py-2"><span className="inline-flex items-center gap-2">{row.harness && <HarnessMark harness={row.harness} size={12} />}<span className="font-mono text-caption text-foreground">{row.model}</span>{row.override && !isEditing && <span className="text-caption text-muted-foreground">override</span>}</span></td>
             {isEditing ? <>
               <td className="py-1.5 pl-3">{field("input", `${row.model} input price`)}</td>
               <td className="py-1.5 pl-3">{field("output", `${row.model} output price`)}</td>

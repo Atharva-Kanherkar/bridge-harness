@@ -90,7 +90,7 @@ export function SessionRecallSearch({
               autoFocus
               placeholder="Search this chat…"
               aria-label="Search this chat"
-              className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
+              className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground"
             />
             {status === "loading" && <LoaderCircle size={13} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />}
           </label>
@@ -103,10 +103,10 @@ export function SessionRecallSearch({
             <X size={14} strokeWidth={1.8} aria-hidden="true" />
           </button>
         </div>
-        <p className="text-[11px] text-muted-foreground">This search stays in this chat. It does not look at other sessions or account memory.</p>
-        {status === "error" && error && <p className="text-[12px] text-destructive">{error}</p>}
+        <p className="text-caption text-muted-foreground">This search stays in this chat. It does not look at other sessions or account memory.</p>
+        {status === "error" && error && <p className="text-meta text-destructive">{error}</p>}
         {status === "ready" && hits.length === 0 && (
-          <p className="text-[12px] text-muted-foreground">No matches in this chat.</p>
+          <p className="text-meta text-muted-foreground">No matches in this chat.</p>
         )}
         {hits.length > 0 && (
           <ul className="max-h-48 overflow-y-auto">
@@ -117,8 +117,8 @@ export function SessionRecallSearch({
                   onClick={() => onJump(hit.entryId)}
                   className="flex w-full flex-col gap-0.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-accent"
                 >
-                  <span className="font-mono text-[11px] text-muted-foreground">{hit.kind} · #{hit.sequence}</span>
-                  <span className="line-clamp-2 text-[13px] text-foreground">{hit.snippet}</span>
+                  <span className="font-mono text-caption text-muted-foreground">{hit.kind} · #{hit.sequence}</span>
+                  <span className="line-clamp-2 text-ui text-foreground">{hit.snippet}</span>
                 </button>
               </li>
             ))}
@@ -149,7 +149,7 @@ export function SessionRecallSearch({
                 // would strand it.
                 .finally(() => setLoadingMore(false));
             }}
-            className="self-start rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+            className="self-start rounded-md px-2 py-1 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
           >{loadingMore ? "Loading…" : "Show more"}</button>
         )}
       </div>

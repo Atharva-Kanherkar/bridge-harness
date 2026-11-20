@@ -156,13 +156,13 @@ export function TerminalSurface({ record, focused, onRecord, onSearchHandled, se
     {searchOpen && <div className="flex shrink-0 items-center gap-1 border-b border-border bg-background px-2 py-1">
       <Search size={12} aria-hidden="true" />
       <input autoFocus aria-label="Search terminal scrollback" className="min-w-0 flex-1 bg-transparent px-1 py-1 text-xs outline-none" value={query} onChange={event => { setQuery(event.target.value); searchRef.current?.findNext(event.target.value, { incremental: true, decorations: terminalSearchDecorations() }); }} onKeyDown={event => { if (event.key === "Enter") find(event.shiftKey); if (event.key === "Escape") setSearchOpen(false); event.stopPropagation(); }} />
-      <span className="text-[10px] text-muted-foreground">{query && matches}</span>
+      <span className="text-micro text-muted-foreground">{query && matches}</span>
       <button type="button" aria-label="Previous match" className="rounded p-1 hover:bg-accent" onClick={() => find(true)}><ChevronUp size={13} /></button>
       <button type="button" aria-label="Next match" className="rounded p-1 hover:bg-accent" onClick={() => find()}><ChevronDown size={13} /></button>
       <button type="button" aria-label="Close search" className="rounded p-1 hover:bg-accent" onClick={() => setSearchOpen(false)}><X size={13} /></button>
     </div>}
     <div ref={host} aria-label={`${record.title} terminal`} className="min-h-0 flex-1 overflow-hidden p-2 [&_.xterm]:h-full [&_.xterm-viewport]:scrollbar-thin" />
-    {restoring && <div role="status" className="pointer-events-none absolute bottom-2 right-3 rounded bg-background px-2 py-1 text-[10px] text-muted-foreground">Restoring terminal…</div>}
+    {restoring && <div role="status" className="pointer-events-none absolute bottom-2 right-3 rounded bg-background px-2 py-1 text-micro text-muted-foreground">Restoring terminal…</div>}
     {error && <div role="alert" className="flex items-center gap-2 border-t border-border bg-background px-3 py-2 text-xs text-destructive"><span className="min-w-0 flex-1">{error}</span><button type="button" className="shrink-0 underline" onClick={() => retry.current()}>Reconnect</button></div>}
   </div>;
 }

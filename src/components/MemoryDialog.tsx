@@ -274,7 +274,7 @@ export function MemoryDialog({
           <textarea
             ref={editorRef}
             rows={composing ? 3 : 1}
-            className="block w-full resize-none bg-transparent px-4 py-3 text-[13px] leading-relaxed text-foreground outline-none placeholder:text-faint disabled:opacity-45"
+            className="block w-full resize-none bg-transparent px-4 py-3 text-ui leading-relaxed text-foreground outline-none placeholder:text-faint disabled:opacity-45"
             placeholder="Add something Bridge should remember about you or how you work"
             value={body}
             disabled={busy}
@@ -346,7 +346,7 @@ export function MemoryDialog({
               const stat = statById.get(record.id);
               return <li key={record.id} className={cn("group flex items-start gap-3 px-4 py-3 transition-colors", editingId === record.id && "bg-accent/50")}>
                 <div className="min-w-0 flex-1">
-                  <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground">{record.body}</p>
+                  <p className="whitespace-pre-wrap break-words text-ui leading-relaxed text-foreground">{record.body}</p>
                   <p className="mt-1 text-caption text-faint">
                     {KIND_LABEL[record.kind as Kind] ?? record.kind} · {new Date(record.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
                     {record.provenance === "model_proposal" && <> · extracted</>}
@@ -402,7 +402,7 @@ export function MemoryDialog({
                   {selected && <span className="size-1.5 rounded-full bg-foreground" />}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-[13px] text-foreground">{mode.label}</span>
+                  <span className="block text-ui text-foreground">{mode.label}</span>
                   <span className="mt-0.5 block text-caption leading-relaxed text-muted-foreground">{mode.description}</span>
                 </span>
               </button>;
@@ -413,7 +413,7 @@ export function MemoryDialog({
         <section>
           <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border-card bg-card px-4 py-3">
             <span className="min-w-0 flex-1 basis-48">
-              <span className="block text-[13px] text-foreground">Extraction model</span>
+              <span className="block text-ui text-foreground">Extraction model</span>
               <span className="mt-0.5 block text-caption leading-relaxed text-muted-foreground">Runs on each chat&apos;s own model unless you pin a helper.</span>
             </span>
             <select className={`${fieldClass} h-7 w-40 px-2 text-caption`} value={profileHarness} disabled={busy} onChange={event => { setProfileHarness(event.target.value); setProfileModel(""); }} aria-label="Extraction harness">
@@ -443,7 +443,7 @@ export function MemoryDialog({
                 {(proposed ?? []).map(record => (
                   <li key={record.id} className="flex flex-wrap items-start gap-3 px-4 py-3">
                     <div className="min-w-0 flex-1 basis-64">
-                      <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground">{record.body}</p>
+                      <p className="whitespace-pre-wrap break-words text-ui leading-relaxed text-foreground">{record.body}</p>
                       <p className="mt-1 text-caption text-faint">
                         {KIND_LABEL[record.kind as Kind] ?? record.kind}
                         {record.provenance === "agent_proposal" && <> · proposed by an agent</>}
@@ -532,7 +532,7 @@ export function MemoryDialog({
             : <ul className="mt-2 divide-y divide-border">
               {(log ?? []).map((entry, index) => (
                 <li key={index} className="flex items-baseline gap-3 py-2 text-caption">
-                  <span className="w-24 shrink-0 font-mono text-[11px] uppercase tracking-wide text-faint">{entry.source}</span>
+                  <span className="w-24 shrink-0 font-mono text-caption text-faint font-medium">{entry.source}</span>
                   <span className="min-w-0 flex-1 truncate text-foreground" title={runDetail(entry)}>{runDetail(entry)}</span>
                   <span className="shrink-0 tabular-nums text-faint">{relative(entry.at)}</span>
                 </li>
@@ -573,7 +573,7 @@ function Sparkbars({ values, className }: { values: number[]; className?: string
       {values.map((value, index) => (
         <div
           key={index}
-          className={cn("min-h-[2px] flex-1 rounded-[2px]", value > 0 ? "bg-foreground/60" : "bg-foreground/10")}
+          className={cn("min-h-[2px] flex-1 rounded-sm", value > 0 ? "bg-foreground/60" : "bg-foreground/10")}
           style={{ height: `${Math.round((value / max) * 100)}%` }}
         />
       ))}

@@ -68,7 +68,7 @@ export function SettingsGroup({ label, note, children, className }: {
   return <section className={className}>
     {(label || note) && <div className="mb-2 flex flex-wrap items-baseline gap-x-3 gap-y-1 px-0.5">
       {label && <h3 className="text-ui font-medium text-foreground">{label}</h3>}
-      {note && <span className="ml-auto text-[12px] text-muted-foreground">{note}</span>}
+      {note && <span className="ml-auto text-meta text-muted-foreground">{note}</span>}
     </div>}
     <div className="overflow-hidden rounded-xl border border-border-card bg-card">
       <div className="divide-y divide-border">{children}</div>
@@ -109,12 +109,12 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
   className?: string;
 }) {
   const text = <span className="min-w-0 flex-1 basis-40 text-left">
-    <span className="block text-[13px] text-foreground">{label}</span>
+    <span className="block text-ui text-foreground">{label}</span>
     {description !== undefined && description !== null && description !== "" && <span className={cn(
       "mt-0.5 block text-muted-foreground",
       // Prose wraps; an id or a path truncates, because half a sentence is
       // useless and half a hash is still a hash you can widen the window to read.
-      mono ? "truncate font-mono text-[11px]" : "text-[12px] leading-relaxed",
+      mono ? "truncate font-mono text-caption" : "text-meta leading-relaxed",
     )}>{description}</span>}
   </span>;
   const trailing = <>
@@ -175,8 +175,8 @@ export function SettingsBlockRow({ label, description, children, action, classNa
   return <div className={cn("px-3.5 py-3", className)}>
     {(label || action) && <div className="mb-2 flex items-baseline gap-3">
       <div className="min-w-0 flex-1">
-        {label && <span className="block text-[13px] text-foreground">{label}</span>}
-        {description && <span className="mt-0.5 block text-[12px] text-muted-foreground">{description}</span>}
+        {label && <span className="block text-ui text-foreground">{label}</span>}
+        {description && <span className="mt-0.5 block text-meta text-muted-foreground">{description}</span>}
       </div>
       {action}
     </div>}
@@ -185,7 +185,7 @@ export function SettingsBlockRow({ label, description, children, action, classNa
 }
 
 function SavedFlash() {
-  return <span role="status" className="flex shrink-0 items-center gap-1 text-[11px] text-success">
+  return <span role="status" className="flex shrink-0 items-center gap-1 text-caption text-success">
     <Check size={12} strokeWidth={1.7} aria-hidden="true" />Saved
   </span>;
 }
@@ -314,7 +314,7 @@ export function Select({ value, options, onChange, disabled, label, placeholder 
             {option.lead}
             <span className="min-w-0 flex-1">
               <SelectPrimitive.ItemText render={<span />}>{option.label}</SelectPrimitive.ItemText>
-              {option.description && <span className="mt-0.5 block text-[11px] text-muted-foreground">{option.description}</span>}
+              {option.description && <span className="mt-0.5 block text-caption text-muted-foreground">{option.description}</span>}
             </span>
             {option.value === value && <Check size={12} strokeWidth={1.7} aria-hidden="true" className="shrink-0" />}
           </SelectPrimitive.Item>)}
@@ -346,7 +346,7 @@ export function Field({ value, onChange, disabled, label, placeholder, type = "t
     spellCheck={false}
     onKeyDown={onKeyDown}
     onChange={event => onChange(event.target.value)}
-    className={cn(CONTROL, width, "max-w-full shrink-0 placeholder:text-muted-foreground focus:border-foreground/25", mono && "font-mono text-[11px]")}
+    className={cn(CONTROL, width, "max-w-full shrink-0 placeholder:text-muted-foreground focus:border-foreground/25", mono && "font-mono text-caption")}
   />;
 }
 
@@ -367,7 +367,7 @@ export function TextArea({ value, onChange, disabled, label, placeholder, rows =
     placeholder={placeholder}
     spellCheck={false}
     onChange={event => onChange(event.target.value)}
-    className="w-full resize-y rounded-lg border border-border-card bg-popover px-2.5 py-2 font-mono text-[11px] leading-relaxed text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-foreground/25 disabled:opacity-45"
+    className="w-full resize-y rounded-lg border border-border-card bg-popover px-2.5 py-2 font-mono text-caption leading-relaxed text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-foreground/25 disabled:opacity-45"
   />;
 }
 
@@ -416,7 +416,7 @@ const PILL_TONE: Record<PillTone, string> = {
 
 /** The one place tint is allowed outside a harness mark, and only for status. */
 export function StatusPill({ tone = "neutral", children }: { tone?: PillTone; children: ReactNode }) {
-  return <span className={cn("shrink-0 rounded-full border px-1.5 py-0.5 text-[11px] leading-none", PILL_TONE[tone])}>{children}</span>;
+  return <span className={cn("shrink-0 rounded-full border px-1.5 py-0.5 text-caption leading-none", PILL_TONE[tone])}>{children}</span>;
 }
 
 /* ── save bar ─────────────────────────────────────────────────────────────── */
@@ -441,7 +441,7 @@ export function SaveBar({ dirty, saving, canSave = true, onSave, onDiscard, labe
 }) {
   if (!dirty) return null;
   return <div className="sticky bottom-0 z-20 -mx-1 mt-[26px] flex flex-wrap items-center gap-3 rounded-xl border border-border-card bg-card px-3.5 py-2.5">
-    <span className="min-w-0 flex-1 text-[13px] text-foreground">{label}</span>
+    <span className="min-w-0 flex-1 text-ui text-foreground">{label}</span>
     <TextButton onClick={onDiscard} disabled={saving}>Discard</TextButton>
     <PrimaryButton onClick={onSave} disabled={saving || !canSave}>{saving ? "Saving…" : saveLabel}</PrimaryButton>
   </div>;

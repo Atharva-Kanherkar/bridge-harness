@@ -26,7 +26,7 @@ export interface ViewToolbarProps {
   workspaces?: Workspace[];
 }
 
-const control = "h-7 min-w-0 rounded-md bg-muted px-1.5 text-[12.5px] text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
+const control = "h-7 min-w-0 rounded-md bg-muted px-1.5 text-meta text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 export function ViewToolbar({ database, view, query, dirty, onChange, onSave, onReset, workspaces }: ViewToolbarProps) {
   // A reset reloads the filter builder from the saved view.
@@ -43,8 +43,8 @@ export function ViewToolbar({ database, view, query, dirty, onChange, onSave, on
       <GroupEditor database={database} groupBy={query.groupBy} required={view.type === "board"} onChange={groupBy => onChange({ groupBy })} />
     </Control>}
     {dirty && <span className="ml-auto flex items-center gap-1">
-      <button type="button" onClick={() => { onReset(); setGeneration(current => current + 1); }} className="inline-flex h-7 items-center rounded-full px-2.5 text-[12.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Reset</button>
-      <button type="button" onClick={() => { onSave(); setGeneration(current => current + 1); }} className="inline-flex h-7 items-center rounded-full bg-primary px-3 text-[12.5px] font-medium text-primary-foreground transition-opacity hover:opacity-90">Save for everyone</button>
+      <button type="button" onClick={() => { onReset(); setGeneration(current => current + 1); }} className="inline-flex h-7 items-center rounded-full px-2.5 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Reset</button>
+      <button type="button" onClick={() => { onSave(); setGeneration(current => current + 1); }} className="inline-flex h-7 items-center rounded-full bg-primary px-3 text-meta font-medium text-primary-foreground transition-opacity hover:opacity-90">Save for everyone</button>
     </span>}
   </div>;
 }
@@ -53,8 +53,8 @@ function Control({ label, count, icon, width, children }: { label: string; count
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLDivElement>(null);
   return <div ref={anchor} className="relative">
-    <button type="button" aria-expanded={open} aria-label={count ? `${label}, ${count}` : label} onClick={() => setOpen(current => !current)} className={clsx("inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12.5px] transition-colors hover:bg-accent", count ? "text-foreground" : "text-muted-foreground", open && "bg-accent")}>
-      {icon}{label}{count > 0 && <span className="rounded bg-muted px-1 text-[11px] tabular-nums">{count}</span>}
+    <button type="button" aria-expanded={open} aria-label={count ? `${label}, ${count}` : label} onClick={() => setOpen(current => !current)} className={clsx("inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-meta transition-colors hover:bg-accent", count ? "text-foreground" : "text-muted-foreground", open && "bg-accent")}>
+      {icon}{label}{count > 0 && <span className="rounded bg-muted px-1 text-caption tabular-nums">{count}</span>}
     </button>
     {open && <Floating anchor={anchor} label={`${label} options`} onClose={() => setOpen(false)} width={width}>{children}</Floating>}
   </div>;
@@ -70,7 +70,7 @@ function SortEditor({ database, sorts, onChange }: { database: NoteDatabase; sor
   };
   const unused = columns.find(column => !sorts.some(sort => sort.property === column.id));
   return <div aria-label="Sorts" className="flex flex-col gap-1 p-1">
-    {!sorts.length && <p className="m-0 px-1 py-1.5 text-[12.5px] text-muted-foreground">No sorts. Newest edits first.</p>}
+    {!sorts.length && <p className="m-0 px-1 py-1.5 text-meta text-muted-foreground">No sorts. Newest edits first.</p>}
     <ol className="m-0 flex list-none flex-col gap-1 p-0">
       {sorts.map((sort, index) => <li key={`${sort.property}-${index}`} role="group" aria-label={`Sort ${index + 1}`} className="flex items-center gap-1">
         <select aria-label={`Sort ${index + 1} property`} value={sort.property} onChange={event => onChange(sorts.map((item, at) => at === index ? { ...item, property: event.target.value } : item))} className={clsx(control, "flex-1")}>
@@ -85,7 +85,7 @@ function SortEditor({ database, sorts, onChange }: { database: NoteDatabase; sor
         <IconButton label={`Remove sort ${index + 1}`} onClick={() => onChange(sorts.filter((_, at) => at !== index))}><X size={12} aria-hidden="true" /></IconButton>
       </li>)}
     </ol>
-    {sorts.length < MAX_SORTS && unused && <button type="button" onClick={() => onChange([...sorts, { property: unused.id, direction: "asc" }])} className="inline-flex h-7 w-fit items-center gap-1 rounded-md px-1.5 text-[12.5px] text-foreground transition-colors hover:bg-accent"><Plus size={13} aria-hidden="true" />Add a sort</button>}
+    {sorts.length < MAX_SORTS && unused && <button type="button" onClick={() => onChange([...sorts, { property: unused.id, direction: "asc" }])} className="inline-flex h-7 w-fit items-center gap-1 rounded-md px-1.5 text-meta text-foreground transition-colors hover:bg-accent"><Plus size={13} aria-hidden="true" />Add a sort</button>}
   </div>;
 }
 

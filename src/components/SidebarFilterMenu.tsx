@@ -98,10 +98,10 @@ export function SidebarFilterMenu({ view, agents, allowProjectGrouping, onChange
               type="button"
               role="menuitem"
               onClick={() => setPanel(row.panel)}
-              className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors hover:bg-accent"
+              className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-ui transition-colors hover:bg-accent"
             >
               <span className="min-w-0 flex-1 truncate">{row.label}</span>
-              <span className="shrink-0 truncate text-[11px] text-muted-foreground">{row.value}</span>
+              <span className="shrink-0 truncate text-caption text-muted-foreground">{row.value}</span>
               <ChevronRight size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
             </button>
           </div>
@@ -110,7 +110,7 @@ export function SidebarFilterMenu({ view, agents, allowProjectGrouping, onChange
             <button
               type="button"
               onClick={() => setPanel("root")}
-              className="flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              className="flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
               <ChevronLeft size={12} strokeWidth={1.7} aria-hidden="true" />
               {panels[panel].title}
@@ -128,7 +128,7 @@ export function SidebarFilterMenu({ view, agents, allowProjectGrouping, onChange
                     onChange(panels[panel].apply(option.id));
                     setPanel("root");
                   }}
-                  className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors hover:bg-accent"
+                  className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-ui transition-colors hover:bg-accent"
                 >
                   <Check size={12} strokeWidth={2.2} aria-hidden="true" className={cn("shrink-0", checked ? "opacity-100" : "opacity-0")} />
                   <span className="min-w-0 flex-1 truncate">{option.label}</span>

@@ -56,7 +56,7 @@ export function UsageStrips({ report, window, metric, partial }: UsageLayoutProp
       <div>
         <PartialBadge label={partial} className="mb-3" />
         <div className="text-[2.75rem] font-light leading-none tracking-[-0.04em] tabular-nums text-foreground">{format(metric === "cost" ? report.totals.costMicrousd : report.totals.processedTokens)}{metric === "cost" && <EstimateMark report={report} large />}</div>
-        <p className="mt-2.5 text-[14px] text-muted-foreground">{metric === "cost"
+        <p className="mt-2.5 text-body text-muted-foreground">{metric === "cost"
           ? <>at API rates · <span className="font-medium tabular-nums text-foreground">{formatTokens(report.totals.processedTokens)}</span> tokens processed</>
           : <>tokens processed · <span className="font-medium tabular-nums text-foreground">{formatUsd(report.totals.costMicrousd)}</span><EstimateMark report={report} /> at API rates</>}</p>
         <HeroCaption report={report} metric={metric} className="mt-1" />
@@ -68,7 +68,7 @@ export function UsageStrips({ report, window, metric, partial }: UsageLayoutProp
           ["Output", formatTokens(report.totals.outputTokens)],
           ["Cache saved", formatUsd(report.totals.cacheSavingsMicrousd)],
         ].map(([label, value]) => <div key={label} className="px-5 first:pl-0 last:pr-0">
-          <dt className="text-[11.5px] text-muted-foreground">{label}</dt>
+          <dt className="text-caption text-muted-foreground">{label}</dt>
           <dd className="mt-1 text-[17px] tracking-tight tabular-nums text-foreground">{value}</dd>
         </div>)}
       </dl>
@@ -103,7 +103,7 @@ export function UsageStrips({ report, window, metric, partial }: UsageLayoutProp
               <div className="mt-1 flex items-center justify-between border-t border-border pt-1 font-medium text-foreground"><span>Total</span><span className="tabular-nums">{format(totals[index] ?? 0)}</span></div>
             </div>}
           </div>
-          <span className="text-right"><span className="block text-[14px] tabular-nums text-foreground">{format(metric === "cost" ? report.totals.costMicrousd : report.totals.processedTokens)}</span><span className="block text-[11.5px] tabular-nums text-muted-foreground">{metric === "cost" ? `${formatTokens(report.totals.processedTokens)} tokens` : formatUsd(report.totals.costMicrousd)}</span></span>
+          <span className="text-right"><span className="block text-body tabular-nums text-foreground">{format(metric === "cost" ? report.totals.costMicrousd : report.totals.processedTokens)}</span><span className="block text-caption tabular-nums text-muted-foreground">{metric === "cost" ? `${formatTokens(report.totals.processedTokens)} tokens` : formatUsd(report.totals.costMicrousd)}</span></span>
         </div>
         {series.map(entry => {
           const harness = harnesses.find(item => item.harness === entry.harness)!;
@@ -113,7 +113,7 @@ export function UsageStrips({ report, window, metric, partial }: UsageLayoutProp
             <div onPointerMove={scrub.fromPointer} onPointerLeave={scrub.clear}>
               <Strip values={entry.values} max={scale === "shared" ? sharedPeak : own} geometry={STRIP} index={index} harness={entry.harness} gradientId={`${id}-${entry.harness}`} />
             </div>
-            <span className="text-right"><span className="block text-[14px] tabular-nums text-foreground">{format(harnessValue(harness, metric))}</span><span className="block text-[11.5px] tabular-nums text-muted-foreground">{formatPercent(metric === "cost" ? harness.costShare : harness.tokenShare)} · {metric === "cost" ? formatTokens(harness.processedTokens) : formatUsd(harness.costMicrousd)}</span></span>
+            <span className="text-right"><span className="block text-body tabular-nums text-foreground">{format(harnessValue(harness, metric))}</span><span className="block text-caption tabular-nums text-muted-foreground">{formatPercent(metric === "cost" ? harness.costShare : harness.tokenShare)} · {metric === "cost" ? formatTokens(harness.processedTokens) : formatUsd(harness.costMicrousd)}</span></span>
           </div>;
         })}
         <div className={cn(GRID, "pt-1.5")} aria-hidden="true">
@@ -131,7 +131,7 @@ export function UsageStrips({ report, window, metric, partial }: UsageLayoutProp
       </div>
       <ul className="grid gap-x-10 md:grid-cols-2">
         {models.map(model => <li key={`${model.harness}:${model.model}`} className="grid h-8 grid-cols-[minmax(0,9rem)_minmax(0,1fr)_4.5rem_4.5rem] items-center gap-3">
-          <span className="flex min-w-0 items-center gap-1.5"><span className="truncate font-mono text-caption text-foreground/85">{model.model}</span>{model.costSource === "unpriced" && <span className="shrink-0 text-[11px] text-muted-foreground">unpriced</span>}</span>
+          <span className="flex min-w-0 items-center gap-1.5"><span className="truncate font-mono text-caption text-foreground/85">{model.model}</span>{model.costSource === "unpriced" && <span className="shrink-0 text-caption text-muted-foreground">unpriced</span>}</span>
           <span className="h-1.5 overflow-hidden rounded-full bg-muted"><span className={cn("block h-full rounded-full", harnessChartDot(model.harness))} style={{ width: `${topModel > 0 ? (modelValue(model, metric) / topModel) * 100 : 0}%` }} /></span>
           <span className="text-right text-ui tabular-nums text-foreground">{format(modelValue(model, metric))}</span>
           <span className="text-right text-caption tabular-nums text-muted-foreground">{metric === "cost" ? formatTokens(model.tokens) : formatUsd(model.costMicrousd)}</span>

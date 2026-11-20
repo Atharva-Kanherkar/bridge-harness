@@ -37,7 +37,7 @@ function Finding({ finding }: { finding: OutgoingLintFinding }) {
       data-finding={finding.rule}
       data-fixed={finding.fixed || undefined}
       className={cn(
-        "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px]",
+        "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-caption",
         open ? "border-warning/40 text-foreground/85" : "border-border text-muted-foreground",
       )}
     >
@@ -51,7 +51,7 @@ function Finding({ finding }: { finding: OutgoingLintFinding }) {
 
 function Placeholder() {
   return (
-    <div data-outgoing-state="drafting" className="rounded-2xl border border-dashed border-border px-4 py-3 text-[12.5px] text-muted-foreground">
+    <div data-outgoing-state="drafting" className="rounded-2xl border border-dashed border-border px-4 py-3 text-meta text-muted-foreground">
       <span className="animate-pulse">Drafting a message…</span>
     </div>
   );
@@ -60,7 +60,7 @@ function Placeholder() {
 function RefusedRow({ detail }: { detail?: string }) {
   const [open, setOpen] = useState(false);
   return (
-    <div data-outgoing-state="refused" className="min-w-0 text-[12px] text-muted-foreground">
+    <div data-outgoing-state="refused" className="min-w-0 text-meta text-muted-foreground">
       <button
         type="button"
         className="flex min-h-7 items-center gap-2 rounded-md px-1.5 text-left transition-colors hover:bg-accent/50 disabled:cursor-default"
@@ -72,7 +72,7 @@ function RefusedRow({ detail }: { detail?: string }) {
         <span>Message not drafted: the reason went back to the agent</span>
         {detail && <ChevronRight size={12} className={cn("transition-transform", open && "rotate-90")} aria-hidden="true" />}
       </button>
-      {open && detail && <pre className="ml-6 mt-1 max-h-60 overflow-auto whitespace-pre-wrap rounded-lg bg-code p-3 font-mono text-[11.5px] leading-relaxed">{detail}</pre>}
+      {open && detail && <pre className="ml-6 mt-1 max-h-60 overflow-auto whitespace-pre-wrap rounded-lg bg-code p-3 font-mono text-caption leading-relaxed">{detail}</pre>}
     </div>
   );
 }
@@ -128,7 +128,7 @@ function Attachment({ draftId, index, attachment, readOnly, canRemove, busy, onR
           : <ImageIcon size={18} className={cn("text-muted-foreground", !failed && "animate-pulse")} aria-hidden="true" />}
       </div>
       <div className="flex min-w-0 items-center gap-1 px-2 py-1.5">
-        <span className="min-w-0 flex-1 truncate text-[11px] text-foreground/85" title={failed ? `${attachment.name}: file missing or changed` : attachment.name}>
+        <span className="min-w-0 flex-1 truncate text-caption text-foreground/85" title={failed ? `${attachment.name}: file missing or changed` : attachment.name}>
           {failed ? "Missing: " : ""}{attachment.name}
         </span>
         {!readOnly && <>
@@ -183,7 +183,7 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
 
   if (draft.state === "discarded") {
     return (
-      <div data-outgoing-state="discarded" className="flex min-h-7 items-center gap-2 px-1.5 text-[12px] text-muted-foreground">
+      <div data-outgoing-state="discarded" className="flex min-h-7 items-center gap-2 px-1.5 text-meta text-muted-foreground">
         <Trash2 size={13} aria-hidden="true" />
         <span>Draft discarded</span>
         <span aria-hidden="true">·</span>
@@ -228,15 +228,15 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
       className="relative overflow-hidden rounded-2xl border border-border-card bg-card shadow-[0_1px_2px_rgb(0_0_0/0.04),0_12px_32px_-16px_rgb(0_0_0/0.18)]"
     >
       <div hidden={!!currentApproval && !readOnly} className="px-4 pb-3.5 pt-3.5 sm:px-5">
-        <p className="flex flex-wrap items-center gap-1.5 text-[10.5px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+        <p className="flex flex-wrap items-center gap-1.5 text-caption font-medium text-muted-foreground">
           <span>{draft.state === "sent" ? "Message sent" : draft.state === "sending" ? "Sending message…" : draft.state === "failed" ? "Message failed" : "Draft message"}</span>
           {draft.state === "copied" && <>
             <span aria-hidden="true" className="text-muted-foreground/50">·</span>
             <span className="normal-case tracking-normal">copied</span>
           </>}
         </p>
-        <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-          <span data-outgoing-destination className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border border-border bg-background/60 px-1.5 py-0.5 text-[11px] text-foreground/85">
+        <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5 text-caption text-muted-foreground">
+          <span data-outgoing-destination className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border border-border bg-background/60 px-1.5 py-0.5 text-caption text-foreground/85">
             <DestinationIcon destination={draft.destination} />
             <span className="truncate">{draft.label}</span>
           </span>
@@ -246,7 +246,7 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
         {editing ? (
           <textarea
             aria-label="Message text"
-            className="mt-3 block min-h-32 w-full resize-y rounded-xl border border-input bg-background px-3 py-2.5 text-[13.5px] leading-relaxed text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="mt-3 block min-h-32 w-full resize-y rounded-xl border border-input bg-background px-3 py-2.5 text-ui leading-relaxed text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
             value={text}
             onChange={event => setText(event.target.value)}
             disabled={busy}
@@ -255,11 +255,11 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
           // Markdown destinations (Slack through its connector, GitHub) are
           // previewed formatted; pasted mrkdwn and plain text as typed.
           draft.format === "slackMarkdown" || draft.format === "github" ? (
-            <div data-outgoing-preview className="mt-3 max-h-96 overflow-auto rounded-xl bg-background/60 px-3 py-2.5 text-[13.5px] leading-relaxed text-foreground">
+            <div data-outgoing-preview className="mt-3 max-h-96 overflow-auto rounded-xl bg-background/60 px-3 py-2.5 text-ui leading-relaxed text-foreground">
               <Markdown text={draft.rendered} richFences={false} />
             </div>
           ) : (
-            <div data-outgoing-preview className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-background/60 px-3 py-2.5 text-[13.5px] leading-relaxed text-foreground">
+            <div data-outgoing-preview className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-background/60 px-3 py-2.5 text-ui leading-relaxed text-foreground">
               {draft.rendered}
             </div>
           )
@@ -292,9 +292,9 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
           </ul>
         )}
 
-        {draft.lastError && <p role="alert" className="mt-2.5 text-[12px] text-destructive">{draft.lastError}</p>}
-        {draft.state === "sent" && draft.permalink && <a href={draft.permalink} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1 text-[12px] text-foreground underline underline-offset-2"><ExternalLink size={12} aria-hidden="true" />View sent message</a>}
-        {error && <p role="alert" className="mt-2.5 text-[12px] text-destructive">{error}</p>}
+        {draft.lastError && <p role="alert" className="mt-2.5 text-meta text-destructive">{draft.lastError}</p>}
+        {draft.state === "sent" && draft.permalink && <a href={draft.permalink} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1 text-meta text-foreground underline underline-offset-2"><ExternalLink size={12} aria-hidden="true" />View sent message</a>}
+        {error && <p role="alert" className="mt-2.5 text-meta text-destructive">{error}</p>}
 
         {!readOnly && !immutable && (
           <div className="mt-3 flex flex-wrap items-center gap-1.5">
@@ -364,7 +364,7 @@ export function OutgoingCard({ item, sessionId, readOnly = false }: { item: Conv
   if (state === "refused") return <RefusedRow detail={outgoingRefusal(item)} />;
   if (!draft) {
     return missing
-      ? <div data-outgoing-state="missing" className="px-1.5 text-[12px] text-muted-foreground">This drafted message is no longer stored.</div>
+      ? <div data-outgoing-state="missing" className="px-1.5 text-meta text-muted-foreground">This drafted message is no longer stored.</div>
       : <Placeholder />;
   }
   return <OutgoingDraft draft={draft} readOnly={readOnly} onChange={setDraft} />;

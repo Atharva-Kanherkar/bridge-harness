@@ -23,19 +23,32 @@
     --container-page: 64rem;
     /* Storage only: a disk explorer plus its copilot rail needs the room. */
     --container-page-wide: 76rem;
-    --text-message: 0.9375rem;
-    --text-message--line-height: 1.7;
+    /* The type scale. Every UI size in Bridge is one of these; arbitrary
+       `text-[Npx]` under 16px is rejected by designSystem.test.ts.
+         micro 10.5 badges, kbd · caption 11.5 times, counts, labels
+         meta 12.5 secondary rows · ui 13 controls and lists
+         body 14 dialogs and panes · message 15 reading
+         heading 18 section titles · title 24 page titles */
+    --text-micro: 0.65625rem;
+    --text-caption: 0.71875rem;
+    --text-caption--line-height: 1.45;
+    --text-meta: 0.78125rem;
     --text-ui: 0.8125rem;
     --text-ui--line-height: 1.5;
-    --text-caption: 0.75rem;
-    --text-caption--line-height: 1.5;
+    --text-body: 0.875rem;
+    --text-message: 0.9375rem;
+    --text-message--line-height: 1.7;
+    --text-heading: 1.125rem;
+    --text-heading--line-height: 1.35;
+    --text-heading--letter-spacing: -0.012em;
     --text-title: 1.5rem;
     --text-title--line-height: 1.25;
+    --text-title--letter-spacing: -0.022em;
     /* `--skin-font` is unset except under the Omarchy skin, which follows the
        system monospace everywhere (see src/omarchy.ts). */
-    --font-family-display: var(--skin-font, "Bricolage Grotesque Variable", "Geist Variable", ui-sans-serif, system-ui, -apple-system, sans-serif);
+    --font-family-display: var(--skin-font, "Geist Variable", "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif);
     --font-family-sans: var(--skin-font, "Geist Variable", "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif);
-    --font-display: var(--skin-font, "Bricolage Grotesque Variable", "Geist Variable", ui-sans-serif, system-ui, -apple-system, sans-serif);
+    --font-display: var(--skin-font, "Geist Variable", "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif);
     --font-heading: var(--font-display);
     --font-mono: var(--skin-font, "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
     --font-sans: var(--skin-font, "Geist Variable", "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif);
@@ -142,39 +155,39 @@
     color-scheme: light;
 
     /* The ladder */
-    --sidebar: #eeefed;
-    --background: #fafaf9;
+    --sidebar: #f4f4f3;
+    --background: #fbfbfa;
     --card: #ffffff;
     --popover: #ffffff;
 
     /* Text */
-    --foreground: #1f1f1d;
-    --card-foreground: #1f1f1d;
-    --popover-foreground: #1f1f1d;
-    --muted-foreground: #62625c;
-    --selection: #dcdedb;
+    --foreground: #18181a;
+    --card-foreground: #18181a;
+    --popover-foreground: #18181a;
+    --muted-foreground: #66666b;
+    --selection: #e8e8e5;
     --selection-foreground: #1f1f1d;
-    --control-shadow: 0 1px 3px rgb(31 31 29 / 0.06), 0 4px 16px rgb(31 31 29 / 0.03);
+    --control-shadow: 0 1px 3px rgb(24 24 26 / 0.06), 0 4px 16px rgb(24 24 26 / 0.03);
 
     /* Structure */
-    --border: #deded9;
-    --border-card: #d7d8d2;
-    --input: #d6d6d1;
-    --muted: #f0f0ee;
-    --secondary: #f0f0ee;
-    --secondary-foreground: #1f1f1d;
-    --accent: color-mix(in srgb, #1f1f1d 5%, transparent);
-    --accent-foreground: #1f1f1d;
+    --border: #e7e7e4;
+    --border-card: #e2e2df;
+    --input: #dcdcd8;
+    --muted: #f1f1ef;
+    --secondary: #f1f1ef;
+    --secondary-foreground: #18181a;
+    --accent: color-mix(in srgb, #18181a 5%, transparent);
+    --accent-foreground: #18181a;
 
     /* Primary is an inversion, not a hue */
-    --primary: #1f1f1d;
+    --primary: #18181a;
     --primary-foreground: #fafaf9;
 
     /* Slate signal — focus, links, selection. Interaction plumbing, not brand */
-    --ring: #3d6fa5;
+    --ring: #5b63d3;
 
     /* Scrim always darkens, in both modes — never a tint of --foreground. */
-    --scrim: rgb(31 31 29 / 0.38);
+    --scrim: rgb(24 24 26 / 0.38);
 
     /* The merged state. The one deliberate colour on this chrome: the purple
        everyone already reads as "merged" on GitHub. Reserved for the merged
@@ -225,15 +238,15 @@
     /* Appearance preview swatches: the literal sidebar and canvas each mode
        renders. Fixed in both themes on purpose, because the Paper tile has to
        look like paper while Graphite is the one switched on. */
-    --preview-paper-sidebar: #eeefed;
-    --preview-paper-canvas: #fafaf9;
-    --preview-graphite-sidebar: #000000;
-    --preview-graphite-canvas: #000000;
+    --preview-paper-sidebar: #f4f4f3;
+    --preview-paper-canvas: #fbfbfa;
+    --preview-graphite-sidebar: #09090a;
+    --preview-graphite-canvas: #0c0c0d;
 
     /* Code */
     --code: #f3f3f1;
     --code-foreground: #1f1f1d;
-    --code-highlight: color-mix(in srgb, #1f1f1d 5%, transparent);
+    --code-highlight: color-mix(in srgb, #18181a 5%, transparent);
 
     /* Syntax — tuned for paper. Thirteen buckets, six hue families: violet
        (keyword), green (string), amber (number/param), blue (function/
@@ -293,13 +306,13 @@
     --window-radius: 16px;
     --window-control-inset: 6px;
 
-    --sidebar-foreground: #5d5d57;
-    --sidebar-accent: color-mix(in srgb, #1f1f1d 5%, transparent);
-    --sidebar-accent-foreground: #1f1f1d;
-    --sidebar-border: #e2e2de;
-    --sidebar-primary: #1f1f1d;
+    --sidebar-foreground: #5e5e63;
+    --sidebar-accent: color-mix(in srgb, #18181a 5%, transparent);
+    --sidebar-accent-foreground: #18181a;
+    --sidebar-border: #e9e9e6;
+    --sidebar-primary: #18181a;
     --sidebar-primary-foreground: #fafaf9;
-    --sidebar-ring: #3d6fa5;
+    --sidebar-ring: #5b63d3;
 }
 
 /* ── Dark · graphite ──────────────────────────────────────────────────────── */
@@ -308,38 +321,38 @@
 
     /* Pure-black shell — the ground is true black; raised surfaces lift off it
        in neutral greys. Color lives only in harness marks and status ink. */
-    --sidebar: #000000;
-    --background: #000000;
-    --card: #0f0f0f;
-    --popover: #161616;
+    --sidebar: #09090a;
+    --background: #0c0c0d;
+    --card: #141416;
+    --popover: #19191c;
 
-    --foreground: #e4e4e4;
-    --card-foreground: #e4e4e4;
-    --popover-foreground: #e4e4e4;
+    --foreground: #ededef;
+    --card-foreground: #ededef;
+    --popover-foreground: #ededef;
     /* Body copy sits a step under --foreground; muted is the row subtitle ink. */
-    --body: #c9c9c9;
-    --muted-foreground: #8b8b8b;
-    --selection: #242424;
-    --selection-foreground: #e4e4e4;
+    --body: #cfcfd3;
+    --muted-foreground: #8e8e94;
+    --selection: #26262b;
+    --selection-foreground: #ededef;
     --control-shadow: none;
     /* Faint ink for times, counts and paths. */
-    --faint: #6b6b6b;
-    --faint-2: #4a4a4a;
+    --faint: #6b6b71;
+    --faint-2: #4a4a50;
 
-    --border: #1e1e1e;
+    --border: #1d1d20;
     /* Hairline lifts to #242424 on cards/inputs where it needs to read. */
-    --border-card: #242424;
-    --input: #242424;
-    --muted: #1c1c1c;
-    --secondary: #161616;
-    --secondary-foreground: #e4e4e4;
-    --accent: color-mix(in srgb, #e4e4e4 6%, transparent);
-    --accent-foreground: #e4e4e4;
+    --border-card: #26262a;
+    --input: #2a2a2e;
+    --muted: #1c1c1f;
+    --secondary: #18181b;
+    --secondary-foreground: #ededef;
+    --accent: color-mix(in srgb, #ededef 6%, transparent);
+    --accent-foreground: #ededef;
 
-    --primary: #e4e4e4;
+    --primary: #ededef;
     --primary-foreground: #000000;
 
-    --ring: #6a9bcc;
+    --ring: #8b91f0;
     --scrim: rgb(0 0 0 / 0.62);
 
     --merged: #a371f7;
@@ -379,7 +392,7 @@
     --cursor-facet-lighter: #cfcfcf;
     --cursor-facet-lightest: #ededed;
 
-    --code: #0a0a0a;
+    --code: #0f0f11;
     --code-foreground: #ececea;
     --code-highlight: color-mix(in srgb, #ececea 7%, transparent);
 
@@ -403,13 +416,13 @@
     --syn-addition: #5db872;
     --syn-deletion: #e5695e;
 
-    --sidebar-foreground: #8b8b8b;
-    --sidebar-accent: color-mix(in srgb, #e4e4e4 6%, transparent);
-    --sidebar-accent-foreground: #e4e4e4;
-    --sidebar-border: #161616;
-    --sidebar-primary: #e4e4e4;
+    --sidebar-foreground: #8e8e94;
+    --sidebar-accent: color-mix(in srgb, #ededef 6%, transparent);
+    --sidebar-accent-foreground: #ededef;
+    --sidebar-border: #17171a;
+    --sidebar-primary: #ededef;
     --sidebar-primary-foreground: #000000;
-    --sidebar-ring: #6a9bcc;
+    --sidebar-ring: #8b91f0;
 }
 
 /* The opt-in dark material restores the original near-black surfaces. */

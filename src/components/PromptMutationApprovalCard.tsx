@@ -4,7 +4,7 @@ import type { ConversationItem } from "../conversation";
 import type { ApprovalDecision } from "../types";
 import type { InteractionResolutionResult } from "../protocol/generated/protocol";
 
-const BUTTON = "inline-flex min-h-8 items-center gap-1.5 rounded-lg px-3 py-1 text-[13px] font-medium transition-colors disabled:opacity-50";
+const BUTTON = "inline-flex min-h-8 items-center gap-1.5 rounded-lg px-3 py-1 text-ui font-medium transition-colors disabled:opacity-50";
 
 function text(data: Record<string, unknown>, key: string): string {
   return typeof data[key] === "string" ? data[key] : "";
@@ -61,13 +61,13 @@ export function PromptMutationApprovalCard({ item, onResolve }: {
 
   return <section aria-label="Review prompt change" className="min-w-0 overflow-hidden rounded-xl border border-border border-x-2 border-x-warning bg-card">
     <header className="flex flex-wrap items-baseline gap-2 px-3.5 pt-3 sm:px-4">
-      <b className="text-[13px] font-semibold text-foreground">Review prompt change</b>
-      {pending && <small className="text-[11px] text-warning">waiting for you</small>}
+      <b className="text-ui font-semibold text-foreground">Review prompt change</b>
+      {pending && <small className="text-caption text-warning">waiting for you</small>}
     </header>
-    <div className="space-y-3 px-3.5 pt-2 text-[13px] sm:px-4">
+    <div className="space-y-3 px-3.5 pt-2 text-ui sm:px-4">
       <p className="text-foreground">Append to the <b>{role}</b> role default · Shared role guidance</p>
       <p className="leading-relaxed text-muted-foreground">Shared by all sessions with this role. Applies the next time Bridge starts or relaunches a matching role. Running turns keep their current instructions.</p>
-      <p className="break-words text-[12px] text-muted-foreground">Requested by {text(item.data, "actorRole")} · session <code className="font-mono">{text(item.data, "actorSessionId")}</code></p>
+      <p className="break-words text-meta text-muted-foreground">Requested by {text(item.data, "actorRole")} · session <code className="font-mono">{text(item.data, "actorSessionId")}</code></p>
       <div>
         <span className="font-medium text-foreground">Reason for the change</span>
         <p className="mt-1 whitespace-pre-wrap break-words leading-relaxed text-muted-foreground">{text(item.data, "rationale")}</p>
@@ -76,8 +76,8 @@ export function PromptMutationApprovalCard({ item, onResolve }: {
         {(["Before", "After"] as const).map(label => {
           const content = text(item.data, label === "Before" ? "beforeText" : "afterText");
           return <div key={label} className="min-w-0">
-            <span className="text-[12px] font-medium text-foreground">{label}{content === "" && <span className="font-normal text-muted-foreground"> · empty guidance</span>}</span>
-            <pre aria-label={`${label} prompt text`} className="mt-1 max-h-72 min-h-16 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-code px-2.5 py-2 font-mono text-[12px] leading-relaxed text-foreground">{content}</pre>
+            <span className="text-meta font-medium text-foreground">{label}{content === "" && <span className="font-normal text-muted-foreground"> · empty guidance</span>}</span>
+            <pre aria-label={`${label} prompt text`} className="mt-1 max-h-72 min-h-16 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-code px-2.5 py-2 font-mono text-meta leading-relaxed text-foreground">{content}</pre>
           </div>;
         })}
       </div>
@@ -85,12 +85,12 @@ export function PromptMutationApprovalCard({ item, onResolve }: {
     {pending ? <div className="flex flex-wrap justify-end gap-2 px-3.5 py-3 sm:px-4" aria-busy={busy !== null}>
       <button type="button" disabled={busy !== null} className={`${BUTTON} border border-input text-foreground hover:bg-accent`} onClick={() => void resolve("decline")}><X size={12} aria-hidden="true" />{busy === "decline" ? "Declining…" : "Decline"}</button>
       <button type="button" disabled={busy !== null} className={`${BUTTON} bg-primary text-primary-foreground hover:bg-primary/90`} onClick={() => void resolve("accept")}><Check size={12} aria-hidden="true" />{busy === "accept" ? "Approving…" : "Approve change"}</button>
-    </div> : <div role="status" className="space-y-1 px-3.5 py-3 text-[12px] text-muted-foreground sm:px-4">
+    </div> : <div role="status" className="space-y-1 px-3.5 py-3 text-meta text-muted-foreground sm:px-4">
       <p className="flex items-start gap-1.5">{accepted ? <Check size={12} className="mt-0.5 shrink-0" aria-hidden="true" /> : <X size={12} className="mt-0.5 shrink-0" aria-hidden="true" />}{outcomeCopy(status)}</p>
       {result?.disposition === "alreadyResolved" && <p>This request was already resolved.</p>}
       {resolutionReason && <p className="whitespace-pre-wrap break-words">{resolutionReason}</p>}
       {accepted && <p>Review history or restore an earlier revision in Settings → Prompts.</p>}
     </div>}
-    {error && <p role="alert" className="px-3.5 pb-3 text-[12px] text-destructive sm:px-4">{error}</p>}
+    {error && <p role="alert" className="px-3.5 pb-3 text-meta text-destructive sm:px-4">{error}</p>}
   </section>;
 }

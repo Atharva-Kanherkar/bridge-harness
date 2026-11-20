@@ -46,7 +46,7 @@ function draw(input: unknown) {
   const parsed = parseVisualSpec(input);
   if (!parsed.ok) {
     root.render(
-      <p className="px-5 py-4 text-[12.5px] text-muted-foreground">This visual could not be drawn: {parsed.errors[0]?.path || "spec"} {parsed.errors[0]?.message}</p>,
+      <p className="px-5 py-4 text-meta text-muted-foreground">This visual could not be drawn: {parsed.errors[0]?.path || "spec"} {parsed.errors[0]?.message}</p>,
     );
     return;
   }

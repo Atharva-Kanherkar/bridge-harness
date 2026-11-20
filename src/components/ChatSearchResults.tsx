@@ -53,7 +53,7 @@ export function ChatSearchResults({
     <section aria-label="In conversations" aria-busy={loading || deepRunning} className="mb-3 flex flex-col gap-0.5">
       <div className="flex h-7 items-center gap-1.5 px-2">
         <Search size={13} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-        <span className="text-[12px] font-medium tracking-[-0.004em] text-muted-foreground">In conversations</span>
+        <span className="text-meta font-medium tracking-[-0.004em] text-muted-foreground">In conversations</span>
         {(loading || deepRunning) && <LoaderCircle size={12} strokeWidth={1.7} className="ml-auto animate-spin text-muted-foreground" aria-hidden="true" />}
       </div>
       <ul className={cn("flex flex-col gap-0.5 transition-opacity", deepRunning && "opacity-60")}>
@@ -68,17 +68,17 @@ export function ChatSearchResults({
                 title={hit.title}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "flex w-full min-w-0 flex-col gap-0.5 rounded-[7px] px-2 py-1.5 text-left transition-colors active:scale-[0.99]",
+                  "flex w-full min-w-0 flex-col gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors active:scale-[0.99]",
                   active ? "bg-selection text-selection-foreground" : "hover:bg-accent",
                 )}
               >
                 <span className="flex min-w-0 items-center gap-1.5">
                   <HarnessMark harness={hit.harness} size={12} className="shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 flex-1 truncate text-[13px] leading-4 tracking-[-0.008em] text-foreground">{hit.title}</span>
-                  {time && <span className="shrink-0 text-[11px] tabular-nums text-faint">{time}</span>}
+                  <span className="min-w-0 flex-1 truncate text-ui leading-4 tracking-[-0.008em] text-foreground">{hit.title}</span>
+                  {time && <span className="shrink-0 text-caption tabular-nums text-faint">{time}</span>}
                 </span>
-                {hit.snippet && <span className="line-clamp-2 text-[11px] leading-3.5 text-muted-foreground">{hit.snippet}</span>}
-                <span className="flex min-w-0 items-center gap-1.5 text-[11px] leading-3.5 text-faint">
+                {hit.snippet && <span className="line-clamp-2 text-caption leading-3.5 text-muted-foreground">{hit.snippet}</span>}
+                <span className="flex min-w-0 items-center gap-1.5 text-caption leading-3.5 text-faint">
                   <span className="truncate">{hit.why}</span>
                   {(hit.archived || hit.ended) && <span className="shrink-0">· {hit.archived ? "archived" : "ended"}</span>}
                 </span>
@@ -87,7 +87,7 @@ export function ChatSearchResults({
           );
         })}
       </ul>
-      {note && <p role="status" className="px-2 py-1 text-[11px] leading-relaxed text-muted-foreground/70">{note}</p>}
+      {note && <p role="status" className="px-2 py-1 text-caption leading-relaxed text-muted-foreground/70">{note}</p>}
     </section>
   );
 }

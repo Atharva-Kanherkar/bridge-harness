@@ -38,7 +38,7 @@ export function QuickPrompt({ emit = emitToShell }: { emit?: (event: string, pay
   };
 
   return <div className="flex h-screen flex-col bg-background p-4 text-foreground">
-    <div className="mb-3 flex items-center gap-2 text-[12px] text-muted-foreground">
+    <div className="mb-3 flex items-center gap-2 text-meta text-muted-foreground">
       <BridgeGlyph size={16} />
       <span>New chat in your last project</span>
       <span className="ml-auto">Esc to hide</span>
@@ -56,7 +56,7 @@ export function QuickPrompt({ emit = emitToShell }: { emit?: (event: string, pay
         placeholder="Ask Bridge…"
         className="min-h-0 flex-1 resize-none bg-transparent text-message text-foreground outline-none placeholder:text-muted-foreground"
       />
-      <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-between text-caption text-muted-foreground">
         <span>↵ send · ⇧↵ new line · {modKey("N")} in Bridge for more options</span>
         <button
           type="button"

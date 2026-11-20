@@ -77,7 +77,7 @@ export function ToastCard({
 /** The count of toasts of one kind waiting behind the shown ones. */
 export function ToastOverflow({ count }: { count: number }) {
   if (count <= 0) return null;
-  return <div className="pointer-events-none rounded-md bg-muted/70 px-2 py-0.5 text-[11px] text-muted-foreground">
+  return <div className="pointer-events-none rounded-md bg-muted/70 px-2 py-0.5 text-caption text-muted-foreground">
     +{count} more waiting
   </div>;
 }

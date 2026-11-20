@@ -252,7 +252,7 @@ export function AttachPullRequest({ onAttach, variant = "inline" }: { onAttach: 
     } finally { setBusy(false); }
   };
   if (!open) {
-    return <button type="button" onClick={() => setOpen(true)} className={cn("inline-flex min-h-7 items-center gap-1.5 rounded-lg px-2 text-[11.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground", variant === "empty" && "border border-dashed border-border")}>
+    return <button type="button" onClick={() => setOpen(true)} className={cn("inline-flex min-h-7 items-center gap-1.5 rounded-lg px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground", variant === "empty" && "border border-dashed border-border")}>
       <Plus size={12} aria-hidden="true" /> Attach a pull request
     </button>;
   }
@@ -267,17 +267,17 @@ export function AttachPullRequest({ onAttach, variant = "inline" }: { onAttach: 
         onChange={event => setValue(event.target.value)}
         onKeyDown={event => { if (event.key === "Escape") { setOpen(false); setError(undefined); } }}
         placeholder="github.com/owner/repo/pull/123 or #123"
-        className="min-w-0 flex-1 bg-transparent px-1 py-1 text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground/70"
+        className="min-w-0 flex-1 bg-transparent px-1 py-1 text-meta text-foreground outline-none placeholder:text-muted-foreground/70"
         aria-invalid={!!error}
         aria-describedby={error ? `${inputId}-error` : undefined}
         disabled={busy}
       />
-      <button type="submit" disabled={busy || !value.trim()} className="inline-flex min-h-7 items-center rounded-lg bg-primary px-2.5 text-[11.5px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50">
+      <button type="submit" disabled={busy || !value.trim()} className="inline-flex min-h-7 items-center rounded-lg bg-primary px-2.5 text-caption font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50">
         {busy ? "Verifying…" : "Attach"}
       </button>
-      <button type="button" onClick={() => { setOpen(false); setError(undefined); }} className="inline-flex min-h-7 items-center rounded-lg px-2 text-[11.5px] text-muted-foreground hover:bg-accent hover:text-foreground">Cancel</button>
+      <button type="button" onClick={() => { setOpen(false); setError(undefined); }} className="inline-flex min-h-7 items-center rounded-lg px-2 text-caption text-muted-foreground hover:bg-accent hover:text-foreground">Cancel</button>
     </div>
-    {error && <p id={`${inputId}-error`} role="alert" className="px-1 text-[11px] text-destructive">{error}</p>}
+    {error && <p id={`${inputId}-error`} role="alert" className="px-1 text-caption text-destructive">{error}</p>}
   </form>;
 }
 

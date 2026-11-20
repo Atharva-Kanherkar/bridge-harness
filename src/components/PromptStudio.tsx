@@ -320,14 +320,14 @@ export function PromptStudio() {
     >
       {errorRow}
 
-      {warnings.length > 0 && <div role="status" className="rounded-xl border border-warning/30 bg-warning/10 px-3.5 py-2.5 text-[12px] leading-relaxed text-warning">
+      {warnings.length > 0 && <div role="status" className="rounded-xl border border-warning/30 bg-warning/10 px-3.5 py-2.5 text-meta leading-relaxed text-warning">
         {warnings.map(warning => <p key={warning.marker}>{warning.message}</p>)}
       </div>}
 
       <SettingsGroup
         label="prompt.md"
         note={<span className="flex items-center gap-2">
-          <span className="font-mono text-[11px]">{section.tokenEstimate} tok est</span>
+          <span className="font-mono text-caption">{section.tokenEstimate} tok est</span>
           {section.state.state === "overridden" && <StatusPill tone="warning">Modified</StatusPill>}
           {isDeleted && <StatusPill tone="destructive">Deleted</StatusPill>}
           {isDirty && <StatusPill tone="info">Unsaved draft</StatusPill>}
@@ -355,11 +355,11 @@ export function PromptStudio() {
           key={revision.id}
           label={revision.operation}
           description={<>
-            <time className="block font-mono text-[11px]">{revision.createdAt}</time>
+            <time className="block font-mono text-caption">{revision.createdAt}</time>
             {revision.attribution && <>
-              <span className="mt-1 block">Proposed by {revision.attribution.actorRole} · session <code className="break-all font-mono text-[11px]">{revision.attribution.actorSessionId}</code> · approved by you</span>
+              <span className="mt-1 block">Proposed by {revision.attribution.actorRole} · session <code className="break-all font-mono text-caption">{revision.attribution.actorSessionId}</code> · approved by you</span>
               <span className="mt-1 block whitespace-pre-wrap break-words">{revision.attribution.rationale}</span>
-              <span className="mt-1 block break-all font-mono text-[11px]">Proposal {revision.attribution.proposalId}</span>
+              <span className="mt-1 block break-all font-mono text-caption">Proposal {revision.attribution.proposalId}</span>
             </>}
           </>}
           control={<TextButton
@@ -426,7 +426,7 @@ export function PromptStudio() {
               const key = docKeyFor(target, item.id);
               return <SettingsRow
                 key={item.id}
-                label={<span className={item.id === "additional_guidance" ? undefined : "font-mono text-[12px]"}>{item.id === "additional_guidance" ? "Additional guidance" : item.id}</span>}
+                label={<span className={item.id === "additional_guidance" ? undefined : "font-mono text-meta"}>{item.id === "additional_guidance" ? "Additional guidance" : item.id}</span>}
                 openLabel={`Edit ${item.id}`}
                 description={item.id === "additional_guidance"
                   ? `Shared role guidance · ${item.tokenEstimate} tok · applies at next start or relaunch`
@@ -454,8 +454,8 @@ export function PromptStudio() {
     {importResults && <SettingsGroup label="Last import">
       {importResults.map(item => <SettingsRow
         key={item.key}
-        label={<span className={cn("font-mono text-[11px]", !item.ok && "text-destructive")}>{item.key}</span>}
-        control={<span className={cn("text-[11px]", item.ok ? "text-muted-foreground" : "text-destructive")}>
+        label={<span className={cn("font-mono text-caption", !item.ok && "text-destructive")}>{item.key}</span>}
+        control={<span className={cn("text-caption", item.ok ? "text-muted-foreground" : "text-destructive")}>
           {item.ok ? "saved" : `failed (${item.message})`}
         </span>}
       />)}
@@ -489,15 +489,15 @@ function CompiledPreview({ preview, previewError, prefixChanged }: {
           <SettingsRow label="Hash" description={preview.prefixHash} mono />
           <SettingsRow label="ID" description={preview.prefixId} mono />
           <SettingsBlockRow label="Stable prefix" description="Exact bytes">
-            <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border-card bg-popover p-2 font-mono text-[11px]">{preview.stablePrefix}</pre>
+            <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border-card bg-popover p-2 font-mono text-caption">{preview.stablePrefix}</pre>
           </SettingsBlockRow>
           <SettingsBlockRow label="Variable suffix" description="Exact bytes">
-            <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border-card bg-popover p-2 font-mono text-[11px]">{preview.variableSuffix}</pre>
+            <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border-card bg-popover p-2 font-mono text-caption">{preview.variableSuffix}</pre>
           </SettingsBlockRow>
           <SettingsRow label="Provider layers (not exact)" description="Bridge describes these; it does not own their bytes." />
           {preview.providerLayers.map(layer => <SettingsRow
             key={`${layer.layer}:${layer.adapter}`}
-            label={<span className="font-mono text-[12px]">{layer.adapter}</span>}
+            label={<span className="font-mono text-meta">{layer.adapter}</span>}
             description={layer.detail}
             control={<StatusPill>{layer.source}</StatusPill>}
           />)}

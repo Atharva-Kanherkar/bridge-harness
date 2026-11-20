@@ -78,7 +78,7 @@ export function CompositionBar({ reading, tall = false }: { reading: ContextWind
   return <div className={cn("relative", tall && compactsAt != null && "pt-5")}>
     {compactsAt != null && <span
       aria-hidden="true"
-      className={cn("pointer-events-none absolute top-0 whitespace-nowrap font-mono text-[10px] text-muted-foreground", labelLeft ? "-translate-x-full pr-1.5" : "pl-1.5", !tall && "hidden")}
+      className={cn("pointer-events-none absolute top-0 whitespace-nowrap font-mono text-micro text-muted-foreground", labelLeft ? "-translate-x-full pr-1.5" : "pl-1.5", !tall && "hidden")}
       style={{ left: width(compactsAt) }}
     >compacts ~{compactTokens(compactsAt)}</span>}
     <div
@@ -109,7 +109,7 @@ export function CompositionBar({ reading, tall = false }: { reading: ContextWind
 
 function LegendItem({ swatch, label, share }: { swatch: string; label: string; share: string }) {
   return <span className="inline-flex items-center gap-1.5">
-    <span className={cn("size-2 rounded-[3px]", swatch)} aria-hidden="true" />
+    <span className={cn("size-2 rounded-sm", swatch)} aria-hidden="true" />
     <span className="text-foreground">{label}</span>
     <span className="font-mono tabular-nums text-muted-foreground">{share}</span>
   </span>;
@@ -117,7 +117,7 @@ function LegendItem({ swatch, label, share }: { swatch: string; label: string; s
 
 function Legend({ reading }: { reading: ContextWindowReading }) {
   const composition = windowComposition(reading);
-  return <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-[11px]">
+  return <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-caption">
     {composition.used.map((segment, index) => <LegendItem key={segment.name} swatch={segmentFill(index)} label={segment.name} share={percentOf(segment.tokens, reading.windowTokens)} />)}
     {composition.unattributed > 0 && <LegendItem
       swatch={composition.used.length === 0 ? segmentFill(0) : "ctx-hatch-neutral"}
@@ -143,37 +143,37 @@ function WindowTab({ window, selected, onSelect }: { window: ContextWindow; sele
   >
     <ContextGauge percent={reading?.percent} size={22} />
     <span className="min-w-0 flex-1">
-      <span className="flex items-center gap-1.5 text-[12px] font-medium text-foreground">
+      <span className="flex items-center gap-1.5 text-meta font-medium text-foreground">
         <HarnessMark harness={window.harness} size={12} />
         <span className="truncate">{roleTitle(window)}</span>
       </span>
-      <span className="block truncate text-[11px] text-muted-foreground">{window.model ? modelLabel(window.model) : harnessLabel(window.harness)}</span>
+      <span className="block truncate text-caption text-muted-foreground">{window.model ? modelLabel(window.model) : harnessLabel(window.harness)}</span>
     </span>
-    <span className={cn("shrink-0 font-mono text-[12px] tabular-nums", reading ? TONE_TEXT[tone] : "text-muted-foreground")}>{reading ? `${reading.percent}%` : "–"}</span>
+    <span className={cn("shrink-0 font-mono text-meta tabular-nums", reading ? TONE_TEXT[tone] : "text-muted-foreground")}>{reading ? `${reading.percent}%` : "–"}</span>
   </button>;
 }
 
 function SectionTitle({ children, aside }: { children: React.ReactNode; aside?: React.ReactNode }) {
   return <div className="mb-2 mt-6 flex items-center justify-between gap-2 px-0.5">
-    <h3 className="text-[12px] font-medium text-foreground">{children}</h3>
+    <h3 className="text-meta font-medium text-foreground">{children}</h3>
     {aside}
   </div>;
 }
 
 function Row({ fill, label, detail, tokens, share, relative }: { fill: string; label: string; detail?: string | null; tokens: number; share: string; relative: number }) {
   return <li className="grid grid-cols-[minmax(0,1fr)_3.25rem_2.75rem] items-center gap-3 px-3 py-2 @md:grid-cols-[minmax(0,1fr)_minmax(4rem,30%)_3.25rem_2.75rem]">
-    <span className="flex min-w-0 items-center gap-2 text-[12px] text-foreground">
-      <span className={cn("size-2 shrink-0 rounded-[3px]", fill)} aria-hidden="true" />
+    <span className="flex min-w-0 items-center gap-2 text-meta text-foreground">
+      <span className={cn("size-2 shrink-0 rounded-sm", fill)} aria-hidden="true" />
       <span className="min-w-0">
         <span className="block truncate">{label}</span>
-        {detail && <span className="block truncate text-[11px] text-muted-foreground">{detail}</span>}
+        {detail && <span className="block truncate text-caption text-muted-foreground">{detail}</span>}
       </span>
     </span>
     <span className="hidden h-1 overflow-hidden rounded-full bg-muted @md:block" aria-hidden="true">
       <span className={cn("block h-full origin-left rounded-full motion-safe:animate-[meter-fill_600ms_ease-out_both]", fill)} style={{ width: `${Math.max(relative, 2)}%` }} />
     </span>
-    <span className="text-right font-mono text-[12px] tabular-nums text-foreground">{compactTokens(tokens)}</span>
-    <span className="text-right font-mono text-[11px] tabular-nums text-muted-foreground">{share}</span>
+    <span className="text-right font-mono text-meta tabular-nums text-foreground">{compactTokens(tokens)}</span>
+    <span className="text-right font-mono text-caption tabular-nums text-muted-foreground">{share}</span>
   </li>;
 }
 
@@ -191,11 +191,11 @@ function BridgeShare({ bridge }: { bridge: ContextBridgeContribution }) {
     <SectionTitle aside={<StateBadge state="estimated" />}>What Bridge adds</SectionTitle>
     <div className="grid gap-2 @md:grid-cols-2">
       {tiles.map(tile => <div key={tile.label} className="rounded-xl border border-border bg-card px-3 py-2.5">
-        <p className="truncate text-[11px] text-muted-foreground">{tile.label}</p>
-        <p className="mt-0.5 font-mono text-[15px] font-medium tabular-nums text-foreground">~{compactTokens(tile.tokens)}</p>
+        <p className="truncate text-caption text-muted-foreground">{tile.label}</p>
+        <p className="mt-0.5 font-mono text-message font-medium tabular-nums text-foreground">~{compactTokens(tile.tokens)}</p>
       </div>)}
     </div>
-    <p className="mt-1.5 px-0.5 text-[11px] text-muted-foreground">From the last compiled prompt{bridge.method ? `, counted as ${bridge.method}` : ""}.</p>
+    <p className="mt-1.5 px-0.5 text-caption text-muted-foreground">From the last compiled prompt{bridge.method ? `, counted as ${bridge.method}` : ""}.</p>
   </>;
 }
 
@@ -203,12 +203,12 @@ function EarlierList({ earlier }: { earlier: EarlierContextWindow[] }) {
   return <>
     <SectionTitle>Earlier in this chat</SectionTitle>
     <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
-      {earlier.map(window => <li key={`${window.harness}:${window.model}:${window.observedAt}`} className="flex items-center gap-2.5 px-3 py-2 text-[12px]">
+      {earlier.map(window => <li key={`${window.harness}:${window.model}:${window.observedAt}`} className="flex items-center gap-2.5 px-3 py-2 text-meta">
         <ContextGauge percent={window.percent} size={18} />
         <HarnessMark harness={window.harness} size={12} />
         <span className="min-w-0 flex-1 truncate text-foreground">{window.model ? modelLabel(window.model) : harnessLabel(window.harness)}</span>
         <StateBadge state={window.state} className="hidden @md:inline-flex" />
-        <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">{compactTokens(window.usedTokens)} / {compactTokens(window.windowTokens)} · {window.percent}%</span>
+        <span className="shrink-0 font-mono text-caption tabular-nums text-muted-foreground">{compactTokens(window.usedTokens)} / {compactTokens(window.windowTokens)} · {window.percent}%</span>
       </li>)}
     </ul>
   </>;
@@ -252,7 +252,7 @@ function CompactAction({ window, owner, urgent, onCompact }: {
     : state.phase === "failed" ? state.message
     : how;
   return <div data-slot="compact-action" className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2 border-t border-border px-4 py-3 @md:px-5">
-    <p role={state.phase === "failed" ? "alert" : undefined} className={cn("min-w-[12rem] flex-1 text-[12px] leading-relaxed", state.phase === "failed" ? "text-destructive" : "text-muted-foreground")}>{note}</p>
+    <p role={state.phase === "failed" ? "alert" : undefined} className={cn("min-w-[12rem] flex-1 text-meta leading-relaxed", state.phase === "failed" ? "text-destructive" : "text-muted-foreground")}>{note}</p>
     <Button
       size="sm"
       variant={urgent ? "default" : "outline"}
@@ -269,7 +269,7 @@ function CompactAction({ window, owner, urgent, onCompact }: {
 function WindowDetail({ window, bridge, earlier, onCompact }: { window: ContextWindow; bridge: ContextBridgeContribution | null | undefined; earlier: EarlierContextWindow[]; onCompact?: (sessionId: string) => Promise<void> }) {
   const reading = window.current;
   const harness = harnessLabel(window.harness);
-  const identity = <p className="flex min-w-0 items-center gap-1.5 text-[12px] text-muted-foreground">
+  const identity = <p className="flex min-w-0 items-center gap-1.5 text-meta text-muted-foreground">
     <HarnessMark harness={window.harness} size={12} />
     <span className="truncate">{harness}{window.model ? ` · ${modelLabel(window.model)}` : ""}</span>
   </p>;
@@ -282,7 +282,7 @@ function WindowDetail({ window, bridge, earlier, onCompact }: { window: ContextW
           <Badge variant="outline" className="border-dashed px-1.5 font-normal text-muted-foreground">Unavailable</Badge>
         </div>
         <p className="mt-4 font-display text-[22px] font-semibold leading-none tracking-tight text-foreground">No reading yet</p>
-        <p className="mt-2 text-[12px] leading-relaxed text-muted-foreground">{window.unavailableReason}</p>
+        <p className="mt-2 text-meta leading-relaxed text-muted-foreground">{window.unavailableReason}</p>
       </div>
       {onCompact && <CompactAction window={window} owner={null} urgent={false} onCompact={onCompact} />}
     </section>;
@@ -310,27 +310,27 @@ function WindowDetail({ window, bridge, earlier, onCompact }: { window: ContextW
         </div>
         <div className="mt-4 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
           <span className="font-display text-[40px] font-semibold leading-none tracking-tight tabular-nums text-foreground">{reading.percent}%</span>
-          <span className="text-[13px] text-muted-foreground"><span className="font-mono tabular-nums text-foreground">{compactTokens(reading.usedTokens)}</span> of {compactTokens(reading.windowTokens)} tokens</span>
-          <span className="ml-auto font-mono text-[11px] tabular-nums text-muted-foreground">{compactTokens(composition.free)} free</span>
+          <span className="text-ui text-muted-foreground"><span className="font-mono tabular-nums text-foreground">{compactTokens(reading.usedTokens)}</span> of {compactTokens(reading.windowTokens)} tokens</span>
+          <span className="ml-auto font-mono text-caption tabular-nums text-muted-foreground">{compactTokens(composition.free)} free</span>
         </div>
         <div className="mt-4"><CompositionBar reading={reading} tall /></div>
         <Legend reading={reading} />
-        <p className="mt-4 text-[11px] leading-relaxed text-muted-foreground">
+        <p className="mt-4 text-caption leading-relaxed text-muted-foreground">
           {pressure.explanation}{observed ? ` Read at ${observed}.` : ""}
         </p>
       </div>
       {onCompact && <CompactAction window={window} owner={reading.compactionOwner} urgent={level === "high" || level === "critical"} onCompact={onCompact} />}
     </section>
 
-    {reading.forecast && <p className="mt-3 flex flex-wrap items-center gap-2 px-0.5 text-[12px] text-muted-foreground">
+    {reading.forecast && <p className="mt-3 flex flex-wrap items-center gap-2 px-0.5 text-meta text-muted-foreground">
       <TrendingUp size={13} className="shrink-0" aria-hidden="true" />
       <span className="min-w-0">About <b className="font-medium text-foreground">{reading.forecast.turnsRemaining} turn{reading.forecast.turnsRemaining === 1 ? "" : "s"}</b> until {reading.autoCompactTokens != null ? "it compacts" : "the window is full"}, at ~{compactTokens(reading.forecast.growthPerTurn)} per turn.</span>
       <StateBadge state="estimated" />
     </p>}
 
-    <SectionTitle aside={<span className="text-[11px] text-muted-foreground">share of window</span>}>What fills it</SectionTitle>
+    <SectionTitle aside={<span className="text-caption text-muted-foreground">share of window</span>}>What fills it</SectionTitle>
     {composition.used.length === 0
-      ? <p className="rounded-xl border border-dashed border-border px-3 py-2.5 text-[12px] leading-relaxed text-muted-foreground">{harness} reports how full the window is but not what is in it.</p>
+      ? <p className="rounded-xl border border-dashed border-border px-3 py-2.5 text-meta leading-relaxed text-muted-foreground">{harness} reports how full the window is but not what is in it.</p>
       : <RowList>
         {composition.used.map((segment, index) => <Row key={segment.name} fill={segmentFill(index)} label={segment.name} tokens={segment.tokens} share={percentOf(segment.tokens, reading.windowTokens)} relative={(segment.tokens / largestSegment) * 100} />)}
         {composition.unattributed > 0 && <Row fill="ctx-hatch-neutral" label="Not attributed" tokens={composition.unattributed} share={percentOf(composition.unattributed, reading.windowTokens)} relative={(composition.unattributed / largestSegment) * 100} />}
@@ -345,7 +345,7 @@ function WindowDetail({ window, bridge, earlier, onCompact }: { window: ContextW
 
     {window.role !== "worker" && bridge && <BridgeShare bridge={bridge} />}
     {window.role !== "worker" && earlier.length > 0 && <EarlierList earlier={earlier} />}
-    <p className="mt-6 px-0.5 text-[11px] leading-relaxed text-muted-foreground">{owner}</p>
+    <p className="mt-6 px-0.5 text-caption leading-relaxed text-muted-foreground">{owner}</p>
   </div>;
 }
 
@@ -375,16 +375,16 @@ export function ContextLensDialog({ open, sessionId, focusSessionId, refreshKey,
       <DialogHeader className="gap-1 pe-12">
         <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
           <DialogTitle className="font-display text-base font-medium text-foreground">Context lens</DialogTitle>
-          {result && <span className="text-[12px] tabular-nums text-muted-foreground">{live} live · {windows.length} window{windows.length === 1 ? "" : "s"}</span>}
+          {result && <span className="text-meta tabular-nums text-muted-foreground">{live} live · {windows.length} window{windows.length === 1 ? "" : "s"}</span>}
         </div>
-        <DialogDescription className="text-[12px] leading-5">How full each window in this chat is, read from its own harness.</DialogDescription>
+        <DialogDescription className="text-meta leading-5">How full each window in this chat is, read from its own harness.</DialogDescription>
       </DialogHeader>
       <DialogPanel className="@container/lens">
         {!result
           ? (unavailable
             ? <div role="alert" className="rounded-2xl border border-dashed border-border px-4 py-10 text-center">
-              <p className="text-[13px] font-medium text-foreground">Context is unavailable</p>
-              <p className="mt-1 text-[12px] text-muted-foreground">This Bridge daemon does not report context windows yet. Restart Bridge after updating.</p>
+              <p className="text-ui font-medium text-foreground">Context is unavailable</p>
+              <p className="mt-1 text-meta text-muted-foreground">This Bridge daemon does not report context windows yet. Restart Bridge after updating.</p>
             </div>
             : <SkeletonRegion label="Reading context windows" className="flex flex-col gap-4">
               <Skeleton className="h-44 rounded-2xl" />
@@ -405,7 +405,7 @@ export function ContextLensDialog({ open, sessionId, focusSessionId, refreshKey,
             <div className="@container min-w-0 flex-1">
               {detail
                 ? <WindowDetail window={detail} bridge={result.bridge} earlier={result.earlier} onCompact={onCompact} />
-                : <p className="rounded-2xl border border-dashed border-border px-4 py-10 text-center text-[12px] text-muted-foreground">No window is live in this chat yet.</p>}
+                : <p className="rounded-2xl border border-dashed border-border px-4 py-10 text-center text-meta text-muted-foreground">No window is live in this chat yet.</p>}
             </div>
           </div>}
       </DialogPanel>

@@ -91,7 +91,7 @@ export function DatabaseBoard({ database, view, query, groups, run, host, onComm
   const generation = useRef(0);
   useEffect(() => { generation.current += 1; setMoves([]); setExtra({}); }, [groups]);
 
-  if (!grouping || !groups) return <p role="status" className="m-0 rounded-lg bg-muted px-3 py-6 text-center text-[13px] text-muted-foreground">Choose a property to group by</p>;
+  if (!grouping || !groups) return <p role="status" className="m-0 rounded-lg bg-muted px-3 py-6 text-center text-ui text-muted-foreground">Choose a property to group by</p>;
   // A date grouping is a bucket of days, which a move cannot write.
   const movable = MOVABLE.has(grouping.type);
 
@@ -155,7 +155,7 @@ export function DatabaseBoard({ database, view, query, groups, run, host, onComm
       onDrop={event => { event.preventDefault(); if (dragging) void move(dragging.row, dragging.from, column.key); setDragging(null); }}
       className="flex w-64 shrink-0 flex-col rounded-xl bg-muted/50 p-1.5"
     >
-      <header className="flex h-7 items-center gap-1.5 px-1 text-[12.5px]">
+      <header className="flex h-7 items-center gap-1.5 px-1 text-meta">
         <span className="min-w-0 truncate font-medium text-foreground">{column.label}</span>
         <span className="text-muted-foreground tabular-nums">{column.count}</span>
       </header>
@@ -174,8 +174,8 @@ export function DatabaseBoard({ database, view, query, groups, run, host, onComm
           />
         </li>)}
       </ol>
-      {column.count > column.cards.length && <button type="button" disabled={loading.has(column.key)} onClick={() => void loadMore(column, column.cards.length)} className="mt-1 h-7 rounded-md text-[12px] text-muted-foreground transition-colors enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-50">Load more ({column.count - column.cards.length})</button>}
-      {movable && <button type="button" aria-label={`New in ${column.label}`} onClick={() => void onNewRow({ column: grouping, value: movedValue(grouping, undefined, "", column.key) })} className="mt-1 inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-[12.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />New</button>}
+      {column.count > column.cards.length && <button type="button" disabled={loading.has(column.key)} onClick={() => void loadMore(column, column.cards.length)} className="mt-1 h-7 rounded-md text-meta text-muted-foreground transition-colors enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-50">Load more ({column.count - column.cards.length})</button>}
+      {movable && <button type="button" aria-label={`New in ${column.label}`} onClick={() => void onNewRow({ column: grouping, value: movedValue(grouping, undefined, "", column.key) })} className="mt-1 inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />New</button>}
     </section>)}
   </div>;
 }
@@ -203,15 +203,15 @@ function Card({ row, columns, host, movable, targets, onOpen, onDragStart, onDra
     className="group relative rounded-lg bg-background p-2 shadow-sm ring-1 ring-border"
   >
     <button type="button" onClick={onOpen} className="block w-full min-w-0 text-left">
-      <span className={clsx("block truncate text-[13px] font-medium", row.note.title ? "text-foreground" : "text-faint")}>{row.note.title || "Untitled"}</span>
-      {lines.map(([column, text]) => <span key={column.id} className="mt-0.5 block truncate text-[11.5px] text-muted-foreground">{column.type === "checkbox" ? column.name : text}</span>)}
+      <span className={clsx("block truncate text-ui font-medium", row.note.title ? "text-foreground" : "text-faint")}>{row.note.title || "Untitled"}</span>
+      {lines.map(([column, text]) => <span key={column.id} className="mt-0.5 block truncate text-caption text-muted-foreground">{column.type === "checkbox" ? column.name : text}</span>)}
     </button>
     {movable && targets.length > 0 && <button type="button" aria-label={`Move ${row.note.title || "Untitled"} to…`} aria-expanded={menu} onClick={() => setMenu(current => !current)} className="absolute right-1 top-1 grid size-6 place-items-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100">
       <ArrowRightLeft size={12} aria-hidden="true" />
     </button>}
     {menu && <Floating anchor={anchor} label="Move to" onClose={() => setMenu(false)} width="w-56">
       <div role="menu" aria-label="Move to">
-        {targets.map(target => <button key={target.key || "none"} type="button" role="menuitem" onClick={() => { setMenu(false); onMove(target.key); }} className="flex min-h-8 w-full items-center rounded-lg px-2.5 text-left text-[13px] text-foreground transition-colors hover:bg-accent">{target.label}</button>)}
+        {targets.map(target => <button key={target.key || "none"} type="button" role="menuitem" onClick={() => { setMenu(false); onMove(target.key); }} className="flex min-h-8 w-full items-center rounded-lg px-2.5 text-left text-ui text-foreground transition-colors hover:bg-accent">{target.label}</button>)}
       </div>
     </Floating>}
   </div>;

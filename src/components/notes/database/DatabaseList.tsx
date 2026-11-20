@@ -26,12 +26,12 @@ export function DatabaseList({ database, view, query, rows, groups, host, onOpen
 function Section({ label, count, shown, children }: { label: string; count: number; shown: number; children: React.ReactNode }) {
   const [open, setOpen] = useState(true);
   return <section aria-label={label}>
-    <button type="button" aria-expanded={open} onClick={() => setOpen(current => !current)} className="flex h-8 w-full items-center gap-1.5 rounded-md px-1 text-left text-[13px] font-medium text-foreground transition-colors hover:bg-accent">
+    <button type="button" aria-expanded={open} onClick={() => setOpen(current => !current)} className="flex h-8 w-full items-center gap-1.5 rounded-md px-1 text-left text-ui font-medium text-foreground transition-colors hover:bg-accent">
       <ChevronRight size={14} aria-hidden="true" className={clsx("text-muted-foreground transition-transform", open && "rotate-90")} />
-      {label}<span className="text-[12px] font-normal text-muted-foreground tabular-nums">{count}</span>
+      {label}<span className="text-meta font-normal text-muted-foreground tabular-nums">{count}</span>
     </button>
     {open && <div role="list" className="mt-0.5 flex flex-col">{children}</div>}
-    {open && count > shown && <p className="m-0 px-2 pt-1 text-[12px] text-muted-foreground">Showing {shown} of {count}. Filter the view to narrow it.</p>}
+    {open && count > shown && <p className="m-0 px-2 pt-1 text-meta text-muted-foreground">Showing {shown} of {count}. Filter the view to narrow it.</p>}
   </section>;
 }
 
@@ -53,7 +53,7 @@ function Windowed({ rows, render }: { rows: DatabaseRow[]; render: (row: Databas
   // The scroller stays mounted when empty, so it is measured once and rows
   // that arrive later are windowed against its real height.
   return <div ref={scroller} aria-label="List" onScroll={event => setScrollTop(event.currentTarget.scrollTop)} className="max-h-[70vh] overflow-y-auto">
-    {!rows.length && <p className="m-0 px-1 py-4 text-[13px] text-muted-foreground">No rows yet</p>}
+    {!rows.length && <p className="m-0 px-1 py-4 text-ui text-muted-foreground">No rows yet</p>}
     <div role="list">
       {start > 0 && <div aria-hidden="true" style={{ height: start * ROW_HEIGHT }} />}
       {rows.slice(start, end).map(render)}
@@ -67,10 +67,10 @@ function Line({ row, columns, host, onOpen }: { row: DatabaseRow; columns: Colum
   const chips = columns.map(column => [column, formatValue(column, cellValue(column, row.note, row.values), context)] as const).filter(([column, text]) => text && !(column.type === "checkbox" && text === "No"));
   return <div role="listitem" className="h-9">
     <button type="button" onClick={onOpen} className="flex h-9 w-full min-w-0 items-center gap-3 rounded-md px-2 text-left transition-colors hover:bg-accent">
-      <span className={clsx("min-w-0 max-w-[60%] shrink-0 truncate text-[13.5px] font-medium", row.note.title ? "text-foreground" : "text-faint")}>{row.note.title || "Untitled"}</span>
+      <span className={clsx("min-w-0 max-w-[60%] shrink-0 truncate text-ui font-medium", row.note.title ? "text-foreground" : "text-faint")}>{row.note.title || "Untitled"}</span>
       {/* Right-aligned, and clipped at the right edge when there are more than fit. */}
       <span className="ml-auto flex min-w-0 shrink items-center gap-1.5 overflow-hidden">
-        {chips.map(([column, text]) => <span key={column.id} title={`${column.name}: ${text}`} className="max-w-48 shrink-0 truncate rounded-md bg-muted px-1.5 py-0.5 text-[11.5px] text-muted-foreground">{column.type === "checkbox" ? column.name : text}</span>)}
+        {chips.map(([column, text]) => <span key={column.id} title={`${column.name}: ${text}`} className="max-w-48 shrink-0 truncate rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">{column.type === "checkbox" ? column.name : text}</span>)}
       </span>
     </button>
   </div>;

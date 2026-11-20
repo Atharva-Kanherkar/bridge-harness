@@ -124,9 +124,9 @@ export function DrawingEditor({ body, dark, title, onSave, onClose }: {
 
   return createPortal(<div role="dialog" aria-modal="true" aria-label={title ? `Drawing in ${title}` : "Drawing"} className="fixed inset-0 z-50 flex flex-col bg-background">
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
-      <h2 className="m-0 min-w-0 flex-1 truncate text-[13px] font-semibold text-foreground">{title ? `Drawing in ${title}` : "Drawing"}</h2>
+      <h2 className="m-0 min-w-0 flex-1 truncate text-ui font-semibold text-foreground">{title ? `Drawing in ${title}` : "Drawing"}</h2>
       <p className="m-0 hidden text-caption text-muted-foreground sm:block">Saved to the page as you draw. Agents can read and add to it.</p>
-      <button type="button" onClick={() => { flush(); onClose(); }} className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground px-3 text-[12px] font-medium text-background transition-opacity hover:opacity-90">
+      <button type="button" onClick={() => { flush(); onClose(); }} className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground px-3 text-meta font-medium text-background transition-opacity hover:opacity-90">
         <Check size={14} aria-hidden="true" />Done
       </button>
     </header>

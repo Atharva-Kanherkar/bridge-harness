@@ -56,7 +56,7 @@ export function ProjectsScreen({
           <button
             type="button"
             onClick={onNewWorkspace}
-            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-opacity hover:opacity-90 active:scale-[0.98]"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-opacity hover:opacity-90 active:scale-[0.98]"
           >
             <Plus size={14} strokeWidth={1.9} aria-hidden="true" /> New project
           </button>
@@ -65,8 +65,8 @@ export function ProjectsScreen({
         {!workspaces.length ? (
           <div className="rounded-xl border border-border bg-card px-6 py-10 text-center">
             <FolderGit2 size={20} strokeWidth={1.5} className="mx-auto mb-3 text-muted-foreground" aria-hidden="true" />
-            <p className="m-0 text-[13px] font-medium text-foreground">No projects yet</p>
-            <p className="mx-auto mt-1 max-w-sm text-[12.5px] leading-relaxed text-muted-foreground">
+            <p className="m-0 text-ui font-medium text-foreground">No projects yet</p>
+            <p className="mx-auto mt-1 max-w-sm text-meta leading-relaxed text-muted-foreground">
               A project connects a repository so agents can read it, branch from it, and open pull requests against it.
             </p>
           </div>
@@ -82,7 +82,7 @@ export function ProjectsScreen({
                 <section key={workspace.id} className="flex min-w-0 flex-col rounded-xl border border-border bg-card p-4">
                   <div className="flex min-w-0 items-center gap-2">
                     <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-accent text-muted-foreground"><FolderGit2 size={19} strokeWidth={1.6} aria-hidden="true" /></span>
-                    <h2 title={workspace.title} className="m-0 min-w-0 flex-1 truncate text-[15px] font-semibold tracking-[-0.01em] text-foreground">{workspace.title}</h2>
+                    <h2 title={workspace.title} className="m-0 min-w-0 flex-1 truncate text-message font-semibold tracking-[-0.01em] text-foreground">{workspace.title}</h2>
                   </div>
 
                   <p
@@ -118,7 +118,7 @@ export function ProjectsScreen({
                         onClick={() => onOpenSession(chat.id)}
                         title={chatName(chat)}
                         className={cn(
-                          "flex h-9 w-full items-center gap-2 rounded-md px-1.5 text-left text-[13px] transition-colors",
+                          "flex h-9 w-full items-center gap-2 rounded-md px-1.5 text-left text-ui transition-colors",
                           chat.id === activeSessionId
                             ? "bg-accent font-medium text-foreground"
                             : "text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -141,7 +141,7 @@ export function ProjectsScreen({
                       type="button"
                       disabled={busy}
                       onClick={() => onNewWorkspaceSession(workspace.id)}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-secondary px-2.5 text-[12px] font-medium text-secondary-foreground transition-colors hover:bg-accent disabled:opacity-40"
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-secondary px-2.5 text-meta font-medium text-secondary-foreground transition-colors hover:bg-accent disabled:opacity-40"
                     >
                       <Sparkles size={13} strokeWidth={1.75} aria-hidden="true" /> New agent
                     </button>
@@ -149,7 +149,7 @@ export function ProjectsScreen({
                       <button
                         type="button"
                         onClick={() => onConnectFolder(workspace.id)}
-                        className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                        className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-meta font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                       >
                         <FolderOpen size={13} strokeWidth={1.75} aria-hidden="true" /> Connect folder
                       </button>

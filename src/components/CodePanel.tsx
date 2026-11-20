@@ -57,7 +57,7 @@ const TreeRow = memo(function TreeRow({ row, active, onToggle, onOpen }: {
     onClick={() => (isDir ? onToggle(row.node.path) : onOpen(row.node.path))}
     aria-expanded={isDir ? row.expanded : undefined}
     className={cn(
-      "group/row flex h-7 w-full items-stretch gap-0 truncate rounded-[5px] pr-2 text-left font-mono text-[12px] transition-colors",
+      "group/row flex h-7 w-full items-stretch gap-0 truncate rounded-sm pr-2 text-left font-mono text-meta transition-colors",
       active ? "bg-accent text-foreground" : "hover:bg-accent/60",
     )}
   >
@@ -111,13 +111,13 @@ function FilePalette({ paths, onPick, onClose }: { paths: string[]; onPick: (pat
           }}
           placeholder="Go to file…"
           aria-label="Go to file"
-          className="h-11 flex-1 bg-transparent font-mono text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground"
+          className="h-11 flex-1 bg-transparent font-mono text-meta text-foreground outline-none placeholder:text-muted-foreground"
         />
         <Kbd>esc</Kbd>
       </div>
       <div className="max-h-[46vh] overflow-y-auto p-1">
         {results.length === 0
-          ? <p className="px-2 py-6 text-center text-[12px] text-muted-foreground">No file matches “{query}”.</p>
+          ? <p className="px-2 py-6 text-center text-meta text-muted-foreground">No file matches “{query}”.</p>
           : results.map((path, position) => {
             const cut = path.lastIndexOf("/") + 1;
             const { Icon, tint } = glyphFor(path);
@@ -127,7 +127,7 @@ function FilePalette({ paths, onPick, onClose }: { paths: string[]; onPick: (pat
               onMouseEnter={() => setIndex(position)}
               onClick={() => onPick(path)}
               className={cn(
-                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left font-mono text-[12px]",
+                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left font-mono text-meta",
                 path === active ? "bg-accent text-foreground" : "text-muted-foreground",
               )}
             >
@@ -356,7 +356,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
   return <div className="@container/code relative flex h-full min-h-0">
     <aside className="hidden w-52 shrink-0 flex-col border-r border-border bg-muted/20 @min-[640px]/code:flex">
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border pl-3 pr-1.5">
-        <span className="flex-1 truncate text-[12px] font-medium text-muted-foreground">Files</span>
+        <span className="flex-1 truncate text-meta font-medium text-muted-foreground">Files</span>
         <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" onClick={() => setPaletteOpen(true)} aria-label="Go to file">
           <FileSearch size={13} aria-hidden="true" />
         </Button>
@@ -366,7 +366,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-1">
         {treeError
-          ? <p className="px-2 py-3 text-[12px] leading-relaxed text-destructive">{treeError}</p>
+          ? <p className="px-2 py-3 text-meta leading-relaxed text-destructive">{treeError}</p>
           : rows.map(row => <TreeRow
             key={`${row.node.path}:${row.node.children ? "d" : "f"}`}
             row={row}
@@ -374,7 +374,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
             onToggle={toggleDir}
             onOpen={path => void openFile(path)}
           />)}
-        {rows.length >= MAX_TREE_ROWS && <p className="px-2 py-2 text-[11px] text-muted-foreground">Showing the first {MAX_TREE_ROWS} rows — use {modKey("P")} to reach the rest.</p>}
+        {rows.length >= MAX_TREE_ROWS && <p className="px-2 py-2 text-caption text-muted-foreground">Showing the first {MAX_TREE_ROWS} rows — use {modKey("P")} to reach the rest.</p>}
       </div>
     </aside>
 
@@ -388,7 +388,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
             return <div
               key={file.path}
               className={cn(
-                "group/tab relative flex shrink-0 items-center gap-1.5 border-r border-border pl-3 pr-1.5 font-mono text-[12px] transition-colors",
+                "group/tab relative flex shrink-0 items-center gap-1.5 border-r border-border pl-3 pr-1.5 font-mono text-meta transition-colors",
                 file.path === activePath ? "bg-code text-foreground" : "text-muted-foreground hover:bg-accent/50",
               )}
             >
@@ -405,7 +405,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
                 onClick={() => closeFile(file.path)}
                 aria-label={marked ? `Close ${file.path}, discarding unsaved changes` : `Close ${file.path}`}
                 title={marked ? "Close and discard unsaved changes" : "Close"}
-                className="grid h-6 w-6 shrink-0 place-items-center rounded-[3px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                className="grid h-6 w-6 shrink-0 place-items-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 {/* The dot is the unsaved marker; it becomes the close affordance on hover. */}
                 {marked
@@ -425,11 +425,11 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
         {!active
           ? <PaneState icon={FileSearch} title="Pick a file to start editing." action={<Button variant="outline" size="sm" onClick={() => setPaletteOpen(true)}>Go to file <Kbd>{modKey("P")}</Kbd></Button>}>Browse the project or search for a file. Use <Kbd>{modKey("S")}</Kbd> to save your changes.</PaneState>
           : active.state === "error" && !active.baseSha
-            ? <p className="p-6 text-[12.5px] leading-relaxed text-destructive">{active.message}</p>
+            ? <p className="p-6 text-meta leading-relaxed text-destructive">{active.message}</p>
             : active.tooLarge
-              ? <p className="p-6 text-[12.5px] leading-relaxed text-muted-foreground">{active.path} is {Math.round(active.sizeBytes / 1024)} KB — too large to open in the editor.</p>
+              ? <p className="p-6 text-meta leading-relaxed text-muted-foreground">{active.path} is {Math.round(active.sizeBytes / 1024)} KB — too large to open in the editor.</p>
               : active.binary
-                ? <p className="p-6 text-[12.5px] leading-relaxed text-muted-foreground">{active.path} is binary, so there is nothing to edit here.</p>
+                ? <p className="p-6 text-meta leading-relaxed text-muted-foreground">{active.path} is binary, so there is nothing to edit here.</p>
                 : <CodeEditor
                   key={`${active.path}:${active.seed}`}
                   docKey={`${active.path}:${active.seed}`}
@@ -443,7 +443,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
                 />}
       </div>
 
-      {active && <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-2 border-t border-border px-3 font-mono text-[11px] text-muted-foreground">
+      {active && <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-2 border-t border-border px-3 font-mono text-caption text-muted-foreground">
         <span className="truncate">{active.path}</span>
         <span className="ml-auto flex shrink-0 items-center gap-2">
           {active.state === "saving" && <LoaderCircle size={11} className="animate-spin" aria-hidden="true" />}

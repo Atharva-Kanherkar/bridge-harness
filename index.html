@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#000000" />
+    <meta name="theme-color" content="#0c0c0d" />
     <link rel="icon" type="image/svg+xml" href="/assets/bridge-icon.svg" />
     <title>Bridge</title>
     <script>
@@ -22,7 +22,7 @@
           document.documentElement.dataset.skin = skin;
           if ("__TAURI_INTERNALS__" in window) document.documentElement.dataset.tauri = "";
           var meta = document.querySelector('meta[name="theme-color"]');
-          if (meta) meta.setAttribute("content", dark ? (skin === "vibrancy" ? "#111111" : "#000000") : "#fafaf9");
+          if (meta) meta.setAttribute("content", dark ? (skin === "vibrancy" ? "#111111" : "#0c0c0d") : "#fbfbfa");
         } catch (error) {
           document.documentElement.classList.add("dark");
         }

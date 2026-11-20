@@ -41,7 +41,7 @@ export function ContextRing({ percent, model, active = false, onOpen }: { percen
     )}
   >
     <ContextGauge percent={percent} />
-    <span className={cn("min-w-[2.25rem] pr-0.5 text-left font-mono text-[11px] tabular-nums", known ? TONE_TEXT[tone] : "text-muted-foreground")}>
+    <span className={cn("min-w-[2.25rem] pr-0.5 text-left font-mono text-caption tabular-nums", known ? TONE_TEXT[tone] : "text-muted-foreground")}>
       {known ? `${Math.round(percent)}%` : "–"}
     </span>
   </button>;

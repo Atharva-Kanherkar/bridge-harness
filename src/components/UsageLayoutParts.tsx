@@ -23,7 +23,7 @@ export interface UsageLayoutProps {
 }
 
 export const LAYOUT_CARD = "u-surface rounded-2xl p-5";
-export const EYEBROW = "text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground";
+export const EYEBROW = "text-caption font-medium text-muted-foreground";
 
 /** Achromatic ramp for the four parts of processed tokens: colour stays reserved for harnesses. */
 export const KIND_SHADE: Record<TokenKind, { bg: string; opacity: number }> = {
@@ -47,7 +47,7 @@ export function periodNoun(window: UsageWindow): string {
 
 export function PartialBadge({ label, className }: { label: string | null; className?: string }) {
   if (!label) return null;
-  return <span role="status" className={cn("inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground", className)}>
+  return <span role="status" className={cn("inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-1 text-caption text-muted-foreground", className)}>
     <span className="size-1.5 rounded-full bg-muted-foreground/50" aria-hidden="true" />Partial total · {label}
   </span>;
 }
@@ -107,11 +107,11 @@ export function TokenComposition({ report, className }: { report: UsageReport; c
   return <section aria-label="Token composition" className={className}>
     <h2 className={EYEBROW}>Where the tokens went</h2>
     <div className="mt-3.5 flex h-2 gap-0.5" role="img" aria-label={TOKEN_KINDS.map(kind => `${kind.label} ${formatTokens(report.totals[kind.key])}`).join(", ")}>
-      {total > 0 ? TOKEN_KINDS.filter(kind => report.totals[kind.key] > 0).map(kind => <span key={kind.key} className={cn("min-w-1 rounded-[2px]", KIND_SHADE[kind.key].bg)} style={{ flexGrow: report.totals[kind.key] }} />) : <span className="flex-1 rounded-[2px] bg-muted" />}
+      {total > 0 ? TOKEN_KINDS.filter(kind => report.totals[kind.key] > 0).map(kind => <span key={kind.key} className={cn("min-w-1 rounded-sm", KIND_SHADE[kind.key].bg)} style={{ flexGrow: report.totals[kind.key] }} />) : <span className="flex-1 rounded-sm bg-muted" />}
     </div>
     <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4">
       {TOKEN_KINDS.map(kind => <div key={kind.key} className="flex items-baseline gap-2 text-ui">
-        <span className={cn("size-2 shrink-0 translate-y-[-1px] rounded-[2px]", KIND_SHADE[kind.key].bg)} aria-hidden="true" />
+        <span className={cn("size-2 shrink-0 translate-y-[-1px] rounded-sm", KIND_SHADE[kind.key].bg)} aria-hidden="true" />
         <dt className="text-muted-foreground">{kind.label}</dt>
         <dd className="font-medium tabular-nums text-foreground">{formatTokens(report.totals[kind.key])}</dd>
         <dd className="text-caption tabular-nums text-muted-foreground/70">{formatPercent(total > 0 ? report.totals[kind.key] / total : 0)}</dd>
@@ -152,7 +152,7 @@ export function useScrub(count: number) {
 
 /** Evenly spaced period labels. `slots` centres them under bars; otherwise they sit on the points of a line. */
 export function AxisLabels({ count, label, slots, className }: { count: number; label: (index: number) => string; slots?: boolean; className?: string }) {
-  return <div className={cn("relative h-4 text-[11px] tabular-nums text-muted-foreground/70", className)} aria-hidden="true">
+  return <div className={cn("relative h-4 text-caption tabular-nums text-muted-foreground/70", className)} aria-hidden="true">
     {evenTicks(count).map(tick => {
       if (count === 1) return <span key={tick} className="absolute left-1/2 -translate-x-1/2 whitespace-nowrap">{label(tick)}</span>;
       const first = tick === 0;

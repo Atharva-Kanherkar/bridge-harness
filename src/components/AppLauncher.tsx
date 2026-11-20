@@ -175,16 +175,16 @@ function LauncherPanel({ onClose, apps, personal, badges, pins, chats, chatOpen,
           aria-label="Search apps and chats"
           placeholder="Search apps and chats…"
           spellCheck={false}
-          className="min-w-0 flex-1 bg-transparent text-[15px] text-foreground outline-none placeholder:text-muted-foreground/70"
+          className="min-w-0 flex-1 bg-transparent text-message text-foreground outline-none placeholder:text-muted-foreground/70"
         />
         <Kbd>esc</Kbd>
       </div>
 
       <div id={`${baseId}-list`} role="listbox" aria-label="Apps and chats" className="min-h-0 flex-1 overflow-y-auto">
-        {!sections.some(section => section.id !== "actions") && <p className="px-5 pb-2 pt-5 text-center text-[13px] text-muted-foreground">No app or chat matches “{query.trim()}”.</p>}
+        {!sections.some(section => section.id !== "actions") && <p className="px-5 pb-2 pt-5 text-center text-ui text-muted-foreground">No app or chat matches “{query.trim()}”.</p>}
         {sections.map(section => (
           <div key={section.id} role="group" aria-labelledby={`${baseId}-${section.id}`} data-launcher-section={section.id} className="border-b border-border px-2 py-2.5 last:border-b-0">
-            <p id={`${baseId}-${section.id}`} className="px-2 pb-1.5 text-[11px] font-medium uppercase tracking-[0.06em] text-faint">{section.label}</p>
+            <p id={`${baseId}-${section.id}`} className="px-2 pb-1.5 text-caption font-medium text-faint">{section.label}</p>
             {section.id === "apps" || section.id === "mine"
               ? <div className="grid grid-cols-4 gap-1 sm:grid-cols-5">{section.items.map(item => item.kind === "app" && <AppTile key={item.key} app={item.app} pinned={pins.includes(item.app.key)} badge={isAppId(item.app.key) ? badgeText(badges[item.app.key]) : undefined} active={item === current} onPin={() => pinApp(item.app)} {...optionProps(item)} />)}</div>
               : section.items.map(item => <Row key={item.key} item={item} active={item === current} {...optionProps(item)} />)}
@@ -192,7 +192,7 @@ function LauncherPanel({ onClose, apps, personal, badges, pins, chats, chatOpen,
         ))}
       </div>
 
-      <div className="flex h-10 shrink-0 items-center gap-4 border-t border-border bg-muted/30 px-4 text-[11.5px] text-muted-foreground">
+      <div className="flex h-10 shrink-0 items-center gap-4 border-t border-border bg-muted/30 px-4 text-caption text-muted-foreground">
         {/* One live region for the life of the panel, so a pin result is
             announced; the key hints step aside while it speaks. */}
         <p role="status" className={status ? "min-w-0 flex-1 truncate text-foreground" : "sr-only"}>{status}</p>
@@ -212,11 +212,11 @@ function AppTile({ app, pinned, badge, active, onPin, ...option }: { app: Launch
   const Icon = app.icon;
   return (
     <div {...option} aria-label={`${app.name}${pinned ? ", pinned" : ""}${badge ? `, ${badge.label}` : ""}`} className={cn("group/tile relative flex cursor-default flex-col items-center gap-2 rounded-xl px-1 pb-2.5 pt-3 text-center", active ? "bg-selection text-selection-foreground" : "text-foreground/90")}>
-      <span className="relative flex size-11 items-center justify-center rounded-[12px] border border-border-card bg-card shadow-control">
+      <span className="relative flex size-11 items-center justify-center rounded-xl border border-border-card bg-card shadow-control">
         <Icon size={19} strokeWidth={1.5} aria-hidden="true" />
-        {badge && <span aria-hidden="true" className="absolute -right-1.5 -top-1.5 min-w-4 rounded-full bg-foreground px-1 text-[10px] font-semibold leading-4 text-background tabular-nums">{badge.count}</span>}
+        {badge && <span aria-hidden="true" className="absolute -right-1.5 -top-1.5 min-w-4 rounded-full bg-foreground px-1 text-micro font-semibold leading-4 text-background tabular-nums">{badge.count}</span>}
       </span>
-      <span className="text-[12px] leading-tight">{app.name}</span>
+      <span className="text-meta leading-tight">{app.name}</span>
       {/* The pin for a pointer. The tile stays the listbox option and ⌘P the
           keyboard path, so the button is no tab stop, keeps focus in the
           search box, and never opens the app it sits on. */}
@@ -244,14 +244,14 @@ function AppTile({ app, pinned, badge, active, onPin, ...option }: { app: Launch
 }
 
 function Row({ item, active, ...option }: { item: Item; active: boolean } & OptionProps) {
-  const base = cn("flex h-10 cursor-default items-center gap-3 rounded-lg px-2 text-[13px]", active ? "bg-selection text-selection-foreground" : "text-foreground");
+  const base = cn("flex h-10 cursor-default items-center gap-3 rounded-lg px-2 text-ui", active ? "bg-selection text-selection-foreground" : "text-foreground");
   if (item.kind === "needs") {
     const Icon = item.app.icon;
     return <div {...option} className={base}>
       <Icon size={15} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
       <span className="font-medium">{item.app.name}</span>
       <span className="min-w-0 truncate text-muted-foreground">{item.badge.label}</span>
-      <span aria-hidden="true" className="ml-auto rounded-full bg-foreground/10 px-1.5 text-[11px] tabular-nums text-muted-foreground">{item.badge.count}</span>
+      <span aria-hidden="true" className="ml-auto rounded-full bg-foreground/10 px-1.5 text-caption tabular-nums text-muted-foreground">{item.badge.count}</span>
     </div>;
   }
   if (item.kind === "chat") {

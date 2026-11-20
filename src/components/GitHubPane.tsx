@@ -133,20 +133,20 @@ function pullRequestStateIcon(pr: { isDraft: boolean; state: string }) {
   return pr.isDraft ? GitPullRequestDraft : pr.state === "merged" ? GitMerge : GitPullRequest;
 }
 
-const SECTION_LABEL = "text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground";
+const SECTION_LABEL = "text-caption font-medium text-muted-foreground";
 
 /** A section heading with an optional count, the one heading shape the pane
  *  uses so Description, Conversation and Commits read as one family. */
 function SectionLabel({ children, count, className }: { children: React.ReactNode; count?: number; className?: string }) {
   return <h3 className={cn("mb-2.5 flex items-center gap-2", SECTION_LABEL, className)}>
     {children}
-    {count !== undefined && <span className="rounded-full bg-muted px-1.5 font-mono text-[10px] tabular-nums tracking-normal text-muted-foreground">{count}</span>}
+    {count !== undefined && <span className="rounded-full bg-muted px-1.5 font-mono text-micro tabular-nums tracking-normal text-muted-foreground">{count}</span>}
   </h3>;
 }
 
 /** A branch name as a quiet mono chip. */
 function BranchChip({ name, className }: { name: string; className?: string }) {
-  return <span title={name} className={cn("inline-block max-w-full truncate rounded-[5px] bg-muted px-1.5 py-px font-mono text-[11px] text-foreground/80", className)}>{name}</span>;
+  return <span title={name} className={cn("inline-block max-w-full truncate rounded-sm bg-muted px-1.5 py-px font-mono text-caption text-foreground/80", className)}>{name}</span>;
 }
 
 const STRATEGY_LABEL: Record<MergeStrategy, string> = { merge: "Merge commit", squash: "Squash and merge", rebase: "Rebase and merge" };
@@ -193,7 +193,7 @@ function CopyButton({ value, label, className, children }: {
     aria-label={copied ? `${label} copied` : label}
     title={copied ? "Copied" : label}
     className={cn(
-      "inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+      "inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
       className,
     )}
   >
@@ -258,8 +258,8 @@ function OpenOnGithub({ url, what, className }: { url: string; what: string; cla
 function PaneNotice({ icon: Icon, title, spin, children }: { icon: typeof GitPullRequest; title: string; spin?: boolean; children?: React.ReactNode }) {
   return <div className="animate-page-mount flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
     <span className="grid size-12 place-items-center rounded-2xl border border-border bg-card text-muted-foreground shadow-xs"><Icon size={19} strokeWidth={1.6} className={cn(spin && "animate-spin")} aria-hidden="true" /></span>
-    <p className="mt-2 font-display text-[14px] font-semibold text-foreground">{title}</p>
-    <div className="max-w-[26rem] text-[12px] leading-relaxed text-muted-foreground">{children}</div>
+    <p className="mt-2 font-display text-body font-semibold text-foreground">{title}</p>
+    <div className="max-w-[26rem] text-meta leading-relaxed text-muted-foreground">{children}</div>
   </div>;
 }
 
@@ -267,7 +267,7 @@ function PaneNotice({ icon: Icon, title, spin, children }: { icon: typeof GitPul
  * a raw ISO string (or "unknown") is noise, not information. */
 function CommentTime({ iso }: { iso: string }) {
   if (Number.isNaN(Date.parse(iso))) return null;
-  return <time dateTime={iso} title={new Date(iso).toLocaleString()} className="text-[11px] text-muted-foreground">{relativeTime(iso, new Date())}</time>;
+  return <time dateTime={iso} title={new Date(iso).toLocaleString()} className="text-caption text-muted-foreground">{relativeTime(iso, new Date())}</time>;
 }
 
 /** Placeholder rows with optional connection context above the shared list. */
@@ -285,8 +285,8 @@ function ConnectingNotice() {
   return <div className="mb-3 flex items-center gap-2.5 rounded-xl border border-border bg-card px-3 py-2.5">
     <LoaderCircle size={14} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
     <span className="min-w-0">
-      <span className="block text-[12px] font-medium text-foreground">Connecting to GitHub…</span>
-      <span className="block text-[11px] leading-relaxed text-muted-foreground">Resolving the CLI and repository.</span>
+      <span className="block text-meta font-medium text-foreground">Connecting to GitHub…</span>
+      <span className="block text-caption leading-relaxed text-muted-foreground">Resolving the CLI and repository.</span>
     </span>
   </div>;
 }
@@ -332,7 +332,7 @@ function LabelBadge({ label }: { label: GithubLabel }) {
   const color = /^[\da-f]{3,8}$/i.test(label.color) ? `#${label.color}` : undefined;
   return <span
     title={label.description || label.name}
-    className="inline-flex max-w-[12rem] items-center gap-1.5 rounded-full border border-border bg-card px-2 py-0.5 text-[11px] text-muted-foreground"
+    className="inline-flex max-w-[12rem] items-center gap-1.5 rounded-full border border-border bg-card px-2 py-0.5 text-caption text-muted-foreground"
   >
     <span className="size-2 shrink-0 rounded-full bg-muted-foreground" style={color ? { backgroundColor: color } : undefined} aria-hidden="true" />
     <span className="min-w-0 truncate">{label.name}</span>
@@ -349,12 +349,12 @@ function LabelControls({ available, current, disabled, onChange }: {
   return <div className="animate-page-mount mt-2 grid max-h-56 gap-1 overflow-y-auto rounded-lg border border-border bg-card p-1.5" aria-label="Repository labels">
     {available.length ? available.map(label => {
       const active = selected.has(label.name);
-      return <button key={label.name} type="button" disabled={disabled} onClick={() => onChange(label.name, active ? "remove" : "add")} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] text-foreground transition-colors hover:bg-accent disabled:opacity-50">
+      return <button key={label.name} type="button" disabled={disabled} onClick={() => onChange(label.name, active ? "remove" : "add")} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-50">
         <Tag size={11} className={active ? "text-primary" : "text-muted-foreground"} aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate">{label.name}</span>
-        <span className="text-[11px] text-muted-foreground">{active ? "Remove" : "Add"}</span>
+        <span className="text-caption text-muted-foreground">{active ? "Remove" : "Add"}</span>
       </button>;
-    }) : <p className="px-2 py-1 text-[11px] text-muted-foreground">No repository labels.</p>}
+    }) : <p className="px-2 py-1 text-caption text-muted-foreground">No repository labels.</p>}
   </div>;
 }
 
@@ -369,7 +369,7 @@ function ListSearch({ value, onChange, placeholder }: { value: string; onChange:
       onChange={event => onChange(event.target.value)}
       placeholder={placeholder}
       aria-label={placeholder}
-      className="min-w-0 flex-1 bg-transparent text-[12px] text-foreground outline-none placeholder:text-muted-foreground [&::-webkit-search-cancel-button]:hidden"
+      className="min-w-0 flex-1 bg-transparent text-meta text-foreground outline-none placeholder:text-muted-foreground [&::-webkit-search-cancel-button]:hidden"
     />
     {value && <button type="button" onClick={() => onChange("")} aria-label="Clear the filter" className="grid size-4 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground">
       <X size={10} aria-hidden="true" />
@@ -641,7 +641,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       {signingIn
         ? <div className="text-left"><ProviderLoginPane provider="github" label="GitHub" onClose={() => { setSigningIn(false); void loadSurface(true); }} /></div>
         : <span className="mt-3 block">
-          <button type="button" onClick={() => setSigningIn(true)} className="min-h-8 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90">Sign in to GitHub</button>
+          <button type="button" onClick={() => setSigningIn(true)} className="min-h-8 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90">Sign in to GitHub</button>
         </span>}
     </PaneNotice>;
   } else if (!status.repository) {
@@ -650,7 +650,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
     body = <PaneNotice icon={FolderGit2} title="No GitHub repository connected">
       This folder has no GitHub remote, so there are no pull requests or issues to show. Connect it to a repository and this pane fills in.
       <span className="mt-3 block">
-        <button type="button" onClick={() => setConnectOpen(true)} className="min-h-8 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90">Connect a repository</button>
+        <button type="button" onClick={() => setConnectOpen(true)} className="min-h-8 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90">Connect a repository</button>
       </span>
     </PaneNotice>;
   } else if (surfaceTab === "pulls" && selected !== undefined) {
@@ -743,18 +743,18 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
             data-active={surfaceTab === id}
             onClick={() => pickSurface(id)}
             className={cn(
-              "relative -mb-px flex h-10 items-center gap-1.5 border-b-2 px-2.5 text-[13px] transition-colors",
+              "relative -mb-px flex h-10 items-center gap-1.5 border-b-2 px-2.5 text-ui transition-colors",
               surfaceTab === id ? "border-foreground font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
             )}
           >
             <Icon size={14} strokeWidth={1.7} aria-hidden="true" />
             {label}
-            {count !== undefined && <span className={cn("rounded-full px-1.5 font-mono text-[10.5px] tabular-nums", surfaceTab === id ? "bg-foreground text-background" : "bg-muted text-muted-foreground")}>{count}</span>}
+            {count !== undefined && <span className={cn("rounded-full px-1.5 font-mono text-micro tabular-nums", surfaceTab === id ? "bg-foreground text-background" : "bg-muted text-muted-foreground")}>{count}</span>}
           </button>)}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-0.5 self-center">
           {repoLabel && <CopyButton value={repoLabel} label={`Copy ${repoLabel}`} className="h-7 px-2">
-            <span className="whitespace-nowrap font-mono text-[11px]">{repoLabel}</span>
+            <span className="whitespace-nowrap font-mono text-caption">{repoLabel}</span>
           </CopyButton>}
           {repositoryUrl && <OpenOnGithub url={repositoryUrl} what={repoLabel ?? "the repository"} />}
           {refreshButton}
@@ -769,7 +769,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
             aria-pressed={facet === choice.id}
             data-active={facet === choice.id}
             onClick={() => setFacet(choice.id)}
-            className="u-segmented-item rounded-md px-2.5 py-1 text-[12px] text-muted-foreground"
+            className="u-segmented-item rounded-md px-2.5 py-1 text-meta text-muted-foreground"
           >{choice.label}</button>)}
         </div>}
       </div>}
@@ -780,7 +780,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
             <FolderGit2 size={13} strokeWidth={1.7} aria-hidden="true" />
           </span>
           {repoLabel && <CopyButton value={repoLabel} label={`Copy ${repoLabel}`} className="h-7 min-w-0 shrink px-1.5">
-            <span className="min-w-0 truncate font-mono text-[11px]">{repoLabel}</span>
+            <span className="min-w-0 truncate font-mono text-caption">{repoLabel}</span>
           </CopyButton>}
         </div>
         <div className="u-segmented flex shrink-0 items-center p-0.5" role="toolbar" aria-label="GitHub repository actions">
@@ -807,7 +807,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
             aria-pressed={facet === choice.id}
             data-active={facet === choice.id}
             onClick={() => setFacet(choice.id)}
-            className="u-segmented-item rounded-md px-2 py-1 text-[11px] text-muted-foreground"
+            className="u-segmented-item rounded-md px-2 py-1 text-caption text-muted-foreground"
           >{choice.label}</button>)}
         </div>}
       </div>}
@@ -817,7 +817,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       onCancel={() => setConnectOpen(false)}
       onConnected={() => { setConnectOpen(false); void loadSurface(true); }}
     />}
-    {tabErrors[surfaceTab] && ((surfaceTab === "pulls" && prs) || (surfaceTab === "issues" && issues) || (surfaceTab === "repository" && repositoryOverview)) && <p role="alert" className="border-b border-border bg-warning/10 px-4 py-2 text-[11px] text-warning">Refresh failed: {tabErrors[surfaceTab]}</p>}
+    {tabErrors[surfaceTab] && ((surfaceTab === "pulls" && prs) || (surfaceTab === "issues" && issues) || (surfaceTab === "repository" && repositoryOverview)) && <p role="alert" className="border-b border-border bg-warning/10 px-4 py-2 text-caption text-warning">Refresh failed: {tabErrors[surfaceTab]}</p>}
     {sideList
       ? <div className="flex min-h-0 flex-1">
           <div data-pulls-list className="hidden min-h-0 w-[min(420px,38%)] shrink-0 flex-col border-r border-border min-[1100px]:flex">{sideList}</div>
@@ -844,14 +844,14 @@ const PR_GRID = "grid-cols-[minmax(0,1fr)_9.5rem_8.5rem_9rem]";
 /** The checks column: a glyph, a count and the proportions bar, all in the
  *  rollup's verdict colour so a red row is findable from across the room. */
 function ChecksCell({ pr }: { pr: PullRequestListItem }) {
-  if (!pr.checks.total) return <span className="text-[11px] text-muted-foreground">No checks</span>;
+  if (!pr.checks.total) return <span className="text-caption text-muted-foreground">No checks</span>;
   const rollup = ROLLUP[rollupState(pr)];
   const RollupIcon = rollup.icon;
   return <span className="flex min-w-0 flex-col gap-1.5" title={`${rollup.label} — ${pr.checks.passed}/${pr.checks.total} checks passed`}>
-    <span className={cn("inline-flex items-center gap-1.5 text-[11.5px] tabular-nums", rollup.className)}>
+    <span className={cn("inline-flex items-center gap-1.5 text-caption tabular-nums", rollup.className)}>
       <RollupIcon size={13} aria-hidden="true" className={cn(rollup.live && "github-check-live")} />
       <span className="font-medium"><RollLabel value={rollup.label} /></span>
-      <span className="font-mono text-[11px] text-muted-foreground">{pr.checks.passed}/{pr.checks.total}</span>
+      <span className="font-mono text-caption text-muted-foreground">{pr.checks.passed}/{pr.checks.total}</span>
     </span>
     <RollupMeter checks={pr.checks} className="w-full max-w-28" />
   </span>;
@@ -876,19 +876,19 @@ function PullRequestRow({ pr, index, wide, active, onOpen }: { pr: PullRequestLi
         <StateIcon size={16} strokeWidth={1.8} aria-hidden="true" className={cn("mt-0.5 shrink-0", stateTone)} />
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="min-w-0 text-[13.5px] font-medium leading-5 text-foreground group-hover:underline group-hover:decoration-border group-hover:underline-offset-4">{pr.title}</span>
+            <span className="min-w-0 text-ui font-medium leading-5 text-foreground group-hover:underline group-hover:decoration-border group-hover:underline-offset-4">{pr.title}</span>
             {pr.isDraft && <Badge variant="outline" size="sm">Draft</Badge>}
             {pr.mergeability === "conflicting" && <Badge variant="warning" size="sm"><TriangleAlert aria-hidden="true" />Conflicts</Badge>}
           </span>
-          <span className="mt-1.5 flex min-w-0 items-center gap-2 text-[11.5px] text-muted-foreground">
+          <span className="mt-1.5 flex min-w-0 items-center gap-2 text-caption text-muted-foreground">
             <span className="shrink-0 font-mono tabular-nums">#{pr.number}</span>
             <BranchChip name={pr.headBranch} className="min-w-0" />
           </span>
         </span>
       </span>
       <ChecksCell pr={pr} />
-      <span className="min-w-0">{review ? <Badge variant={review.variant} size="sm">{review.label}</Badge> : <span className="text-[11px] text-muted-foreground">—</span>}</span>
-      <span className="flex min-w-0 items-center gap-2 pr-12 text-[12px] text-muted-foreground">
+      <span className="min-w-0">{review ? <Badge variant={review.variant} size="sm">{review.label}</Badge> : <span className="text-caption text-muted-foreground">—</span>}</span>
+      <span className="flex min-w-0 items-center gap-2 pr-12 text-meta text-muted-foreground">
         <Monogram login={pr.author?.login} />
         <span className="truncate">{pr.author?.login ?? "ghost"}</span>
       </span>
@@ -901,16 +901,16 @@ function PullRequestRow({ pr, index, wide, active, onOpen }: { pr: PullRequestLi
       <StateIcon size={15} strokeWidth={1.8} aria-hidden="true" className={cn("mt-0.5 shrink-0", stateTone)} />
       <span className="min-w-0 flex-1">
         <span className="flex flex-wrap items-start gap-x-1.5 gap-y-1">
-          <span className="min-w-0 flex-1 text-[13px] font-medium leading-5 text-foreground">{pr.title}</span>
+          <span className="min-w-0 flex-1 text-ui font-medium leading-5 text-foreground">{pr.title}</span>
           {pr.mergeability === "conflicting" && <Badge variant="warning" size="sm">Conflicts</Badge>}
           {pr.isDraft && <Badge variant="outline" size="sm">Draft</Badge>}
           {review && <Badge variant={review.variant} size="sm">{review.label}</Badge>}
-          {pr.checks.total > 0 && <span className={cn("inline-flex shrink-0 items-center gap-1 font-mono text-[11px] tabular-nums", rollup.className)} title={`${rollup.label} — ${pr.checks.passed}/${pr.checks.total} checks passed`}>
+          {pr.checks.total > 0 && <span className={cn("inline-flex shrink-0 items-center gap-1 font-mono text-caption tabular-nums", rollup.className)} title={`${rollup.label} — ${pr.checks.passed}/${pr.checks.total} checks passed`}>
             <RollupIcon size={12} aria-hidden="true" className={cn(rollup.live && "github-check-live")} />
             {pr.checks.passed}/{pr.checks.total}
           </span>}
         </span>
-        <span className="mt-1 flex items-center gap-1.5 pr-14 text-[11px] text-muted-foreground">
+        <span className="mt-1 flex items-center gap-1.5 pr-14 text-caption text-muted-foreground">
           <span className="shrink-0 tabular-nums">#{pr.number}</span>
           <span aria-hidden="true">·</span>
           <span className="truncate font-mono">{pr.headBranch}</span>
@@ -947,7 +947,7 @@ function PatchView({ patch, fullDiffUrl, onComment }: { patch: string; fullDiffU
   // One open composer per file: starting a second comment moves it.
   const [composing, setComposing] = useState<number>();
   return <>
-    <div role="group" className="max-h-[28rem] overflow-auto bg-background/50 py-2 font-mono text-[11px] leading-5" aria-label="File patch">{shown.map((line, index) => {
+    <div role="group" className="max-h-[28rem] overflow-auto bg-background/50 py-2 font-mono text-caption leading-5" aria-label="File patch">{shown.map((line, index) => {
       const anchor = onComment ? commentAnchor(line) : null;
       return <div key={index}>
         <div className={cn("group/line relative flex w-max min-w-full whitespace-pre", PATCH_ROW[line.kind])}>
@@ -958,7 +958,7 @@ function PatchView({ patch, fullDiffUrl, onComment }: { patch: string; fullDiffU
             onClick={() => setComposing(index)}
             aria-label={`Comment on line ${anchor.line}`}
             title={`Comment on line ${anchor.line}`}
-            className="absolute left-[4.1rem] top-0.5 grid size-4 -translate-x-1/2 scale-75 place-items-center rounded-[4px] bg-primary text-primary-foreground opacity-0 shadow-xs transition-[opacity,transform] duration-150 hover:scale-110 focus-visible:scale-100 focus-visible:opacity-100 group-hover/line:scale-100 group-hover/line:opacity-100"
+            className="absolute left-[4.1rem] top-0.5 grid size-4 -translate-x-1/2 scale-75 place-items-center rounded-sm bg-primary text-primary-foreground opacity-0 shadow-xs transition-[opacity,transform] duration-150 hover:scale-110 focus-visible:scale-100 focus-visible:opacity-100 group-hover/line:scale-100 group-hover/line:opacity-100"
           ><Plus size={11} strokeWidth={2.4} aria-hidden="true" /></button>}
           <span className="pl-2 pr-3">{line.text || " "}</span>
         </div>
@@ -974,7 +974,7 @@ function PatchView({ patch, fullDiffUrl, onComment }: { patch: string; fullDiffU
         </div>}
       </div>;
     })}</div>
-    {shown.length < lines.length && <a href={fullDiffUrl} target="_blank" rel="noreferrer" data-system-browser className="flex items-center gap-1.5 border-t border-border px-3 py-2 text-[11px] text-muted-foreground transition-colors hover:text-foreground">
+    {shown.length < lines.length && <a href={fullDiffUrl} target="_blank" rel="noreferrer" data-system-browser className="flex items-center gap-1.5 border-t border-border px-3 py-2 text-caption text-muted-foreground transition-colors hover:text-foreground">
       <ExternalLink size={11} aria-hidden="true" />
       Patch truncated at {PATCH_LINE_LIMIT} lines — view the full diff on GitHub
     </a>}
@@ -992,14 +992,14 @@ function FileChange({ file, defaultOpen, fullDiffUrl, onComment }: {
     <div className={cn("flex items-center transition-colors hover:bg-accent/40", open && "border-b border-border")}>
       <button type="button" onClick={() => setOpen(value => !value)} aria-expanded={open} className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left">
         <ChevronRight size={11} aria-hidden="true" className={cn("shrink-0 text-muted-foreground transition-transform duration-200", open && "rotate-90")} />
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground">{file.path}</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-caption text-foreground">{file.path}</span>
         <Badge variant="outline" size="sm">{file.status}</Badge>
-        <span className="font-mono text-[11px] text-success">+{file.additions}</span>
-        <span className="font-mono text-[11px] text-destructive">−{file.deletions}</span>
+        <span className="font-mono text-caption text-success">+{file.additions}</span>
+        <span className="font-mono text-caption text-destructive">−{file.deletions}</span>
       </button>
       <CopyButton value={file.path} label={`Copy the path ${file.path}`} className="mr-1.5" />
     </div>
-    {open && (file.patch ? <PatchView patch={file.patch} fullDiffUrl={fullDiffUrl} onComment={onComment} /> : <p className="px-3 py-4 text-center text-[12px] text-muted-foreground">Binary file or patch unavailable from GitHub.</p>)}
+    {open && (file.patch ? <PatchView patch={file.patch} fullDiffUrl={fullDiffUrl} onComment={onComment} /> : <p className="px-3 py-4 text-center text-meta text-muted-foreground">Binary file or patch unavailable from GitHub.</p>)}
   </article>;
 }
 
@@ -1023,8 +1023,8 @@ function CommentList({ comments, repositoryUrl }: {
         className="group overflow-hidden rounded-lg border border-border bg-card"
       >
         <div className="flex items-center gap-2 border-b border-border/60 px-3 py-1.5">
-          <Avatar login={comment.author?.login} className="size-[18px] text-[9px]" />
-          <span className="text-[11.5px] font-medium text-foreground">{comment.author?.login ?? "ghost"}</span>
+          <Avatar login={comment.author?.login} className="size-[18px] text-micro" />
+          <span className="text-caption font-medium text-foreground">{comment.author?.login ?? "ghost"}</span>
           <CommentTime iso={comment.createdAt} />
           <span className="ml-auto flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
             <CopyButton value={comment.url} label="Copy the link to this comment" />
@@ -1044,7 +1044,7 @@ function ChecksList({ checks, rollup }: { checks: GithubChecksResult["checks"]; 
   const settled = useCheckSettle(checks);
   return <section aria-label="Checks" className="space-y-3">
     {rollup && rollup.total > 0 && <div className="rounded-lg border border-border bg-card px-3 py-2.5">
-      <p className="flex items-center gap-2 text-[11px] text-muted-foreground">
+      <p className="flex items-center gap-2 text-caption text-muted-foreground">
         <span className="font-medium text-foreground">{rollup.passed}/{rollup.total} passed</span>
         {rollup.failed > 0 && <span className="text-destructive">{rollup.failed} failed</span>}
         {rollup.queued + rollup.inProgress > 0 && <span className="text-warning">{rollup.queued + rollup.inProgress} running</span>}
@@ -1062,13 +1062,13 @@ function ChecksList({ checks, rollup }: { checks: GithubChecksResult["checks"]; 
           const justSettled = settled.has(key);
           return <div key={key} className={cn("flex items-center gap-2.5 px-3 py-2", justSettled && "github-check-settle")}>
             <ToneIcon size={13.5} className={cn("shrink-0", tone.className, tone.live && "github-check-live", justSettled && "check-glyph-settle")} aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate text-[12px] text-foreground">{check.name}</span>
-            <span className="shrink-0 text-[11px] text-muted-foreground">{check.conclusion ?? check.status}</span>
+            <span className="min-w-0 flex-1 truncate text-meta text-foreground">{check.name}</span>
+            <span className="shrink-0 text-caption text-muted-foreground">{check.conclusion ?? check.status}</span>
             {check.logUrl && <OpenOnGithub url={check.logUrl} what={`logs for ${check.name}`} />}
           </div>;
         })}
       </div>
-    </div>) : <p className="text-[12px] text-muted-foreground">No checks reported.</p>}
+    </div>) : <p className="text-meta text-muted-foreground">No checks reported.</p>}
   </section>;
 }
 
@@ -1086,9 +1086,9 @@ function CommitList({ commits, prUrl }: { commits: GithubPullRequestResult["pull
       >
         <GitCommitHorizontal size={14} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         <div className="min-w-0 flex-1">
-          <p className="pr-14 text-[12.5px] font-medium leading-5 text-foreground">{commit.messageHeadline || "(no commit message)"}</p>
-          {commit.messageBody.trim() && <p className="mt-0.5 whitespace-pre-line text-[11px] leading-relaxed text-muted-foreground">{commit.messageBody.trim()}</p>}
-          <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+          <p className="pr-14 text-meta font-medium leading-5 text-foreground">{commit.messageHeadline || "(no commit message)"}</p>
+          {commit.messageBody.trim() && <p className="mt-0.5 whitespace-pre-line text-caption leading-relaxed text-muted-foreground">{commit.messageBody.trim()}</p>}
+          <p className="mt-1 flex flex-wrap items-center gap-1.5 text-caption text-muted-foreground">
             <span className="font-mono text-foreground/80">{commit.abbreviatedOid}</span>
             {commit.authors.length > 0 && <>
               <span aria-hidden="true">·</span>
@@ -1105,7 +1105,7 @@ function CommitList({ commits, prUrl }: { commits: GithubPullRequestResult["pull
           <OpenOnGithub url={`${prUrl}/commits/${commit.oid}`} what={`commit ${commit.abbreviatedOid}`} />
         </span>
       </article>)}
-    </div> : <p className="text-[12px] text-muted-foreground">No commits reported for this pull request.</p>}
+    </div> : <p className="text-meta text-muted-foreground">No commits reported for this pull request.</p>}
   </section>;
 }
 
@@ -1120,8 +1120,8 @@ function IssueList({ issues, wide, active, onOpen }: { issues: GithubIssuesResul
         <button type="button" onClick={() => onOpen(issue.number)} className={cn("flex min-w-0 flex-1 items-start text-left", wide ? "gap-3 px-4 py-3.5" : "gap-2.5 px-3 py-3")}>
           <CircleDot size={wide ? 16 : 14} strokeWidth={1.8} className={cn("mt-0.5 shrink-0", issue.state === "open" ? "text-foreground" : "text-muted-foreground")} aria-hidden="true" />
           <span className="min-w-0 flex-1">
-            <span className={cn("block pr-14 font-medium leading-5 text-foreground", wide ? "text-[13.5px]" : "text-[13px]")}>{issue.title}</span>
-            <span className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground"><span className="font-mono tabular-nums">#{issue.number}</span><span aria-hidden="true">·</span>{wide && <Monogram login={issue.author?.login} className="size-4 text-[9px]" />}<span>{issue.author?.login ?? "ghost"}</span>{!Number.isNaN(Date.parse(issue.updatedAt)) && <><span aria-hidden="true">·</span><span>updated {relativeTime(issue.updatedAt, new Date())}</span></>}</span>
+            <span className={cn("block pr-14 font-medium leading-5 text-foreground", wide ? "text-ui" : "text-ui")}>{issue.title}</span>
+            <span className="mt-1 flex items-center gap-1.5 text-caption text-muted-foreground"><span className="font-mono tabular-nums">#{issue.number}</span><span aria-hidden="true">·</span>{wide && <Monogram login={issue.author?.login} className="size-4 text-micro" />}<span>{issue.author?.login ?? "ghost"}</span>{!Number.isNaN(Date.parse(issue.updatedAt)) && <><span aria-hidden="true">·</span><span>updated {relativeTime(issue.updatedAt, new Date())}</span></>}</span>
             {!!issue.labels.length && <span className="mt-2 flex flex-wrap gap-1">{issue.labels.map(label => <LabelBadge key={label.name} label={label} />)}</span>}
           </span>
         </button>
@@ -1147,7 +1147,7 @@ function RepositoryOverview({ overview }: { overview: GithubRepositoryResult }) 
         <span className="grid size-9 shrink-0 place-items-center rounded-lg border border-border bg-card"><FolderGit2 size={16} aria-hidden="true" /></span>
         <div className="min-w-0 flex-1">
           <h2 className="truncate font-display text-base font-semibold text-foreground">{overview.nameWithOwner}</h2>
-          <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">{overview.description || "No repository description."}</p>
+          <p className="mt-1 text-meta leading-relaxed text-muted-foreground">{overview.description || "No repository description."}</p>
         </div>
         <Badge variant="outline" size="sm">{overview.visibility.toLowerCase()}</Badge>
       </div>
@@ -1156,8 +1156,8 @@ function RepositoryOverview({ overview }: { overview: GithubRepositoryResult }) 
         <CopyButton value={`git clone ${overview.url}.git`} label="Copy the clone command" className="border border-border bg-card px-2">Copy clone command</CopyButton>
         <OpenOnGithub url={overview.url} what={overview.nameWithOwner} />
       </div>
-      <div className="mt-5 grid grid-cols-2 gap-2 @2xl:grid-cols-4">{facts.map(([label, value, Icon]) => <div key={label} className="rounded-lg bg-muted/50 px-3 py-3"><p className="flex items-center gap-1.5 text-[11px] text-muted-foreground"><Icon size={11} aria-hidden="true" />{label}</p><p className="mt-1.5 truncate text-[15px] font-semibold tabular-nums text-foreground">{value}</p></div>)}</div>
-      <section className="mt-5"><SectionLabel>Labels</SectionLabel><div className="flex flex-wrap gap-1.5">{overview.labels.length ? overview.labels.map(label => <LabelBadge key={label.name} label={label} />) : <p className="text-[12px] text-muted-foreground">No labels.</p>}</div></section>
+      <div className="mt-5 grid grid-cols-2 gap-2 @2xl:grid-cols-4">{facts.map(([label, value, Icon]) => <div key={label} className="rounded-lg bg-muted/50 px-3 py-3"><p className="flex items-center gap-1.5 text-caption text-muted-foreground"><Icon size={11} aria-hidden="true" />{label}</p><p className="mt-1.5 truncate text-message font-semibold tabular-nums text-foreground">{value}</p></div>)}</div>
+      <section className="mt-5"><SectionLabel>Labels</SectionLabel><div className="flex flex-wrap gap-1.5">{overview.labels.length ? overview.labels.map(label => <LabelBadge key={label.name} label={label} />) : <p className="text-meta text-muted-foreground">No labels.</p>}</div></section>
     </div>
   </div>;
 }
@@ -1194,14 +1194,14 @@ const REVIEW_HARNESSES: ReadonlyArray<{ id: string; label: string; note?: string
   { id: "bugbot", label: "Cursor Bugbot" },
 ];
 
-const ACTION_BUTTON = "inline-flex min-h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-[12px] font-medium text-foreground shadow-xs transition-colors hover:bg-accent active:scale-[0.98] disabled:opacity-50";
+const ACTION_BUTTON = "inline-flex min-h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-meta font-medium text-foreground shadow-xs transition-colors hover:bg-accent active:scale-[0.98] disabled:opacity-50";
 /** The one action a PR is for. Ink on paper, like every other primary button
  *  in the app, rather than a green that reads as a status. */
-const PRIMARY_ACTION = "inline-flex min-h-7 items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-[12px] font-medium text-primary-foreground shadow-xs transition-colors hover:bg-primary/90 active:scale-[0.98] disabled:opacity-50";
+const PRIMARY_ACTION = "inline-flex min-h-7 items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-meta font-medium text-primary-foreground shadow-xs transition-colors hover:bg-primary/90 active:scale-[0.98] disabled:opacity-50";
 /** Ending something is available but never loud until a pointer is on it. */
-const QUIET_ACTION = "ml-auto inline-flex min-h-7 items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive active:scale-[0.98] disabled:opacity-50";
+const QUIET_ACTION = "ml-auto inline-flex min-h-7 items-center gap-1.5 rounded-md px-2.5 py-1 text-meta font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive active:scale-[0.98] disabled:opacity-50";
 
-const PILL_BASE = "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize shadow-xs";
+const PILL_BASE = "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-caption font-medium capitalize shadow-xs";
 const PILL_MERGED = "border-merged/45 bg-merged/15 text-merged";
 const PILL_NEUTRAL = "border-border bg-card text-foreground";
 
@@ -1342,7 +1342,7 @@ function DetailTabs<T extends string>({ id, tabs, active, onSelect, label }: {
         onSelect(tabs[next].value);
         document.getElementById(`${id}-${tabs[next].value}`)?.focus();
       }}
-      className={cn("relative px-2.5 py-2.5 text-[12.5px] capitalize transition-colors", active === tab.value ? "font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}
+      className={cn("relative px-2.5 py-2.5 text-meta capitalize transition-colors", active === tab.value ? "font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}
     >
       {tab.label}
       {active === tab.value && <motion.span layoutId={`${id}-underline`} className="absolute inset-x-1.5 -bottom-px h-0.5 rounded-full bg-foreground" aria-hidden="true" />}
@@ -1544,7 +1544,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   };
 
   const header = <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5">
-    <button type="button" onClick={onBack} className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+    <button type="button" onClick={onBack} className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 py-1 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
       <ArrowLeft size={12.5} aria-hidden="true" /> All pull requests
     </button>
   </div>;
@@ -1620,10 +1620,10 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
     {header}
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className={cn("animate-page-mount relative border-b border-border px-5 pb-4 pt-4", merge.celebrate && mergedNow && "merge-sweep play")}>
-        <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
+        <div className="flex items-center gap-2 text-caption text-muted-foreground">
           <StatePill icon={mergedNow ? GitMerge : StateIcon} label={mergedNow ? "merged" : summary.isDraft ? "draft" : summary.state} merged={mergedNow} />
           <span className="font-mono tabular-nums">#{summary.number}</span>
-          <span className="flex min-w-0 items-center gap-1.5"><Avatar login={summary.author?.login} className="size-4 text-[9px]" /><span className="truncate">{summary.author?.login ?? "ghost"}</span></span>
+          <span className="flex min-w-0 items-center gap-1.5"><Avatar login={summary.author?.login} className="size-4 text-micro" /><span className="truncate">{summary.author?.login ?? "ghost"}</span></span>
           {review && <Badge variant={review.variant} size="sm">{review.label}</Badge>}
           <span className="ml-auto flex shrink-0 items-center">
             {sessionId && <ShowInChat sessionId={sessionId} url={summary.url} number={summary.number} />}
@@ -1632,16 +1632,16 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
           </span>
         </div>
         <h2 className="mt-2.5 font-display text-[19px] font-semibold leading-snug tracking-[-0.015em] text-foreground">{summary.title}</h2>
-        <p className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[12px] text-muted-foreground">
+        <p className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-meta text-muted-foreground">
           <b className="font-medium text-foreground">{summary.author?.login ?? "ghost"}</b>
           {mergedNow
             ? <>merged <b className="font-medium text-foreground">{pullRequest.commits.length} commits</b> into <BranchChip name={pullRequest.baseBranch} />{merge.celebrate && <span>· just now</span>}</>
             : <>wants to merge <b className="font-medium text-foreground">{pullRequest.commits.length} commits</b> into <BranchChip name={pullRequest.baseBranch} /> from <BranchChip name={summary.headBranch} />
               <CopyButton value={summary.headBranch} label={`Copy the branch name ${summary.headBranch}`} />
-              {checkedOutHere && <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-px text-[11px] text-foreground"><Check size={11} aria-hidden="true" />Checked out here</span>}
+              {checkedOutHere && <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-px text-caption text-foreground"><Check size={11} aria-hidden="true" />Checked out here</span>}
             </>}
         </p>
-        {summary.state === "closed" && summary.mergeability === "conflicting" && <p className="mt-2 flex items-start gap-1.5 rounded-md border border-warning/25 bg-warning/10 px-2.5 py-1.5 text-[11px] text-warning">
+        {summary.state === "closed" && summary.mergeability === "conflicting" && <p className="mt-2 flex items-start gap-1.5 rounded-md border border-warning/25 bg-warning/10 px-2.5 py-1.5 text-caption text-warning">
           <TriangleAlert size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
           <span>This branch has conflicts with {pullRequest.baseBranch}. GitHub reports its merge state as <span className="font-mono">{summary.mergeStateStatus.toLowerCase()}</span>.</span>
         </p>}
@@ -1650,7 +1650,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
         </div>}
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           {pullRequest.labels.map(label => <LabelBadge key={label.name} label={label} />)}
-          <button type="button" onClick={() => setLabelsOpen(value => !value)} className="inline-flex min-h-7 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+          <button type="button" onClick={() => setLabelsOpen(value => !value)} className="inline-flex min-h-7 items-center gap-1 rounded-md px-2 py-1 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
             <Tag size={10.5} aria-hidden="true" /> Manage labels
           </button>
         </div>
@@ -1708,14 +1708,14 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
             })}
           />
           {summary.state === "open" && reviewOpen && <div className="animate-page-mount mt-2 grid gap-1 rounded-lg border border-border bg-card p-1.5" role="menu" aria-label="Review harness">
-            <p className="px-2 pb-0.5 pt-1 text-[11px] font-semibold tracking-[0.1em] text-muted-foreground">RUN REVIEW WITH</p>
-            {REVIEW_HARNESSES.map(choice => <button key={choice.id} type="button" role="menuitem" disabled={reviewBusy} onClick={() => void startReview(choice.id)} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-[12px] text-foreground transition-colors hover:bg-accent disabled:opacity-50">
+            <p className="px-2 pb-0.5 pt-1 text-caption font-semibold text-muted-foreground">RUN REVIEW WITH</p>
+            {REVIEW_HARNESSES.map(choice => <button key={choice.id} type="button" role="menuitem" disabled={reviewBusy} onClick={() => void startReview(choice.id)} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
               <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />
               <span className="min-w-0 flex-1 truncate">{choice.label}</span>
-              {choice.note && <span className="shrink-0 text-[10.5px] text-muted-foreground">{choice.note}</span>}
+              {choice.note && <span className="shrink-0 text-micro text-muted-foreground">{choice.note}</span>}
             </button>)}
           </div>}
-          {summary.state === "open" && reviewNotice && <p role="status" className={cn("animate-page-mount mt-2 rounded-md border px-2.5 py-1.5 text-[12px]", reviewNotice.tone === "success" ? "border-success/25 bg-success/10 text-success" : "border-destructive/25 bg-destructive/10 text-destructive")}>{reviewNotice.text}</p>}
+          {summary.state === "open" && reviewNotice && <p role="status" className={cn("animate-page-mount mt-2 rounded-md border px-2.5 py-1.5 text-meta", reviewNotice.tone === "success" ? "border-success/25 bg-success/10 text-success" : "border-destructive/25 bg-destructive/10 text-destructive")}>{reviewNotice.text}</p>}
         </>}
         {summary.state === "closed" && <div className="mt-3 flex flex-wrap items-center gap-1.5">
           <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({
@@ -1731,12 +1731,12 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
         </div>}
       </div>
 
-      {actionError && <p role="alert" className="border-b border-border bg-destructive/10 px-4 py-2 text-[12px] text-destructive">{actionError}</p>}
-      {error && <p role="alert" className="border-b border-border bg-warning/10 px-4 py-2 text-[12px] text-warning">Live refresh failed: {error}</p>}
-      {checkout && <p className="border-b border-border bg-success/10 px-4 py-2 text-[12px] text-success">
+      {actionError && <p role="alert" className="border-b border-border bg-destructive/10 px-4 py-2 text-meta text-destructive">{actionError}</p>}
+      {error && <p role="alert" className="border-b border-border bg-warning/10 px-4 py-2 text-meta text-warning">Live refresh failed: {error}</p>}
+      {checkout && <p className="border-b border-border bg-success/10 px-4 py-2 text-meta text-success">
         {checkout.reused ? "Reusing the task worktree already on " : "Checked out into a task worktree on "}
         <span className="font-mono">{checkout.branch}</span>
-        <span className="block truncate font-mono text-[11px] text-success/80" title={checkout.path}>{checkout.path}</span>
+        <span className="block truncate font-mono text-caption text-success/80" title={checkout.path}>{checkout.path}</span>
       </p>}
 
       <DetailTabs id={detailId} tabs={tabs} active={tab} onSelect={selectTab} label="Pull request detail" />
@@ -1757,7 +1757,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
         {tab === "commits" && <CommitList commits={pullRequest.commits} prUrl={summary.url} />}
 
         {tab === "changes" && <section aria-label="Changed files">
-          <div className="mb-3 flex items-center gap-2 text-[11px] text-muted-foreground">
+          <div className="mb-3 flex items-center gap-2 text-caption text-muted-foreground">
             <FileDiff size={13} aria-hidden="true" />
             <span>{pullRequest.changedFiles} changed files</span>
             <span className="ml-auto font-mono text-success">+{pullRequest.additions}</span>
@@ -1769,18 +1769,18 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
             defaultOpen={detail.result.files.length <= EAGER_PATCH_FILE_LIMIT}
             fullDiffUrl={`${summary.url}/files`}
             onComment={summary.state === "open" ? (line, side, body) => write({ kind: "reviewComment", number, path: file.path, line, side, body }) : undefined}
-          />)}</div> : <p className="text-[12px] text-muted-foreground">No changed files reported.</p>}
+          />)}</div> : <p className="text-meta text-muted-foreground">No changed files reported.</p>}
         </section>}
 
         {tab === "conversation" && <>
         <section aria-label="Description">
           <SectionLabel>Description</SectionLabel>
-          {pullRequest.body ? <GithubMarkdown text={pullRequest.body} repositoryUrl={repositoryUrl} /> : <p className="text-[12px] italic text-muted-foreground">No description provided.</p>}
+          {pullRequest.body ? <GithubMarkdown text={pullRequest.body} repositoryUrl={repositoryUrl} /> : <p className="text-meta italic text-muted-foreground">No description provided.</p>}
         </section>
 
         <section aria-label="Conversation comments">
           <SectionLabel count={pullRequest.comments.length}>Conversation</SectionLabel>
-          {pullRequest.comments.length ? <CommentList comments={pullRequest.comments} repositoryUrl={repositoryUrl} /> : <p className="text-[12px] text-muted-foreground">No conversation comments.</p>}
+          {pullRequest.comments.length ? <CommentList comments={pullRequest.comments} repositoryUrl={repositoryUrl} /> : <p className="text-meta text-muted-foreground">No conversation comments.</p>}
           <div className="mt-2.5">
             <Composer
               label="New comment"
@@ -1861,7 +1861,7 @@ function IssueDetail({ workspaceId, repository, repositoryUrl, number, detail, e
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string>();
   const repoLabel = repository ? `${repository.owner}/${repository.name}` : "this repository";
-  const header = <div className="flex shrink-0 items-center border-b border-border px-2 py-1.5"><button type="button" onClick={onBack} className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><ArrowLeft size={12.5} aria-hidden="true" /> All issues</button></div>;
+  const header = <div className="flex shrink-0 items-center border-b border-border px-2 py-1.5"><button type="button" onClick={onBack} className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 py-1 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><ArrowLeft size={12.5} aria-hidden="true" /> All issues</button></div>;
 
   const submit = async (action: GithubAction) => {
     setBusy(true); setActionError(undefined);
@@ -1883,7 +1883,7 @@ function IssueDetail({ workspaceId, repository, repositoryUrl, number, detail, e
     {header}
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="animate-page-mount border-b border-border px-5 py-4">
-        <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
+        <div className="flex items-center gap-2 text-caption text-muted-foreground">
           <StatePill icon={CircleDot} label={issue.summary.state} />
           <span className="font-mono tabular-nums">#{issue.summary.number}</span>
           <span className="ml-auto flex shrink-0 items-center">
@@ -1892,8 +1892,8 @@ function IssueDetail({ workspaceId, repository, repositoryUrl, number, detail, e
           </span>
         </div>
         <h2 className="mt-2.5 font-display text-[19px] font-semibold leading-snug tracking-[-0.015em] text-foreground">{issue.summary.title}</h2>
-        <p className="mt-1.5 flex items-center gap-1.5 text-[11.5px] text-muted-foreground"><Monogram login={issue.summary.author?.login} className="size-4 text-[9px]" />Opened by {issue.summary.author?.login ?? "ghost"}</p>
-        <div className="mt-2 flex flex-wrap items-center gap-1.5">{issue.summary.labels.map(label => <LabelBadge key={label.name} label={label} />)}<button type="button" onClick={() => setLabelsOpen(value => !value)} className="inline-flex min-h-7 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"><Tag size={10.5} aria-hidden="true" /> Manage labels</button></div>
+        <p className="mt-1.5 flex items-center gap-1.5 text-caption text-muted-foreground"><Monogram login={issue.summary.author?.login} className="size-4 text-micro" />Opened by {issue.summary.author?.login ?? "ghost"}</p>
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">{issue.summary.labels.map(label => <LabelBadge key={label.name} label={label} />)}<button type="button" onClick={() => setLabelsOpen(value => !value)} className="inline-flex min-h-7 items-center gap-1 rounded-md px-2 py-1 text-caption text-muted-foreground hover:bg-accent hover:text-foreground"><Tag size={10.5} aria-hidden="true" /> Manage labels</button></div>
         {labelsOpen && <LabelControls available={availableLabels} current={issue.summary.labels} disabled={busy} onChange={(label, operation) => setPending({
           title: `${operation === "add" ? "Add" : "Remove"} label “${label}”`,
           consequence: `The issue is edited on ${repoLabel}.`,
@@ -1922,12 +1922,12 @@ function IssueDetail({ workspaceId, repository, repositoryUrl, number, detail, e
           </button>
         </div>
       </div>
-      {actionError && <p role="alert" className="border-b border-border bg-destructive/10 px-4 py-2 text-[12px] text-destructive">{actionError}</p>}
+      {actionError && <p role="alert" className="border-b border-border bg-destructive/10 px-4 py-2 text-meta text-destructive">{actionError}</p>}
       <div className="space-y-6 px-5 py-5">
-        <section aria-label="Issue description"><SectionLabel>Description</SectionLabel>{issue.body ? <GithubMarkdown text={issue.body} repositoryUrl={repositoryUrl} /> : <p className="text-[12px] italic text-muted-foreground">No description provided.</p>}</section>
+        <section aria-label="Issue description"><SectionLabel>Description</SectionLabel>{issue.body ? <GithubMarkdown text={issue.body} repositoryUrl={repositoryUrl} /> : <p className="text-meta italic text-muted-foreground">No description provided.</p>}</section>
         <section aria-label="Issue comments">
           <SectionLabel count={issue.comments.length}>Comments</SectionLabel>
-          {issue.comments.length ? <CommentList comments={issue.comments} repositoryUrl={repositoryUrl} /> : <p className="text-[12px] text-muted-foreground">No comments.</p>}
+          {issue.comments.length ? <CommentList comments={issue.comments} repositoryUrl={repositoryUrl} /> : <p className="text-meta text-muted-foreground">No comments.</p>}
           <div className="mt-2.5">
             <Composer
               label="New comment"
@@ -2028,8 +2028,8 @@ function ConnectRepositoryDialog({ workspaceId, onCancel, onConnected }: {
 
   return <Dialog open onOpenChange={next => { if (!next && !busy) onCancel(); }}>
     <DialogPopup showCloseButton={false} aria-label="Connect a repository" className="max-w-md p-5">
-      <h2 className="font-display text-[14px] font-semibold text-foreground">Connect a repository</h2>
-      <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">Search your GitHub repositories, or paste a repository URL. Bridge points this folder&apos;s <code className="font-mono text-foreground/90">origin</code> at it.</p>
+      <h2 className="font-display text-body font-semibold text-foreground">Connect a repository</h2>
+      <p className="mt-1 text-meta leading-relaxed text-muted-foreground">Search your GitHub repositories, or paste a repository URL. Bridge points this folder&apos;s <code className="font-mono text-foreground/90">origin</code> at it.</p>
       <input
         autoFocus
         value={query}
@@ -2038,24 +2038,24 @@ function ConnectRepositoryDialog({ workspaceId, onCancel, onConnected }: {
         disabled={busy}
         aria-label="Repository search or URL"
         placeholder="owner/name, or https://github.com/owner/name"
-        className="mt-4 h-9 w-full rounded-lg border border-input bg-card px-3 text-[13px] text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring disabled:opacity-50"
+        className="mt-4 h-9 w-full rounded-lg border border-input bg-card px-3 text-ui text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring disabled:opacity-50"
       />
       {!pastedUrl && candidates !== undefined && <ul className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-border" aria-label="Matching repositories">
         {candidates.length === 0
-          ? <li className="px-3 py-2.5 text-[12px] text-muted-foreground">{searching ? "Searching…" : "No repository matches that. Paste its URL instead."}</li>
+          ? <li className="px-3 py-2.5 text-meta text-muted-foreground">{searching ? "Searching…" : "No repository matches that. Paste its URL instead."}</li>
           : candidates.map(candidate => <li key={candidate.nameWithOwner}>
             <button type="button" disabled={busy} onClick={() => void connect(candidate.url)} className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent disabled:opacity-50">
               <FolderGit2 size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-              <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-foreground">{candidate.nameWithOwner}</span>
-              {candidate.isPrivate && <Badge variant="outline" className="shrink-0 text-[10px]">Private</Badge>}
+              <span className="min-w-0 flex-1 truncate font-mono text-meta text-foreground">{candidate.nameWithOwner}</span>
+              {candidate.isPrivate && <Badge variant="outline" className="shrink-0 text-micro">Private</Badge>}
             </button>
           </li>)}
       </ul>}
-      {searchError && !pastedUrl && <p role="alert" className="mt-2 text-[12px] text-destructive">Search failed: {searchError} You can still paste the repository URL.</p>}
-      {error && <p role="alert" className="mt-3 text-[12px] text-destructive">{error}</p>}
+      {searchError && !pastedUrl && <p role="alert" className="mt-2 text-meta text-destructive">Search failed: {searchError} You can still paste the repository URL.</p>}
+      {error && <p role="alert" className="mt-3 text-meta text-destructive">{error}</p>}
       <div className="mt-4 flex justify-end gap-2">
-        <button type="button" onClick={onCancel} disabled={busy} className="min-h-8 rounded-lg px-3 text-[13px] font-medium hover:bg-accent disabled:opacity-50">Cancel</button>
-        <button type="button" onClick={() => pastedUrl && void connect(pastedUrl)} disabled={busy || !pastedUrl} className="min-h-8 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">Connect</button>
+        <button type="button" onClick={onCancel} disabled={busy} className="min-h-8 rounded-lg px-3 text-ui font-medium hover:bg-accent disabled:opacity-50">Cancel</button>
+        <button type="button" onClick={() => pastedUrl && void connect(pastedUrl)} disabled={busy || !pastedUrl} className="min-h-8 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">Connect</button>
       </div>
     </DialogPopup>
   </Dialog>;

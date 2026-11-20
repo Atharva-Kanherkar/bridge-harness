@@ -24,9 +24,9 @@ export function UsageLedger({ report, windowDays, metric, partial }: UsageLayout
       <div className={EYEBROW}>{windowTitle(windowDays)}</div>
       <div className="mt-2.5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className="text-[3.25rem] font-light leading-none tracking-[-0.04em] tabular-nums text-foreground">{format(metricTotal)}{metric === "cost" && <EstimateMark report={report} large />}</span>
-        <span className="text-[15px] text-muted-foreground">{metric === "cost" ? "at API rates" : "tokens processed"}</span>
+        <span className="text-message text-muted-foreground">{metric === "cost" ? "at API rates" : "tokens processed"}</span>
       </div>
-      <p className="mt-3 max-w-2xl text-[14.5px] leading-relaxed text-muted-foreground">
+      <p className="mt-3 max-w-2xl text-body leading-relaxed text-muted-foreground">
         across <span className="font-medium text-foreground">{count} {count === 1 ? "harness" : "harnesses"}</span> and <span className="font-medium tabular-nums text-foreground">{formatCount(report.totals.records)}</span> requests.{" "}
         {metric === "tokens"
           ? <>At API rates that is <span className="font-medium tabular-nums text-foreground">{formatUsd(report.totals.costMicrousd)}</span><EstimateMark report={report} />. Your subscriptions bill separately.</>
@@ -37,7 +37,7 @@ export function UsageLedger({ report, windowDays, metric, partial }: UsageLayout
 
     {harnesses.length > 0 && <section aria-label="By harness">
       <div className="flex h-2.5 gap-[3px]" role="img" aria-label={`Share of ${metric === "cost" ? "cost" : "processed tokens"}: ${harnesses.map(entry => `${harnessLabel(entry.harness)} ${formatPercent(metric === "cost" ? entry.costShare : entry.tokenShare)}`).join(", ")}`}>
-        {harnesses.filter(entry => harnessValue(entry, metric) > 0).map(entry => <span key={entry.harness} className={cn("rounded-[3px]", harnessChartDot(entry.harness))} style={{ flexGrow: harnessValue(entry, metric) }} />)}
+        {harnesses.filter(entry => harnessValue(entry, metric) > 0).map(entry => <span key={entry.harness} className={cn("rounded-sm", harnessChartDot(entry.harness))} style={{ flexGrow: harnessValue(entry, metric) }} />)}
       </div>
       <ul className="mt-4 grid grid-cols-2 gap-x-6 gap-y-4 md:grid-cols-4">
         {harnesses.map(entry => <li key={entry.harness}>
@@ -66,7 +66,7 @@ export function UsageLedger({ report, windowDays, metric, partial }: UsageLayout
         {modelsOf(report, entry.harness, metric).map(model => <div key={model.model} className={cn(ROW, "h-7 pl-[1.125rem]")}>
           <span className="flex min-w-0 items-center">
             <span className="truncate font-mono text-caption text-foreground/80">{model.model}</span>
-            {model.costSource === "unpriced" && <span className="ml-2 shrink-0 text-[11px] text-muted-foreground">unpriced</span>}
+            {model.costSource === "unpriced" && <span className="ml-2 shrink-0 text-caption text-muted-foreground">unpriced</span>}
             <span className="mx-3 h-px min-w-4 flex-1 translate-y-1 border-b border-dotted border-border" aria-hidden="true" />
           </span>
           <span className="text-right text-ui tabular-nums text-muted-foreground">{formatTokens(model.tokens)}</span>
@@ -74,7 +74,7 @@ export function UsageLedger({ report, windowDays, metric, partial }: UsageLayout
           <span className="flex justify-end"><Sparkline values={modelSeries(model, metric)} harness={entry.harness} className="h-4" /></span>
         </div>)}
       </div>)}
-      {harnesses.length > 0 && <div className={cn(ROW, "h-12 border-t border-border text-[14px] font-medium text-foreground")}>
+      {harnesses.length > 0 && <div className={cn(ROW, "h-12 border-t border-border text-body font-medium text-foreground")}>
         <span>Total</span>
         <span className="text-right tabular-nums">{formatTokens(report.totals.processedTokens)}</span>
         <span className="text-right tabular-nums">{formatUsd(report.totals.costMicrousd)}<EstimateMark report={report} /></span>

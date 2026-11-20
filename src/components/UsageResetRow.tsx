@@ -74,7 +74,7 @@ export function UsageResetRow({ snapshot, onUpdated, compact = false }: { snapsh
       setResult(errorMessage(error));
     } finally { setBusy(false); }
   };
-  return <div className={compact ? "mt-2 border-t border-border pt-2 text-[11px]" : "u-glass-soft rounded-xl p-3 text-caption"}>
+  return <div className={compact ? "mt-2 border-t border-border pt-2 text-caption" : "u-glass-soft rounded-xl p-3 text-caption"}>
     <div className="flex items-center justify-between gap-3">
       <span className="text-foreground">{compact ? summary : `${harnessLabel(snapshot.provider)} · ${summary}`}</span>
       <button type="button" onClick={() => setConfirming(true)} disabled={disabled} title={disabledReason ?? undefined} className="shrink-0 rounded-md border border-border px-2.5 py-1 font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-40">Use reset</button>

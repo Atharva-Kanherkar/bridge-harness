@@ -203,10 +203,10 @@ export function MentionText({ text }: { text: string }) {
 /** What a page attached to a message, folded into a chip the person can open. */
 function FoldedContext({ label, fence, series, body }: { label: string; fence: string; series: string; body: string }) {
   return <details className="mt-1.5 text-caption text-muted-foreground">
-    <summary className="cursor-pointer list-none select-none rounded-full border border-border px-2 py-0.5 text-[11px] marker:hidden hover:text-foreground">
+    <summary className="cursor-pointer list-none select-none rounded-full border border-border px-2 py-0.5 text-caption marker:hidden hover:text-foreground">
       <span aria-hidden="true" className={`mr-1 inline-block size-1.5 rounded-full align-middle ${series}`} />{label}
     </summary>
-    <pre aria-label={fence} className="mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed">{body}</pre>
+    <pre aria-label={fence} className="mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-caption leading-relaxed">{body}</pre>
   </details>;
 }
 
@@ -227,7 +227,7 @@ function KeyChip({ reference }: { reference: string }) {
     role="img"
     aria-label={`${name}, kept by Bridge`}
     title={`Bridge kept this key out of the chat. The agent sees only [secret:${reference}] and can use it on the sites allowed in Settings, Permissions, API keys.`}
-    className="mx-0.5 inline-flex items-baseline gap-1 rounded-md border border-border bg-foreground/[0.04] px-1.5 font-mono text-[11px] text-muted-foreground"
+    className="mx-0.5 inline-flex items-baseline gap-1 rounded-md border border-border bg-foreground/[0.04] px-1.5 font-mono text-caption text-muted-foreground"
   ><KeyRound size={10} aria-hidden="true" className="self-center" />{name}</span>;
 }
 
@@ -512,7 +512,7 @@ function MermaidBlock({ code }: { code: string }) {
             </div>
           </div>
         : <div className="flex justify-center overflow-x-auto [&_svg]:h-auto [&_svg]:max-w-full" role="img" aria-label="Mermaid diagram" dangerouslySetInnerHTML={{ __html: rendered.svg }} />}
-      {clamped && <p className="mt-1 text-[11px] text-muted-foreground">Scroll horizontally or expand for the full diagram.</p>}
+      {clamped && <p className="mt-1 text-caption text-muted-foreground">Scroll horizontally or expand for the full diagram.</p>}
     </div>
     <VisualFullscreen open={fullscreen} onClose={() => setFullscreen(false)} label="mermaid">
       {/* Mermaid bakes a `max-width` onto its own <svg>; the overlay's canvas

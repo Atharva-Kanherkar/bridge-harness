@@ -30,7 +30,7 @@ export type ComposerContextStripProps = {
 };
 
 const CHIP =
-  "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] tracking-[-0.01em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
+  "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-meta tracking-[-0.01em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
 
 function ContextHelp({ text, onNewChat }: { text: string; onNewChat?: () => void }) {
   return <>
@@ -79,7 +79,7 @@ export function ComposerContextStrip({
         aria-expanded={repoMenu.open}
         title={workspace?.title ?? "No project"}
         onClick={repoMenu.toggle}
-        className={cn(CHIP, "min-w-0 max-w-[16rem] flex-1", repoMenu.open && "bg-accent text-foreground")}
+        className={cn(CHIP, "min-w-0 max-w-[16rem]", repoMenu.open && "bg-accent text-foreground")}
       >
         <FolderGit2 size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 truncate">{workspace?.title ?? "No project"}</span>
@@ -111,7 +111,7 @@ export function ComposerContextStrip({
           if (!locked && branchAvailable && !branchBusy) onRequestBranches();
           branchMenu.toggle();
         }}
-        className={cn(CHIP, "min-w-0 max-w-[16rem] flex-1", branchMenu.open && "bg-accent text-foreground", branchBusy && "opacity-70")}
+        className={cn(CHIP, "min-w-0 max-w-[16rem]", branchMenu.open && "bg-accent text-foreground", branchBusy && "opacity-70")}
       >
         <GitBranch size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 truncate">{displayedBranch}</span>
@@ -126,7 +126,7 @@ export function ComposerContextStrip({
           />
         </> : <>
           {branchBusy && <SkeletonRows label="Loading branches" rows={3} meta={false} framed={false} className="divide-y-0" rowClassName="min-h-8 px-3 py-1.5" />}
-          {!branchBusy && branchError && <p role="status" aria-live="polite" className="px-3 py-2 text-[12px] text-destructive">{branchError}</p>}
+          {!branchBusy && branchError && <p role="status" aria-live="polite" className="px-3 py-2 text-meta text-destructive">{branchError}</p>}
           {!branchBusy && !branchError && branches.map(branch => (
             <MenuItem
               key={branch}
@@ -141,7 +141,7 @@ export function ComposerContextStrip({
             />
           ))}
           {!branchBusy && !branchError && branches.length === 0 && (
-            <p role="status" className="px-3 py-2 text-[12px] text-muted-foreground">No local branches</p>
+            <p role="status" className="px-3 py-2 text-meta text-muted-foreground">No local branches</p>
           )}
         </>}
       </MenuPanel>

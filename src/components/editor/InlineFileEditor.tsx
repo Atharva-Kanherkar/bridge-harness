@@ -58,10 +58,10 @@ export function InlineFileEditor({ workspaceId, path, onDirtyChange, onSaved }: 
   if (!buffer) return <SkeletonRegion label={`Opening ${path}`} className="px-3.5 py-4"><SkeletonText lines={6} /></SkeletonRegion>;
 
   if (buffer.state === "error" && !buffer.baseSha) {
-    return <p className="px-3.5 py-4 text-[12px] leading-relaxed text-destructive">{buffer.message}</p>;
+    return <p className="px-3.5 py-4 text-meta leading-relaxed text-destructive">{buffer.message}</p>;
   }
   if (isReadOnly(buffer)) {
-    return <p className="px-3.5 py-4 text-[12px] leading-relaxed text-muted-foreground">
+    return <p className="px-3.5 py-4 text-meta leading-relaxed text-muted-foreground">
       {buffer.tooLarge ? `${Math.round(buffer.sizeBytes / 1024)} KB — too large to open in the editor.` : "Binary file — nothing to edit here."}
     </p>;
   }
@@ -84,7 +84,7 @@ export function InlineFileEditor({ workspaceId, path, onDirtyChange, onSaved }: 
         className="cm-fit"
       />
     </div>
-    <div className="flex min-h-9 flex-wrap items-center gap-2 py-1 border-t border-border px-3 font-mono text-[11px] text-muted-foreground">
+    <div className="flex min-h-9 flex-wrap items-center gap-2 py-1 border-t border-border px-3 font-mono text-caption text-muted-foreground">
       {buffer.state === "saving" && <LoaderCircle size={11} className="animate-spin" aria-hidden="true" />}
       <span className={cn(
         buffer.state === "conflict" && "text-warning",

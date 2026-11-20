@@ -25,14 +25,14 @@ const EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
 function Timestamp({ iso }: { iso: string }) {
   if (Number.isNaN(Date.parse(iso))) return null;
-  return <time dateTime={iso} title={new Date(iso).toLocaleString()} className="text-[11px] text-muted-foreground">{relativeTime(iso, new Date())}</time>;
+  return <time dateTime={iso} title={new Date(iso).toLocaleString()} className="text-caption text-muted-foreground">{relativeTime(iso, new Date())}</time>;
 }
 
 /** The lines a conversation was opened on. */
 function Hunk({ hunk }: { hunk: string }) {
   const lines = useMemo(() => hunkTail(hunk), [hunk]);
   if (!lines.length) return null;
-  return <pre aria-label="Commented lines" className="overflow-x-auto border-b border-border/70 bg-background/50 py-1 font-mono text-[11px] leading-5">
+  return <pre aria-label="Commented lines" className="overflow-x-auto border-b border-border/70 bg-background/50 py-1 font-mono text-caption leading-5">
     {lines.map((line, index) => <span key={index} className={cn("flex whitespace-pre", line.kind === "add" && "bg-success/10 text-success", line.kind === "del" && "bg-destructive/10 text-destructive")}>
       <span aria-hidden="true" className="w-9 shrink-0 select-none pr-2 text-right tabular-nums text-muted-foreground/70">{line.newLine ?? line.oldLine ?? ""}</span>
       <span className="pr-3">{line.text || " "}</span>
@@ -108,7 +108,7 @@ function ThreadCard({ thread, index, number, repositoryUrl, headBranch, checkedO
         type="button"
         onClick={() => onJumpToFile(thread.path, line === undefined ? undefined : Number(line), headBranch)}
         title={checkedOutHere ? "Open in the editor at this line" : `Open in the editor — ${headBranch} isn’t checked out here`}
-        className="group inline-flex min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        className="group inline-flex min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 font-mono text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
       >
         <span className="truncate">{thread.path}{line !== undefined ? `:${line}` : ""}</span>
         <SquareArrowOutUpRight size={11} className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true" />
@@ -128,7 +128,7 @@ function ThreadCard({ thread, index, number, repositoryUrl, headBranch, checkedO
           type="button"
           disabled={busy}
           onClick={() => void toggle()}
-          className="inline-flex min-h-6 items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-foreground shadow-xs transition-[background-color,transform] hover:bg-accent active:scale-[0.97] disabled:opacity-60"
+          className="inline-flex min-h-6 items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 text-caption font-medium text-foreground shadow-xs transition-[background-color,transform] hover:bg-accent active:scale-[0.97] disabled:opacity-60"
         >
           {busy ? <LoaderCircle size={11} className="animate-spin" aria-hidden="true" /> : resolved ? <RotateCcw size={11} aria-hidden="true" /> : <CircleCheck size={11} aria-hidden="true" />}
           {resolved ? "Unresolve" : "Resolve"}
@@ -136,8 +136,8 @@ function ThreadCard({ thread, index, number, repositoryUrl, headBranch, checkedO
       </span>
     </div>
 
-    {!open && first && <button type="button" onClick={() => setOpen(true)} className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-muted-foreground transition-colors hover:bg-accent/40">
-      <Avatar login={first.author?.login} className="size-4 text-[9px]" />
+    {!open && first && <button type="button" onClick={() => setOpen(true)} className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-meta text-muted-foreground transition-colors hover:bg-accent/40">
+      <Avatar login={first.author?.login} className="size-4 text-micro" />
       <span className="shrink-0 font-medium text-foreground">{first.author?.login ?? "ghost"}</span>
       <span className="min-w-0 flex-1 truncate">{first.body.replace(/\s+/g, " ").slice(0, 160)}</span>
       {thread.comments.length > 1 && <span className="shrink-0 tabular-nums">{thread.comments.length - 1} {thread.comments.length === 2 ? "reply" : "replies"}</span>}
@@ -165,7 +165,7 @@ function ThreadCard({ thread, index, number, repositoryUrl, headBranch, checkedO
             >
               <Avatar login={comment.author?.login} className="mt-0.5" />
               <div className="min-w-0 flex-1">
-                <p className="flex items-baseline gap-2 text-[11.5px]">
+                <p className="flex items-baseline gap-2 text-caption">
                   <span className="font-medium text-foreground">{comment.author?.login ?? "ghost"}</span>
                   <Timestamp iso={comment.createdAt} />
                 </p>
@@ -173,7 +173,7 @@ function ThreadCard({ thread, index, number, repositoryUrl, headBranch, checkedO
               </div>
             </motion.div>)}
           </AnimatePresence>
-          {error !== undefined && <p role="alert" className="rounded-md bg-destructive/10 px-2 py-1 text-[11.5px] text-destructive">{error}</p>}
+          {error !== undefined && <p role="alert" className="rounded-md bg-destructive/10 px-2 py-1 text-caption text-destructive">{error}</p>}
           {rootId !== null && thread.viewerCanReply !== false && <Composer
             collapsed
             label="Reply"
@@ -204,9 +204,9 @@ export function ReviewThreads({ threads, number, repositoryUrl, headBranch, chec
 
   return <section aria-label="Review threads">
     <div className="mb-2.5 flex items-center gap-2">
-      <h3 className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+      <h3 className="flex items-center gap-2 text-caption font-medium text-muted-foreground">
         Review threads
-        <span className="font-mono text-[11px] tabular-nums tracking-normal text-muted-foreground">{threads.length}</span>
+        <span className="font-mono text-caption tabular-nums tracking-normal text-muted-foreground">{threads.length}</span>
       </h3>
       {threads.length > 0 && <div role="radiogroup" aria-label="Filter conversations" className="ml-auto flex items-center gap-0.5 rounded-md border border-border bg-background/60 p-0.5">
         {(["all", "open", "resolved"] as const).map(value => <button
@@ -215,17 +215,17 @@ export function ReviewThreads({ threads, number, repositoryUrl, headBranch, chec
           role="radio"
           aria-checked={filter === value}
           onClick={() => setFilter(value)}
-          className={cn("relative rounded-[5px] px-2 py-0.5 text-[11px] transition-colors", filter === value ? "font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}
+          className={cn("relative rounded-sm px-2 py-0.5 text-caption transition-colors", filter === value ? "font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}
         >
-          {filter === value && <motion.span layoutId={`thread-filter-${number}`} className="absolute inset-0 rounded-[5px] bg-card shadow-xs" transition={{ duration: 0.22, ease: EASE }} aria-hidden="true" />}
+          {filter === value && <motion.span layoutId={`thread-filter-${number}`} className="absolute inset-0 rounded-sm bg-card shadow-xs" transition={{ duration: 0.22, ease: EASE }} aria-hidden="true" />}
           <span className="relative">{FILTER_LABEL[value]} <span className="tabular-nums opacity-70">{counts[value]}</span></span>
         </button>)}
       </div>}
     </div>
     {threads.length === 0
-      ? <p className="text-[12px] text-muted-foreground">No review threads.</p>
+      ? <p className="text-meta text-muted-foreground">No review threads.</p>
       : shown.length === 0
-        ? <p className="flex items-center gap-2 rounded-lg border border-dashed border-border px-3 py-4 text-[12px] text-muted-foreground"><MessagesSquare size={13} aria-hidden="true" />{filter === "open" ? "Every conversation is resolved." : "Nothing resolved yet."}</p>
+        ? <p className="flex items-center gap-2 rounded-lg border border-dashed border-border px-3 py-4 text-meta text-muted-foreground"><MessagesSquare size={13} aria-hidden="true" />{filter === "open" ? "Every conversation is resolved." : "Nothing resolved yet."}</p>
         : <div className="space-y-2.5">
           <AnimatePresence initial={false}>
             {shown.map((thread, index) => <ThreadCard

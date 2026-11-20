@@ -51,14 +51,14 @@ function ServiceIcon({ service, size = "md" }: { service: MarketplaceService; si
     .find(candidate => candidate && !failedIcons.includes(candidate));
   const dimensions = size === "sm" ? "h-8 w-8" : size === "lg" ? "h-12 w-12" : "h-9 w-9";
   const rounding = size === "lg" ? "rounded-xl" : "rounded-lg";
-  const text = size === "sm" ? "text-[11px]" : size === "lg" ? "text-lg" : "text-[13px]";
+  const text = size === "sm" ? "text-caption" : size === "lg" ? "text-lg" : "text-ui";
   if (icon) return <span className={`inline-flex shrink-0 items-center justify-center overflow-hidden ${rounding} border border-border bg-muted p-1.5 ${dimensions}`} aria-hidden="true"><img src={icon} alt="" referrerPolicy="no-referrer" onError={() => setFailedIcons(current => current.includes(icon) ? current : [...current, icon])} className="h-full w-full object-contain" /></span>;
   return <span className={`inline-flex shrink-0 items-center justify-center ${rounding} border border-border bg-accent font-display font-semibold text-foreground ${dimensions} ${text}`} aria-hidden="true">{initials}</span>;
 }
 
 function Status({ variant }: { variant: MarketplaceVariant }) {
   const auth = authenticationLabel(variant.authenticationState);
-  return <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+  return <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-caption text-muted-foreground">
     <span className="inline-flex items-center gap-1.5">
       <span className={`h-1.5 w-1.5 rounded-full ${variant.installed ? "bg-success" : "bg-muted-foreground/40"}`} />
       {variant.installed ? "Installed" : "Available"}
@@ -87,10 +87,10 @@ function ServiceRow({ service, busyKey, onOpen, onInstall }: {
         <ServiceIcon service={service} />
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2">
-            <span className="truncate text-[13.5px] font-semibold tracking-[-0.008em] text-foreground">{service.name}</span>
+            <span className="truncate text-ui font-semibold tracking-[-0.008em] text-foreground">{service.name}</span>
             {service.variants.every(variant => variant.installed) && <Check size={12} className="shrink-0 text-success" aria-label="Installed" />}
           </span>
-          <span className="mt-1 line-clamp-2 block text-[13px] leading-[1.5] text-muted-foreground">{service.description || "Provider plugin for Bridge agents"}</span>
+          <span className="mt-1 line-clamp-2 block text-ui leading-[1.5] text-muted-foreground">{service.description || "Provider plugin for Bridge agents"}</span>
         </span>
       </button>
       {installable
@@ -122,7 +122,7 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
 
   return <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
-      <button type="button" onClick={onBack} className="inline-flex items-center gap-0.5 min-h-8 rounded-lg py-1 pl-1 pr-3 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+      <button type="button" onClick={onBack} className="inline-flex items-center gap-0.5 min-h-8 rounded-lg py-1 pl-1 pr-3 text-meta font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
         <ChevronLeft size={14} aria-hidden="true" /> Plugins
       </button>
 
@@ -130,31 +130,31 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
         <ServiceIcon service={service} size="lg" />
         <div className="min-w-0 flex-1 basis-48 pt-1">
           <h1 className="font-display text-title font-semibold tracking-tight text-foreground break-words">{service.name}</h1>
-          {sourceUrl && <a className="mt-1.5 flex max-w-full items-center gap-1 truncate text-[12px] text-muted-foreground transition-colors hover:text-foreground" href={sourceUrl} target="_blank" rel="noreferrer"><span className="truncate">{sourceUrl.replace(/^https?:\/\//, "")}</span> <ExternalLink size={10} className="shrink-0" /></a>}
+          {sourceUrl && <a className="mt-1.5 flex max-w-full items-center gap-1 truncate text-meta text-muted-foreground transition-colors hover:text-foreground" href={sourceUrl} target="_blank" rel="noreferrer"><span className="truncate">{sourceUrl.replace(/^https?:\/\//, "")}</span> <ExternalLink size={10} className="shrink-0" /></a>}
         </div>
         <div className="shrink-0 pt-2">
           {installable
             ? <Button size="sm" disabled={!!busyKey} onClick={onInstall}>{working ? <LoaderCircle className="animate-spin" size={13} /> : <Package size={13} />} Install</Button>
-            : <span className="inline-flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-3 py-1.5 text-[11px] font-medium text-success"><Check size={12} aria-hidden="true" /> Installed</span>}
+            : <span className="inline-flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-3 py-1.5 text-caption font-medium text-success"><Check size={12} aria-hidden="true" /> Installed</span>}
         </div>
       </header>
 
       <div className="mt-5 flex flex-wrap items-center gap-1.5">
         {hasCodex && <Badge variant="secondary" size="sm">Codex</Badge>}
         {hasClaude && <Badge variant="secondary" size="sm">Claude Code</Badge>}
-        {labels.map(label => <span key={label} className={`rounded-full border px-2 py-0.5 text-[11px] ${label === "Separate login required" ? "border-warning/30 bg-warning/10 text-warning" : "border-border text-muted-foreground"}`}>{label}</span>)}
+        {labels.map(label => <span key={label} className={`rounded-full border px-2 py-0.5 text-caption ${label === "Separate login required" ? "border-warning/30 bg-warning/10 text-warning" : "border-border text-muted-foreground"}`}>{label}</span>)}
       </div>
 
       <section className="mt-5">
-        <h2 className="text-[12px] font-medium text-muted-foreground">About</h2>
-        <p className="mt-3 text-[13.5px] leading-[1.7] text-foreground">{service.description || "Provider plugin for Bridge agents"}</p>
+        <h2 className="text-meta font-medium text-muted-foreground">About</h2>
+        <p className="mt-3 text-ui leading-[1.7] text-foreground">{service.description || "Provider plugin for Bridge agents"}</p>
         {capabilities.length > 0 && <div className="mt-4 flex flex-wrap gap-1.5">
-          {capabilities.map(capability => <span key={capability} className="rounded-full border border-border bg-muted px-2.5 py-1 text-[11px] text-muted-foreground">{capability}</span>)}
+          {capabilities.map(capability => <span key={capability} className="rounded-full border border-border bg-muted px-2.5 py-1 text-caption text-muted-foreground">{capability}</span>)}
         </div>}
       </section>
 
       <section className="mt-5">
-        <h2 className="text-[12px] font-medium text-muted-foreground">Providers</h2>
+        <h2 className="text-meta font-medium text-muted-foreground">Providers</h2>
         <div className="mt-3 grid gap-3">
           {service.variants.map(variant => {
             const key = `${service.id}:${variant.provider}`;
@@ -166,7 +166,7 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
             return <div key={`${variant.provider}:${variant.pluginId}`} className="u-surface rounded-2xl p-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                 <div className="min-w-0 flex-1">
-                  <div className="mb-1 text-[13px] font-semibold text-foreground">{providerLabel(variant.provider)} {variant.version && <span className="ml-1 font-mono text-[11px] font-normal text-muted-foreground">v{variant.version}</span>}</div>
+                  <div className="mb-1 text-ui font-semibold text-foreground">{providerLabel(variant.provider)} {variant.version && <span className="ml-1 font-mono text-caption font-normal text-muted-foreground">v{variant.version}</span>}</div>
                   <Status variant={variant} />
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5">
@@ -194,7 +194,7 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
       </section>}
 
       {!!results.length && <section className="mt-6">
-        <div className="u-surface rounded-2xl p-4 text-[11px]">
+        <div className="u-surface rounded-2xl p-4 text-caption">
           {results.map(result => <div key={`${result.provider}:${result.pluginId}`} className="flex items-start gap-2 py-1">{result.success ? <Check className="mt-0.5 shrink-0 text-success" size={12} /> : <X className="mt-0.5 shrink-0 text-destructive" size={12} />}<span className="min-w-0 break-words text-muted-foreground"><b className="font-medium text-foreground">{providerLabel(result.provider)}:</b> {result.error ?? result.message}</span></div>)}
           {!!failed.length && <Button size="xs" variant="secondary" className="mt-2" disabled={!!busyKey} onClick={onRetry}><RefreshCw size={10} /> Retry failed provider</Button>}
         </div>
@@ -210,7 +210,7 @@ function PluginListSkeleton() {
 }
 
 function PluginEmptyState({ title, detail }: { title: string; detail: string }) {
-  return <div className="u-surface mt-3.5 flex min-h-44 flex-col items-center justify-center rounded-2xl px-4 text-center"><Unplug className="mb-2.5 text-muted-foreground" size={22} /><p className="text-[13px] font-medium text-foreground">{title}</p><p className="mt-1 text-[11px] text-muted-foreground">{detail}</p></div>;
+  return <div className="u-surface mt-3.5 flex min-h-44 flex-col items-center justify-center rounded-2xl px-4 text-center"><Unplug className="mb-2.5 text-muted-foreground" size={22} /><p className="text-ui font-medium text-foreground">{title}</p><p className="mt-1 text-caption text-muted-foreground">{detail}</p></div>;
 }
 
 function ServiceList({ services, busyKey, onOpen, onInstall }: {
@@ -352,13 +352,13 @@ function PluginMarketplace() {
   return <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
       <ScreenHeading title="Plugins" description="Connect your tools to Codex and Claude Code." action={<button type="button" onClick={() => { void refresh(); void refreshAuth(); }} disabled={loading} aria-label="Refresh apps" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /></button>} />
-      <div className="relative mt-4"><Search className="pointer-events-none absolute left-3.5 top-1/2 z-10 -translate-y-1/2 text-muted-foreground" size={14} /><Input value={query} onChange={event => setQuery(event.target.value)} aria-label="Search apps" placeholder="Search apps" className="h-8 rounded-lg pl-10 text-[13px]" /></div>
+      <div className="relative mt-4"><Search className="pointer-events-none absolute left-3.5 top-1/2 z-10 -translate-y-1/2 text-muted-foreground" size={14} /><Input value={query} onChange={event => setQuery(event.target.value)} aria-label="Search apps" placeholder="Search apps" className="h-8 rounded-lg pl-10 text-ui" /></div>
 
-      {catalog?.providers.map(item => item.error && <div key={item.provider} className="mt-3 flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning"><AlertCircle className="mt-0.5 shrink-0" size={12} /><span className="min-w-0 break-words"><b>{providerLabel(item.provider)}:</b> {item.error}</span></div>)}
-      {resolvingNames && <p role="status" className="mt-3 flex items-center gap-2 text-[11px] text-muted-foreground"><LoaderCircle className="animate-spin" size={12} aria-hidden="true" />Resolving connector names…</p>}
-      {namesFailed && <p role="status" className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-warning"><AlertCircle size={12} aria-hidden="true" />Connector names could not be resolved.<button type="button" onClick={() => void refreshAuth()} className="font-medium text-foreground transition-colors hover:underline">Retry</button></p>}
+      {catalog?.providers.map(item => item.error && <div key={item.provider} className="mt-3 flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-caption text-warning"><AlertCircle className="mt-0.5 shrink-0" size={12} /><span className="min-w-0 break-words"><b>{providerLabel(item.provider)}:</b> {item.error}</span></div>)}
+      {resolvingNames && <p role="status" className="mt-3 flex items-center gap-2 text-caption text-muted-foreground"><LoaderCircle className="animate-spin" size={12} aria-hidden="true" />Resolving connector names…</p>}
+      {namesFailed && <p role="status" className="mt-3 flex flex-wrap items-center gap-2 text-caption text-warning"><AlertCircle size={12} aria-hidden="true" />Connector names could not be resolved.<button type="button" onClick={() => void refreshAuth()} className="font-medium text-foreground transition-colors hover:underline">Retry</button></p>}
       {loading && !catalog && <PluginListSkeleton />}
-      {catalogFailed && !loading && !catalog && <p role="status" className="mt-5 flex items-center gap-2 text-[12px] text-warning"><AlertCircle size={12} aria-hidden="true" />Plugins could not be loaded. Use refresh to try again.</p>}
+      {catalogFailed && !loading && !catalog && <p role="status" className="mt-5 flex items-center gap-2 text-meta text-warning"><AlertCircle size={12} aria-hidden="true" />Plugins could not be loaded. Use refresh to try again.</p>}
 
       {!!resolved && <>
         <div className="mt-5 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
@@ -372,33 +372,33 @@ function PluginMarketplace() {
 
         {searching || view === "all" ? <>
           {!searching && categories.length > 0 && <div className="mt-4 flex flex-wrap gap-1.5">
-            <button type="button" data-category="all" data-active={category === "all"} aria-pressed={category === "all"} onClick={() => setCategory("all")} className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${category === "all" ? "border-foreground/25 bg-accent text-foreground" : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"}`}>All <span className="text-muted-foreground">{services.length}</span></button>
-            {categories.map(item => <button key={item.key || "other"} type="button" data-category={item.key || "other"} data-active={category === item.key} aria-pressed={category === item.key} onClick={() => setCategory(item.key)} className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${category === item.key ? "border-foreground/25 bg-accent text-foreground" : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"}`}>{item.label} <span className="text-muted-foreground">{item.count}</span></button>)}
+            <button type="button" data-category="all" data-active={category === "all"} aria-pressed={category === "all"} onClick={() => setCategory("all")} className={`rounded-full border px-2.5 py-1 text-caption transition-colors ${category === "all" ? "border-foreground/25 bg-accent text-foreground" : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"}`}>All <span className="text-muted-foreground">{services.length}</span></button>
+            {categories.map(item => <button key={item.key || "other"} type="button" data-category={item.key || "other"} data-active={category === item.key} aria-pressed={category === item.key} onClick={() => setCategory(item.key)} className={`rounded-full border px-2.5 py-1 text-caption transition-colors ${category === item.key ? "border-foreground/25 bg-accent text-foreground" : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"}`}>{item.label} <span className="text-muted-foreground">{item.count}</span></button>)}
           </div>}
           <section className="mt-5" aria-labelledby="catalog-heading">
             <div className="flex items-center justify-between gap-3">
               <h2 id="catalog-heading" className="text-ui font-medium text-muted-foreground">{searching ? "Search results" : category === "all" ? "All apps" : category === "" ? "Other" : categoryLabel(category)}</h2>
-              <span className="shrink-0 text-[11px] text-muted-foreground">{visible.length} apps</span>
+              <span className="shrink-0 text-caption text-muted-foreground">{visible.length} apps</span>
             </div>
             {paged.length ? <ServiceList services={paged} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <PluginEmptyState title="No matching apps" detail="Try another search, scope, or provider." />}
             {remaining > 0 && <ShowMore remaining={remaining} onClick={() => setPageLimit(limit => limit + PAGE_SIZE)} />}
           </section>
         </> : view === "installed" ? <section className="mt-5" aria-labelledby="installed-heading">
-          <div className="flex items-center justify-between gap-3"><h2 id="installed-heading" className="text-ui font-medium text-muted-foreground">Installed</h2><span className="shrink-0 text-[11px] text-muted-foreground">{installed.length} apps</span></div>
+          <div className="flex items-center justify-between gap-3"><h2 id="installed-heading" className="text-ui font-medium text-muted-foreground">Installed</h2><span className="shrink-0 text-caption text-muted-foreground">{installed.length} apps</span></div>
           {paged.length ? <ServiceList services={paged} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <PluginEmptyState title="No apps installed yet" detail="Switch scope or browse the catalog to add one." />}
           {remaining > 0 && <ShowMore remaining={remaining} onClick={() => setPageLimit(limit => limit + PAGE_SIZE)} />}
         </section> : <>
           <section className="mt-5" aria-labelledby="installed-heading">
-            <div className="flex items-center justify-between gap-3"><h2 id="installed-heading" className="text-[12px] font-medium text-muted-foreground">Installed</h2><span className="shrink-0 text-[11px] text-muted-foreground">{installed.length} apps</span></div>
-            {featuredInstalled.length ? <ServiceList services={featuredInstalled} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <p className="mt-3 text-[11px] text-muted-foreground">No apps installed yet.</p>}
-            {installed.length > featuredInstalled.length && <button type="button" onClick={() => setView("installed")} className="mt-3 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground">{installed.length - featuredInstalled.length} more installed apps</button>}
+            <div className="flex items-center justify-between gap-3"><h2 id="installed-heading" className="text-meta font-medium text-muted-foreground">Installed</h2><span className="shrink-0 text-caption text-muted-foreground">{installed.length} apps</span></div>
+            {featuredInstalled.length ? <ServiceList services={featuredInstalled} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <p className="mt-3 text-caption text-muted-foreground">No apps installed yet.</p>}
+            {installed.length > featuredInstalled.length && <button type="button" onClick={() => setView("installed")} className="mt-3 text-caption font-medium text-muted-foreground transition-colors hover:text-foreground">{installed.length - featuredInstalled.length} more installed apps</button>}
           </section>
           <section className="mt-6" aria-labelledby="popular-heading">
-            <h2 id="popular-heading" className="text-[12px] font-medium text-muted-foreground">Popular</h2>
-            {popular.length ? <ServiceList services={popular} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <p className="mt-3 text-[11px] text-muted-foreground">Popular apps appear as providers report install counts.</p>}
+            <h2 id="popular-heading" className="text-meta font-medium text-muted-foreground">Popular</h2>
+            {popular.length ? <ServiceList services={popular} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <p className="mt-3 text-caption text-muted-foreground">Popular apps appear as providers report install counts.</p>}
           </section>
           <button type="button" onClick={() => setView("all")} className="u-surface mt-6 flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3.5 text-left transition-colors hover:bg-accent">
-            <span className="text-[13px] font-medium text-foreground">Browse all {services.length} {services.length === 1 ? "app" : "apps"}</span>
+            <span className="text-ui font-medium text-foreground">Browse all {services.length} {services.length === 1 ? "app" : "apps"}</span>
             <ChevronRight size={15} className="shrink-0 text-muted-foreground" aria-hidden="true" />
           </button>
         </>}

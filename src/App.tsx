@@ -3964,12 +3964,12 @@ function AppContent() {
             onClick={() => dispatchDock({ type: "open-pane", pane: "changes" })}
             aria-label={`Review changes in ${workspace.dirtyFiles} ${workspace.dirtyFiles === 1 ? "file" : "files"}`}
             aria-pressed={dock.open && dock.pane === "changes"}
-            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-2 text-[12px] text-foreground shadow-xs transition-colors hover:bg-accent"
+            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-2 text-meta text-foreground shadow-xs transition-colors hover:bg-accent"
           >
             <FileDiff size={13} aria-hidden="true" />
             <span className="hidden md:inline">Review</span>
             <span>{workspace.dirtyFiles} {workspace.dirtyFiles === 1 ? "file" : "files"}</span>
-            <span className="hidden gap-1.5 pl-1 font-mono text-[11px] tabular-nums xl:inline-flex"><span className="text-success">+{workspace.additions}</span><span className="text-destructive">−{workspace.deletions}</span></span>
+            <span className="hidden gap-1.5 pl-1 font-mono text-caption tabular-nums xl:inline-flex"><span className="text-success">+{workspace.additions}</span><span className="text-destructive">−{workspace.deletions}</span></span>
           </button> : undefined}
           onEnd={sessionConnected ? () => void endChat() : undefined}
           busy={busy}
@@ -4144,11 +4144,11 @@ function AppContent() {
                     you type amends the objective its orchestrator gave it, and
                     the orchestrator is told so it does not fight the change. */}
                 {isWorkerView ? <div className="mx-auto max-w-conversation px-4 sm:px-6">
-                  <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator — steer it here to amend that objective.</span></div>
+                  <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-meta text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator — steer it here to amend that objective.</span></div>
                   <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2" trailing={contextRing}/>
                 </div> : <div className="relative mx-auto max-w-conversation-frame">
                   {agentShortcutOpen && <div id="agent-shortcut-listbox" role="listbox" aria-label="Specialist agents" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
-                    <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">
+                    <div className="shrink-0 px-3 py-1.5 text-caption text-muted-foreground/70 border-b border-border flex items-center gap-2 font-medium">
                       <span>Dispatch a specialist</span>
                       <span className="normal-case tracking-normal text-muted-foreground/50">{agentShortcutMatches.length}</span>
                     </div>
@@ -4160,47 +4160,47 @@ function AppContent() {
                         return <button id={`agent-shortcut-option-${index}`} role="option" aria-selected={index === agentShortcutIndex} key={agent.id ?? `${agent.name}:${agent.role}`} type="button" data-agent-shortcut-index={index} onMouseEnter={() => setAgentShortcutIndex(index)} onMouseDown={e => { e.preventDefault(); applyAgentShortcut(candidate); }} className={`min-h-12 w-full flex items-start gap-3 px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${index === agentShortcutIndex ? "bg-accent" : "hover:bg-accent"}`}>
                           <Bot size={13} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden="true" />
                           <span className="min-w-0 flex-1">
-                            <span className="flex items-baseline gap-2"><b className="font-mono text-[12px] font-medium text-foreground">#{candidate.token}</b><span className="truncate text-[11px] text-muted-foreground">{agent.name}</span></span>
-                            <small className="mt-0.5 block truncate text-[9.5px] leading-4 text-muted-foreground">{agent.role} · {agent.harness} / {model} · {access} · {agent.effort} effort</small>
+                            <span className="flex items-baseline gap-2"><b className="font-mono text-meta font-medium text-foreground">#{candidate.token}</b><span className="truncate text-caption text-muted-foreground">{agent.name}</span></span>
+                            <small className="mt-0.5 block truncate text-micro leading-4 text-muted-foreground">{agent.role} · {agent.harness} / {model} · {access} · {agent.effort} effort</small>
                           </span>
                         </button>;
                       })}
                     </div>
                   </div>}
                   {mentionOpen && <div id="file-mention-listbox" role="listbox" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
-                    <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">
+                    <div className="shrink-0 px-3 py-1.5 text-caption text-muted-foreground/70 border-b border-border flex items-center gap-2 font-medium">
                       <span>Reference a file</span>
                       <span className="normal-case tracking-normal text-muted-foreground/50">{fileMatches.length}</span>
                     </div>
                     <div ref={mentionListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onWheel={e => e.stopPropagation()}>
                       {fileMatches.map((file, index) => { const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/") + 1) : ""; const base = file.slice(dir.length); return <button id={`file-mention-option-${index}`} role="option" aria-selected={index === mentionIndex} key={file} type="button" data-mention-index={index} onMouseEnter={() => setMentionIndex(index)} onMouseDown={e => { e.preventDefault(); applyFileMention(file); }} className={`min-h-11 w-full flex items-center gap-2 px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${index === mentionIndex ? "bg-accent" : "hover:bg-accent"}`}>
                         <FileText size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-                        <span className="flex-1 min-w-0 text-[12px] whitespace-nowrap overflow-hidden text-ellipsis"><span className="text-muted-foreground">{dir}</span><span className="text-foreground">{base}</span></span>
+                        <span className="flex-1 min-w-0 text-meta whitespace-nowrap overflow-hidden text-ellipsis"><span className="text-muted-foreground">{dir}</span><span className="text-foreground">{base}</span></span>
                       </button>; })}
                     </div>
                   </div>}
                   {slashOpen && <div id="slash-listbox" role="listbox" aria-label="Commands and skills" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
-                    <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">
+                    <div className="shrink-0 px-3 py-1.5 text-caption text-muted-foreground/70 border-b border-border flex items-center gap-2 font-medium">
                       <span>Commands & skills</span>
                       <span className="normal-case tracking-normal text-muted-foreground/50">{slashMatches.length}</span>
                     </div>
                     <div ref={slashListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onWheel={e => e.stopPropagation()}>
                       {slashMatches.map((command, index) => <button id={`slash-option-${index}`} role="option" aria-selected={index === slashIndex} key={`${command.harness}:${command.kind}:${command.name}`} type="button" data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); void applySlash(command); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-accent" : "hover:bg-accent"}`}>
-                        <span className="font-mono text-[12px] text-foreground whitespace-nowrap">/{command.name}</span>
-                        <span className="flex-1 min-w-0 text-[11px] text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis">{command.description}</span>
-                        <span title={command.harness === "bridge" ? "Runs locally in Bridge" : "Provider-owned command"} className="shrink-0 text-[8.5px] uppercase tracking-[0.06em] text-muted-foreground border border-border rounded px-1 py-[1px]">{slashOwnershipBadge(command.harness)}</span>
+                        <span className="font-mono text-meta text-foreground whitespace-nowrap">/{command.name}</span>
+                        <span className="flex-1 min-w-0 text-caption text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis">{command.description}</span>
+                        <span title={command.harness === "bridge" ? "Runs locally in Bridge" : "Provider-owned command"} className="shrink-0 text-micro text-muted-foreground border border-border rounded-sm px-1 py-px font-medium">{slashOwnershipBadge(command.harness)}</span>
                       </button>)}
                     </div>
                   </div>}
                   {harnessShortcutOpen && <div className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
-                    <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">
+                    <div className="shrink-0 px-3 py-1.5 text-caption text-muted-foreground/70 border-b border-border flex items-center gap-2 font-medium">
                       <span>Talk to a harness directly</span>
                       <span className="normal-case tracking-normal text-muted-foreground/50">{harnessShortcutMatches.length}</span>
                     </div>
                     <div ref={harnessShortcutListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onWheel={e => e.stopPropagation()}>
                       {harnessShortcutMatches.map((adapter, index) => <button key={adapter.id} type="button" data-harness-shortcut-index={index} onMouseEnter={() => setHarnessShortcutIndex(index)} onMouseDown={e => { e.preventDefault(); applyHarnessShortcut(adapter); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${index === harnessShortcutIndex ? "bg-accent" : "hover:bg-accent"}`}>
-                        <span className="font-mono text-[12px] text-foreground whitespace-nowrap">${adapter.id}</span>
-                        <span className="flex-1 min-w-0 text-[11px] text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis">Starts a new {adapter.label} chat with what follows</span>
+                        <span className="font-mono text-meta text-foreground whitespace-nowrap">${adapter.id}</span>
+                        <span className="flex-1 min-w-0 text-caption text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis">Starts a new {adapter.label} chat with what follows</span>
                       </button>)}
                     </div>
                   </div>}
@@ -4259,7 +4259,7 @@ function AppContent() {
                     leading={contextRing}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} accounts={providerAccounts} account={session.account ?? null} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model, account) => void changeChatModel(harness, model, account)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} speed={session.speed ?? null} onSpeedChange={speed => void changeChatSpeed(speed)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
-                      : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
+                      : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-ui rounded-full">{harnessLabel(session.harness)}</span>}
                     accessControl={accessControl}
                     footer={<ComposerContextStrip
                       workspaces={state.workspaces}
@@ -4279,7 +4279,7 @@ function AppContent() {
                     />}
                   />
                   <div className="mx-4 sm:mx-6"><ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} /></div>
-                  {harnessShortcutFailure && <p role="alert" className="mx-4 mt-2 text-[11px] text-destructive sm:mx-6">{harnessShortcutFailure}</p>}
+                  {harnessShortcutFailure && <p role="alert" className="mx-4 mt-2 text-caption text-destructive sm:mx-6">{harnessShortcutFailure}</p>}
                 </div>}
               </div>
             </>
@@ -4734,18 +4734,18 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
     <div className="mx-auto my-auto w-full max-w-3xl py-8">
     {!adapters.some(adapter => adapter.available && adapter.id !== "bridge") && <div className="mb-6 rounded-xl border border-border bg-card p-4">
       <h2 className="text-sm font-medium">Connect your first agent</h2>
-      <p className="mt-1 mb-3 text-[13px] text-muted-foreground">Install an agent and sign in here. Bridge handles the setup commands.</p>
+      <p className="mt-1 mb-3 text-ui text-muted-foreground">Install an agent and sign in here. Bridge handles the setup commands.</p>
       <ManagedAgentsPanel adapters={adapters} onChanged={onHealthChange} />
     </div>}
-    <p className="mb-3 text-[12px] font-medium text-muted-foreground">Your workspace, ready.</p>
-    <h1 className="mb-3 max-w-2xl font-display text-[28px] font-medium leading-tight tracking-[-0.025em] text-foreground sm:text-[34px]">
+    <p className="mb-3 text-meta font-medium text-muted-foreground">Your workspace, ready.</p>
+    <h1 className="mb-3 max-w-2xl font-display text-[26px] font-semibold leading-tight tracking-[-0.03em] text-foreground sm:text-[30px]">
       {greeting.parts.length > 1
         ? greeting.parts.map((part, index) => part.kind === "project"
           ? <span key={index} className="text-foreground">{part.text}</span>
           : <span key={index}>{part.text}</span>)
         : greeting.headline}
     </h1>
-    <p className="mb-7 max-w-xl text-[13px] leading-relaxed text-muted-foreground">Ask a question, explore an idea, or pick a project and get to work.</p>
+    <p className="mb-7 max-w-xl text-ui leading-relaxed text-muted-foreground">Ask a question, explore an idea, or pick a project and get to work.</p>
     <div className="relative">
     {slashOpen && <ComposerSlashMenu id="welcome-slash-listbox" commands={slashMatches} index={Math.min(slashIndex, slashMatches.length - 1)} onIndex={setSlashIndex} onSelect={applySlash} />}
     <ComposerPill
@@ -4822,8 +4822,8 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
     {defaultsNotice && <p role="status" className="mt-2 text-xs text-muted-foreground">{defaultsNotice}</p>}
     <ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} />
     </div>
-    {(composerError || harnessShortcutFailure) && <p role="alert" className="mt-2 max-w-3xl text-left text-[11px] text-destructive">{composerError ?? harnessShortcutFailure}</p>}
-    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-[11px] text-muted-foreground">
+    {(composerError || harnessShortcutFailure) && <p role="alert" className="mt-2 max-w-3xl text-left text-caption text-destructive">{composerError ?? harnessShortcutFailure}</p>}
+    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-caption text-muted-foreground">
       {workspace && agent
         ? <span id={sessionModeHintId}><span className="font-medium text-foreground">{agent.name}</span> · Your first message goes straight to this agent.</span>
         : workspace
@@ -4832,16 +4832,16 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
       <span className="shrink-0"><kbd className="font-sans">↵</kbd> Send <span className="mx-1.5" aria-hidden="true">·</span><kbd className="font-sans">⇧↵</kbd> New line</span>
     </div>
     {workspaces.length === 0 && <div className="mt-6 flex justify-center">
-      <button type="button" onClick={onNewWorkspace} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />Add project</button>
+      <button type="button" onClick={onNewWorkspace} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />Add project</button>
     </div>}
     {workspaces.length > 0 && <section aria-label="Choose a project" className="mt-9 border-t border-border pt-5">
-      <div className="mb-3 flex items-center justify-between"><h2 className="text-[12px] font-medium text-muted-foreground">Projects</h2><button type="button" onClick={onNewWorkspace} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-muted-foreground hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />Add project</button></div>
+      <div className="mb-3 flex items-center justify-between"><h2 className="text-meta font-medium text-muted-foreground">Projects</h2><button type="button" onClick={onNewWorkspace} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-meta text-muted-foreground hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />Add project</button></div>
       <div className="grid gap-2 sm:grid-cols-2">{workspaces.slice(0, 4).map(item => <button key={item.id} type="button" disabled={busy} onClick={() => onSelectWorkspace(item.id)} aria-pressed={workspace?.id === item.id} className={cn("flex min-w-0 items-center gap-3 rounded-xl border p-3 text-left transition-colors disabled:opacity-50", workspace?.id === item.id ? "border-ring/50 bg-selection" : "border-border bg-card hover:border-input")}>
         <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-accent text-muted-foreground"><FolderGit2 size={17} strokeWidth={1.6} aria-hidden="true" /></span>
-        <span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium text-foreground">{item.title}</span><span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{item.branch ?? "Choose a project folder"}</span></span>
+        <span className="min-w-0 flex-1"><span className="block truncate text-ui font-medium text-foreground">{item.title}</span><span className="mt-0.5 block truncate text-caption text-muted-foreground">{item.branch ?? "Choose a project folder"}</span></span>
       </button>)}</div>
     </section>}
     </div>
   </div>;
 }
-function CommandPalette({ workspaces, onChoose }: { workspaces: Workspace[]; onChoose: (id:string)=>void }) { return <><InputGroup className="border-b border-border rounded-none border-x-0 border-t-0 shadow-none"><InputGroupInput autoFocus placeholder="Search workspaces and actions…" /><InputGroupAddon><Search size={17} aria-hidden="true" /></InputGroupAddon></InputGroup><div className="p-[9px]"><label className="block p-[5px_9px_7px] text-muted-foreground/65 text-[10px] font-semibold tracking-[0.09em]">WORKSPACES</label>{workspaces.map(w => <Button type="button" key={w.id} variant="ghost" className="w-full h-[44px] rounded-md justify-start px-2.5" onClick={() => onChoose(w.id)}><StatusDot status={w.status}/><span className="flex flex-col gap-[3px] flex-1 text-left"><b className="text-[12.5px] font-medium">{w.title}</b><small className="text-[10.5px] text-muted-foreground">{w.city} · {w.branch}</small></span><Kbd className="font-mono text-muted-foreground/65 border border-border rounded px-1 py-[1px] text-[10px]">↵</Kbd></Button>)}</div><div className="h-[32px] border-t border-border flex items-center gap-[14px] px-[13px] text-muted-foreground/65 text-[10.5px]"><span>↑↓ navigate</span><span>esc close</span></div></>; }
+function CommandPalette({ workspaces, onChoose }: { workspaces: Workspace[]; onChoose: (id:string)=>void }) { return <><InputGroup className="border-b border-border rounded-none border-x-0 border-t-0 shadow-none"><InputGroupInput autoFocus placeholder="Search workspaces and actions…" /><InputGroupAddon><Search size={17} aria-hidden="true" /></InputGroupAddon></InputGroup><div className="p-[9px]"><label className="block p-[5px_9px_7px] text-muted-foreground/65 text-micro font-semibold">WORKSPACES</label>{workspaces.map(w => <Button type="button" key={w.id} variant="ghost" className="w-full h-[44px] rounded-md justify-start px-2.5" onClick={() => onChoose(w.id)}><StatusDot status={w.status}/><span className="flex flex-col gap-[3px] flex-1 text-left"><b className="text-meta font-medium">{w.title}</b><small className="text-micro text-muted-foreground">{w.city} · {w.branch}</small></span><Kbd className="font-mono text-muted-foreground/65 border border-border rounded px-1 py-[1px] text-micro">↵</Kbd></Button>)}</div><div className="h-[32px] border-t border-border flex items-center gap-[14px] px-[13px] text-muted-foreground/65 text-micro"><span>↑↓ navigate</span><span>esc close</span></div></>; }

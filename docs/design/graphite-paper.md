@@ -14,17 +14,16 @@ Both modes are renderings of the same token names, defined in [`src/index.css`](
 
 |                | Light · paper | Dark · graphite |
 | -------------- | ------------- | --------------- |
-| `--sidebar`    | `#F3F3F1`     | `#121211`       |
-| `--background` | `#FAFAF9`     | `#171716`       |
-| `--card`       | `#FFFFFF`     | `#1F1F1E`       |
-| `--popover`    | `#FFFFFF`     | `#262624`       |
-| `--border`     | `#E7E7E4`     | `#232321`       |
-| `--foreground` | `#1F1F1D`     | `#ECECEA`       |
-| `--muted-foreground` | `#5D5D57` | `#A8A8A3`      |
-| `--primary`    | `#1F1F1D`     | `#ECECEA`       |
-| `--ring`       | `#3D6FA5`     | `#6A9BCC`       |
+| `--sidebar`    | `#F4F4F3`     | `#09090A`       |
+| `--background` | `#FBFBFA`     | `#0C0C0D`       |
+| `--card`       | `#FFFFFF`     | `#141416`       |
+| `--popover`    | `#FFFFFF`     | `#19191C`       |
+| `--border`     | `#E7E7E4`     | `#1D1D20`       |
+| `--foreground` | `#18181A`     | `#EDEDEF`       |
+| `--muted-foreground` | `#66666B` | `#8E8E94`      |
+| `--primary`    | `#18181A`     | `#EDEDEF`       |
+| `--ring`       | `#5B63D3`     | `#8B91F0`       |
 | `--success`    | `#2F7D4F`     | `#5DB872`       |
-| `--warning`    | `#8F5E05`     | `#D4A957`       |
 | `--info`       | `#3D6FA5`     | `#6A9BCC`       |
 | `--destructive`| `#BE3D3D`     | `#E5695E`       |
 
@@ -39,8 +38,24 @@ Four rules hold the system together:
 4. **Status ink is the hue itself** (`text-success`). The `*-foreground` variants are the ink that sits
    *on* a full-strength status fill and are near-black in dark mode — never use them on a wash.
 
-Type is a single family: Geist 400/500/600, with hierarchy from weight rather than a second display
-face. Geist Mono is reserved for paths, commands, telemetry, and diffs. Base radius is `0.75rem`.
+Type is a single family: Geist 400/500/600, with hierarchy from weight and size rather than a second
+display face. Geist Mono is reserved for paths, commands, telemetry, and diffs.
+
+Every UI size comes from one scale:
+
+| Token | Size | For |
+| --- | --- | --- |
+| `text-micro` | 10.5px | badges, key caps |
+| `text-caption` | 11.5px | times, counts, section labels |
+| `text-meta` | 12.5px | secondary rows, chips |
+| `text-ui` | 13px | controls and lists |
+| `text-body` | 14px | dialogs and panes |
+| `text-message` | 15px | reading |
+| `text-heading` | 18px | section titles |
+| `text-title` | 24px | page titles |
+
+Labels are sentence case: no all-caps, no positive letter-spacing. Large type tightens instead
+(about -0.02em to -0.03em). Corners come from the radius scale (`rounded-sm` to `rounded-2xl`).
 
 ## Session view
 
@@ -98,9 +113,12 @@ resolved tokens from the document and re-themes when the mode flips.
 - a raw hex literal outside the one allowlisted file
 - `backdrop-blur` on a class string that also names a resting surface
 - `text-<status>-foreground` used anywhere but on a full-strength `bg-<status>`
+- an arbitrary text size under 16px (`text-[12px]`): use the type scale
+- `uppercase` or positive tracking on labels
+- a one-off pixel radius (`rounded-[5px]`)
 
 It also asserts the ladder rungs stay distinct within each mode, that both grounds are exactly
-`#FAFAF9` and `#171716`, that `--primary` equals `--foreground`, that no `color-scheme` is pinned on
+`#FBFBFA` and `#0C0C0D`, that `--primary` equals `--foreground`, that no `color-scheme` is pinned on
 the document, and that reduced motion is honoured.
 
 Screenshots on this page are the real components rendered against the real compiled CSS with

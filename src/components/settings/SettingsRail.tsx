@@ -55,7 +55,7 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
 
   return <nav aria-label="Settings" className="flex w-full shrink-0 flex-col border-b border-border bg-muted/30 md:w-44 md:border-r md:border-b-0 lg:w-52">
     <div className="shrink-0 px-3 pt-4">
-      <h1 className="hidden px-1.5 text-[15px] font-semibold text-foreground md:block">Settings</h1>
+      <h1 className="hidden px-1.5 text-message font-semibold text-foreground md:block">Settings</h1>
       <div className="md:hidden"><Select label="Settings section" value={primarySection(section)} options={SECTION_ORDER.flatMap(group => group.sections.map(id => ({ value: id, label: SECTION_LABELS[id] })))} onChange={value => onSelect(value as Section)} width="w-full" /></div>
       <div className="relative mt-3">
         <MagnifyingGlass size={12} strokeWidth={1.7} aria-hidden="true" className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -84,7 +84,7 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
                 aria-current={active ? "page" : undefined}
                 onClick={() => onSelect(id)}
                 className={cn(
-                  "flex h-8 w-full items-center gap-2 rounded-lg px-1.5 text-left text-[13px] transition-colors",
+                  "flex h-8 w-full items-center gap-2 rounded-lg px-1.5 text-left text-ui transition-colors",
                   active ? "bg-selection font-medium text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
                 )}
               >
@@ -98,7 +98,7 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
     <div className="shrink-0 border-t border-border/60 p-3">
       {confirming
         ? <div className="rounded-lg border border-border-card bg-card p-2.5">
-            <p className="text-[11.5px] leading-relaxed text-muted-foreground">
+            <p className="text-caption leading-relaxed text-muted-foreground">
               This restores default agent settings, model choices, and instructions, and removes your agents. Chats and sign-in details are kept.
             </p>
             <div className="mt-2.5 flex items-center gap-2">
@@ -118,11 +118,11 @@ function SearchResults({ results, onSelect }: {
   onSelect: (next: Section) => void;
 }) {
   if (results.length === 0) {
-    return <p className="px-1.5 py-2 text-[11.5px] text-muted-foreground">No setting matches that.</p>;
+    return <p className="px-1.5 py-2 text-caption text-muted-foreground">No setting matches that.</p>;
   }
   return <div role="list" aria-label="Search results">
     {results.map(group => <div key={group.section} className="mb-3 last:mb-0">
-      <p className="px-1.5 pb-1 text-[11px] font-medium text-muted-foreground">{group.pageLabel}</p>
+      <p className="px-1.5 pb-1 text-caption font-medium text-muted-foreground">{group.pageLabel}</p>
       {group.rows.map(row => <button
         key={`${group.section}:${row.label}`}
         type="button"
@@ -130,8 +130,8 @@ function SearchResults({ results, onSelect }: {
         onClick={() => onSelect(group.section)}
         className="w-full rounded-lg px-1.5 py-1 text-left text-muted-foreground transition-colors hover:bg-foreground/[0.045] hover:text-foreground"
       >
-        <span className="block truncate text-[13px]">{row.label}</span>
-        {row.description && <span className="block truncate text-[11px] text-muted-foreground/70">{row.description}</span>}
+        <span className="block truncate text-ui">{row.label}</span>
+        {row.description && <span className="block truncate text-caption text-muted-foreground/70">{row.description}</span>}
       </button>)}
     </div>)}
   </div>;

@@ -137,14 +137,14 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
         <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", TONE_DOT[status.tone], status.tone === "working" && "mission-live-accent")} aria-hidden="true" />
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-1.5">
-            <b className="shrink-0 text-[13px] font-medium text-foreground">{name}</b>
-            <span className="min-w-0 truncate text-[12px] text-muted-foreground">{agentRole(open.label)}</span>
-            <span className={cn("shrink-0 text-[11px] font-semibold tracking-[0.06em]", status.tone === "waiting" ? "text-warning" : "text-muted-foreground")}>{status.label}</span>
+            <b className="shrink-0 text-ui font-medium text-foreground">{name}</b>
+            <span className="min-w-0 truncate text-meta text-muted-foreground">{agentRole(open.label)}</span>
+            <span className={cn("shrink-0 text-caption font-semibold", status.tone === "waiting" ? "text-warning" : "text-muted-foreground")}>{status.label}</span>
           </span>
-          {topic && <span className="mt-0.5 block truncate text-[12px] text-foreground/80" title={topic}>{topic}</span>}
-          <small className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">{[harnessLabel(open.harness), open.model, runtime?.taskFamily].filter(Boolean).join(" · ")}</small>
+          {topic && <span className="mt-0.5 block truncate text-meta text-foreground/80" title={topic}>{topic}</span>}
+          <small className="mt-0.5 block truncate font-mono text-caption text-muted-foreground">{[harnessLabel(open.harness), open.model, runtime?.taskFamily].filter(Boolean).join(" · ")}</small>
         </span>
-        <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">{formatElapsed(open.startedAt, workerClock(open, runtime, now))}</span>
+        <span className="shrink-0 font-mono text-caption tabular-nums text-muted-foreground">{formatElapsed(open.startedAt, workerClock(open, runtime, now))}</span>
         <PinButton name={name} pinned={isPinned} onToggle={() => onTogglePin(open.id)} />
         {onStopWorker && runtime && !TERMINAL_LIFECYCLES.includes(runtime.lifecycleState) && <StopButton name={name} onStop={() => void onStopWorker(open.id)} />}
         <button
@@ -186,14 +186,14 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
               <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", TONE_DOT[status.tone], status.tone === "working" && "mission-live-accent")} aria-hidden="true" />
               <span className="min-w-0 flex-1">
                 <span className="flex items-baseline gap-1.5">
-                  <b className="shrink-0 text-[13px] font-medium text-foreground">{name}</b>
-                  <span className="min-w-0 truncate text-[12px] text-muted-foreground">{agentRole(session.label)}</span>
-                  <span className={cn("shrink-0 text-[11px] font-semibold tracking-[0.06em]", status.tone === "waiting" ? "text-warning" : "text-muted-foreground")}>{status.label}</span>
+                  <b className="shrink-0 text-ui font-medium text-foreground">{name}</b>
+                  <span className="min-w-0 truncate text-meta text-muted-foreground">{agentRole(session.label)}</span>
+                  <span className={cn("shrink-0 text-caption font-semibold", status.tone === "waiting" ? "text-warning" : "text-muted-foreground")}>{status.label}</span>
                 </span>
-                {topic && <span className="mt-0.5 block truncate text-[12px] text-foreground/80">{topic}</span>}
-                <small className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">{runtime.waitingReason ? `waiting: ${runtime.waitingReason.replaceAll("_", " ")}` : runtime.progressSummary ?? runtime.taskFamily}</small>
+                {topic && <span className="mt-0.5 block truncate text-meta text-foreground/80">{topic}</span>}
+                <small className="mt-0.5 block truncate font-mono text-caption text-muted-foreground">{runtime.waitingReason ? `waiting: ${runtime.waitingReason.replaceAll("_", " ")}` : runtime.progressSummary ?? runtime.taskFamily}</small>
               </span>
-              <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">{elapsed}</span>
+              <span className="shrink-0 font-mono text-caption tabular-nums text-muted-foreground">{elapsed}</span>
               <ChevronRight size={12} className="shrink-0 text-muted-foreground" aria-hidden="true" />
             </button>
             <PinButton name={name} pinned={isPinned} onToggle={() => onTogglePin(runtime.sessionId)} />
@@ -206,10 +206,10 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
         <Clock3 size={12} className="mt-1 shrink-0 text-muted-foreground" aria-hidden="true" />
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-1.5">
-            <b className="min-w-0 truncate text-[13px] font-medium text-foreground">{queueObjective(item.request) ?? "Queued delegation"}</b>
-            <span className="shrink-0 text-[11px] font-semibold tracking-[0.06em] text-muted-foreground">QUEUED</span>
+            <b className="min-w-0 truncate text-ui font-medium text-foreground">{queueObjective(item.request) ?? "Queued delegation"}</b>
+            <span className="shrink-0 text-caption font-semibold text-muted-foreground">QUEUED</span>
           </span>
-          <small className="mt-0.5 block truncate text-[11px] text-muted-foreground">{queueReason(item.request) ?? item.lastError ?? "waiting for capacity"} · {item.actualModel}</small>
+          <small className="mt-0.5 block truncate text-caption text-muted-foreground">{queueReason(item.request) ?? item.lastError ?? "waiting for capacity"} · {item.actualModel}</small>
         </span>
       </div>)}
 
@@ -220,12 +220,12 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
         className="flex w-full items-center gap-2.5 border-b border-border px-3 py-2.5 text-left transition-colors hover:bg-accent"
       >
         <TerminalSquare size={12} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-        <span className="min-w-0 flex-1 truncate text-[12px] text-foreground">{shellCount} shell{shellCount === 1 ? "" : "s"} running</span>
+        <span className="min-w-0 flex-1 truncate text-meta text-foreground">{shellCount} shell{shellCount === 1 ? "" : "s"} running</span>
         <ChevronRight size={12} className="shrink-0 text-muted-foreground" aria-hidden="true" />
       </button>}
     </div>
 
-    {!empty && <div className="flex min-h-8 shrink-0 items-center gap-2 border-t border-border px-3 font-mono text-[11px] text-muted-foreground">
+    {!empty && <div className="flex min-h-8 shrink-0 items-center gap-2 border-t border-border px-3 font-mono text-caption text-muted-foreground">
       <span>{running + shellCount} running{queued.length > 0 ? ` · ${queued.length} queued` : ""}</span>
     </div>}
   </div>;

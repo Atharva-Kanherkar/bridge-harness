@@ -45,7 +45,7 @@ function Block({ block, numbers, citeBlocks }: { block: VisualBlock; numbers: Ma
     <section className="min-w-0" data-visual-block={`${block.family}/${block.form}`}>
       {(block.title || cited?.length) && (
         <div className="mb-3 flex items-baseline justify-between gap-3">
-          {block.title ? <h3 className="text-[13px] font-medium text-foreground">{block.title}</h3> : <span />}
+          {block.title ? <h3 className="text-ui font-medium text-foreground">{block.title}</h3> : <span />}
           <Cites ids={cited} numbers={numbers} />
         </div>
       )}
@@ -69,15 +69,15 @@ export function VisualView({ spec, actions = {}, showTitle = true, fullscreen = 
       <div className="px-5 pt-4 pb-4">
         {showTitle && (
           <header className="mb-4">
-            <h2 className="text-[15px] font-semibold tracking-[-0.01em]">{spec.title}</h2>
-            {spec.subtitle && <p className="mt-0.5 text-[12.5px] text-muted-foreground">{spec.subtitle}</p>}
+            <h2 className="text-message font-semibold tracking-[-0.01em]">{spec.title}</h2>
+            {spec.subtitle && <p className="mt-0.5 text-meta text-muted-foreground">{spec.subtitle}</p>}
           </header>
         )}
         <div className={cn("grid gap-6", grid && "sm:grid-cols-2")}>
           {spec.blocks.map((block, at) => <Block key={at} block={block} numbers={numbers} citeBlocks={spec.blocks.length > 1} />)}
         </div>
         {spec.notes && spec.notes.length > 0 && (
-          <ul className="mt-4 grid gap-1 text-[12px] leading-relaxed text-muted-foreground">
+          <ul className="mt-4 grid gap-1 text-meta leading-relaxed text-muted-foreground">
             {spec.notes.map((note, at) => <li key={at}>{note}</li>)}
           </ul>
         )}
@@ -91,14 +91,14 @@ export function VisualView({ spec, actions = {}, showTitle = true, fullscreen = 
                 const link = source.kind === "web" && actions.open ? () => actions.open!(source.ref) : undefined;
                 const body = (
                   <>
-                    <span className="inline-flex h-[17px] min-w-[17px] items-center justify-center rounded-[5px] border border-border px-1 text-[10.5px] tabular-nums text-muted-foreground">{at + 1}</span>
+                    <span className="inline-flex h-[17px] min-w-[17px] items-center justify-center rounded-sm border border-border px-1 text-micro tabular-nums text-muted-foreground">{at + 1}</span>
                     <span className="font-medium text-foreground">{name}</span>
                     {detail && <span className="truncate text-muted-foreground">{detail}</span>}
-                    {source.kind === "estimate" && <span className="rounded border border-dashed border-border px-1 text-[10.5px] text-muted-foreground">est.</span>}
+                    {source.kind === "estimate" && <span className="rounded border border-dashed border-border px-1 text-micro text-muted-foreground">est.</span>}
                     {link && <ArrowUpRight size={12} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
                   </>
                 );
-                const chip = "inline-flex max-w-full items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[12px]";
+                const chip = "inline-flex max-w-full items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-meta";
                 return link
                   ? <button key={source.id} type="button" onClick={link} className={cn(chip, "transition-colors hover:bg-accent")} title={source.ref}>{body}</button>
                   : <span key={source.id} className={chip} title={source.ref}>{body}</span>;
@@ -108,7 +108,7 @@ export function VisualView({ spec, actions = {}, showTitle = true, fullscreen = 
           {spec.followUps && spec.followUps.length > 0 && actions.ask && (
             <div className="flex flex-wrap gap-1.5" aria-label="Follow-up questions">
               {spec.followUps.map(question => (
-                <button key={question} type="button" onClick={() => actions.ask!(question)} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-[12.5px] text-foreground transition-colors hover:bg-accent">
+                <button key={question} type="button" onClick={() => actions.ask!(question)} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-meta text-foreground transition-colors hover:bg-accent">
                   <MessageCircle size={12} className="text-muted-foreground" aria-hidden="true" />
                   {question}
                 </button>
