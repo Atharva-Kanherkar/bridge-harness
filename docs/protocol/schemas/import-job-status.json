@@ -86,6 +86,13 @@
         },
         "updatedAt": {
           "type": "string"
+        },
+        "workspaces": {
+          "default": 0,
+          "description": "Workspaces adopted in place from the tool's worktrees (T3 Code).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
         }
       },
       "required": [

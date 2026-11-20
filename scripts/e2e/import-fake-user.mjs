@@ -24,10 +24,11 @@ const OUT = process.env.OUT ?? "/tmp/import-fake-user";
 const PORT = Number(process.env.CDP_PORT ?? 9377);
 const RECORD = process.env.RECORD !== "0";
 // How many generated chats the fake home holds (import-fake-home.py), plus 5
-// hand-made in ~/.claude, 1 that ran in a Conductor workspace, and 1 in the
-// work account's folder.
-const CHATS = Number(process.env.IMPORT_FAKE_CHATS ?? 600) + 7;
-// The fake home, to check on disk that Bridge left Conductor's folders alone.
+// hand-made in ~/.claude, 1 that ran in a Conductor workspace, 1 that T3 Code
+// ran in its worktree, and 1 in the work account's folder.
+const CHATS = Number(process.env.IMPORT_FAKE_CHATS ?? 600) + 8;
+// The fake home, to check on disk that Bridge left Conductor's and T3 Code's
+// folders alone.
 const FAKE_HOME = process.env.FAKE_HOME;
 if (!LINK) throw new Error("Set LINK to a daemon link from scripts/web-link.mjs");
 
@@ -168,6 +169,7 @@ try {
   check("A work Claude account with its own folder is in Settings", accountSaved === 1, String(accountSaved));
   await caption("Open Settings, then Chat history, then Import");
   await click("Open settings for");
+  await waitFor("Settings to open", `[...document.querySelectorAll("button, a, [role=button]")].some(el => el.offsetParent !== null && el.textContent.includes("Chat history"))`);
   await click("Chat history");
   await waitFor("the Chat history page", `!!document.querySelector("[data-settings-column]") && document.querySelector("[data-settings-column]").innerText.includes("Archived chats")`);
   const history = await js(`document.querySelector("[data-settings-column]").innerText`);
@@ -177,7 +179,7 @@ try {
   await waitFor("the tools list", `document.body.innerText.includes("Found on this Mac") && !document.body.innerText.includes("Looking for other tools")`);
   await caption("Bridge finds the tools already on this Mac, without reading any chat");
   const found = await text();
-  check("Claude Code is found with its chats from both folders, projects, setup and the background run left out", new RegExp(`${CHATS.toLocaleString("en-US")} chats in 7 projects · from 2 folders · 1 setup item · \\d+ background runs? left out`).test(found), found.slice(found.indexOf("Found on this Mac"), found.indexOf("Found on this Mac") + 700).replace(/\n+/g, " | "));
+  check("Claude Code is found with its chats from both folders, projects, setup and the background run left out", new RegExp(`${CHATS.toLocaleString("en-US")} chats in 8 projects · from 2 folders · 1 setup item · \\d+ background runs? left out`).test(found), found.slice(found.indexOf("Found on this Mac"), found.indexOf("Found on this Mac") + 700).replace(/\n+/g, " | "));
   check("Codex is found with its own section, mark and Import button", found.includes("Codex keeps using its own memory")
     && await js(`!!document.querySelector('[data-import-tool="codex"] [data-tool-mark] svg') && !!document.querySelector('[data-import-tool="codex"] button')`));
   check("OpenCode is found with its own section, mark and Import button, its background run apart", found.includes("OpenCode keeps its own memory and setup")
@@ -304,6 +306,7 @@ try {
 
   await caption("Conductor's workspaces come over where they are");
   await click("Open settings for");
+  await waitFor("Settings to open", `[...document.querySelectorAll("button, a, [role=button]")].some(el => el.offsetParent !== null && el.textContent.includes("Chat history"))`);
   await click("Chat history");
   await click("Import", "main button, [data-settings-column] button");
   await waitFor("the tools list", `!!document.querySelector('[data-import-tool="conductor"]') && !document.body.innerText.includes("Looking for other tools")`);
@@ -340,6 +343,55 @@ try {
   const { existsSync, readFileSync: read } = await import("node:fs");
   const kept = FAKE_HOME ? existsSync(join(FAKE_HOME, "conductor/workspaces/storefront/tokyo/cart.js")) && read(join(FAKE_HOME, "conductor/workspaces/storefront/tokyo/cart.js"), "utf8").includes("uncommitted") : null;
   check("Archived in Bridge, the folder and its uncommitted work are still there for Conductor", archived === true && kept !== false, `archived=${archived} kept=${kept}`);
+
+  await caption("T3 Code's threads come over as chats, its worktree as a workspace");
+  await js(`document.querySelector('[data-import-tool="t3code"]').scrollIntoView({ block: "center" })`);
+  const t3Found = await js(`document.querySelector('[data-import-tool="t3code"]').innerText`);
+  check("T3 Code is found with its chats and worktree, and its own Import button", t3Found.includes("2 chats · 1 workspace in 1 repo")
+    && await js(`!!document.querySelector('[data-import-tool="t3code"] button')`), t3Found.replace(/\n+/g, " | "));
+  await click("Import", '[data-import-tool="t3code"] button');
+  await waitFor("the T3 Code import to finish", `!!document.querySelector('[data-import-tool="t3code"] [data-import-result="imported"]')`, 60000);
+  const t3 = await js(`(() => {
+    const section = document.querySelector('[data-import-tool="t3code"]');
+    const count = selector => Number(section.querySelector(selector)?.textContent ?? -1);
+    return { imported: count('[data-import-result="imported"]'), skipped: count('[data-import-result="skipped"]'), workspaces: count('[data-import-result="workspaces"]'), text: section.innerText };
+  })()`);
+  check("The thread whose Claude Code session is gone came over from T3 Code's copy; the one Claude Code still has was already in Bridge",
+    t3.imported === 1 && t3.skipped === 1, JSON.stringify(t3).slice(0, 400));
+  check("Its worktree came over as a workspace, left where it is", t3.workspaces === 1 && t3.text.includes("so T3 Code keeps working with them"), t3.text.replace(/\n+/g, " | "));
+  check("Nothing shows T3 Code's secrets", !(await text()).includes("CANARY"));
+  await sleep(600);
+  await shot("05i-t3code-summary-dark");
+  const t3State = await js(`(async () => {
+    const { bridgeApi } = await import("/src/api.ts");
+    const state = await bridgeApi.state();
+    const workspace = state.workspaces.find(item => item.title === "Add a discount helper");
+    const chat = state.sessions.find(item => item.title === "Add a discount helper");
+    return {
+      id: workspace?.id, path: workspace?.path, branch: workspace?.branch, chatWorkspace: chat?.workspaceId,
+      copy: state.sessions.some(item => item.title === "Casual conversation"),
+      deleted: state.sessions.some(item => item.title === "Thrown away"),
+    };
+  })()`);
+  check("The workspace keeps T3 Code's folder and branch, and the chat that ran there is under it",
+    !!t3State.id && (t3State.path ?? "").endsWith("/.t3/worktrees/pricing/feat-discount-07db51fef00c511d") && t3State.branch === "feat/discount" && t3State.chatWorkspace === t3State.id, JSON.stringify(t3State));
+  check("The thread deleted in T3 Code did not come over", t3State.copy && !t3State.deleted, JSON.stringify(t3State));
+  await caption("The chat from T3 Code's own copy opens");
+  await click("Casual conversation");
+  await waitFor("the T3 Code chat", `document.body.innerText.includes("What are we working on today?")`);
+  await sleep(1000);
+  const t3Badge = await js(`document.querySelector('[data-testid="import-source-badge"]')?.getAttribute("title")`);
+  check("It is badged as imported from T3 Code", (t3Badge ?? "").startsWith("Imported · T3 Code"), String(t3Badge));
+  // The finished-import notice sits over the top of the chat; close it to see both sides.
+  await js(`document.querySelectorAll('button[aria-label="Dismiss notification"]').forEach(button => button.click())`);
+  await sleep(800);
+  const t3Chat = await text();
+  const t3Said = t3Chat.slice(0, t3Chat.indexOf("What are we working on today?"));
+  check("Both sides of the conversation came over, the user's message first", /(^|\n)hi\n/.test(t3Said), t3Said.slice(-200).replace(/\n+/g, " | "));
+  await shot("05j-t3code-chat-dark");
+  const t3Tree = FAKE_HOME ? join(FAKE_HOME, ".t3/worktrees/pricing/feat-discount-07db51fef00c511d/price.js") : null;
+  const t3Kept = t3Tree ? existsSync(t3Tree) && read(t3Tree, "utf8").includes("uncommitted") : null;
+  check("T3 Code's worktree and its uncommitted work are untouched", t3Kept !== false, `kept=${t3Kept}`);
 
   await caption("Find the imported chat in the sidebar and open it");
   await click("Invoice email header fix");
@@ -387,6 +439,7 @@ try {
 
   await caption("Import again: nothing lands twice");
   await click("Open settings for");
+  await waitFor("Settings to open", `[...document.querySelectorAll("button, a, [role=button]")].some(el => el.offsetParent !== null && el.textContent.includes("Chat history"))`);
   await click("Chat history");
   await click("Import", "main button, [data-settings-column] button");
   await waitFor("the tools list", `document.body.innerText.includes("Found on this Mac") && !document.body.innerText.includes("Looking for other tools")`);

@@ -203,14 +203,17 @@ function ImportSummary({ job }: { job: ImportJob }) {
     {!failed && <div className="mx-auto my-3 max-w-md px-2" data-import-done><ImportTransfer tool={job.tool} done /></div>}
     <dl className="mt-2 grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4">
       <Stat label="Came over"><Count value={job.imported} tone="plain" result="imported" /></Stat>
+      {(job.workspaces ?? 0) > 0 && <Stat label="Workspaces"><Count value={job.workspaces ?? 0} tone="plain" result="workspaces" /></Stat>}
       <Stat label="Already in Bridge"><Count value={job.alreadyInBridge} result="skipped" /></Stat>
       {job.changed > 0 && <Stat label="Changed since the last import"><Count value={job.changed} /></Stat>}
       {job.leftOut > 0 && <Stat label={job.tool === "conductor" ? "Archived in Conductor, left out" : "Background runs left out"}><Count value={job.leftOut} /></Stat>}
       {job.failed > 0 && <Stat label="Could not be imported"><Count value={job.failed} tone="warning" /></Stat>}
     </dl>
-    {job.imported > 0 && <p className="mt-3 text-caption text-muted-foreground">{job.tool === "conductor"
+    {(job.imported > 0 || (job.workspaces ?? 0) > 0) && <p className="mt-3 text-caption text-muted-foreground">{job.tool === "conductor"
       ? "The workspaces are in the sidebar under their project, in the same folders, so Conductor keeps working with them. Import Claude Code and Codex to bring their chats."
-      : "Imported chats are in the sidebar, under their project when Bridge knows the folder."}</p>}
+      : job.tool === "t3code"
+        ? "The chats are in the sidebar under their workspace or project. T3 Code's worktrees are Bridge workspaces now, in the same folders, so T3 Code keeps working with them."
+        : "Imported chats are in the sidebar, under their project when Bridge knows the folder."}</p>}
     {notCarried.length > 0 && <div className="mt-3">
       <p className="text-meta font-medium text-foreground">What did not come over</p>
       <ul className="mt-1 space-y-0.5 text-caption text-muted-foreground">{notCarried.map(item => <li key={item.text}>{item.count.toLocaleString()} × {item.text}</li>)}</ul>

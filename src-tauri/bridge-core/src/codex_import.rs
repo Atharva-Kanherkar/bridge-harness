@@ -458,6 +458,35 @@ pub fn is_temp_folder(cwd: &str) -> bool {
 }
 
 /// The order a job reads in, and its resume cursor: by path, which is by date.
+/// The id at the end of a rollout's file name, `rollout-<time>-<uuid>.jsonl`.
+pub fn rollout_thread_id(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    // A UUID is 36 characters.
+    let start = stem.len().checked_sub(36)?;
+    stem.is_char_boundary(start).then_some(())?;
+    stem[..start].ends_with('-').then(|| stem[start..].to_owned())
+}
+
+/// The job's work for named threads only (T3 Code knows its threads' Codex
+/// ids): the rollouts whose file name ends with one of them. Only those are
+/// opened. Background runs are left out as in [`job_work`].
+pub fn job_work_for_threads(roots: &[PathBuf], threads: &HashSet<&str>) -> Result<crate::claude_import::JobWork, BridgeError> {
+    let mut artifacts = Vec::new();
+    let mut left_out = 0u64;
+    for path in rollouts_under(roots, roots) {
+        if !rollout_thread_id(&path).is_some_and(|id| threads.contains(id.as_str())) {
+            continue;
+        }
+        if rollout::read_meta(&path).and_then(|meta| meta.cwd).is_some_and(|cwd| is_temp_folder(&cwd)) {
+            left_out += 1;
+            continue;
+        }
+        push_artifact(&path, roots, &mut artifacts)?;
+    }
+    artifacts.sort_by_cached_key(job_key);
+    Ok(crate::claude_import::JobWork { roots: roots.to_vec(), artifacts, left_out })
+}
+
 pub fn job_key(artifact: &DiscoveredArtifact) -> String {
     format!("1:{}", artifact.canonical_source_ref)
 }

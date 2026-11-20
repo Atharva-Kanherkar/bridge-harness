@@ -8,8 +8,8 @@ Explore subagent), a billing chat with a pasted screenshot, thinking, a search,
 a failing command, a compaction and a /rename title, three small docs chats,
 600 short chats in three more projects, one background run in the OS temp
 folder, one Claude memory and a CLAUDE.md, one Codex chat, an OpenCode store
-with a chat and its subagent, plus traces of Conductor and T3 Code so the
-"Found on this Mac" list shows what is coming.
+with a chat and its subagent, Conductor's workspaces, and T3 Code's threads
+and worktree, so the "Found on this Mac" list shows every tool.
 """
 import base64, json, os, shutil, sqlite3, subprocess, sys, uuid
 
@@ -76,7 +76,7 @@ write(f".claude/projects/-private-var-folders-h7-T-probe/{probe}.jsonl", [
 os.makedirs(os.path.join(home, ".claude/projects/-work-billing-service/memory"))
 open(os.path.join(home, ".claude/projects/-work-billing-service/memory/MEMORY.md"), "w").write("- The billing service uses pnpm, not npm.\n- Email templates live in templates/.\n")
 open(os.path.join(home, ".claude/CLAUDE.md"), "w").write("Prefer small commits. Run tests before saying done.\n")
-for folder in [".codex/sessions/2026/11/17", ".t3/userdata"]:
+for folder in [".codex/sessions/2026/11/17"]:
     os.makedirs(os.path.join(home, folder), exist_ok=True)
 # One Codex chat, shaped like a real rollout: what Codex showed is in
 # item_completed events.
@@ -176,4 +176,60 @@ write(f".claude/projects/{slug}/{conductor_chat}.jsonl", [
     {"type": "assistant", "uuid": "c2", "sessionId": conductor_chat, "timestamp": "2026-11-19T15:00:40Z", "cwd": tokyo, "message": {"role": "assistant", "content": [{"type": "text", "text": "The total now multiplies each price by its quantity."}]}},
     {"type": "custom-title", "customTitle": "Cart total ignores quantities", "sessionId": conductor_chat},
 ])
+# T3 Code, as its current build lays things out (migration 102): a project
+# with a thread in a real git worktree under ~/.t3/worktrees/<repo>/, whose
+# Claude Code session is still on disk (T3 Code titles it in the transcript);
+# a thread whose session Claude Code already deleted, so only T3 Code's own
+# copy is left; and a deleted thread. Its auth table holds a canary.
+pricing = os.path.join(home, "code/pricing")
+os.makedirs(pricing)
+git(pricing, "init", "-q", "-b", "main")
+with open(os.path.join(pricing, "price.js"), "w") as out:
+    out.write("export const price = n => n * 1.2;\n")
+git(pricing, "add", "-A")
+git(pricing, "commit", "-q", "-m", "first")
+t3_tree = os.path.join(home, ".t3/worktrees/pricing/feat-discount-07db51fef00c511d")
+git(pricing, "worktree", "add", "-q", "-b", "feat/discount", t3_tree)
+with open(os.path.join(t3_tree, "price.js"), "a") as out:
+    out.write("// uncommitted: export const discount = (n, pct) => n * (1 - pct / 100);\n")
+t3_tree = os.path.realpath(t3_tree)
+kept, gone = "1da2ef59-9231-40f6-8da5-ba7f64dc5e6d", "43440686-a49e-487a-9544-a94e260774a6"
+write(f".claude/projects/{''.join(c if c.isalnum() else '-' for c in t3_tree)}/{kept}.jsonl", [
+    {"type": "custom-title", "customTitle": "Add a discount helper", "sessionId": kept},
+    {"type": "user", "uuid": "t1", "sessionId": kept, "timestamp": "2026-11-20T17:18:31Z", "cwd": t3_tree, "entrypoint": "t3-code", "message": {"role": "user", "content": "Add a function discount(n, pct) to price.js. Keep it tiny."}},
+    {"type": "assistant", "uuid": "t2", "sessionId": kept, "timestamp": "2026-11-20T17:18:40Z", "cwd": t3_tree, "entrypoint": "t3-code", "message": {"role": "assistant", "content": [{"type": "text", "text": "Added discount(n, pct): it returns n * (1 - pct / 100)."}]}},
+])
+t3_db = os.path.join(home, ".t3/userdata/statev2.sqlite")
+os.makedirs(os.path.dirname(t3_db), exist_ok=True)
+t3_fixtures = os.path.join(repo, "testing/fixtures/import/t3code")
+db = sqlite3.connect(t3_db)
+db.executescript(open(os.path.join(t3_fixtures, "schema-102.sql")).read())
+for line in open(os.path.join(t3_fixtures, "migrations-102.txt")):
+    number, name = line.rstrip("\n").split("\t", 1)
+    db.execute("INSERT INTO effect_sql_migrations(migration_id,name) VALUES(?,?)", (int(number), name))
+db.execute("INSERT INTO auth_sessions(session_id,subject,scopes,method,issued_at,expires_at) VALUES('CANARY-t3code-secret','owner','[]','bootstrap','2026-11-20','2027-11-20')")
+db.execute("INSERT INTO projection_projects(project_id,title,workspace_root,scripts_json,created_at,updated_at) VALUES('p','pricing',?,?,'2026-11-20T17:00:00Z','2026-11-20T17:00:00Z')",
+           (os.path.realpath(pricing), json.dumps([{"id": "i", "name": "Install", "command": "bun install", "icon": "configure", "runOnWorktreeCreate": True}])))
+def t3_thread(tid, title, native, worktree, branch, deleted=False):
+    provider_thread = f"provider-thread:provider:claudeAgent:native-thread:{native}"
+    payload = {"id": tid, "projectId": "p", "title": title, "providerInstanceId": "claudeAgent", "modelSelection": {"instanceId": "claudeAgent", "model": "claude-haiku-4-5"},
+               "branch": branch, "worktreePath": worktree, "pullRequests": [], "activeProviderThreadId": provider_thread,
+               "lineage": {"parentThreadId": None, "relationshipToParent": None, "rootThreadId": tid}, "historyOrigin": "native", "deletedAt": "2026-11-20T18:00:00Z" if deleted else None}
+    db.execute("INSERT INTO orchestration_v2_projection_threads(thread_id,project_id,title,default_provider,runtime_mode,interaction_mode,active_provider_thread_id,created_at,updated_at,deleted_at,payload_json,provider_instance_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+               (tid, "p", title, "claudeAgent", "full-access", "default", provider_thread, "2026-11-20T17:18:29Z", "2026-11-20T17:18:40Z", "2026-11-20T18:00:00Z" if deleted else None, json.dumps(payload), "claudeAgent"))
+    db.execute("INSERT INTO orchestration_v2_projection_provider_threads(provider_thread_id,thread_id,provider,driver,provider_session_id,status,updated_at,payload_json) VALUES(?,?,?,?,?,?,?,?)",
+               (provider_thread, tid, "claudeAgent", "claudeAgent", "provider-session:provider-instance:claudeAgent:shared", "idle", "2026-11-20T17:18:40Z",
+                json.dumps({"id": provider_thread, "driver": "claudeAgent", "nativeThreadRef": {"driver": "claudeAgent", "nativeId": native, "strength": "strong"}})))
+def t3_message(tid, mid, role, text, at):
+    db.execute("INSERT INTO orchestration_v2_projection_messages(message_id,thread_id,role,streaming,created_at,updated_at,payload_json) VALUES(?,?,?,0,?,?,?)",
+               (mid, tid, role, at, at, json.dumps({"id": mid, "role": role, "text": text})))
+t3_thread("mcp:f1cf9272", "Add a discount helper", kept, t3_tree, "feat/discount")
+t3_message("mcp:f1cf9272", "k1", "user", "Add a function discount(n, pct) to price.js. Keep it tiny.", "2026-11-20T17:18:31Z")
+t3_thread("b87ac664", "Casual conversation", gone, None, "main")
+t3_message("b87ac664", "g1", "user", "hi", "2026-09-07T20:35:00Z")
+t3_message("b87ac664", "g2", "assistant", "Hi! What are we working on today?", "2026-09-07T20:35:01Z")
+t3_thread("deleted-1", "Thrown away", "55555555-5555-4555-8555-555555555555", None, "main", deleted=True)
+t3_message("deleted-1", "x1", "user", "This thread was deleted in T3 Code.", "2026-11-20T18:00:00Z")
+db.commit()
+db.close()
 print(home)
