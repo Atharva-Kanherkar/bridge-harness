@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { asWireKind } from "../transcript/wire";
 import type { AgentEvent, Session, Workspace } from "../types";
+import { builtinEntry, appById } from "../apps/registry";
 import { BridgeSidebar, type BridgeSidebarProps } from "./BridgeSidebar";
 
 // The Running group above Projects: which chats it lists, what each row says,
@@ -198,5 +199,42 @@ describe("sidebar Active group", () => {
       field.dispatchEvent(new Event("input", { bubbles: true }));
     });
     expect(group()).toBeNull();
+  });
+  it("folds to its heading and count, and unfolds to every row", () => {
+    mount();
+    const toggle = () => container.querySelector<HTMLButtonElement>("[data-active-toggle]")!;
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    act(() => { toggle().dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expect(rows()).toHaveLength(0);
+    expect(group()!.querySelector("[data-active-count]")!.textContent).toBe("2");
+    act(() => { toggle().dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(rows().map(button => button.dataset.runningRow)).toEqual(["retry", "deck"]);
+  });
+
+  it("remembers the fold across launches", () => {
+    mount();
+    act(() => { container.querySelector<HTMLButtonElement>("[data-active-toggle]")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    act(() => root.unmount());
+    root = createRoot(container);
+    mount();
+    expect(group()!.dataset.collapsed).toBe("true");
+    expect(rows()).toHaveLength(0);
+  });
+
+  it("opens Mission Control from the heading and stands in for its pin while something runs", () => {
+    const onOpenApp = vi.fn();
+    const pinnedApps = [{ app: builtinEntry(appById("mission-control")) }];
+    mount({ onOpenApp, pinnedApps, activeApp: "mission-control" });
+    const open = group()!.querySelector<HTMLButtonElement>("[data-open-mission-control]")!;
+    expect(open.getAttribute("aria-current")).toBe("page");
+    act(() => { open.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(onOpenApp).toHaveBeenCalledWith("mission-control");
+    const nav = container.querySelector('nav[aria-label="Main navigation"]')!;
+    expect(nav.textContent).not.toContain("Mission Control");
+    // Idle, the pin comes back: the way in never disappears.
+    mount({ onOpenApp, pinnedApps, chats: [daemon], liveAgents: new Map(), sessions: [daemon], liveEvents: [] });
+    expect(group()).toBeNull();
+    expect(container.querySelector('nav[aria-label="Main navigation"]')!.textContent).toContain("Mission Control");
   });
 });
