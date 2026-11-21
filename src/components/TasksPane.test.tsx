@@ -213,7 +213,16 @@ describe("a row", () => {
     await click(byLabel(`View ${agentName("w1")}`));
     expect(container.querySelector("b")?.textContent).toBe(agentName("w1"));
     expect(container.textContent).toContain("Rank the gateway repos");
-    expect(container.textContent).toContain("Codex · m · research");
+    // Contract: testing/fix-worker-detail-ui.md. One sans line: the state in
+    // sentence case, then harness and model; the family is the role, so it is
+    // not said twice.
+    const header = container.querySelector("[data-agent-header]")!;
+    expect(header.textContent).toContain("Starting");
+    expect(header.textContent).not.toContain("STARTING");
+    expect(header.textContent).toContain("Codex · m");
+    expect(header.textContent).not.toContain("· research");
+    expect(header.querySelector(".font-mono")).toBeNull();
+    expect(header.querySelector(".mission-live-accent")).toBeNull();
   });
 
   it("stops a live worker through the host", async () => {

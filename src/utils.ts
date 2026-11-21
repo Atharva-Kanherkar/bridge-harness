@@ -2,7 +2,15 @@ import type { CapabilityTier, SessionStatus, SlashCommand } from "./types";
 
 const MODEL_LABELS: Record<string, string> = { "gpt-5.6-luna": "GPT Luna", "gpt-5.6-terra": "GPT Terra", "gpt-6.1-sol": "GPT-6.1 Sol", "gpt-5.6-sol": "GPT Sol", "gpt-5.3-codex": "GPT-5.3 Codex", sonnet: "Sonnet", opus: "Opus", haiku: "Haiku", fable: "Fable" };
 
-export const modelLabel = (model?: string | null) => (model ? MODEL_LABELS[model] ?? model : "—");
+/** `claude-opus-5-5` (with or without a date or `[1m]` suffix) as `Opus 5.5`. */
+function claudeModelLabel(model: string): string | undefined {
+  const match = /^claude-(opus|sonnet|haiku|fable)-(\d+)-(\d+)(?:-\d{8})?(?:\[1m\])?$/.exec(model);
+  if (!match) return undefined;
+  const [, family, major, minor] = match;
+  return `${family.charAt(0).toUpperCase()}${family.slice(1)} ${major}.${minor}`;
+}
+
+export const modelLabel = (model?: string | null) => (model ? MODEL_LABELS[model] ?? claudeModelLabel(model) ?? model : "—");
 
 export function tierRuntimeLabel(tier?: CapabilityTier | null, model?: string | null, effort?: string | null): string {
   const routing = tier ? `${tier.toUpperCase()} TIER` : "TIER —";

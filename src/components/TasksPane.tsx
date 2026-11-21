@@ -31,17 +31,6 @@ import { WORKER_STATE_TEXT, formatWorkerClock, sentenceCase, stateOfTone, useTic
 // workspace tree (which worktree a worker writes in) are facts on a row, never
 // what decides where the row sits.
 
-const TONE_DOT: Record<WorkerTone, string> = {
-  working: "bg-success",
-  waiting: "bg-warning",
-  attention: "bg-warning",
-  warm: "bg-info",
-  done: "bg-muted-foreground/40",
-  failed: "bg-destructive",
-  stalled: "bg-destructive",
-  idle: "bg-muted-foreground/40",
-};
-
 /// Running, or waiting on you: the two states in which an agent is doing
 /// something now. Starting, resuming and restored resolve to `working`.
 export function isActiveTone(tone: WorkerTone): boolean {
@@ -211,8 +200,22 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
     const name = agentName(open.id);
     const topic = open.kind === "harness_subagent" ? open.title : agentTopic(open);
     const isPinned = pinned.has(open.id);
+    const state = stateOfTone(status.tone);
+    const StateIcon = STATE_ICON[state];
+    const role = open.kind === "harness_subagent" ? "subagent" : agentRole(open.label);
+    // The task family usually is the role, lowercased: say it once.
+    const family = runtime?.taskFamily?.replaceAll("_", " ");
+    const meta = [
+      harnessLabel(open.harness),
+      open.model ? modelLabel(open.model) : null,
+      family && family.toLowerCase() !== role.toLowerCase() ? sentenceCase(family) : null,
+    ].filter(Boolean).join(" · ");
+    const elapsed = formatElapsed(open.startedAt, workerClock(open, runtime, now));
+    // Drawn as its lineage row is, so opening a worker does not change how it
+    // is described: name and role, then topic, then the state in its colour
+    // and the facts beside it, in the sans face the rest of the pane uses.
     return <div className="flex h-full flex-col">
-      <div className="flex min-h-11 shrink-0 items-center gap-1.5 border-b border-border px-1.5 py-1.5">
+      <div data-agent-header className="flex shrink-0 items-start gap-1.5 border-b border-border py-2 pl-1.5 pr-2">
         <button
           type="button"
           onClick={() => setSelected(undefined)}
@@ -220,17 +223,21 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
           title="All agents"
           className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
         ><ChevronLeft size={14} aria-hidden="true" /></button>
-        <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", TONE_DOT[status.tone], status.tone === "working" && "mission-live-accent")} aria-hidden="true" />
-        <span className="min-w-0 flex-1">
-          <span className="flex items-baseline gap-1.5">
+        <span className="min-w-0 flex-1 py-0.5">
+          <span className="flex min-w-0 items-baseline gap-1.5">
             <b className="shrink-0 text-ui font-medium text-foreground">{name}</b>
-            <span className="min-w-0 truncate text-meta text-muted-foreground">{open.kind === "harness_subagent" ? "subagent" : agentRole(open.label)}</span>
-            <span className={cn("shrink-0 text-caption font-semibold", status.tone === "waiting" ? "text-warning" : "text-muted-foreground")}>{status.label}</span>
+            <span className="min-w-0 truncate text-meta text-muted-foreground">{role}</span>
           </span>
           {topic && <span className="mt-0.5 block truncate text-meta text-foreground/80" title={topic}>{topic}</span>}
-          <small className="mt-0.5 block truncate font-mono text-caption text-muted-foreground">{[harnessLabel(open.harness), open.model, runtime?.taskFamily].filter(Boolean).join(" · ")}</small>
+          <span className="mt-1 flex min-w-0 items-center gap-1 text-caption">
+            <span data-agent-state={state} className={clsx("inline-flex shrink-0 items-center gap-1", WORKER_STATE_TEXT[state])}>
+              <StateIcon size={11} className={clsx("shrink-0", state === "working" && "animate-spin")} aria-hidden="true"/>{sentenceCase(status.label)}
+            </span>
+            {meta && <span className="min-w-0 truncate text-faint"><span aria-hidden="true">· </span>{meta}</span>}
+            {/* The clock is the one fact that changes: it never truncates. */}
+            {elapsed && <span className="shrink-0 tabular-nums text-faint"><span aria-hidden="true">· </span>{elapsed}</span>}
+          </span>
         </span>
-        <span className="shrink-0 font-mono text-caption tabular-nums text-muted-foreground">{formatElapsed(open.startedAt, workerClock(open, runtime, now))}</span>
         <PinButton name={name} pinned={isPinned} onToggle={() => onTogglePin(open.id)} />
         {onStopWorker && (open.kind === "harness_subagent" ? isActiveTone(status.tone) : runtime && !TERMINAL_LIFECYCLES.includes(runtime.lifecycleState)) && <StopButton name={name} subagent={open.kind === "harness_subagent"} onStop={() => void onStopWorker(open.id)} />}
         <button
