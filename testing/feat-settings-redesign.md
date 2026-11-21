@@ -1,235 +1,173 @@
-# feat/settings-redesign — Test Contract
+# feat/settings-redesign: test contract
 
-Locked before implementation. Derived from issue #511 ("Redesign Settings: one
-row-and-group system, Phosphor icons, exact harness marks") and its acceptance
-comment. Every criterion below maps to a test named here or to a screenshot in
-the PR body.
+Locked before implementation. Three commit groups, in order: fixes, settings
+redesign, model picker. Styling stays Tailwind v4 utilities on existing
+Graphite & Paper tokens; no new CSS files, no inline style.
 
-The single rule the whole redesign rests on: **every page is a column of groups,
-every group is a card of rows, every row is one label and one control.**
+## Phase 1: broken settings
 
-## Functional Behavior
+### 1. Input while running has one source
 
-### Chrome and layout
+- The General page has no "Active-turn behavior" row and
+  `ActiveTurnInputSetting` is deleted.
+- `activeTurnSettings.ts` resolves the value as: the chat's own snapshot when
+  its configuration revision is above 0, otherwise the application chat
+  default `activeTurnInput`, otherwise `steer`.
+- `App.tsx` and `AsideChat.tsx` both call the same resolver
+  (`useActiveTurnInput(sessionSettings)`), so a legacy chat and its side chat
+  agree.
+- Saving "Input while running" on New chats updates the resolver in the same
+  window without a reload.
+- Migration, once: a legacy `bridge.composer.activeTurnInput = "queue"` is
+  written into the application default when that default is unset; the
+  legacy key is removed after a successful check. A set default is never
+  overwritten. A failed save keeps the key so the next launch retries.
 
-- The Settings screen renders no page header bar. The 208px rail runs full
-  height and carries, in order: the title "Settings", a 28px search field, four
-  labelled groups, and a footer with "Reset all settings".
-- Rail groups and their items, in this exact order:
-  - General: Appearance, Permissions, Composer
-  - Agents: Presets, Models, Prompts
-  - Runtimes: Harnesses
-  - Data: Work briefing, Import
-- `Section` ids stay stable for existing callers: `permissions` (opened by the
-  bypass badge) and `prompts` (opened from usage). `composer` is added.
-  `agents` continues to address the Presets page, `work` the Work briefing page.
-- Every page body renders in one centered column of `max-w-[720px]` with 30px
-  top padding. Switching pages does not move the column, because no page draws
-  its own sidebar or its own width.
-- Presets, Harnesses, and Prompts are list pages. A row opens a detail page in
-  the same column, headed by a breadcrumb whose first crumb returns to the list.
-- Typing in the rail search filters rows across all pages by row label and row
-  description, and shows which page each surviving row belongs to. Clearing the
-  field restores normal navigation.
-- "Reset all settings" sits in the rail footer, opens a confirmation that names
-  what it deletes (every Bridge, Codex, Claude, and agent override, and custom
-  agent presets), and only calls `resetAllConfig` + `resetModelProfiles` when
-  confirmed.
+Tests (each fails on main):
+- `activeTurnSettings.test.ts`: resolver precedence; migration writes queue
+  when unset, leaves a set default alone, removes the key, keeps it on failure.
+- `AsideChat.test.tsx`: the aside follows the application default.
+- `App.drafts.test.tsx`: Queue mode comes from the application default.
+- `AppearancePage`/General: no Active-turn row.
 
-### Controls
+### 2. Per-row audit
 
-- No `<input type="checkbox">` and no `<select>` element exists anywhere under
-  the Settings screen root. Boolean rows use a `role="switch"` button; choice
-  rows use a listbox-style button + popup.
-- Switch is 32x18. Selects, fields, and buttons are 28px tall with 12px text and
-  8px radius.
-- Group cards use `bg-card` + `border-border-card` at 12px radius with
-  `overflow-hidden`; rows are separated by a `border-border` hairline, never by
-  margin.
-- Filled (foreground) buttons appear only for Save and Connect. Install is a
-  ghost (bordered) button, Remove is destructive text, Reset is muted text.
-- Type sizes used on the Settings screen are limited to 17 (page title), 13 (row
-  label), 12 (control), 11.5 (row description), 11 (group label), and 10.5 mono
-  (ids, paths, meta).
-- Color appears only on harness marks and status pills. All other chrome is
-  achromatic in both Graphite and Paper.
+Status: OK = control writes, value persists, a consumer reads it with a
+visible effect. FIXED = broken on main, fixed here with a test. N/A = not
+reachable on main by design.
 
-### Saving
+| Page | Row | Storage | Consumer | Status |
+| --- | --- | --- | --- | --- |
+| General | Mode | localStorage `bridge.theme` + app prefs mirror | `src/theme.ts:175` applyTheme | OK |
+| General | Window background | localStorage `bridge.skin` | `src/theme.ts:150` applySkin | OK |
+| General | Window zoom | zoom store | `src/zoom.ts:279` setZoomLevel applies to webview | OK |
+| General | Show thinking | localStorage `bridge.transcript.showThinking` | `src/components/AgentConversation.tsx:923` | OK |
+| General | Open edit activity automatically | localStorage `bridge.transcript.autoExpandEditActivity` | `src/components/AgentConversation.tsx:924` | OK |
+| General | Thinking control | localStorage `bridge.effortSelector` | `src/components/ChatModelControl.tsx:304` | OK |
+| General | Show worker chats in Mission Control | localStorage `bridge.missionControl.showWorkerChats` | `src/components/MissionControl.tsx:382` | OK |
+| General | Active-turn behavior | localStorage `bridge.composer.activeTurnInput` | `src/App.tsx:1696` ignores it when chat revision > 0; `src/components/AsideChat.tsx:84` reads only it | FIXED: row removed, value migrated to New chats default |
+| General | Hub rows (Voice, Typing, Notifications, Menu bar, Updates) | none | none | FIXED: replaced by rail destinations |
+| Appearance | whole page | same as General | same | FIXED: duplicate page, `appearance` aliases to `general` |
+| Notifications | Toast/Banner/Sound per notice | localStorage `bridge.attention.settings` | `src/App.tsx:870` useAttentionSettings | OK |
+| Notifications | Play | none (action) | `src/attentionSound.ts` | OK |
+| Notifications | Quiet hours, From, Until | `bridge.attention.settings` | `src/attentionSettings.ts:88` isQuiet | OK |
+| Voice | Set up / Remove local model, Retry status | backend voice model store | `voice/local_*` commands, `src/App.tsx` useVoiceDictation | OK |
+| Typing & search | Inline suggestions Enabled, Suggestion model | `config/save_suggestion_settings` | `src/App.tsx:1787` + composer typeahead | OK |
+| Typing & search | Search deeper, Search model | `chat_search/settings` | `src-tauri/bridge-core/src/chat_search/settings.rs:44` | OK |
+| Menu bar | Display, icon layout, favorites, providers, usage, refresh | `menu_bar/save_settings` | `src-tauri/bridge-menu-bar/swift/MenuBar.swift` | OK |
+| Menu bar | OpenCode workspace | `menu_bar/save_settings` on blur | same | OK (free text, kept on blur) |
+| New chats | Apply defaults to (scope) | none (view filter) | page | OK |
+| New chats | Agent, Model, Thinking, Access, Work location, Input while running | `config/save_chat_defaults` | `src-tauri/bridge-core/src/chat_defaults.rs:416` resolve | FIXED: only saved by a separate Save button; leaving the page lost the choice. Now saves on change with revision check |
+| New chats | When a usage limit stops a chat: Action, Backup model, Backup effort | `limit_recovery` settings | `src-tauri/bridge-core/src/limit_recovery.rs:134` | FIXED: Backup effort had no Saved confirmation |
+| Coding agents | Installed/Available rows, Install, Sign in | managed agents | `src/components/ManagedAgentsPanel.tsx` | OK |
+| Coding agents | Hub rows (New chat defaults, Model preferences, Agents, Background tasks, Bridge instructions) | none | none | FIXED: replaced by rail destinations |
+| Coding agent detail | Enabled, Default model, Thinking level | `config/save_harness` | `src/chatDefaults.ts:58` harnessLaunchOverrides, backend launch | OK |
+| Coding agent detail | Accounts | harness `advanced.accounts` | `src/providerAccounts.ts` accountsOf, account picker | OK |
+| Coding agent detail | Custom instructions, Executable path, Advanced JSON | `config/save_harness` via SaveBar | backend session launch | OK |
+| Coding agent detail | OpenCode visible models | harness `advanced.visibleModels` | `src/components/SettingsScreen.tsx` modelOptions, picker | OK |
+| Models | per profile: model, thinking, choice mode, backup, cost, speed, past results | `models/save_profiles` | `src-tauri/bridge-core/src/learning_router.rs:691`, `model_profiles.rs:380` | OK |
+| Models | Available models Retry | catalog refresh | adapters | OK |
+| Your agents | Enabled, What it does, Coding agent, Model, Thinking | `config/save_agent` on change | agent menu, `#` mention, chat target | OK |
+| Your agents | Name, Description, Instructions | SaveBar | same | OK |
+| Permissions | Let agents act without asking | `config/save_permission_policy` | `src-tauri/bridge-core/src/agent_config.rs:72` | OK |
+| Permissions | Suggested instruction changes per role | `workerPromptProposalRoles` | `src-tauri/bridge-core/src/agent_config.rs:381` | OK |
+| Permissions | Personal apps through OpenCode | app prefs `allowOpencodeAppCourier` | `src-tauri/bridge-core/src/apps/router.rs:59` | OK |
+| Permissions | API keys hub row | none | none | FIXED: API keys is a rail destination |
+| API keys | Add, Replace, Sites, Forget | Keychain via `secrets/*` | credential proxy | OK |
+| Import | Import per tool | import job | `src/components/MoveToBridge.tsx` | OK |
+| Archived chats | Search, Unarchive | `sessions/*archive*` | sidebar history | OK |
+| Storage | Explorer, Trash, Worktree retention and cleanup | disk + `worktrees/*` | `src/components/settings/WorktreeStorage.tsx` | OK |
+| Storage | Storage page duplicate (`storage` vs `data`) | same | same | FIXED: `storage` aliases to `data` |
+| Background tasks | Workspace | none (view filter) | page | OK |
+| Background tasks | Preferred agent, Try another agent, Automatic retry | `workers/save_settings` | `src-tauri/bridge-core/src/learning_router.rs:1198`, `live_turn.rs:8641`, `worker_settings.rs:25` | FIXED: only saved by a Save button |
+| Background tasks | Tasks at once, per message, Stop waiting, Keep ready | `workers/save_settings` | `src-tauri/bridge-core/src/policy.rs`, `live_turn.rs:9365` | FIXED: Save button only; a cleared field sent 0, which the host refuses for Stop waiting. Now saves on valid change, out of range shows an error and does not send |
+| Background tasks | Orchestrator notices | `delegation_notify` global | `src-tauri/bridge-core/src/delegation_notify.rs:101` | OK |
+| Background tasks | Reviewer model and effort per harness | `reviewer` settings | GitHub pane Review launch | FIXED: selects only saved by a Save button; now save on change |
+| Background tasks | Reviewer instructions | `reviewer` settings | same | OK (free text, SaveBar) |
+| Bridge instructions | Sections, Reset, Restore, Export, Import | `prompts/*` | prompt compiler | OK |
+| Daily briefing | Briefing on, harness, model, effort, connectors, frequency, focus | `work/write_settings` | `src/App.tsx:2225` refresh on focus; backend briefing | OK |
+| Updates | Beta nightly builds, Check now | localStorage update channel | `src/App.tsx:1467` | OK |
+| Footer | Reset all settings | `config/reset_all` + `models/reset_profiles` | config | FIXED: renamed to say what it resets |
+| Browser copies | all | `clone/*` | n/a | N/A: page unmounted when clones were switched off; out of scope |
+| Rail search | every hit | n/a | `SettingsScreen` | FIXED: hits only switched page; index was hand-kept and pointed at removed rows ("Menu Bar icon", `appearance`) |
 
-- A switch or select row persists on change and shows a check plus "Saved"
-  beside its control, in the same row, for about 1.5 seconds. The control stays
-  live throughout: the confirmation never replaces the thing that was clicked.
-- Editors and text fields do not persist on change. A dirty page shows exactly
-  one save bar at the bottom of the column reading "Unsaved changes" with
-  Discard and Save. No per-card Save button exists anywhere in Settings.
-- Save is disabled while a request is in flight; a failure is reported through
-  the existing `onError` prop and leaves the draft dirty.
-- Navigating away from a page with unsaved editor text keeps the draft, exactly
-  as Prompt Studio does today.
+Backend breaks found: none that a frontend change cannot fix.
 
-### Pages
+### 3. Search reveals the row
 
-- **Appearance**: mode tiles (Match macOS, Paper, Graphite) and shell tiles
-  (Solid, Cursor), each with a two-swatch preview and a radio. The selected tile
-  is marked by a foreground border. Choosing a tile stamps
-  `document.documentElement.dataset.skin` as it does today.
-- **Permissions**: group "Provider prompts" with the auto-approve switch,
-  "Always asks" with the two surviving gates behind a lock icon, and "Recent
-  auto-approvals" with a row per event (mono body, time on the right, or a
-  plain "Nothing has been auto-approved yet").
-- **Composer**: group "Inline suggestions" with an Enabled switch row and a
-  Model select row. Inline suggestions no longer appears on the Models page.
-- **Presets**: list of rows (enabled dot, name, "role · harness", Default pill,
-  chevron) and a "New preset" header action. Detail page groups: Identity
-  (Enabled, Name, Description, Role), Runtime (Harness, Model, Effort), System
-  prompt (editor). Header actions cover Make default and Reset/Delete.
-- **Models**: one row per profile grouped Orchestration, Workers, Verification.
-  A row shows name, "Provider · Model · effort" with the provider's mark, and a
-  "Tracks standard" or "Pinned" pill. Expanding the row reveals the six fields
-  plus Allow learning as label/control rows. A stale or errored catalog shows a
-  Stale pill with Retry. The header carries the version pill and no Save button.
-- **Harnesses (list)**: groups Installed, Available, Defaults. A runtime row
-  carries its mark, name, "source · version", a status pill (Ready / Working /
-  Not installed / Needs repair), an Install button when the runtime is absent,
-  and a chevron. Bridge appears under Defaults as "Always on" with no chevron.
-- **Harness detail**: breadcrumb "Harnesses / Name"; header with mark, name,
-  "source version · path", status pill, and Remove only when `removable` is
-  true. Groups: Sessions (Enabled, Default model, Default effort), System prompt
-  (editor), Advanced (Executable path or Advanced JSON), plus Providers and
-  Visible models for OpenCode only. Repair replaces Install when `repairable`.
-- **Prompts**: list page with a target select in the header and a "Sections"
-  group of rows (mono id, token estimate, Modified/Deleted pill, unsaved dot);
-  Export overrides, Import overrides, and Reset all for this target are header
-  actions. The Compiled preview group (Stable prefix, Variable suffix, Provider
-  layers, and the cache-miss note) sits on the *list* page rather than the
-  detail page, because it describes the target rather than any one section, and
-  a direct session has sections to compile but none to open. Detail page:
-  breadcrumb "Prompts / Target / section", lint warnings above the editor, a
-  file bar with an unsaved indicator, a Reset action, and a History group with a
-  row per revision and Restore.
-- **Work briefing**: groups Suggested work (Enabled, Harness, Model, Effort),
-  What it reads (Everything connected switch, then a switch per connector with a
-  sign-in note), When it runs (Cadence, Refresh on focus). The same validation
-  as today gates Save.
-- **Import**: the existing five-stage wizard, restyled into the page header,
-  group cards, and the new controls.
+- One registry (`settings/registry.ts`) lists every page (id, label,
+  description, group) and every searchable row (id, page, label, description,
+  `fold` when inside an Advanced fold). The rail and the search both read it;
+  `STATIC_SETTINGS_ROWS` is gone.
+- Rendered rows carry `data-settings-row="<id>"` through the kit (`anchor`).
+- Clicking a hit opens the page, opens every enclosing `<details>`, scrolls
+  the row into view and marks it `data-search-highlight` for about 1.6 s.
+- Harness and agent hits open that harness's or agent's detail page.
 
-### Icons and marks
+Tests:
+- `registry.test.tsx`: every registry row id renders on its page (mounted on
+  mock data), so the index cannot go stale.
+- `SettingsScreen.search.test.tsx`: a hit inside General's Advanced fold opens
+  the fold, calls scrollIntoView, sets then clears the highlight; a harness
+  hit opens the harness detail; an agent hit opens the agent detail.
 
-- The Settings screen imports no symbol from `lucide-react`. Icons come from
-  `@phosphor-icons/react` (Regular weight), 14px in the rail, 12px in controls.
-- `harnessMarks.tsx` draws the exact vendor marks: OpenAI (Codex) filled
-  `currentColor` in foreground and never green, Claude in `text-harness-claude`,
-  OpenCode's frame in `text-harness-opencode` with an inner block at 45%, and a
-  new Cursor mark with its own five facets. No radial stand-in remains.
-- No mark rotates. `.harness-mark-live` animates opacity only; the
-  `harness-turn` keyframe is gone from it.
-- Every existing `HarnessMark` caller (startup row, sidebar, aside chat, model
-  control) still renders a mark plus its label.
+### 4, 5, 6. Pages, aliases, contextual mode, reset label
 
-### Copy
+- `canonicalSection`: `appearance -> general`, `storage -> data`,
+  `harnesses -> codingAgents`, `history -> import`. Old ids still open.
+- Page titles equal nav labels (test renders each page and compares its h2).
+- `contextual` is removed; archives, saved-setups and briefing-settings views
+  render the rail with the matching item current.
+- The reset action reads "Reset agents, models and instructions".
 
-- No em dash appears in any user-facing string added or touched by this change.
-- The rail's shield note and the header subtitle "Providers, models, prompts,
-  and agent presets." are removed.
+## Phase 2: settings redesign
 
-## Unit Tests
+- Rail: left, `w-56`, full height, own scroll, no "Settings" heading. Groups:
+  Basics (General, Notifications, Voice, Typing & search, Menu bar); Agents &
+  models (New chats, Coding agents, Models, Your agents, Permissions, API
+  keys); Data (Import, Archived chats, Storage); Advanced (Background tasks,
+  Bridge instructions, Daily briefing), collapsed by default, open state
+  remembered in localStorage. Footer: Updates (dot when an update is
+  available) and the reset action.
+- Below md the rail is a Select listing every page, grouped.
+- Content column left aligned beside the rail, `max-w-176` (44rem), generous
+  left padding.
+- General: Mode, Window background, Zoom, Conversation, one Advanced fold
+  (Thinking control, Mission Control).
+- Kit: `SettingsPage` (title, description, groups), `SettingsFold` (the one
+  Advanced fold), `Segmented` (2-3 options), `NumberField` (saves on valid
+  change). No hub rows and no "Back to" links anywhere.
+- Save rule: switches, selects, segmented and number fields save on change
+  with the Saved flash; only free text uses SaveBar.
 
-New, in `src/components/settings/settingsKit.test.tsx`:
+Tests: rail lists every page in one click; Advanced group remembers its
+state; mobile Select lists every page; no "Back to" text; Workers and New
+chats save on change with the revision passed; Saved flash shows.
 
-- `SettingsRow renders one label and one control` — a row with a description
-  renders label, description, and exactly one control slot.
-- `Switch is a role=switch button and reports aria-checked from its prop` — it
-  never flips its own state.
-- `Switch does not fire while disabled`.
-- `Select renders a button with aria-haspopup=listbox and no native select`.
-- `SaveBar disables Save while saving and calls onDiscard/onSave`.
-- `StatusPill maps each managed-agent state to its own tone`.
+## Phase 3: model picker
 
-New, in `src/components/settings/settingsSearch.test.ts`:
+- One column, `w-95` (380px). Header: search and refresh. Under it a
+  horizontal harness strip (favorites star, then one mark per harness); the lit
+  item follows list scroll, click jumps, ArrowLeft/Right move within it.
+- Sticky group header per harness or account: mark, label, right-aligned
+  thinking and unavailable badges that do not truncate into each other.
+- Rows `h-8`, fixed 16px leading gutter with a check on the selected row, no
+  per-row mark. Selected: `bg-selection text-selection-foreground
+  font-medium`. Hover: `bg-accent/50`. Right side: preview badge, star on
+  hover or when starred.
+- One full-width thinking row under the list in the chosen style, with the
+  level meaning as a caption. The picker stays open after a model pick.
+- Footer: speed left, access right, `flex-wrap gap-2`. No keyboard-hint cell;
+  "Switching restarts the provider session" is a caption.
+- Kept: favorites, accounts, search, pending and in-flight switching, Tab
+  between zones, arrows, Enter, Escape, digit shortcuts in list style, aria.
 
-- `matches rows by label` / `matches rows by description` / `is case-insensitive`
-- `returns every page's rows when the query is empty`
-- `groups results by the page that owns them`
+Tests: updated `ChatModelControl.test.tsx` and
+`ChatModelControl.columns.test.tsx`; selected row class differs from hover
+class; strip arrow keys; the effort row sits after the list.
 
-Extended, in `src/components/harnessMarks.test.tsx`:
+## Gates
 
-- `draws the exact vendor marks for claude, codex, opencode, and cursor` — four
-  distinct paths, none produced by the old `arms()` generator.
-- `renders Codex in currentColor with no harness tint class` — OpenAI is never
-  green.
-- `tints Claude and OpenCode and gives OpenCode a 45% inner block`.
-- `keeps the unknown-harness spinner and the muted tint`.
-- `animates only opacity when live` — the rendered class list still carries
-  `harness-mark-live`, and `src/index.css` no longer names `harness-turn` in it.
-
-Retained, in `src/components/PermissionsSection.test.tsx`:
-
-- Every existing case, rewritten against the row form: the switch renders from
-  stored state, reports the flip without applying it, is disabled while busy,
-  names both surviving gates, lists auto-approvals, and says so when there are
-  none. `adapterSupportsAgentRole` coverage is unchanged.
-
-## Integration / Functional Tests
-
-In `src/components/SettingsScreen.test.tsx` (extended, not replaced):
-
-- `renders the rail groups and the nine items in order`.
-- `opens Permissions from initialSection and Prompts from initialSection` — the
-  two entry points `App.tsx` depends on.
-- `has no native checkbox or select anywhere in Settings` — walks every page
-  (including each detail page) and asserts
-  `container.querySelectorAll("select, input[type=checkbox]").length === 0`.
-- `imports no lucide symbol on the Settings screen` — a source-level assertion
-  over the `src/components/settings/` directory plus `SettingsScreen.tsx`.
-- `keeps the column width constant across pages` — every page body carries the
-  same `max-w-[720px]` container.
-- `filters rows across pages from the rail search`.
-- `confirms before resetting all settings and calls both reset RPCs`.
-- `keeps an unsaved editor draft when switching pages and back`.
-
-In `src/components/ManagedAgentsPanel.test.tsx` (extended):
-
-- Install / Repair / Remove still appear only when the API says so, now asserted
-  against the harness list rows and the harness detail header.
-- The remove confirmation still names the payload and focuses "Keep it".
-
-In `src/components/PromptStudio.test.tsx` (extended):
-
-- Every existing capability still passes through the list/detail split: per
-  target stacks, save, reset, reset all, restore, export, import (including the
-  malformed-file rejection), lint warnings, compiled preview, and the
-  cache-miss note.
-
-In `src/components/WorkSettingsSection.test.tsx` and
-`src/components/OpenCodeHarnessSettings.test.tsx` (extended):
-
-- The same validation and the same RPC calls as today, driven through switches
-  and selects instead of native inputs.
-
-## Smoke Tests
-
-- `bun run build` is green.
-- `bun run test` is green (sidecar + vitest + cargo).
-- `bun run dev` on mock data: every one of the nine pages renders, and every
-  detail page opens and returns via its breadcrumb.
-
-## E2E Tests
-
-- `bun run tauri dev`: open Settings, walk all nine pages, open each detail
-  page, flip one switch on each page and confirm the "Saved" check appears and
-  the value survives a reload of the screen.
-- Install and remove a managed runtime from the Harnesses page; confirm the
-  status pill follows the API result rather than the click.
-- Edit a prompt section, navigate to another page and back, confirm the draft
-  survives, then Save from the bottom bar.
-
-## Manual Tests
-
-- In both Graphite and Paper at 1440 wide, capture every page and every detail
-  page. Confirm the content column does not shift between pages.
-- Confirm with the browser inspector that the Settings subtree contains zero
-  `select` and zero `input[type=checkbox]` elements.
-- Confirm the only colored pixels in the Settings subtree belong to harness
-  marks and status pills.
-- Grep the diff for an em dash in a quoted user-facing string; expect no hit.
+`bun run check`, `NODE_OPTIONS=--no-experimental-webstorage bunx vitest run`,
+`bun run build`. Screenshots (dark and light: General, one Agents & models
+page, search highlight, model picker) in `BRIDGE_WORKER_OUTPUT_DIR`.
