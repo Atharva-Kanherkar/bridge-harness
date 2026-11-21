@@ -351,6 +351,7 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
       item.title = event.title;
       item.text = event.text;
       item.data = { ...item.data, ...envelope.providerData };
+      if (envelope.itemId) item.callId = envelope.itemId;
       fold.requests.set(`approval:${envelope.eventId}`, item);
       return;
     }
@@ -373,6 +374,7 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
       item.title = event.title;
       item.text = event.text;
       item.data = { ...item.data, ...envelope.providerData };
+      if (envelope.itemId) item.callId = envelope.itemId;
       fold.requests.set(`${event.interaction}:${envelope.eventId}`, item);
       return;
     }
@@ -613,7 +615,32 @@ function adoptStreamingAssistant(
   return undefined;
 }
 
+/** Rows that ask the reader something about a call rather than being one. */
+const INTERACTION_TYPES = new Set<ConversationItemType>(["approval", "permission", "question"]);
+
+/**
+ * The identity an interaction row shares with its twin on the other projection.
+ *
+ * Not the call's item id: that is the tool row's identity, and the stored
+ * payload flattens it into `data` while the live frame keeps it on the
+ * envelope, so reading it off `data` gave the stored card the tool's identity
+ * and the live card its request id, and the merge drew both. Not the request id
+ * alone either, which restarts at 1 with every sidecar. The pair is what both
+ * projections carry and what no other row has.
+ */
+function interactionIdentity(item: ConversationItem): string | undefined {
+  const request = ["requestId", "approvalId", "questionId"]
+    .map(key => item.data[key])
+    .find((value): value is string => typeof value === "string" && value !== "");
+  if (!request && !item.callId) return undefined;
+  return `${item.type}:${item.callId ?? ""}:${request ?? ""}`;
+}
+
 function withIdentity(item: ConversationItem): ConversationItem {
+  if (INTERACTION_TYPES.has(item.type)) {
+    const identity = interactionIdentity(item);
+    return { ...item, identity: identity ?? itemIdentity(item) };
+  }
   const itemId = item.itemId ?? (typeof item.data.itemId === "string" ? item.data.itemId : undefined);
   const next = itemId && item.itemId !== itemId ? { ...item, itemId } : item;
   return { ...next, identity: itemIdentity(next) };

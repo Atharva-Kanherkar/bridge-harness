@@ -48,6 +48,13 @@ export interface ConversationItem {
    */
   itemId?: string;
   /**
+   * On an approval, permission or question: the provider call it is about.
+   * Held apart from `itemId` because the row does not own that id (the tool
+   * row does), but its identity needs it: a request id alone is a per-process
+   * counter that a restarted sidecar hands out again.
+   */
+  callId?: string;
+  /**
    * The identity this item shares with its counterpart on the other
    * projection (live vs durable), when it has one. `eventId` is not it: on
    * the live side it is the session-event table's own autoincrement id, and
