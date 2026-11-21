@@ -14,6 +14,7 @@ import { bridgeApi } from "../../api";
 import type { AdapterDescriptor } from "../../types";
 import type { ChatSearchSettings, SuggestionSettings, SuggestionSettingsSnapshot } from "../../protocol/generated/protocol";
 import { HarnessMark } from "../harnessMarks";
+import { PAGES } from "./sections";
 import { Select, SettingsGroup, SettingsPage, SettingsRow, Switch, useSavedFlash } from "./kit";
 
 // Stands for "no pinned model": the host then picks the cheapest one.
@@ -91,10 +92,10 @@ export function ComposerPage({ adapters, onChange, onError }: {
   const deepOn = search?.deepSearch !== false;
 
   return <SettingsPage
-    title="Composer"
-    description="How Bridge behaves while you are writing, before a turn starts."
+    title={PAGES.composer.label}
+    description={PAGES.composer.description}
   >
-    <SettingsGroup label="Inline suggestions">
+    <SettingsGroup anchor="inline-suggestions" label="Inline suggestions">
       {!draft
         ? <SkeletonRows label="Loading inline suggestions" rows={2} trailing framed={false} />
         : <>
@@ -110,6 +111,7 @@ export function ComposerPage({ adapters, onChange, onError }: {
               />}
             />
             <SettingsRow
+              anchor="suggestion-model"
               label="Suggestion model"
               description="Kept separate from your chat model, because this one runs on every keystroke."
               saved={isFlashed("model")}
@@ -130,7 +132,7 @@ export function ComposerPage({ adapters, onChange, onError }: {
             />
           </>}
     </SettingsGroup>
-    <SettingsGroup label="Chat search" note="The sidebar search finds chats from what was said in them">
+    <SettingsGroup anchor="search-deeper" label="Chat search" note="The sidebar search finds chats from what was said in them">
       {!search
         ? <SkeletonRows label="Loading chat search" rows={2} trailing framed={false} />
         : <>
@@ -148,6 +150,7 @@ export function ComposerPage({ adapters, onChange, onError }: {
               />}
             />
             <SettingsRow
+              anchor="search-model"
               label="Search model"
               description="A search spends about one to two thousand tokens, so the smallest model is the default."
               saved={isFlashed("searchModel")}

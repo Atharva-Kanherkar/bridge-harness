@@ -18,6 +18,7 @@ import {
   Field, GhostButton, SaveBar, Select, SettingsBlockRow, SettingsGroup, SettingsPage, SettingsRow,
   StatusPill, Switch, TextArea, TextButton, useSavedFlash,
 } from "./kit";
+import { PAGES } from "./sections";
 import type { ModelOption } from "./HarnessesPage";
 
 const ROLES: { id: AgentRole; label: string }[] = [
@@ -87,11 +88,11 @@ export function PresetsPage({
   }
 
   return <SettingsPage
-    title="Agents"
+    title={PAGES.agents.label}
     description="Save a model and instructions you want to reuse. Start a new chat with one from the agent menu, or type # in a chat."
     action={<GhostButton onClick={onNew}><Plus size={12} strokeWidth={1.7} aria-hidden="true" />New agent</GhostButton>}
   >
-    <SettingsGroup label="Your agents" note={`${mine.length} total`}>
+    <SettingsGroup anchor="your-agents" label="Your agents" note={`${mine.length} total`}>
       {mine.length === 0 && <SettingsRow label="No agents yet" description="Create one when you want your own reusable instructions. Bridge's built-in agents are below." />}
       {mine.map(row)}
     </SettingsGroup>
@@ -153,7 +154,7 @@ function PresetDetail({
 
   return <SettingsPage
     title={isNew ? "New agent" : draft.name}
-    breadcrumb={[{ label: "Agents", onClick: onBack }, { label: isNew ? "New agent" : draft.name }]}
+    breadcrumb={[{ label: PAGES.agents.label, onClick: onBack }, { label: isNew ? "New agent" : draft.name }]}
     description={isNew
       ? "Your agent. You can delete it at any time."
       : draft.isBuiltIn ? "Built-in Bridge role. Reset restores its original instructions and choices." : "Your agent. You can delete it at any time."}

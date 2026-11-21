@@ -24,6 +24,12 @@ const adapters = [
   { id: "opencode", label: "OpenCode", available: false, models: [{ id: "kimi", label: "Kimi" }] },
 ] as unknown as AdapterDescriptor[];
 
+async function press(label: string, text: string) {
+  const button = [...host.querySelectorAll<HTMLButtonElement>(`[aria-label="${label}"] button`)].find(node => node.textContent === text)!;
+  expect(button, `${label}: ${text}`).toBeTruthy();
+  await act(async () => { button.click(); });
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+}
 async function choose(label: string, text: string) {
   await act(async () => host.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click());
   const option = [...document.querySelectorAll<HTMLElement>(`[role="listbox"][aria-label="${label}"] [role="option"]`)].find(item => item.textContent === text);
@@ -46,9 +52,9 @@ async function mount(settings: LimitRecoverySettings) {
 it("is off by default and saves resume in one choice", async () => {
   await mount({ mode: "off", backup: null });
   const save = vi.spyOn(bridgeApi, "saveLimitRecoverySettings").mockImplementation(async settings => settings);
-  expect(host.querySelector('[aria-label="When a usage limit stops a chat"]')?.textContent).toContain("Do nothing");
+  expect(host.querySelector('[aria-label="When a usage limit stops a chat"] [aria-pressed="true"]')?.textContent).toBe("Off");
   expect(host.querySelector('[aria-label="Backup model"]')).toBeNull();
-  await choose("When a usage limit stops a chat", "Resume when the limit resets");
+  await press("When a usage limit stops a chat", "Resume");
   expect(save).toHaveBeenCalledWith({ mode: "resume", backup: null });
   expect(host.textContent).toContain("waits for the reset time");
 });
@@ -56,7 +62,7 @@ it("is off by default and saves resume in one choice", async () => {
 it("holds backup mode as a draft until a backup is chosen, then saves model and effort", async () => {
   await mount({ mode: "off", backup: null });
   const save = vi.spyOn(bridgeApi, "saveLimitRecoverySettings").mockImplementation(async settings => settings);
-  await choose("When a usage limit stops a chat", "Switch to a backup model");
+  await press("When a usage limit stops a chat", "Backup model");
   expect(save).not.toHaveBeenCalled();
   expect(host.textContent).toContain("Choose a backup model to turn this on.");
   // Unavailable harnesses are not offered.
@@ -66,6 +72,9 @@ it("holds backup mode as a draft until a backup is chosen, then saves model and 
   expect(await options("Backup effort")).toEqual(["Model default", "medium", "xhigh"]);
   await choose("Backup effort", "xhigh");
   expect(save).toHaveBeenLastCalledWith({ mode: "backup", backup: { harness: "codex", model: "gpt-5.5", effort: "xhigh" } });
+  // The effort row confirms its own save, like every other control here.
+  const effortRow = host.querySelector<HTMLButtonElement>('[aria-label="Backup effort"]')!.closest("[class*='min-h-11']")!;
+  expect(effortRow.textContent).toContain("Saved");
 });
 
 it("offers only the efforts the setting can store and disables effort for a model without one", async () => {
@@ -81,6 +90,6 @@ it("shows a refused save and keeps the stored backup visible when the catalog dr
   await mount({ mode: "backup", backup: { harness: "codex", model: "gpt-4-retired", effort: null } });
   expect(host.querySelector('[aria-label="Backup model"]')?.textContent).toContain("gpt-4-retired");
   vi.spyOn(bridgeApi, "saveLimitRecoverySettings").mockRejectedValue(new Error("gpt-4-retired is not a model codex lists; refresh models"));
-  await choose("When a usage limit stops a chat", "Resume when the limit resets");
+  await press("When a usage limit stops a chat", "Resume");
   expect(host.querySelector('[role="alert"]')?.textContent).toContain("refresh models");
 });

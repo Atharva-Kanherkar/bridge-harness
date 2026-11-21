@@ -21,12 +21,15 @@ import { cn } from "@/lib/utils";
 
 export type Crumb = { label: string; onClick?: () => void };
 
+/** The settings content column: left aligned beside the rail, about 44rem
+ *  wide. Every page and the loading skeleton use it, so content never jumps
+ *  as the rail selection changes. */
+export const SETTINGS_COLUMN = "w-full max-w-176 pb-12 pl-6 pr-6 pt-7 md:pl-12";
+
 /**
- * One settings page: an optional breadcrumb, a title, one line of description,
- * an optional action, then the groups.
- *
- * The column width lives here and only here, which is what keeps the content
- * from jumping as the rail selection changes.
+ * One settings page, the same anatomy everywhere: an optional breadcrumb, a
+ * title, one line of description, an optional action, then labeled groups of
+ * rows and at most one `SettingsFold`.
  */
 export function SettingsPage({ title, description, breadcrumb, action, children }: {
   title: string;
@@ -35,7 +38,7 @@ export function SettingsPage({ title, description, breadcrumb, action, children 
   action?: ReactNode;
   children: ReactNode;
 }) {
-  return <div data-settings-column className="@container/settings mx-auto w-full max-w-page px-5 pb-12 pt-6 sm:px-8">
+  return <div data-settings-column className={cn("@container/settings", SETTINGS_COLUMN)}>
     {breadcrumb && breadcrumb.length > 0 && <nav aria-label="Breadcrumb" className="mb-2 flex items-center gap-1.5 text-xs">
       {breadcrumb.map((crumb, index) => <span key={`${crumb.label}-${index}`} className="flex items-center gap-1.5">
         {index > 0 && <span aria-hidden="true" className="text-muted-foreground">/</span>}
@@ -55,17 +58,32 @@ export function SettingsPage({ title, description, breadcrumb, action, children 
   </div>;
 }
 
+/* ── fold ─────────────────────────────────────────────────────────────────── */
+
+/** The page's one "Advanced" fold, closed until opened. Search opens it when
+ *  a hit lives inside. */
+export function SettingsFold({ label = "Advanced", children }: { label?: string; children: ReactNode }) {
+  return <details data-settings-fold className="group/fold">
+    <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded-md px-0.5 text-ui text-muted-foreground transition-colors hover:text-foreground [&::-webkit-details-marker]:hidden">
+      <CaretRight size={12} strokeWidth={1.7} aria-hidden="true" className="transition-transform group-open/fold:rotate-90" />{label}
+    </summary>
+    <div className="mt-4 space-y-6">{children}</div>
+  </details>;
+}
+
 /* ── group ────────────────────────────────────────────────────────────────── */
 
 /** A labelled card of rows. The label is outside the card; the card holds only
  *  rows, separated by hairlines rather than by margin. */
-export function SettingsGroup({ label, note, children, className }: {
+export function SettingsGroup({ label, note, children, className, anchor }: {
   label?: string;
   note?: ReactNode;
   children: ReactNode;
   className?: string;
+  /** The search index id for this group (see settingsSearch.ts). */
+  anchor?: string;
 }) {
-  return <section className={className}>
+  return <section data-settings-row={anchor} className={cn(GROUP_HIGHLIGHT, className)}>
     {(label || note) && <div className="mb-2 flex flex-wrap items-baseline gap-x-3 gap-y-1 px-0.5">
       {label && <h3 className="text-ui font-medium text-foreground">{label}</h3>}
       {note && <span className="ml-auto text-meta text-muted-foreground">{note}</span>}
@@ -75,6 +93,12 @@ export function SettingsGroup({ label, note, children, className }: {
     </div>
   </section>;
 }
+
+/* ── search reveal ────────────────────────────────────────────────────────── */
+
+/** What a search hit looks like for a moment after the screen scrolls to it. */
+const ROW_HIGHLIGHT = "transition-colors duration-300 data-search-highlight:bg-accent";
+const GROUP_HIGHLIGHT = "scroll-mt-6 rounded-xl outline-offset-4 transition-[outline-color] duration-300 data-search-highlight:outline-2 data-search-highlight:outline-foreground/25";
 
 /* ── row ──────────────────────────────────────────────────────────────────── */
 
@@ -91,7 +115,7 @@ export function RowLead({ children }: { children: ReactNode }) {
  * confirmation *beside* the control: a switch that vanishes for a second and a
  * half the moment it is clicked is a switch the user cannot correct.
  */
-export function SettingsRow({ label, openLabel, description, mono, lead, control, adornment, onOpen, expanded, saved, disabled, className }: {
+export function SettingsRow({ label, openLabel, description, mono, lead, control, adornment, onOpen, expanded, saved, disabled, className, anchor }: {
   label: ReactNode;
   /** The accessible name of the open action, when `label` is not plain text. */
   openLabel?: string;
@@ -107,6 +131,8 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
   saved?: boolean;
   disabled?: boolean;
   className?: string;
+  /** The search index id for this row (see settingsSearch.ts). */
+  anchor?: string;
 }) {
   const text = <span className="min-w-0 flex-1 basis-40 text-left">
     <span className="block text-ui text-foreground">{label}</span>
@@ -131,11 +157,12 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
   if (onOpen && !control) {
     return <button
       type="button"
+      data-settings-row={anchor}
       disabled={disabled}
       aria-label={openLabel}
       aria-expanded={expanded}
       onClick={onOpen}
-      className={cn("flex min-h-11 w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-accent disabled:opacity-45", className)}
+      className={cn("flex min-h-11 w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-accent disabled:opacity-45", ROW_HIGHLIGHT, className)}
     >{lead && <RowLead>{lead}</RowLead>}{text}{trailing}</button>;
   }
 
@@ -144,7 +171,7 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
   // full-bleed button underneath and the action sits above it. One accessible
   // name each, and the whole row is still the target for "open this".
   if (onOpen) {
-    return <div className={cn("relative flex min-h-11 flex-wrap items-center gap-3 px-3.5 py-2.5", className)}>
+    return <div data-settings-row={anchor} className={cn("relative flex min-h-11 flex-wrap items-center gap-3 px-3.5 py-2.5", ROW_HIGHLIGHT, className)}>
       <button
         type="button"
         disabled={disabled}
@@ -158,21 +185,22 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
     </div>;
   }
 
-  return <div className={cn("flex min-h-11 flex-wrap items-center gap-3 px-3.5 py-2.5", disabled && "opacity-45", className)}>
+  return <div data-settings-row={anchor} className={cn("flex min-h-11 flex-wrap items-center gap-3 px-3.5 py-2.5", ROW_HIGHLIGHT, disabled && "opacity-45", className)}>
     {lead && <RowLead>{lead}</RowLead>}{text}{trailing}
   </div>;
 }
 
 /** A row whose control needs the full width beneath the label: an editor, a
  *  textarea, a wizard step. Still a row of the same card. */
-export function SettingsBlockRow({ label, description, children, action, className }: {
+export function SettingsBlockRow({ label, description, children, action, className, anchor }: {
   label?: ReactNode;
   description?: ReactNode;
   action?: ReactNode;
   children: ReactNode;
   className?: string;
+  anchor?: string;
 }) {
-  return <div className={cn("px-3.5 py-3", className)}>
+  return <div data-settings-row={anchor} className={cn("px-3.5 py-3", ROW_HIGHLIGHT, className)}>
     {(label || action) && <div className="mb-2 flex items-baseline gap-3">
       <div className="min-w-0 flex-1">
         {label && <span className="block text-ui text-foreground">{label}</span>}
@@ -184,7 +212,8 @@ export function SettingsBlockRow({ label, description, children, action, classNa
   </div>;
 }
 
-function SavedFlash() {
+/** The brief confirmation beside a control after the host stored its value. */
+export function SavedFlash() {
   return <span role="status" className="flex shrink-0 items-center gap-1 text-caption text-success">
     <Check size={12} strokeWidth={1.7} aria-hidden="true" />Saved
   </span>;
@@ -249,7 +278,30 @@ export type SelectOption = {
   description?: string;
   disabled?: boolean;
   lead?: ReactNode;
+  /** Options sharing a group are listed under that label. */
+  group?: string;
 };
+
+/** Two or three short choices, all visible at once. Saves on click. */
+export function Segmented<T extends string>({ value, options, onChange, disabled, label }: {
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (next: T) => void;
+  disabled?: boolean;
+  label: string;
+}) {
+  return <div role="group" aria-label={label} className="u-segmented flex shrink-0">
+    {options.map(option => <button
+      key={option.value}
+      type="button"
+      className="u-segmented-item disabled:opacity-45"
+      disabled={disabled}
+      data-active={value === option.value}
+      aria-pressed={value === option.value}
+      onClick={() => { if (option.value !== value) onChange(option.value); }}
+    >{option.label}</button>)}
+  </div>;
+}
 
 const CONTROL = "h-7 rounded-lg border border-border-card bg-popover px-2.5 text-xs text-foreground outline-none transition-colors disabled:opacity-45";
 
@@ -301,7 +353,7 @@ export function Select({ value, options, onChange, disabled, label, placeholder 
           aria-label={label}
           className="u-glass-popover max-h-[min(18rem,var(--available-height))] min-w-(--anchor-width) max-w-(--available-width) overflow-y-auto rounded-lg border border-border bg-popover p-1 outline-none"
         >
-          {options.map(option => <SelectPrimitive.Item
+          {options.map((option, index) => <SelectItemWithGroup key={option.value} option={option} first={index === 0 || options[index - 1].group !== option.group}><SelectPrimitive.Item
             key={option.value}
             value={option.value}
             label={option.label}
@@ -317,11 +369,20 @@ export function Select({ value, options, onChange, disabled, label, placeholder 
               {option.description && <span className="mt-0.5 block text-caption text-muted-foreground">{option.description}</span>}
             </span>
             {option.value === value && <Check size={12} strokeWidth={1.7} aria-hidden="true" className="shrink-0" />}
-          </SelectPrimitive.Item>)}
+          </SelectPrimitive.Item></SelectItemWithGroup>)}
         </SelectPrimitive.Popup>
       </SelectPrimitive.Positioner>
     </SelectPrimitive.Portal>
   </SelectPrimitive.Root>;
+}
+
+/** A group label above the first option of each group. */
+function SelectItemWithGroup({ option, first, children }: { option: SelectOption; first: boolean; children: ReactNode }) {
+  if (!option.group || !first) return <>{children}</>;
+  return <>
+    <div role="presentation" className="px-2 pb-1 pt-2 text-caption font-medium text-muted-foreground first:pt-1">{option.group}</div>
+    {children}
+  </>;
 }
 
 /** A single-line text field. Same box as the select, without the chevron. */
@@ -331,7 +392,7 @@ export function Field({ value, onChange, disabled, label, placeholder, type = "t
   disabled?: boolean;
   label: string;
   placeholder?: string;
-  type?: "text" | "password" | "time";
+  type?: "text" | "password" | "time" | "search";
   width?: string;
   mono?: boolean;
   onKeyDown?: (event: React.KeyboardEvent<HTMLInputElement>) => void;
@@ -347,6 +408,55 @@ export function Field({ value, onChange, disabled, label, placeholder, type = "t
     onKeyDown={onKeyDown}
     onChange={event => onChange(event.target.value)}
     className={cn(CONTROL, width, "max-w-full shrink-0 placeholder:text-muted-foreground focus:border-foreground/25", mono && "font-mono text-caption")}
+  />;
+}
+
+/**
+ * A whole-number field that saves on change. A value outside `min`..`max` is
+ * marked invalid and never sent; a valid one is committed after a short pause
+ * or on blur, so typing "120" does not save 1 and then 12.
+ */
+export function NumberField({ value, min, max, onChange, disabled, label, width = "w-24" }: {
+  value: number;
+  min: number;
+  max: number;
+  onChange: (next: number) => void;
+  disabled?: boolean;
+  label: string;
+  width?: string;
+}) {
+  const [text, setText] = useState(String(value));
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => { setText(String(value)); }, [value]);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const parse = (raw: string) => {
+    const parsed = raw.trim() === "" ? Number.NaN : Number(raw);
+    return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : null;
+  };
+  const valid = parse(text) !== null;
+  const commit = (raw: string) => {
+    window.clearTimeout(timer.current);
+    const parsed = parse(raw);
+    if (parsed !== null && parsed !== value) onChange(parsed);
+  };
+  return <input
+    type="number"
+    inputMode="numeric"
+    aria-label={label}
+    aria-invalid={valid ? undefined : true}
+    min={min}
+    max={max}
+    step={1}
+    value={text}
+    disabled={disabled}
+    onChange={event => {
+      const raw = event.target.value;
+      setText(raw);
+      window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => commit(raw), 400);
+    }}
+    onBlur={event => commit(event.target.value)}
+    className={cn(CONTROL, width, "max-w-full shrink-0 tabular-nums focus:border-foreground/25 aria-invalid:border-destructive")}
   />;
 }
 

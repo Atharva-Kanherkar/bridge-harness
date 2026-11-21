@@ -58,7 +58,7 @@ export function KeysPage({ onError }: { onError: (message: string) => void }) {
       <SettingsRow label="Agents cannot use keys right now" description="Bridge could not open the local port agents call through. Restart Bridge to try again." control={<StatusPill tone="warning">Off</StatusPill>} />
     </SettingsGroup>}
 
-    <SettingsGroup label="Saved keys" note={snapshot.canSave ? "Kept in your macOS Keychain" : "Saving needs the macOS Keychain"}>
+    <SettingsGroup anchor="saved-keys" label="Saved keys" note={snapshot.canSave ? "Kept in your macOS Keychain" : "Saving needs the macOS Keychain"}>
       {snapshot.saved.length === 0 && <SettingsRow label="No saved keys yet" description="Add one below, or save a key you pasted into a chat." />}
       {snapshot.saved.map(key => editing === key.name
         ? <SitesEditor
@@ -92,7 +92,7 @@ export function KeysPage({ onError }: { onError: (message: string) => void }) {
       <AddKeyForm busy={busy} taken={snapshot.saved.map(key => key.name)} onSave={(name, value, hosts) => run(() => bridgeApi.saveApiKey({ name, value, hosts }), name)} />
     </SettingsGroup>}
 
-    <SettingsGroup label="Pasted in chats" note="Forgotten when Bridge quits">
+    <SettingsGroup anchor="pasted-keys" label="Pasted in chats" note="Forgotten when Bridge quits">
       {snapshot.chat.length === 0 && <SettingsRow label="Nothing pasted" description="When you paste a key into a chat, Bridge hides it from the agent and lists it here." />}
       {snapshot.chat.map(key => promoting === key.reference
         ? <PromoteForm

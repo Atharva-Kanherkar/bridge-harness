@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_ATTENTION_SETTINGS, readAttentionSettings } from "../../attentionSettings";
 import { NotificationsPage } from "./NotificationsPage";
-import { filterSettingsRows, STATIC_SETTINGS_ROWS } from "./settingsSearch";
+import { filterSettingsRows, SETTINGS_ROWS } from "./settingsSearch";
 
 const playAttentionSound = vi.hoisted(() => vi.fn());
 vi.mock("../../attentionSound", () => ({ playAttentionSound }));
@@ -68,7 +68,7 @@ describe("NotificationsPage", () => {
   });
 
   it("is found by the settings search", () => {
-    const hits = filterSettingsRows("quiet hours", STATIC_SETTINGS_ROWS);
-    expect(hits.some(group => group.section === "notifications")).toBe(true);
+    const hits = filterSettingsRows("quiet hours", SETTINGS_ROWS);
+    expect(hits.some(group => group.page === "notifications")).toBe(true);
   });
 });

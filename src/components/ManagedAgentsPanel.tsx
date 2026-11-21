@@ -236,7 +236,7 @@ export function ManagedAgentRows({ state, adapters = [], onOpen, onAuthenticatio
   }, [state.agents]);
 
   if (state.listError) {
-    return <SettingsGroup label="Installed">
+    return <SettingsGroup anchor="installed-agents" label="Installed">
       <SettingsRow
         label={<span role="alert" className="text-destructive">{state.listError}</span>}
         control={<GhostButton onClick={state.reload}>Retry</GhostButton>}
@@ -244,11 +244,11 @@ export function ManagedAgentRows({ state, adapters = [], onOpen, onAuthenticatio
     </SettingsGroup>;
   }
   if (!state.agents) {
-    return <SettingsGroup label="Installed"><SkeletonRows label="Loading agents" rows={3} lead="icon" trailing framed={false} /></SettingsGroup>;
+    return <SettingsGroup anchor="installed-agents" label="Installed"><SkeletonRows label="Loading agents" rows={3} lead="icon" trailing framed={false} /></SettingsGroup>;
   }
 
   return <>
-    {groups.map(group => <SettingsGroup key={group.label} label={group.label} note={group.note}>
+    {groups.map((group, index) => <SettingsGroup key={group.label} anchor={index === 0 ? "installed-agents" : undefined} label={group.label} note={group.note}>
       {group.agents.map(agent => {
         const authState = agentAuthState(agent.agentId, adapters);
         return <div key={agent.agentId} data-testid={`agent-card-${agent.agentId}`}>

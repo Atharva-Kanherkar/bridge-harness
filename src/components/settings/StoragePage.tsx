@@ -25,6 +25,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { GhostButton, PrimaryButton, StatusPill, TextButton } from "./kit";
 import type { StorageCopilotHost } from "./StorageCopilot";
 import { WorktreeStorage } from "./WorktreeStorage";
+import { PAGES } from "./sections";
 
 const POLL_MS = 1500;
 
@@ -525,7 +526,7 @@ function OutcomeToast({ outcome, busy, onEmptyTrash, onDismiss }: { outcome: Out
 const VISIT_REFRESH_MS = 60_000;
 let lastVisitRefresh = 0;
 
-export function StoragePage({ onError, title = "Storage", extra, copilot }: {
+export function StoragePage({ onError, title = PAGES.data.label, extra, copilot }: {
   onError?: (message: string) => void;
   title?: string;
   extra?: ReactNode;
@@ -693,7 +694,7 @@ export function StoragePage({ onError, title = "Storage", extra, copilot }: {
     reply: text => { ask(text); },
   };
 
-  return <div data-settings-column className="@container/settings mx-auto w-full max-w-page-wide px-5 pb-16 pt-6 sm:px-8">
+  return <div data-settings-column className="@container/settings w-full max-w-page-wide pb-16 pl-6 pr-6 pt-7 md:pl-12">
     <div
       ref={gridRef}
       // The rail column takes the dragged width, but never less than RAIL_MIN

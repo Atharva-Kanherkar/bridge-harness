@@ -3,7 +3,8 @@ import { SkeletonRows } from "@/components/ui/skeleton";
 import { RefreshCw } from "lucide-react";
 import { bridgeApi } from "../../api";
 import type { MenuBarSettings, ProviderUsageOverviews } from "../../protocol/generated/protocol";
-import { SettingsPage, SettingsGroup, SettingsRow, Select, Switch } from "../../components/settings/kit";
+import { PAGES } from "../../components/settings/sections";
+import { Field, GhostButton, PrimaryButton, Segmented, SettingsPage, SettingsGroup, SettingsRow, Select, Switch, useSavedFlash } from "../../components/settings/kit";
 import { MenuBarLayoutEditor } from "./MenuBarLayoutEditor";
 import { chooseFavorite, defaultFavorites } from "./favorites";
 
@@ -19,7 +20,7 @@ export function MenuBarSettingsPage() {
   const [usage, setUsage] = useState<ProviderUsageOverviews | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [isFlashed, flash] = useSavedFlash();
   const [connection, setConnection] = useState<string | null>(null);
   const [openCodeKey, setOpenCodeKey] = useState("");
   const confirmedSettings = useRef<MenuBarSettings | null>(null);
@@ -55,14 +56,14 @@ export function MenuBarSettingsPage() {
   async function save(patch: Partial<MenuBarSettings>) {
     if (!confirmedSettings.current) return;
     pendingSaves.current += 1;
-    setBusy(true); setError(null); setSaved(false);
+    setBusy(true); setError(null);
     const operation = saves.current.then(async () => {
       try {
         const value = await bridgeApi.saveMenuBarSettings({ ...confirmedSettings.current!, ...patch });
         confirmedSettings.current = value;
         setSettings(value);
-        if (pendingSaves.current === 1) setSaved(true);
-      } catch (error) { setError(String(error)); setSaved(false); }
+        for (const key of Object.keys(patch)) flash(key);
+      } catch (error) { setError(String(error)); }
       finally { pendingSaves.current -= 1; if (pendingSaves.current === 0) setBusy(false); }
     });
     saves.current = operation;
@@ -70,7 +71,7 @@ export function MenuBarSettingsPage() {
   }
 
   async function refresh() {
-    setBusy(true); setError(null); setSaved(false);
+    setBusy(true); setError(null);
     try { setUsage(await bridgeApi.refreshProviderUsageOverviews()); }
     catch (error) { setError(String(error)); }
     finally { setBusy(false); }
@@ -91,63 +92,60 @@ export function MenuBarSettingsPage() {
     } finally { setBusy(false); }
   }
 
-  return <SettingsPage title="Menu Bar" description="Account limits, tokens, and spend at a glance."
-    action={<button type="button" disabled={busy || enabled.length === 0} onClick={() => void refresh()}
-      className="flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-xs text-foreground hover:bg-accent disabled:opacity-40">
+  return <SettingsPage title={PAGES.menuBar.label} description={PAGES.menuBar.description}
+    action={<GhostButton disabled={busy || enabled.length === 0} onClick={() => void refresh()}>
       <RefreshCw size={12} aria-hidden="true" />Refresh usage
-    </button>}>
-    {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-    {connection && <p role="status" className="text-xs text-muted-foreground">{connection}</p>}
-    {saved && <p role="status" className="text-xs text-muted-foreground">Menu Bar settings saved.</p>}
+    </GhostButton>}>
+    {error && <p role="alert" className="text-ui text-destructive">{error}</p>}
+    {connection && <p role="status" className="text-ui text-muted-foreground">{connection}</p>}
     {!settings && !error && <SkeletonRows label="Loading Menu Bar settings" rows={4} trailing />}
     {settings && <>
-      <SettingsGroup label="Display">
-        <SettingsRow label="Show in menu bar" description="The Bridge symbol follows your macOS appearance."
+      <SettingsGroup anchor="menu-display" label="Display">
+        <SettingsRow saved={isFlashed("enabled")} label="Show in menu bar" description="The Bridge symbol follows your macOS appearance."
           control={<Switch label="Show in menu bar" checked={settings.enabled} disabled={busy} onChange={enabled => void save({ enabled })} />} />
-        <SettingsRow label="Separate provider icons" description="Show each favorite with account usage enabled as its own icon in the macOS menu bar. Each icon opens that provider."
+        <SettingsRow saved={isFlashed("separateProviderIcons")} label="Separate provider icons" description="Show each favorite with account usage enabled as its own icon in the macOS menu bar. Each icon opens that provider."
           control={<Switch label="Separate provider icons" checked={settings.separateProviderIcons ?? false} disabled={busy} onChange={separateProviderIcons => void save({ separateProviderIcons })} />} />
-        <SettingsRow label="Open to Overview" description="See your favorite providers’ current quotas together. Details stay in provider tabs."
+        <SettingsRow saved={isFlashed("openToOverview")} label="Open to Overview" description="See your favorite providers’ current quotas together. Details stay in provider tabs."
           control={<Switch label="Open to Overview" checked={settings.openToOverview ?? true} disabled={busy} onChange={openToOverview => void save({ openToOverview })} />} />
-        <SettingsRow label="Quota bars" description="Used fills the bar as you consume your allowance. The opposite percentage appears below."
-          control={<Select label="Quota bars" value={settings.quotaDisplayMode ?? "used"} disabled={busy}
-            options={[{ value: "used", label: "Show used" }, { value: "remaining", label: "Show remaining" }]}
+        <SettingsRow saved={isFlashed("quotaDisplayMode")} label="Quota bars" description="Used fills the bar as you consume your allowance. The opposite percentage appears below."
+          control={<Segmented label="Quota bars" value={settings.quotaDisplayMode ?? "used"} disabled={busy}
+            options={[{ value: "used", label: "Used" }, { value: "remaining", label: "Remaining" }]}
             onChange={value => void save({ quotaDisplayMode: value as MenuBarSettings["quotaDisplayMode"] })} />} />
-        <SettingsRow label="Menu icon" description="Single-icon mode uses this mark. Separate icons use each provider’s logo. All follow macOS appearance."
-          control={<Select label="Menu icon" value={settings.iconStyle ?? "bridge"} disabled={busy || settings.separateProviderIcons}
+        <SettingsRow saved={isFlashed("iconStyle")} label="Menu icon" description="Single-icon mode uses this mark. Separate icons use each provider’s logo. All follow macOS appearance."
+          control={<Segmented label="Menu icon" value={settings.iconStyle ?? "bridge"} disabled={busy || settings.separateProviderIcons}
             options={[{ value: "bridge", label: "Bridge logo" }, { value: "meter", label: "Quota meters" }]}
             onChange={value => void save({ iconStyle: value as MenuBarSettings["iconStyle"] })} />} />
-        <SettingsRow label="Beside the icon" description={customDisplay ? "Custom layout is active. Choose a standard display to replace it." : "Choose what appears beside each menu icon."}
+        <SettingsRow saved={isFlashed("displayMode")} label="Beside the icon" description={customDisplay ? "Custom layout is active. Choose a standard display to replace it." : "Choose what appears beside each menu icon."}
           control={<Select label="Beside the icon" value={customDisplay ? "custom" : settings.displayMode} disabled={busy} options={[
             ...(customDisplay ? [{ value: "custom", label: "Custom layout", disabled: true }] : []),
             { value: "icon", label: "Icon only" }, { value: "remaining", label: "Quota remaining" },
             { value: "used", label: "Quota used" }, { value: "cost", label: "Today's spend" },
           ]} onChange={displayMode => { if (displayMode !== "custom") void save({ displayMode: displayMode as MenuBarSettings["displayMode"], statusLayout: [] }); }} />} />
-        <SettingsRow label="Quota window" description="Automatic uses the provider’s first available limit, including billing cycles."
-          control={<Select label="Quota window" value={settings.quotaWindow} disabled={busy}
-          options={[{ value: "auto", label: "Automatic" }, { value: "session", label: "5-hour / rolling" }, { value: "weekly", label: "Weekly" }]}
+        <SettingsRow saved={isFlashed("quotaWindow")} label="Quota window" description="Automatic uses the provider’s first available limit, including billing cycles."
+          control={<Segmented label="Quota window" value={settings.quotaWindow} disabled={busy}
+          options={[{ value: "auto", label: "Automatic" }, { value: "session", label: "5-hour" }, { value: "weekly", label: "Weekly" }]}
           onChange={quotaWindow => void save({ quotaWindow: quotaWindow as MenuBarSettings["quotaWindow"] })} />} />
       </SettingsGroup>
       <SettingsGroup label="Menu icon layout">
-        {settings.separateProviderIcons && <p className="px-4 py-3 text-xs text-muted-foreground">Custom layouts apply to the single Bridge icon. Separate provider icons use the standard display selected above.</p>}
+        {settings.separateProviderIcons && <p className="px-3.5 py-2.5 text-meta text-muted-foreground">Custom layouts apply to the single Bridge icon. Separate provider icons use the standard display selected above.</p>}
         <MenuBarLayoutEditor key={JSON.stringify(settings.statusLayout ?? [])} layout={settings.statusLayout ?? []} busy={busy || !!settings.separateProviderIcons}
           onSave={statusLayout => save({ statusLayout })} />
       </SettingsGroup>
-      <SettingsGroup label="Favorite providers">
-        <p className="px-4 py-3 text-xs text-muted-foreground">In single-icon mode, your first favorite supplies the usage beside the menu icon. Switching tabs only changes the open menu. Favorites control the tabs, overview totals, and separate icons. Add more favorites below, then scroll or use the arrows. Disconnected favorites keep their tabs.</p>
-        {favorites.map((_, position) => <SettingsRow key={position} label={`Favorite ${position + 1}`}
+      <SettingsGroup anchor="menu-favorites" label="Favorite providers">
+        <p className="px-3.5 py-2.5 text-meta text-muted-foreground">In single-icon mode, your first favorite supplies the usage beside the menu icon. Switching tabs only changes the open menu. Favorites control the tabs, overview totals, and separate icons. Add more favorites below, then scroll or use the arrows. Disconnected favorites keep their tabs.</p>
+        {favorites.map((_, position) => <SettingsRow saved={isFlashed("pinnedProviders")} key={position} label={`Favorite ${position + 1}`}
           control={<Select label={`Favorite provider ${position + 1}`} value={favorites[position] ?? ""} disabled={busy}
             options={[{ value: "", label: "Remove favorite" }, ...providers.map(provider => ({ value: provider.id, label: provider.name }))]}
             onChange={value => void save({ pinnedProviders: chooseFavorite(favorites, position, value as (typeof favorites)[number] | "") })} />} />)}
-        <div className="px-4 py-3">
-          <button type="button" disabled={busy || !nextFavorite}
-            className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-40"
+        <div className="px-3.5 py-2.5">
+          <GhostButton disabled={busy || !nextFavorite}
             onClick={() => { if (nextFavorite) void save({ pinnedProviders: [...favorites, nextFavorite.id] }); }}>
             Add favorite
-          </button>
+          </GhostButton>
         </div>
       </SettingsGroup>
-      <SettingsGroup label="Providers & accounts">
-        <p className="px-4 py-3 text-xs text-muted-foreground">Enable account usage for each provider. Choosing a favorite does not connect its account.</p>
+      <SettingsGroup anchor="menu-providers" label="Providers & accounts">
+        <p className="px-3.5 py-2.5 text-meta text-muted-foreground">Enable account usage for each provider. Choosing a favorite does not connect its account.</p>
         {providers.map(provider => {
           // The provider's own login; extra accounts follow it, read with the
           // same switch, so a second subscription is never invisible here.
@@ -163,39 +161,38 @@ export function MenuBarSettingsPage() {
               control={<span className="text-caption text-muted-foreground">{settings[provider.key] ? "Included" : "Off"}</span>} />)}
           </Fragment>;
         })}
-        {settings.claudeEnabled && <p className="px-4 py-3 text-xs text-muted-foreground">Claude limits come from your Claude Code subscription sign-in. Claude Code handles authentication and renewal. If limits are unavailable, open Claude Code, check your account, then refresh usage.</p>}
+        {settings.claudeEnabled && <p className="px-3.5 py-2.5 text-meta text-muted-foreground">Claude limits come from your Claude Code subscription sign-in. Claude Code handles authentication and renewal. If limits are unavailable, open Claude Code, check your account, then refresh usage.</p>}
         <SettingsRow label="Provider beside the icon" description={settings.separateProviderIcons ? "Each favorite with account usage enabled has its own icon and usage." : "Uses your first favorite, or the first enabled provider when no favorites are set."}
           control={<span className="text-sm text-muted-foreground" aria-label="Provider beside the icon">{settings.separateProviderIcons ? enabledFavorites.map(provider => provider.name).join(", ") || "None" : visible[0]?.name ?? enabled[0]?.name ?? "None"}</span>} />
         <SettingsRow label="OpenCode Go account" description="Sign in using your default browser, then copy your API key below. Already connected through OpenCode? Enable usage and click Refresh usage."
-          control={<button type="button" disabled={busy} className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-40"
-            onClick={() => { setConnection(null); void bridgeApi.connectMenuBarOpenCode().catch(() => setError("Could not open your default browser. Visit opencode.ai/auth to sign in.")); }}>Connect OpenCode</button>} />
+          control={<GhostButton disabled={busy}
+            onClick={() => { setConnection(null); void bridgeApi.connectMenuBarOpenCode().catch(() => setError("Could not open your default browser. Visit opencode.ai/auth to sign in.")); }}>Connect OpenCode</GhostButton>} />
         <SettingsRow label="OpenCode Go API key" description="Saved by OpenCode in its own authentication store. Requires OpenCode to be installed."
           control={<form className="flex flex-wrap items-center gap-2" onSubmit={event => { event.preventDefault(); void connectOpenCodeGo(); }}>
-            <input aria-label="OpenCode Go API key" type="password" autoComplete="off" spellCheck={false}
-              value={openCodeKey} onChange={event => setOpenCodeKey(event.currentTarget.value)} disabled={busy} maxLength={4096}
-              placeholder="Paste API key" className="w-44 rounded-lg border border-border bg-background px-2 py-1.5 text-xs text-foreground" />
-            <button type="submit" disabled={busy || !openCodeKey.trim()} className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-40">Save key</button>
+            <Field label="OpenCode Go API key" type="password" mono width="w-44"
+              value={openCodeKey} onChange={setOpenCodeKey} disabled={busy}
+              placeholder="Paste API key" />
+            <PrimaryButton type="submit" disabled={busy || !openCodeKey.trim()}>Save key</PrimaryButton>
           </form>} />
         <SettingsRow label="OpenCode workspace" description="For previously connected Zen browser sessions only. OpenCode Go uses your API key and does not need a workspace ID."
-          control={<input key={settings.opencodeWorkspace ?? "connected"} aria-label="OpenCode workspace" defaultValue={settings.opencodeWorkspace ?? ""}
-            placeholder="Connected workspace" disabled={busy} maxLength={132}
-            className="w-44 rounded-lg border border-border bg-background px-2 py-1.5 text-xs text-foreground"
-            onBlur={event => { const value = event.currentTarget.value.trim() || null; if (value !== (settings.opencodeWorkspace ?? null)) void save({ opencodeWorkspace: value }); }} />} />
-        <SettingsRow label="Show account" control={<Switch label="Show account" checked={settings.showAccount} disabled={busy}
+          saved={isFlashed("opencodeWorkspace")}
+          control={<WorkspaceField key={settings.opencodeWorkspace ?? "connected"} stored={settings.opencodeWorkspace ?? null} disabled={busy}
+            onSave={value => void save({ opencodeWorkspace: value })} />} />
+        <SettingsRow saved={isFlashed("showAccount")} label="Show account" control={<Switch label="Show account" checked={settings.showAccount} disabled={busy}
           onChange={showAccount => void save({ showAccount })} />} />
       </SettingsGroup>
-      <SettingsGroup label="Usage & spend">
-        <SettingsRow label="Overview usage & spend" description="Show a 30-day summary across favorites with account usage enabled above the Overview quota bars."
+      <SettingsGroup anchor="menu-usage" label="Usage & spend">
+        <SettingsRow saved={isFlashed("showOverviewSummary")} label="Overview usage & spend" description="Show a 30-day summary across favorites with account usage enabled above the Overview quota bars."
           control={<Switch label="Overview usage & spend" checked={settings.showOverviewSummary ?? true} disabled={busy} onChange={showOverviewSummary => void save({ showOverviewSummary })} />} />
-        <SettingsRow label="Daily history" description="A 30-day chart in provider tabs. Overview stays compact without charts."
+        <SettingsRow saved={isFlashed("showHistory")} label="Daily history" description="A 30-day chart in provider tabs. Overview stays compact without charts."
           control={<Switch label="Daily history" checked={settings.showHistory ?? true} disabled={busy} onChange={showHistory => void save({ showHistory })} />} />
-        <SettingsRow label="Tokens and models" description="Show token totals. Model details are available in the breakdown submenu."
+        <SettingsRow saved={isFlashed("showTokens")} label="Tokens and models" description="Show token totals. Model details are available in the breakdown submenu."
           control={<Switch label="Tokens and models" checked={settings.showTokens} disabled={busy} onChange={showTokens => void save({ showTokens })} />} />
-        <SettingsRow label="Show spend" description="Today and the last 30 days. Estimated costs are labelled; missing prices stay unavailable."
+        <SettingsRow saved={isFlashed("showCost")} label="Show spend" description="Today and the last 30 days. Estimated costs are labelled; missing prices stay unavailable."
           control={<Switch label="Show spend" checked={settings.showCost} disabled={busy} onChange={showCost => void save({ showCost })} />} />
       </SettingsGroup>
-      <SettingsGroup label="Refresh">
-        <SettingsRow label="Refresh account usage" description="Shared with Bridge. Closing the main window keeps the menu available."
+      <SettingsGroup anchor="menu-refresh" label="Refresh">
+        <SettingsRow saved={isFlashed("refreshSeconds")} label="Refresh account usage" description="Shared with Bridge. Closing the main window keeps the menu available."
           control={<Select label="Refresh account usage" value={String(settings.refreshSeconds)} disabled={busy} options={[
             { value: "0", label: "Manually" }, { value: "60", label: "Every minute" }, { value: "300", label: "Every 5 minutes" },
             { value: "900", label: "Every 15 minutes" }, { value: "1800", label: "Every 30 minutes" },
@@ -203,4 +200,16 @@ export function MenuBarSettingsPage() {
       </SettingsGroup>
     </>}
   </SettingsPage>;
+}
+
+/** Free text saved when you leave the field or press Return, the way the
+ *  menu bar helper expects one workspace id rather than every keystroke. */
+function WorkspaceField({ stored, disabled, onSave }: { stored: string | null; disabled: boolean; onSave: (value: string | null) => void }) {
+  const [value, setValue] = useState(stored ?? "");
+  const commit = () => { const next = value.trim() || null; if (next !== stored) onSave(next); };
+  return <span onBlur={commit}>
+    <Field label="OpenCode workspace" value={value} disabled={disabled} width="w-44" placeholder="Connected workspace"
+      onChange={next => setValue(next.slice(0, 132))}
+      onKeyDown={event => { if (event.key === "Enter") commit(); }} />
+  </span>;
 }

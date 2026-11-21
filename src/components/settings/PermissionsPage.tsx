@@ -7,7 +7,8 @@
 import type { ReactNode } from "react";
 import { Lock as LockSimple } from "lucide-react";
 import type { BridgeEvent, PermissionPolicy } from "../../types";
-import { SettingsGroup, SettingsPage, SettingsRow, Switch } from "./kit";
+import { SettingsFold, SettingsGroup, SettingsPage, SettingsRow, Switch } from "./kit";
+import { PAGES } from "./sections";
 import { OpencodeAppsSetting } from "./OpencodeAppsSetting";
 
 /// Host gates that outlive the provider convenience switch.
@@ -39,9 +40,10 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
 }) {
   const on = policy.autoApproveProviderPermissions === true;
   const proposalRoles = policy.workerPromptProposalRoles ?? [];
-  return <SettingsPage title="Permissions" description="How much Bridge asks before an agent acts.">
+  return <SettingsPage title={PAGES.permissions.label} description={PAGES.permissions.description}>
     <SettingsGroup label="Agent actions">
       <SettingsRow
+        anchor="auto-approve"
         label="Let agents act without asking"
         description="Automatically accept supported requests from coding agents and let background tasks write to their assigned files. Agents can run commands and change files without asking. Questions and macOS permissions still need your response."
         saved={saved}
@@ -54,7 +56,30 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
       />
     </SettingsGroup>
 
-    <details className="text-ui"><summary className="cursor-pointer text-muted-foreground">Advanced: suggested instruction changes</summary><div className="mt-3"><SettingsGroup label="Suggested instruction changes" note="Off by default; each change still asks">
+
+
+    <SettingsGroup anchor="always-asks" label="Always asks" note="These keep asking either way">
+      {SURVIVING_GATES.map(gate => <SettingsRow
+        key={gate.title}
+        lead={<LockSimple size={12} strokeWidth={1.7} aria-hidden="true" />}
+        label={gate.title}
+        description={gate.copy}
+      />)}
+    </SettingsGroup>
+
+    <SettingsGroup anchor="auto-approvals" label="Recent auto-approvals" note="Every automatic decision is recorded">
+      {autoApprovals.length === 0
+        ? <SettingsRow label={<span className="font-mono text-caption text-muted-foreground">Nothing has been auto-approved yet.</span>} />
+        : autoApprovals.map(event => <SettingsRow
+            key={event.id}
+            label={<span className="font-mono text-caption text-foreground/85">{event.body}</span>}
+            control={<time className="shrink-0 font-mono text-caption text-muted-foreground">
+              {new Date(event.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+            </time>}
+          />)}
+    </SettingsGroup>
+    {extra}
+    <SettingsFold><SettingsGroup anchor="instruction-proposals" label="Suggested instruction changes" note="Off by default; each change still asks">
       <SettingsRow label="Let background agents suggest improvements to their instructions"
         description="Each agent may suggest changes to its instructions. You review the exact change before it is saved. It applies the next time that role starts." />
       {WORKER_ROLES.map(role => <SettingsRow
@@ -69,30 +94,7 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
             : proposalRoles.filter(item => item !== role) })}
         />}
       />)}
-    </SettingsGroup></div></details>
-
-    <OpencodeAppsSetting />
-
-    <SettingsGroup label="Always asks" note="These keep asking either way">
-      {SURVIVING_GATES.map(gate => <SettingsRow
-        key={gate.title}
-        lead={<LockSimple size={12} strokeWidth={1.7} aria-hidden="true" />}
-        label={gate.title}
-        description={gate.copy}
-      />)}
     </SettingsGroup>
-
-    <SettingsGroup label="Recent auto-approvals" note="Every automatic decision is recorded">
-      {autoApprovals.length === 0
-        ? <SettingsRow label={<span className="font-mono text-caption text-muted-foreground">Nothing has been auto-approved yet.</span>} />
-        : autoApprovals.map(event => <SettingsRow
-            key={event.id}
-            label={<span className="font-mono text-caption text-foreground/85">{event.body}</span>}
-            control={<time className="shrink-0 font-mono text-caption text-muted-foreground">
-              {new Date(event.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-            </time>}
-          />)}
-    </SettingsGroup>
-    {extra}
+    <OpencodeAppsSetting /></SettingsFold>
   </SettingsPage>;
 }

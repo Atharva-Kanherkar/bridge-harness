@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { TriangleAlert } from "lucide-react";
 import { bridgeApi } from "../../api";
-import { Button } from "../ui/button";
-import { SettingsGroup, SettingsRow, Switch } from "./kit";
+import { PrimaryButton, SettingsGroup, SettingsRow, Switch, TextButton } from "./kit";
 
 export const OPENCODE_APPS_WARNING = "OpenCode reaches MCP servers only through its code mode, which can also make network requests Bridge cannot see or approve. Bridge still lets OpenCode make only the exact MCP call you approved, but it cannot stop other network traffic from that hidden session. Turn this on only for servers you trust, at your own discretion.";
 
@@ -32,7 +31,7 @@ export function OpencodeAppsSetting() {
       setBusy(false);
     }
   };
-  return <SettingsGroup label="Personal apps" note="Off by default">
+  return <SettingsGroup anchor="personal-apps" label="Personal apps" note="Off by default">
     <SettingsRow
       label="Allow personal apps through OpenCode (less safe)"
       description={OPENCODE_APPS_WARNING}
@@ -48,8 +47,8 @@ export function OpencodeAppsSetting() {
       label="Turn on personal apps through OpenCode?"
       description="You accept that an app running through OpenCode may make network requests Bridge cannot approve."
       control={<div className="flex gap-2">
-        <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirming(false)}>Cancel</Button>
-        <Button size="sm" disabled={busy} onClick={() => void save(true)}>I understand, turn on</Button>
+        <TextButton disabled={busy} onClick={() => setConfirming(false)}>Cancel</TextButton>
+        <PrimaryButton disabled={busy} onClick={() => void save(true)}>I understand, turn on</PrimaryButton>
       </div>}
     />}
     {error && <SettingsRow label={<span role="alert" className="text-destructive">{error}</span>} />}
