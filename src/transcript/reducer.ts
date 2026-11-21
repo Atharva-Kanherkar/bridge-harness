@@ -105,6 +105,8 @@ interface Fold {
   requests: Map<string, ConversationItem>;
   /** Rows a later lifecycle half can join, keyed by provider item id. */
   byItemId: Map<string, ConversationItem>;
+  /** Tool calls that are a question a card already shows. */
+  askedBy: Set<string>;
   /** Assistant prose emitted inside a compaction maintenance window. */
   internal: Set<ConversationItem>;
   compacting: boolean;
@@ -146,6 +148,7 @@ export function reduceTranscript(events: TranscriptEvent[]): ConversationItem[] 
     thinkingCandidates: new StreamingCandidates(true),
     requests: new Map(),
     byItemId: new Map(),
+    askedBy: new Set(),
     internal: new Set(),
     compacting: false,
     turn: 0,
@@ -157,7 +160,9 @@ export function reduceTranscript(events: TranscriptEvent[]): ConversationItem[] 
     applyEvent(fold, event);
   }
 
+  const answeredByCard = questionCalls(fold);
   const reduced = [...fold.items.values()]
+    .filter(item => !answeredByCard.has(item))
     .filter(item => item.type !== "message" || !fold.internal.has(item))
     .map(item => item.type === "message"
       ? { ...item, text: stripBridgeFences(stripWorkerResultBlocks(item.text)) }
@@ -374,6 +379,7 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
       item.text = event.text;
       item.data = { ...item.data, ...envelope.providerData };
       fold.requests.set(`${event.interaction}:${envelope.eventId}`, item);
+      if (event.askingCall) fold.askedBy.add(event.askingCall);
       return;
     }
 
@@ -461,6 +467,20 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
 }
 
 /* ── Fold helpers ──────────────────────────────────────────────────────── */
+
+/**
+ * The tool rows a question card already stands for (`askingCall`). Read after
+ * the fold because the two halves arrive in either order: the question can
+ * land before the call it is when the model thinks first.
+ */
+function questionCalls(fold: Fold): Set<ConversationItem> {
+  const rows = new Set<ConversationItem>();
+  for (const callId of fold.askedBy) {
+    const row = fold.byItemId.get(callId);
+    if (row?.type === "activity") rows.add(row);
+  }
+  return rows;
+}
 
 /**
  * The one place a row comes into existence — and therefore the one place the
