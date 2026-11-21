@@ -193,7 +193,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
   };
 
   const projectName = useMemo(() => new Map(projects.map(project => [project.id, project.name])), [projects]);
-  const heading = <ScreenHeading title="Workflows" description="Repeatable jobs that run on your own agents and connectors. Writes always ask first." action={<>
+  const heading = <ScreenHeading title="Workflows" action={<>
     <Button size="xs" disabled={busy} onClick={() => { setEditorError(null); setEditing({ workflow: null }); }}><Plus size={13}/>New workflow</Button>
     <Button size="xs" variant="secondary" onClick={() => setSettingsOpen(true)}><Settings2 size={13}/>Settings</Button>
   </>}/>;
@@ -236,7 +236,6 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
           ? <div className="mt-6 flex flex-col items-center rounded-2xl border border-dashed border-border px-6 py-12 text-center">
             <div className="flex h-11 w-11 items-center justify-center rounded-[14px] border border-border bg-accent text-muted-foreground"><WorkflowIcon size={18}/></div>
             <h2 className="mt-4 text-message font-semibold text-foreground">Automate a job you do every day</h2>
-            <p className="mt-1 max-w-md text-ui leading-relaxed text-muted-foreground">It runs on the plan you already pay for, through the connectors your agent already has. No project needed.</p>
             <Button size="sm" className="mt-5" onClick={() => setEditing({ workflow: null })}><Plus size={13}/>New workflow</Button>
           </div>
           : <div className="mt-4 divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">{rows.map(row => {

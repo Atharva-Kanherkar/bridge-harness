@@ -771,7 +771,6 @@ function EmptyPage({ onNewPage, onCapture }: { onNewPage: () => void; onCapture:
   return <div className="grid flex-1 place-items-center px-8 pb-24">
     <div className="max-w-sm text-center">
       <h2 className="m-0 text-[1.375rem] font-semibold tracking-[-0.015em] text-foreground">Your words, kept as typed</h2>
-      <p className="m-0 mt-2 text-ui leading-relaxed text-muted-foreground">Capture a thought, or start a page. Structure and tasks run only when you ask, and any chat can write a page here.</p>
       <div className="mt-6 flex items-center justify-center gap-1">
         <PrimaryButton onClick={onNewPage}>New page</PrimaryButton>
         <Pill onClick={onCapture}>Capture <span className="text-faint">{chordLabel("capture-note")}</span></Pill>

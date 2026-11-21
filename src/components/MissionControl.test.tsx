@@ -108,7 +108,7 @@ it("shows only active sessions even with hundreds of idle chats", async () => {
 it("explains the empty state without offering idle chats", async () => {
   await render({ sessions: [session("b", "completed")] });
   expect(tiles()).toEqual([]);
-  expect(host.textContent).toContain("Chats and agents appear here automatically");
+  expect(host.textContent).toContain("Nothing running");
   expect(host.textContent).not.toContain("Show all");
   expect(bridgeApi.sessionForest).not.toHaveBeenCalled();
 });

@@ -351,7 +351,7 @@ function PluginMarketplace() {
 
   return <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
-      <ScreenHeading title="Plugins" description="Connect your tools to Codex and Claude Code." action={<button type="button" onClick={() => { void refresh(); void refreshAuth(); }} disabled={loading} aria-label="Refresh apps" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /></button>} />
+      <ScreenHeading title="Plugins" action={<button type="button" onClick={() => { void refresh(); void refreshAuth(); }} disabled={loading} aria-label="Refresh apps" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /></button>} />
       <div className="relative mt-4"><Search className="pointer-events-none absolute left-3.5 top-1/2 z-10 -translate-y-1/2 text-muted-foreground" size={14} /><Input value={query} onChange={event => setQuery(event.target.value)} aria-label="Search apps" placeholder="Search apps" className="h-8 rounded-lg pl-10 text-ui" /></div>
 
       {catalog?.providers.map(item => item.error && <div key={item.provider} className="mt-3 flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-caption text-warning"><AlertCircle className="mt-0.5 shrink-0" size={12} /><span className="min-w-0 break-words"><b>{providerLabel(item.provider)}:</b> {item.error}</span></div>)}

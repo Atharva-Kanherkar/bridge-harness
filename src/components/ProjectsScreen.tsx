@@ -52,7 +52,7 @@ export function ProjectsScreen({
   return (
     <div className="@container/projects h-full overflow-y-auto">
       <div className={SCREEN_CONTENT}>
-        <ScreenHeading title="Projects" description="Your repositories, conversations, and changes." action={
+        <ScreenHeading title="Projects" action={
           <button
             type="button"
             onClick={onNewWorkspace}

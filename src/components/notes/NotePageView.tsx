@@ -485,7 +485,6 @@ function StructuredPanel({ view, busy, streaming, onSplit }: { view: StructuredV
   if (!view) {
     return <div className="mt-10 text-center">
       <p className="m-0 text-message font-medium text-foreground">No structured view yet</p>
-      <p className="mx-auto mt-1.5 max-w-sm text-ui leading-relaxed text-muted-foreground">Structure is opt-in. Click Structure above and it builds a second view from your words, without changing them.</p>
     </div>;
   }
   return <section aria-label="Structured view" className="mt-6">

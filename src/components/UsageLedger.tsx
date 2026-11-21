@@ -3,7 +3,7 @@ import { harnessLabel } from "../utils";
 import { harnessChartDot } from "./harnessMarks";
 import { formatCount, formatPercent, formatTokens, formatUsd } from "../usageReport";
 import { harnessesByMetric, harnessValue, modelSeries, modelsOf } from "../usageGeometry";
-import { EstimateMark, EYEBROW, formatMetric, HarnessName, HeroCaption, PartialBadge, Sparkline, TokenComposition, windowTitle, type UsageLayoutProps } from "./UsageLayoutParts";
+import { EstimateMark, EYEBROW, formatMetric, HarnessName, HeroCaption, Sparkline, TokenComposition, windowTitle, type UsageLayoutProps } from "./UsageLayoutParts";
 
 // Layout A: an editorial receipt. Typography carries the hierarchy instead of
 // cards: one large figure, a sentence that states the scale, a single ribbon
@@ -11,7 +11,7 @@ import { EstimateMark, EYEBROW, formatMetric, HarnessName, HeroCaption, PartialB
 
 const ROW = "grid grid-cols-[minmax(0,1fr)_5.5rem_6.5rem_7rem] items-center gap-x-2";
 
-export function UsageLedger({ report, windowDays, metric, partial }: UsageLayoutProps) {
+export function UsageLedger({ report, windowDays, metric }: UsageLayoutProps) {
   const format = formatMetric(metric);
   const harnesses = harnessesByMetric(report, metric);
   const metricTotal = metric === "cost" ? report.totals.costMicrousd : report.totals.processedTokens;
@@ -20,7 +20,6 @@ export function UsageLedger({ report, windowDays, metric, partial }: UsageLayout
 
   return <div className="space-y-10">
     <section aria-label="Summary">
-      <PartialBadge label={partial} className="mb-4" />
       <div className={EYEBROW}>{windowTitle(windowDays)}</div>
       <div className="mt-2.5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className="text-[3.25rem] font-light leading-none tracking-[-0.04em] tabular-nums text-foreground">{format(metricTotal)}{metric === "cost" && <EstimateMark report={report} large />}</span>
@@ -29,8 +28,8 @@ export function UsageLedger({ report, windowDays, metric, partial }: UsageLayout
       <p className="mt-3 max-w-2xl text-body leading-relaxed text-muted-foreground">
         across <span className="font-medium text-foreground">{count} {count === 1 ? "harness" : "harnesses"}</span> and <span className="font-medium tabular-nums text-foreground">{formatCount(report.totals.records)}</span> requests.{" "}
         {metric === "tokens"
-          ? <>At API rates that is <span className="font-medium tabular-nums text-foreground">{formatUsd(report.totals.costMicrousd)}</span><EstimateMark report={report} />. Your subscriptions bill separately.</>
-          : <><span className="font-medium tabular-nums text-foreground">{formatTokens(report.totals.processedTokens)}</span> tokens processed. Not money spent: subscriptions bill separately.</>}
+          ? <>At API rates that is <span className="font-medium tabular-nums text-foreground">{formatUsd(report.totals.costMicrousd)}</span><EstimateMark report={report} />.</>
+          : <><span className="font-medium tabular-nums text-foreground">{formatTokens(report.totals.processedTokens)}</span> tokens processed.</>}
       </p>
       <HeroCaption report={report} metric={metric} requests={false} className="mt-1.5" />
     </section>

@@ -4776,15 +4776,13 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
       <p className="mt-1 mb-3 text-ui text-muted-foreground">Install an agent and sign in here. Bridge handles the setup commands.</p>
       <ManagedAgentsPanel adapters={adapters} onChanged={onHealthChange} />
     </div>}
-    <p className="mb-3 text-meta font-medium text-muted-foreground">Your workspace, ready.</p>
-    <h1 className="mb-3 max-w-2xl font-display text-[26px] font-semibold leading-tight tracking-[-0.03em] text-foreground sm:text-[30px]">
+    <h1 className="mb-6 max-w-2xl font-display text-[26px] font-semibold leading-tight tracking-[-0.03em] text-foreground sm:text-[30px]">
       {greeting.parts.length > 1
         ? greeting.parts.map((part, index) => part.kind === "project"
           ? <span key={index} className="text-foreground">{part.text}</span>
           : <span key={index}>{part.text}</span>)
         : greeting.headline}
     </h1>
-    <p className="mb-7 max-w-xl text-ui leading-relaxed text-muted-foreground">Ask a question, explore an idea, or pick a project and get to work.</p>
     <div className="relative">
     {slashOpen && <ComposerSlashMenu id="welcome-slash-listbox" commands={slashMatches} index={Math.min(slashIndex, slashMatches.length - 1)} onIndex={setSlashIndex} onSelect={applySlash} />}
     <ComposerPill
@@ -4827,7 +4825,7 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
       onVoiceCancel={voice.cancel}
       onVoiceRetry={voice.retry}
       onVoiceSetup={onVoiceSetup}
-      placeholder={canStartChat ? "Ask Bridge… / skills & commands · $ provider · paste a repo to open it" : "Paste a repo to open it, or install a model adapter to chat…"}
+      placeholder={canStartChat ? "Ask Bridge…" : "Paste a repo, or install an agent…"}
       // Opening a project (typing a bare repo URL, or the folder `+` below)
       // needs no adapter — only starting an actual chat turn does, and
       // submitNewChatDraft already guards that with its own adaptersReady
@@ -4864,10 +4862,10 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
     {(composerError || harnessShortcutFailure) && <p role="alert" className="mt-2 max-w-3xl text-left text-caption text-destructive">{composerError ?? harnessShortcutFailure}</p>}
     <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-caption text-muted-foreground">
       {workspace && agent
-        ? <span id={sessionModeHintId}><span className="font-medium text-foreground">{agent.name}</span> · Your first message goes straight to this agent.</span>
+        ? <span id={sessionModeHintId}><span className="font-medium text-foreground">{agent.name}</span></span>
         : workspace
-        ? <span id={sessionModeHintId}><span className="font-medium text-foreground">{sessionKind === "direct" ? "Direct" : "Orchestrator"}</span> · {sessionModeDescription(sessionKind)}</span>
-        : <span>{greeting.hint}</span>}
+        ? <span id={sessionModeHintId}><span className="font-medium text-foreground">{sessionKind === "direct" ? "Direct" : "Orchestrator"}</span><span className="sr-only"> · {sessionModeDescription(sessionKind)}</span></span>
+        : <span />}
       <ComposerKeyHints state="idle" className="shrink-0" />
     </div>
     {workspaces.length === 0 && <div className="mt-6 flex justify-center">
