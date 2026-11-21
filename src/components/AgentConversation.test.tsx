@@ -491,8 +491,9 @@ describe("AgentConversation", () => {
     expect(html).toContain("abcdef123456");
     expect(html).toContain("Browser unavailable");
     expect(html).toContain("Skipped");
-    expect(html).toContain("border-x-2");
-    expect(html).toContain("border-x-warning");
+    // One even border, no side accents: a light 2px tick on each side drew
+    // the card as a pair of brackets.
+    expect(html).not.toContain("border-x-2");
     expect(html).not.toContain("border-l-2");
   });
 
@@ -587,8 +588,17 @@ describe("AgentConversation", () => {
     const automatic = event(42, "permission.requested", { status:"settling", title:"Run command", data:{resolvedBy:"policy",reason:"Auto-approve provider permissions",actions:[{decision:"accept",label:"Allow once"}]} });
     const policyHtml = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[automatic]}/>);
     expect(policyHtml).toContain("Applying decision");
-    expect(policyHtml).toContain("by policy");
+    expect(policyHtml).toContain("by policy · Auto-approve provider permissions");
+    expect(policyHtml).not.toContain("—");
     expect(policyHtml).not.toContain("Allow once</button>");
+  });
+
+  it("shows a permission's command once, in its well", () => {
+    const command = "git fetch origin -q && git log --oneline -3";
+    const requested = event(43, "permission.requested", { status:"pending", title:"Run this command?", text:command, data:{command,actions:[{decision:"accept",label:"Allow once"}]} });
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[requested]}/>);
+    expect(html.split("git fetch origin -q").length - 1).toBe(1);
+    expect(html).toContain("<code");
   });
 
   it("holds permission actions disabled until a deferred resolution settles", async () => {

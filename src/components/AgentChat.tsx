@@ -72,7 +72,7 @@ export function AgentChat({ session, runtime, liveEvents, reasons = [], onOpenSe
   const answer = (eventId: number, action: QuestionAction, answers: Record<string, string[]>): Promise<InteractionResolutionResult | void> => bridgeApi.resolveQuestion(session.id, eventId, action, answers);
 
   return <div role="region" aria-label={`Agent ${session.title || session.label}`} className="flex h-full min-h-0 flex-col">
-    {hasDiagnostics && <div className="shrink-0 border-b border-border px-3 py-2"><WorkerDiagnostics reasons={reasons} sessionId={session.id} /></div>}
+    {hasDiagnostics && <div className="shrink-0 border-b border-border px-3 py-1"><WorkerDiagnostics reasons={reasons} sessionId={session.id} /></div>}
     <div className="relative min-h-0 flex-1 overflow-hidden">
       <AgentConversation
         session={session}

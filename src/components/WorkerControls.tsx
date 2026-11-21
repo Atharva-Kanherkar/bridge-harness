@@ -1,3 +1,4 @@
+import { ChevronRight } from "lucide-react";
 import type { BridgeEvent, Session, WorkerRuntimeRecord } from "../types";
 
 export function canStopWorker(session: Session, runtime?: WorkerRuntimeRecord): boolean {
@@ -65,8 +66,14 @@ export function workerDiagnostics(reasons: BridgeEvent[], sessionId: string) {
 export function WorkerDiagnostics({ reasons, sessionId }: { reasons: BridgeEvent[]; sessionId: string }) {
   const diagnostics = workerDiagnostics(reasons, sessionId);
   if (!diagnostics.length) return null;
-  return <details className="rounded-lg border border-border bg-card px-3 py-2 text-xs">
-    <summary className="cursor-pointer font-medium text-foreground">{diagnostics[0].label}{diagnostics.length > 1 ? ` · ${diagnostics.length} events` : ""}</summary>
-    <ol className="mt-2 space-y-2">{diagnostics.map(reason => <li key={reason.id}><p className="font-medium text-foreground">{reason.label}</p><p className="whitespace-pre-wrap break-words text-muted-foreground">{reason.body}</p></li>)}</ol>
+  // A quiet disclosure, drawn like the transcript's own: a chevron instead of
+  // the browser's triangle, and the newest reason with a count beside it.
+  return <details data-worker-diagnostics className="group min-w-0 [&_summary::-webkit-details-marker]:hidden">
+    <summary className="flex min-h-7 cursor-pointer list-none items-center gap-1.5 text-meta text-muted-foreground transition-colors hover:text-foreground">
+      <ChevronRight size={12} className="shrink-0 transition-transform group-open:rotate-90" aria-hidden="true" />
+      <span className="min-w-0 truncate font-medium text-foreground/85">{diagnostics[0].label}</span>
+      {diagnostics.length > 1 && <span className="shrink-0 tabular-nums">{diagnostics.length} events</span>}
+    </summary>
+    <ol className="mb-1 ml-[18px] mt-1 space-y-2 border-l border-border pl-3">{diagnostics.map(reason => <li key={reason.id}><p className="text-caption font-medium text-foreground">{reason.label}</p><p className="whitespace-pre-wrap break-words text-caption leading-relaxed text-muted-foreground">{reason.body}</p></li>)}</ol>
   </details>;
 }

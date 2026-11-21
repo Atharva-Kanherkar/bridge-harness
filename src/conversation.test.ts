@@ -122,6 +122,35 @@ describe("normalized conversation reducer",()=>{
     expect(live.identity).toBe(durable.identity);
     expect(live.eventId).not.toBe(durable.eventId);
   });
+  it("draws one permission card when its live frame and stored entry both exist",()=>{
+    // Claude sends the request under the tool's own item id, and the stored
+    // payload carries that id at its top level while the live frame keeps it on
+    // the envelope. Both have to land on the same identity, and neither on the
+    // tool row's.
+    const data = { requestId: "root-permission-1", command: "git status", interactionKind: "permission" };
+    const live = reduceConversation([
+      event(40,"tool.started",{itemId:"toolu_1",status:"inProgress",data:{tool_name:"Bash"}}),
+      event(41,"permission.requested",{itemId:"toolu_1",title:"Run this command?",status:"settling",text:"git status",data}),
+    ]);
+    const durable = projectSessionConversation([
+      entry("e8",null,"tool.started",{itemId:"toolu_1",status:"inProgress",data:{tool_name:"Bash"}},8),
+      entry("e9","e8","permission.requested",{itemId:"toolu_1",title:"Run this command?",status:"settling",text:"git status",data},9),
+    ], "e9");
+    const merged = mergeConversationProjections(durable, live);
+    expect(merged.filter(item => item.type === "permission")).toHaveLength(1);
+    expect(merged.filter(item => item.type === "activity")).toHaveLength(1);
+    const permission = merged.find(item => item.type === "permission")!;
+    expect(permission.identity).not.toBe("toolu_1");
+  });
+  it("keeps two permissions apart when a restarted sidecar reuses a request id",()=>{
+    const durable = projectSessionConversation([
+      entry("e1",null,"permission.requested",{itemId:"toolu_1",title:"Run this command?",status:"allowed_once",data:{requestId:"root-permission-1"}},1),
+    ], "e1");
+    const live = reduceConversation([
+      event(70,"permission.requested",{itemId:"toolu_2",title:"Run this command?",status:"pending",data:{requestId:"root-permission-1"}}),
+    ]);
+    expect(mergeConversationProjections(durable, live).filter(item => item.type === "permission")).toHaveLength(2);
+  });
   it("folds unnamed streaming assistant chunks into the identified completion",()=>{
     const items = reduceConversation([
       event(0,"message.delta",{sequence:0,itemId:null,role:"assistant",status:"streaming",text:"Hi — "}),

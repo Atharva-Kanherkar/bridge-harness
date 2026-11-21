@@ -59,7 +59,7 @@ export function PromptMutationApprovalCard({ item, onResolve }: {
     }
   }
 
-  return <section aria-label="Review prompt change" className="min-w-0 overflow-hidden rounded-xl border border-border border-x-2 border-x-warning bg-card">
+  return <section aria-label="Review prompt change" className="min-w-0 overflow-hidden rounded-xl border border-border bg-card">
     <header className="flex flex-wrap items-baseline gap-2 px-3.5 pt-3 sm:px-4">
       <b className="text-ui font-semibold text-foreground">Review prompt change</b>
       {pending && <small className="text-caption text-warning">waiting for you</small>}
