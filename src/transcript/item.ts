@@ -164,6 +164,8 @@ export function sameItems(left: readonly ConversationItem[], right: readonly Con
  */
 const IDENTITY_KEYS = ["itemId", "approvalId", "requestId", "questionId"] as const;
 
+const INTERACTION_TYPES: ReadonlySet<ConversationItemType> = new Set(["approval", "permission", "question"]);
+
 /**
  * The identity a conversation item shares with its counterpart on the other
  * projection, falling back to something still unique — but not
@@ -172,6 +174,14 @@ const IDENTITY_KEYS = ["itemId", "approvalId", "requestId", "questionId"] as con
  * caller merging live and durable lists never has to reach for `eventId`.
  */
 export function itemIdentity(item: Pick<ConversationItem, "data" | "entryId" | "eventId" | "type" | "itemId">): string {
+  // An approval, a permission or a question is about a call, and its stored
+  // payload carries that call's item id while the live frame does not, so the
+  // two copies never matched and a question was drawn twice once the forest
+  // caught up. Its request event id is the one number both sides share: live
+  // it is the event id, stored it is the entry sequence, and they are equal by
+  // design (see `TranscriptEnvelope.eventId`). The provider's request id is no
+  // substitute: Claude restarts its count with every sidecar process.
+  if (INTERACTION_TYPES.has(item.type)) return `${item.type}:${item.eventId}`;
   if (typeof item.itemId === "string" && item.itemId) return item.itemId;
   for (const key of IDENTITY_KEYS) {
     const value = item.data[key];

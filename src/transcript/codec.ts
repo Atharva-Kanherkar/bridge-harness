@@ -325,6 +325,7 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
         title: title ?? (interaction === "permission" ? "Permission required" : "Question"),
         text,
         status: status ?? "pending",
+        askingCall: askingCall(interaction, itemId, data),
       };
     }
     return {
@@ -467,6 +468,20 @@ function liveKey(kind: string, itemId: string | undefined, eventId: number): str
   // the reducer knows.
   if (kind.startsWith("reasoning.") || kind === "reasoning" || kind.startsWith("message.")) return undefined;
   return `${kind}:${eventId}`;
+}
+
+/**
+ * The tool call a question is, when the call does nothing but ask.
+ *
+ * Claude's `AskUserQuestion`, OpenCode's `question` and Codex's
+ * `item/tool/requestUserInput` each arrive twice under one id: as the tool
+ * call and as the question. Codex's MCP elicitation is the exception: its id
+ * names an MCP call that does real work and is only pausing for input, so that
+ * call keeps its row.
+ */
+function askingCall(interaction: "permission" | "question", itemId: string | undefined, data: Record<string, unknown>): string | undefined {
+  if (interaction !== "question" || !itemId) return undefined;
+  return data.requestMethod === "mcpServer/elicitation/request" ? undefined : itemId;
 }
 
 function interactionKind(kind: string): "permission" | "question" | undefined {
@@ -701,7 +716,7 @@ export function normalizeSessionEntry(entry: SessionEntry): TranscriptEvent | nu
   const interaction = interactionKind(kind);
   if (interaction) {
     if (kind.endsWith(".requested")) {
-      return { type: "interaction.requested", envelope, interaction, title, text: body, status: status ?? "pending" };
+      return { type: "interaction.requested", envelope, interaction, title, text: body, status: status ?? "pending", askingCall: askingCall(interaction, itemId, flat) };
     }
     return {
       type: "interaction.settled",

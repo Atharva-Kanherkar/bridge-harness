@@ -192,6 +192,12 @@ export interface InteractionRequested extends Framed {
   title: string;
   text: string;
   status: string;
+  /**
+   * The tool call this question is, when the call exists only to ask. The
+   * provider reports it as an ordinary tool call under this id as well, and the
+   * card already stands for it, so that call gets no row of its own.
+   */
+  askingCall?: string;
 }
 
 export interface InteractionSettled extends Framed {

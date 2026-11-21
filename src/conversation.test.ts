@@ -180,6 +180,50 @@ describe("normalized conversation reducer",()=>{
     // One is the durable row's twin; the second retry is its own failure.
     expect(mergeConversationProjections(durable, live).filter(item=>item.type==="error")).toHaveLength(2);
   });
+  /**
+   * One question, read twice.
+   *
+   * The live frame names the request (`requestId`) and the stored payload also
+   * carries the tool id it is about (`itemId`), so the two copies used to get
+   * different identities. Within three seconds of Claude asking, the forest
+   * caught up and the merge drew a second card for the same question.
+   */
+  describe("an interaction across the two projections",()=>{
+    const questionData = { tool_use_id:"toolu_q", tool_name:"AskUserQuestion", requestId:"root-permission-1", requestMethod:"claude.askUserQuestion", interactionKind:"question", questions:[{id:"0",question:"Which way?",options:[{label:"A"},{label:"B"}]}] };
+    const toolData = { type:"tool_use", id:"toolu_q", name:"AskUserQuestion" };
+
+    it("draws a question once, and not its tool call",()=>{
+      const live = reduceConversation([
+        event(12461,"question.requested",{itemId:"toolu_q",title:"Which way",status:"pending",data:questionData}),
+        event(12463,"tool.started",{itemId:"toolu_q",title:"AskUserQuestion",status:"inProgress",data:toolData}),
+      ]);
+      const durable = projectSessionConversation([
+        entry("e1",null,"question.requested",{itemId:"toolu_q",title:"Which way",status:"pending",data:questionData},12461),
+        entry("e2","e1","tool.started",{itemId:"toolu_q",title:"AskUserQuestion",status:"inProgress",data:toolData},12463),
+      ], "e2");
+      const merged = mergeConversationProjections(durable, live);
+      expect(merged.map(item=>item.type)).toEqual(["question"]);
+      // The stored card survives: it is the one an answer after a reload finds.
+      expect(merged[0]).toMatchObject({ entryId:"e1", eventId:12461 });
+    });
+
+    it("draws a permission once",()=>{
+      const data = { tool_use_id:"toolu_p", tool_name:"Bash", requestId:"root-permission-2", interactionKind:"permission" };
+      const live = reduceConversation([event(20,"permission.requested",{itemId:"toolu_p",title:"Run command",status:"pending",data})]);
+      const durable = projectSessionConversation([entry("e20",null,"permission.requested",{itemId:"toolu_p",title:"Run command",status:"pending",data},20)], "e20");
+      expect(mergeConversationProjections(durable, live).filter(item=>item.type==="permission")).toHaveLength(1);
+    });
+
+    it("keeps two questions whose request ids repeat after a restart",()=>{
+      // Claude numbers requests per sidecar process, so a restarted chat asks
+      // its next question as `root-permission-1` again.
+      const older = entry("e5",null,"question.requested",{itemId:"toolu_old",title:"First",status:"answered",data:{...questionData,tool_use_id:"toolu_old"}},5);
+      const durable = projectSessionConversation([older], "e5");
+      const live = reduceConversation([event(9,"question.requested",{itemId:"toolu_new",title:"Second",status:"pending",data:{...questionData,tool_use_id:"toolu_new"}})]);
+      const questions = mergeConversationProjections(durable, live).filter(item=>item.type==="question");
+      expect(questions.map(item=>item.title)).toEqual(["First","Second"]);
+    });
+  });
   it("keeps a failure the forest has not caught up with yet",()=>{
     const live = reduceConversation([event(9,"error",{status:"failed",text:"boom"})]);
     expect(mergeConversationProjections([], live).filter(item=>item.type==="error")).toHaveLength(1);
