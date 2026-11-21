@@ -851,6 +851,7 @@ export function BridgeSidebar({
     runningSeen.current = rememberRunning(rows);
     return rows;
   }, [chats, liveAgents, sessions, sendingChatIds, liveEvents]);
+  const showRunning = running.length > 0 && !searching;
 
   // Collapsing takes the rail off the screen entirely; the panel controls move
   // to the canvas' chrome row, which is the only way back in besides ⌘B. The
@@ -988,7 +989,9 @@ export function BridgeSidebar({
             else lives in the launcher, so a new app costs the sidebar nothing. */}
         <nav aria-label="Main navigation" className="mb-4 shrink-0 space-y-0.5">
           <ActionRow icon={Blocks} label="Apps" chord="open-launcher" onClick={onOpenApps} badge={appsBadge} />
-          {pinnedApps.map(pin => {
+          {/* While something runs, the Active group below carries the way into
+              Mission Control, so its pin would only repeat it. */}
+          {pinnedApps.filter(pin => !(pin.app.key === "mission-control" && showRunning)).map(pin => {
             const { app } = pin;
             const row = <ActionRow icon={app.icon} label={app.name} onClick={() => onOpenApp(app.key)} active={activeApp === app.key} badge={pin.badge} unpinnable={Boolean(onUnpinApp)} />;
             if (!onUnpinApp) return <div key={app.key}>{row}</div>;
@@ -1013,8 +1016,14 @@ export function BridgeSidebar({
 
         {/* Above Projects and out of their scroll, so what is running stays in
             view. A search has the rail to itself. */}
-        {running.length > 0 && !searching && (
-          <SidebarRunning rows={running} activeSessionId={activeSessionId} onOpenSession={onOpenSession} />
+        {showRunning && (
+          <SidebarRunning
+            rows={running}
+            activeSessionId={activeSessionId}
+            onOpenSession={onOpenSession}
+            onOpenMissionControl={() => onOpenApp("mission-control")}
+            missionControlActive={activeApp === "mission-control"}
+          />
         )}
 
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
