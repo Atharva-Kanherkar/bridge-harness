@@ -42,6 +42,7 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
   return <SettingsPage title="Permissions" description="How much Bridge asks before an agent acts.">
     <SettingsGroup label="Agent actions">
       <SettingsRow
+        anchor="auto-approve"
         label="Let agents act without asking"
         description="Automatically accept supported requests from coding agents and let background tasks write to their assigned files. Agents can run commands and change files without asking. Questions and macOS permissions still need your response."
         saved={saved}
@@ -54,7 +55,7 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
       />
     </SettingsGroup>
 
-    <details className="text-ui"><summary className="cursor-pointer text-muted-foreground">Advanced: suggested instruction changes</summary><div className="mt-3"><SettingsGroup label="Suggested instruction changes" note="Off by default; each change still asks">
+    <details className="text-ui"><summary className="cursor-pointer text-muted-foreground">Advanced: suggested instruction changes</summary><div className="mt-3"><SettingsGroup anchor="instruction-proposals" label="Suggested instruction changes" note="Off by default; each change still asks">
       <SettingsRow label="Let background agents suggest improvements to their instructions"
         description="Each agent may suggest changes to its instructions. You review the exact change before it is saved. It applies the next time that role starts." />
       {WORKER_ROLES.map(role => <SettingsRow
@@ -73,7 +74,7 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
 
     <OpencodeAppsSetting />
 
-    <SettingsGroup label="Always asks" note="These keep asking either way">
+    <SettingsGroup anchor="always-asks" label="Always asks" note="These keep asking either way">
       {SURVIVING_GATES.map(gate => <SettingsRow
         key={gate.title}
         lead={<LockSimple size={12} strokeWidth={1.7} aria-hidden="true" />}
@@ -82,7 +83,7 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
       />)}
     </SettingsGroup>
 
-    <SettingsGroup label="Recent auto-approvals" note="Every automatic decision is recorded">
+    <SettingsGroup anchor="auto-approvals" label="Recent auto-approvals" note="Every automatic decision is recorded">
       {autoApprovals.length === 0
         ? <SettingsRow label={<span className="font-mono text-caption text-muted-foreground">Nothing has been auto-approved yet.</span>} />
         : autoApprovals.map(event => <SettingsRow

@@ -12,7 +12,7 @@
 // dragged along by a switch. The system prompt, the executable path, and the
 // advanced JSON are text, so they dirty the page and go through the save bar.
 
-import { useMemo, type ReactNode } from "react";
+import { useMemo } from "react";
 import type { AdapterDescriptor, HarnessConfig, OpenCodeCatalog, ReasoningEffort } from "../../types";
 import { advertisedEfforts } from "../../modelProfiles";
 import { HarnessMark } from "../harnessMarks";
@@ -20,6 +20,7 @@ import { ManagedAgentDetail, ManagedAgentRows, type ManagedAgents } from "../Man
 import { OpenCodeHarnessSettings, type OpenCodeAdvancedSettings } from "../OpenCodeHarnessSettings";
 import { accountsOf, supportsAccounts } from "../../providerAccounts";
 import { ProviderAccountsSettings } from "./ProviderAccountsSettings";
+import { PAGES } from "./sections";
 import {
   Field, SaveBar, Select, SettingsBlockRow, SettingsGroup, SettingsPage, SettingsRow, StatusPill,
   Switch, TextArea, TextButton, useSavedFlash,
@@ -58,7 +59,6 @@ export function HarnessesPage(props: Shared & {
   detailId: string | null;
   onOpenDetail: (id: string) => void;
   onCloseDetail: () => void;
-  preferences?: ReactNode;
 }) {
   const { harnesses, managed, adapters, detailId, onOpenDetail, onCloseDetail, onAuthenticationChanged } = props;
   const detail = detailId ? harnesses.find(item => item.id === detailId) : undefined;
@@ -66,7 +66,7 @@ export function HarnessesPage(props: Shared & {
 
   const bridge = harnesses.find(item => item.id === "bridge");
   return <SettingsPage
-    title="Coding agents"
+    title={PAGES.codingAgents.label}
     description="Use coding agents already on your computer, or let Bridge install a separate copy. Open an agent to manage sign-in and defaults for new chats."
   >
     <ManagedAgentRows state={managed} adapters={adapters} onOpen={onOpenDetail} onAuthenticationChanged={onAuthenticationChanged} />
@@ -79,7 +79,6 @@ export function HarnessesPage(props: Shared & {
           control={<StatusPill tone={adapter?.available ? "success" : "neutral"}>{adapter?.available ? "Available" : "Unavailable"}</StatusPill>} />
       </SettingsGroup>;
     })}
-    {props.preferences}
     {bridge && <details className="text-ui"><summary className="cursor-pointer text-muted-foreground">Advanced Bridge defaults</summary><div className="mt-3"><SettingsGroup label="Defaults" note="Bridge's own routing">
       <SettingsRow
         lead={<HarnessMark harness="bridge" size={14} />}

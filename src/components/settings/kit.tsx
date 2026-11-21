@@ -59,13 +59,15 @@ export function SettingsPage({ title, description, breadcrumb, action, children 
 
 /** A labelled card of rows. The label is outside the card; the card holds only
  *  rows, separated by hairlines rather than by margin. */
-export function SettingsGroup({ label, note, children, className }: {
+export function SettingsGroup({ label, note, children, className, anchor }: {
   label?: string;
   note?: ReactNode;
   children: ReactNode;
   className?: string;
+  /** The search index id for this group (see settingsSearch.ts). */
+  anchor?: string;
 }) {
-  return <section className={className}>
+  return <section data-settings-row={anchor} className={cn(GROUP_HIGHLIGHT, className)}>
     {(label || note) && <div className="mb-2 flex flex-wrap items-baseline gap-x-3 gap-y-1 px-0.5">
       {label && <h3 className="text-ui font-medium text-foreground">{label}</h3>}
       {note && <span className="ml-auto text-meta text-muted-foreground">{note}</span>}
@@ -75,6 +77,12 @@ export function SettingsGroup({ label, note, children, className }: {
     </div>
   </section>;
 }
+
+/* ── search reveal ────────────────────────────────────────────────────────── */
+
+/** What a search hit looks like for a moment after the screen scrolls to it. */
+const ROW_HIGHLIGHT = "transition-colors duration-300 data-search-highlight:bg-accent";
+const GROUP_HIGHLIGHT = "scroll-mt-6 rounded-xl outline-offset-4 transition-[outline-color] duration-300 data-search-highlight:outline-2 data-search-highlight:outline-foreground/25";
 
 /* ── row ──────────────────────────────────────────────────────────────────── */
 
@@ -91,7 +99,7 @@ export function RowLead({ children }: { children: ReactNode }) {
  * confirmation *beside* the control: a switch that vanishes for a second and a
  * half the moment it is clicked is a switch the user cannot correct.
  */
-export function SettingsRow({ label, openLabel, description, mono, lead, control, adornment, onOpen, expanded, saved, disabled, className }: {
+export function SettingsRow({ label, openLabel, description, mono, lead, control, adornment, onOpen, expanded, saved, disabled, className, anchor }: {
   label: ReactNode;
   /** The accessible name of the open action, when `label` is not plain text. */
   openLabel?: string;
@@ -107,6 +115,8 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
   saved?: boolean;
   disabled?: boolean;
   className?: string;
+  /** The search index id for this row (see settingsSearch.ts). */
+  anchor?: string;
 }) {
   const text = <span className="min-w-0 flex-1 basis-40 text-left">
     <span className="block text-ui text-foreground">{label}</span>
@@ -131,11 +141,12 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
   if (onOpen && !control) {
     return <button
       type="button"
+      data-settings-row={anchor}
       disabled={disabled}
       aria-label={openLabel}
       aria-expanded={expanded}
       onClick={onOpen}
-      className={cn("flex min-h-11 w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-accent disabled:opacity-45", className)}
+      className={cn("flex min-h-11 w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-accent disabled:opacity-45", ROW_HIGHLIGHT, className)}
     >{lead && <RowLead>{lead}</RowLead>}{text}{trailing}</button>;
   }
 
@@ -144,7 +155,7 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
   // full-bleed button underneath and the action sits above it. One accessible
   // name each, and the whole row is still the target for "open this".
   if (onOpen) {
-    return <div className={cn("relative flex min-h-11 flex-wrap items-center gap-3 px-3.5 py-2.5", className)}>
+    return <div data-settings-row={anchor} className={cn("relative flex min-h-11 flex-wrap items-center gap-3 px-3.5 py-2.5", ROW_HIGHLIGHT, className)}>
       <button
         type="button"
         disabled={disabled}
@@ -158,21 +169,22 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
     </div>;
   }
 
-  return <div className={cn("flex min-h-11 flex-wrap items-center gap-3 px-3.5 py-2.5", disabled && "opacity-45", className)}>
+  return <div data-settings-row={anchor} className={cn("flex min-h-11 flex-wrap items-center gap-3 px-3.5 py-2.5", ROW_HIGHLIGHT, disabled && "opacity-45", className)}>
     {lead && <RowLead>{lead}</RowLead>}{text}{trailing}
   </div>;
 }
 
 /** A row whose control needs the full width beneath the label: an editor, a
  *  textarea, a wizard step. Still a row of the same card. */
-export function SettingsBlockRow({ label, description, children, action, className }: {
+export function SettingsBlockRow({ label, description, children, action, className, anchor }: {
   label?: ReactNode;
   description?: ReactNode;
   action?: ReactNode;
   children: ReactNode;
   className?: string;
+  anchor?: string;
 }) {
-  return <div className={cn("px-3.5 py-3", className)}>
+  return <div data-settings-row={anchor} className={cn("px-3.5 py-3", ROW_HIGHLIGHT, className)}>
     {(label || action) && <div className="mb-2 flex items-baseline gap-3">
       <div className="min-w-0 flex-1">
         {label && <span className="block text-ui text-foreground">{label}</span>}
@@ -184,7 +196,8 @@ export function SettingsBlockRow({ label, description, children, action, classNa
   </div>;
 }
 
-function SavedFlash() {
+/** The brief confirmation beside a control after the host stored its value. */
+export function SavedFlash() {
   return <span role="status" className="flex shrink-0 items-center gap-1 text-caption text-success">
     <Check size={12} strokeWidth={1.7} aria-hidden="true" />Saved
   </span>;
@@ -347,6 +360,55 @@ export function Field({ value, onChange, disabled, label, placeholder, type = "t
     onKeyDown={onKeyDown}
     onChange={event => onChange(event.target.value)}
     className={cn(CONTROL, width, "max-w-full shrink-0 placeholder:text-muted-foreground focus:border-foreground/25", mono && "font-mono text-caption")}
+  />;
+}
+
+/**
+ * A whole-number field that saves on change. A value outside `min`..`max` is
+ * marked invalid and never sent; a valid one is committed after a short pause
+ * or on blur, so typing "120" does not save 1 and then 12.
+ */
+export function NumberField({ value, min, max, onChange, disabled, label, width = "w-24" }: {
+  value: number;
+  min: number;
+  max: number;
+  onChange: (next: number) => void;
+  disabled?: boolean;
+  label: string;
+  width?: string;
+}) {
+  const [text, setText] = useState(String(value));
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => { setText(String(value)); }, [value]);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const parse = (raw: string) => {
+    const parsed = raw.trim() === "" ? Number.NaN : Number(raw);
+    return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : null;
+  };
+  const valid = parse(text) !== null;
+  const commit = (raw: string) => {
+    window.clearTimeout(timer.current);
+    const parsed = parse(raw);
+    if (parsed !== null && parsed !== value) onChange(parsed);
+  };
+  return <input
+    type="number"
+    inputMode="numeric"
+    aria-label={label}
+    aria-invalid={valid ? undefined : true}
+    min={min}
+    max={max}
+    step={1}
+    value={text}
+    disabled={disabled}
+    onChange={event => {
+      const raw = event.target.value;
+      setText(raw);
+      window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => commit(raw), 400);
+    }}
+    onBlur={event => commit(event.target.value)}
+    className={cn(CONTROL, width, "max-w-full shrink-0 tabular-nums focus:border-foreground/25 aria-invalid:border-destructive")}
   />;
 }
 

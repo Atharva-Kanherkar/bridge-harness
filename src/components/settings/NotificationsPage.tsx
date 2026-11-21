@@ -26,7 +26,7 @@ export function NotificationsPage() {
     writeAttentionSettings({ ...settings, quietHours: { ...settings.quietHours, ...change } });
   };
   return <SettingsPage title="Notifications" description="How Bridge tells you about your chats. A toast appears in the window, a banner from macOS while Bridge is in the background. Nothing is shown for the chat you are looking at.">
-    <SettingsGroup label="Notices">
+    <SettingsGroup anchor="notices" label="Notices">
       {ATTENTION_KINDS.map(kind => <SettingsRow
         key={kind}
         label={KIND_COPY[kind].label}
@@ -44,7 +44,7 @@ export function NotificationsPage() {
         </div>}
       />)}
     </SettingsGroup>
-    <SettingsGroup label="Quiet hours" note="No banners or sounds between these times. Toasts still appear in the window.">
+    <SettingsGroup anchor="quiet-hours" label="Quiet hours" note="No banners or sounds between these times. Toasts still appear in the window.">
       <SettingsRow
         label="Quiet hours"
         description={settings.quietHours.enabled ? `From ${settings.quietHours.start} to ${settings.quietHours.end}` : "Off"}

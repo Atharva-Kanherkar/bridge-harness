@@ -2,9 +2,10 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsScreen } from "./SettingsScreen";
-import { ALL_SECTIONS, PRIMARY_SECTIONS, SECTION_LABELS } from "./settings/sections";
+import { ALL_PAGES, PAGES, type PageId } from "./settings/sections";
+import { SETTINGS_ROWS } from "./settings/settingsSearch";
 
 async function flush() {
   await new Promise(resolve => setTimeout(resolve, 0));
@@ -32,9 +33,9 @@ const props = {
 };
 
 describe("SettingsScreen", () => {
-  it("shows all five primary settings destinations", () => {
+  it("makes every page a rail destination", () => {
     const html = renderToStaticMarkup(<SettingsScreen {...props} />);
-    for (const section of PRIMARY_SECTIONS) expect(html).toContain(SECTION_LABELS[section].replace("&", "&amp;"));
+    for (const page of ALL_PAGES) expect(html).toContain(`>${PAGES[page].label.replace("&", "&amp;")}<`);
     for (const label of ["Presets", "Harnesses", "Clones", "Runtimes"]) expect(html).not.toContain(`>${label}<`);
   });
 
@@ -49,7 +50,8 @@ describe("SettingsScreen", () => {
 
   it("puts Reset all in the rail footer, behind a confirmation that names what it deletes", async () => {
     const html = renderToStaticMarkup(<SettingsScreen {...props} />);
-    expect(html).toContain("Reset all settings");
+    expect(html).toContain("Reset agents, models and instructions");
+    expect(html).not.toContain("Reset all settings");
     expect(html).not.toContain("removes your agents");
   });
 
@@ -85,31 +87,91 @@ describe("SettingsScreen", () => {
       });
     };
 
-    it("puts Import and Archived chats in their own Chat history page, not under Data & storage", async () => {
-      await render({ initialSection: "general" });
-      const rail = container.querySelector("nav[aria-label='Settings']") as HTMLElement;
-      await act(async () => { button(rail, "Chat history").click(); await flush(); });
-      expect(button(rail, "Chat history").getAttribute("aria-current")).toBe("page");
-      const page = [...container.querySelectorAll("button")].filter(candidate => !candidate.closest("nav")).map(candidate => candidate.textContent ?? "");
-      expect(page.some(text => text.startsWith("Import"))).toBe(true);
-      expect(page.some(text => text.startsWith("Archived chats"))).toBe(true);
+    const waitFor = async (check: () => boolean, label: string) => {
+      for (let i = 0; i < 60 && !check(); i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+      expect(check(), label).toBe(true);
+    };
+    const rail = () => container.querySelector("nav[aria-label='Settings']") as HTMLElement;
+    const current = () => rail().querySelector('[aria-current="page"]')?.textContent?.trim();
+    const title = () => container.querySelector("h2")?.textContent;
 
-      await open("Import");
-      expect(container.textContent).toContain("Back to Chat history");
-      expect(container.textContent).toContain("Found on this Mac");
-      expect(button(rail, "Chat history").getAttribute("aria-current")).toBe("page");
-
-      await act(async () => { button(rail, "Data & storage").click(); await flush(); });
-      const storage = [...container.querySelectorAll("button")].filter(candidate => !candidate.closest("nav")).map(candidate => candidate.textContent ?? "");
-      expect(storage.some(text => text.startsWith("Archived chats") || text.startsWith("Import"))).toBe(false);
+    it("opens retired section ids on the page that replaced them", async () => {
+      const cases: [string, PageId][] = [["appearance", "general"], ["storage", "data"], ["harnesses", "codingAgents"], ["history", "import"]];
+      for (const [legacy, page] of cases) {
+        await render({ initialSection: legacy });
+        await waitFor(() => title() === PAGES[page].label, `${legacy} title`);
+        expect(current(), legacy).toBe(PAGES[page].label);
+      }
     });
 
-    it("opens archived chats inside Settings from Chat history", async () => {
-      await render({ initialSection: "history" });
-      await open("Archived chats");
-      expect(container.textContent).toContain("Back to Chat history");
-      expect(container.textContent).toContain("Archived chats");
-      expect(container.textContent).toContain("General");
+    it("titles every page with its rail label", async () => {
+      for (const page of ALL_PAGES) {
+        await render({ initialSection: page });
+        await waitFor(() => title() === PAGES[page].label, `${page}: ${title()}`);
+        expect(current()).toBe(PAGES[page].label);
+      }
+    });
+
+    // The search index is only as good as the rows it points at. Every fixed
+    // row id has to be drawn by its page, so the index cannot go stale.
+    it("renders every search index row on its page", async () => {
+      for (const page of ALL_PAGES) {
+        const ids = SETTINGS_ROWS.filter(row => row.page === page).map(row => row.id);
+        if (ids.length === 0) continue;
+        await render({ initialSection: page });
+        const missing = () => ids.filter(id => !container.querySelector(`[data-settings-row="${id}"]`));
+        await waitFor(() => missing().length === 0, `${page} is missing ${missing().join(", ")}`);
+      }
+    });
+
+    it("has no hub rows and no Back to links", async () => {
+      for (const page of ["general", "codingAgents", "permissions", "import"] as PageId[]) {
+        await render({ initialSection: page });
+        expect(container.textContent, page).not.toContain("Back to");
+      }
+      await render({ initialSection: "general" });
+      expect(container.textContent).not.toContain("Active-turn behavior");
+    });
+
+    it("reveals a search hit inside an Advanced fold: opens it, scrolls to it, and highlights it briefly", async () => {
+      const scroll = vi.fn();
+      Element.prototype.scrollIntoView = scroll;
+      await render({ initialSection: "permissions" });
+      const search = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+      await act(async () => { type(search, "mission control"); await flush(); });
+      const hit = [...container.querySelectorAll<HTMLButtonElement>('[aria-label="Search results"] button')].find(node => node.textContent?.includes("Show worker chats"))!;
+      await act(async () => { hit.click(); await flush(); });
+      const row = () => container.querySelector<HTMLElement>('[data-settings-row="mission-control"]');
+      await waitFor(() => row()?.hasAttribute("data-search-highlight") === true, "highlighted");
+      expect(current()).toBe("General");
+      expect(row()!.closest("details")!.open).toBe(true);
+      expect(scroll).toHaveBeenCalled();
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 1700)); });
+      expect(row()!.hasAttribute("data-search-highlight")).toBe(false);
+    });
+
+    it("opens a harness hit on that harness's detail page", async () => {
+      Element.prototype.scrollIntoView = vi.fn();
+      await render({ initialSection: "general" });
+      await waitFor(() => !!container.querySelector('input[type="search"]'), "search");
+      const search = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+      await act(async () => { type(search, "claude code"); await flush(); });
+      const hit = [...container.querySelectorAll<HTMLButtonElement>('[aria-label="Search results"] button')].find(node => node.textContent?.startsWith("Claude Code"))!;
+      await act(async () => { hit.click(); await flush(); });
+      await waitFor(() => title() === "Claude Code", "harness detail");
+      expect(container.querySelector('[aria-label="Breadcrumb"]')?.textContent).toContain("Coding agents");
+    });
+
+    it("opens an agent hit on that agent's detail page", async () => {
+      Element.prototype.scrollIntoView = vi.fn();
+      await render({ initialSection: "general" });
+      await waitFor(() => !!container.querySelector('input[type="search"]'), "search");
+      const search = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+      await act(async () => { type(search, "bridge orchestrator"); await flush(); });
+      const hit = [...container.querySelectorAll<HTMLButtonElement>('[aria-label="Search results"] button')].find(node => node.textContent?.startsWith("Bridge orchestrator"))!;
+      await act(async () => { hit.click(); await flush(); });
+      await waitFor(() => title() === "Bridge orchestrator", "agent detail");
+      expect(current()).toBe("Your agents");
     });
 
     it("stamps the chosen skin on the document from the Appearance tiles", async () => {
@@ -183,7 +245,7 @@ describe("SettingsScreen", () => {
       await render({ initialSection: "general" });
       await render({ initialSection: "permissions" });
       expect(container.textContent).toContain("How much Bridge asks before an agent acts.");
-      expect(container.querySelector('[aria-current="page"]')?.textContent).toBe("Permissions");
+      expect(container.querySelector('[aria-current="page"]')?.textContent?.trim()).toBe("Permissions");
     });
 
     it("says so, rather than showing everything, when nothing matches the search", async () => {
@@ -244,7 +306,7 @@ describe("SettingsScreen", () => {
       await act(async () => flush());
 
       await open("Coding agents");
-      await open("Agents");
+      await open("Your agents");
       expect(container.querySelector('[aria-label="Breadcrumb"]')).toBeNull();
 
       await open("Edit Bridge orchestrator");
@@ -263,10 +325,10 @@ describe("SettingsScreen", () => {
     // The screen-wide invariants. A page that reintroduces a native select or
     // a lucide icon breaks here rather than in review.
     it("renders no native select and no native checkbox on any page", async () => {
-      for (const section of ALL_SECTIONS) {
+      for (const section of ALL_PAGES) {
         await render({ initialSection: section });
-        expect(container.querySelectorAll("select"), SECTION_LABELS[section]).toHaveLength(0);
-        expect(container.querySelectorAll('input[type="checkbox"]'), SECTION_LABELS[section]).toHaveLength(0);
+        expect(container.querySelectorAll("select"), PAGES[section].label).toHaveLength(0);
+        expect(container.querySelectorAll('input[type="checkbox"]'), PAGES[section].label).toHaveLength(0);
         await act(async () => root.unmount());
         container.remove();
         container = document.createElement("div");
@@ -277,14 +339,14 @@ describe("SettingsScreen", () => {
 
     it("keeps the content column the same width on every page", async () => {
       const widths = new Set<string>();
-      for (const section of ALL_SECTIONS) {
+      for (const section of ALL_PAGES) {
         await render({ initialSection: section });
         const column = container.querySelector<HTMLElement>("[data-settings-column]");
-        expect(column, SECTION_LABELS[section]).toBeTruthy();
+        expect(column, PAGES[section].label).toBeTruthy();
         const width = [...column!.classList].find(name => name.startsWith("max-w-"))!;
         // The storage pages carry a disk explorer and a copilot rail side by
         // side; they are the one deliberate exception.
-        if (section === "data" || section === "storage") expect(width, SECTION_LABELS[section]).toBe("max-w-page-wide");
+        if (section === "data") expect(width, PAGES[section].label).toBe("max-w-page-wide");
         else widths.add(width);
         await act(async () => root.unmount());
         container.remove();
@@ -297,7 +359,7 @@ describe("SettingsScreen", () => {
 
     it("names what Reset all deletes before it deletes it", async () => {
       await render();
-      await open("Reset all settings");
+      await open("Reset agents, models and instructions");
       expect(container.textContent).toContain("removes your agents");
       expect(container.textContent).toContain("Keep them");
       await open("Keep them");

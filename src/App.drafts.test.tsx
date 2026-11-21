@@ -4,7 +4,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { bridgeApi } from "./api";
-import { writeActiveTurnInput } from "./activeTurnSettings";
+import { acceptApplicationChatDefaults, resetActiveTurnInputForTests } from "./activeTurnSettings";
+
+const writeActiveTurnInput = (activeTurnInput: "steer" | "queue") => acceptApplicationChatDefaults({ application: { revision: 1, defaults: { activeTurnInput } } });
 import { chordLabel } from "./keymap";
 
 // xterm paints to canvas, which jsdom lacks; the pane only needs to mount here.
@@ -111,6 +113,8 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  resetActiveTurnInputForTests();
+  acceptApplicationChatDefaults({ application: { revision: 0, defaults: {} } });
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const store = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", {

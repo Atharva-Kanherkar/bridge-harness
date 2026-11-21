@@ -35,11 +35,11 @@ export function UpdatesPage({ availableUpdate, onUpdate }: { availableUpdate?: U
 
   return <SettingsPage title="Updates" description="Choose which Bridge builds you receive and check for a new one.">
     <SettingsGroup label="Channel">
-      <SettingsRow label="Beta nightly builds" description="Get the latest signed nightly build when one is available. Nightlies may be less stable. Turn this off to follow published releases again."
+      <SettingsRow anchor="beta-builds" label="Beta nightly builds" description="Get the latest signed nightly build when one is available. Nightlies may be less stable. Turn this off to follow published releases again."
         control={<Switch label="Beta nightly builds" checked={channel === "beta"} onChange={change} />} />
     </SettingsGroup>
     <SettingsGroup label="Check">
-      <SettingsRow label="Check for updates" description={availableUpdate?.channel === channel
+      <SettingsRow anchor="check-updates" label="Check for updates" description={availableUpdate?.channel === channel
         ? `Bridge ${availableUpdate.version} is available on this channel.`
         : message ?? `Current channel: ${channel === "beta" ? "beta nightly" : "stable"}. Bridge also checks when it opens.`}
         control={<button type="button" disabled={checking} onClick={() => void check()} className="rounded-lg border border-border px-3 py-1.5 text-xs text-foreground hover:bg-accent disabled:opacity-50">{checking ? "Checking…" : "Check now"}</button>} />

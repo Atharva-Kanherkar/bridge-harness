@@ -18,21 +18,24 @@ import {
 } from "../../modelProfiles";
 import type { AdapterDescriptor, ModelProfileDraft, ProfilePurpose, ReasoningEffort } from "../../types";
 import { HarnessMark } from "../harnessMarks";
+import { PAGES } from "./sections";
 import {
   GhostButton, Select, SettingsGroup, SettingsPage, SettingsRow, StatusPill, Switch, useSavedFlash,
 } from "./kit";
 
 const VERIFICATION: ProfilePurpose[] = ["reviewer", "evaluator"];
 
-const GROUPS: { label: string; note: string; includes: (purpose: ProfilePurpose) => boolean }[] = [
-  { label: "Your chats", note: "The model you talk to", includes: isOrchestratorPurpose },
+const GROUPS: { label: string; anchor: string; note: string; includes: (purpose: ProfilePurpose) => boolean }[] = [
+  { label: "Your chats", anchor: "your-chats-models", note: "The model you talk to", includes: isOrchestratorPurpose },
   {
     label: "Background tasks",
+    anchor: "background-models",
     note: "Bridge chooses an agent suited to each task",
     includes: purpose => !isOrchestratorPurpose(purpose) && !VERIFICATION.includes(purpose),
   },
   {
     label: "Verification",
+    anchor: "verification-models",
     note: "Models that check the work",
     includes: purpose => VERIFICATION.includes(purpose),
   },
@@ -67,14 +70,14 @@ export function ModelsPage({ profiles, adapters, version, busy, onSave, onRefres
   };
 
   return <SettingsPage
-    title="Model preferences"
+    title={PAGES.models.label}
     description="Choose models for your chats and the tasks Bridge runs for you. These task choices take priority over an agent's defaults."
     action={<StatusPill>{version ? "Saved preferences" : "Default preferences"}</StatusPill>}
   >
     {GROUPS.map(group => {
       const rows = profiles.filter(profile => group.includes(profile.purpose));
       if (rows.length === 0) return null;
-      return <SettingsGroup key={group.label} label={group.label} note={group.note}>
+      return <SettingsGroup key={group.label} anchor={group.anchor} label={group.label} note={group.note}>
         {rows.map(profile => <ProfileRow
           key={profile.purpose}
           profile={profile}
@@ -88,7 +91,7 @@ export function ModelsPage({ profiles, adapters, version, busy, onSave, onRefres
       </SettingsGroup>;
     })}
 
-    <SettingsGroup label="Available models" note="Model lists reported by your coding agents">
+    <SettingsGroup anchor="model-catalog" label="Available models" note="Model lists reported by your coding agents">
       {adapters.filter(adapter => adapter.available).map(adapter => {
         const catalog = adapter.modelCatalog;
         const isStale = catalog?.stale || catalog?.lastError;

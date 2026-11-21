@@ -23,7 +23,7 @@ import { SIDE_CHAT_COMMANDS } from "../sideChat";
 import { type ComposerAttachment, imageFilesFromClipboard, prepareImage } from "../pasteAttachments";
 import { cn } from "@/lib/utils";
 import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session, SlashCommand } from "../types";
-import type { InteractionResolutionResult, QuestionAction, SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
+import type { ChatSessionSettings, InteractionResolutionResult, QuestionAction, SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
 
 // An aside: a standalone chat the user delegated to another agent from inside
 // a conversation, shown as a panel floating over that conversation instead of
@@ -81,7 +81,17 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
   /** Extra header buttons, before Open as chat. */
   headerActions?: ReactNode;
 }) {
-  const activeTurnInput = useActiveTurnInput();
+  // The same resolution as the main composer: this chat's own configuration
+  // when it has one, otherwise the application default from New chats.
+  const [chatSettings, setChatSettings] = useState<{ sessionId: string; value: ChatSessionSettings }>();
+  useEffect(() => {
+    let active = true;
+    bridgeApi.chatSettings(session.id)
+      .then(value => { if (active) setChatSettings({ sessionId: session.id, value }); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [session.id]);
+  const activeTurnInput = useActiveTurnInput(chatSettings?.sessionId === session.id ? chatSettings.value : undefined);
   const activeAction = activeTurnAction(adapters.find(adapter => adapter.id === session.harness)?.capabilities, activeTurnInput);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);

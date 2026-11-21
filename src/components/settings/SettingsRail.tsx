@@ -11,44 +11,43 @@ import {
   RotateCcw as ArrowCounterClockwise, Code, Download as DownloadSimple, RefreshCw, type LucideIcon as Icon, Keyboard, Search as MagnifyingGlass, Bot as Robot,
   ScrollText as Scroll, ShieldCheck, SlidersHorizontal, Sparkles as Sparkle, Sun, HardDrive, Archive, Mic, Bell, KeyRound, MessagesSquare,
 } from "lucide-react";
-import { SECTION_LABELS, SECTION_ORDER, primarySection, type Section } from "./sections";
+import { ALL_PAGES, PAGES, RAIL_GROUPS, type PageId } from "./sections";
+import type { UpdateInfo } from "../../updater";
 import { filterSettingsRows, type SearchableRow } from "./settingsSearch";
 import { GhostButton, Select, TextButton } from "./kit";
 import { cn } from "@/lib/utils";
 
-const SECTION_ICONS: Record<Section, Icon> = {
+const PAGE_ICONS: Record<PageId, Icon> = {
   general: Sun,
-  chatDefaults: Robot,
-  codingAgents: Robot,
-  data: HardDrive,
-  history: MessagesSquare,
-  appearance: Sun,
-  menuBar: SlidersHorizontal,
   notifications: Bell,
-  updates: RefreshCw,
-  permissions: ShieldCheck,
-  composer: Keyboard,
   voice: Mic,
+  composer: Keyboard,
+  menuBar: SlidersHorizontal,
+  chatDefaults: MessagesSquare,
+  codingAgents: Code,
+  models: Sparkle,
   agents: Robot,
-  models: SlidersHorizontal,
-  prompts: Scroll,
-  storage: HardDrive,
-  archives: Archive,
-  workers: Robot,
-  harnesses: Code,
+  permissions: ShieldCheck,
   keys: KeyRound,
-  work: Sparkle,
   import: DownloadSimple,
+  archives: Archive,
+  data: HardDrive,
+  workers: Robot,
+  prompts: Scroll,
+  work: Sparkle,
+  updates: RefreshCw,
 };
 
-export function SettingsRail({ section, query, rows, onQueryChange, onSelect, onResetAll, resetting }: {
-  section: Section;
+export function SettingsRail({ section, query, rows, onQueryChange, onSelect, onSearchSelect, onResetAll, resetting, availableUpdate }: {
+  section: PageId;
   query: string;
   rows: SearchableRow[];
   onQueryChange: (next: string) => void;
-  onSelect: (next: Section) => void;
+  onSelect: (next: PageId) => void;
+  onSearchSelect: (row: SearchableRow) => void;
   onResetAll: () => void;
   resetting: boolean;
+  availableUpdate?: UpdateInfo;
 }) {
   const [confirming, setConfirming] = useState(false);
   const results = query.trim() ? filterSettingsRows(query, rows) : null;
@@ -56,7 +55,7 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
   return <nav aria-label="Settings" className="flex w-full shrink-0 flex-col border-b border-border bg-muted/30 md:w-44 md:border-r md:border-b-0 lg:w-52">
     <div className="shrink-0 px-3 pt-4">
       <h1 className="hidden px-1.5 text-message font-semibold text-foreground md:block">Settings</h1>
-      <div className="md:hidden"><Select label="Settings section" value={primarySection(section)} options={SECTION_ORDER.flatMap(group => group.sections.map(id => ({ value: id, label: SECTION_LABELS[id] })))} onChange={value => onSelect(value as Section)} width="w-full" /></div>
+      <div className="md:hidden"><Select label="Settings section" value={section} options={ALL_PAGES.map(id => ({ value: id, label: PAGES[id].label }))} onChange={value => onSelect(value as PageId)} width="w-full" /></div>
       <div className="relative mt-3">
         <MagnifyingGlass size={12} strokeWidth={1.7} aria-hidden="true" className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
         <input
@@ -72,12 +71,12 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
 
     <div className={cn("min-h-0 flex-1 overflow-y-auto px-3 py-3 md:block", results ? "max-h-40 md:max-h-none" : "hidden")}>
       {results
-        ? <SearchResults results={results} onSelect={onSelect} />
-        : SECTION_ORDER.map(group => <div key={group.group} className="mb-3 last:mb-0">
-
-            {group.sections.map(id => {
-              const Icon = SECTION_ICONS[id];
-              const active = primarySection(section) === id;
+        ? <SearchResults results={results} onSelect={onSearchSelect} />
+        : [...RAIL_GROUPS, { id: "footer", label: "", pages: ["updates"] as PageId[] }].map(group => <div key={group.id} className="mb-3 last:mb-0">
+            {group.label && <p className="px-1.5 pb-1 text-caption font-medium text-muted-foreground">{group.label}</p>}
+            {group.pages.map(id => {
+              const Icon = PAGE_ICONS[id];
+              const active = section === id;
               return <button
                 key={id}
                 type="button"
@@ -89,7 +88,8 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
                 )}
               >
                 <Icon size={14} strokeWidth={1.7} className="shrink-0" />
-                <span className="min-w-0 flex-1 truncate">{SECTION_LABELS[id]}</span>
+                <span className="min-w-0 flex-1 truncate">{PAGES[id].label}</span>
+                {id === "updates" && availableUpdate && <span aria-label="Update available" className="size-1.5 shrink-0 rounded-full bg-foreground" />}
               </button>;
             })}
           </div>)}
@@ -107,7 +107,7 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
             </div>
           </div>
         : <TextButton disabled={resetting} onClick={() => setConfirming(true)}>
-            <ArrowCounterClockwise size={12} strokeWidth={1.7} aria-hidden="true" />Reset all settings
+            <ArrowCounterClockwise size={12} strokeWidth={1.7} aria-hidden="true" />Reset agents, models and instructions
           </TextButton>}
     </div>
   </nav>;
@@ -115,19 +115,19 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
 
 function SearchResults({ results, onSelect }: {
   results: ReturnType<typeof filterSettingsRows>;
-  onSelect: (next: Section) => void;
+  onSelect: (row: SearchableRow) => void;
 }) {
   if (results.length === 0) {
     return <p className="px-1.5 py-2 text-caption text-muted-foreground">No setting matches that.</p>;
   }
   return <div role="list" aria-label="Search results">
-    {results.map(group => <div key={group.section} className="mb-3 last:mb-0">
+    {results.map(group => <div key={group.page} className="mb-3 last:mb-0">
       <p className="px-1.5 pb-1 text-caption font-medium text-muted-foreground">{group.pageLabel}</p>
       {group.rows.map(row => <button
-        key={`${group.section}:${row.label}`}
+        key={`${group.page}:${row.id ?? row.target?.id ?? "page"}:${row.label}`}
         type="button"
         role="listitem"
-        onClick={() => onSelect(group.section)}
+        onClick={() => onSelect(row)}
         className="w-full rounded-lg px-1.5 py-1 text-left text-muted-foreground transition-colors hover:bg-foreground/[0.045] hover:text-foreground"
       >
         <span className="block truncate text-ui">{row.label}</span>

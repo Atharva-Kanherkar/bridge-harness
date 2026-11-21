@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { canZoom, stepZoom, useZoomLevel } from "../../zoom";
 import { useOmarchyTheme } from "../../omarchy";
 import { chordLabel } from "../../keymap";
+import { PAGES } from "./sections";
 
 /** A tile previews either two swatches or a drawn figure, never both. */
 type Tile<T> = { id: T; label: string; hint: string } & ({ swatches: [string, string]; preview?: undefined } | { preview: ReactNode; swatches?: undefined });
@@ -121,7 +122,7 @@ function ZoomControl({ level, onChange }: { level: number; onChange: (next: numb
   </div>;
 }
 
-export function AppearancePage({ title = "Appearance", extra }: { title?: string; extra?: ReactNode }) {
+export function AppearancePage() {
   const { preference, resolved, setPreference, skin, setSkin, effortSelector, setEffortSelector } = useThemePreference();
   const [showWorkerChats, setShowWorkerChats] = useShowWorkerChatsInMissionControl();
   const [showThinking, setShowThinking] = useShowThinking();
@@ -133,25 +134,26 @@ export function AppearancePage({ title = "Appearance", extra }: { title?: string
   const shownSkin: ThemeSkin = skin === "omarchy" && !omarchy ? "graphite" : skin;
   const onOmarchy = shownSkin === "omarchy" && omarchy;
   return <SettingsPage
-    title={title}
-    description={onOmarchy
-      ? `Following your Omarchy theme${omarchy.themeName ? ` (${omarchy.themeName})` : ""}. Switch themes in Omarchy and Bridge retints.`
-      : `Bridge follows macOS by default. Currently showing ${resolved === "dark" ? "graphite" : "paper"}.`}
+    title={PAGES.general.label}
+    description={PAGES.general.description}
   >
-    {extra}
-    <SettingsGroup label="Mode" note={onOmarchy ? "Your Omarchy theme decides light or dark" : undefined}>
+    <SettingsGroup anchor="mode" label="Mode" note={onOmarchy
+      ? `Following your Omarchy theme${omarchy.themeName ? ` (${omarchy.themeName})` : ""}, which decides light or dark`
+      : `Follows macOS by default. Showing ${resolved === "dark" ? "graphite" : "paper"} now`}>
       <TileGrid name="Mode" tiles={MODES} value={preference} onChange={setPreference} columns="@min-[580px]/settings:grid-cols-3" />
     </SettingsGroup>
-    <SettingsGroup label="Window background" note="Solid or tinted by your desktop">
+    <SettingsGroup anchor="window-background" label="Window background" note="Solid or tinted by your desktop">
       <TileGrid name="Shell" tiles={skins} value={shownSkin} onChange={setSkin} columns={omarchy ? "@min-[580px]/settings:grid-cols-3" : "@min-[480px]/settings:grid-cols-2"} />
     </SettingsGroup>
     <SettingsGroup label="Conversation" note="What appears while your agent works">
       <SettingsRow
+        anchor="show-thinking"
         label="Show thinking"
         description="Show the thinking text an agent shares while it works. When off, Bridge still shows a working indicator."
         control={<Switch label="Show thinking" checked={showThinking} onChange={setShowThinking} />}
       />
       <SettingsRow
+        anchor="edit-activity"
         label="Open edit activity automatically"
         description="Off by default. Short Activity sections with a file diff stay collapsed until you click them. Turn this on to open them automatically."
         control={<Switch label="Open edit activity automatically" checked={autoExpandEditActivity} onChange={setAutoExpandEditActivity} />}
@@ -159,17 +161,19 @@ export function AppearancePage({ title = "Appearance", extra }: { title?: string
     </SettingsGroup>
     <SettingsGroup label="Zoom" note={`Also on ${chordLabel("zoom-in")} and ${chordLabel("zoom-out")}`}>
       <SettingsRow
+        anchor="zoom"
         label="Window zoom"
         description={`Scales the whole window, the way ${chordLabel("zoom-in")} does in a browser. Kept between launches.`}
         control={<ZoomControl level={zoom} onChange={setZoom} />}
       />
     </SettingsGroup>
     <details className="text-ui"><summary className="cursor-pointer text-muted-foreground">Advanced display options</summary><div className="mt-3 space-y-5">
-    <SettingsGroup label="Thinking control" note="How the model picker sets reasoning effort">
+    <SettingsGroup anchor="thinking-control" label="Thinking control" note="How the model picker sets reasoning effort">
       <TileGrid name="Thinking control" tiles={EFFORT_STYLES} value={effortSelector} onChange={setEffortSelector} columns="@min-[580px]/settings:grid-cols-3" />
     </SettingsGroup>
     <SettingsGroup label="Mission Control">
       <SettingsRow
+        anchor="mission-control"
         label="Show worker chats in Mission Control"
         description="Off by default: only your main chat appears automatically. Turn on to also show chats for background tasks."
         control={<Switch label="Show worker chats in Mission Control" checked={showWorkerChats} onChange={setShowWorkerChats} />}

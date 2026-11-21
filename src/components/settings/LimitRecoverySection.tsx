@@ -62,7 +62,7 @@ export function LimitRecoverySection({ adapters }: { adapters: AdapterDescriptor
   // "max") are chat-only for now.
   const efforts = (backupAdapter?.models.find(model => model.id === (draft.backup?.model ?? backupAdapter.defaultModel))?.supportedEffortLevels ?? [])
     .filter(level => (STORABLE_EFFORTS as readonly string[]).includes(level));
-  return <SettingsGroup label="When a usage limit stops a chat" note="Works while this Mac is awake and Bridge is open.">
+  return <SettingsGroup anchor="limit-recovery" label="When a usage limit stops a chat" note="Works while this Mac is awake and Bridge is open.">
     {error && <p role="alert" className="px-3 py-2 text-ui text-destructive">{error}</p>}
     <SettingsRow label="Action" description={mode.description} saved={saved && draft.mode !== "backup"} control={
       <Select label="When a usage limit stops a chat" disabled={busy} width="w-64" value={draft.mode} options={MODES.map(option => ({ value: option.value, label: option.label }))} onChange={value => void commit({ ...draft, mode: value as LimitRecoveryMode })} />
@@ -74,7 +74,7 @@ export function LimitRecoverySection({ adapters }: { adapters: AdapterDescriptor
           void commit({ ...draft, backup: { harness: picked.harness, model: picked.model, effort: null } });
         }} />
       } />
-      {draft.backup && <SettingsRow label="Backup effort" description={efforts.length ? "Thinking effort on the backup model." : "This model has no thinking control."} control={
+      {draft.backup && <SettingsRow label="Backup effort" saved={saved} description={efforts.length ? "Thinking effort on the backup model." : "This model has no thinking control."} control={
         <Select label="Backup effort" disabled={busy || efforts.length === 0} width="w-40" value={draft.backup.effort ?? ""} options={[{ value: "", label: "Model default" }, ...efforts.map(level => ({ value: level, label: level }))]} onChange={value => void commit({ ...draft, backup: { ...draft.backup!, effort: (value || null) as Effort | null } })} />
       } />}
     </>}

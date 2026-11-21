@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { writeActiveTurnInput } from "../activeTurnSettings";
+import { acceptApplicationChatDefaults } from "../activeTurnSettings";
 import { AsideChat } from "./AsideChat";
 import { asWireKind } from "../transcript/wire";
 import { bridgeApi } from "../api";
@@ -170,13 +170,15 @@ describe("AsideChat", () => {
     expect(pill.disabled).toBe(true);
   });
 
-  it("uses the global preference and shows fallback and durable queue count", async () => {
+  it("follows the New chats default like the main composer, and shows fallback and durable queue count", async () => {
+    const setDefault = (activeTurnInput: "steer" | "queue") => acceptApplicationChatDefaults({ application: { revision: 1, defaults: { activeTurnInput } } });
+    await act(async () => setDefault("steer"));
     await mount({ working: true, adapters: adapters.map(adapter => ({ ...adapter, capabilities: ["steering"] })), queuedFollowUpCount: 2 });
     expect(document.body.querySelector('button[aria-label="Steer"]')).not.toBeNull();
-    await act(async () => writeActiveTurnInput("queue"));
+    await act(async () => setDefault("queue"));
     expect(document.body.querySelector('button[aria-label="Queue"]')).not.toBeNull();
     expect(document.body.textContent).toContain("2 follow-ups queued");
-    await act(async () => writeActiveTurnInput("steer"));
+    await act(async () => setDefault("steer"));
     await mount({ working: true });
     expect(document.body.querySelector<HTMLButtonElement>('button[aria-label="Steer"]')!.title).toContain("interrupts");
   });

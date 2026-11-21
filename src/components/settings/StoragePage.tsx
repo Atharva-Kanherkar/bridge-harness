@@ -25,6 +25,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { GhostButton, PrimaryButton, StatusPill, TextButton } from "./kit";
 import type { StorageCopilotHost } from "./StorageCopilot";
 import { WorktreeStorage } from "./WorktreeStorage";
+import { PAGES } from "./sections";
 
 const POLL_MS = 1500;
 
@@ -525,7 +526,7 @@ function OutcomeToast({ outcome, busy, onEmptyTrash, onDismiss }: { outcome: Out
 const VISIT_REFRESH_MS = 60_000;
 let lastVisitRefresh = 0;
 
-export function StoragePage({ onError, title = "Storage", extra, copilot }: {
+export function StoragePage({ onError, title = PAGES.data.label, extra, copilot }: {
   onError?: (message: string) => void;
   title?: string;
   extra?: ReactNode;

@@ -32,7 +32,7 @@ export function OpencodeAppsSetting() {
       setBusy(false);
     }
   };
-  return <SettingsGroup label="Personal apps" note="Off by default">
+  return <SettingsGroup anchor="personal-apps" label="Personal apps" note="Off by default">
     <SettingsRow
       label="Allow personal apps through OpenCode (less safe)"
       description={OPENCODE_APPS_WARNING}

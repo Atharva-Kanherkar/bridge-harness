@@ -3,6 +3,7 @@ import { SkeletonRows } from "@/components/ui/skeleton";
 import { RefreshCw } from "lucide-react";
 import { bridgeApi } from "../../api";
 import type { MenuBarSettings, ProviderUsageOverviews } from "../../protocol/generated/protocol";
+import { PAGES } from "../../components/settings/sections";
 import { SettingsPage, SettingsGroup, SettingsRow, Select, Switch } from "../../components/settings/kit";
 import { MenuBarLayoutEditor } from "./MenuBarLayoutEditor";
 import { chooseFavorite, defaultFavorites } from "./favorites";
@@ -91,7 +92,7 @@ export function MenuBarSettingsPage() {
     } finally { setBusy(false); }
   }
 
-  return <SettingsPage title="Menu Bar" description="Account limits, tokens, and spend at a glance."
+  return <SettingsPage title={PAGES.menuBar.label} description={PAGES.menuBar.description}
     action={<button type="button" disabled={busy || enabled.length === 0} onClick={() => void refresh()}
       className="flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-xs text-foreground hover:bg-accent disabled:opacity-40">
       <RefreshCw size={12} aria-hidden="true" />Refresh usage
@@ -101,7 +102,7 @@ export function MenuBarSettingsPage() {
     {saved && <p role="status" className="text-xs text-muted-foreground">Menu Bar settings saved.</p>}
     {!settings && !error && <SkeletonRows label="Loading Menu Bar settings" rows={4} trailing />}
     {settings && <>
-      <SettingsGroup label="Display">
+      <SettingsGroup anchor="menu-display" label="Display">
         <SettingsRow label="Show in menu bar" description="The Bridge symbol follows your macOS appearance."
           control={<Switch label="Show in menu bar" checked={settings.enabled} disabled={busy} onChange={enabled => void save({ enabled })} />} />
         <SettingsRow label="Separate provider icons" description="Show each favorite with account usage enabled as its own icon in the macOS menu bar. Each icon opens that provider."
@@ -132,7 +133,7 @@ export function MenuBarSettingsPage() {
         <MenuBarLayoutEditor key={JSON.stringify(settings.statusLayout ?? [])} layout={settings.statusLayout ?? []} busy={busy || !!settings.separateProviderIcons}
           onSave={statusLayout => save({ statusLayout })} />
       </SettingsGroup>
-      <SettingsGroup label="Favorite providers">
+      <SettingsGroup anchor="menu-favorites" label="Favorite providers">
         <p className="px-4 py-3 text-xs text-muted-foreground">In single-icon mode, your first favorite supplies the usage beside the menu icon. Switching tabs only changes the open menu. Favorites control the tabs, overview totals, and separate icons. Add more favorites below, then scroll or use the arrows. Disconnected favorites keep their tabs.</p>
         {favorites.map((_, position) => <SettingsRow key={position} label={`Favorite ${position + 1}`}
           control={<Select label={`Favorite provider ${position + 1}`} value={favorites[position] ?? ""} disabled={busy}
@@ -146,7 +147,7 @@ export function MenuBarSettingsPage() {
           </button>
         </div>
       </SettingsGroup>
-      <SettingsGroup label="Providers & accounts">
+      <SettingsGroup anchor="menu-providers" label="Providers & accounts">
         <p className="px-4 py-3 text-xs text-muted-foreground">Enable account usage for each provider. Choosing a favorite does not connect its account.</p>
         {providers.map(provider => {
           // The provider's own login; extra accounts follow it, read with the
@@ -184,7 +185,7 @@ export function MenuBarSettingsPage() {
         <SettingsRow label="Show account" control={<Switch label="Show account" checked={settings.showAccount} disabled={busy}
           onChange={showAccount => void save({ showAccount })} />} />
       </SettingsGroup>
-      <SettingsGroup label="Usage & spend">
+      <SettingsGroup anchor="menu-usage" label="Usage & spend">
         <SettingsRow label="Overview usage & spend" description="Show a 30-day summary across favorites with account usage enabled above the Overview quota bars."
           control={<Switch label="Overview usage & spend" checked={settings.showOverviewSummary ?? true} disabled={busy} onChange={showOverviewSummary => void save({ showOverviewSummary })} />} />
         <SettingsRow label="Daily history" description="A 30-day chart in provider tabs. Overview stays compact without charts."
@@ -194,7 +195,7 @@ export function MenuBarSettingsPage() {
         <SettingsRow label="Show spend" description="Today and the last 30 days. Estimated costs are labelled; missing prices stay unavailable."
           control={<Switch label="Show spend" checked={settings.showCost} disabled={busy} onChange={showCost => void save({ showCost })} />} />
       </SettingsGroup>
-      <SettingsGroup label="Refresh">
+      <SettingsGroup anchor="menu-refresh" label="Refresh">
         <SettingsRow label="Refresh account usage" description="Shared with Bridge. Closing the main window keeps the menu available."
           control={<Select label="Refresh account usage" value={String(settings.refreshSeconds)} disabled={busy} options={[
             { value: "0", label: "Manually" }, { value: "60", label: "Every minute" }, { value: "300", label: "Every 5 minutes" },

@@ -95,7 +95,7 @@ export function VoiceSettingsPage({ onError, onChanged }: {
     ? Math.min(100, Math.round((status.downloadedBytes / status.downloadBytes) * 100)) : 0;
 
   return <SettingsPage title="Voice" description="Dictate, review, then send. Private English speech recognition on your Mac.">
-    <SettingsGroup label="Local dictation" note="No account or API key required">
+    <SettingsGroup anchor="local-dictation" label="Local dictation" note="No account or API key required">
       <SettingsRow label="English speech model" description="English (en-US) · audio stays on this Mac"
         lead={<Mic size={14} strokeWidth={1.7} aria-hidden="true" />}
         control={status ? <StatusPill tone={tone(status.state)}>{STATE_LABEL[status.state]}</StatusPill> : <StatusPill>{loadError ? "Unavailable" : "Checking…"}</StatusPill>} />
