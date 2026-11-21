@@ -2580,9 +2580,15 @@ async fn write_terminal(
     workspace_id: String,
     terminal_id: String,
     data: String,
+    binary: bool,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    api::write_terminal(state.inner(), &workspace_id, &terminal_id, &data)
+    // Enqueue only: the PTY write itself happens on the terminal's own thread.
+    if binary {
+        api::write_terminal_binary(state.inner(), &workspace_id, &terminal_id, &data)
+    } else {
+        api::write_terminal(state.inner(), &workspace_id, &terminal_id, &data)
+    }
 }
 
 #[tauri::command]

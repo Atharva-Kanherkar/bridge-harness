@@ -2468,7 +2468,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 47
+    "minor": 48
   },
   "reserved": {
     "cancel": "$/cancel",

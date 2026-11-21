@@ -14,7 +14,6 @@ use crate::{
 use portable_pty::{Child, MasterPty};
 use std::{
     collections::HashMap,
-    io::Write,
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     thread,
@@ -38,7 +37,11 @@ pub(crate) fn lock_operation(operation: &Mutex<()>) -> MutexGuard<'_, ()> {
 }
 
 pub struct RuntimeSession {
-    pub writer: Box<dyn Write + Send>,
+    /// Bytes for the PTY, written in order by a thread that owns the writer.
+    /// A program that stops reading its input blocks only that thread, never
+    /// a caller holding the `runtimes` map (see
+    /// [`crate::terminal_workspace::spawn_pty_writer`]).
+    pub input: std::sync::mpsc::Sender<Vec<u8>>,
     pub master: Box<dyn MasterPty + Send>,
     pub child: Box<dyn Child + Send + Sync>,
     /// Which spawn this entry belongs to. A reader thread draining a dead

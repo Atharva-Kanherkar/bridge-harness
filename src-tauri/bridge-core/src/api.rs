@@ -35,7 +35,6 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
@@ -4083,7 +4082,9 @@ pub fn close_terminal(
         crate::terminal_workspace::closed(core, workspace_id, terminal_id)?;
     }
     let runtime = core.runtimes.lock().unwrap().remove(&runtime_id);
-    if let Some(mut runtime) = runtime { let _ = runtime.child.kill(); }
+    if let Some(mut runtime) = runtime {
+        crate::terminal_workspace::end_child(runtime.child.as_mut());
+    }
 
     Ok(())
 }
@@ -4107,13 +4108,45 @@ pub fn write_terminal(
     terminal_id: &str,
     data: &str,
 ) -> Result<(), BridgeError> {
-    let mut sessions = core.runtimes.lock().unwrap();
-    let runtime = sessions
-        .get_mut(&terminal_runtime_id(workspace_id, terminal_id))
-        .ok_or_else(|| BridgeError::Invalid("Workspace terminal is not open".into()))?;
-    runtime.writer.write_all(data.as_bytes())?;
-    runtime.writer.flush()?;
-    Ok(())
+    send_terminal_input(core, workspace_id, terminal_id, data.as_bytes().to_vec())
+}
+
+/// Write input that is bytes rather than text. xterm.js reports X10 mouse
+/// events (what macOS terminfo's `kmous=\E[M` selects for ncurses apps) as a
+/// binary string: one char per byte, some above 0x7F. Encoding those chars as
+/// UTF-8 would turn one byte into two, so each char is taken as its byte.
+pub fn write_terminal_binary(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    terminal_id: &str,
+    data: &str,
+) -> Result<(), BridgeError> {
+    let bytes = data
+        .chars()
+        .map(|char| u8::try_from(u32::from(char)))
+        .collect::<Result<Vec<u8>, _>>()
+        .map_err(|_| BridgeError::Invalid("Binary terminal input must be one byte per character".into()))?;
+    send_terminal_input(core, workspace_id, terminal_id, bytes)
+}
+
+/// Queue bytes for one terminal's writer thread. The map lock covers only the
+/// lookup: writing to a PTY whose program is not reading blocks, and a block
+/// here used to freeze every terminal and every session stop with it.
+fn send_terminal_input(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    terminal_id: &str,
+    bytes: Vec<u8>,
+) -> Result<(), BridgeError> {
+    let closed = || BridgeError::Invalid("Workspace terminal is not open".into());
+    let input = core
+        .runtimes
+        .lock()
+        .unwrap()
+        .get(&terminal_runtime_id(workspace_id, terminal_id))
+        .map(|runtime| runtime.input.clone())
+        .ok_or_else(closed)?;
+    input.send(bytes).map_err(|_| closed())
 }
 
 pub fn resize_terminal(core: &Arc<BridgeCore>, workspace_id: &str, terminal_id: &str, rows: u16, cols: u16) -> Result<(), BridgeError> {
@@ -4291,10 +4324,7 @@ pub fn start_provider_login(
     let account_launch = provider_login_account(core, provider, account)?;
     let mut command = provider_login_command(core, provider)?;
     apply_provider_login_account(&mut command, account_launch.as_ref());
-    command.env("TERM", "xterm-256color");
-    if let Some(path) = binary::hydrated_command_path() {
-        command.env("PATH", path);
-    }
+    crate::terminal_workspace::pty_environment(&mut command);
     if let Some(home) = std::env::var_os("HOME") {
         command.cwd(home);
     }
@@ -4323,7 +4353,7 @@ pub fn start_provider_login(
     core.runtimes.lock().unwrap().insert(
         runtime_id.clone(),
         RuntimeSession {
-            writer,
+            input: crate::terminal_workspace::spawn_pty_writer(writer),
             master: pair.master,
             child,
             epoch,
@@ -4336,11 +4366,15 @@ pub fn start_provider_login(
     let runtime_reader = runtime_id;
     thread::spawn(move || {
         let mut buf = [0u8; 8192];
+        let mut text = crate::terminal_workspace::Utf8Stream::default();
         loop {
-            match reader.read(&mut buf) {
+            match crate::terminal_workspace::read_pty(&mut reader, &mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let data = text.push(&buf[..n]);
+                    if data.is_empty() {
+                        continue;
+                    }
                     core_reader.events.publish(CoreEvent::SessionOutput {
                         session_id: workspace_reader.clone(),
                         terminal_id: terminal_reader.clone(),
@@ -4349,17 +4383,18 @@ pub fn start_provider_login(
                 }
             }
         }
-        {
+        let ended = {
             let mut sessions = core_reader.runtimes.lock().unwrap();
             match sessions.get(&runtime_reader) {
-                Some(entry) if entry.epoch == epoch => {
-                    sessions.remove(&runtime_reader);
-                }
+                Some(entry) if entry.epoch == epoch => sessions.remove(&runtime_reader),
                 Some(_) => {
                     return;
                 }
-                None => {}
+                None => None,
             }
+        };
+        if let Some(mut runtime) = ended {
+            crate::terminal_workspace::settle_exit(runtime.child.as_mut());
         }
         // The sign-in that just ended may have changed what a probe would
         // answer, and an adapter that records its probe would otherwise keep
@@ -4399,7 +4434,7 @@ pub fn cancel_provider_login(
     let runtime_id = terminal_runtime_id(PROVIDER_LOGIN_WORKSPACE_ID, &terminal_id);
     let removed = core.runtimes.lock().unwrap().remove(&runtime_id);
     if let Some(mut runtime) = removed {
-        let _ = runtime.child.kill();
+        crate::terminal_workspace::end_child(runtime.child.as_mut());
     }
     Ok(())
 }

@@ -4,11 +4,13 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
 import type { TerminalChunk, TerminalExit } from "../types";
+import type { TerminalRecord } from "../terminal/types";
 import { TerminalPane, type TerminalActivity } from "./TerminalPane";
 import { requestTerminalRun } from "../terminal/runQueue";
 
-// Contract: testing/feat-dock-terminal.md §3. xterm paints to canvas, which
-// jsdom lacks; the terminals are mocked and the pane's wiring is the subject.
+// Contract: testing/feat-dock-terminal.md §3 and testing/fix-terminal-sweep.md
+// §6. Each shell renders the shared TerminalSurface, mocked here: its engine
+// has its own suite, and the pane's wiring is the subject.
 
 const written = new Map<string, string[]>();
 let terminalSeq = 0;
@@ -16,34 +18,33 @@ let bracketedPaste = false;
 let mode = "mock";
 const focused: string[] = [];
 
-vi.mock("@xterm/xterm", () => ({
-  Terminal: class {
-    id = `term-${terminalSeq++}`;
-    options: Record<string, unknown> = {};
-    rows = 24;
-    cols = 32;
-    get modes() { return { bracketedPasteMode: bracketedPaste }; }
-    focus() { focused.push(this.id); }
-    open() {}
-    loadAddon() {}
-    dispose() {}
-    onData() { return { dispose() {} }; }
-    write(data: string) {
-      const log = written.get(this.id) ?? [];
-      log.push(data);
-      written.set(this.id, log);
-    }
-    writeln(data: string) {
-      this.write(`${data}\n`);
-    }
-  },
-}));
-vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+vi.mock("./TerminalSurface", async () => {
+  const { useEffect } = await import("react");
+  return {
+    TerminalSurface: ({ record, focused: wantsFocus, onTerminal }: { record: TerminalRecord; focused: boolean; onTerminal?: (term: unknown) => void }) => {
+      useEffect(() => {
+        const id = `term-${terminalSeq++}`;
+        onTerminal?.({
+          id,
+          get modes() { return { bracketedPasteMode: bracketedPaste }; },
+          focus() { focused.push(id); },
+          write(data: string) { written.set(id, [...(written.get(id) ?? []), data]); },
+        });
+        return () => onTerminal?.(null);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [record.generation]);
+      return <div data-surface={record.terminalId} data-generation={record.generation} data-focused={wantsFocus} />;
+    },
+  };
+});
+
+const record = (terminalId: string, overrides: Partial<TerminalRecord> = {}): TerminalRecord => ({ workspaceId: ws, terminalId, generation: `${terminalId}-g${++generationSeq}`, title: "Shell", cwd: "/tmp", agentId: null, status: "running", rows: 24, cols: 80, createdAt: "now", exitCode: null, historyTruncated: false, ...overrides });
+let generationSeq = 0;
 
 vi.mock("../api", () => ({
   backendMode: () => mode,
   bridgeApi: {
-    openTerminal: vi.fn().mockResolvedValue(undefined),
+    createTerminal: vi.fn(),
     writeTerminal: vi.fn().mockResolvedValue(undefined),
     resizeTerminal: vi.fn().mockResolvedValue(undefined),
     closeTerminal: vi.fn().mockResolvedValue(undefined),
@@ -77,6 +78,7 @@ const click = async (element: Element) => {
   });
 };
 
+const opened = () => api.createTerminal.mock.calls.map(call => call[0].terminalId);
 const tabButtons = () => [...container.querySelectorAll<HTMLButtonElement>("button[title*='double-click to rename']")];
 const hostFor = (terminalId: string) => container.querySelector<HTMLElement>(`[data-shell-host="${terminalId}"]`);
 
@@ -88,7 +90,6 @@ const emitChunk = async (terminalId: string, data: string) => {
 
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   ws = `w${++wsSeq}`;
   vi.clearAllMocks();
   written.clear();
@@ -98,6 +99,7 @@ beforeEach(() => {
   chunkHandler = undefined;
   exitHandler = undefined;
   api.listTerminals.mockResolvedValue([]);
+  api.createTerminal.mockImplementation(async params => record(params.terminalId));
   api.onTerminal.mockImplementation(async handler => { chunkHandler = handler; return () => undefined; });
   api.onTerminalExited.mockImplementation(async handler => { exitHandler = handler; return () => undefined; });
   container = document.createElement("div");
@@ -113,13 +115,13 @@ afterEach(async () => {
 describe("TerminalPane multi-shell", () => {
   it("creates the first shell on demand and more from the strip", async () => {
     await mount();
-    expect(api.openTerminal).toHaveBeenCalledWith(ws, expect.stringMatching(/^t\d+$/));
-    const first = api.openTerminal.mock.calls[0][1];
+    expect(api.createTerminal).toHaveBeenCalledWith({ workspaceId: ws, terminalId: expect.stringMatching(/^t\d+$/), restart: true });
+    const first = api.createTerminal.mock.calls[0][0].terminalId;
     expect(tabButtons()).toHaveLength(1);
 
     await click(container.querySelector('button[aria-label="New shell"]')!);
     expect(tabButtons()).toHaveLength(2);
-    const second = api.openTerminal.mock.calls[1][1];
+    const second = api.createTerminal.mock.calls[1][0].terminalId;
     expect(second).not.toBe(first);
     expect(hostFor(second)!.className).not.toContain("hidden");
     expect(hostFor(first)!.className).toContain("hidden");
@@ -129,13 +131,12 @@ describe("TerminalPane multi-shell", () => {
     api.listTerminals.mockResolvedValue(["t4", "t7"]);
     await mount();
     expect(tabButtons()).toHaveLength(2);
-    expect(api.openTerminal).toHaveBeenCalledTimes(2);
-    expect(api.openTerminal).toHaveBeenCalledWith(ws, "t4");
-    expect(api.openTerminal).toHaveBeenCalledWith(ws, "t7");
+    expect(api.createTerminal).toHaveBeenCalledTimes(2);
+    expect(opened()).toEqual(["t4", "t7"]);
 
     // The counter learned from the live ids: "+" creates, never re-activates.
     await click(container.querySelector('button[aria-label="New shell"]')!);
-    expect(api.openTerminal).toHaveBeenLastCalledWith(ws, "t8");
+    expect(opened().at(-1)).toBe("t8");
     expect(tabButtons()).toHaveLength(3);
   });
 
@@ -153,13 +154,15 @@ describe("TerminalPane multi-shell", () => {
     expect(container.querySelector('[data-shell-mark="output"]')).not.toBeNull();
   });
 
-  it("routes output to its shell only and keeps hosts mounted across switches", async () => {
+  it("leaves bytes to each surface's frames and keeps hosts mounted across switches", async () => {
     api.listTerminals.mockResolvedValue(["t1", "t2"]);
     await mount();
     const hostT1 = hostFor("t1")!;
+    expect(hostT1.querySelector('[data-surface="t1"]')).not.toBeNull();
     await emitChunk("t2", "from-two");
-    const logs = [...written.values()].flat();
-    expect(logs.filter(entry => entry === "from-two")).toHaveLength(1);
+    // The surface draws from sequenced frames; a second write from the
+    // session-output stream is what used to print every byte twice.
+    expect([...written.values()].flat()).toEqual([]);
 
     await click(tabButtons()[1]);
     expect(hostFor("t1")).toBe(hostT1);
@@ -213,14 +216,62 @@ describe("TerminalPane multi-shell", () => {
       input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
     });
     expect(tabButtons()[0].textContent).toBe("dev server");
-    expect(api.openTerminal).toHaveBeenCalledTimes(1);
+    expect(api.createTerminal).toHaveBeenCalledTimes(1);
     expect(api.writeTerminal).not.toHaveBeenCalled();
   });
 
   it("states the worktree path and the scrollback bound", async () => {
     await mount();
     expect(container.textContent).toContain(`/tmp/bridge/${ws}`);
-    expect(container.textContent).toContain("1 MB scrollback");
+    expect(container.textContent).toContain("5,000 lines scrollback");
+  });
+
+  it("mounts the shared surface with the record the runtime returned", async () => {
+    let resolve: (value: TerminalRecord) => void = () => undefined;
+    api.createTerminal.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    await mount();
+    expect(container.querySelector("[data-surface]")).toBeNull();
+    expect(container.textContent).toContain("Starting shell");
+    await act(async () => { resolve(record("t1", { generation: "live-1" })); });
+    expect(container.querySelector('[data-surface="t1"]')!.getAttribute("data-generation")).toBe("live-1");
+  });
+
+  it("restarts an ended shell on request", async () => {
+    api.listTerminals.mockResolvedValue(["t1"]);
+    await mount();
+    await act(async () => { exitHandler?.({ sessionId: ws, terminalId: "t1" }); });
+    expect(container.textContent).toContain("Shell ended");
+    const before = container.querySelector('[data-surface="t1"]')!.getAttribute("data-generation");
+    await click([...container.querySelectorAll("button")].find(button => button.textContent === "Restart")!);
+    expect(api.createTerminal).toHaveBeenLastCalledWith({ workspaceId: ws, terminalId: "t1", restart: true });
+    expect(container.querySelector('[data-shell-mark="exited"]')).toBeNull();
+    expect(container.querySelector('[data-surface="t1"]')!.getAttribute("data-generation")).not.toBe(before);
+    expect(container.textContent).not.toContain("Shell ended");
+  });
+
+  it("shows why a shell could not start and lets it try again", async () => {
+    api.createTerminal.mockRejectedValueOnce(new Error("Node.js is required for persistent terminals."));
+    await mount();
+    expect(container.querySelector('[role="alert"]')!.textContent).toContain("Node.js is required");
+    await click([...container.querySelectorAll("button")].find(button => button.textContent === "Try again")!);
+    expect(container.querySelector('[data-surface="t1"]')).not.toBeNull();
+  });
+
+  it("labels a terminal Agent Fleet started with its title", async () => {
+    api.listTerminals.mockResolvedValue(["9b2f6c1e-agent"]);
+    api.createTerminal.mockImplementation(async params => record(params.terminalId, { title: "Dev server" }));
+    await mount();
+    expect(tabButtons()[0].textContent).toBe("Dev server");
+  });
+
+  it("focuses a shell the user picks, only while the pane is visible", async () => {
+    api.listTerminals.mockResolvedValue(["t1", "t2"]);
+    await mount();
+    expect(container.querySelector('[data-surface="t1"]')!.getAttribute("data-focused")).toBe("false");
+    await click(tabButtons()[1]);
+    expect(container.querySelector('[data-surface="t2"]')!.getAttribute("data-focused")).toBe("true");
+    await mount({ visible: false });
+    expect(container.querySelector('[data-surface="t2"]')!.getAttribute("data-focused")).toBe("false");
   });
 });
 
@@ -243,9 +294,9 @@ describe("TerminalPane runs from the chat", () => {
     const result = requestTerminalRun(ws, "bun install\nbun test");
     await mount();
     await settled(result);
-    expect(api.openTerminal).toHaveBeenCalledWith(ws, "t1");
+    expect(opened()).toEqual(["t1"]);
     expect(writesTo("t1")).toEqual(["bun install\rbun test\r"]);
-    expect(api.openTerminal.mock.invocationCallOrder[0]).toBeLessThan(api.writeTerminal.mock.invocationCallOrder[0]);
+    expect(api.createTerminal.mock.invocationCallOrder[0]).toBeLessThan(api.writeTerminal.mock.invocationCallOrder[0]);
     await expect(result).resolves.toEqual({ shell: "shell 1" });
     expect(focused).toHaveLength(1);
   });
@@ -259,21 +310,12 @@ describe("TerminalPane runs from the chat", () => {
     expect(writesTo("t1")).toEqual([]);
   });
 
-  it("sizes a shell's PTY to its xterm once the PTY has opened", async () => {
-    let open: () => void = () => undefined;
-    api.openTerminal.mockImplementationOnce(() => new Promise<void>(resolve => { open = resolve; }));
-    await mount();
-    expect(api.resizeTerminal).not.toHaveBeenCalledWith(ws, "t1", 24, 32);
-    await act(async () => { open(); });
-    expect(api.resizeTerminal).toHaveBeenCalledWith(ws, "t1", 24, 32);
-  });
-
   it("opens a new shell when the active one has exited", async () => {
     api.listTerminals.mockResolvedValue(["t1"]);
     await mount();
     await act(async () => { exitHandler?.({ sessionId: ws, terminalId: "t1" }); });
     const result = await settled(requestTerminalRun(ws, "ls"));
-    expect(api.openTerminal).toHaveBeenLastCalledWith(ws, "t2");
+    expect(opened().at(-1)).toBe("t2");
     expect(writesTo("t2")).toEqual(["ls\r"]);
     expect(writesTo("t1")).toEqual([]);
     expect(result).toEqual({ shell: "shell 2" });
