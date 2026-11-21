@@ -1142,7 +1142,7 @@ fn ensure_inactive(active: bool, operation: &str) -> Result<(), BridgeError> {
 /// Whether git recognizes the directory as a repository at all — the cheapest
 /// question to answer before any operation that would otherwise fail with raw
 /// stderr deep in its first command.
-fn is_repository(path: &Path) -> bool {
+pub(crate) fn is_repository(path: &Path) -> bool {
     run(path, ["rev-parse", "--git-dir"]).is_ok()
 }
 
@@ -1323,6 +1323,102 @@ pub fn workspace_changeset(path: &Path) -> Result<WorkspaceChangeset, BridgeErro
     })
 }
 
+/// The changeset between two snapshot trees, keeping only the paths `keep`
+/// accepts, in the shape the Changes pane already renders, so a chat's own
+/// changes and the folder's uncommitted ones read the same way.
+///
+/// Gitlinks are ignored: a nested repository snapshotted inside the tree is
+/// another checkout, not this chat's edit. Without `include_patches` only the
+/// counts are computed, which is what a badge polls for.
+pub(crate) fn tree_changeset(
+    repo: &Path,
+    from: &str,
+    to: &str,
+    keep: &dyn Fn(&str) -> bool,
+    include_patches: bool,
+) -> Result<(WorkspaceChangeset, (i64, i64)), BridgeError> {
+    let diff = |format: &'static str| {
+        run_bounded_bytes(
+            repo,
+            [
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--ignore-submodules=all",
+                format,
+                "-z",
+                "--find-renames",
+                from,
+                to,
+            ],
+            MAX_WORKSPACE_METADATA_BYTES,
+            &[0],
+        )
+    };
+    let raw = diff("--raw")?;
+    let numstat = diff("--numstat")?;
+    let stats = parse_numstat(complete_nul_records(&numstat));
+    let mut descriptors: Vec<_> = parse_raw_changes(complete_nul_records(&raw))
+        .into_iter()
+        .filter(|descriptor| {
+            keep(&descriptor.path) || descriptor.previous_path.as_deref().is_some_and(keep)
+        })
+        .collect();
+    for descriptor in &mut descriptors {
+        if let Some((additions, deletions, binary)) = stats.get(&descriptor.path) {
+            descriptor.additions = *additions;
+            descriptor.deletions = *deletions;
+            descriptor.binary = *binary;
+        }
+    }
+    descriptors.sort_by(|left, right| {
+        risk_rank(completion::risk_tier_for_path(&left.path))
+            .cmp(&risk_rank(completion::risk_tier_for_path(&right.path)))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    // Totals over every kept file, not just the bounded window below: the
+    // badge reads them, and a sum of the first hundred would undercount.
+    let totals = descriptors.iter().fold((0, 0), |(additions, deletions), descriptor| {
+        (additions + descriptor.additions, deletions + descriptor.deletions)
+    });
+    let metadata_truncated = raw.truncated || numstat.truncated;
+    let total_files = (!metadata_truncated).then_some(descriptors.len());
+    let files_truncated = metadata_truncated || descriptors.len() > MAX_WORKSPACE_CHANGE_FILES;
+    let mut remaining_patch_bytes = MAX_WORKSPACE_TOTAL_PATCH_BYTES;
+    let mut files = Vec::new();
+    for mut descriptor in descriptors.into_iter().take(MAX_WORKSPACE_CHANGE_FILES) {
+        let (patch, patch_truncated) = if descriptor.binary || !include_patches {
+            (String::new(), false)
+        } else {
+            file_patch(
+                repo,
+                &[from, to],
+                &descriptor.path,
+                descriptor.previous_path.as_deref(),
+                remaining_patch_bytes.min(MAX_WORKSPACE_PATCH_BYTES),
+            )?
+        };
+        if descriptor.change_kind == WorkspaceChangeKind::Modified
+            && descriptor.additions == 0
+            && descriptor.deletions == 0
+            && patch.lines().any(|line| line.starts_with("old mode "))
+        {
+            descriptor.change_kind = WorkspaceChangeKind::ModeOnly;
+        }
+        remaining_patch_bytes = remaining_patch_bytes.saturating_sub(patch.len());
+        files.push(workspace_file_change(descriptor, patch, patch_truncated));
+    }
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    let changeset = WorkspaceChangeset {
+        base_commit: None,
+        repository_state: WorkspaceRepositoryState::Normal,
+        files,
+        total_files,
+        files_truncated,
+    };
+    Ok((changeset, totals))
+}
+
 #[derive(Debug)]
 struct ChangeDescriptor {
     path: String,
@@ -1420,6 +1516,18 @@ fn tracked_file_patch(
     previous_path: Option<&str>,
     budget: usize,
 ) -> Result<(String, bool), BridgeError> {
+    file_patch(worktree, &[base], relative_path, previous_path, budget)
+}
+
+/// One file's patch between `revisions`: a single base (against the working
+/// tree) or a `from`/`to` pair of trees.
+fn file_patch(
+    worktree: &Path,
+    revisions: &[&str],
+    relative_path: &str,
+    previous_path: Option<&str>,
+    budget: usize,
+) -> Result<(String, bool), BridgeError> {
     if budget == 0 {
         return Ok((String::new(), true));
     }
@@ -1434,9 +1542,9 @@ fn tracked_file_patch(
         "--no-ext-diff",
         "--no-textconv",
         "--find-renames",
-        base,
-        "--",
     ];
+    args.extend_from_slice(revisions);
+    args.push("--");
     if let Some(previous_path) = previous_path {
         args.push(previous_path);
     }

@@ -94,6 +94,7 @@ methods![
     (CheckoutWorkspaceBranch, "workspaces", "checkout_workspace_branch"),
     (ArchiveWorkspace, "workspaces", "archive_workspace"),
     (WorkspaceChanges, "workspaces", "workspace_changes"),
+    (SessionChanges, "workspaces", "session_changes"),
     // sessions
     (GetSessionForest, "sessions", "get_session_forest"),
     (GetSessionForestDigest, "sessions", "get_session_forest_digest"),

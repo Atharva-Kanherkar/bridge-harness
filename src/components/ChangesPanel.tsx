@@ -1,8 +1,8 @@
 import { PaneState } from "@/components/ui/pane";
 import { SkeletonRows } from "@/components/ui/skeleton";
-import { Suspense, lazy, useCallback, useEffect, useRef, useState, useMemo } from "react";
-import { Check, ChevronDown, Code2, Quote, FolderGit2, CircleAlert } from "lucide-react";
-import type { RiskTier, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "../types";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState, useMemo, type ReactNode } from "react";
+import { Check, ChevronDown, Code2, Quote, FileDiff, FolderGit2, CircleAlert } from "lucide-react";
+import type { RiskTier, SessionChangesResult, SessionChangesUnavailable, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "../types";
 import { bridgeApi } from "../api";
 import { errorMessage } from "../errors";
 import { cn } from "@/lib/utils";
@@ -31,6 +31,35 @@ const sameFile = (a: WorkspaceFileChange, b: WorkspaceFileChange) =>
   && a.changeKind === b.changeKind && a.binary === b.binary && a.importance === b.importance
   && a.lowSignal === b.lowSignal && a.patchTruncated === b.patchTruncated && a.previousPath === b.previousPath
   && a.labels.join("\0") === b.labels.join("\0");
+
+/** Which changes the pane shows: what this chat's own turns changed, or
+ *  everything uncommitted in the folder. */
+export type ChangesScope = "chat" | "folder";
+
+const UNAVAILABLE: Record<SessionChangesUnavailable, { title: string; body: string }> = {
+  no_turns: { title: "No turns recorded yet", body: "This chat's changes appear after its first turn. Until then, the folder's uncommitted changes are one click away." },
+  snapshot_failed: { title: "Could not measure this chat's changes", body: "Snapshotting the folder failed or ran out of time. The folder's uncommitted changes are still available." },
+  not_git: { title: "No Git repository", body: "This chat's folder is not a Git repository." },
+  no_folder: { title: "No folder", body: "This chat has no folder to measure." },
+};
+
+/** "42 minutes ago", coarse on purpose: it says when the baseline was taken. */
+export function sinceLabel(iso: string | null | undefined, now = Date.now()): string {
+  const then = iso ? Date.parse(iso) : Number.NaN;
+  if (Number.isNaN(then)) return "";
+  const minutes = Math.max(0, Math.round((now - then) / 60_000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.round(hours / 24);
+  return `${days} days ago`;
+}
+
+const sameChat = (a: SessionChangesResult | undefined, b: SessionChangesResult) =>
+  !!a && a.available === b.available && a.unavailableReason === b.unavailableReason && a.turns === b.turns
+  && a.since === b.since && a.additions === b.additions && a.deletions === b.deletions
+  && (a.changes == null ? b.changes == null : b.changes != null && sameChangeset(a.changes, b.changes));
 
 /** A poll that found the same changeset must not re-render every open diff. */
 export function sameChangeset(a: WorkspaceChangesResult | undefined, b: WorkspaceChangesResult): boolean {
@@ -169,8 +198,13 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
   </div>;
 }
 
-export function ChangesPanel({ workspace, visible = false, onQuote, onOpenFile, onSaved }: {
+export function ChangesPanel({ workspace, sessionId, chatSignal, visible = false, onQuote, onOpenFile, onSaved }: {
   workspace: Workspace;
+  /** The chat on screen. With it the pane opens on what this chat's turns
+   *  changed; without it only the folder's uncommitted changes exist. */
+  sessionId?: string;
+  /** Changes when the chat's own stats drift, like the workspace stats do. */
+  chatSignal?: string;
   /** On screen: poll the changeset as well as following the stats drift. */
   visible?: boolean;
   onQuote?: (path: string, range?: HunkRange) => void;
@@ -178,7 +212,10 @@ export function ChangesPanel({ workspace, visible = false, onQuote, onOpenFile, 
   /** A file was saved from an inline editor, so the workspace stats are stale. */
   onSaved?: () => void;
 }) {
-  const [changes, setChanges] = useState<WorkspaceChangesResult>();
+  const [scope, setScope] = useState<ChangesScope>(sessionId ? "chat" : "folder");
+  // What was loaded, and for which scope: switching scopes must never show
+  // one scope's files under the other's heading.
+  const [loaded, setLoaded] = useState<{ scope: ChangesScope; changes?: WorkspaceChangesResult; chat?: SessionChangesResult }>();
   const [loadError, setLoadError] = useState<string>();
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   // Viewed is a claim about *this* patch. Keyed by the patch text, so a file
@@ -194,18 +231,24 @@ export function ChangesPanel({ workspace, visible = false, onQuote, onOpenFile, 
   const reloadChanges = useCallback(async () => {
     const generation = ++requestGeneration.current;
     try {
-      const next = await bridgeApi.workspaceChanges(workspace.id);
-      if (generation !== requestGeneration.current) return;
-      setChanges(current => sameChangeset(current, next) ? current : next);
+      if (scope === "chat" && sessionId) {
+        const chat = await bridgeApi.sessionChanges(sessionId, true);
+        if (generation !== requestGeneration.current) return;
+        setLoaded(current => current?.scope === "chat" && sameChat(current.chat, chat) ? current : { scope: "chat", chat, changes: chat.changes ?? undefined });
+      } else {
+        const next = await bridgeApi.workspaceChanges(workspace.id);
+        if (generation !== requestGeneration.current) return;
+        setLoaded(current => current?.scope === "folder" && current.changes && sameChangeset(current.changes, next) ? current : { scope: "folder", changes: next });
+      }
       setLoadError(undefined);
     } catch (error) {
       if (generation !== requestGeneration.current) return;
       setLoadError(errorMessage(error));
     }
-  }, [workspace.id]);
+  }, [scope, sessionId, workspace.id]);
 
   useEffect(() => {
-    setChanges(undefined); setLoadError(undefined); setExpandedPaths(new Set()); setViewedPatches(new Map()); setShowLowSignal(false); statsSeen.current = undefined;
+    setLoaded(undefined); setLoadError(undefined); setExpandedPaths(new Set()); setViewedPatches(new Map()); setShowLowSignal(false); statsSeen.current = undefined;
     void reloadChanges();
     return () => { requestGeneration.current += 1; };
   }, [reloadChanges]);
@@ -214,7 +257,7 @@ export function ChangesPanel({ workspace, visible = false, onQuote, onOpenFile, 
   // while an agent writes, so a drift re-reads the diff without a manual
   // refresh — in place, after the burst settles.
   useEffect(() => {
-    const stats = `${workspace.dirtyFiles}:${workspace.additions}:${workspace.deletions}`;
+    const stats = `${workspace.dirtyFiles}:${workspace.additions}:${workspace.deletions}:${chatSignal ?? ""}`;
     if (statsSeen.current === undefined) {
       statsSeen.current = stats;
       return;
@@ -223,7 +266,7 @@ export function ChangesPanel({ workspace, visible = false, onQuote, onOpenFile, 
     statsSeen.current = stats;
     const timer = window.setTimeout(() => void reloadChanges(), STATS_REFRESH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [workspace.dirtyFiles, workspace.additions, workspace.deletions, reloadChanges]);
+  }, [workspace.dirtyFiles, workspace.additions, workspace.deletions, chatSignal, reloadChanges]);
 
   // While on screen, re-read on a slow serial clock (first read after one
   // interval: mounting already loaded). A failed poll keeps the last good diff.
@@ -243,6 +286,8 @@ export function ChangesPanel({ workspace, visible = false, onQuote, onOpenFile, 
     onSaved?.();
   }, [reloadChanges, onSaved]);
 
+  const current = loaded?.scope === scope ? loaded : undefined;
+  const changes = current?.changes;
   const sortedFiles = useMemo(() => [...(changes?.files ?? [])].sort((a, b) =>
     IMPORTANCE_RANK[a.importance] - IMPORTANCE_RANK[b.importance] || a.path.localeCompare(b.path)
   ), [changes]);
@@ -261,22 +306,52 @@ export function ChangesPanel({ workspace, visible = false, onQuote, onOpenFile, 
     return next;
   });
 
-  if (loadError) return <PaneState icon={CircleAlert} title="Could not load changes" role="alert" action={<button type="button" onClick={() => void reloadChanges()} className="min-h-8 rounded-lg border border-border bg-card px-3 text-ui hover:bg-accent">Try again</button>}>{loadError}</PaneState>;
-  if (!changes) return <SkeletonRows label="Loading changes" rows={5} lead="dot" meta={false} framed={false} className="min-h-0 flex-1 overflow-hidden" />;
-  if (changes.repositoryState === "not_git") return <PaneState icon={FolderGit2} title="No Git repository">This folder is available in Code, but Changes needs a Git repository.</PaneState>;
+  // The switch is part of every state, so a chat with nothing to show can
+  // still reach the folder, and the folder can always come back to the chat.
+  const scopeSwitch = sessionId ? <div role="group" aria-label="Which changes" className="mb-3 inline-flex rounded-lg border border-border bg-muted/30 p-0.5">
+    {([["chat", "This chat"], ["folder", "All uncommitted"]] as const).map(([value, label]) => <button
+      key={value}
+      type="button"
+      aria-pressed={scope === value}
+      onClick={() => setScope(value)}
+      className={cn("h-7 rounded-md px-2.5 text-meta transition-colors", scope === value ? "bg-card text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground")}
+    >{label}</button>)}
+  </div> : null;
+  const frame = (body: ReactNode) => <div className="@container/changes flex h-full w-full flex-col overflow-y-auto px-3 py-4 sm:px-4">
+    <div className="text-meta font-medium text-muted-foreground">CHANGES</div>
+    <div className="mt-2">{scopeSwitch}</div>
+    {body}
+  </div>;
 
-  const totalAdditions = changes.files.reduce((sum, file) => sum + file.additions, 0);
-  const totalDeletions = changes.files.reduce((sum, file) => sum + file.deletions, 0);
+  if (loadError) return frame(<PaneState icon={CircleAlert} title="Could not load changes" role="alert" action={<button type="button" onClick={() => void reloadChanges()} className="min-h-8 rounded-lg border border-border bg-card px-3 text-ui hover:bg-accent">Try again</button>}>{loadError}</PaneState>);
+  if (!current) return frame(<SkeletonRows label="Loading changes" rows={5} lead="dot" meta={false} framed={false} className="min-h-0 flex-1 overflow-hidden" />);
+  if (current.chat && !current.chat.available) {
+    const reason = UNAVAILABLE[current.chat.unavailableReason ?? "no_turns"];
+    return frame(<PaneState icon={FileDiff} title={reason.title} role="status" action={<button type="button" onClick={() => setScope("folder")} className="min-h-8 rounded-lg border border-border bg-card px-3 text-ui hover:bg-accent">Show all uncommitted</button>}>{reason.body}</PaneState>);
+  }
+  if (!changes) return frame(<SkeletonRows label="Loading changes" rows={5} lead="dot" meta={false} framed={false} className="min-h-0 flex-1 overflow-hidden" />);
+  if (changes.repositoryState === "not_git") return frame(<PaneState icon={FolderGit2} title="No Git repository">This folder is available in Code, but Changes needs a Git repository.</PaneState>);
+  const chatScope = current.scope === "chat" ? current.chat : undefined;
+
+  // A chat reports totals across all its files; the folder's bounded window
+  // only has the files it carries, and says so below when it is cut.
+  const totalAdditions = chatScope ? chatScope.additions : changes.files.reduce((sum, file) => sum + file.additions, 0);
+  const totalDeletions = chatScope ? chatScope.deletions : changes.files.reduce((sum, file) => sum + file.deletions, 0);
+  const totalsCoverShownOnly = !chatScope && changes.filesTruncated;
   const viewedCount = sortedFiles.filter(isViewed).length;
   const reportedFileCount = changes.totalFiles ?? changes.files.length;
   const fileCountLabel = changes.filesTruncated && changes.totalFiles == null ? `${changes.files.length}+` : `${reportedFileCount}`;
-  const diffBasis = changes.repositoryState === "unborn"
-    ? `${workspace.branch} · before first commit (against empty repository)`
-    : `${workspace.branch} · uncommitted vs HEAD${changes.baseCommit ? ` (${changes.baseCommit.slice(0, 8)})` : ""}`;
+  const diffBasis = chatScope
+    ? `${workspace.branch} · ${chatScope.turns} turn${chatScope.turns === 1 ? "" : "s"} in this chat${chatScope.since ? ` · since ${sinceLabel(chatScope.since)}` : ""}`
+    : changes.repositoryState === "unborn"
+      ? `${workspace.branch} · before first commit (against empty repository)`
+      : `${workspace.branch} · uncommitted vs HEAD${changes.baseCommit ? ` (${changes.baseCommit.slice(0, 8)})` : ""}`;
+  const emptyHeading = chatScope ? "No changes from this chat" : changes.repositoryState === "unborn" ? "No changes before first commit" : "Workspace is clean";
 
   return <div className="@container/changes h-full w-full overflow-y-auto px-3 py-4 sm:px-4">
     <div className="text-meta font-medium text-muted-foreground">CHANGES</div>
-    <h2 className="my-1.5 font-heading text-[20px] tracking-[-0.015em] text-foreground">{changes.files.length ? `${fileCountLabel} file${reportedFileCount === 1 ? "" : "s"} changed` : changes.repositoryState === "unborn" ? "No changes before first commit" : "Workspace is clean"}</h2>
+    <div className="mt-2">{scopeSwitch}</div>
+    <h2 className="my-1.5 font-heading text-[20px] tracking-[-0.015em] text-foreground">{changes.files.length ? `${fileCountLabel} file${reportedFileCount === 1 ? "" : "s"} changed` : emptyHeading}</h2>
     {/* What this diff is measured against — with worktree isolation, "which
         checkout am I looking at" should never be a question. */}
     <p className="mb-2 font-mono text-caption text-muted-foreground">
@@ -286,15 +361,18 @@ export function ChangesPanel({ workspace, visible = false, onQuote, onOpenFile, 
         pane is the folder's git state. Without the line, "3 files" in the
         chat and "241 files" here read as the same claim disagreeing. */}
     {changes.files.length > 0 && <p className="mb-2 text-caption leading-relaxed text-muted-foreground">
-      Everything uncommitted in this folder, from any chat, agent, or editor. Each turn in the chat lists only its own edits.
+      {chatScope
+        ? "Only files this chat's turns changed, measured from before its first turn."
+        : "Everything uncommitted in this folder, from any chat, agent, or editor."}
     </p>}
     {changes.files.length === 0
-      ? <p className="text-ui leading-relaxed text-muted-foreground">{changes.repositoryState === "unborn" ? "Create or stage a file to begin the first review." : "No uncommitted changes against HEAD."}</p>
+      ? <p className="text-ui leading-relaxed text-muted-foreground">{chatScope ? "This chat's turns have not changed any files, or their changes were undone." : changes.repositoryState === "unborn" ? "Create or stage a file to begin the first review." : "No uncommitted changes against HEAD."}</p>
       : <>
         <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 font-mono text-meta">
           <span className="text-success">+{totalAdditions}</span>
           <span className="text-destructive">−{totalDeletions}</span>
           <DiffStatBar additions={totalAdditions} deletions={totalDeletions} className="w-24" />
+          {totalsCoverShownOnly && <span className="text-muted-foreground">in the {changes.files.length} shown</span>}
           <span className="ml-auto text-muted-foreground">{viewedCount}/{sortedFiles.length}{changes.filesTruncated ? " shown" : ""} viewed</span>
         </div>
         {changes.filesTruncated && <p role="status" className="mb-3 rounded-md border border-warning/25 bg-warning/8 px-3 py-2 text-caption text-warning">

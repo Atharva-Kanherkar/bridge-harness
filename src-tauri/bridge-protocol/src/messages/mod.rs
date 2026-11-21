@@ -241,6 +241,7 @@ typed_methods![
     (CheckoutWorkspaceBranch, CheckoutWorkspaceBranchParams, BridgeState),
     (ArchiveWorkspace, ArchiveWorkspaceParams, BridgeState),
     (WorkspaceChanges, WorkspaceChangesParams, WorkspaceChangesResult),
+    (SessionChanges, SessionChangesParams, SessionChangesResult),
     // sessions
     (GetSessionForest, GetSessionForestParams, SessionForestSnapshot),
     (GetSessionForestDigest, GetSessionForestDigestParams, SessionForestDigestResult),

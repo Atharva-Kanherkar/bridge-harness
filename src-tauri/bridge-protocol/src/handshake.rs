@@ -181,9 +181,12 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// always sends the field, so it must not pair with a 1.47 daemon, which
 /// would refuse it as unknown on every keystroke; a 1.47 client still pairs
 /// with a 1.48 daemon.
+///
+/// **1.49 adds chat-scoped changes**: `workspaces/session_changes`. A 1.48
+/// client still pairs: it never calls it.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 48,
+    minor: 49,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -525,9 +528,17 @@ mod tests {
     fn a_binary_input_client_rejects_a_daemon_that_refuses_the_field() {
         let before = ProtocolVersion { major: 1, minor: 47 };
         let binary = ProtocolVersion { major: 1, minor: 48 };
-        assert_eq!(PROTOCOL_VERSION, binary);
         assert!(binary.accepts(before), "a 1.47 client still pairs with a 1.48 daemon");
         assert!(!before.accepts(binary), "a 1.48 client sends `binary` on every terminal write");
+    }
+
+    #[test]
+    fn a_1_48_client_pairs_with_a_chat_changes_daemon() {
+        let before = ProtocolVersion { major: 1, minor: 48 };
+        let chat_changes = ProtocolVersion { major: 1, minor: 49 };
+        assert_eq!(PROTOCOL_VERSION, chat_changes);
+        assert!(chat_changes.accepts(before), "a 1.48 client never calls session_changes");
+        assert!(!before.accepts(chat_changes), "a 1.49 client needs session_changes");
     }
 
     #[test]

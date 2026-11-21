@@ -335,6 +335,10 @@ pub fn dispatch(
             let p: wire::WorkspaceChangesParams = decode(method, params)?;
             reply(api::workspace_changes(core, &p.workspace_id))
         }
+        MethodName::SessionChanges => {
+            let p: wire::SessionChangesParams = decode(method, params)?;
+            reply(api::session_changes(core, &p.session_id, p.include_patches.unwrap_or(false)))
+        }
 
         MethodName::GetSessionForest => {
             let p: wire::GetSessionForestParams = decode(method, params)?;
