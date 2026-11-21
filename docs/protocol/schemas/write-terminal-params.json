@@ -3,6 +3,11 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "properties": {
+    "binary": {
+      "default": false,
+      "description": "`data` is a binary string: every char is one byte (0x00 to 0xFF), not text to encode as UTF-8. xterm.js reports X10 mouse events this way.",
+      "type": "boolean"
+    },
     "data": {
       "description": "Raw bytes to write to the PTY, exactly as typed.",
       "type": "string"

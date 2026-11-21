@@ -175,9 +175,15 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 ///
 /// **1.47 adds Screen Time**: `usage/record_presence` and
 /// `usage/screen_time`. A 1.46 client still pairs: it never calls them.
+///
+/// **1.48 adds binary terminal input**: an optional `binary` on
+/// `terminal/write_terminal`, for xterm's X10 mouse reports. A 1.48 client
+/// always sends the field, so it must not pair with a 1.47 daemon, which
+/// would refuse it as unknown on every keystroke; a 1.47 client still pairs
+/// with a 1.48 daemon.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 47,
+    minor: 48,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -511,9 +517,17 @@ mod tests {
     fn a_1_46_client_pairs_with_a_1_47_daemon() {
         let before = ProtocolVersion { major: 1, minor: 46 };
         let screen_time = ProtocolVersion { major: 1, minor: 47 };
-        assert_eq!(PROTOCOL_VERSION, screen_time);
         assert!(screen_time.accepts(before), "a 1.46 client still pairs with a 1.47 daemon");
         assert!(!before.accepts(screen_time), "a 1.47 client needs the Screen Time methods");
+    }
+
+    #[test]
+    fn a_binary_input_client_rejects_a_daemon_that_refuses_the_field() {
+        let before = ProtocolVersion { major: 1, minor: 47 };
+        let binary = ProtocolVersion { major: 1, minor: 48 };
+        assert_eq!(PROTOCOL_VERSION, binary);
+        assert!(binary.accepts(before), "a 1.47 client still pairs with a 1.48 daemon");
+        assert!(!before.accepts(binary), "a 1.48 client sends `binary` on every terminal write");
     }
 
     #[test]

@@ -3952,7 +3952,8 @@ export const bridgeApi = {
   /** The live channel dropped frames. Durable ones come back by cursor replay. */
   onStreamLagged: async (handler: () => void): Promise<UnlistenFn> => hasBackend() ? subscribe("stream-lagged", handler) : () => undefined,
   openTerminal: (workspaceId: string, terminalId: string): Promise<void> => hasBackend() ? unit(call("terminal/open_terminal", { workspaceId, terminalId })) : Promise.resolve(),
-  writeTerminal: (workspaceId: string, terminalId: string, data: string): Promise<void> => hasBackend() ? unit(call("terminal/write_terminal", { workspaceId, terminalId, data })) : Promise.resolve(),
+  /** `binary` marks a string whose chars are bytes (xterm's X10 mouse reports), not text. Always sent: a Tauri command argument cannot be omitted. */
+  writeTerminal: (workspaceId: string, terminalId: string, data: string, binary = false): Promise<void> => hasBackend() ? unit(call("terminal/write_terminal", { workspaceId, terminalId, data, binary })) : Promise.resolve(),
   resizeTerminal: (workspaceId: string, terminalId: string, rows: number, cols: number): Promise<void> => hasBackend() ? unit(call("terminal/resize_terminal", { workspaceId, terminalId, rows, cols })) : Promise.resolve(),
   closeTerminal: (workspaceId: string, terminalId: string): Promise<void> => hasBackend() ? unit(call("terminal/close_terminal", { workspaceId, terminalId })) : Promise.resolve(mockCloseTerminal(workspaceId, terminalId)),
   listTerminals: async (workspaceId: string): Promise<string[]> => {

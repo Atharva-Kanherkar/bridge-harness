@@ -109,6 +109,10 @@ pub struct WriteTerminalParams {
     pub terminal_id: String,
     /// Raw bytes to write to the PTY, exactly as typed.
     pub data: String,
+    /// `data` is a binary string: every char is one byte (0x00 to 0xFF), not
+    /// text to encode as UTF-8. xterm.js reports X10 mouse events this way.
+    #[serde(default)]
+    pub binary: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -163,12 +167,23 @@ mod tests {
             workspace_id: "w-1".into(),
             terminal_id: "t1".into(),
             data: "ls -la\n".into(),
+            binary: false,
         };
         assert_eq!(
             serde_json::to_value(&write).unwrap(),
-            json!({"workspaceId": "w-1", "terminalId": "t1", "data": "ls -la\n"})
+            json!({"workspaceId": "w-1", "terminalId": "t1", "data": "ls -la\n", "binary": false})
         );
         assert_eq!(round_trip(&write), write);
+        // Clients that predate binary input omit the field; it means text.
+        assert_eq!(
+            serde_json::from_value::<WriteTerminalParams>(
+                json!({"workspaceId": "w-1", "terminalId": "t1", "data": "ls -la\n"})
+            )
+            .unwrap(),
+            write
+        );
+        let mouse = WriteTerminalParams { data: "\u{1b}[M \u{ff}!".into(), binary: true, ..write.clone() };
+        assert_eq!(round_trip(&mouse), mouse);
 
         let resize = ResizeTerminalParams {
             workspace_id: "w-1".into(),

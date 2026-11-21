@@ -648,7 +648,11 @@ pub fn dispatch(
         }
         MethodName::WriteTerminal => {
             let p: wire::WriteTerminalParams = decode(method, params)?;
-            reply(api::write_terminal(core, &p.workspace_id, &p.terminal_id, &p.data))
+            reply(if p.binary {
+                api::write_terminal_binary(core, &p.workspace_id, &p.terminal_id, &p.data)
+            } else {
+                api::write_terminal(core, &p.workspace_id, &p.terminal_id, &p.data)
+            })
         }
         MethodName::ResizeTerminal => {
             let p: wire::ResizeTerminalParams = decode(method, params)?;
