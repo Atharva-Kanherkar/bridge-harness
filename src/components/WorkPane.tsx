@@ -194,7 +194,6 @@ export function WorkPane({ overview, prs, tasks, harness, refreshing, focus, onA
     {overview}
     {empty && !overview && <div className="px-2 pb-2 pt-6">
       <p className="text-ui font-medium text-foreground">Nothing running</p>
-      <p className="mt-1 max-w-sm text-meta leading-relaxed text-muted-foreground">Pull requests this chat opens and work its agent leaves running show up here, and in one line above the composer.</p>
     </div>}
     <section aria-label="Pull requests">
       {(!empty || overview) && <h3 className={SECTION}>Pull requests<span className="tabular-nums">{ordered.length || ""}</span></h3>}

@@ -92,9 +92,7 @@ describe("UsageScreen", () => {
     expect(text()).toContain("$4.50");
     expect(text()).toContain("API estimate");
     expect(text()).toContain("Partly unpriced");
-    expect(text()).toContain("2 records have no known rate");
-    expect(text()).toContain("3 live records were counted once");
-    expect(text()).toContain("Codex history is still loading.");
+    expect(text()).toContain("2 unpriced records");
     expect(text()).not.toContain("Codex history is partial: scan hit the cap");
     const details = container.querySelector<HTMLDetailsElement>('[aria-label="History sources"] details');
     expect(details?.open).toBe(false);
@@ -131,7 +129,7 @@ describe("UsageScreen", () => {
     expect(text()).not.toContain("Cursor history is still loading");
     expect(text()).not.toContain("Unsupported");
     expect(text()).not.toContain("25 imported");
-    expect(text()).not.toContain("Partial total");
+    expect(text()).not.toContain("History scan failed");
     click(buttonByText("Tokens"));
     await flush();
     expect(text()).toContain("2M");
@@ -149,11 +147,8 @@ describe("UsageScreen", () => {
     }));
     await mount();
     expect(text()).toContain("$12.50");
-    expect(text()).toContain("Showing last-known Cursor usage.");
-    expect(text()).toContain("History incomplete");
     click(buttonByText("24h"));
     await flush();
-    expect(text()).toContain("Choose 7d or longer");
     expect(text()).not.toContain("$12.50");
     expect(text()).not.toContain("Cursor history is still loading");
   });
@@ -167,8 +162,7 @@ describe("UsageScreen", () => {
     await mount();
     expect(text()).toContain("$12.50");
     expect(text()).toContain("Partly unpriced");
-    expect(text()).toContain("1 records have no known rate");
-    expect(text()).toContain("their cost is unknown, not free");
+    expect(text()).toContain("1 unpriced record");
   });
 
   it("refetches at hour resolution for the 24h window", async () => {
@@ -234,7 +228,7 @@ describe("UsageScreen", () => {
     expect(scanSpy).toHaveBeenCalledTimes(2);
     expect(scanSpy.mock.calls[1][0]).toEqual({ sourceIds: [source.id] });
     expect(text()).toContain("Imported 10,025 records");
-    expect(text()).not.toContain("Partial total");
+    expect(text()).not.toContain("History scan failed");
     expect(summarySpy).toHaveBeenCalledTimes(2);
   });
 
@@ -245,7 +239,7 @@ describe("UsageScreen", () => {
     await mount();
     expect(text()).toContain("$4.50");
     expect(text()).not.toContain("Numbers appear");
-    expect(text()).not.toContain("Partial total");
+    expect(text()).not.toContain("History scan failed");
     await act(async () => { pending.resolve(batch("complete", 5, "end")); });
     expect(summarySpy).toHaveBeenCalledTimes(2);
   });
@@ -294,7 +288,7 @@ describe("UsageScreen", () => {
     await mount();
     expect(scanSpy).toHaveBeenCalledTimes(2);
     expect(text()).toContain("History scan did not advance");
-    expect(text()).toContain("Partial total");
+    expect(text()).toContain("History scan failed");
   });
 
   it("caps auto-scan passes and resumes on demand", async () => {
@@ -303,7 +297,6 @@ describe("UsageScreen", () => {
     await mount();
     expect(scanSpy).toHaveBeenCalledTimes(25);
     expect(text()).toContain("stopped after 25 batches");
-    expect(text()).toContain("Partial total");
   });
 
   it("does not claim complete coverage when scanning fails", async () => {
@@ -311,7 +304,7 @@ describe("UsageScreen", () => {
     await mount();
     expect(scanSpy).toHaveBeenCalledTimes(1);
     expect(text()).toContain("cannot read history");
-    expect(text()).toContain("Partial total");
+    expect(text()).toContain("History scan failed");
   });
 
   it("continues healthy sources when another source fails", async () => {
@@ -323,7 +316,7 @@ describe("UsageScreen", () => {
     expect(scanSpy).toHaveBeenCalledTimes(2);
     expect(scanSpy.mock.calls[1][0]).toEqual({ sourceIds: [source.id] });
     expect(text()).toContain("Claude history is unreadable");
-    expect(text()).toContain("Partial total");
+    expect(text()).toContain("History scan failed");
   });
 
   it("replaces the figures in place when the post-import summary arrives", async () => {
@@ -332,11 +325,11 @@ describe("UsageScreen", () => {
     vi.mocked(bridgeApi.listUsageHistorySources).mockResolvedValue([{ ...source, coverageState: "complete" }]);
     await mount();
     expect(text()).toContain("$4.50");
-    expect(text()).not.toContain("Partial total");
+    expect(text()).not.toContain("History scan failed");
     const updated = summaryFor(summarySpy.mock.calls[1][0]);
     updated.buckets[0].costMicrousd = 6_000_000;
     await act(async () => { pending.resolve(updated); });
-    expect(text()).not.toContain("Partial total");
+    expect(text()).not.toContain("History scan failed");
     expect(text()).toContain("$6.00");
   });
 
@@ -358,7 +351,6 @@ describe("UsageScreen", () => {
   it("keeps storage paths and scan internals behind an explicit disclosure", async () => {
     vi.mocked(bridgeApi.listUsageHistorySources).mockResolvedValue([{ ...source, location: "chats/store.db", coverageReason: "ai-tracking/ai-code-tracking.db records have no token counts" }]);
     await mount();
-    expect(text()).toContain("Codex history is still loading.");
     expect(text()).not.toContain("Codex history is partial");
     const details = container.querySelector<HTMLDetailsElement>("details");
     expect(details?.open).toBe(false);
@@ -397,10 +389,7 @@ describe("UsageScreen layouts", () => {
     expect(layoutSelect().value).toBe(layout);
     expect(text()).toContain("$4.50~");
     expect(text()).toContain("API estimate · Partly unpriced");
-    expect(text()).toContain("Partial total · History incomplete");
-    expect(text()).toContain("2 records have no known rate");
-    expect(text()).toContain("3 live records were counted once");
-    expect(text()).toContain("Codex history is still loading.");
+        expect(text()).toContain("2 unpriced records");
     expect(section("History sources")).not.toBeNull();
     expect(section("Model prices")).not.toBeNull();
   });
@@ -455,11 +444,11 @@ describe("UsageScreen layouts", () => {
   it("stops the flow at the model in cost mode and follows tokens to their kind", async () => {
     prefer("flow");
     await mount();
-    expect(text()).toContain("Cost is recorded per model, not per token kind");
+    expect(text()).toContain("Switch to Tokens to see token kinds");
     expect(container.querySelector('svg[aria-label="Cost flowing from harness to model"]')).not.toBeNull();
     click(buttonByText("Tokens"));
     await flush();
-    expect(text()).not.toContain("Cost is recorded per model");
+    expect(text()).not.toContain("Switch to Tokens to see token kinds");
     const flow = container.querySelector('svg[aria-label="Processed tokens flowing from harness to model to token kind"]')!;
     expect(flow.textContent).toContain("Uncached input");
     const titles = [...flow.querySelectorAll("title")].map(title => title.textContent);

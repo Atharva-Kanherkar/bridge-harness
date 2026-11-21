@@ -21,7 +21,6 @@ export function ModelProfileEditor({ profiles, adapters, disabled, onChange }: {
     <section className="space-y-3">
       <div>
         <h3 className="text-sm font-medium text-foreground">Orchestrator model</h3>
-        <p className="mt-0.5 text-ui leading-relaxed text-muted-foreground">The model you talk to. Pick any model your providers expose and set how hard it thinks. Bridge still routes the workers it delegates to by capability tier below.</p>
       </div>
       {orchestrators.map(profile => {
         const selected = options.find(option => option.value === `${profile.provider}:${profile.model}`);

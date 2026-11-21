@@ -177,7 +177,6 @@ describe("MemoryDialog", () => {
     await flush();
     expect(container.textContent).toContain("Prefers tabs over spaces");
     expect(container.textContent).toContain("Works in IST");
-    expect(container.textContent).toContain("remembers across your conversations");
   });
 
   it("shows a loading skeleton, not an empty list, until pins arrive", async () => {

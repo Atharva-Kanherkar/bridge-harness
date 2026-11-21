@@ -51,7 +51,6 @@ describe("WorkflowsScreen", () => {
   it("keeps native schedules, with their actions, in their own section", async () => {
     await act(async () => root.render(<WorkflowsScreen projects={[]} onContinueInChat={() => {}} initialTab="native" />));
     await settle();
-    expect(container.textContent).toContain("Schedules your coding agents keep themselves");
     expect(container.textContent).toContain("Refresh");
   });
 
@@ -60,7 +59,6 @@ describe("WorkflowsScreen", () => {
     await act(async () => root.render(<WorkflowsScreen projects={[]} onContinueInChat={() => {}} />));
     await settle();
     expect(container.textContent).toContain("Automate a job you do every day");
-    expect(container.textContent).toContain("No project needed");
   });
 
   it("creates a no-project workflow without choosing a folder", async () => {

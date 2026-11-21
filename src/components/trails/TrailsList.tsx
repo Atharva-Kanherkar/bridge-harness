@@ -118,7 +118,6 @@ export function TrailsList({ trails, loading, error, workspaces, defaultWorkspac
     <div className="mx-auto w-full max-w-page px-5 pb-12 pt-6 sm:px-8">
       <ScreenHeading
         title="Trails"
-        description="One page per piece of work: its plan, chats, pull requests and messages, and what waits on you."
         action={<Button size="sm" onClick={() => setCreating(true)}><Plus aria-hidden="true" />New trail</Button>}
       />
       {creating && (

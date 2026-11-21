@@ -706,7 +706,6 @@ export function StoragePage({ onError, title = "Storage", extra, copilot }: {
         <header className="flex flex-wrap items-end gap-x-4 gap-y-1">
           <div className="min-w-0 flex-1">
             <h2 className="font-display text-title font-semibold leading-tight tracking-tight text-foreground">{title}</h2>
-            <p className="mt-1 text-ui leading-relaxed text-muted-foreground">What is using space on this Mac, and what you can let go of. Deleting moves to the Trash first.</p>
           </div>
           {measuring && overview && <span role="status" className="flex items-center gap-1.5 pb-0.5 text-caption text-muted-foreground">
             <LoaderCircle size={12} aria-hidden="true" className="animate-spin" />Updating sizes
