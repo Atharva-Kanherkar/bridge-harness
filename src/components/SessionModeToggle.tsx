@@ -32,7 +32,7 @@ export function SessionModeToggle({ value, onChange, disabled, describedBy }: {
     if (event.key === "ArrowRight" || event.key === "ArrowDown") { event.preventDefault(); select(index + 1); }
     else if (event.key === "ArrowLeft" || event.key === "ArrowUp") { event.preventDefault(); select(index - 1); }
   };
-  return <div role="radiogroup" aria-label="Chat mode" aria-describedby={describedBy} className="inline-flex h-8 shrink-0 items-center gap-0.5 rounded-lg border border-border bg-background p-0.5">
+  return <div role="radiogroup" aria-label="Chat mode" aria-describedby={describedBy} className="inline-flex h-7 shrink-0 items-center gap-0.5 rounded-md bg-muted p-0.5">
     {SESSION_MODES.map((mode, index) => {
       const checked = mode.id === value;
       const Icon = mode.icon;
@@ -48,11 +48,11 @@ export function SessionModeToggle({ value, onChange, disabled, describedBy }: {
         onClick={() => onChange(mode.id)}
         onKeyDown={event => onKeyDown(event, index)}
         className={cn(
-          "inline-flex h-6 items-center gap-1.5 rounded-md px-2 text-meta font-medium transition-colors disabled:opacity-50",
-          checked ? "bg-accent text-foreground shadow-control" : "text-muted-foreground hover:text-foreground",
+          "inline-flex h-6 items-center gap-1.5 rounded-sm px-2 text-meta tracking-[-0.01em] transition-colors disabled:opacity-50",
+          checked ? "bg-card text-foreground shadow-control" : "text-muted-foreground hover:text-foreground",
         )}
       >
-        <Icon className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
+        <Icon className="h-3 w-3" strokeWidth={1.75} aria-hidden="true" />
         {mode.label}
       </button>;
     })}

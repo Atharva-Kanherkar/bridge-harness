@@ -19,16 +19,16 @@ vi.mock("@xterm/xterm", () => ({
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 
-// Spy on the greeting picker without changing its behaviour, so a test can
-// assert what the welcome hero feeds it (the owning project name, not the
-// workspace title) regardless of which line the picker lands on.
+// Spy on the headline without changing its behaviour, so a test can assert
+// what the welcome hero feeds it (the owning project name, not the workspace
+// title).
 vi.mock("./greetings", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./greetings")>();
-  return { ...actual, pickGreeting: vi.fn(actual.pickGreeting) };
+  return { ...actual, welcomeHeadline: vi.fn(actual.welcomeHeadline) };
 });
 
 import { App, ChatModelControl } from "./App";
-import { pickGreeting } from "./greetings";
+import { welcomeHeadline } from "./greetings";
 // Pre-resolve the lazy pane chunks so Suspense settles inside act().
 import "./components/TerminalPane";
 import "./components/CodePanel";
@@ -229,17 +229,18 @@ describe("the dock in the session view", () => {
   // The mock state's workspace ("Build session supervisor") sits under a project
   // named "Bridge"; the hero must name the project, not the workspace's own title.
   it("feeds the welcome hero its owning project name, not the workspace title", async () => {
-    vi.mocked(pickGreeting).mockClear();
+    vi.mocked(welcomeHeadline).mockClear();
     // Select the mock workspace ("Build session supervisor", project "Bridge")
     // as the welcome target, the way returning to a repo would.
     localStorage.setItem("bridge.chat.lastWorkspaceId", "demo-1");
     await mountApp();
-    const welcomeCalls = vi.mocked(pickGreeting).mock.calls.filter(args => args[0] === "welcome");
+    const welcomeCalls = vi.mocked(welcomeHeadline).mock.calls;
     expect(welcomeCalls.length).toBeGreaterThan(0);
     // Once the workspace resolves, the hero is fed the owning project ("Bridge").
-    expect(welcomeCalls.at(-1)?.[1]).toBe("Bridge");
+    expect(welcomeCalls.at(-1)?.[0]).toBe("Bridge");
+    expect(container.querySelector("h1")?.textContent).toBe("What should we build in Bridge?");
     // And it is never fed the workspace's own title, on any render.
-    expect(welcomeCalls.some(args => args[1] === "Build session supervisor")).toBe(false);
+    expect(welcomeCalls.some(args => args[0] === "Build session supervisor")).toBe(false);
   });
 
   it("services a tray refresh without raising the app or opening an in-app meter", async () => {

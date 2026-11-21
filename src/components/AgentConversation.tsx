@@ -7,7 +7,7 @@ import { isToolLive } from "../transcript/toolCall";
 import { reduceTranscript } from "../transcript/reducer";
 import type { TranscriptEvent } from "../transcript/events";
 import { LAUNCH_STEPS, humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeLaunchFailure, humanizeResolution, launchFailureStep } from "../humanize";
-import { pickGreeting, type GreetingPart } from "../greetings";
+import { welcomeHeadline, type GreetingPart } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError, isThrottleKind } from "../errors";
@@ -1093,7 +1093,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // never hidden behind the skeleton.
   const historyPending = !!session && !preview && forestEntries === undefined;
   if (historyPending && !visibleItems.length && !activeProcesses.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <ChatHistorySkeleton density={density} />;
-  if (!visibleItems.length && !activeProcesses.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return empty ?? <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} projectName={projectName} />;
+  if (!visibleItems.length && !activeProcesses.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return empty ?? <GreetingEmpty projectName={projectName} />;
   // A send is answered only by a user turn newer than the newest identical one
   // the chat already had when it was sent, so repeating "yes" or "continue"
   // still shows its bubble at once. A send with neither words nor images has
@@ -1593,11 +1593,10 @@ function isStreamingText(status?: string): boolean {
   return status === "streaming" || status === "inProgress";
 }
 
-function GreetingEmpty({ seed, projectName }: { seed?: string; projectName?: string }) {
-  // Stable per session so it doesn't reshuffle on every re-render, tinted by
-  // time of day. A known project name lets the hero name it, dotted-underlined.
-  const greeting = useMemo(() => pickGreeting(seed, projectName), [seed, projectName]);
-  return <Empty title={greeting.headline} copy={greeting.hint} parts={greeting.parts} />;
+function GreetingEmpty({ projectName }: { projectName?: string }) {
+  // The same plain question the new-chat screen asks, naming the project.
+  const greeting = welcomeHeadline(projectName);
+  return <Empty title={greeting.headline} parts={greeting.parts} />;
 }
 
 /// Placeholder rows shaped like a transcript while an existing chat's history
@@ -1632,17 +1631,17 @@ function ChatHistorySkeleton({ density }: { density: "comfortable" | "compact" }
   </SkeletonRegion>;
 }
 
-function Empty({ title, copy, parts }: { title: string; copy: string; parts?: GreetingPart[] }) {
+function Empty({ title, copy, parts }: { title: string; copy?: string; parts?: GreetingPart[] }) {
   return <div className="absolute inset-0 flex flex-col items-center justify-center px-4 text-center animate-page-enter sm:px-6">
     <div className="flex w-full max-w-[440px] flex-col items-center">
-      <h2 className="font-display text-[24px] font-semibold leading-[1.15] tracking-[-0.03em] text-foreground">
+      <h2 className="text-balance font-display text-[22px] font-medium leading-[1.2] tracking-[-0.02em] text-foreground">
         {parts && parts.length > 1
           ? parts.map((part, index) => part.kind === "project"
-            ? <span key={index} className="underline decoration-dotted decoration-muted-foreground/60 underline-offset-[6px]">{part.text}</span>
+            ? <span key={index} className="font-semibold">{part.text}</span>
             : <span key={index}>{part.text}</span>)
           : title}
       </h2>
-      <p className="mt-2.5 max-w-[380px] text-ui leading-relaxed tracking-[-0.004em] text-muted-foreground">{copy}</p>
+      {copy && <p className="mt-2.5 max-w-[380px] text-ui leading-relaxed tracking-[-0.004em] text-muted-foreground">{copy}</p>}
     </div>
   </div>;
 }
