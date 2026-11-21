@@ -62,7 +62,9 @@ describe("ComposerContextStrip", () => {
     expect(text).toContain("bridge-harness");
     expect(text).toContain("feat/cursor-sidebar-dev");
     expect(text).toContain("Work on branch");
-    expect(text).toContain("No agent");
+    // No agent is the default, so the chip is an icon with an accessible name.
+    expect(text).not.toContain("No agent");
+    expect(container.querySelector('[aria-label="Agent: None"]')).toBeTruthy();
     expect(text).not.toContain("This computer");
     expect(container.querySelector('[aria-label="Chat context"]')).toBeTruthy();
   });

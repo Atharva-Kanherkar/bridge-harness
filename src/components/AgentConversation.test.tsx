@@ -474,6 +474,7 @@ describe("AgentConversation", () => {
   it("keeps the greeting for a loaded-but-empty chat", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={[]} />);
     expect(html).not.toContain('aria-label="Loading conversation"');
+    expect(html).toContain("What should we build?");
   });
 
   it("shows live content through a forest refetch instead of the skeleton", () => {

@@ -17,7 +17,7 @@ import type { ImportContinuation, ImportJob, ResolveReferenceResult, WorkflowDra
 import { workflowNotification } from "./components/workflows/notify";
 import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, History, FileCode2, FileDiff, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, Check, CircleDot, Clock3, Code2, History, FileCode2, FileDiff, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
 import { continuationNotice, importedChatBadge, importSourceLabel } from "./importSources";
 import { abandonFlight, beginNewChat, beginSend, bindNewChat, markFlight, markSubmitted } from "./sendLatency";
@@ -150,7 +150,7 @@ import { readAgentOnboardingComplete, shouldShowAgentOnboarding, writeAgentOnboa
 import { resolveAsideModel } from "./asideModel";
 import { parseSideChatCommand, quoteSelection } from "./sideChat";
 import { parseFindCommand } from "./chatSearch";
-import { pickGreeting } from "./greetings";
+import { welcomeHeadline } from "./greetings";
 import { useThemePreference } from "./theme";
 import { startAppPreferenceSync } from "./appPreferences";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
@@ -4684,7 +4684,7 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
   // Names the owning project in the hero when one is selected, dotted-underlined.
   // Falls back to the workspace title only when it has no distinct project.
   const heroProject = projectName ?? workspace?.title;
-  const greeting = useMemo(() => pickGreeting("welcome", heroProject), [heroProject]);
+  const greeting = welcomeHeadline(heroProject);
   const sessionModeHintId = useId();
   const [draft, setDraftValue] = useState("");
   // Same revisioned draft as the chat composer: dictation must see edits that
@@ -4768,19 +4768,17 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
       .then(pasted => setAttachments(current => [...current, ...pasted]))
       .catch(error => setComposerError(errorMessage(error)));
   };
+  const failure = composerError ?? harnessShortcutFailure;
+  const modeToggle = !!workspace && !agent;
   return <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-8 sm:px-10 animate-page-enter">
-    <div className="mx-auto my-auto w-full max-w-3xl py-8">
-    {!adapters.some(adapter => adapter.available && adapter.id !== "bridge") && <div className="mb-6 rounded-xl border border-border bg-card p-4">
+    <div className="mx-auto my-auto w-full max-w-3xl pb-[10vh] pt-8">
+    {!adapters.some(adapter => adapter.available && adapter.id !== "bridge") && <div className="mb-10 rounded-xl border border-border bg-card p-4">
       <h2 className="text-sm font-medium">Connect your first agent</h2>
       <p className="mt-1 mb-3 text-ui text-muted-foreground">Install an agent and sign in here. Bridge handles the setup commands.</p>
       <ManagedAgentsPanel adapters={adapters} onChanged={onHealthChange} />
     </div>}
-    <h1 className="mb-6 max-w-2xl font-display text-[26px] font-semibold leading-tight tracking-[-0.03em] text-foreground sm:text-[30px]">
-      {greeting.parts.length > 1
-        ? greeting.parts.map((part, index) => part.kind === "project"
-          ? <span key={index} className="text-foreground">{part.text}</span>
-          : <span key={index}>{part.text}</span>)
-        : greeting.headline}
+    <h1 className="mb-7 text-balance text-center font-display text-[26px] font-medium leading-tight tracking-[-0.025em] text-foreground sm:text-[30px]">
+      {greeting.parts.map((part, index) => <span key={index} className={part.kind === "project" ? "font-semibold" : undefined}>{part.text}</span>)}
     </h1>
     <div className="relative">
     {slashOpen && <ComposerSlashMenu id="welcome-slash-listbox" commands={slashMatches} index={Math.min(slashIndex, slashMatches.length - 1)} onIndex={setSlashIndex} onSelect={applySlash} />}
@@ -4824,7 +4822,7 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
       onVoiceCancel={voice.cancel}
       onVoiceRetry={voice.retry}
       onVoiceSetup={onVoiceSetup}
-      placeholder={canStartChat ? "Ask Bridge…" : "Paste a repo, or install an agent…"}
+      placeholder={canStartChat ? "Ask Bridge anything, or type / for commands" : "Paste a repo, or install an agent…"}
       // Opening a project (typing a bare repo URL, or the folder `+` below)
       // needs no adapter — only starting an actual chat turn does, and
       // submitNewChatDraft already guards that with its own adaptersReady
@@ -4835,8 +4833,8 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
       // before the first message, the same picker the session composer uses.
       modelControl={<ChatModelControl adapters={adapters} accounts={agent ? undefined : accounts} account={account} harness={harness} model={model} knownLabel={knownLabel} loading={loading} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} allowedEfforts={agent ? WORKER_EFFORTS : undefined} onEffortChange={onSelectEffort} speed={speed} onSpeedChange={agent ? undefined : onSelectSpeed} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} accessControl={modelAccessControl} />}
       accessControl={accessControl}
-      trailing={workspace && !agent ? <SessionModeToggle value={sessionKind} onChange={onSelectSessionKind} disabled={busy || !canStartChat} describedBy={sessionModeHintId} /> : undefined}
-      footer={workspaces.length > 0 ? <ComposerContextStrip
+      footer={workspaces.length > 0 ? <div className="flex min-w-0 items-center gap-2 px-0.5">
+        <div className="min-w-0 flex-1"><ComposerContextStrip
         workspaces={workspaces}
         workspace={workspace}
         worktree={worktree}
@@ -4853,29 +4851,35 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
         agent={agent}
         onCreateAgent={onOpenAgents}
         onSelectAgent={onSelectAgent}
-      /> : undefined}
+        /></div>
+        {modeToggle && <SessionModeToggle value={sessionKind} onChange={onSelectSessionKind} disabled={busy || !canStartChat} describedBy={sessionModeHintId} />}
+      </div> : undefined}
     />
-    {defaultsNotice && <p role="status" className="mt-2 text-xs text-muted-foreground">{defaultsNotice}</p>}
-    <ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} />
+    {/* One reserved line for status, so a notice that comes and goes on
+        first load does not shift the centered hero. */}
+    <div className="mt-1.5 min-h-5 px-2.5 text-left">
+      {defaultsNotice && <p role="status" className="text-caption text-muted-foreground">{defaultsNotice}</p>}
+      {failure && <p role="alert" className="text-caption text-destructive">{failure}</p>}
+      <ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} />
     </div>
-    {(composerError || harnessShortcutFailure) && <p role="alert" className="mt-2 max-w-3xl text-left text-caption text-destructive">{composerError ?? harnessShortcutFailure}</p>}
-    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-caption text-muted-foreground">
-      {workspace && agent
-        ? <span id={sessionModeHintId}><span className="font-medium text-foreground">{agent.name}</span></span>
-        : workspace
-        ? <span id={sessionModeHintId}><span className="font-medium text-foreground">{sessionKind === "direct" ? "Direct" : "Orchestrator"}</span><span className="sr-only"> · {sessionModeDescription(sessionKind)}</span></span>
-        : <span />}
-      <ComposerKeyHints state="idle" className="shrink-0" />
     </div>
-    {workspaces.length === 0 && <div className="mt-6 flex justify-center">
+    {modeToggle && <span id={sessionModeHintId} className="sr-only">{sessionModeDescription(sessionKind)}</span>}
+    {workspaces.length === 0 ? <div className="mt-6 flex justify-center">
       <button type="button" onClick={onNewWorkspace} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />Add project</button>
-    </div>}
-    {workspaces.length > 0 && <section aria-label="Choose a project" className="mt-9 border-t border-border pt-5">
-      <div className="mb-3 flex items-center justify-between"><h2 className="text-meta font-medium text-muted-foreground">Projects</h2><button type="button" onClick={onNewWorkspace} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-meta text-muted-foreground hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />Add project</button></div>
-      <div className="grid gap-2 sm:grid-cols-2">{workspaces.slice(0, 4).map(item => <button key={item.id} type="button" disabled={busy} onClick={() => onSelectWorkspace(item.id)} aria-pressed={workspace?.id === item.id} className={cn("flex min-w-0 items-center gap-3 rounded-xl border p-3 text-left transition-colors disabled:opacity-50", workspace?.id === item.id ? "border-ring/50 bg-selection" : "border-border bg-card hover:border-input")}>
-        <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-accent text-muted-foreground"><FolderGit2 size={17} strokeWidth={1.6} aria-hidden="true" /></span>
-        <span className="min-w-0 flex-1"><span className="block truncate text-ui font-medium text-foreground">{item.title}</span><span className="mt-0.5 block truncate text-caption text-muted-foreground">{item.branch ?? "Choose a project folder"}</span></span>
-      </button>)}</div>
+    </div> : <section aria-label="Choose a project" className="mt-10">
+      <div className="mb-1 flex items-center justify-between pl-2.5">
+        <h2 className="text-caption font-medium text-faint">Projects</h2>
+        <button type="button" onClick={onNewWorkspace} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={12} aria-hidden="true" />Add project</button>
+      </div>
+      <ul className="flex flex-col">{workspaces.slice(0, 4).map(item => {
+        const selected = workspace?.id === item.id;
+        return <li key={item.id}><button type="button" disabled={busy} onClick={() => onSelectWorkspace(item.id)} aria-pressed={selected} className={cn("flex h-9 w-full min-w-0 items-center gap-2.5 rounded-lg px-2.5 text-left transition-colors hover:bg-accent disabled:opacity-50", selected && "bg-accent/60")}>
+          <FolderGit2 size={14} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+          <span className="min-w-0 shrink truncate text-ui text-foreground">{item.title}</span>
+          {item.branch && <span className="min-w-0 flex-1 truncate text-caption text-faint">{item.branch}</span>}
+          {selected && <Check size={14} className="ml-auto shrink-0 text-muted-foreground" aria-hidden="true" />}
+        </button></li>;
+      })}</ul>
     </section>}
     </div>
   </div>;

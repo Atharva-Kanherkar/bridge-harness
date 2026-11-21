@@ -195,7 +195,8 @@ export function ComposerContextStrip({
           className={cn(CHIP, "ml-auto min-w-0 max-w-[12rem] shrink-0", agentMenu.open && "bg-accent text-foreground")}
         >
           <Bot size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
-          <span className="hidden min-w-0 truncate @xl/composer-context:inline">{agent?.name ?? "No agent"}</span>
+          {/* "No agent" is the default; spelling it out only crowded the row. */}
+          {agent && <span className="hidden min-w-0 truncate @xl/composer-context:inline">{agent.name}</span>}
           <ChevronDown size={10} className="shrink-0 opacity-60" aria-hidden="true" />
         </button>
         <MenuPanel controller={agentMenu} label="Agent">
