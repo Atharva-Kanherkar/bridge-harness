@@ -22,7 +22,7 @@ import { accountsOf, supportsAccounts } from "../../providerAccounts";
 import { ProviderAccountsSettings } from "./ProviderAccountsSettings";
 import { PAGES } from "./sections";
 import {
-  Field, SaveBar, Select, SettingsBlockRow, SettingsGroup, SettingsPage, SettingsRow, StatusPill,
+  Field, SaveBar, Select, SettingsBlockRow, SettingsFold, SettingsGroup, SettingsPage, SettingsRow, StatusPill,
   Switch, TextArea, TextButton, useSavedFlash,
 } from "./kit";
 
@@ -79,7 +79,7 @@ export function HarnessesPage(props: Shared & {
           control={<StatusPill tone={adapter?.available ? "success" : "neutral"}>{adapter?.available ? "Available" : "Unavailable"}</StatusPill>} />
       </SettingsGroup>;
     })}
-    {bridge && <details className="text-ui"><summary className="cursor-pointer text-muted-foreground">Advanced Bridge defaults</summary><div className="mt-3"><SettingsGroup label="Defaults" note="Bridge's own routing">
+    {bridge && <SettingsFold><SettingsGroup label="Bridge defaults" note="Bridge's own routing">
       <SettingsRow
         lead={<HarnessMark harness="bridge" size={14} />}
         label={bridge.label}
@@ -88,7 +88,7 @@ export function HarnessesPage(props: Shared & {
         onOpen={() => onOpenDetail("bridge")}
         control={<StatusPill tone="success">Always on</StatusPill>}
       />
-    </SettingsGroup></div></details>}
+    </SettingsGroup></SettingsFold>}
     {managed.confirmation}
   </SettingsPage>;
 }

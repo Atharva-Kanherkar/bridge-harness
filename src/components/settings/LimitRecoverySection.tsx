@@ -3,12 +3,12 @@ import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
 import type { AdapterDescriptor } from "../../types";
 import type { Effort, LimitRecoveryMode, LimitRecoverySettings, LimitRecoveryTarget } from "../../protocol/generated/protocol";
-import { Select, SettingsGroup, SettingsRow } from "./kit";
+import { Segmented, Select, SettingsGroup, SettingsRow } from "./kit";
 
 const MODES: ReadonlyArray<{ value: LimitRecoveryMode; label: string; description: string }> = [
-  { value: "off", label: "Do nothing", description: "The chat stops and waits for you." },
-  { value: "resume", label: "Resume when the limit resets", description: "Bridge waits for the reset time the provider gives, then continues the chat on the same model and effort." },
-  { value: "backup", label: "Switch to a backup model", description: "Bridge switches the chat to your backup model right away and continues. If the backup runs out too, it resumes when the backup's limit resets." },
+  { value: "off", label: "Off", description: "The chat stops and waits for you." },
+  { value: "resume", label: "Resume", description: "Bridge waits for the reset time the provider gives, then continues the chat on the same model and effort." },
+  { value: "backup", label: "Backup model", description: "Bridge switches the chat to your backup model right away and continues. If the backup runs out too, it resumes when the backup's limit resets." },
 ];
 
 const STORABLE_EFFORTS = ["low", "medium", "high", "xhigh"] as const satisfies readonly Effort[];
@@ -65,7 +65,7 @@ export function LimitRecoverySection({ adapters }: { adapters: AdapterDescriptor
   return <SettingsGroup anchor="limit-recovery" label="When a usage limit stops a chat" note="Works while this Mac is awake and Bridge is open.">
     {error && <p role="alert" className="px-3 py-2 text-ui text-destructive">{error}</p>}
     <SettingsRow label="Action" description={mode.description} saved={saved && draft.mode !== "backup"} control={
-      <Select label="When a usage limit stops a chat" disabled={busy} width="w-64" value={draft.mode} options={MODES.map(option => ({ value: option.value, label: option.label }))} onChange={value => void commit({ ...draft, mode: value as LimitRecoveryMode })} />
+      <Segmented label="When a usage limit stops a chat" disabled={busy} value={draft.mode} options={MODES.map(option => ({ value: option.value, label: option.label }))} onChange={value => void commit({ ...draft, mode: value })} />
     } />
     {draft.mode === "backup" && <>
       <SettingsRow label="Backup model" description={draft.backup ? "The chat continues on this model until you switch it back." : "Choose a backup model to turn this on."} saved={saved} control={

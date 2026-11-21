@@ -4,7 +4,7 @@ import { bridgeApi } from "../../api";
 import { layerChatDefaults, WORKER_EFFORTS } from "../../chatDefaults";
 import type { AdapterDescriptor, AgentDefinition, Project } from "../../types";
 import type { ChatDefaults, ChatDefaultsView, ChatLaunchTarget } from "../../protocol/generated/protocol";
-import { SettingsGroup, SettingsPage, SettingsRow, TextButton, Select, useSavedFlash } from "./kit";
+import { Segmented, SettingsGroup, SettingsPage, SettingsRow, TextButton, Select, useSavedFlash } from "./kit";
 import { acceptApplicationChatDefaults } from "../../activeTurnSettings";
 import { LimitRecoverySection } from "./LimitRecoverySection";
 import { PAGES } from "./sections";
@@ -30,7 +30,7 @@ export function DefaultsSelect({ label, value, options, disabled, onChange }: {
   return <Select label={label} value={value} disabled={disabled} options={visible} onChange={onChange} />;
 }
 
-export function ChatDefaultsPage({ adapters, agents, onOpenAgents }: { adapters: AdapterDescriptor[]; agents: AgentDefinition[]; onOpenAgents?: () => void }) {
+export function ChatDefaultsPage({ adapters, agents }: { adapters: AdapterDescriptor[]; agents: AgentDefinition[] }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [scope, setScope] = useState("");
   const [view, setView] = useState<ChatDefaultsView>();
@@ -64,8 +64,8 @@ export function ChatDefaultsPage({ adapters, agents, onOpenAgents }: { adapters:
     target: [{ value: "direct", label: "Direct chat" }, { value: "orchestrator", label: "Orchestrator" }, ...agents.filter(a => a.enabled && a.role !== "orchestrator").map(a => ({ value: `agent:${a.id}`, label: a.name }))],
     model: adapters.filter(a => a.available).flatMap(a => [{ value: modelValue({ harness: a.id, model: null }), label: `${a.label} · Provider default` }, ...a.models.map(m => ({ value: modelValue({ harness: a.id, model: m.id }), label: `${a.label} · ${m.label}`, disabled: m.available === false || m.compatible === false }))]),
     effort: [{ value: "provider", label: "Provider default" }, ...efforts.map(value => ({ value, label: value }))],
-    access: [{ value: "ask", label: "User approval" }, { value: "full", label: "Full access" }],
-    createWorktree: [{ value: "false", label: "Current project checkout" }, { value: "true", label: "New isolated worktree" }],
+    access: [{ value: "ask", label: "Ask" }, { value: "full", label: "Full access" }],
+    createWorktree: [{ value: "false", label: "Checkout" }, { value: "true", label: "Worktree" }],
     activeTurnInput: [{ value: "steer", label: "Steer" }, { value: "queue", label: "Queue" }],
   };
   const source = (field: keyof ChatDefaults) => {
@@ -93,6 +93,7 @@ export function ChatDefaultsPage({ adapters, agents, onOpenAgents }: { adapters:
     finally { if (generation.current === request) setBusy(false); }
   };
   const inherited = { value: INHERIT, label: scope ? "Inherit application default" : "Use agent or Bridge default" };
+  const inheritShort = { value: INHERIT, label: scope ? "Inherit" : "Default" };
   return <SettingsPage title={PAGES.chatDefaults.label} description="Choose how new chats start. Each chat can change its own settings; saved defaults affect future chats.">
     <SettingsGroup label="Scope">
       <SettingsRow label="Apply defaults to" description="Project settings belong to this Bridge project on this device." control={<DefaultsSelect label="Defaults scope" value={scope} options={[{ value: "", label: "All projects (application default)" }, ...projects.map(p => ({ value: p.id, label: p.name }))]} onChange={setScope} />} />
@@ -106,12 +107,9 @@ export function ChatDefaultsPage({ adapters, agents, onOpenAgents }: { adapters:
           else { const model = JSON.parse(value) as NonNullable<ChatDefaults["model"]>; change({ model, effort: { value: null } }, "model"); }
         }} />} />
         <SettingsRow anchor="default-effort" label="Thinking effort" saved={isFlashed("effort")} description={efforts.length ? source("effort") : "This model has no advertised thinking control. Provider default is available."} control={<DefaultsSelect label="Default thinking effort" disabled={busy} value={selectValue("effort", draft)} options={[inherited, ...choices.effort]} onChange={value => setField("effort", value, value => ({ value: value === "provider" ? null : value }))} />} />
-        <SettingsRow anchor="default-access" label="Access" saved={isFlashed("access")} description={`${source("access")}. User approval keeps provider approval checks; Full access grants ordinary provider approvals. Browser and other special grants remain separate.`} control={<DefaultsSelect label="Default chat access" disabled={busy} value={selectValue("access", draft)} options={[inherited, ...choices.access]} onChange={value => setField("access", value, value => value as "ask" | "full")} />} />
-        <SettingsRow anchor="default-location" label="Work location" saved={isFlashed("createWorktree")} description={`${source("createWorktree")}. An isolated worktree is created only when the first message is sent.`} control={<DefaultsSelect label="Default work location" disabled={busy} value={selectValue("createWorktree", draft)} options={[inherited, ...choices.createWorktree]} onChange={value => setField("createWorktree", value, value => value === "true")} />} />
-        <SettingsRow anchor="input-while-running" label="Input while running" saved={isFlashed("activeTurnInput")} description={`${source("activeTurnInput")}. Providers without live steer queue input until a safe boundary.`} control={<DefaultsSelect label="Default input while running" disabled={busy} value={selectValue("activeTurnInput", draft)} options={[inherited, ...choices.activeTurnInput]} onChange={value => setField("activeTurnInput", value, value => value as "steer" | "queue")} />} />
-      </SettingsGroup>
-      <SettingsGroup label="Instructions">
-        <SettingsRow label="Agent instructions" description="Use your existing agents to configure reusable instructions. Project defaults select the agent by its saved identity." onOpen={onOpenAgents} />
+        <SettingsRow anchor="default-access" label="Access" saved={isFlashed("access")} description={`${source("access")}. Ask keeps provider approval checks; Full access grants ordinary provider approvals. Browser and other special grants remain separate.`} control={<Segmented label="Default chat access" disabled={busy} value={selectValue("access", draft)} options={[inheritShort, ...choices.access]} onChange={value => setField("access", value, value => value as "ask" | "full")} />} />
+        <SettingsRow anchor="default-location" label="Work location" saved={isFlashed("createWorktree")} description={`${source("createWorktree")}. Checkout works in the project folder; a new isolated worktree is created only when the first message is sent.`} control={<Segmented label="Default work location" disabled={busy} value={selectValue("createWorktree", draft)} options={[inheritShort, ...choices.createWorktree]} onChange={value => setField("createWorktree", value, value => value === "true")} />} />
+        <SettingsRow anchor="input-while-running" label="Input while running" saved={isFlashed("activeTurnInput")} description={`${source("activeTurnInput")}. Steer sends guidance into the live turn; Queue holds it until the current step finishes. Providers without live steer queue input until a safe boundary.`} control={<Segmented label="Default input while running" disabled={busy} value={selectValue("activeTurnInput", draft)} options={[inheritShort, ...choices.activeTurnInput]} onChange={value => setField("activeTurnInput", value, value => value as "steer" | "queue")} />} />
       </SettingsGroup>
       <SettingsGroup>
         <SettingsRow label="Reset these defaults" description={scope ? "Clear this project's choices so it inherits the application defaults." : "Clear every application default so chats use the selected agent or Bridge default."} saved={isFlashed("reset")} control={<TextButton disabled={busy} onClick={() => void save({})}>Reset</TextButton>} />

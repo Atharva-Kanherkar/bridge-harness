@@ -14,24 +14,25 @@ beforeEach(()=>{(globalThis as typeof globalThis & {IS_REACT_ACT_ENVIRONMENT:boo
 afterEach(()=>{act(()=>root.unmount());host.remove();vi.restoreAllMocks();});
 async function render(){await act(async()=>root.render(<ChatDefaultsPage adapters={[adapter]} agents={[]}/>));}
 async function choose(label:string,text:string){await act(async()=>host.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click());const option=[...document.querySelectorAll<HTMLElement>('[role="option"]')].find(o=>o.textContent===text);expect(option,`${label}: ${text}`).toBeTruthy();await act(async()=>{option!.dispatchEvent(new MouseEvent("pointerdown",{bubbles:true}));option!.click();});}
+async function press(group:string,text:string){const button=[...host.querySelectorAll<HTMLButtonElement>(`[aria-label="${group}"] button`)].find(b=>b.textContent===text);expect(button,`${group}: ${text}`).toBeTruthy();await act(async()=>button!.click());}
 async function click(text:string){const button=[...host.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent===text);expect(button).toBeTruthy();await act(async()=>button!.click());}
 it("saves a project override on change with the acknowledged project revision and leaves inherited fields absent",async()=>{
   const save=vi.spyOn(bridgeApi,"saveChatDefaults").mockResolvedValue({...view(),project:{revision:4,defaults:{access:"ask"}}});
   const create=vi.spyOn(bridgeApi,"createConfiguredChat");await render();await choose("Defaults scope","Project A");
-  expect(host.textContent).toContain("Inherits application default");await choose("Default chat access","User approval");
+  expect(host.textContent).toContain("Inherits application default");await press("Default chat access","Ask");
   expect(save).toHaveBeenCalledWith({projectId:"p",expectedRevision:3,defaults:{access:"ask"}});expect(host.querySelector('[role="status"]')?.textContent).toBe("Saved");expect(create).not.toHaveBeenCalled();
   expect([...host.querySelectorAll("button")].map(b=>b.textContent)).not.toContain("Save defaults");
 });
 it("reports save failures without claiming Saved and shows what is stored",async()=>{
-  vi.spyOn(bridgeApi,"saveChatDefaults").mockRejectedValue(new Error("Disk is full"));await render();await choose("Default chat access","User approval");
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Disk is full");expect(host.textContent).not.toContain("Saved");expect(host.querySelector('[aria-label="Default chat access"]')?.textContent).toContain("Full access");
+  vi.spyOn(bridgeApi,"saveChatDefaults").mockRejectedValue(new Error("Disk is full"));await render();await press("Default chat access","Ask");
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Disk is full");expect(host.textContent).not.toContain("Saved");expect([...host.querySelectorAll('[aria-label="Default chat access"] button')].find(b=>b.getAttribute("aria-pressed")==="true")?.textContent).toBe("Full access");
 });
 it("saves Input while running on change and hands it to the composer's resolver",async()=>{
   const save=vi.spyOn(bridgeApi,"saveChatDefaults").mockImplementation(async params=>({application:{revision:3,defaults:params.defaults},project:null}));
   const { useActiveTurnInput } = await import("../../activeTurnSettings");
   function Probe(){return <output data-probe>{useActiveTurnInput()}</output>;}
   await act(async()=>root.render(<><ChatDefaultsPage adapters={[adapter]} agents={[]}/><Probe/></>));
-  await choose("Default input while running","Queue");
+  await press("Default input while running","Queue");
   expect(save).toHaveBeenCalledWith(expect.objectContaining({projectId:null,expectedRevision:2,defaults:expect.objectContaining({activeTurnInput:"queue"})}));
   expect(host.querySelector("[data-probe]")?.textContent).toBe("queue");
 });
@@ -44,7 +45,7 @@ it("does not let a late project read overwrite another project's editor",async()
   await choose("Defaults scope","Project A");await choose("Defaults scope","Project B");
   const save=vi.spyOn(bridgeApi,"saveChatDefaults").mockResolvedValue({...view(),project:{revision:10,defaults:{access:"full"}}});
   await act(async()=>q({...view(),project:{revision:9,defaults:{access:"ask"}}}));await act(async()=>p({...view(),project:{revision:5,defaults:{access:"full"}}}));
-  await choose("Default chat access","Full access");expect(save.mock.calls[0][0]).toMatchObject({projectId:"q",expectedRevision:9,defaults:{access:"full"}});
+  await press("Default chat access","Full access");expect(save.mock.calls[0][0]).toMatchObject({projectId:"q",expectedRevision:9,defaults:{access:"full"}});
 });
 it("labels inherited values with the same words as the menus, never raw data",async()=>{
   await render();await choose("Defaults scope","Project A");

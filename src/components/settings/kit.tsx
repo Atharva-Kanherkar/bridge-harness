@@ -21,12 +21,15 @@ import { cn } from "@/lib/utils";
 
 export type Crumb = { label: string; onClick?: () => void };
 
+/** The settings content column: left aligned beside the rail, about 44rem
+ *  wide. Every page and the loading skeleton use it, so content never jumps
+ *  as the rail selection changes. */
+export const SETTINGS_COLUMN = "w-full max-w-176 pb-12 pl-6 pr-6 pt-7 md:pl-12";
+
 /**
- * One settings page: an optional breadcrumb, a title, one line of description,
- * an optional action, then the groups.
- *
- * The column width lives here and only here, which is what keeps the content
- * from jumping as the rail selection changes.
+ * One settings page, the same anatomy everywhere: an optional breadcrumb, a
+ * title, one line of description, an optional action, then labeled groups of
+ * rows and at most one `SettingsFold`.
  */
 export function SettingsPage({ title, description, breadcrumb, action, children }: {
   title: string;
@@ -35,7 +38,7 @@ export function SettingsPage({ title, description, breadcrumb, action, children 
   action?: ReactNode;
   children: ReactNode;
 }) {
-  return <div data-settings-column className="@container/settings mx-auto w-full max-w-page px-5 pb-12 pt-6 sm:px-8">
+  return <div data-settings-column className={cn("@container/settings", SETTINGS_COLUMN)}>
     {breadcrumb && breadcrumb.length > 0 && <nav aria-label="Breadcrumb" className="mb-2 flex items-center gap-1.5 text-xs">
       {breadcrumb.map((crumb, index) => <span key={`${crumb.label}-${index}`} className="flex items-center gap-1.5">
         {index > 0 && <span aria-hidden="true" className="text-muted-foreground">/</span>}
@@ -53,6 +56,19 @@ export function SettingsPage({ title, description, breadcrumb, action, children 
     </header>
     <div className="space-y-6">{children}</div>
   </div>;
+}
+
+/* ── fold ─────────────────────────────────────────────────────────────────── */
+
+/** The page's one "Advanced" fold, closed until opened. Search opens it when
+ *  a hit lives inside. */
+export function SettingsFold({ label = "Advanced", children }: { label?: string; children: ReactNode }) {
+  return <details data-settings-fold className="group/fold">
+    <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded-md px-0.5 text-ui text-muted-foreground transition-colors hover:text-foreground [&::-webkit-details-marker]:hidden">
+      <CaretRight size={12} strokeWidth={1.7} aria-hidden="true" className="transition-transform group-open/fold:rotate-90" />{label}
+    </summary>
+    <div className="mt-4 space-y-6">{children}</div>
+  </details>;
 }
 
 /* ── group ────────────────────────────────────────────────────────────────── */
@@ -262,7 +278,30 @@ export type SelectOption = {
   description?: string;
   disabled?: boolean;
   lead?: ReactNode;
+  /** Options sharing a group are listed under that label. */
+  group?: string;
 };
+
+/** Two or three short choices, all visible at once. Saves on click. */
+export function Segmented<T extends string>({ value, options, onChange, disabled, label }: {
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (next: T) => void;
+  disabled?: boolean;
+  label: string;
+}) {
+  return <div role="group" aria-label={label} className="u-segmented flex shrink-0">
+    {options.map(option => <button
+      key={option.value}
+      type="button"
+      className="u-segmented-item disabled:opacity-45"
+      disabled={disabled}
+      data-active={value === option.value}
+      aria-pressed={value === option.value}
+      onClick={() => { if (option.value !== value) onChange(option.value); }}
+    >{option.label}</button>)}
+  </div>;
+}
 
 const CONTROL = "h-7 rounded-lg border border-border-card bg-popover px-2.5 text-xs text-foreground outline-none transition-colors disabled:opacity-45";
 
@@ -314,7 +353,7 @@ export function Select({ value, options, onChange, disabled, label, placeholder 
           aria-label={label}
           className="u-glass-popover max-h-[min(18rem,var(--available-height))] min-w-(--anchor-width) max-w-(--available-width) overflow-y-auto rounded-lg border border-border bg-popover p-1 outline-none"
         >
-          {options.map(option => <SelectPrimitive.Item
+          {options.map((option, index) => <SelectItemWithGroup key={option.value} option={option} first={index === 0 || options[index - 1].group !== option.group}><SelectPrimitive.Item
             key={option.value}
             value={option.value}
             label={option.label}
@@ -330,11 +369,20 @@ export function Select({ value, options, onChange, disabled, label, placeholder 
               {option.description && <span className="mt-0.5 block text-caption text-muted-foreground">{option.description}</span>}
             </span>
             {option.value === value && <Check size={12} strokeWidth={1.7} aria-hidden="true" className="shrink-0" />}
-          </SelectPrimitive.Item>)}
+          </SelectPrimitive.Item></SelectItemWithGroup>)}
         </SelectPrimitive.Popup>
       </SelectPrimitive.Positioner>
     </SelectPrimitive.Portal>
   </SelectPrimitive.Root>;
+}
+
+/** A group label above the first option of each group. */
+function SelectItemWithGroup({ option, first, children }: { option: SelectOption; first: boolean; children: ReactNode }) {
+  if (!option.group || !first) return <>{children}</>;
+  return <>
+    <div role="presentation" className="px-2 pb-1 pt-2 text-caption font-medium text-muted-foreground first:pt-1">{option.group}</div>
+    {children}
+  </>;
 }
 
 /** A single-line text field. Same box as the select, without the chevron. */
@@ -344,7 +392,7 @@ export function Field({ value, onChange, disabled, label, placeholder, type = "t
   disabled?: boolean;
   label: string;
   placeholder?: string;
-  type?: "text" | "password" | "time";
+  type?: "text" | "password" | "time" | "search";
   width?: string;
   mono?: boolean;
   onKeyDown?: (event: React.KeyboardEvent<HTMLInputElement>) => void;

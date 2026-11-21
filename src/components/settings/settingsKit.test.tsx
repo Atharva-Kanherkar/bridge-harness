@@ -201,7 +201,10 @@ describe("SettingsPage and SettingsGroup", () => {
         <SettingsGroup label="Provider prompts"><SettingsRow label="Auto-approve" /></SettingsGroup>
       </SettingsPage>,
     );
-    expect(container.querySelector("[data-settings-column]")?.classList.contains("max-w-page")).toBe(true);
+    const column = container.querySelector("[data-settings-column]")!;
+    expect(column.classList.contains("max-w-176")).toBe(true);
+    // Left aligned beside the rail, never centered in the window.
+    expect(column.classList.contains("mx-auto")).toBe(false);
     expect(container.querySelector("h2")!.textContent).toBe("Permissions");
     expect(container.textContent).toContain("Provider prompts");
     await unmount();

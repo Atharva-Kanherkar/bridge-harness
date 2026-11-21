@@ -4,7 +4,8 @@ import { Archive, ArrowLeft, ArchiveRestore } from "lucide-react";
 import { bridgeApi } from "../../api";
 import type { ArchivedChat } from "../../protocol/generated/protocol";
 import type { AgentEvent } from "../../types";
-import { GhostButton, SettingsGroup, SettingsPage } from "./kit";
+import { Field, GhostButton, SettingsGroup, SettingsPage, TextButton } from "./kit";
+import { PAGES } from "./sections";
 import { AgentConversation } from "../AgentConversation";
 
 export function ArchivedChatsPage() {
@@ -75,9 +76,9 @@ export function ArchivedChatsPage() {
     finally { setBusy(false); }
   };
 
-  return <SettingsPage title="Archived chats" description="Your conversations, kept for reference. Unarchive returns a chat to history without restoring its worktree or starting a model.">
-    {error && <p role="alert" className="rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{error} <button type="button" onClick={() => setRevision(value => value + 1)} className="underline">Retry</button></p>}
-    {note && <p role="status" className="text-sm text-muted-foreground">{note}</p>}
+  return <SettingsPage title={PAGES.archives.label} description="Your conversations, kept for reference. Unarchive returns a chat to history without restoring its worktree or starting a model.">
+    {error && <p role="alert" className="flex flex-wrap items-center gap-2 text-ui text-destructive">{error} <TextButton onClick={() => setRevision(value => value + 1)}>Retry</TextButton></p>}
+    {note && <p role="status" className="text-ui text-muted-foreground">{note}</p>}
     {selected ? <>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <GhostButton onClick={() => { setSelected(undefined); setConversation(undefined); }}><ArrowLeft size={14} /> All archived chats</GhostButton>
@@ -106,7 +107,7 @@ export function ArchivedChatsPage() {
         {moreContent && <GhostButton disabled={loading} onClick={() => setSequence(events[events.length - 1]?.sequence ?? sequence)}>{loading ? "Loading history..." : "Load more history"}</GhostButton>}
       </div>
     </> : <>
-      <input type="search" aria-label="Search archived chats" placeholder="Search by chat or project name" value={query} onChange={event => { setQuery(event.target.value); setOffset(0); }} className="h-10 w-full rounded-lg border border-border bg-card px-3 text-sm outline-none focus:border-ring" />
+      <Field type="search" label="Search archived chats" placeholder="Search by chat or project name" width="w-full" value={query} onChange={next => { setQuery(next); setOffset(0); }} />
       {loading ? <SkeletonRows label="Loading archived chats" rows={4} trailing /> : <SettingsGroup label="Conversations">
         {chats.length === 0 ? <div className="p-8 text-center text-muted-foreground"><Archive size={24} className="mx-auto mb-3" /><p className="text-sm">{query ? "No archived chats match your search." : "No archived chats yet."}</p></div> : <ul className="divide-y divide-border">
           {chats.map(chat => <li key={chat.id} className="flex flex-wrap items-center gap-3 p-4">

@@ -20,7 +20,7 @@ import type { AdapterDescriptor, ModelProfileDraft, ProfilePurpose, ReasoningEff
 import { HarnessMark } from "../harnessMarks";
 import { PAGES } from "./sections";
 import {
-  GhostButton, Select, SettingsGroup, SettingsPage, SettingsRow, StatusPill, Switch, useSavedFlash,
+  GhostButton, Segmented, Select, SettingsGroup, SettingsPage, SettingsRow, StatusPill, Switch, useSavedFlash,
 } from "./kit";
 
 const VERIFICATION: ProfilePurpose[] = ["reviewer", "evaluator"];
@@ -193,12 +193,11 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
               description={selectionMode === "pinned"
                 ? "Uses the coding agent and model selected below. If unavailable, Bridge tries the backup choice."
                 : "Bridge chooses an available model suited to this task and may change it over time."}
-              control={<Select
+              control={<Segmented
                 label={`${profileLabels[profile.purpose]} model choice`}
                 value={selectionMode}
                 disabled={busy}
-                width="w-52"
-                options={[{ value: "track_standard", label: "Choose automatically" }, { value: "pinned", label: "Use a specific model" }]}
+                options={[{ value: "track_standard", label: "Automatic" }, { value: "pinned", label: "Specific model" }]}
                 onChange={value => {
                   const mode = value as "track_standard" | "pinned";
                   onUpdate({
@@ -252,30 +251,28 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
             />
             <SettingsRow
               label="Cost preference"
-              control={<Select
+              control={<Segmented
                 label={`${profileLabels[profile.purpose]} cost preference`}
                 value={profile.budgetPreference ?? ""}
                 disabled={busy}
-                width="w-44"
                 options={[
                   { value: "", label: "Balanced" },
                   { value: "economy", label: "Lower cost" },
-                  { value: "quality", label: "Quality first" },
+                  { value: "quality", label: "Quality" },
                 ]}
                 onChange={value => onUpdate({ budgetPreference: value || null })}
               />}
             />
             <SettingsRow
               label="Response speed"
-              control={<Select
+              control={<Segmented
                 label={`${profileLabels[profile.purpose]} response speed`}
                 value={profile.latencyPreference ?? ""}
                 disabled={busy}
-                width="w-44"
                 options={[
                   { value: "", label: "Balanced" },
-                  { value: "fast", label: "Faster responses" },
-                  { value: "patient", label: "Willing to wait" },
+                  { value: "fast", label: "Faster" },
+                  { value: "patient", label: "Can wait" },
                 ]}
                 onChange={value => onUpdate({ latencyPreference: value || null })}
               />}

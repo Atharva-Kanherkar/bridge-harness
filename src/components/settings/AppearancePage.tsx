@@ -10,7 +10,7 @@ import type { ReactNode } from "react";
 import { useThemePreference, type EffortSelectorStyle, type ThemePreference, type ThemeSkin } from "../../theme";
 import { useShowWorkerChatsInMissionControl } from "../../missionControlSettings";
 import { useAutoExpandEditActivity, useShowThinking } from "../../transcriptSettings";
-import { SettingsGroup, SettingsPage, SettingsRow, Switch, TextButton } from "./kit";
+import { SettingsFold, SettingsGroup, SettingsPage, SettingsRow, Switch, TextButton } from "./kit";
 import { cn } from "@/lib/utils";
 import { canZoom, stepZoom, useZoomLevel } from "../../zoom";
 import { useOmarchyTheme } from "../../omarchy";
@@ -145,6 +145,14 @@ export function AppearancePage() {
     <SettingsGroup anchor="window-background" label="Window background" note="Solid or tinted by your desktop">
       <TileGrid name="Shell" tiles={skins} value={shownSkin} onChange={setSkin} columns={omarchy ? "@min-[580px]/settings:grid-cols-3" : "@min-[480px]/settings:grid-cols-2"} />
     </SettingsGroup>
+    <SettingsGroup label="Zoom" note={`Also on ${chordLabel("zoom-in")} and ${chordLabel("zoom-out")}`}>
+      <SettingsRow
+        anchor="zoom"
+        label="Window zoom"
+        description={`Scales the whole window, the way ${chordLabel("zoom-in")} does in a browser. Kept between launches.`}
+        control={<ZoomControl level={zoom} onChange={setZoom} />}
+      />
+    </SettingsGroup>
     <SettingsGroup label="Conversation" note="What appears while your agent works">
       <SettingsRow
         anchor="show-thinking"
@@ -159,15 +167,7 @@ export function AppearancePage() {
         control={<Switch label="Open edit activity automatically" checked={autoExpandEditActivity} onChange={setAutoExpandEditActivity} />}
       />
     </SettingsGroup>
-    <SettingsGroup label="Zoom" note={`Also on ${chordLabel("zoom-in")} and ${chordLabel("zoom-out")}`}>
-      <SettingsRow
-        anchor="zoom"
-        label="Window zoom"
-        description={`Scales the whole window, the way ${chordLabel("zoom-in")} does in a browser. Kept between launches.`}
-        control={<ZoomControl level={zoom} onChange={setZoom} />}
-      />
-    </SettingsGroup>
-    <details className="text-ui"><summary className="cursor-pointer text-muted-foreground">Advanced display options</summary><div className="mt-3 space-y-5">
+    <SettingsFold>
     <SettingsGroup anchor="thinking-control" label="Thinking control" note="How the model picker sets reasoning effort">
       <TileGrid name="Thinking control" tiles={EFFORT_STYLES} value={effortSelector} onChange={setEffortSelector} columns="@min-[580px]/settings:grid-cols-3" />
     </SettingsGroup>
@@ -179,6 +179,6 @@ export function AppearancePage() {
         control={<Switch label="Show worker chats in Mission Control" checked={showWorkerChats} onChange={setShowWorkerChats} />}
       />
     </SettingsGroup>
-    </div></details>
+    </SettingsFold>
   </SettingsPage>;
 }

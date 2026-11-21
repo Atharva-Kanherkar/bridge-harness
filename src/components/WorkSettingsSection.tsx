@@ -10,7 +10,7 @@ import type {
 } from "../protocol/generated/protocol";
 import { HarnessMark } from "./harnessMarks";
 import { PAGES } from "./settings/sections";
-import { Select, SettingsGroup, SettingsPage, SettingsRow, Switch, useSavedFlash } from "./settings/kit";
+import { GhostButton, Select, SettingsGroup, SettingsPage, SettingsRow, Switch, useSavedFlash } from "./settings/kit";
 
 // Work briefing: the write path that makes a briefing reachable from a fresh
 // install through the UI alone. This surface pre-empts the obvious mistakes, but
@@ -105,7 +105,7 @@ export function WorkSettingsSection({ onError, onOpenBoard }: { onError: (messag
     title={PAGES.work.label}
     description="A briefing of activity from your connected tools in the past 24 hours, using the model you choose."
   >
-    {onOpenBoard && <SettingsRow label="Past 24 hours" description="See recent activity from your connected integrations." control={<button type="button" onClick={onOpenBoard} className="rounded-md border border-border px-3 py-2 text-xs text-foreground hover:bg-accent">Open Work</button>} />}
+    {onOpenBoard && <SettingsRow label="Past 24 hours" description="See recent activity from your connected integrations." control={<GhostButton onClick={onOpenBoard}>Open Work</GhostButton>} />}
     <SettingsGroup
       anchor="briefing"
       label="Integration briefing"

@@ -11,6 +11,8 @@ import type { SuggestionSettingsSnapshot } from "../protocol/generated/protocol"
 import { type OpenCodeAdvancedSettings } from "./OpenCodeHarnessSettings";
 import { ImportHarnessSection } from "./ImportHarnessSection";
 import { SettingsRail } from "./settings/SettingsRail";
+import { SETTINGS_COLUMN } from "./settings/kit";
+import { cn } from "@/lib/utils";
 import { AppearancePage } from "./settings/AppearancePage";
 import { UpdatesPage } from "./settings/UpdatesPage";
 import { NotificationsPage } from "./settings/NotificationsPage";
@@ -293,12 +295,12 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     />
     <div ref={contentRef} className="relative min-h-0 min-w-0 flex-1 overflow-y-auto">
 
-      {busy && !config ? <SkeletonRegion label="Loading settings" className="mx-auto w-full max-w-page space-y-6 px-5 pb-12 pt-6 sm:px-8">
+      {busy && !config ? <SkeletonRegion label="Loading settings" className={cn("space-y-6", SETTINGS_COLUMN)}>
         <div className="space-y-2"><Skeleton className="h-6 w-48" /><Skeleton index={1} className="w-72 max-w-full" /></div>
         <SkeletonRows rows={4} trailing />
       </SkeletonRegion> : null}
 
-      {section === "chatDefaults" && config && <ChatDefaultsPage adapters={adapters} agents={config.agents} onOpenAgents={() => navigate("agents")} />}
+      {section === "chatDefaults" && config && <ChatDefaultsPage adapters={adapters} agents={config.agents} />}
       {section === "general" && <AppearancePage />}
       {section === "data" && <StoragePage onError={onError} copilot={storageCopilot} />}
       {section === "updates" && <UpdatesPage availableUpdate={availableUpdate} onUpdate={onUpdate} />}

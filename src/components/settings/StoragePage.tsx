@@ -694,7 +694,7 @@ export function StoragePage({ onError, title = PAGES.data.label, extra, copilot 
     reply: text => { ask(text); },
   };
 
-  return <div data-settings-column className="@container/settings mx-auto w-full max-w-page-wide px-5 pb-16 pt-6 sm:px-8">
+  return <div data-settings-column className="@container/settings w-full max-w-page-wide pb-16 pl-6 pr-6 pt-7 md:pl-12">
     <div
       ref={gridRef}
       // The rail column takes the dragged width, but never less than RAIL_MIN

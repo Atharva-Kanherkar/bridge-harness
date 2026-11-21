@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsScreen } from "./SettingsScreen";
 import { ALL_PAGES, PAGES, type PageId } from "./settings/sections";
 import { SETTINGS_ROWS } from "./settings/settingsSearch";
+import { ADVANCED_OPEN_KEY } from "./settings/SettingsRail";
 
 async function flush() {
   await new Promise(resolve => setTimeout(resolve, 0));
@@ -33,9 +34,14 @@ const props = {
 };
 
 describe("SettingsScreen", () => {
-  it("makes every page a rail destination", () => {
+  it("makes every page outside Advanced a rail destination, with Advanced collapsed by default", () => {
+    localStorage.removeItem(ADVANCED_OPEN_KEY);
     const html = renderToStaticMarkup(<SettingsScreen {...props} />);
-    for (const page of ALL_PAGES) expect(html).toContain(`>${PAGES[page].label.replace("&", "&amp;")}<`);
+    for (const page of ALL_PAGES.filter(id => PAGES[id].group !== "advanced")) expect(html).toContain(`>${PAGES[page].label.replace("&", "&amp;")}<`);
+    expect(html).toContain(">Advanced<");
+    expect(html).not.toContain(">Background tasks<");
+    // The rail does not repeat the screen's name above the destinations.
+    expect(html).not.toContain(">Settings</h1>");
     for (const label of ["Presets", "Harnesses", "Clones", "Runtimes"]) expect(html).not.toContain(`>${label}<`);
   });
 
@@ -354,7 +360,7 @@ describe("SettingsScreen", () => {
         document.body.append(container);
         root = createRoot(container);
       }
-      expect([...widths]).toEqual(["max-w-page"]);
+      expect([...widths]).toEqual(["max-w-176"]);
     });
 
     it("names what Reset all deletes before it deletes it", async () => {

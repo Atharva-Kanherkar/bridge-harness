@@ -7,7 +7,8 @@
 import type { ReactNode } from "react";
 import { Lock as LockSimple } from "lucide-react";
 import type { BridgeEvent, PermissionPolicy } from "../../types";
-import { SettingsGroup, SettingsPage, SettingsRow, Switch } from "./kit";
+import { SettingsFold, SettingsGroup, SettingsPage, SettingsRow, Switch } from "./kit";
+import { PAGES } from "./sections";
 import { OpencodeAppsSetting } from "./OpencodeAppsSetting";
 
 /// Host gates that outlive the provider convenience switch.
@@ -39,7 +40,7 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
 }) {
   const on = policy.autoApproveProviderPermissions === true;
   const proposalRoles = policy.workerPromptProposalRoles ?? [];
-  return <SettingsPage title="Permissions" description="How much Bridge asks before an agent acts.">
+  return <SettingsPage title={PAGES.permissions.label} description={PAGES.permissions.description}>
     <SettingsGroup label="Agent actions">
       <SettingsRow
         anchor="auto-approve"
@@ -55,24 +56,7 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
       />
     </SettingsGroup>
 
-    <details className="text-ui"><summary className="cursor-pointer text-muted-foreground">Advanced: suggested instruction changes</summary><div className="mt-3"><SettingsGroup anchor="instruction-proposals" label="Suggested instruction changes" note="Off by default; each change still asks">
-      <SettingsRow label="Let background agents suggest improvements to their instructions"
-        description="Each agent may suggest changes to its instructions. You review the exact change before it is saved. It applies the next time that role starts." />
-      {WORKER_ROLES.map(role => <SettingsRow
-        key={role}
-        label={<span className="capitalize">{role}</span>}
-        control={<Switch
-          label={`Allow ${role} prompt proposals`}
-          checked={proposalRoles.includes(role)}
-          disabled={busy}
-          onChange={enabled => onChange({ ...policy, workerPromptProposalRoles: enabled
-            ? [...proposalRoles.filter(item => item !== role), role]
-            : proposalRoles.filter(item => item !== role) })}
-        />}
-      />)}
-    </SettingsGroup></div></details>
 
-    <OpencodeAppsSetting />
 
     <SettingsGroup anchor="always-asks" label="Always asks" note="These keep asking either way">
       {SURVIVING_GATES.map(gate => <SettingsRow
@@ -95,5 +79,22 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
           />)}
     </SettingsGroup>
     {extra}
+    <SettingsFold><SettingsGroup anchor="instruction-proposals" label="Suggested instruction changes" note="Off by default; each change still asks">
+      <SettingsRow label="Let background agents suggest improvements to their instructions"
+        description="Each agent may suggest changes to its instructions. You review the exact change before it is saved. It applies the next time that role starts." />
+      {WORKER_ROLES.map(role => <SettingsRow
+        key={role}
+        label={<span className="capitalize">{role}</span>}
+        control={<Switch
+          label={`Allow ${role} prompt proposals`}
+          checked={proposalRoles.includes(role)}
+          disabled={busy}
+          onChange={enabled => onChange({ ...policy, workerPromptProposalRoles: enabled
+            ? [...proposalRoles.filter(item => item !== role), role]
+            : proposalRoles.filter(item => item !== role) })}
+        />}
+      />)}
+    </SettingsGroup>
+    <OpencodeAppsSetting /></SettingsFold>
   </SettingsPage>;
 }
