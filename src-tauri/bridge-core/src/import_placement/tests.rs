@@ -306,7 +306,7 @@ fn bridges_own_runs_and_probes_are_removed_and_real_chats_are_kept_immutable() {
         params![slack],
     ).unwrap();
 
-    assert_eq!(purge_background(&core.db, &rules).unwrap(), 2);
+    assert_eq!(purge_background(&core.db, &rules).unwrap().removed, 2);
 
     let db = core.db.lock().unwrap();
     let left: Vec<String> = db
@@ -328,7 +328,7 @@ fn bridges_own_runs_and_probes_are_removed_and_real_chats_are_kept_immutable() {
     let refused = db.execute("DELETE FROM session_entries WHERE session_id='chat'", []).unwrap_err();
     assert!(refused.to_string().contains("immutable"), "the guard is back: {refused}");
     drop(db);
-    assert_eq!(purge_background(&core.db, &rules).unwrap(), 0, "nothing left to remove");
+    assert_eq!(purge_background(&core.db, &rules).unwrap().removed, 0, "nothing left to remove");
 }
 
 #[test]
@@ -342,7 +342,7 @@ fn removal_goes_in_batches() {
         imported(&core, &id, &data.join(format!("chats/{index}")).to_string_lossy(), None);
         history(&core, &id, &[("user.message", "Slack inbox")]);
     }
-    assert_eq!(purge_background(&core.db, &Rules::for_core(&core)).unwrap(), PURGE_BATCH + 7);
+    assert_eq!(purge_background(&core.db, &Rules::for_core(&core)).unwrap().removed, PURGE_BATCH + 7);
     let left: i64 = core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM sessions WHERE kind='imported'", [], |row| row.get(0)).unwrap();
     assert_eq!(left, 0);
 }
@@ -360,7 +360,9 @@ fn measure_tidying_on_this_machine() {
     let mut rules = Rules::new(&data, &home);
     rules.temp_dirs = os_temp_dirs();
     let started = std::time::Instant::now();
-    let doomed = background_sessions(&db, &rules).unwrap();
+    let db = Mutex::new(db);
+    let doomed = background_sessions(&db, &rules, &mut std::time::Duration::ZERO).unwrap();
+    let db = db.into_inner().unwrap();
     let total: i64 = db.query_row("SELECT COUNT(*) FROM sessions WHERE kind='imported' AND parent_session_id IS NULL", [], |row| row.get(0)).unwrap();
     println!("MEASURE imported={total} would_remove={} in {:.1}s", doomed.len(), started.elapsed().as_secs_f64());
     let doomed: std::collections::HashSet<String> = doomed.into_iter().collect();
@@ -419,4 +421,143 @@ fn adopting_a_worktree_later_moves_its_chats_from_the_repository_to_it() {
     assert_eq!(report.relinked_chats, 1);
     assert_eq!(workspace_of(&core, "c"), Some(tree.to_string_lossy().into_owned()), "then under its own worktree");
     assert_eq!(workspace_of(&core, "r"), Some(app.to_string_lossy().into_owned()), "the repository's own chat stays");
+}
+
+/// The real purge on a copy of a real Bridge database
+/// (`BRIDGE_PURGE_COPY=<copy>/bridge.db`), opened the way Bridge opens it:
+/// how long it takes and the longest it holds the database.
+#[test]
+#[ignore = "deletes from the database it is given; run by hand on a copy"]
+fn measure_the_purge_on_a_copy() {
+    let path = PathBuf::from(std::env::var("BRIDGE_PURGE_COPY").expect("set BRIDGE_PURGE_COPY to a copy of bridge.db"));
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;").unwrap();
+    let home = PathBuf::from(std::env::var("HOME").unwrap());
+    let mut rules = Rules::new(&home.join("Library/Application Support/dev.bridge.deck"), &home);
+    rules.temp_dirs = os_temp_dirs();
+    let db = Mutex::new(db);
+    let before: i64 = db.lock().unwrap().query_row("SELECT COUNT(*) FROM sessions WHERE kind='imported'", [], |row| row.get(0)).unwrap();
+    let started = std::time::Instant::now();
+    let purge = purge_background(&db, &rules).unwrap();
+    let total = started.elapsed();
+    let db = db.into_inner().unwrap();
+    let after: i64 = db.query_row("SELECT COUNT(*) FROM sessions WHERE kind='imported'", [], |row| row.get(0)).unwrap();
+    let foreign_keys: i64 = db.query_row("PRAGMA foreign_keys", [], |row| row.get(0)).unwrap();
+    let guard: i64 = db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ('imported_session_entries_immutable_delete','session_entries_ad_fts')", [], |row| row.get(0)).unwrap();
+    let orphan_entries: i64 = db.query_row("SELECT COUNT(*) FROM session_entries e WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id=e.session_id)", [], |row| row.get(0)).unwrap();
+    let orphan_heads: i64 = db.query_row("SELECT COUNT(*) FROM session_heads h WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id=h.session_id)", [], |row| row.get(0)).unwrap();
+    println!(
+        "MEASURE removed={} batches={} total_secs={:.1} longest_hold_ms={} imported_before={before} imported_after={after} foreign_keys={foreign_keys} triggers_back={guard} orphan_entries={orphan_entries} orphan_heads={orphan_heads}",
+        purge.removed,
+        purge.batches,
+        total.as_secs_f64(),
+        purge.longest_hold.as_millis()
+    );
+}
+
+fn search_rows(core: &BridgeCore, session: &str) -> i64 {
+    core.db
+        .lock()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM session_entry_fts WHERE session_id=?1", params![session], |row| row.get(0))
+        .unwrap()
+}
+
+#[test]
+fn a_removed_run_leaves_no_search_rows_digest_or_lifted_guard_and_checks_come_back_on() {
+    let scratch = tempfile::tempdir().unwrap();
+    let home = scratch.path().canonicalize().unwrap();
+    let data = home.join("data");
+    let core = core(&data);
+    let slack = data.join("chats/0a1b").to_string_lossy().into_owned();
+    imported(&core, "slack", &slack, None);
+    history(&core, "slack", &[("user.message", "Check my Slack inbox"), ("assistant.message", "2 unread")]);
+    imported(&core, "chat", "/Users/me/code/app", None);
+    history(&core, "chat", &[("user.message", "fix the login"), ("assistant.message", "Fixed.")]);
+    assert_eq!((search_rows(&core, "slack"), search_rows(&core, "chat")), (2, 2), "both are in the search index");
+
+    let purge = purge_background(&core.db, &Rules::for_core(&core)).unwrap();
+
+    assert_eq!((purge.removed, purge.batches), (1, 1));
+    assert_eq!(search_rows(&core, "slack"), 0, "the run's search rows went with it");
+    assert_eq!(search_rows(&core, "chat"), 2, "the kept chat is still searchable");
+    let db = core.db.lock().unwrap();
+    let digests: i64 = db.query_row("SELECT COUNT(*) FROM chat_digests WHERE session_id='slack'", [], |row| row.get(0)).unwrap();
+    assert_eq!(digests, 0);
+    let foreign_keys: i64 = db.query_row("PRAGMA foreign_keys", [], |row| row.get(0)).unwrap();
+    assert_eq!(foreign_keys, 1, "checks are back on");
+    let triggers: Vec<String> = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name IN ('imported_session_entries_immutable_delete','session_entries_ad_fts') ORDER BY name")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(triggers, vec!["imported_session_entries_immutable_delete", "session_entries_ad_fts"]);
+}
+
+#[test]
+fn a_run_something_else_points_at_is_removed_with_checks_on() {
+    let scratch = tempfile::tempdir().unwrap();
+    let home = scratch.path().canonicalize().unwrap();
+    let data = home.join("data");
+    let core = core(&data);
+    let slack = data.join("chats/0a1b").to_string_lossy().into_owned();
+    imported(&core, "slack", &slack, None);
+    history(&core, "slack", &[("user.message", "Check my Slack inbox")]);
+    // A title job points at it: its foreign key cascades.
+    core.db
+        .lock()
+        .unwrap()
+        .execute("INSERT INTO session_title_jobs(session_id,status,reason,available_at,created_at,updated_at) VALUES('slack','pending','backfill','now','now','now')", [])
+        .map(|_| ())
+        .unwrap_or_else(|error| panic!("the title job fixture needs updating: {error}"));
+    let purge = purge_background(&core.db, &Rules::for_core(&core)).unwrap();
+    assert_eq!(purge.removed, 1);
+    let db = core.db.lock().unwrap();
+    let left: i64 = db.query_row("SELECT COUNT(*) FROM session_title_jobs WHERE session_id='slack'", [], |row| row.get(0)).unwrap();
+    assert_eq!(left, 0, "the cascade was carried out");
+    let foreign_keys: i64 = db.query_row("PRAGMA foreign_keys", [], |row| row.get(0)).unwrap();
+    assert_eq!(foreign_keys, 1);
+}
+
+/// The regression: with foreign key checks on, every deleted entry made
+/// SQLite read the whole history (`parent_entry_id` has no index). On a large
+/// history the old purge took most of a second per entry and held Bridge's
+/// database for minutes per batch.
+#[test]
+fn removal_stays_fast_on_a_large_history() {
+    let scratch = tempfile::tempdir().unwrap();
+    let home = scratch.path().canonicalize().unwrap();
+    let data = home.join("data");
+    let core = core(&data);
+    {
+        let db = core.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,harness,label,status,metric_source,kind,cwd) VALUES('big','claude','x','stopped','reported','chat','/Users/me/code/app')",
+            [],
+        )
+        .unwrap();
+        // 400,000 entries of a chat Bridge ran, each pointing at the one before.
+        db.execute_batch(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 400000)
+             INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+             SELECT 'big-' || i, 'big', CASE WHEN i > 1 THEN 'big-' || (i - 1) END, i, 'tool.call', '{}', 'now' FROM n;",
+        )
+        .unwrap();
+    }
+    for index in 0..300 {
+        let id = format!("run-{index}");
+        imported(&core, &id, &data.join(format!("chats/{index}")).to_string_lossy(), None);
+        history(&core, &id, &[("user.message", "Slack inbox"), ("assistant.message", "nothing new")]);
+    }
+    let started = std::time::Instant::now();
+    let purge = purge_background(&core.db, &Rules::for_core(&core)).unwrap();
+    let total = started.elapsed();
+    println!("purge held the database at most {:?}, {total:?} in all", purge.longest_hold);
+    assert_eq!(purge.removed, 300);
+    assert!(purge.longest_hold < std::time::Duration::from_millis(1500), "held the database for {:?}", purge.longest_hold);
+    assert!(total < std::time::Duration::from_secs(10), "took {total:?}");
+    let kept: i64 = core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='big'", [], |row| row.get(0)).unwrap();
+    assert_eq!(kept, 400_000);
 }

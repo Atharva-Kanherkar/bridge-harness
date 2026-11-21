@@ -310,75 +310,280 @@ pub fn place(db: &Mutex<Connection>, rules: &Rules) -> Result<Placement, BridgeE
     Ok(out)
 }
 
-/// Sessions removed per transaction, so Bridge's database is never held for
-/// long.
-const PURGE_BATCH: usize = 500;
+/// Sessions removed per transaction. Each batch holds Bridge's database for
+/// a moment, then lets go for [`PURGE_PAUSE`] so other work gets it.
+const PURGE_BATCH: usize = 200;
+const PURGE_PAUSE: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Triggers on `session_entries` lifted inside a purge batch and put back
+/// before it commits: the guard on imported history, and the search index's
+/// per-entry delete, which the batch does once for all its entries instead
+/// (`entry_id` is not indexed in the search table, so each per-entry delete
+/// reads the whole index).
+const LIFTED_TRIGGERS: &[&str] = &["imported_session_entries_immutable_delete", "session_entries_ad_fts"];
+
+/// Run `work` with Bridge's database held, and keep the longest hold.
+fn held<T>(db: &Mutex<Connection>, longest: &mut std::time::Duration, work: impl FnOnce(&Connection) -> T) -> T {
+    let db = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let started = std::time::Instant::now();
+    let out = work(&db);
+    *longest = (*longest).max(started.elapsed());
+    out
+}
+
+/// What [`purge_background`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Purge {
+    /// Chats removed (subagents not counted).
+    pub removed: usize,
+    pub batches: usize,
+    /// The longest any step held Bridge's database.
+    pub longest_hold: std::time::Duration,
+}
 
 /// Remove imported copies of runs that are not chats (Bridge's own runs and
 /// command probes), with their subagents and history. Imported history is
 /// otherwise immutable: only these are ever deleted, the guard on their
 /// entries is lifted inside each batch's transaction and put back before it
 /// commits, and their provenance records stay as the audit of what was
-/// imported. Returns how many chats were removed.
-pub fn purge_background(db: &Mutex<Connection>, rules: &Rules) -> Result<usize, BridgeError> {
-    let doomed = {
-        let db = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        background_sessions(&db, rules)?
-    };
-    let mut removed = 0;
-    for batch in doomed.chunks(PURGE_BATCH) {
-        let db = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let transaction = db.unchecked_transaction()?;
-        // Foreign keys are checked when the batch commits, so the order rows
-        // go in does not matter, only that nothing is left pointing at them.
-        transaction.execute_batch(
-            "PRAGMA defer_foreign_keys = ON;
-             CREATE TEMP TABLE IF NOT EXISTS import_purge(id TEXT PRIMARY KEY);
-             DELETE FROM temp.import_purge;",
-        )?;
-        for id in batch {
-            transaction.execute("INSERT OR IGNORE INTO temp.import_purge(id) VALUES(?1)", params![id])?;
-        }
-        // Their subagents go with them, however deep.
-        transaction.execute_batch(
-            "WITH RECURSIVE tree(id) AS (
-                 SELECT id FROM temp.import_purge
-                 UNION SELECT s.id FROM sessions s JOIN tree ON s.parent_session_id = tree.id WHERE s.kind='imported'
-             )
-             INSERT OR IGNORE INTO temp.import_purge(id) SELECT id FROM tree;
-             DROP TRIGGER IF EXISTS imported_session_entries_immutable_delete;",
-        )?;
-        // Rows that cannot outlive their session or its history: every table
-        // whose foreign key to `sessions` or `session_entries` does not
-        // cascade (history, heads, events).
-        for (table, column) in dependents_of(&transaction, "session_entries")? {
-            transaction.execute(
-                &format!(
-                    "DELETE FROM \"{table}\" WHERE \"{column}\" IN
-                     (SELECT id FROM session_entries WHERE session_id IN (SELECT id FROM temp.import_purge))"
-                ),
-                [],
-            )?;
-        }
-        for (table, column) in dependents_of(&transaction, "sessions")? {
-            transaction.execute(
-                &format!("DELETE FROM \"{table}\" WHERE \"{column}\" IN (SELECT id FROM temp.import_purge)"),
-                [],
-            )?;
-        }
-        transaction.execute("DELETE FROM import_native_sessions WHERE session_id IN (SELECT id FROM temp.import_purge)", [])?;
-        removed += transaction.query_row(
-            "SELECT COUNT(*) FROM sessions WHERE kind='imported' AND parent_session_id IS NULL AND id IN (SELECT id FROM temp.import_purge)",
-            [],
-            |row| row.get::<_, i64>(0),
-        )? as usize;
-        // Parents and subagents in one statement, so the parent link holds.
-        transaction.execute("DELETE FROM sessions WHERE kind='imported' AND id IN (SELECT id FROM temp.import_purge)", [])?;
-        crate::external_import::install_import_foundation(&transaction)?;
-        transaction.execute_batch("DELETE FROM temp.import_purge;")?;
-        transaction.commit()?;
+/// imported.
+///
+/// Fast, so it never stalls Bridge: a batch removes a run's own rows
+/// (session, history, head, native id, search rows) with foreign key checks
+/// off, because with them on, every deleted entry makes SQLite read the whole
+/// history table (`parent_entry_id` has no index); on a 1.5 million entry
+/// history that was a second per entry. A batch whose sessions anything else
+/// points at is removed with the checks on instead.
+pub fn purge_background(db: &Mutex<Connection>, rules: &Rules) -> Result<Purge, BridgeError> {
+    let mut out = Purge::default();
+    let doomed = background_sessions(db, rules, &mut out.longest_hold)?;
+    if doomed.is_empty() {
+        return Ok(out);
     }
+    // Found once, up front, in short locked steps, so a batch only deletes
+    // by key: each run with its subagents, their search rows, their native
+    // ids.
+    let families = held(db, &mut out.longest_hold, |db| families_of(db, &doomed))?;
+    let search = search_rows_of(db, &families, &mut out.longest_hold)?;
+    let natives = held(db, &mut out.longest_hold, |db| native_keys_of(db, &families))?;
+    for (index, batch) in doomed.chunks(PURGE_BATCH).enumerate() {
+        if index > 0 {
+            std::thread::sleep(PURGE_PAUSE);
+        }
+        let ids: Vec<&str> = batch.iter().flat_map(|root| families.get(root).into_iter().flatten()).map(String::as_str).collect();
+        let rows: Vec<i64> = ids.iter().flat_map(|id| search.get(*id).into_iter().flatten()).copied().collect();
+        let keys: Vec<&str> = ids.iter().flat_map(|id| natives.get(*id).into_iter().flatten()).map(String::as_str).collect();
+        out.removed += held(db, &mut out.longest_hold, |db| purge_batch(db, &ids, &rows, &keys))?;
+        out.batches += 1;
+    }
+    Ok(out)
+}
+
+/// Each doomed run and its imported subagents, however deep, by run.
+fn families_of(db: &Connection, doomed: &[String]) -> Result<HashMap<String, Vec<String>>, BridgeError> {
+    db.execute_batch("CREATE TEMP TABLE IF NOT EXISTS import_doomed(id TEXT PRIMARY KEY); DELETE FROM temp.import_doomed;")?;
+    {
+        let mut insert = db.prepare("INSERT OR IGNORE INTO temp.import_doomed(id) VALUES(?1)")?;
+        for id in doomed {
+            insert.execute(params![id])?;
+        }
+    }
+    let mut statement = db.prepare(
+        "WITH RECURSIVE tree(root, id) AS (
+             SELECT id, id FROM temp.import_doomed
+             UNION SELECT tree.root, s.id FROM sessions s JOIN tree ON s.parent_session_id = tree.id WHERE s.kind='imported'
+         )
+         SELECT root, id FROM tree",
+    )?;
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    for row in statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))? {
+        let (root, id) = row?;
+        out.entry(root).or_default().push(id);
+    }
+    drop(statement);
+    db.execute_batch("DELETE FROM temp.import_doomed;")?;
+    Ok(out)
+}
+
+/// Rows of the search index read per locked step: the index can only be
+/// filtered by session by reading it, so it is read once, in steps.
+const SEARCH_STEP: i64 = 20_000;
+
+/// The search index's rows for the doomed sessions, by session.
+fn search_rows_of(
+    db: &Mutex<Connection>,
+    families: &HashMap<String, Vec<String>>,
+    longest: &mut std::time::Duration,
+) -> Result<HashMap<String, Vec<i64>>, BridgeError> {
+    let wanted: std::collections::HashSet<&str> = families.values().flatten().map(String::as_str).collect();
+    let mut out: HashMap<String, Vec<i64>> = HashMap::new();
+    let last: Option<i64> = held(db, longest, |db| -> Result<Option<i64>, BridgeError> {
+        let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='session_entry_fts')", [], |row| row.get(0))?;
+        if !exists {
+            return Ok(None);
+        }
+        Ok(db.query_row("SELECT max(rowid) FROM session_entry_fts", [], |row| row.get(0))?)
+    })?;
+    let Some(last) = last else { return Ok(out) };
+    let mut from = 0;
+    while from < last {
+        held(db, longest, |db| -> Result<(), BridgeError> {
+            let mut statement = db.prepare_cached("SELECT rowid, session_id FROM session_entry_fts WHERE rowid > ?1 AND rowid <= ?2")?;
+            for row in statement.query_map(params![from, from + SEARCH_STEP], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)))? {
+                let (rowid, session) = row?;
+                if let Some(session) = session.filter(|session| wanted.contains(session.as_str())) {
+                    out.entry(session).or_default().push(rowid);
+                }
+            }
+            Ok(())
+        })?;
+        from += SEARCH_STEP;
+    }
+    Ok(out)
+}
+
+/// The native ids recorded for the doomed sessions, by session.
+fn native_keys_of(db: &Connection, families: &HashMap<String, Vec<String>>) -> Result<HashMap<String, Vec<String>>, BridgeError> {
+    let wanted: std::collections::HashSet<&str> = families.values().flatten().map(String::as_str).collect();
+    let mut statement = db.prepare("SELECT native_key, session_id FROM import_native_sessions")?;
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    for row in statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))? {
+        let (key, session) = row?;
+        if wanted.contains(session.as_str()) {
+            out.entry(session).or_default().push(key);
+        }
+    }
+    Ok(out)
+}
+
+/// Remove one batch (runs with their subagents, their search rows and native
+/// ids), with foreign key checks off when nothing but the runs' own rows
+/// refers to them, else with them on.
+fn purge_batch(db: &Connection, ids: &[&str], search_rows: &[i64], native_keys: &[&str]) -> Result<usize, BridgeError> {
+    db.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS import_purge(id TEXT PRIMARY KEY);
+         CREATE TEMP TABLE IF NOT EXISTS import_purge_entries(id TEXT PRIMARY KEY);
+         CREATE TEMP TABLE IF NOT EXISTS import_purge_search(row INTEGER PRIMARY KEY);
+         CREATE TEMP TABLE IF NOT EXISTS import_purge_natives(key TEXT PRIMARY KEY);
+         DELETE FROM temp.import_purge; DELETE FROM temp.import_purge_entries;
+         DELETE FROM temp.import_purge_search; DELETE FROM temp.import_purge_natives;",
+    )?;
+    {
+        let mut insert = db.prepare("INSERT OR IGNORE INTO temp.import_purge(id) VALUES(?1)")?;
+        for id in ids {
+            insert.execute(params![id])?;
+        }
+        let mut insert = db.prepare("INSERT OR IGNORE INTO temp.import_purge_search(row) VALUES(?1)")?;
+        for row in search_rows {
+            insert.execute(params![row])?;
+        }
+        let mut insert = db.prepare("INSERT OR IGNORE INTO temp.import_purge_natives(key) VALUES(?1)")?;
+        for key in native_keys {
+            insert.execute(params![key])?;
+        }
+    }
+    db.execute_batch(
+        "INSERT OR IGNORE INTO temp.import_purge_entries(id)
+             SELECT id FROM session_entries WHERE session_id IN (SELECT id FROM temp.import_purge);",
+    )?;
+    let fast = !referenced_elsewhere(db)?;
+    if fast {
+        db.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    }
+    let removed = remove_batch(db, fast);
+    if fast {
+        db.execute_batch("PRAGMA foreign_keys = ON;")?;
+    }
+    db.execute_batch(
+        "DELETE FROM temp.import_purge; DELETE FROM temp.import_purge_entries;
+         DELETE FROM temp.import_purge_search; DELETE FROM temp.import_purge_natives;",
+    )?;
+    removed
+}
+
+/// Whether any row besides a run's own (its session, history and head, and
+/// subagents in the batch) points at the batch: then foreign key checks
+/// must stay on to carry out each reference's action.
+fn referenced_elsewhere(db: &Connection) -> Result<bool, BridgeError> {
+    for (parent, keys) in [("sessions", "temp.import_purge"), ("session_entries", "temp.import_purge_entries")] {
+        for (table, column) in references_to(db, parent)? {
+            if table == "session_entries" || table == "session_heads" || table == "sessions" {
+                continue;
+            }
+            let found: bool = db.query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM \"{table}\" WHERE \"{column}\" IN (SELECT id FROM {keys}))"),
+                [],
+                |row| row.get(0),
+            )?;
+            if found {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Delete the batch in one transaction. `fast`: foreign key checks are off,
+/// so every reference to the batch is removed here.
+fn remove_batch(db: &Connection, fast: bool) -> Result<usize, BridgeError> {
+    let transaction = db.unchecked_transaction()?;
+    let lifted: Vec<String> = {
+        let mut statement = transaction.prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='session_entries'")?;
+        let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|(name, _)| LIFTED_TRIGGERS.contains(&name.as_str()))
+            .filter_map(|(name, sql)| sql.map(|sql| {
+                (name, sql)
+            }))
+            .map(|(name, sql)| {
+                transaction.execute_batch(&format!("DROP TRIGGER \"{name}\";")).map(|()| sql)
+            })
+            .collect::<Result<_, _>>()?
+    };
+    if !fast {
+        transaction.execute_batch("PRAGMA defer_foreign_keys = ON;")?;
+        // With the checks on, other references are carried out by them; the
+        // rows that cannot outlive the session still go first.
+        for (parent, keys) in [("session_entries", "temp.import_purge_entries"), ("sessions", "temp.import_purge")] {
+            for (table, column) in dependents_of(&transaction, parent)? {
+                transaction.execute(&format!("DELETE FROM \"{table}\" WHERE \"{column}\" IN (SELECT id FROM {keys})"), [])?;
+            }
+        }
+    }
+    // The batch's search rows, found up front, by row number.
+    let has_search: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='session_entry_fts')", [], |row| row.get(0))?;
+    if has_search {
+        transaction.execute("DELETE FROM session_entry_fts WHERE rowid IN (SELECT row FROM temp.import_purge_search)", [])?;
+    }
+    transaction.execute_batch(
+        "DELETE FROM session_heads WHERE session_id IN (SELECT id FROM temp.import_purge);
+         DELETE FROM session_entries WHERE id IN (SELECT id FROM temp.import_purge_entries);
+         DELETE FROM import_native_sessions WHERE native_key IN (SELECT key FROM temp.import_purge_natives);",
+    )?;
+    let removed = transaction.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE kind='imported' AND parent_session_id IS NULL AND id IN (SELECT id FROM temp.import_purge)",
+        [],
+        |row| row.get::<_, i64>(0),
+    )? as usize;
+    // Parents and subagents in one statement, so the parent link holds.
+    transaction.execute("DELETE FROM sessions WHERE kind='imported' AND id IN (SELECT id FROM temp.import_purge)", [])?;
+    for sql in lifted {
+        transaction.execute_batch(&sql)?;
+    }
+    crate::external_import::install_import_foundation(&transaction)?;
+    transaction.commit()?;
     Ok(removed)
+}
+
+/// Every foreign key column that points at `parent`, whatever its action.
+fn references_to(db: &Connection, parent: &str) -> Result<Vec<(String, String)>, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT m.name, f.\"from\" FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) f
+         WHERE m.type='table' AND f.\"table\"=?1 ORDER BY m.name",
+    )?;
+    let rows = statement.query_map(params![parent], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    Ok(rows.collect::<Result<_, _>>()?)
 }
 
 /// Tables with a foreign key to `parent` that does not cascade, and the
@@ -395,29 +600,44 @@ fn dependents_of(db: &Connection, parent: &str) -> Result<Vec<(String, String)>,
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
-/// Top-level imported sessions that are runs, not chats.
-fn background_sessions(db: &Connection, rules: &Rules) -> Result<Vec<String>, BridgeError> {
+/// Top-level imported sessions that are runs, not chats. Folders are
+/// checked without Bridge's database held (they may touch the disk).
+fn background_sessions(db: &Mutex<Connection>, rules: &Rules, longest: &mut std::time::Duration) -> Result<Vec<String>, BridgeError> {
+    let folders: Vec<(String, String)> = held(db, longest, |db| -> Result<Vec<(String, String)>, BridgeError> {
+        let mut statement = db.prepare("SELECT id, cwd FROM sessions WHERE kind='imported' AND parent_session_id IS NULL AND cwd IS NOT NULL")?;
+        let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    })?;
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    let mut statement = db.prepare("SELECT id, cwd FROM sessions WHERE kind='imported' AND parent_session_id IS NULL AND cwd IS NOT NULL")?;
-    for row in statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))? {
-        let (id, cwd) = row?;
-        if rules.is_bridge_folder(&cwd) && seen.insert(id.clone()) {
+    let mut checked: HashMap<String, bool> = HashMap::new();
+    for (id, cwd) in folders {
+        let bridge = *checked.entry(cwd.clone()).or_insert_with(|| rules.is_bridge_folder(&cwd));
+        if bridge && seen.insert(id.clone()) {
             out.push(id);
         }
     }
     // Probes: every entry a user message, and every one a slash command.
-    let mut statement = db.prepare(
-        "SELECT s.id FROM sessions s
-         WHERE s.kind='imported' AND s.parent_session_id IS NULL
-           AND EXISTS (SELECT 1 FROM session_entries e WHERE e.session_id=s.id)
-           AND NOT EXISTS (SELECT 1 FROM session_entries e WHERE e.session_id=s.id AND e.kind <> 'user.message')",
-    )?;
-    let only_user: Vec<String> = statement.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
-    let mut texts = db.prepare("SELECT json_extract(payload,'$.text') FROM session_entries WHERE session_id=?1")?;
-    for id in only_user {
-        let all: Vec<Option<String>> = texts.query_map(params![id], |row| row.get(0))?.collect::<Result<_, _>>()?;
-        if command_run(all.iter().map(|text| (Some("user.message"), text.as_deref()))) && seen.insert(id.clone()) {
+    let probes = held(db, longest, |db| -> Result<Vec<String>, BridgeError> {
+        let mut statement = db.prepare(
+            "SELECT s.id FROM sessions s
+             WHERE s.kind='imported' AND s.parent_session_id IS NULL
+               AND EXISTS (SELECT 1 FROM session_entries e WHERE e.session_id=s.id)
+               AND NOT EXISTS (SELECT 1 FROM session_entries e WHERE e.session_id=s.id AND e.kind <> 'user.message')",
+        )?;
+        let only_user: Vec<String> = statement.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
+        let mut texts = db.prepare("SELECT json_extract(payload,'$.text') FROM session_entries WHERE session_id=?1")?;
+        let mut found = Vec::new();
+        for id in only_user {
+            let all: Vec<Option<String>> = texts.query_map(params![id], |row| row.get(0))?.collect::<Result<_, _>>()?;
+            if command_run(all.iter().map(|text| (Some("user.message"), text.as_deref()))) {
+                found.push(id);
+            }
+        }
+        Ok(found)
+    })?;
+    for id in probes {
+        if seen.insert(id.clone()) {
             out.push(id);
         }
     }

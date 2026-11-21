@@ -273,7 +273,7 @@ pub(crate) fn start_with_roots(
 /// under its project ([`crate::import_placement`]). Returns what changed.
 pub(crate) fn tidy_imported_chats(core: &Arc<BridgeCore>) -> Result<(usize, crate::import_placement::Placement), BridgeError> {
     let rules = crate::import_placement::Rules::for_core(core);
-    let removed = crate::import_placement::purge_background(&core.db, &rules)?;
+    let removed = crate::import_placement::purge_background(&core.db, &rules)?.removed;
     let placement = crate::import_placement::place(&core.db, &rules)?;
     if removed > 0 || placement.placed > 0 {
         core.events.publish(CoreEvent::StateChanged);
