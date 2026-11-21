@@ -85,7 +85,9 @@ function TileGrid<T extends string>({ name, tiles, value, onChange, columns }: {
         }}
         onClick={() => onChange(tile.id)}
         className={cn(
-          "rounded-lg border p-2.5 text-left transition-colors",
+          // A column from the top: a button centers its content by default,
+          // so a tile whose hint wraps pushed its neighbours' swatches down.
+          "flex flex-col items-stretch justify-start rounded-lg border p-2.5 text-left transition-colors",
           selected ? "border-foreground" : "border-border-card hover:bg-accent",
         )}
       >
@@ -100,7 +102,7 @@ function TileGrid<T extends string>({ name, tiles, value, onChange, columns }: {
         <span className="flex items-center gap-1.5">
           <span aria-hidden="true" className={cn(
             "grid size-3 shrink-0 place-items-center rounded-full border",
-            selected ? "border-foreground" : "border-border",
+            selected ? "border-foreground" : "border-muted-foreground/50",
           )}>{selected && <span className="size-1.5 rounded-full bg-foreground" />}</span>
           <span className="min-w-0 flex-1 truncate text-ui text-foreground">{tile.label}</span>
         </span>

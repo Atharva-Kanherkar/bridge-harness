@@ -360,7 +360,7 @@ describe("SettingsScreen", () => {
         document.body.append(container);
         root = createRoot(container);
       }
-      expect([...widths]).toEqual(["max-w-176"]);
+      expect([...widths]).toEqual(["max-w-200"]);
     });
 
     it("names what Reset all deletes before it deletes it", async () => {

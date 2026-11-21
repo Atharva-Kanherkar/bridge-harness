@@ -16,15 +16,13 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Select as SelectPrimitive } from "@base-ui/react/select";
 import { ChevronDown as CaretDown, ChevronRight as CaretRight, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { SETTINGS_COLUMN } from "./layout";
 
 /* ── page ─────────────────────────────────────────────────────────────────── */
 
 export type Crumb = { label: string; onClick?: () => void };
 
-/** The settings content column: left aligned beside the rail, about 44rem
- *  wide. Every page and the loading skeleton use it, so content never jumps
- *  as the rail selection changes. */
-export const SETTINGS_COLUMN = "w-full max-w-176 pb-12 pl-6 pr-6 pt-7 md:pl-12";
+export { SETTINGS_COLUMN, SETTINGS_COLUMN_WIDE } from "./layout";
 
 /**
  * One settings page, the same anatomy everywhere: an optional breadcrumb, a

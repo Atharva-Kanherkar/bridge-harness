@@ -32,7 +32,7 @@ export function NotificationsPage() {
         label={KIND_COPY[kind].label}
         description={KIND_COPY[kind].description}
         control={<div className="flex items-center gap-3">
-          {CHANNELS.map(channel => <span key={channel.key} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          {CHANNELS.map(channel => <span key={channel.key} className="flex items-center gap-1.5 text-meta text-muted-foreground">
             <span aria-hidden="true">{channel.label}</span>
             <Switch
               checked={settings.kinds[kind][channel.key]}

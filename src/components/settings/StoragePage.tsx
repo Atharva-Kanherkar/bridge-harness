@@ -22,7 +22,7 @@ import { cleanupTotal, diskBytes, displayPath, storageSnapshot, withSnapshot, ty
 import { StorageAgentContext, type StorageAgentHost } from "../StoragePlanCard";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogTitle } from "../ui/dialog";
-import { GhostButton, PrimaryButton, StatusPill, TextButton } from "./kit";
+import { GhostButton, PrimaryButton, SETTINGS_COLUMN_WIDE, StatusPill, TextButton } from "./kit";
 import type { StorageCopilotHost } from "./StorageCopilot";
 import { WorktreeStorage } from "./WorktreeStorage";
 import { PAGES } from "./sections";
@@ -694,7 +694,7 @@ export function StoragePage({ onError, title = PAGES.data.label, extra, copilot 
     reply: text => { ask(text); },
   };
 
-  return <div data-settings-column className="@container/settings w-full max-w-page-wide pb-16 pl-6 pr-6 pt-7 md:pl-12">
+  return <div data-settings-column className={cn("@container/settings", SETTINGS_COLUMN_WIDE)}>
     <div
       ref={gridRef}
       // The rail column takes the dragged width, but never less than RAIL_MIN

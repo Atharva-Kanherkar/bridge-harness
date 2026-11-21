@@ -202,9 +202,10 @@ describe("SettingsPage and SettingsGroup", () => {
       </SettingsPage>,
     );
     const column = container.querySelector("[data-settings-column]")!;
-    expect(column.classList.contains("max-w-176")).toBe(true);
-    // Left aligned beside the rail, never centered in the window.
-    expect(column.classList.contains("mx-auto")).toBe(false);
+    expect(column.classList.contains("max-w-200")).toBe(true);
+    // Centered in the space beside the rail: Settings owns the window's
+    // sidebar slot, so a left-aligned column left a dead strip on the right.
+    expect(column.classList.contains("mx-auto")).toBe(true);
     expect(container.querySelector("h2")!.textContent).toBe("Permissions");
     expect(container.textContent).toContain("Provider prompts");
     await unmount();

@@ -1,5 +1,11 @@
-// The settings rail: search, every page as a destination, then Updates and
-// the reset action in the footer.
+// The settings rail: back to the app, search, every page as a destination,
+// then Updates and the reset action in the footer.
+//
+// Settings takes the window's sidebar slot rather than sitting beside it, the
+// way System Settings and most desktop apps do it: two stacked navigation
+// columns made every page narrow and asked the eye to pick which sidebar was
+// in charge. The rail owns the window's leading edge, so its first row keeps
+// clear of the traffic lights and drags the window.
 //
 // Every page is one click away at every width. On a wide window the rail is a
 // full-height column with its own scroll; below md it collapses to a section
@@ -10,7 +16,7 @@
 
 import { useState } from "react";
 import {
-  RotateCcw as ArrowCounterClockwise, ChevronRight as CaretRight, Code, Download as DownloadSimple, RefreshCw, type LucideIcon as Icon, Keyboard, Search as MagnifyingGlass, Bot as Robot,
+  RotateCcw as ArrowCounterClockwise, ChevronLeft as CaretLeft, ChevronRight as CaretRight, Code, Download as DownloadSimple, RefreshCw, type LucideIcon as Icon, Keyboard, Search as MagnifyingGlass, Bot as Robot,
   ScrollText as Scroll, ShieldCheck, SlidersHorizontal, Sparkles as Sparkle, Sun, HardDrive, Archive, Mic, Bell, KeyRound, MessagesSquare, Newspaper, Cpu,
 } from "lucide-react";
 import { ALL_PAGES, PAGES, RAIL_GROUPS, type PageId } from "./sections";
@@ -57,7 +63,7 @@ const PICKER_OPTIONS = ALL_PAGES.map(id => ({
   group: RAIL_GROUPS.find(group => group.pages.includes(id))?.label ?? "Bridge",
 }));
 
-export function SettingsRail({ section, query, rows, onQueryChange, onSelect, onSearchSelect, onResetAll, resetting, availableUpdate }: {
+export function SettingsRail({ section, query, rows, onQueryChange, onSelect, onSearchSelect, onResetAll, onExit, resetting, availableUpdate }: {
   section: PageId;
   query: string;
   rows: SearchableRow[];
@@ -65,6 +71,8 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
   onSelect: (next: PageId) => void;
   onSearchSelect: (row: SearchableRow) => void;
   onResetAll: () => void;
+  /** Leave Settings for wherever the user was before it. */
+  onExit?: () => void;
   resetting: boolean;
   availableUpdate?: UpdateInfo;
 }) {
@@ -91,8 +99,17 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
     </button>;
   };
 
-  return <nav aria-label="Settings" className="flex w-full shrink-0 flex-col border-b border-border bg-muted/30 md:h-full md:w-56 md:border-b-0 md:border-r">
-    <div className="flex shrink-0 items-center gap-2 px-3 pb-2 pt-3 md:block md:pt-4">
+  return <nav aria-label="Settings" className="u-vibrancy-sidebar flex w-full shrink-0 flex-col border-b border-sidebar-border bg-sidebar md:h-full md:w-60 md:border-b-0 md:border-r">
+    <div data-tauri-drag-region="deep" className="u-traffic-inset flex h-11 shrink-0 items-center pl-24 pr-3">
+      {onExit && <button
+        type="button"
+        onClick={onExit}
+        className="flex h-7 items-center gap-1 rounded-lg pl-1 pr-2 text-ui text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+      >
+        <CaretLeft size={14} strokeWidth={1.7} aria-hidden="true" className="shrink-0" />Back to app
+      </button>}
+    </div>
+    <div className="flex shrink-0 items-center gap-2 px-3 pb-2 md:block">
       <div className="min-w-0 flex-1 md:hidden">
         <Select label="Settings section" value={section} options={PICKER_OPTIONS} onChange={value => onSelect(value as PageId)} width="w-full" />
       </div>
@@ -104,7 +121,7 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
           aria-label="Search settings"
           placeholder="Search settings"
           onChange={event => onQueryChange(event.target.value)}
-          className="h-7 w-full rounded-lg border border-border-card bg-popover pl-7 pr-2 text-xs text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring"
+          className="h-7 w-full rounded-lg border border-border-card bg-popover pl-7 pr-2 text-ui text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring"
         />
       </div>
     </div>
