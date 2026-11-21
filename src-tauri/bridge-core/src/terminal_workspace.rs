@@ -59,7 +59,7 @@ pub(crate) fn settle_exit(child: &mut (dyn portable_pty::Child + Send + Sync)) -
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let _ = child.kill();
+    child.kill().ok();
     child.wait().ok().map(|status| status.exit_code())
 }
 
@@ -82,7 +82,7 @@ fn settle_registered(core: &BridgeCore, key: &str, epoch: u64) -> Option<Option<
                     if Instant::now() >= deadline {
                         let Some(mut runtime) = runtimes.remove(key) else { return Some(None) };
                         drop(runtimes);
-                        let _ = runtime.child.kill();
+                        runtime.child.kill().ok();
                         return Some(runtime.child.wait().ok().map(|status| status.exit_code()));
                     }
                 }
@@ -96,8 +96,8 @@ fn settle_registered(core: &BridgeCore, key: &str, epoch: u64) -> Option<Option<
 /// SIGKILL; the wait collects the process so a closed terminal leaves no
 /// zombie behind in a long-lived daemon.
 pub(crate) fn end_child(child: &mut (dyn portable_pty::Child + Send + Sync)) {
-    let _ = child.kill();
-    let _ = child.wait();
+    child.kill().ok();
+    child.wait().ok();
 }
 
 /// The locale a PTY gets when Bridge itself has none. A Finder-launched app
@@ -845,7 +845,7 @@ mod tests {
     struct Stuck(mpsc::Receiver<()>);
     impl Write for Stuck {
         fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-            let _ = self.0.recv();
+            self.0.recv().ok();
             Err(std::io::ErrorKind::BrokenPipe.into())
         }
         fn flush(&mut self) -> std::io::Result<()> {
