@@ -232,6 +232,46 @@ pub struct WorkspaceChangesResult {
     pub files_truncated: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionChangesParams {
+    pub session_id: String,
+    /// Include each file's patch. Off, only the counts are computed: what a
+    /// badge polls for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_patches: Option<bool>,
+}
+
+/// Why a chat has no scoped changes view. Mirrors
+/// `bridge_core::chat_changes::SessionChangesUnavailable`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionChangesUnavailable {
+    NoFolder,
+    NotGit,
+    NoTurns,
+    SnapshotFailed,
+}
+
+/// `workspaces/session_changes`' result: what one chat's own turns changed,
+/// measured from the snapshot taken before its first turn and kept to the
+/// paths its turns touched. Mirrors `bridge_core::chat_changes::SessionChanges`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionChangesResult {
+    pub available: bool,
+    pub unavailable_reason: Option<SessionChangesUnavailable>,
+    /// Turns recorded for the chat.
+    pub turns: usize,
+    /// When the chat's baseline was taken (RFC 3339).
+    pub since: Option<String>,
+    /// Line totals across every changed file, including any past the
+    /// bounded `changes.files` window.
+    pub additions: i64,
+    pub deletions: i64,
+    pub changes: Option<WorkspaceChangesResult>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

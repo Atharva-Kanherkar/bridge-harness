@@ -1945,6 +1945,22 @@ pub fn workspace_changes(
     git::workspace_changeset(Path::new(&path))
 }
 
+/// What one chat's own turns changed, rather than everything uncommitted in
+/// its folder. Resolves the folder under the lock, then runs Git outside it.
+/// See [`crate::chat_changes`].
+pub fn session_changes(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    include_patches: bool,
+) -> Result<crate::chat_changes::SessionChanges, BridgeError> {
+    match core.session_workspace_root(session_id) {
+        Some(root) => crate::chat_changes::session_changes(&root, session_id, include_patches),
+        None => Ok(crate::chat_changes::SessionChanges::unavailable(
+            crate::chat_changes::SessionChangesUnavailable::NoFolder,
+        )),
+    }
+}
+
 pub fn archive_workspace(
     core: &Arc<BridgeCore>,
     workspace_id: &str,

@@ -2,8 +2,8 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "../types";
-import { CHANGES_POLL_MS, ChangesPanel, STATS_REFRESH_DEBOUNCE_MS, sameChangeset } from "./ChangesPanel";
+import type { SessionChangesResult, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "../types";
+import { CHANGES_POLL_MS, ChangesPanel, STATS_REFRESH_DEBOUNCE_MS, sameChangeset, sinceLabel } from "./ChangesPanel";
 import { bridgeApi } from "../api";
 
 // Contracts: testing/feat-dock-changes.md §1–§4 and
@@ -378,5 +378,100 @@ describe("ChangesPanel in the dock", () => {
     expect(sameChangeset(a, changesResult([fileChange("a.ts", { labels: ["y"] })]))).toBe(false);
     expect(sameChangeset(a, changesResult([fileChange("a.ts", { labels: ["x"], patch: "@@ -1 +1 @@\n+z\n" })]))).toBe(false);
     expect(sameChangeset(undefined, a)).toBe(false);
+  });
+
+  describe("scoped to the chat", () => {
+    const chatResult = (over: Partial<SessionChangesResult> = {}): SessionChangesResult => ({
+      available: true,
+      unavailableReason: null,
+      turns: 3,
+      since: new Date(Date.now() - 5 * 60_000).toISOString(),
+      additions: 40,
+      deletions: 2,
+      changes: changesResult([fileChange("src/mine.ts", { additions: 40, deletions: 2 })]),
+      ...over,
+    });
+    const scopeButton = (label: string) => [...container.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Which changes"] button')].find(node => node.textContent === label);
+
+    it("opens on what this chat's turns changed, with the folder one click away", async () => {
+      vi.spyOn(bridgeApi, "sessionChanges").mockResolvedValue(chatResult());
+      vi.spyOn(bridgeApi, "workspaceChanges").mockResolvedValue(changesResult([fileChange("src/mine.ts"), fileChange("other/agent.ts"), fileChange("leftover.md")]));
+      await mount(<ChangesPanel workspace={workspace()} sessionId="chat-1" />);
+
+      expect(bridgeApi.sessionChanges).toHaveBeenCalledWith("chat-1", true);
+      expect(scopeButton("This chat")!.getAttribute("aria-pressed")).toBe("true");
+      expect(container.textContent).toContain("1 file changed");
+      expect(container.textContent).toContain("3 turns in this chat");
+      expect(container.textContent).toContain("since 5 minutes ago");
+      expect(container.textContent).toContain("Only files this chat's turns changed");
+      expect(container.textContent).toContain("+40");
+      expect(container.textContent).not.toContain("other/agent.ts");
+
+      await click(scopeButton("All uncommitted")!);
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+      expect(scopeButton("All uncommitted")!.getAttribute("aria-pressed")).toBe("true");
+      expect(container.textContent).toContain("3 files changed");
+      expect(container.textContent).toContain("uncommitted vs HEAD");
+      expect(container.textContent).toContain("Everything uncommitted in this folder");
+    });
+
+    it("uses the chat's own totals, which cover files past the shown window", async () => {
+      vi.spyOn(bridgeApi, "sessionChanges").mockResolvedValue(chatResult({
+        additions: 9000,
+        deletions: 7,
+        changes: changesResult([fileChange("a.ts")], { totalFiles: 250, filesTruncated: true }),
+      }));
+      await mount(<ChangesPanel workspace={workspace()} sessionId="chat-1" />);
+      expect(container.textContent).toContain("+9000");
+      expect(container.textContent).toContain("−7");
+      expect(container.textContent).toContain("250 files changed");
+      expect(container.textContent).not.toContain("in the 1 shown");
+    });
+
+    it("says the folder totals cover only the files shown when the list is cut", async () => {
+      vi.spyOn(bridgeApi, "workspaceChanges").mockResolvedValue(changesResult([fileChange("a.ts")], { totalFiles: 1787, filesTruncated: true }));
+      await mount(<ChangesPanel workspace={workspace()} />);
+      expect(container.textContent).toContain("in the 1 shown");
+    });
+
+    it("explains a chat with no turns yet and offers the folder", async () => {
+      vi.spyOn(bridgeApi, "sessionChanges").mockResolvedValue(chatResult({ available: false, unavailableReason: "no_turns", turns: 0, since: null, changes: null, additions: 0, deletions: 0 }));
+      vi.spyOn(bridgeApi, "workspaceChanges").mockResolvedValue(changesResult([fileChange("leftover.md")]));
+      await mount(<ChangesPanel workspace={workspace()} sessionId="chat-1" />);
+      expect(container.textContent).toContain("No turns recorded yet");
+
+      await click([...container.querySelectorAll("button")].find(node => node.textContent === "Show all uncommitted")!);
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+      expect(container.textContent).toContain("leftover.md");
+    });
+
+    it("says when the chat's turns changed nothing", async () => {
+      vi.spyOn(bridgeApi, "sessionChanges").mockResolvedValue(chatResult({ additions: 0, deletions: 0, changes: changesResult([]) }));
+      await mount(<ChangesPanel workspace={workspace()} sessionId="chat-1" />);
+      expect(container.textContent).toContain("No changes from this chat");
+    });
+
+    it("re-reads the chat when its own stats drift", async () => {
+      const spy = vi.spyOn(bridgeApi, "sessionChanges").mockResolvedValue(chatResult());
+      await mount(<ChangesPanel workspace={workspace()} sessionId="chat-1" chatSignal="3:1:40:2" />);
+      expect(spy).toHaveBeenCalledTimes(1);
+      await mount(<ChangesPanel workspace={workspace()} sessionId="chat-1" chatSignal="3:2:41:2" />);
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, STATS_REFRESH_DEBOUNCE_MS + 40)); });
+      expect(spy).toHaveBeenCalledTimes(2);
+    });
+
+    it("offers no scope switch without a chat", async () => {
+      await mount(<ChangesPanel workspace={workspace()} />);
+      expect(container.querySelector('[aria-label="Which changes"]')).toBeNull();
+    });
+
+    it("words the baseline age coarsely", () => {
+      const now = Date.parse("2026-11-21T12:00:00Z");
+      expect(sinceLabel("2026-11-21T11:59:50Z", now)).toBe("just now");
+      expect(sinceLabel("2026-11-21T11:59:00Z", now)).toBe("1 minute ago");
+      expect(sinceLabel("2026-11-21T09:00:00Z", now)).toBe("3 hours ago");
+      expect(sinceLabel("2026-11-15T12:00:00Z", now)).toBe("6 days ago");
+      expect(sinceLabel(null, now)).toBe("");
+    });
   });
 });

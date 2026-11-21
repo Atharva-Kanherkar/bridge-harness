@@ -204,6 +204,8 @@ export type {
   EmptyTrashResult,
   Workspace,
   WorkspaceChangesResult,
+  SessionChangesResult,
+  SessionChangesUnavailable,
   WorkspaceFileChange,
   WorkspaceSessionKind,
   RiskTier,

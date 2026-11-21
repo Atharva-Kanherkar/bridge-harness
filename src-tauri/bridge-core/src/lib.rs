@@ -64,6 +64,7 @@ mod settings_tools_eval;
 pub mod clone_orchestrator;
 pub mod builtin_compatibility;
 pub mod capability_projection;
+pub mod chat_changes;
 pub mod chat_search;
 pub mod chat_defaults;
 pub mod check_runner;

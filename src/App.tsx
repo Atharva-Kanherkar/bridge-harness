@@ -178,6 +178,7 @@ import { CodexUpdateDialog, type CodexUpdatePhase } from "./components/CodexUpda
 import { mergeForestSnapshot } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { createCoalescedRefresh, startSerialPoll } from "./polling";
+import { reviewBadge, useChatChanges } from "./chatChanges";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { TRANSIENT_ALERT_TTL_MS, TransientAlert } from "./components/TransientAlert";
 import { Badge } from "@/components/ui/badge";
@@ -1151,11 +1152,15 @@ function AppContent() {
     [listPrs, session?.id, chatPrs.loaded, chatPrs.prs],
   );
   const backgroundTaskCount = useBackgroundTaskCount(session?.id);
+  // What this chat's own turns changed, for the Review badge and the dock's
+  // Changes count. The folder's whole uncommitted state is the fallback.
+  const chatChanges = useChatChanges(session?.id, hasRepo && !!workspace);
+  const review = workspace ? reviewBadge(chatChanges.result, chatChanges.loaded, workspace) : null;
   const dockPanes: DockPaneDescriptor[] = [
     // First in the strip, always available: a chat's PRs and background work
     // need no repository of their own to be listed.
     { id: "work", label: "Work", icon: ListChecks, available: true, badge: (chatPrs.prs.length + backgroundTaskCount) || undefined, alert: chatPrs.prs.some(pr => ["failing", "conflicts"].includes(chatPrStatus(pr).phase)) || undefined },
-    { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
+    { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: review?.files || undefined },
     { id: "code", label: "Code", icon: Code2, available: hasRepo && !!workspace, unavailableReason: "Code needs a repository. This chat has no worktree to read files from." },
     { id: "terminal", label: "Terminal", icon: TerminalSquare, available: hasRepo && !!workspace, unavailableReason: "The terminal needs a repository. This chat has no worktree to run a shell in.", badge: terminalActivity && terminalActivity.running > 1 ? terminalActivity.running : undefined, alert: terminalActivity?.attention || undefined },
     // One browser: your own pages.
@@ -4013,21 +4018,24 @@ function AppContent() {
             setRecallOpen(open => !open);
           }}
           recallOpen={recallOpen}
-          actions={hasRepo && workspace && workspace.dirtyFiles > 0 ? <button
+          actions={hasRepo && workspace && review ? <button
             type="button"
             onClick={() => dispatchDock({ type: "open-pane", pane: "changes" })}
-            aria-label={`Review uncommitted changes in ${workspace.dirtyFiles} ${workspace.dirtyFiles === 1 ? "file" : "files"}`}
-            // This counts the folder's whole working tree against HEAD (other
-            // chats, agents, and your own edits included), not this chat's
-            // turns. Say so where the number is.
-            title={`Uncommitted in ${workspace.branch ? `${workspace.branch}` : "this folder"} vs HEAD: every change in the folder, not only this chat's`}
+            aria-label={review.scope === "chat"
+              ? `Review this chat's changes in ${review.files} ${review.files === 1 ? "file" : "files"}`
+              : `Review uncommitted changes in ${review.files} ${review.files === 1 ? "file" : "files"}`}
+            // Say which number this is where the number is: the chat's own
+            // turns, or (when the chat cannot be measured yet) the folder.
+            title={review.scope === "chat"
+              ? "Files this chat's turns changed. The Changes pane also shows everything uncommitted in the folder."
+              : `Uncommitted in ${workspace.branch ? `${workspace.branch}` : "this folder"} vs HEAD: every change in the folder, not only this chat's`}
             aria-pressed={dock.open && dock.pane === "changes"}
             className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-2 text-meta text-foreground shadow-xs transition-colors hover:bg-accent"
           >
             <FileDiff size={13} aria-hidden="true" />
             <span className="hidden md:inline">Review</span>
-            <span>{workspace.dirtyFiles} {workspace.dirtyFiles === 1 ? "file" : "files"}</span>
-            <span className="hidden gap-1.5 pl-1 font-mono text-caption tabular-nums xl:inline-flex"><span className="text-success">+{workspace.additions}</span><span className="text-destructive">−{workspace.deletions}</span></span>
+            <span>{review.files} {review.files === 1 ? "file" : "files"}</span>
+            <span className="hidden gap-1.5 pl-1 font-mono text-caption tabular-nums xl:inline-flex"><span className="text-success">+{review.additions}</span><span className="text-destructive">−{review.deletions}</span></span>
           </button> : undefined}
           onEnd={sessionConnected ? () => void endChat() : undefined}
           busy={busy}
@@ -4417,7 +4425,7 @@ function AppContent() {
                  Without the key a save would aim the old path at the new
                  workspace. */
               if (pane === "github") return <GitHubPane key={workspace.id} workspaceId={workspace.id} workspaceBranch={workspace.branch ?? null} sessionId={session?.id} intent={githubIntent} onJumpToFile={jumpToReviewComment} />;
-              if (pane === "changes") return <ChangesPanel key={workspace.id} workspace={workspace} visible={dock.open && dock.pane === "changes"} onQuote={quoteToComposer} onOpenFile={openFileInDock} onSaved={() => void refreshWorkspaceStats(workspace.id)} />;
+              if (pane === "changes") return <ChangesPanel key={`${workspace.id}:${session.id}`} workspace={workspace} sessionId={session.id} chatSignal={chatChanges.signal} visible={dock.open && dock.pane === "changes"} onQuote={quoteToComposer} onOpenFile={openFileInDock} onSaved={() => void refreshWorkspaceStats(workspace.id)} />;
               if (pane === "code") return <Suspense fallback={<PanelLoading label="Opening editor…"/>}><CodePanel key={workspace.id} workspaceId={workspace.id} visible={dock.open && dock.pane === "code"} reveal={codeReveal} driftSignal={`${workspace.dirtyFiles}:${workspace.additions}:${workspace.deletions}`} onSaved={() => void refreshWorkspaceStats(workspace.id)}/></Suspense>;
               return <Suspense fallback={<PanelLoading label="Opening terminal…"/>}><TerminalPane key={workspace.id} workspaceId={workspace.id} workspacePath={workspace.path ?? undefined} visible={dock.open && dock.pane === "terminal" && !fullscreen} onActivity={setTerminalActivity}/></Suspense>;
             }}

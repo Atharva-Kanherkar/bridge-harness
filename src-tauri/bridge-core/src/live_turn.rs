@@ -3470,6 +3470,9 @@ fn handle_agent_value_timed(
                         .or_else(|| current_turn.lock().unwrap().clone())
                         .or_else(|| Some(format!("turn-{}", Uuid::new_v4())));
                     *current_turn.lock().unwrap() = turn_id.clone();
+                    // The chat's baseline for this turn, so its changes can be
+                    // told apart from everything else in the folder.
+                    crate::chat_changes::enqueue_for_session(&db, session_id, crate::chat_changes::Phase::Start, turn_id.as_deref());
                     if let Some(turn_id) = &turn_id {
                         observed_turn_id = Some(turn_id.clone());
                         let _ =
@@ -3506,7 +3509,8 @@ fn handle_agent_value_timed(
                     // The boundary a steer was waiting for. Its error frames
                     // were relabelled above; a later turn's are real.
                     state.steer_requested.lock().unwrap().remove(session_id);
-                    *current_turn.lock().unwrap() = None;
+                    let ended_turn = current_turn.lock().unwrap().take();
+                    crate::chat_changes::enqueue_for_session(&db, session_id, crate::chat_changes::Phase::End, ended_turn.as_deref());
                     let checkpointing_worker = own_depth > 0
                         && store::worker_runtime(&db, session_id)
                             .ok()
@@ -19693,6 +19697,39 @@ mod permission_policy_tests {
             ledger(&core, "approval."),
             vec!["approval.auto_allowed".to_owned()]
         );
+    }
+
+    #[test]
+    fn turn_boundaries_snapshot_the_chats_folder_so_its_changes_can_be_scoped() {
+        let (_fixture,core,_managed_root)=core_with_session(false);
+        let repo=tempfile::tempdir().unwrap();
+        let git=|args:&[&str]|{assert!(crate::git::git_command(repo.path()).args(args).output().unwrap().status.success(),"git {args:?}");};
+        git(&["init","-q"]);git(&["config","user.email","t@example.invalid"]);git(&["config","user.name","T"]);git(&["config","commit.gpgsign","false"]);
+        std::fs::write(repo.path().join("README.md"),"seed\n").unwrap();git(&["add","."]);git(&["commit","-qm","seed"]);
+        // Someone else's work, already sitting in the folder.
+        std::fs::write(repo.path().join("leftover.txt"),"not this chat\n").unwrap();
+        core.db.lock().unwrap().execute("UPDATE sessions SET cwd=?1 WHERE id='chat'",params![repo.path().to_string_lossy()]).unwrap();
+        let turn=Arc::new(Mutex::new(None));
+        handle_agent_value(&core,"chat",&turn,&serde_json::json!({"method":"turn/started","params":{"turn":{"id":"t1"}}}));
+        // The start snapshot runs in the background; the edit must land after it.
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(20);
+        while !crate::git::git_command(repo.path()).args(["rev-parse","--verify","--quiet","refs/bridge/chats/chat"]).output().unwrap().status.success() {
+            assert!(std::time::Instant::now()<deadline,"no start snapshot was recorded");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        std::fs::write(repo.path().join("made-by-turn.rs"),"fn main() {}\n").unwrap();
+        handle_agent_value(&core,"chat",&turn,&serde_json::json!({"method":"turn/completed","params":{"turn":{"id":"t1","status":"completed"}}}));
+        let changes=loop {
+            let changes=crate::api::session_changes(&core,"chat",false).unwrap();
+            if changes.turns==1 && changes.changes.as_ref().is_some_and(|changes|!changes.files.is_empty()) {
+                let ended=crate::git::git_command(repo.path()).args(["rev-list","--count","refs/bridge/chats/chat"]).output().unwrap();
+                if String::from_utf8_lossy(&ended.stdout).trim()=="2" { break changes; }
+            }
+            assert!(std::time::Instant::now()<deadline,"the turn's end was never snapshotted: {changes:?}");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        let paths:Vec<_>=changes.changes.unwrap().files.into_iter().map(|file|file.path).collect();
+        assert_eq!(paths,["made-by-turn.rs"]);
     }
 
     #[test]

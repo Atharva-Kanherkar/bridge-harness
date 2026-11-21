@@ -38,7 +38,8 @@ async function openWorkspaceSession() {
   for (const row of rows) {
     await act(async () => row.click());
     await settle();
-    if (container.textContent?.includes("7 files")) return;
+    // demo-2's chats own one file in the browser mock (see mockSessionChanges).
+    if (container.querySelector('button[aria-label="Review this chat\'s changes in 1 file"]')) return;
   }
   throw new Error("could not open the ready workspace session");
 }

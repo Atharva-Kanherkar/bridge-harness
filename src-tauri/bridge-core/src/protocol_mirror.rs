@@ -560,6 +560,42 @@ fn base_branch_divergence_mirrors_core() {
         dirty: true,
         unavailable_reason: None,
     });
+    let changes = crate::git::WorkspaceChangeset {
+        base_commit: None,
+        repository_state: crate::git::WorkspaceRepositoryState::Normal,
+        files: vec![crate::git::WorkspaceFileChange {
+            path: "src/new.rs".into(),
+            previous_path: Some("src/old.rs".into()),
+            change_kind: crate::git::WorkspaceChangeKind::Renamed,
+            additions: 2,
+            deletions: 1,
+            patch: "@@ -1 +1,2 @@\n-a\n+b\n+c\n".into(),
+            patch_truncated: false,
+            binary: false,
+            importance: crate::completion::RiskTier::Medium,
+            labels: vec!["rust".into()],
+            low_signal: false,
+        }],
+        total_files: Some(1),
+        files_truncated: false,
+    };
+    assert_mirrors::<wire::SessionChangesResult>(&crate::chat_changes::SessionChanges {
+        available: true,
+        unavailable_reason: None,
+        turns: 3,
+        since: Some("2026-11-21T10:00:00+00:00".into()),
+        additions: 2,
+        deletions: 1,
+        changes: Some(changes),
+    });
+    for reason in [
+        crate::chat_changes::SessionChangesUnavailable::NoFolder,
+        crate::chat_changes::SessionChangesUnavailable::NotGit,
+        crate::chat_changes::SessionChangesUnavailable::NoTurns,
+        crate::chat_changes::SessionChangesUnavailable::SnapshotFailed,
+    ] {
+        assert_mirrors::<wire::SessionChangesResult>(&crate::chat_changes::SessionChanges::unavailable(reason));
+    }
 }
 
 #[test]

@@ -55,7 +55,8 @@ async function click(element: Element) {
 async function openIdleSession() {
   for (const row of chatRows()) {
     await click(row);
-    if (container.textContent?.includes("7 files")) return;
+    // demo-2's chats own one file in the browser mock (see mockSessionChanges).
+    if (container.querySelector('button[aria-label="Review this chat\'s changes in 1 file"]')) return;
   }
   throw new Error("no idle session showed up");
 }

@@ -3234,6 +3234,21 @@ async fn workspace_changes(
     .await
 }
 
+#[tauri::command]
+async fn session_changes(
+    session_id: String,
+    include_patches: Option<bool>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::chat_changes::SessionChanges, BridgeError> {
+    // A live snapshot walks the folder; keep it off the async runtime, same
+    // as workspace_changes.
+    let core = state.inner().clone();
+    blocking("Chat changes", move || {
+        api::session_changes(&core, &session_id, include_patches.unwrap_or(false))
+    })
+    .await
+}
+
 /// Which runtime host this app process runs behind, decided once in setup.
 /// The invoke handler reads it on every command: embedded commands run the
 /// `bridge_core::api` bodies in-process; daemon mode proxies the same wire
@@ -4021,7 +4036,8 @@ pub fn run() -> i32 {
             list_workspace_branches,
             checkout_workspace_branch,
             archive_workspace,
-            workspace_changes
+            workspace_changes,
+            session_changes
         ]);
     let application = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {

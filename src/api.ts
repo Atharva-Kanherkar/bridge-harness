@@ -77,6 +77,7 @@ import type {
   DispatchAgentShortcutResult,
   SubmitInputResult,
   WorkspaceChangesResult,
+  SessionChangesResult,
   WorkBoard,
   WorkBriefReceipt,
   WorkBriefingOptions,
@@ -4009,6 +4010,10 @@ export const bridgeApi = {
   },
   workspaceChanges: (workspaceId: string): Promise<WorkspaceChangesResult> =>
     hasBackend() ? call("workspaces/workspace_changes", { workspaceId }) : Promise.resolve(mockWorkspaceChanges()),
+  /** What one chat's own turns changed. Without `includePatches` only the
+   *  counts come back, which is what the header badge polls for. */
+  sessionChanges: (sessionId: string, includePatches = false): Promise<SessionChangesResult> =>
+    hasBackend() ? call("workspaces/session_changes", { sessionId, includePatches }) : Promise.resolve(mockSessionChanges(sessionId, includePatches)),
   listWorkspaceTree: (workspaceId: string): Promise<string[]> =>
     hasBackend() ? call("workspaces/list_workspace_tree", { workspaceId }) : Promise.resolve(mockTreePaths()),
   // `async` rather than `Promise.resolve(mock…())`: the mocks throw on the
@@ -4478,6 +4483,27 @@ function mockWriteFile(path: string, content: string, baseSha256: string | null)
 /** Browser-mode fixture for the Changes tab: one file per importance tier,
  * plus a lockfile, so the collapse-by-default affordance has something to
  * hide even without a daemon. */
+/** The browser build's chats: each owns a few of its folder's files, and the
+ *  two demo workspaces' chats own different ones, so they can be told apart. */
+function mockSessionChanges(sessionId: string, includePatches: boolean): SessionChangesResult {
+  const folder = mockWorkspaceChanges();
+  const workspaceId = mockState.sessions.find(session => session.id === sessionId)?.workspaceId;
+  const own = workspaceId === "demo-2"
+    ? ["src-tauri/bridge-core/src/policy.rs"]
+    : ["src/components/ChangesPanel.tsx", "src/utils.ts"];
+  const files = folder.files
+    .filter(file => own.includes(file.path))
+    .map(file => includePatches ? file : { ...file, patch: "" });
+  return {
+    available: true,
+    turns: 3,
+    since: new Date(Date.now() - 42 * 60_000).toISOString(),
+    additions: files.reduce((sum, file) => sum + file.additions, 0),
+    deletions: files.reduce((sum, file) => sum + file.deletions, 0),
+    changes: { ...folder, baseCommit: null, files, totalFiles: files.length },
+  };
+}
+
 function mockWorkspaceChanges(): WorkspaceChangesResult {
   return {
     baseCommit: "a1b2c3d4",

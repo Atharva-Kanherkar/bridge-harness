@@ -352,6 +352,13 @@
       "resultSchema": "workspace-changes-result.json"
     },
     {
+      "command": "session_changes",
+      "domain": "workspaces",
+      "method": "workspaces/session_changes",
+      "paramsSchema": "session-changes-params.json",
+      "resultSchema": "session-changes-result.json"
+    },
+    {
       "command": "get_session_forest",
       "domain": "sessions",
       "method": "sessions/get_session_forest",
@@ -2468,7 +2475,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 48
+    "minor": 49
   },
   "reserved": {
     "cancel": "$/cancel",
