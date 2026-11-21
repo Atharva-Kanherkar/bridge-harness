@@ -553,35 +553,12 @@ pub fn write_file(
 
     // A symlink (`CLAUDE.md -> AGENTS.md`) is edited through: the rename below
     // would replace the link itself with a regular file and leave its target
-    // holding the old text. Writing in place gives up crash atomicity for
-    // this one case, and keeps the link. `open_with` still refuses a target
-    // outside the workspace.
+    // holding the old text.
     if dir
         .symlink_metadata(path)
         .is_ok_and(|metadata| metadata.file_type().is_symlink())
     {
-        match inspect(&dir, path)? {
-            Some(now) if now.sha256 == expected => {}
-            Some(_) => {
-                return Err(BridgeError::Invalid(format!(
-                    "{path} changed on disk since it was opened"
-                )))
-            }
-            None => {
-                return Err(BridgeError::Invalid(format!(
-                    "{path} no longer exists on disk"
-                )))
-            }
-        }
-        let mut file = dir.open_with(
-            path,
-            cap_std::fs::OpenOptions::new().write(true).truncate(true),
-        )?;
-        file.write_all(content.as_bytes())?;
-        file.sync_all()?;
-        return Ok(WriteOutcome {
-            sha256: hash_bytes(content.as_bytes()),
-        });
+        return write_through_symlink(&dir, path, content, expected);
     }
 
     // Write through a scratch file and rename, so a crash mid-write leaves the
@@ -592,17 +569,14 @@ pub fn write_file(
             &temp,
             cap_std::fs::OpenOptions::new().write(true).create_new(true),
         )?;
+        // The scratch file is born with default permissions; renamed over the
+        // original as-is, it silently dropped the executable bit from every
+        // script saved in the editor.
+        if let Ok(original) = dir.metadata(path) {
+            file.set_permissions(original.permissions())?;
+        }
         file.write_all(content.as_bytes())?;
         file.sync_all()?;
-    }
-    // The scratch file is born with default permissions; renamed over the
-    // original as-is, it silently dropped the executable bit from every
-    // script saved in the editor.
-    if let Ok(original) = dir.metadata(path) {
-        if let Err(error) = dir.set_permissions(&temp, original.permissions()) {
-            let _ = dir.remove_file(&temp);
-            return Err(error.into());
-        }
     }
     // Last look before the swap. See the note above: this narrows the race, it
     // does not remove it.
@@ -625,6 +599,39 @@ pub fn write_file(
         let _ = dir.remove_file(&temp);
         return Err(error.into());
     }
+    Ok(WriteOutcome {
+        sha256: hash_bytes(content.as_bytes()),
+    })
+}
+
+/// Edit a symlinked file in place, keeping the link. Gives up the scratch
+/// file's crash atomicity for this one case; `open_with` still refuses a
+/// target outside the workspace.
+fn write_through_symlink(
+    dir: &Dir,
+    path: &str,
+    content: &str,
+    expected: &str,
+) -> Result<WriteOutcome, BridgeError> {
+    match inspect(dir, path)? {
+        Some(now) if now.sha256 == expected => {}
+        Some(_) => {
+            return Err(BridgeError::Invalid(format!(
+                "{path} changed on disk since it was opened"
+            )))
+        }
+        None => {
+            return Err(BridgeError::Invalid(format!(
+                "{path} no longer exists on disk"
+            )))
+        }
+    }
+    let mut file = dir.open_with(
+        path,
+        cap_std::fs::OpenOptions::new().write(true).truncate(true),
+    )?;
+    file.write_all(content.as_bytes())?;
+    file.sync_all()?;
     Ok(WriteOutcome {
         sha256: hash_bytes(content.as_bytes()),
     })
