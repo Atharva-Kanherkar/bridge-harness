@@ -108,11 +108,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("sidebar Running group", () => {
+describe("sidebar Active group", () => {
   it("lists every chat with a turn or a worker in flight, across projects, above Projects", () => {
     mount();
-    expect(group()?.getAttribute("aria-label")).toBe("Running");
-    expect(group()!.textContent).toContain("Running2");
+    expect(group()?.getAttribute("aria-label")).toBe("Active");
+    expect(group()!.textContent).toContain("Active2");
+    // A dot per row, not a spinner.
+    expect(group()!.querySelector(".animate-spin")).toBeNull();
+    expect(rows().every(button => button.querySelector("[data-active-dot]"))).toBe(true);
     expect(rows().map(button => button.dataset.runningRow)).toEqual(["retry", "deck"]);
     // Above the project tree, not inside it.
     const projects = [...container.querySelectorAll("span")].find(node => node.textContent === "Projects")!;
@@ -145,7 +148,7 @@ describe("sidebar Running group", () => {
   it("leaves out a chat whose provider is up with no turn, and hides when nothing runs", () => {
     mount({ chats: [providerUp, daemon], liveAgents: new Map(), sessions: [providerUp, daemon], liveEvents: [] });
     expect(group()).toBeNull();
-    expect(container.textContent).not.toContain("Running");
+    expect(container.textContent).not.toContain("Active");
     // The chat is still in its folder, as it was.
     expect(container.textContent).toContain("Provider is up");
   });
