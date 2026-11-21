@@ -7,8 +7,8 @@ import { AccessControl } from "./AccessControl";
 import { MODEL_FAVORITES_STORAGE_KEY } from "../modelFavorites";
 import type { AdapterDescriptor } from "../types";
 
-// The three-column picker: a harness rail, the model list, and a Thinking
-// column in the user's effort selector style, with speed and access in the
+// The single-column picker: a harness strip, the model list, and a thinking
+// row in the user's effort selector style, with speed and access in the
 // footer. The rail jumps between harness sections of one list, so every
 // harness stays one search away.
 
@@ -102,7 +102,7 @@ const typeSearch = async (text: string) => {
 };
 
 describe("ChatModelControl columns", () => {
-  it("opens on a harness rail, the model list and a Thinking column, with keys in the footer", async () => {
+  it("opens as one column: a harness strip, the model list, then a thinking row", async () => {
     await mount(baseProps());
     await act(async () => trigger().click());
     expect(rail().map(item => item.getAttribute("aria-label"))).toEqual(["Favorites", "Claude", "Codex"]);
@@ -111,8 +111,15 @@ describe("ChatModelControl columns", () => {
     expect(groups()).toEqual(["Claude", "Codex"]);
     expect(zone("thinking")!.textContent).toContain("Thinking effort");
     expect(zone("thinking")!.querySelector('[data-testid="effort-control"]')).not.toBeNull();
-    expect(zone("footer")!.textContent).toContain("column");
-    expect(zone("footer")!.textContent).toContain("use");
+    // One column: the strip is horizontal, the thinking row follows the list,
+    // and no keyboard-hint cell is drawn. With neither a speed tier nor an
+    // access control there is no footer at all.
+    expect(zone("rail")!.getAttribute("aria-orientation")).toBe("horizontal");
+    const listbox = zone("models")!.querySelector('[role="listbox"]')!;
+    expect(listbox.compareDocumentPosition(zone("thinking")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(panel()!.className).toContain("flex-col");
+    expect(zone("footer")).toBeNull();
+    expect(panel()!.textContent).not.toContain("column");
     // Typing filters at once: focus starts in the search box.
     expect(active()).toBe(search());
   });
@@ -122,7 +129,7 @@ describe("ChatModelControl columns", () => {
     await act(async () => trigger().click());
     expect(zone("rail")).not.toBeNull();
     expect(zone("thinking")).toBeNull();
-    expect(panel()!.className).toContain("w-[340px]");
+    expect(panel()!.className).toContain("w-[380px]");
   });
 
   it("lights a harness from the rail, and the arrows move the rail's one tab stop", async () => {
@@ -376,5 +383,40 @@ describe("ChatModelControl favorites", () => {
     await typeSearch("sonnet");
     const favorites = panel()!.querySelector<HTMLElement>('[role="group"][aria-label="Favorites"]')!;
     expect([...favorites.querySelectorAll('button[role="option"]')].map(button => button.textContent)).toEqual(["Claude Sonnet"]);
+  });
+});
+
+describe("ChatModelControl clean list", () => {
+  it("marks the chat's model with a check and a ground no hovered row shares", async () => {
+    await mount(baseProps());
+    await act(async () => trigger().click());
+    const rows = [...document.querySelectorAll<HTMLButtonElement>("[data-model-row]")];
+    const selected = rows.filter(row => row.getAttribute("aria-selected") === "true");
+    const others = rows.filter(row => row.getAttribute("aria-selected") !== "true");
+    expect(selected.length).toBeGreaterThan(0);
+    expect(others.length).toBeGreaterThan(0);
+    for (const row of selected) {
+      expect(row.className).toContain("bg-selection");
+      expect(row.className).not.toContain("hover:bg-accent");
+      expect(row.querySelector("svg")).not.toBeNull();
+    }
+    for (const row of others) {
+      expect(row.className).toContain("hover:bg-accent/50");
+      expect(row.className).not.toContain("bg-selection");
+      // The gutter is there, empty: labels line up with the checked row.
+      expect(row.firstElementChild!.className).toContain("size-4");
+      expect(row.firstElementChild!.childElementCount).toBe(0);
+    }
+  });
+
+  it("moves along the strip with the left and right arrows", async () => {
+    await mount(baseProps());
+    await act(async () => trigger().click());
+    const items = rail();
+    await act(async () => items[1].focus());
+    await press("ArrowRight");
+    expect(active()).toBe(rail()[2]);
+    await press("ArrowLeft");
+    expect(active()).toBe(rail()[1]);
   });
 });

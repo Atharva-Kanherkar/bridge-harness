@@ -145,9 +145,15 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
               <TextButton tone="destructive" disabled={resetting} onClick={() => { setConfirming(false); onResetAll(); }}>Reset everything</TextButton>
             </div>
           </div>
-        : <TextButton disabled={resetting} onClick={() => setConfirming(true)}>
-            <ArrowCounterClockwise size={12} strokeWidth={1.7} aria-hidden="true" />Reset agents, models and instructions
-          </TextButton>}
+        : <button
+            type="button"
+            disabled={resetting}
+            onClick={() => setConfirming(true)}
+            className="flex w-full items-start gap-2.5 rounded-lg px-2 py-1.5 text-left text-ui text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground disabled:opacity-45"
+          >
+            <ArrowCounterClockwise size={14} strokeWidth={1.7} aria-hidden="true" className="mt-0.5 shrink-0" />
+            <span className="min-w-0 flex-1">Reset agents, models and instructions</span>
+          </button>}
     </div>
   </nav>;
 }

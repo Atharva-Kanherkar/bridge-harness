@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
-import { Kbd } from "@/components/ui/kbd";
 import { Brain, Check, ChevronDown, LoaderCircle, RefreshCw, Search, Star } from "lucide-react";
 import type { AdapterDescriptor, Harness, ModelOption } from "../types";
 import { harnessLabel } from "../utils";
@@ -97,7 +96,7 @@ export type ChatModelControlProps = {
 const NO_ACCOUNTS: readonly AccountChoice[] = [];
 
 /** The popover's tallest and shortest useful heights, in CSS pixels. */
-const MAX_POPOVER_HEIGHT = 420;
+const MAX_POPOVER_HEIGHT = 520;
 const MIN_POPOVER_HEIGHT = 240;
 const VIEWPORT_MARGIN = 12;
 /** How long an unresolved model stays silent before the pill admits it is
@@ -500,8 +499,8 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
       const items = [...dialog.querySelectorAll<HTMLButtonElement>("[data-rail]")];
       const index = items.indexOf(target as HTMLButtonElement);
       if (index < 0) return;
-      const next = event.key === "ArrowDown" ? (index + 1) % items.length
-        : event.key === "ArrowUp" ? (index - 1 + items.length) % items.length
+      const next = event.key === "ArrowRight" || event.key === "ArrowDown" ? (index + 1) % items.length
+        : event.key === "ArrowLeft" || event.key === "ArrowUp" ? (index - 1 + items.length) % items.length
         : event.key === "Home" ? 0
         : event.key === "End" ? items.length - 1
         : null;
@@ -562,8 +561,8 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
     if (level) { event.preventDefault(); changeEffort(level.value); }
   };
 
-  // Picking restarts the provider session; said once, at the foot of the
-  // Thinking column where there is room, or under the list without one.
+  // Picking restarts the provider session; said once, as a caption under the
+  // thinking row, or under the list on a surface without one.
   const switchNote = <p className="shrink-0 px-3 pb-2 pt-1 text-caption leading-4 text-faint">Switching restarts the provider session. History stays.</p>;
 
   const renderRow = (adapter: AdapterDescriptor, groupAccount: string | null, option: ModelOption, extra: { favoritesRow?: boolean; accountName?: string | null } = {}) => {
@@ -578,13 +577,21 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
         type="button" role="option" aria-selected={selected} disabled={!selectable} tabIndex={-1}
         data-model-row="" data-favorite-row={extra.favoritesRow ? "" : undefined}
         onClick={() => pickModel(adapter.id as Harness, option.id || null, groupAccount)}
-        className={cn("flex h-9 w-full items-center gap-2 rounded-md pl-2 text-left outline-none transition-colors focus-visible:bg-accent disabled:opacity-40", favorite ? "pr-9" : "pr-2", selected ? "bg-accent" : "hover:bg-accent", !selectable && "opacity-60")}
+        className={cn(
+          "flex h-8 w-full items-center gap-1.5 rounded-md pl-1.5 text-left text-ui outline-none transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-40",
+          favorite ? "pr-9" : "pr-2",
+          // Selected and hover never share a ground: the chat's own model is
+          // the selection color, a row under the pointer only a faint wash.
+          selected ? "bg-selection font-medium text-selection-foreground" : "text-foreground hover:bg-accent/50 focus-visible:bg-accent/50",
+          !selectable && "opacity-60",
+        )}
       >
-        <HarnessMark harness={adapter.id} size={13} className={adapter.available ? undefined : "opacity-40"} />
-        <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-ui text-foreground">{label}</span>
-        {extra.accountName && <span className="min-w-0 shrink truncate text-caption text-faint">{extra.accountName}</span>}
-        {option.lifecycle === "preview" && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-caption text-muted-foreground font-medium">preview</span>}
-        {selected && <Check size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
+        {/* A fixed gutter, so the check never shifts the labels. */}
+        <span aria-hidden="true" className="grid size-4 shrink-0 place-items-center">{selected && <Check size={13} strokeWidth={2.2} />}</span>
+        {extra.favoritesRow && <HarnessMark harness={adapter.id} size={13} className={adapter.available ? undefined : "opacity-40"} />}
+        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{label}</span>
+        {extra.accountName && <span className="min-w-0 shrink truncate text-caption font-normal text-faint">{extra.accountName}</span>}
+        {option.lifecycle === "preview" && <span className="shrink-0 rounded-full border border-border px-1.5 py-0.5 font-mono text-caption font-medium text-muted-foreground">preview</span>}
       </button>
       {favorite && <button
         type="button" tabIndex={-1} aria-pressed={starred}
@@ -611,12 +618,15 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
       <div
         ref={dialogRef}
         role="dialog" aria-label="Choose a model"
-        className={cn("@container/model-picker u-glass-popover absolute left-0 z-40 flex max-h-[420px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-border bg-popover", effortSurface ? "w-[460px]" : "w-[340px]", side === "down" ? "top-full mt-2" : "bottom-full mb-2", tight && "overflow-y-auto")}
+        className={cn("u-glass-popover absolute left-0 z-40 flex max-h-[520px] w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-border bg-popover", side === "down" ? "top-full mt-2" : "bottom-full mb-2", tight && "overflow-y-auto")}
         style={fit ? { maxHeight: fit.maxHeight } : undefined}
         onKeyDown={onPickerKeyDown}
       >
-        {/* Harness rail: favorites, then each harness, lit for the section in view. */}
-        <div role="toolbar" aria-label="Harnesses" aria-orientation="vertical" data-picker-zone="rail" className="flex w-12 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-border py-2">
+        {/* One column, top to bottom: search, the harness strip, the list,
+            thinking, then speed and access. The strip comes first in the
+            document so Tab reaches it before the search box; `order` draws it
+            under the search. */}
+        <div role="toolbar" aria-label="Harnesses" aria-orientation="horizontal" data-picker-zone="rail" className="order-2 flex h-10 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border px-2">
           {railItems.map(item => {
             const lit = item.section === railSection;
             return <button
@@ -624,43 +634,40 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
               tabIndex={item.section === railTabStop ? 0 : -1}
               aria-label={item.label} aria-current={lit || undefined} title={item.title}
               onClick={() => jumpTo(item.section)}
-              className={cn("relative grid size-8 shrink-0 place-items-center rounded-md outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring", lit ? "bg-accent" : "hover:bg-accent", item.dim && "opacity-40")}
+              className={cn("relative grid size-7 shrink-0 place-items-center rounded-md outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring", lit ? "bg-accent" : "hover:bg-accent/50", item.dim && "opacity-40")}
             >
-              {lit && <span aria-hidden="true" className="absolute -left-2 h-4 w-0.5 rounded-full bg-foreground" />}
+              {lit && <span aria-hidden="true" className="absolute -bottom-1.5 h-0.5 w-4 rounded-full bg-foreground" />}
               {item.icon}
             </button>;
           })}
         </div>
-        <div className="flex min-w-0 flex-1 flex-col">
-          <div className={cn("flex min-h-0 flex-1 @max-[400px]/model-picker:flex-col", tight && "min-h-24 shrink-0")}>
-            <div data-picker-zone="models" className="flex min-h-0 min-w-0 flex-1 flex-col">
-              {/* Search header, the height of the Thinking header beside it. */}
-              <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
-                <Search size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-                <input
-                  ref={searchRef}
-                  type="text"
-                  value={query}
-                  onChange={event => setQuery(event.target.value)}
-                  placeholder="Search models…"
-                  aria-label="Search models"
-                  className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground/70"
-                />
-                {onRefresh && <button type="button" disabled={refreshing} aria-label="Refresh model catalogues" title="Refresh model catalogues" onClick={() => {
-                  setRefreshing(true);
-                  setRefreshError(null);
-                  Promise.resolve().then(onRefresh).catch(() => setRefreshError("Could not refresh models. Try again.")).finally(() => setRefreshing(false));
-                }} className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50">
-                  <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
-                </button>}
-              </div>
-              {refreshError && <p role="alert" className="px-3 py-2 text-xs text-destructive">{refreshError}</p>}
-              <div ref={listRef} onScroll={onListScroll} role="listbox" aria-label={`${roleLabel} models`} aria-busy={switchInFlight || showAwaiting || undefined} className={cn("relative min-h-0 flex-1 overflow-y-auto p-1.5 @max-[400px]/model-picker:max-h-44", switchInFlight && "cursor-progress")}>
+        <div data-picker-zone="models" className="contents">
+          <div className="order-1 flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
+            <Search size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+            <input
+              ref={searchRef}
+              type="text"
+              value={query}
+              onChange={event => setQuery(event.target.value)}
+              placeholder="Search models…"
+              aria-label="Search models"
+              className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground/70"
+            />
+            {onRefresh && <button type="button" disabled={refreshing} aria-label="Refresh model catalogues" title="Refresh model catalogues" onClick={() => {
+              setRefreshing(true);
+              setRefreshError(null);
+              Promise.resolve().then(onRefresh).catch(() => setRefreshError("Could not refresh models. Try again.")).finally(() => setRefreshing(false));
+            }} className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50">
+              <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
+            </button>}
+          </div>
+          {refreshError && <p role="alert" className="order-2 px-3 py-2 text-xs text-destructive">{refreshError}</p>}
+          <div ref={listRef} onScroll={onListScroll} role="listbox" aria-label={`${roleLabel} models`} aria-busy={switchInFlight || showAwaiting || undefined} className={cn("relative order-3 min-h-0 flex-1 overflow-y-auto px-1.5 pb-1.5", tight && "min-h-24 shrink-0", switchInFlight && "cursor-progress")}>
                 {showAwaiting
                   ? <SkeletonRows label="Loading models…" rows={4} meta={false} framed={false} className="divide-y-0" rowClassName="min-h-8 px-2 py-1.5" />
                   : <>
                     {showFavorites && <div role="group" aria-label="Favorites" data-section={FAVORITES_SECTION}>
-                      <div className="flex items-center gap-1.5 px-2 pb-1.5 pt-2">
+                      <div className={GROUP_HEADER}>
                         <Star size={11} aria-hidden="true" className="fill-current text-muted-foreground opacity-70" />
                         <span className="text-caption font-medium text-muted-foreground">Favorites</span>
                       </div>
@@ -675,55 +682,44 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
                             section marker rather than another row competing with
                             the models beneath it. An unavailable harness is
                             dimmed and flagged, its rows shown but greyed. */}
-                        <div className={cn("flex items-center gap-1.5 px-2 pb-1.5 pt-2", (index > 0 || showFavorites) && "mt-1 border-t border-border/60")}>
+                        <div className={cn(GROUP_HEADER, (index > 0 || showFavorites) && "mt-1")}>
                           <HarnessMark harness={adapter.id} size={11} className={cn("opacity-70", !adapter.available && "opacity-30")} />
-                          <span className="text-caption font-medium text-muted-foreground">{label}</span>
-                          {adapter.capabilities.includes("reasoning") && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-caption text-muted-foreground font-medium">thinking</span>}
-                          {!adapter.available && <span className="ml-auto text-caption text-muted-foreground">unavailable</span>}
+                          <span className="min-w-0 flex-1 truncate text-caption font-medium text-muted-foreground">{label}</span>
+                          {adapter.capabilities.includes("reasoning") && <span className="shrink-0 rounded-full border border-border px-1.5 py-0.5 font-mono text-caption font-medium text-muted-foreground">thinking</span>}
+                          {!adapter.available && <span className="shrink-0 text-caption text-muted-foreground">unavailable</span>}
                         </div>
                         {models.map(option => renderRow(adapter, groupAccount, option))}
                       </div>
                     ))}
                   </>}
-              </div>
-              {!effortSurface && switchNote}
-            </div>
-            {effortSurface && <div data-picker-zone="thinking" className="flex w-44 shrink-0 flex-col border-l border-border @max-[400px]/model-picker:w-full @max-[400px]/model-picker:border-l-0 @max-[400px]/model-picker:border-t">
-              <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-border px-3 text-meta text-muted-foreground">
-                <Brain size={14} className="shrink-0" aria-hidden="true" />
-                <span className="truncate">Thinking effort</span>
-              </div>
-              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-                {showAwaiting ? null : showEffort
-                  ? effortStyle === "list"
-                    ? <div data-testid="effort-control" className="p-1.5"><EffortList {...effortProps} /></div>
-                    : <>
-                      <div data-testid="effort-control" className="h-[72px] shrink-0 px-3 pb-2 pt-2.5 [contain:layout]">
-                        {effortStyle === "sentence" ? <EffortSentence {...effortProps} /> : <EffortSlider {...effortProps} />}
-                      </div>
-                      {/* What the level means; the rail alone only says where it sits. */}
-                      <p className="px-3 text-caption leading-4 text-muted-foreground">{effortIndex(effortLevels, effortValue) >= 0 ? effortMeaning(effortValue!) : "The provider's own default."}</p>
-                    </>
-                  : <p className="px-3 py-2.5 text-meta leading-5 text-muted-foreground">No thinking control for this model.</p>}
-                <div className="mt-auto">
-                  {showEffort && effortStyle === "list" && <p className="px-3 pt-1 text-caption text-faint">1–{Math.min(9, effortLevels.length)} jumps to a level</p>}
-                  {switchNote}
-                </div>
-              </div>
-            </div>}
           </div>
-          {/* Footer: speed where the model has a faster tier, the access mode,
-              and the keys that move around the picker. */}
-          <div data-picker-zone="footer" className="flex min-h-11 shrink-0 border-t border-border">
-            <div className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1.5">
-              {speedControl}
-              {accessControl && <div className="ml-auto flex shrink-0 items-center">{accessControl}</div>}
-            </div>
-            <div aria-hidden="true" className={cn("flex shrink-0 items-center gap-1.5 px-3 text-caption text-faint", effortSurface && "w-44 border-l border-border @max-[400px]/model-picker:w-auto")}>
-              <Kbd>⇥</Kbd>column<Kbd className="ml-1">↵</Kbd>use
-            </div>
-          </div>
+          {!effortSurface && <div className="order-4">{switchNote}</div>}
         </div>
+        {/* Thinking: one full-width row under the list, in the user's chosen
+            style, so a model can be picked and its effort set in one open. */}
+        {effortSurface && <div data-picker-zone="thinking" className="order-4 flex shrink-0 flex-col border-t border-border">
+          <div className="flex h-8 shrink-0 items-center gap-1.5 px-3 text-caption text-muted-foreground">
+            <Brain size={13} className="shrink-0" aria-hidden="true" />
+            <span className="shrink-0 font-medium">Thinking effort</span>
+            {/* What the level means; the control alone only says where it sits. */}
+            {!showAwaiting && showEffort && effortStyle !== "list" && <span className="ml-auto min-w-0 truncate">{effortIndex(effortLevels, effortValue) >= 0 ? effortMeaning(effortValue!) : "The provider's own default."}</span>}
+            {!showAwaiting && showEffort && effortStyle === "list" && <span className="ml-auto shrink-0 text-faint">1–{Math.min(9, effortLevels.length)} jumps to a level</span>}
+          </div>
+          {showAwaiting ? null : showEffort
+            ? effortStyle === "list"
+              ? <div data-testid="effort-control" className="max-h-36 overflow-y-auto px-1.5 pb-1"><EffortList {...effortProps} /></div>
+              : <div data-testid="effort-control" className="h-[72px] shrink-0 px-3 pb-2 pt-1 [contain:layout]">
+                  {effortStyle === "sentence" ? <EffortSentence {...effortProps} /> : <EffortSlider {...effortProps} />}
+                </div>
+            : <p className="px-3 pb-1 text-meta leading-5 text-muted-foreground">No thinking control for this model.</p>}
+          {switchNote}
+        </div>}
+        {/* Footer: speed where the model has a faster tier, and the access
+            mode. They wrap rather than overlap when both are wide. */}
+        {(speedControl || accessControl) && <div data-picker-zone="footer" className="order-5 flex min-h-11 shrink-0 flex-wrap items-center gap-2 border-t border-border px-2.5 py-1.5">
+          {speedControl}
+          {accessControl && <div className="ml-auto flex shrink-0 items-center">{accessControl}</div>}
+        </div>}
       </div>
     </>}
   </div>;
@@ -732,6 +728,10 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
 /** The rail and list section for starred models. Not a harness id: those are
  *  plain words, and this one cannot collide with any of them. */
 const FAVORITES_SECTION = "@favorites";
+
+/** A section label that stays at the top of the list while its models scroll
+ *  under it, with its badges kept to the right and never squeezed together. */
+const GROUP_HEADER = "sticky top-0 z-10 flex h-7 items-center gap-1.5 bg-popover px-2";
 
 /** Moves focus to the next (or previous) tab stop inside the picker, wrapping
  *  at either end. Rows, rail marks and slider ticks carry tabindex -1, so the
