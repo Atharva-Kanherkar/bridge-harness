@@ -20,7 +20,7 @@ Fleet, so both get the same fixes once.
 | T7 | Dock | Live terminals from Agent Fleet show as raw UUID tabs | labels derived from the id, not the record title |
 | T8 | Both | The bottom row and right column of every TUI are clipped | Tailwind's border-box makes FitAddon read the padded height as available space |
 | T9 | Both | Fast typing and key repeat arrive out of order or get dropped | each keystroke is its own concurrent IPC; the daemon proxy runs them on a thread pool and rejects floods as "busy" |
-| T10 | Both | Mouse clicks and wheel do nothing in ncurses TUIs (htop, mc, vim) | macOS terminfo `kmous=\E[M` selects X10 mouse encoding, which xterm emits on `onBinary`; nothing listened |
+| T10 | Both | Mouse clicks and the wheel do nothing in ncurses apps (htop, mc, Python curses) | macOS ncurses enables only `?1000h` (terminfo `kmous=\E[M`), so xterm reports clicks in X10 encoding on `onBinary`, and nothing listened. vim negotiates SGR and was never affected |
 | T11 | Both | No way to select text inside a mouse-mode TUI on macOS | `macOptionClickForcesSelection` is off, so Option-drag cannot override mouse tracking |
 | T12 | Fleet | The bottom rows of a new pane are drawn out of sight | xterm measures cells before Geist Mono has loaded, fits too many rows, and never refits when the font arrives. Chrome: 40 of 41 cold loads |
 | T13 | Both | A terminal opened while hidden never recovers | every background dock tab opens hidden. Chrome: a `top` screen shows one line once the tab is shown |
@@ -110,6 +110,9 @@ Fleet, so both get the same fixes once.
 | 8.1 | Bottom row fits across 41 pane heights (400 to 640 px) | after: 41 of 41 correct |
 | 8.2 | Hide then show a pane running vim or top | after: screen intact |
 | 8.3 | Open a pane while hidden, then show it | after: full screen |
+
+| 8.4 | Real `bridged` (started without `LANG`), real PTY, the new surface | `stty size` equals the xterm grid before and after a resize; `LANG` is UTF-8; vim fills the screen; `exit 7` records exit code 7 |
+| 8.5 | Click inside a real ncurses program (`?1000h`, X10 encoding) | the new engine delivers it; main's surface does not |
 
 ## 9. Gates
 
