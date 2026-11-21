@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the fake user's home for scripts/e2e/import-fake-user.mjs.
 
-    python3 -I scripts/e2e/import-fake-home.py <home-dir>
+    python3 -I scripts/e2e/import-fake-home.py <home-dir> [<bridge-data-dir>]
 
 It holds a real Claude Code 2.1.325 session (the sanitized fixture, with an
 Explore subagent), a billing chat with a pasted screenshot, thinking, a search,
@@ -14,6 +14,9 @@ and worktree, so the "Found on this Mac" list shows every tool.
 import base64, json, os, shutil, sqlite3, subprocess, sys, uuid
 
 home = os.path.abspath(sys.argv[1])
+# The data folder the Bridge under test uses: a Slack inbox run Bridge made
+# there is in Claude Code's history, and must not come back as a chat.
+bridge_data = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else None
 repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 shutil.rmtree(home, ignore_errors=True)
 os.makedirs(os.path.join(home, ".claude"))
@@ -232,4 +235,25 @@ t3_thread("deleted-1", "Thrown away", "55555555-5555-4555-8555-555555555555", No
 t3_message("deleted-1", "x1", "user", "This thread was deleted in T3 Code.", "2026-11-20T18:00:00Z")
 db.commit()
 db.close()
+# A real chat in a subfolder of the storefront repository: it lands under the
+# repository's project. A /usage probe: not a chat. A Slack inbox run Bridge
+# itself made in its data folder: not a chat either.
+sub = os.path.join(os.path.realpath(store_repo), "src")
+os.makedirs(sub, exist_ok=True)
+badge = "2b7c9d1e-5f6a-4b8c-9d0e-1f2a3b4c5d6e"
+write(f".claude/projects/{''.join(c if c.isalnum() else '-' for c in sub)}/{badge}.jsonl", [
+    {"type": "user", "uuid": "b1", "sessionId": badge, "timestamp": "2026-11-18T09:00:00Z", "cwd": sub, "message": {"role": "user", "content": "Make the cart badge show the item count."}},
+    {"type": "assistant", "uuid": "b2", "sessionId": badge, "timestamp": "2026-11-18T09:00:20Z", "cwd": sub, "message": {"role": "assistant", "content": [{"type": "text", "text": "The badge now shows the number of items in the cart."}]}},
+])
+usage = "3c8d0e2f-6a7b-4c9d-8e1f-2a3b4c5d6e7f"
+write(f".claude/projects/-work-billing-service/{usage}.jsonl", [
+    {"type": "user", "uuid": "q1", "sessionId": usage, "timestamp": "2026-11-18T08:00:00Z", "cwd": "/work/billing-service", "message": {"role": "user", "content": "/usage"}},
+])
+if bridge_data:
+    run_cwd = os.path.join(bridge_data, "chats", "5d9e1f3a-7b8c-4d0e-9f2a-3b4c5d6e7f80")
+    run = "4d9e1f3a-7b8c-4d0e-9f2a-3b4c5d6e7f80"
+    write(f".claude/projects/{''.join(c if c.isalnum() else '-' for c in run_cwd)}/{run}.jsonl", [
+        {"type": "user", "uuid": "s1", "sessionId": run, "timestamp": "2026-11-18T07:00:00Z", "cwd": run_cwd, "message": {"role": "user", "content": "Slack inbox bridge connector: list unread messages."}},
+        {"type": "assistant", "uuid": "s2", "sessionId": run, "timestamp": "2026-11-18T07:00:10Z", "cwd": run_cwd, "message": {"role": "assistant", "content": [{"type": "text", "text": "No unread messages."}]}},
+    ])
 print(home)

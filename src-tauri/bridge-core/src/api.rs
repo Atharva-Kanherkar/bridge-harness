@@ -226,6 +226,7 @@ pub fn detect_import_sources(
         claude: crate::import_continue::folders(&homes.claude),
         codex: crate::import_continue::folders(&homes.codex),
         opencode: crate::import_continue::folders(&homes.opencode),
+        bridge_data: crate::import_placement::Rules::for_core(core).bridge_dirs,
     };
     Ok(wire::ImportSourcesDetection {
         sources: crate::import_sources::detect_with(

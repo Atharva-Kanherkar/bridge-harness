@@ -25,8 +25,11 @@ const PORT = Number(process.env.CDP_PORT ?? 9377);
 const RECORD = process.env.RECORD !== "0";
 // How many generated chats the fake home holds (import-fake-home.py), plus 5
 // hand-made in ~/.claude, 1 that ran in a Conductor workspace, 1 that T3 Code
-// ran in its worktree, and 1 in the work account's folder.
-const CHATS = Number(process.env.IMPORT_FAKE_CHATS ?? 600) + 8;
+// ran in its worktree, 1 in a subfolder of the storefront repository, 1 in
+// the work account's folder, and 1 /usage probe. The probe is counted when
+// found (nothing is read then) and left out when imported.
+const CHATS = Number(process.env.IMPORT_FAKE_CHATS ?? 600) + 10;
+const PROBES = 1;
 // The fake home, to check on disk that Bridge left Conductor's and T3 Code's
 // folders alone.
 const FAKE_HOME = process.env.FAKE_HOME;
@@ -179,7 +182,7 @@ try {
   await waitFor("the tools list", `document.body.innerText.includes("Found on this Mac") && !document.body.innerText.includes("Looking for other tools")`);
   await caption("Bridge finds the tools already on this Mac, without reading any chat");
   const found = await text();
-  check("Claude Code is found with its chats from both folders, projects, setup and the background run left out", new RegExp(`${CHATS.toLocaleString("en-US")} chats in 8 projects · from 2 folders · 1 setup item · \\d+ background runs? left out`).test(found), found.slice(found.indexOf("Found on this Mac"), found.indexOf("Found on this Mac") + 700).replace(/\n+/g, " | "));
+  check("Claude Code is found with its chats from both folders, projects, setup and the background run left out", new RegExp(`${CHATS.toLocaleString("en-US")} chats in 9 projects · from 2 folders · 1 setup item · \\d+ background runs? left out`).test(found), found.slice(found.indexOf("Found on this Mac"), found.indexOf("Found on this Mac") + 700).replace(/\n+/g, " | "));
   check("Codex is found with its own section, mark and Import button", found.includes("Codex keeps using its own memory")
     && await js(`!!document.querySelector('[data-import-tool="codex"] [data-tool-mark] svg') && !!document.querySelector('[data-import-tool="codex"] button')`));
   check("OpenCode is found with its own section, mark and Import button, its background run apart", found.includes("OpenCode keeps its own memory and setup")
@@ -192,7 +195,7 @@ try {
   // CLAUDE.md: files read = chats + 1, items written = chats + 2 (the subagent
   // comes out of its parent's file). Claude Code keeps its own memory, so the
   // memory file stays where it is.
-  const EXPECTED = CHATS + 2;
+  const EXPECTED = CHATS + 2 - PROBES;
   await caption("One click: Import");
   await click("Import", "button");
   await waitFor("the progress card", `!!document.querySelector('section[aria-label="Import progress"]')`, 10000);
@@ -243,6 +246,20 @@ try {
   // The fixture's temp-folder run, plus the probes Bridge itself ran in the
   // fake home while setting up: all background runs, all left out.
   check("Background runs are left out and counted", summary.includes("Background runs left out"));
+  const placed = await js(`(async () => {
+    const { bridgeApi } = await import("/src/api.ts");
+    const state = await bridgeApi.state();
+    const badge = state.sessions.find(item => (item.title ?? "").startsWith("Make the cart badge show the item count"));
+    const workspace = state.workspaces.find(item => item.id === badge?.workspaceId);
+    return {
+      project: workspace?.path ?? null,
+      title: workspace?.title ?? null,
+      probe: state.sessions.some(item => (item.title ?? "").startsWith("/usage")),
+      bridgeRun: state.sessions.some(item => (item.title ?? "").includes("Slack inbox")),
+    };
+  })()`);
+  check("A chat from a repository subfolder lands under the repository's project, made for it", (placed.project ?? "").endsWith("/code/storefront") && placed.title === "storefront", JSON.stringify(placed));
+  check("A /usage probe and a run Bridge made itself did not come back as chats", !placed.probe && !placed.bridgeRun, JSON.stringify(placed));
   await caption(`${imported} items came over; background runs left out`);
   await shot("04-summary-dark");
 

@@ -101,6 +101,7 @@ pub mod import_continue;
 pub mod import_job;
 pub mod import_worktrees;
 pub mod import_sqlite;
+pub mod import_placement;
 pub mod import_sources;
 pub mod frame_queue;
 pub mod git;

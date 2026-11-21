@@ -269,9 +269,40 @@ pub(crate) fn start_with_roots(
     Ok(job)
 }
 
-/// On startup: carry on with an import Bridge quit in the middle of, from
-/// the tool it was importing.
+/// Remove imported runs that are not chats, then file every imported chat
+/// under its project ([`crate::import_placement`]). Returns what changed.
+pub(crate) fn tidy_imported_chats(core: &Arc<BridgeCore>) -> Result<(usize, crate::import_placement::Placement), BridgeError> {
+    let rules = crate::import_placement::Rules::for_core(core);
+    let removed = crate::import_placement::purge_background(&core.db, &rules)?;
+    let placement = crate::import_placement::place(&core.db, &rules)?;
+    if removed > 0 || placement.placed > 0 {
+        core.events.publish(CoreEvent::StateChanged);
+    }
+    Ok((removed, placement))
+}
+
+/// On startup: tidy chats earlier imports brought (in the background), and
+/// carry on with an import Bridge quit in the middle of, from the tool it was
+/// importing.
 pub fn start_import_maintenance(core: Arc<BridgeCore>) {
+    let tidy = core.clone();
+    let spawned = std::thread::Builder::new().name("bridge-import-tidy".into()).spawn(move || {
+        if tidy.import_job_running.load(Ordering::SeqCst) {
+            return;
+        }
+        match tidy_imported_chats(&tidy) {
+            Ok((removed, placement)) if removed > 0 || placement.placed > 0 => eprintln!(
+                "bridge: tidied imported chats: removed {removed} runs that were not chats, filed {} under {} new projects",
+                placement.placed,
+                placement.created.len()
+            ),
+            Ok(_) => {}
+            Err(error) => eprintln!("bridge: could not tidy imported chats: {error}"),
+        }
+    });
+    if let Err(error) = spawned {
+        eprintln!("bridge: could not start tidying imported chats: {error}");
+    }
     if let Err(error) = resume_with(&core, |source| source.machine_roots(&core)) {
         eprintln!("bridge: could not resume the import: {error}");
     }
@@ -332,6 +363,7 @@ pub(crate) fn run_with(
     } else {
         Runner { core, source, job: &mut job, last_publish: None }.run(roots, cursor)
     };
+    let outcome = outcome.and_then(|()| tidy_imported_chats(core).map(|_| ()));
     job.status = if outcome.is_ok() { "done" } else { "failed" }.into();
     if let Err(error) = outcome {
         job.errors.push(error.to_string());
@@ -518,7 +550,21 @@ struct Runner<'a> {
 
 impl Runner<'_> {
     fn run(&mut self, roots: &[PathBuf], cursor: Option<String>) -> Result<(), BridgeError> {
-        let work = self.source.work(roots)?;
+        let mut work = self.source.work(roots)?;
+        if self.source == Source::Claude {
+            // Bridge's own runs, by their Claude Code project folder: never
+            // read, counted as background runs.
+            let rules = crate::import_placement::Rules::for_core(self.core);
+            let before = work.artifacts.len();
+            work.artifacts.retain(|artifact| {
+                artifact.kind != CandidateKind::Conversation
+                    || !Path::new(&artifact.canonical_source_ref)
+                        .parent()
+                        .and_then(Path::file_name)
+                        .is_some_and(|slug| rules.is_bridge_claude_project(&slug.to_string_lossy()))
+            });
+            work.left_out += (before - work.artifacts.len()) as u64;
+        }
         self.run_work(work, cursor)
     }
 
@@ -548,6 +594,7 @@ impl Runner<'_> {
                 .and_then(|artifact| source.folder(artifact));
             match import_batch(self.core, source, roots, batch) {
                 Ok(outcome) => {
+                    self.job.left_out += outcome.background;
                     add_batch(self.job, &outcome.candidates, outcome.commit.as_ref());
                     for refusal in &outcome.refusals {
                         self.job.failed += refusal.count;
@@ -604,6 +651,8 @@ struct BatchOutcome {
     candidates: Vec<ImportCandidate>,
     commit: Option<ImportCommit>,
     refusals: Vec<Refusal>,
+    /// Runs left out as not chats (Bridge's own, command probes).
+    background: u64,
 }
 
 struct Refusal {
@@ -627,8 +676,15 @@ fn import_batch(
     // the commit instead of holding a second copy of every chat.
     let mut previewed = Vec::new();
     let mut normalized = Vec::new();
+    let mut background = 0u64;
+    let rules = crate::import_placement::Rules::for_core(core);
     for mut candidate in source.preview(roots, artifacts)? {
         let payload = std::mem::take(&mut candidate.normalized_payload);
+        // A run Bridge made, or a command probe: not a chat.
+        if candidate.kind == CandidateKind::Conversation && crate::import_placement::is_background_candidate(&payload, &rules) {
+            background += 1;
+            continue;
+        }
         previewed.push(candidate.clone());
         if candidate.kind != CandidateKind::Unsupported {
             candidate.normalized_payload = payload;
@@ -636,7 +692,7 @@ fn import_batch(
         }
     }
     if normalized.is_empty() {
-        return Ok(BatchOutcome { candidates: previewed, commit: None, refusals: Vec::new() });
+        return Ok(BatchOutcome { candidates: previewed, commit: None, refusals: Vec::new(), background });
     }
     let selected: HashSet<&str> = normalized
         .iter()
@@ -671,12 +727,12 @@ fn import_batch(
         }
     }
     let Some(commit) = commit else {
-        return Ok(BatchOutcome { candidates: previewed, commit: None, refusals });
+        return Ok(BatchOutcome { candidates: previewed, commit: None, refusals, background });
     };
     if commit.imported > 0 {
         core.events.publish(CoreEvent::StateChanged);
     }
-    Ok(BatchOutcome { candidates: previewed, commit: Some(commit), refusals })
+    Ok(BatchOutcome { candidates: previewed, commit: Some(commit), refusals, background })
 }
 
 fn merge_commit(total: &mut Option<ImportCommit>, next: ImportCommit) {

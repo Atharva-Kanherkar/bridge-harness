@@ -304,8 +304,12 @@ pub fn write(db: &Connection, candidates: &[Candidate], outcomes: &[Outcome]) ->
             "INSERT INTO adopted_worktrees(workspace_id,tool,path,source_ref,scripts,adopted_at) VALUES(?1,?2,?3,?4,?5,?6)",
             params![id, candidate.tool, path, candidate.source_ref, scripts, now],
         )?;
+        // Imported chats that ran in this folder move under it: those with no
+        // project, and those filed under their repository's project, since
+        // the folder's own workspace is the closer match.
         report.relinked_chats += transaction.execute(
-            "UPDATE sessions SET workspace_id=?1 WHERE kind='imported' AND workspace_id IS NULL AND cwd=?2",
+            "UPDATE sessions SET workspace_id=?1 WHERE kind='imported' AND cwd=?2
+               AND (workspace_id IS NULL OR workspace_id IN (SELECT id FROM workspaces WHERE path IS NOT ?2))",
             params![id, path],
         )?;
         store::event(&transaction, "import", "workspace.adopted", &id, &format!("Adopted {title} from {}", candidate.tool))?;
