@@ -80,6 +80,7 @@ fn claude(
     home: &Path,
     config_dir: Option<&Path>,
     accounts: &[PathBuf],
+    bridge_data: &[PathBuf],
 ) -> wire::DetectedImportSource {
     let roots = crate::claude_import::config_roots(home, config_dir, accounts);
     let mut counts = wire::ImportSourceCounts::default();
@@ -88,7 +89,10 @@ fn claude(
     for root in &roots {
         for project in subdirs(&root.join("projects")) {
             let chats = files_with(&project, "jsonl");
-            if is_temp_project(&project) {
+            let bridge_run = project
+                .file_name()
+                .is_some_and(|slug| crate::import_placement::is_bridge_claude_project(&slug.to_string_lossy(), bridge_data));
+            if is_temp_project(&project) || bridge_run {
                 counts.background += chats;
                 continue;
             }
@@ -175,6 +179,9 @@ pub struct AccountFolders {
     pub claude: Vec<PathBuf>,
     pub codex: Vec<PathBuf>,
     pub opencode: Vec<PathBuf>,
+    /// Bridge's own data folders: chats run there are Bridge's own runs,
+    /// counted as background runs, not chats.
+    pub bridge_data: Vec<PathBuf>,
 }
 
 /// Every known tool, Claude Code first, then the rest in a fixed order.
@@ -198,7 +205,7 @@ pub fn detect_with(
     xdg_data_home: Option<&Path>,
 ) -> Vec<wire::DetectedImportSource> {
     [
-        claude(home, claude_config_dir, &accounts.claude),
+        claude(home, claude_config_dir, &accounts.claude, &accounts.bridge_data),
         codex(home, codex_home, &accounts.codex),
         opencode(home, xdg_data_home, &accounts.opencode),
         conductor(home),
@@ -363,6 +370,20 @@ mod tests {
     }
 
     #[test]
+    fn chats_bridge_ran_itself_count_as_background_runs() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        let data = PathBuf::from("/Users/me/Library/Application Support/dev.bridge.deck");
+        let slug = crate::import_placement::claude_slug(&data.join("chats/0a1b"));
+        touch(&h.join(format!(".claude/projects/{slug}/slack.jsonl")));
+        touch(&h.join(format!(".claude/projects/{slug}/slack2.jsonl")));
+        touch(&h.join(".claude/projects/-Users-me-code-app/real.jsonl"));
+        let accounts = AccountFolders { bridge_data: vec![data], ..AccountFolders::default() };
+        let claude = detect_with(h, None, &accounts, None, None).into_iter().find(|source| source.tool == "claude_code").unwrap();
+        assert_eq!((claude.counts.chats, claude.counts.projects, claude.counts.background), (1, 1, 2));
+    }
+
+    #[test]
     fn counts_come_from_file_listings_across_every_claude_folder() {
         let home = tempfile::tempdir().unwrap();
         let h = home.path();
@@ -468,6 +489,7 @@ mod tests {
             claude: vec![h.join("claude-work"), h.join(".claude")],
             codex: vec![h.join("codex-work"), h.join("codex-missing")],
             opencode: vec![work.home.clone()],
+            ..AccountFolders::default()
         };
 
         let sources = detect_with(h, None, &accounts, None, None);

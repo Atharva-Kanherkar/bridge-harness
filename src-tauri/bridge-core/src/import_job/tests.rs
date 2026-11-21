@@ -364,6 +364,95 @@ fn measure_one_transcript() {
     println!("MEASURE one_secs={:.1} bytes={} status={} imported={} failed={}", started.elapsed().as_secs_f64(), fs::metadata(&source).unwrap().len(), job.status, job.imported, job.failed);
 }
 
+mod placement {
+    use super::*;
+    use crate::import_worktrees::tests::repo;
+
+    fn probe(session: &str, cwd: &str) -> String {
+        json!({"type":"user","uuid":format!("{session}-u"),"sessionId":session,"timestamp":"2026-11-01T10:00:00Z","cwd":cwd,"message":{"role":"user","content":"/usage"}}).to_string()
+    }
+
+    fn project_of(core: &BridgeCore, title_like: &str) -> Option<String> {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT w.path FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.kind='imported' AND s.title LIKE ?1",
+                params![format!("%{title_like}%")],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn bridges_own_runs_and_probes_are_left_out_and_real_chats_land_in_their_project() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().canonicalize().unwrap();
+        let data = home.join("bridge-data");
+        let core = Arc::new(BridgeCore::for_tests(&data));
+        let app = repo(&home.join("code"), "app");
+        fs::create_dir_all(app.join("src")).unwrap();
+        let claude = home.join(".claude");
+        let slug = crate::import_placement::claude_slug(&data.join("chats/0a1b"));
+        // A Slack inbox run Bridge made: never read.
+        write(&claude.join(format!("projects/{slug}/slack.jsonl")), &session("slack", &data.join("chats/0a1b").to_string_lossy(), "Check my Slack inbox"));
+        // The same, under a project folder Claude Code named differently: caught by its folder.
+        write(&claude.join("projects/-renamed/slack2.jsonl"), &session("slack2", &data.join("chats/0c").to_string_lossy(), "Slack unread inbox"));
+        // A /usage probe.
+        write(&claude.join("projects/-Users-me--claude-rimo-usage/usage.jsonl"), &probe("usage", "/Users/me/.claude/rimo-usage"));
+        // Real chats: one in the repo, one in a folder that no longer exists.
+        write(&claude.join("projects/-app/real.jsonl"), &session("real", &app.join("src").to_string_lossy(), "fix the login form"));
+        write(&claude.join("projects/-gone/old.jsonl"), &session("old", "/work/long-gone", "an old chat"));
+        let roots = claude_import::config_roots(&home, None, &[]);
+
+        let job = run_job(&core, &roots);
+
+        assert_eq!(job.status, "done", "{job:?}");
+        assert_eq!(job.imported, 2, "the two real chats: {job:?}");
+        assert_eq!(job.left_out, 3, "Bridge's two runs and the probe: {job:?}");
+        assert_eq!(project_of(&core, "fix the login"), Some(app.to_string_lossy().into_owned()), "filed under the repository Bridge made a project for");
+        assert_eq!(project_of(&core, "an old chat"), None, "its folder is gone");
+        let projects: i64 = core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM workspaces", [], |row| row.get(0)).unwrap();
+        assert_eq!(projects, 1);
+    }
+
+    #[test]
+    fn on_startup_runs_an_earlier_import_brought_are_removed_and_chats_filed() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().canonicalize().unwrap();
+        let data = home.join("bridge-data");
+        let core = Arc::new(BridgeCore::for_tests(&data));
+        let app = repo(&home.join("code"), "app");
+        {
+            let db = core.db.lock().unwrap();
+            for (id, cwd) in [("old-slack", data.join("chats/9").to_string_lossy().into_owned()), ("old-real", app.to_string_lossy().into_owned())] {
+                db.execute(
+                    "INSERT INTO sessions(id,harness,label,status,metric_source,kind,cwd) VALUES(?1,'claude','x','stopped','imported','imported',?2)",
+                    params![id, cwd],
+                )
+                .unwrap();
+            }
+        }
+        let (removed, placement) = tidy_imported_chats(&core).unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(placement.placed, 1);
+        assert_eq!(placement.created, vec![app.clone()]);
+        let left: Vec<(String, Option<String>)> = core
+            .db
+            .lock()
+            .unwrap()
+            .prepare("SELECT id, workspace_id FROM sessions WHERE kind='imported'")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].0, "old-real");
+        assert!(left[0].1.is_some());
+    }
+}
+
 mod codex {
     use super::*;
 
@@ -900,6 +989,7 @@ mod t3code {
         claude: Vec<PathBuf>,
         codex: Vec<PathBuf>,
         worktree: PathBuf,
+        main: PathBuf,
     }
 
     /// A home where T3 Code ran, for one repo: a Claude thread in a worktree
@@ -931,6 +1021,7 @@ mod t3code {
             claude: claude_import::config_roots(&home, None, &[]),
             codex: vec![codex_home.canonicalize().unwrap()],
             worktree: tree,
+            main,
         }
     }
 
@@ -987,7 +1078,8 @@ mod t3code {
             chats(&core),
             vec![
                 ("Add a discount helper".into(), "claude".into(), false, Some(tree.clone()), Some(format!("claude:{KEPT}")), 2),
-                ("Casual conversation".into(), "claude".into(), true, None, Some(format!("claude:{GONE}")), 2),
+                // It ran in the project's folder: filed under that project.
+                ("Casual conversation".into(), "claude".into(), true, Some(home.main.to_string_lossy().into_owned()), Some(format!("claude:{GONE}")), 2),
                 ("Round prices".into(), "codex".into(), false, None, Some(format!("codex:{CODEX}")), 2),
             ]
         );
