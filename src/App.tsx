@@ -4186,7 +4186,7 @@ function AppContent() {
                   {/* A child waiting on an approval has no turn of its own to interrupt. */}
                   {(turnActive || session.status === "waiting") && <button type="button" onClick={() => void stopWorker(session.id).catch(value => setError(errorMessage(value)))} className="shrink-0 rounded-md border border-border px-3 py-1.5 hover:bg-accent">Stop subagent</button>}
                 </div> : isWorkerView ? <div className="mx-auto max-w-conversation px-4 sm:px-6">
-                  <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-meta text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator — steer it here to amend that objective.</span></div>
+                  <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-meta text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator. Steer it here to amend that objective.</span></div>
                   <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2" trailing={contextRing}/>
                 </div> : <div className="relative mx-auto max-w-conversation-frame">
                   {agentShortcutOpen && <div id="agent-shortcut-listbox" role="listbox" aria-label="Specialist agents" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
