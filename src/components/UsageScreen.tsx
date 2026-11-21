@@ -7,6 +7,7 @@ import type { UsageHistorySource, UsagePriceOverride, UsageSummaryResult } from 
 import { HarnessMark } from "./harnessMarks";
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
 import { UsageInsights } from "./UsageInsights";
+import { UsageScreenTime } from "./UsageScreenTime";
 import { UsageLedger } from "./UsageLedger";
 import { UsageStrips } from "./UsageStrips";
 import { UsageFlow } from "./UsageFlow";
@@ -59,7 +60,7 @@ export function clearUsageCacheForTests(): void {
 }
 
 type Breakdown = "model" | "time";
-type UsageTab = "usage" | "insights";
+type UsageTab = "usage" | "insights" | "time";
 
 const LAYOUT_LABELS: Record<UsageLayout, string> = { ledger: "Ledger", strips: "Strips", flow: "Flow", mosaic: "Mosaic", calendar: "Calendar" };
 
@@ -294,13 +295,13 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
       <ScreenHeading
         title="Usage"
         action={<span className="inline-flex shrink-0 items-center gap-2">
-          <Segmented<UsageTab> label="View" value={tab} options={[{ value: "usage", label: "Usage" }, { value: "insights", label: "Insights" }]} onChange={setTab} />
+          <Segmented<UsageTab> label="View" value={tab} options={[{ value: "usage", label: "Usage" }, { value: "insights", label: "Insights" }, { value: "time", label: "Time" }]} onChange={setTab} />
           {onOpenMeter && <button type="button" onClick={onOpenMeter} aria-label="Open usage meter" title="Usage meter" className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Gauge size={14} aria-hidden="true" /></button>}
           <button type="button" onClick={() => { setRefreshTick(tick => tick + 1); providerUsage.refresh(); }} disabled={loading || scanning} aria-label="Refresh usage" aria-busy={loading || scanning} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading || scanning ? "animate-spin" : ""} /></button>
         </span>}
       />
 
-      {tab === "insights" ? <UsageInsights windowDays={preferences.windowDays} onError={onError} /> : <>
+      {tab === "time" ? <UsageScreenTime onError={onError} refreshKey={refreshTick} /> : tab === "insights" ? <UsageInsights windowDays={preferences.windowDays} onError={onError} /> : <>
       {providerUsage.overviews?.providers.filter(snapshot => !snapshot.accountId).map(snapshot =>
         <div key={snapshot.provider} className="mb-3 empty:hidden"><UsageResetRow snapshot={snapshot} onUpdated={providerUsage.refresh} /></div>)}
       <div className="mb-5 flex flex-wrap items-start gap-3">
