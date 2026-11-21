@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
 import { harnessLabel } from "../utils";
 import { NOTIFY_LEVELS, useDelegationNotify } from "../delegationNotify";
+import { EARLY_COMPACTION_CHAT_NOTE, useEarlyCompaction } from "../earlyCompaction";
 import { mentionToken, toPublicAlias } from "../referenceChip";
 import { MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
 import { SidebarFilterMenu } from "./SidebarFilterMenu";
@@ -290,7 +291,7 @@ function SubagentList({ chatName: parentName, rows, open, indented, activeSessio
 }
 
 const ROW_MENU_WIDTH = 224;
-const ROW_MENU_HEIGHT_ESTIMATE = 300;
+const ROW_MENU_HEIGHT_ESTIMATE = 400;
 
 function ChatRowMenu({
   chat,
@@ -381,6 +382,7 @@ function ChatRowMenu({
             <span className="min-w-0 flex-1 truncate">Open parent: {forkLabel}</span>
           </button>
         )}
+        <ChatEarlyCompaction chatId={chat.id} />
         {chat.kind !== "worker" && <ChatNoticeLevel chatId={chat.id} item={item} />}
         {onArchive && (
           <>
@@ -392,6 +394,36 @@ function ChatRowMenu({
           </>
         )}
       </MenuPanel>
+    </>
+  );
+}
+
+/**
+ * The opt-out of one chat. It shows only while the global switch is on, because a chat cannot turn the feature on.
+ * The host decides which chat the feature covers, so the row tests no harness.
+ */
+function ChatEarlyCompaction({ chatId }: { chatId: string }) {
+  const { view, error, busy, set } = useEarlyCompaction(chatId);
+  if (!view?.globalEnabled || !view.sessionEligible) return null;
+  const on = view.enabled === true;
+  return (
+    <>
+      <MenuSeparator />
+      <button
+        type="button"
+        role="menuitemcheckbox"
+        aria-checked={on}
+        disabled={busy}
+        className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-ui transition-colors hover:bg-accent"
+        onClick={() => set(view.sessionOptedOut ? null : false)}
+      >
+        <Check size={12} strokeWidth={1.7} className={cn("mt-1 shrink-0", on ? "text-foreground" : "opacity-0")} aria-hidden="true" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate">Compact early</span>
+          <span className="block text-caption leading-snug text-muted-foreground">{EARLY_COMPACTION_CHAT_NOTE}</span>
+        </span>
+      </button>
+      {error && <p role="alert" className="pb-1 pl-7 pr-2 text-caption leading-snug text-destructive">{error}</p>}
     </>
   );
 }

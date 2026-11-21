@@ -437,6 +437,8 @@ typed_methods![
     (SaveAttributionSettings, SaveAttributionSettingsParams, AttributionSettings),
     (GetDelegationNotifySettings, GetDelegationNotifySettingsParams, DelegationNotifySettingsView),
     (SaveDelegationNotifySettings, SaveDelegationNotifySettingsParams, DelegationNotifySettingsView),
+    (GetEarlyCompactionSettings, GetEarlyCompactionSettingsParams, EarlyCompactionSettingsView),
+    (SaveEarlyCompactionSettings, SaveEarlyCompactionSettingsParams, EarlyCompactionSettingsView),
     (GetChatSearchSettings, _, ChatSearchSettings),
     (GetLimitRecoverySettings, _, LimitRecoverySettings),
     (SaveLimitRecoverySettings, SaveLimitRecoverySettingsParams, LimitRecoverySettings),

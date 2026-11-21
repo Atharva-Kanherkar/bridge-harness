@@ -69,6 +69,8 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
         "CREATE INDEX IF NOT EXISTS idx_session_entries_session_kind ON session_entries(session_id, kind);
          CREATE UNIQUE INDEX IF NOT EXISTS idx_harness_subagent_provider ON sessions(parent_session_id,provider_session_id) WHERE kind='harness_subagent';",
     )?;
+    // The audit of early compaction attempts, added the same version-less way.
+    crate::early_compaction::install_store(&connection)?;
     // A chat's speed tier (Claude fast mode, Codex service tier). One nullable
     // column, added the same version-less way as the indexes above.
     {

@@ -887,6 +887,14 @@ pub fn dispatch(
             let p: wire::SaveDelegationNotifySettingsParams = decode(method, params)?;
             reply(api::save_delegation_notify_settings(core, &p))
         }
+        MethodName::GetEarlyCompactionSettings => {
+            let p: wire::GetEarlyCompactionSettingsParams = decode(method, params)?;
+            reply(api::get_early_compaction_settings(core, &p))
+        }
+        MethodName::SaveEarlyCompactionSettings => {
+            let p: wire::SaveEarlyCompactionSettingsParams = decode(method, params)?;
+            reply(api::save_early_compaction_settings(core, &p))
+        }
         MethodName::GetAttributionSettings => reply(api::get_attribution_settings(core)),
         MethodName::SaveAttributionSettings => {
             let p: wire::SaveAttributionSettingsParams = decode(method, params)?;
@@ -2016,5 +2024,49 @@ mod tests {
                 .expect_err("unknown workspaces must reach the core surface");
             assert_eq!(error.code, ErrorCode::Database.code());
         }
+    }
+
+    #[test]
+    fn early_compaction_settings_route_and_load_the_switch_at_boot() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        core.db
+            .lock()
+            .unwrap()
+            .execute("INSERT INTO sessions(id,harness,label,status,kind,title) VALUES('chat-1','claude','Chat','ready','direct','Notes')", [])
+            .unwrap();
+        let off = json!({"enabled": false, "globalEnabled": false, "sessionOptedOut": false, "sessionEligible": false});
+        assert_eq!(dispatch(&core, MethodName::GetEarlyCompactionSettings, None).unwrap(), off);
+        assert_eq!(
+            dispatch(&core, MethodName::GetEarlyCompactionSettings, Some(json!({"sessionId": "chat-1"}))).unwrap(),
+            json!({"enabled": false, "globalEnabled": false, "sessionOptedOut": false, "sessionEligible": true})
+        );
+        assert!(!core.early_compaction.enabled());
+
+        let on = dispatch(&core, MethodName::SaveEarlyCompactionSettings, Some(json!({"enabled": true}))).unwrap();
+        assert_eq!(on, json!({"enabled": true, "globalEnabled": true, "sessionOptedOut": false, "sessionEligible": false}));
+        assert!(core.early_compaction.enabled());
+        let opted_out = dispatch(&core, MethodName::SaveEarlyCompactionSettings, Some(json!({"sessionId": "chat-1", "enabled": false}))).unwrap();
+        assert_eq!(opted_out, json!({"enabled": false, "globalEnabled": true, "sessionOptedOut": true, "sessionEligible": true}));
+
+        let error = dispatch(&core, MethodName::SaveEarlyCompactionSettings, Some(json!({"sessionId": "chat-missing", "enabled": false}))).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Invalid.code(), "a chat outside the scope cannot opt out");
+        let error = dispatch(&core, MethodName::SaveEarlyCompactionSettings, Some(json!({"sessionId": "chat-1", "enabled": true}))).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Invalid.code(), "a chat cannot turn the feature on");
+        let error = dispatch(&core, MethodName::SaveEarlyCompactionSettings, Some(json!({}))).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Invalid.code(), "a global save needs a value");
+        let error = dispatch(&core, MethodName::SaveEarlyCompactionSettings, Some(json!({"enabled": true, "thresholdTokens": 1}))).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+        let error = dispatch(&core, MethodName::GetEarlyCompactionSettings, Some(json!({"sessionId": "chat-1", "extra": 1}))).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+
+        // A new boot reads the switch from the store, not from the old core.
+        drop(core);
+        let rebooted = self::core(fixture.path());
+        assert!(rebooted.early_compaction.enabled(), "startup loads the saved switch");
+        assert_eq!(
+            dispatch(&rebooted, MethodName::GetEarlyCompactionSettings, Some(json!({"sessionId": "chat-1"}))).unwrap(),
+            opted_out
+        );
     }
 }

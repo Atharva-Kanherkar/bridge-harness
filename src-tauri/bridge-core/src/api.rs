@@ -5711,6 +5711,15 @@ pub fn save_delegation_notify_settings(core: &Arc<BridgeCore>, params: &wire::Sa
     crate::delegation_notify::save(&core.db.lock().unwrap(), params)
 }
 
+pub fn get_early_compaction_settings(core: &Arc<BridgeCore>, params: &wire::GetEarlyCompactionSettingsParams) -> Result<wire::EarlyCompactionSettingsView, BridgeError> {
+    crate::early_compaction_settings::view(&lock_db(core), params.session_id.as_deref())
+}
+
+/// Waits on the input lease, so a host must call it off its UI thread.
+pub fn save_early_compaction_settings(core: &Arc<BridgeCore>, params: &wire::SaveEarlyCompactionSettingsParams) -> Result<wire::EarlyCompactionSettingsView, BridgeError> {
+    crate::early_compaction_settings::save(core, params)
+}
+
 pub fn get_attribution_settings(core: &Arc<BridgeCore>) -> Result<wire::AttributionSettings, BridgeError> {
     crate::attribution_settings::load(&core.db.lock().unwrap())
 }
@@ -6513,7 +6522,9 @@ pub fn save_permission_policy(
 }
 
 pub fn reset_all_config(core: &Arc<BridgeCore>) -> Result<agent_config::ConfigState, BridgeError> {
-    let next = agent_config::reset_all(&core.db.lock().unwrap())?;
+    // The reset deletes the early compaction switch, so the write also turns
+    // the switch off in memory.
+    let next = crate::early_compaction_settings::with_switch_write(core, agent_config::reset_all)?;
     // Reset deletes every configuration row, the permission policy among them, so
     // the chrome badge has to hear about it or it keeps advertising a bypass that
     // is no longer in effect.

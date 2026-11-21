@@ -57,7 +57,49 @@ Rust's compaction controller decides when a checkpoint is needed. The session be
 
 Checkpoints are triggered at phase boundaries, before suspension or model downgrade, before risky native resume, or on manual request. They are suppressed during tool calls and approvals, for short-lived workers with valid final results, and when no meaningful work occurred since the last boundary.
 
-The `ContextPressure` trigger stays reachable only where Bridge is the sole owner of the window: a harness that reports a context gauge and has no compaction of its own, which today means the agent-protocol harnesses. A direct chat never auto-compacts, and that exclusion is deliberate rather than an oversight. Its harness owns the live window, so Bridge has no pressure to relieve, and its boundaries are the four above.
+The `ContextPressure` trigger stays reachable only where Bridge is the sole owner of the window: a harness that reports a context gauge and has no compaction of its own, which today means the agent-protocol harnesses. A direct chat never gets an automatic Bridge checkpoint, and that exclusion is deliberate rather than an oversight. Its harness owns the live window, so Bridge has no pressure to relieve, and its boundaries are the four above.
+
+Early compaction is the one case where Bridge asks for a native compaction on its own. It applies only to a top-level direct Claude or Codex chat: OpenCode chats, orchestrators, workers and workflow sessions never get one. After a turn of such a chat ends, the maintenance sweep waits 20 seconds, then compares the window reading of the turn with the threshold. If the reading is at or above the threshold and the chat is idle, Bridge sends the harness its own compaction command, with no focus. This is the same call that a manual `/compact` makes. Idle means: no send that runs, no open approval, no open tool, no live child and no queued input.
+
+Early compaction itself never starts a Bridge checkpoint. A stop of a warm direct chat, which has a live harness process, can still run a Bridge checkpoint turn. A send while an early compaction runs takes the same route as a send while a manual `/compact` runs. The default send stops the compaction and delivers the text.
+
+The threshold is 100,000 tokens, and it is provisional: the live eval and a ledger query set the final value. Bridge keeps an attempt record for each early compaction and settles it from the boundary, from the end of the turn, or after 300 seconds. A Claude boundary gives token figures before and after the compaction. Claude can leave `postTokens` out, so `boundary_post_tokens` can be null. A Codex boundary gives no figures. So the record compares the trigger reading with the next reading of the chat, which has the same base for both harnesses. After a failed attempt, or a next reading still at or above the threshold, Bridge makes no other attempt on that launch of the process.
+
+A global switch controls the trigger, and a chat can opt out. The switch is off by default. With the switch off, this feature makes no new attempt and sends no command. An attempt that is open already can still settle, and its next reading can still fill.
+
+### The live eval
+
+The live eval plays one scripted chat two times on a real harness: with the switch on, and with no switch. Each run costs real tokens, so the test has the `#[ignore]` mark and needs a gate value.
+
+The gated eval starts real chats with full access in a temporary fixture directory. It uses the provider logins and the user settings of the person who runs it, for example the Claude user hooks and the Codex home. Run it only on a development machine.
+
+Run it from the root of the repository:
+
+```bash
+BRIDGE_EARLY_COMPACTION_EVAL=1 cargo test --manifest-path src-tauri/Cargo.toml -p bridge-core --lib early_compaction_eval::live -- --ignored --nocapture
+```
+
+These values change the run:
+
+- `BRIDGE_EARLY_COMPACTION_EVAL_HARNESS`: `claude` or `codex`. With no value, the eval runs the two harnesses, one after the other.
+- `BRIDGE_EARLY_COMPACTION_EVAL_MODEL`: the model of the chat. The defaults are `claude-haiku-5-5` and `gpt-6.2-sol`. Set the harness too when you set a model.
+- `BRIDGE_EARLY_COMPACTION_EVAL_ONLY`: `claude`, `codex`, `on` or `off`. It runs one harness or one arm. A run of one arm writes the figures, but it gives no verdict.
+- `BRIDGE_EARLY_COMPACTION_EVAL_REPORT_DIR`: the directory of the report. The default is `bridge-early-compaction-eval` in the temp directory of the system.
+
+The workload is `testing/evals/early-compaction/workload.json`. Turns 1 to 3 give three rules in the chat only. Turns 4 to 10 read large data files, so the window goes past the threshold. Turns 11 to 14 need the rules. Each of these turns gets 1 point when its check command passes, and 1 point when its file obeys each rule. The maximum is 8 points for each arm. The check has half-even ties that `Math.round` and `toFixed` fail, and it needs a `LedgerError` with an UPPER_SNAKE code. The rule check reads the file with no comments, except for the header line.
+
+The two arms of one harness run at the same time, each with its own data directory. After each turn, the two arms wait until the due mark has a final decision, or until the warm limit. An open attempt gets up to the settle limit. The eval adds the tokens of each chat from `usage_ledger` after the last turn. Then it stops the harness process with no checkpoint turn, so no checkpoint row goes into the sums.
+
+A harness passes when all of these are true:
+
+- The two arms finish each turn.
+- Arm `on` has at least one `compacted` attempt. On Claude, that attempt has `boundary_pre_tokens`.
+- On Claude, each dispatched compaction request, with any outcome, has a ledger row with tokens above zero before the next send. If one request has no such row, the harness fails with `compaction_usage_unobserved`.
+- On Codex, the harness does not report the tokens of the compaction request. The eval adds the trigger reading of each compacted attempt one time as uncached input, in the column `compaction bound (not observed)`. A compacted attempt with no trigger reading fails with `compaction_usage_unobserved`.
+- The score of arm `on` is at least the score of arm `off` minus 1, and arm `off` scores at least 6.
+- The input total of arm `on` (uncached, cache write and cache read, with the bound on Codex) is less than the total of arm `off`.
+
+The report is a Markdown file and a JSON file. It holds the raw sums, the points of each turn, the attempt rows and the verdict. The price from `usage_pricing` is a side figure, and it is not part of the bar. A model with no rate shows `no rate`. Each arm runs one time, so the figures are noise-prone. On Codex, the resend of the skills list (about 10,000 tokens) adds noise to the sums.
 
 ### What the model is asked for
 

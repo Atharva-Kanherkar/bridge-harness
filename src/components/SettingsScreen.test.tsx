@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { bridgeApi } from "../api";
 import { SettingsScreen } from "./SettingsScreen";
 import { ALL_SECTIONS, PRIMARY_SECTIONS, SECTION_LABELS } from "./settings/sections";
 
@@ -302,6 +303,18 @@ describe("SettingsScreen", () => {
       expect(container.textContent).toContain("Keep them");
       await open("Keep them");
       expect(container.textContent).not.toContain("removes your agents");
+    });
+
+    it("reads the early compaction switch again after Reset all", async () => {
+      await bridgeApi.saveEarlyCompactionSettings(null, true);
+      await render({ initialSection: "codingAgents" });
+      const toggle = () => container.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Early compaction"]');
+      expect(toggle()?.getAttribute("aria-checked")).toBe("true");
+      await open("Reset all settings");
+      await open("Reset everything");
+      await act(async () => { await flush(); });
+      expect((await bridgeApi.earlyCompactionSettings()).globalEnabled).toBe(false);
+      expect(toggle()?.getAttribute("aria-checked"), "the switch still shows the value from before the reset").toBe("false");
     });
   });
 });

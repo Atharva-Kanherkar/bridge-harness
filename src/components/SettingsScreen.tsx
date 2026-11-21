@@ -13,6 +13,7 @@ import { ImportHarnessSection } from "./ImportHarnessSection";
 import { SettingsGroup, SettingsPage, SettingsRow, TextButton } from "./settings/kit";
 import { SettingsRail } from "./settings/SettingsRail";
 import { ActiveTurnInputSetting } from "./settings/ActiveTurnInputSetting";
+import { EarlyCompactionSetting } from "./settings/EarlyCompactionSetting";
 import { AppearancePage } from "./settings/AppearancePage";
 import { UpdatesPage } from "./settings/UpdatesPage";
 import { NotificationsPage } from "./settings/NotificationsPage";
@@ -72,6 +73,9 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
   const [openCodeDiscoveryError, setOpenCodeDiscoveryError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  // Reset all deletes the early compaction switch too. That switch loads its
+  // own value, so each reset gives it a new key and it reads the value again.
+  const [resets, setResets] = useState(0);
   // One copy of the runtime list, read by both the Harnesses list and a single
   // harness's detail page, so an install never has to be reported twice.
   const managed = useManagedAgents(undefined, onHealthChange);
@@ -232,6 +236,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     try {
       const [next, setup] = await Promise.all([bridgeApi.resetAllConfig(), bridgeApi.resetModelProfiles()]);
       acceptConfig(next); setAgentDrafts({}); setPresetDetailId(null); setHarnessDrafts({}); setHarnessDetailId(null);
+      setResets(count => count + 1);
       setModelSetup(setup); setProfiles(profileDraftsFromSetup(setup)); onModelSetupChange(setup); flashSaved();
     }
     catch (error) { onError(String(error)); } finally { setBusy(false); }
@@ -244,6 +249,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       <SettingsRow label="Model preferences" description="Choose models for chats and background tasks. Start with Bridge's defaults." onOpen={() => navigate("models")} />
       <SettingsRow label="Agents" description="Your own agents, plus Bridge's built-in ones. Pick one when you start a new chat." onOpen={() => navigate("agents")} />
     </SettingsGroup>
+    <EarlyCompactionSetting key={resets} />
     <details className="text-ui"><summary className="cursor-pointer text-muted-foreground">Advanced</summary><div className="mt-3">
       <SettingsGroup>
         <SettingsRow label="Background tasks" description="Tasks running at once, retries, and how long Bridge waits for an agent." onOpen={() => navigate("workers")} />

@@ -68,6 +68,7 @@ export const STATIC_SETTINGS_ROWS: SearchableRow[] = [
 
   { section: "harnesses", label: "Installed", description: "Coding agents Bridge can start right now" },
   { section: "harnesses", label: "Available", description: "Coding agents Bridge can install for you" },
+  { section: "harnesses", label: "Early compaction", description: "Smaller context for an idle Claude or Codex chat, off by default" },
 
   { section: "keys", label: "Saved keys", description: "API keys agents can use on the sites you allow, without seeing them" },
   { section: "keys", label: "Add a key", description: "Save an API key or token in the Keychain for every chat" },
