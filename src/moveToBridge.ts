@@ -58,11 +58,14 @@ export function importNotice(job: ImportJob, toolLabel = "Claude Code"): { title
     return { title: "Import stopped", body: job.errors?.[0] ?? `The import from ${toolLabel} could not finish.`, failed: true };
   }
   const failed = job.failed > 0 ? ` ${job.failed.toLocaleString()} could not be imported.` : "";
-  if (job.imported === 0) {
+  const workspaces = job.workspaces ?? 0;
+  if (job.imported === 0 && workspaces === 0) {
     const already = job.alreadyInBridge > 0 ? ` ${job.alreadyInBridge.toLocaleString()} already in Bridge.` : "";
     return { title: "Import finished", body: `Nothing new came over from ${toolLabel}.${already}${failed}`, failed: false };
   }
-  const parts = [`${job.imported.toLocaleString()} ${job.imported === 1 ? "item" : "items"} came over from ${toolLabel}`];
+  const items = job.imported > 0 ? `${job.imported.toLocaleString()} ${job.imported === 1 ? "item" : "items"}` : "";
+  const adopted = workspaces > 0 ? `${workspaces.toLocaleString()} ${workspaces === 1 ? "workspace" : "workspaces"}` : "";
+  const parts = [`${[items, adopted].filter(Boolean).join(" and ")} came over from ${toolLabel}`];
   if (job.alreadyInBridge > 0) parts.push(`${job.alreadyInBridge.toLocaleString()} already in Bridge`);
   return { title: "Import finished", body: `${parts.join(", ")}.${failed}`, failed: false };
 }

@@ -62,6 +62,8 @@ describe("Move to Bridge logic", () => {
       .toEqual({ title: "Import finished", body: "33,019 items came over from Claude Code, 12 already in Bridge. 2 could not be imported.", failed: false });
     expect(importNotice(job({ status: "done", imported: 0, alreadyInBridge: 608 })).body).toBe("Nothing new came over from Claude Code. 608 already in Bridge.");
     expect(importNotice(job({ status: "done", imported: 1 })).body).toBe("1 item came over from Claude Code.");
+    expect(importNotice(job({ status: "done", imported: 5, workspaces: 2, alreadyInBridge: 1 }), "T3 Code").body).toBe("5 items and 2 workspaces came over from T3 Code, 1 already in Bridge.");
+    expect(importNotice(job({ status: "done", imported: 0, workspaces: 1 }), "T3 Code").body).toBe("1 workspace came over from T3 Code.");
     expect(importNotice(job({ status: "failed", errors: ["Claude Code was not found on this Mac"] })))
       .toEqual({ title: "Import stopped", body: "Claude Code was not found on this Mac", failed: true });
   });

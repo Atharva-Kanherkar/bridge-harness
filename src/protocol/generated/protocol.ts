@@ -2335,6 +2335,7 @@ export interface ImportJob {
   tool: string;
   total: number;
   updatedAt: string;
+  workspaces?: number;
 }
 
 export interface ImportNotCarried {

@@ -23,14 +23,6 @@ struct KnownTool {
 
 const OTHER_TOOLS: &[KnownTool] = &[
     KnownTool {
-        tool: "t3code",
-        label: "T3 Code",
-        supported: false,
-        markers: &[".t3/userdata"],
-        worktree_roots: &[".t3/worktrees"],
-        note: "T3 Code runs Claude Code, so its Claude chats come over with the Claude Code import. Thread titles and projects are coming.",
-    },
-    KnownTool {
         tool: "orca",
         label: "Orca",
         supported: false,
@@ -210,6 +202,7 @@ pub fn detect_with(
         codex(home, codex_home, &accounts.codex),
         opencode(home, xdg_data_home, &accounts.opencode),
         conductor(home),
+        t3code(&crate::t3code_import::Paths::from_env(home)),
     ]
     .into_iter()
         .chain(OTHER_TOOLS.iter().map(|known| other(home, known)))
@@ -309,6 +302,36 @@ fn conductor(home: &Path) -> wire::DetectedImportSource {
     }
 }
 
+/// T3 Code: its threads and the worktrees they ran in, from its database
+/// (opened read-only; projects and threads only, never a message or a
+/// secret). Deleted threads and subagents' threads are not counted, nor
+/// worktrees whose threads are all archived.
+fn t3code(paths: &crate::t3code_import::Paths) -> wire::DetectedImportSource {
+    let installed = paths.installed();
+    let mut counts = wire::ImportSourceCounts::default();
+    let mut note = "Threads come over as chats, with their full Claude Code, Codex or OpenCode history, or T3 Code's own copy when that is gone. Worktrees come over as Bridge workspaces, left where they are, so T3 Code keeps working with them.".to_owned();
+    if installed {
+        match crate::t3code_import::read(paths) {
+            Ok((store, _)) => {
+                let found = crate::t3code_import::counts(&store);
+                counts.chats = found.chats;
+                counts.projects = found.projects;
+                counts.workspaces = found.workspaces;
+            }
+            Err(reason) => note = reason,
+        }
+    }
+    wire::DetectedImportSource {
+        tool: crate::t3code_import::PROVIDER.into(),
+        label: "T3 Code".into(),
+        installed,
+        supported: true,
+        roots: if installed { vec![paths.base.to_string_lossy().into_owned()] } else { Vec::new() },
+        counts,
+        note: Some(note),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,8 +358,8 @@ mod tests {
             ]
         );
         assert!(sources.iter().all(|source| !source.installed));
-        assert!(sources.iter().take(4).all(|source| source.supported), "Claude Code, Codex, OpenCode and Conductor import today");
-        assert!(sources.iter().skip(4).all(|source| !source.supported));
+        assert!(sources.iter().take(5).all(|source| source.supported), "Claude Code, Codex, OpenCode, Conductor and T3 Code import today");
+        assert!(sources.iter().skip(5).all(|source| !source.supported));
     }
 
     #[test]
@@ -465,7 +488,7 @@ mod tests {
         fs::create_dir_all(h.join("conductor/workspaces/repo-a/tokyo")).unwrap();
         fs::create_dir_all(h.join("conductor/workspaces/repo-a/paris")).unwrap();
         fs::create_dir_all(h.join("conductor/workspaces/repo-b/lima")).unwrap();
-        fs::create_dir_all(h.join(".t3/userdata")).unwrap();
+        touch(&h.join(".t3/userdata/state.sqlite"));
         touch(&h.join(".codex/sessions/2026/11/17/rollout-1.jsonl"));
         touch(&h.join(".codex/archived_sessions/rollout-0.jsonl"));
         let sources = detect(h, None, &[]);

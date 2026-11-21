@@ -1425,6 +1425,44 @@ pub fn job_work(roots: &[PathBuf]) -> Result<JobWork, BridgeError> {
     })
 }
 
+/// The job's work for named sessions only (T3 Code knows its threads'
+/// sessions by id): each one's own transcript, `<root>/projects/<slug>/<session>.jsonl`.
+/// Folders are listed but only the named files are opened, so this stays
+/// fast however many chats Claude Code holds. Background runs are left out
+/// as in [`job_work`].
+pub fn job_work_for_sessions(roots: &[PathBuf], sessions: &HashSet<&str>) -> Result<JobWork, BridgeError> {
+    let mut artifacts = Vec::new();
+    for root in roots {
+        let Ok(projects) = fs::read_dir(root.join("projects")) else { continue };
+        for project in projects.flatten() {
+            let folder = project.path();
+            if !project.file_type().is_ok_and(|kind| kind.is_dir()) || crate::import_sources::is_temp_project(&folder) {
+                continue;
+            }
+            let Ok(files) = fs::read_dir(&folder) else { continue };
+            for file in files.flatten() {
+                let path = file.path();
+                let named = path.extension().is_some_and(|extension| extension == "jsonl")
+                    && path.file_stem().and_then(|stem| stem.to_str()).is_some_and(|stem| sessions.contains(stem));
+                if named && file.file_type().is_ok_and(|kind| kind.is_file()) {
+                    push_artifact(
+                        &path,
+                        roots,
+                        CandidateKind::Conversation,
+                        SourceClassification::VersionGatedPrivate,
+                        Stability::VersionGated,
+                        Some(TRANSCRIPT_GATE),
+                        &mut artifacts,
+                    )?;
+                }
+            }
+        }
+    }
+    artifacts.sort_by_cached_key(job_key);
+    artifacts.dedup_by(|left, right| left.canonical_source_ref == right.canonical_source_ref);
+    Ok(JobWork { roots: roots.to_vec(), artifacts, left_out: 0 })
+}
+
 /// A discovery holding one batch of a job's work, for preview and commit.
 pub fn job_discovery(roots: &[PathBuf], artifacts: Vec<DiscoveredArtifact>) -> DiscoveryResult {
     DiscoveryResult {

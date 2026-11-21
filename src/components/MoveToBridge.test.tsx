@@ -77,8 +77,12 @@ describe("MoveToBridge", () => {
     expect(button(section("conductor"), "Import").disabled).toBe(false);
     expect(section("conductor").textContent).toContain("5 workspaces in 2 repos");
     expect(section("conductor").textContent).toContain("left where they are");
-    expect(section("t3code").textContent).toContain("Not found on this Mac");
-    expect(container.querySelectorAll("button").length).toBe(4);
+    expect(button(section("t3code"), "Import").disabled).toBe(false);
+    expect(section("t3code").textContent).toContain("6 chats · 2 workspaces in 2 repos");
+    expect(section("t3code").textContent).toContain("T3 Code's own copy when that is gone");
+    expect(section("t3code").querySelector("[data-tool-mark]")?.textContent).toBe("T");
+    expect(section("orca").textContent).toContain("Not found on this Mac");
+    expect(container.querySelectorAll("button").length).toBe(5);
   });
 
   it("each tool keeps its own last import", async () => {
@@ -170,6 +174,20 @@ describe("MoveToBridge", () => {
     expect(conductor.textContent).toContain("so Conductor keeps working with them");
     expect(conductor.textContent).toContain("need a branch first");
     expect(conductor.querySelector("[data-tool-initial='conductor']")?.textContent).toBe("C");
+  });
+
+  it("imports T3 Code's threads and worktrees and counts the workspaces", async () => {
+    vi.spyOn(bridgeApi, "importStatus").mockResolvedValue({ jobs: [
+      job({ jobId: "t", tool: "t3code", status: "done", total: 6, processed: 6, imported: 5, alreadyInBridge: 1, workspaces: 2, notCarried: [{ text: "pins: Bridge has no pinned chats yet", count: 1 }], finishedAt: "2026-11-20T10:00:00Z" }),
+    ] });
+    await render();
+    const t3 = section("t3code");
+    expect(t3.querySelector("[data-import-result='imported']")?.textContent).toBe("5");
+    expect(t3.querySelector("[data-import-result='workspaces']")?.textContent).toBe("2");
+    expect(t3.textContent).toContain("so T3 Code keeps working with them");
+    expect(t3.textContent).toContain("pins: Bridge has no pinned chats yet");
+    expect(t3.querySelector("[data-tool-initial='t3code']")?.textContent).toBe("T");
+    expect(section("conductor").querySelector("[data-import-result='workspaces']")).toBeNull();
   });
 
   it("lands the transfer with a check when the import ends", async () => {

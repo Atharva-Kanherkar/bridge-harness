@@ -14,6 +14,7 @@ use crate::codex_import::{self, CodexImporter};
 use crate::import_continue::{folders, SignInHomes};
 use crate::provider_accounts::HostHomes;
 use crate::opencode_import::{self, OpenCodeImporter};
+use crate::t3code_import::{self, T3CodeImporter};
 use crate::BridgeError;
 use crate::events::CoreEvent;
 use crate::external_import::{
@@ -113,6 +114,9 @@ pub(crate) enum Source {
     OpenCode,
     /// Workspaces, not chats: adopted in place by `conductor_import`.
     Conductor,
+    /// Threads and worktrees: see [`run_t3code`]. Its own work items are the
+    /// threads read from T3 Code's copy.
+    T3Code,
 }
 
 impl Source {
@@ -122,6 +126,7 @@ impl Source {
             codex_import::PROVIDER => Some(Self::Codex),
             opencode_import::PROVIDER => Some(Self::OpenCode),
             crate::conductor_import::PROVIDER => Some(Self::Conductor),
+            t3code_import::PROVIDER => Some(Self::T3Code),
             _ => None,
         }
     }
@@ -131,6 +136,7 @@ impl Source {
             Self::Codex => "Codex",
             Self::OpenCode => "OpenCode",
             Self::Conductor => "Conductor",
+            Self::T3Code => "T3 Code",
         }
     }
     /// The folders this machine keeps the tool's data in, and each account
@@ -163,6 +169,11 @@ impl Source {
                 let paths = crate::conductor_import::Paths::for_home(&host.home);
                 if paths.installed() { vec![host.home.clone()] } else { Vec::new() }
             }
+            // T3 Code's base folder (`$T3CODE_HOME`, else `~/.t3`).
+            Self::T3Code => {
+                let paths = t3code_import::Paths::from_env(&host.home);
+                if paths.installed() { vec![paths.base] } else { Vec::new() }
+            }
         }
     }
     fn work(self, roots: &[PathBuf]) -> Result<claude_import::JobWork, BridgeError> {
@@ -170,7 +181,7 @@ impl Source {
             Self::Claude => claude_import::job_work(roots),
             Self::Codex => codex_import::job_work(roots),
             Self::OpenCode => opencode_import::job_work(roots),
-            Self::Conductor => Ok(claude_import::JobWork { roots: roots.to_vec(), artifacts: Vec::new(), left_out: 0 }),
+            Self::Conductor | Self::T3Code => Ok(claude_import::JobWork { roots: roots.to_vec(), artifacts: Vec::new(), left_out: 0 }),
         }
     }
     fn key(self, artifact: &DiscoveredArtifact) -> String {
@@ -178,7 +189,7 @@ impl Source {
             Self::Claude => claude_import::job_key(artifact),
             Self::Codex => codex_import::job_key(artifact),
             Self::OpenCode => opencode_import::job_key(artifact),
-            Self::Conductor => artifact.canonical_source_ref.clone(),
+            Self::Conductor | Self::T3Code => artifact.canonical_source_ref.clone(),
         }
     }
     /// The folder a chat ran in, for "now importing": the listing's when it
@@ -192,7 +203,7 @@ impl Source {
         match self {
             Self::Claude => claude_import::transcript_folder(path),
             Self::Codex => codex_import::transcript_folder(path),
-            Self::OpenCode | Self::Conductor => None,
+            Self::OpenCode | Self::Conductor | Self::T3Code => None,
         }
     }
     fn preview(self, roots: &[PathBuf], artifacts: Vec<DiscoveredArtifact>) -> Result<Vec<ImportCandidate>, BridgeError> {
@@ -204,6 +215,7 @@ impl Source {
             Self::Codex => CodexImporter.preview(&codex_import::job_discovery(roots, artifacts), &selection),
             Self::OpenCode => OpenCodeImporter.preview(&opencode_import::job_discovery(roots, artifacts), &selection),
             Self::Conductor => Ok(Vec::new()),
+            Self::T3Code => T3CodeImporter.preview(&t3code_import::job_discovery(roots, artifacts), &selection),
         }
     }
     fn normalize(self, candidate: ImportCandidate) -> Result<crate::external_import::NormalizedImportCandidate, BridgeError> {
@@ -212,6 +224,7 @@ impl Source {
             Self::Codex => CodexImporter.normalize(candidate),
             Self::OpenCode => OpenCodeImporter.normalize(candidate),
             Self::Conductor => Err(BridgeError::Invalid(format!("Conductor has no chats of its own to import: {}", candidate.candidate_id))),
+            Self::T3Code => T3CodeImporter.normalize(candidate),
         }
     }
 }
@@ -298,10 +311,24 @@ fn spawn(core: Arc<BridgeCore>, job: wire::ImportJob, roots: Vec<PathBuf>, curso
 }
 
 /// Run a job to the end, then record how it ended. Runs on its own thread.
-pub(crate) fn run(core: &Arc<BridgeCore>, mut job: wire::ImportJob, roots: &[PathBuf], cursor: Option<String>) {
+pub(crate) fn run(core: &Arc<BridgeCore>, job: wire::ImportJob, roots: &[PathBuf], cursor: Option<String>) {
+    run_with(core, job, roots, cursor, &|source| source.machine_roots(core));
+}
+
+/// [`run`], with the folders each agent's chats are read from (T3 Code's
+/// threads are read through them) named instead of found on this machine.
+pub(crate) fn run_with(
+    core: &Arc<BridgeCore>,
+    mut job: wire::ImportJob,
+    roots: &[PathBuf],
+    cursor: Option<String>,
+    agent_roots: &dyn Fn(Source) -> Vec<PathBuf>,
+) {
     let source = Source::of(&job.tool).unwrap_or(Source::Claude);
     let outcome = if source == Source::Conductor {
         run_conductor(core, &mut job, roots)
+    } else if source == Source::T3Code {
+        run_t3code(core, &mut job, roots, agent_roots)
     } else {
         Runner { core, source, job: &mut job, last_publish: None }.run(roots, cursor)
     };
@@ -352,6 +379,136 @@ fn run_conductor(core: &Arc<BridgeCore>, job: &mut wire::ImportJob, roots: &[Pat
     Ok(())
 }
 
+/// The id of the native session a listed transcript holds: the file name
+/// for Claude Code, the id at the end of a Codex rollout's name, the session
+/// in an OpenCode reference.
+fn native_id(source: Source, artifact: &DiscoveredArtifact) -> Option<String> {
+    let path = Path::new(&artifact.canonical_source_ref);
+    match source {
+        Source::Claude => path.file_stem().map(|stem| stem.to_string_lossy().into_owned()),
+        Source::Codex => codex_import::rollout_thread_id(path),
+        Source::OpenCode => opencode_import::parse_source_ref(&artifact.canonical_source_ref).map(|(_, session)| session),
+        Source::Conductor | Source::T3Code => None,
+    }
+}
+
+fn harness_of(source: Source) -> Option<&'static str> {
+    match source {
+        Source::Claude => Some("claude"),
+        Source::Codex => Some("codex"),
+        Source::OpenCode => Some("opencode"),
+        Source::Conductor | Source::T3Code => None,
+    }
+}
+
+/// T3 Code's import. Its worktrees are adopted first, so the chats land
+/// under them. Each thread's chat is read by its agent's importer when the
+/// session's file is in Bridge's folders for that agent, else from T3 Code's
+/// own copy. Then T3 Code's titles and archived state go on the chats that
+/// came over through an agent's import.
+fn run_t3code(
+    core: &Arc<BridgeCore>,
+    job: &mut wire::ImportJob,
+    roots: &[PathBuf],
+    agent_roots: &dyn Fn(Source) -> Vec<PathBuf>,
+) -> Result<(), BridgeError> {
+    let Some(base) = roots.first() else {
+        return Err(BridgeError::Invalid("T3 Code was not found on this Mac".into()));
+    };
+    let paths = t3code_import::Paths::at(base);
+    let (store, store_path) = t3code_import::read(&paths).map_err(BridgeError::Invalid)?;
+    let report = crate::import_worktrees::adopt(&core.db, t3code_import::worktree_candidates(&store))?;
+    job.workspaces = report.adopted.len() as u64;
+    for (reason, count) in &report.left_out {
+        let text = match reason {
+            crate::import_worktrees::Reason::ArchivedInTool => "worktrees whose threads are all archived in T3 Code",
+            other => other.text(),
+        };
+        not_carried(job, text, *count as u64);
+    }
+    let mut found = HashSet::new();
+    let mut native_work = Vec::new();
+    for source in [Source::Claude, Source::Codex, Source::OpenCode] {
+        let Some(harness) = harness_of(source) else { continue };
+        let wanted: HashSet<&str> = store
+            .threads
+            .iter()
+            .filter(|thread| t3code_import::is_live(&store, thread))
+            .filter_map(|thread| thread.native.as_ref())
+            .filter(|native| native.harness == harness)
+            .map(|native| native.id.as_str())
+            .collect();
+        if wanted.is_empty() {
+            continue;
+        }
+        let source_roots = agent_roots(source);
+        if source_roots.is_empty() {
+            continue;
+        }
+        // Only the named sessions' files are opened, however many chats
+        // the agent holds.
+        let listed = match source {
+            Source::Claude => claude_import::job_work_for_sessions(&source_roots, &wanted),
+            Source::Codex => codex_import::job_work_for_threads(&source_roots, &wanted),
+            _ => source.work(&source_roots),
+        };
+        let work = match listed {
+            Ok(work) => work,
+            Err(error) => {
+                job.errors.push(format!("{}'s chats could not be listed: {error}", source.label()));
+                continue;
+            }
+        };
+        let artifacts: Vec<DiscoveredArtifact> = work
+            .artifacts
+            .into_iter()
+            .filter(|artifact| artifact.kind == CandidateKind::Conversation)
+            .filter(|artifact| native_id(source, artifact).is_some_and(|id| wanted.contains(id.as_str())))
+            .collect();
+        for artifact in &artifacts {
+            if let Some(id) = native_id(source, artifact) {
+                found.insert(t3code_import::store::NativeSession { harness, id });
+            }
+        }
+        native_work.push((source, work.roots, artifacts));
+    }
+    let plan = t3code_import::plan_chats(&store, &found);
+    // Parents before their subagents, so a batch holds both when it can.
+    let mut copies: Vec<&t3code_import::store::Thread> = plan
+        .copies
+        .iter()
+        .filter_map(|id| store.threads.iter().find(|thread| &thread.id == id))
+        .collect();
+    copies.sort_by_key(|thread| (thread.parent.is_some(), thread.created_at.clone(), thread.id.clone()));
+    let copies: Vec<DiscoveredArtifact> = copies.into_iter().map(|thread| t3code_import::copy_artifact(&store_path, &store, thread)).collect();
+    job.total = native_work.iter().map(|(_, _, artifacts)| artifacts.len() as u64).sum::<u64>() + copies.len() as u64;
+    job.updated_at = Utc::now().to_rfc3339();
+    save(core, job, None)?;
+    core.events.publish(CoreEvent::ImportProgress(job.clone()));
+    let mut runner = Runner { core, source: Source::T3Code, job, last_publish: None };
+    for (source, source_roots, artifacts) in native_work {
+        runner.import_all(source, &source_roots, artifacts, false)?;
+    }
+    runner.import_all(Source::T3Code, std::slice::from_ref(&paths.base), copies, false)?;
+    let overlay = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        t3code_import::overlay(&db, &store)?
+    };
+    let live: Vec<&t3code_import::store::Thread> = t3code_import::chats(&store).collect();
+    let pinned = live.iter().filter(|thread| thread.pinned).count() as u64;
+    if pinned > 0 {
+        not_carried(job, "pins: Bridge has no pinned chats yet", pinned);
+    }
+    let pull_requests = live.iter().map(|thread| thread.pull_requests as u64).sum::<u64>();
+    if pull_requests > 0 {
+        not_carried(job, "pull request links on threads", pull_requests);
+    }
+    if report.imported_any() || overlay.titled + overlay.archived > 0 {
+        core.events.publish(CoreEvent::StateChanged);
+    }
+    Ok(())
+}
+
 struct Runner<'a> {
     core: &'a Arc<BridgeCore>,
     source: Source,
@@ -374,16 +531,22 @@ impl Runner<'_> {
         self.job.total = self.job.processed + remaining.len() as u64;
         self.job.left_out = work.left_out;
         self.checkpoint(cursor.as_deref())?;
-        for batch in batches(remaining) {
-            let Some(last) = batch.last().map(|artifact| self.source.key(artifact)) else {
+        self.import_all(self.source, &work.roots, remaining, true)
+    }
+
+    /// Read and commit `artifacts` with `source`'s importer, a batch at a
+    /// time. With `resumable`, each batch saves the resume cursor.
+    fn import_all(&mut self, source: Source, roots: &[PathBuf], artifacts: Vec<DiscoveredArtifact>, resumable: bool) -> Result<(), BridgeError> {
+        for batch in batches(artifacts) {
+            let Some(last) = batch.last().map(|artifact| source.key(artifact)) else {
                 continue;
             };
             let files = batch.len() as u64;
             self.job.current_project = batch
                 .iter()
                 .find(|artifact| artifact.kind == CandidateKind::Conversation)
-                .and_then(|artifact| self.source.folder(artifact));
-            match import_batch(self.core, self.source, &work.roots, batch) {
+                .and_then(|artifact| source.folder(artifact));
+            match import_batch(self.core, source, roots, batch) {
                 Ok(outcome) => {
                     add_batch(self.job, &outcome.candidates, outcome.commit.as_ref());
                     for refusal in &outcome.refusals {
@@ -397,7 +560,7 @@ impl Runner<'_> {
                 }
             }
             self.job.processed += files;
-            self.checkpoint(Some(&last))?;
+            self.checkpoint(resumable.then_some(last.as_str()))?;
         }
         Ok(())
     }

@@ -367,23 +367,23 @@ fn measure_one_transcript() {
 mod codex {
     use super::*;
 
-    fn line(kind: &str, payload: serde_json::Value) -> String {
+    pub(super) fn line(kind: &str, payload: serde_json::Value) -> String {
         json!({ "timestamp": "2026-11-01T10:00:00Z", "ordinal": 0, "type": kind, "payload": payload }).to_string()
     }
-    fn meta(id: &str, cwd: &str, parent: Option<&str>) -> String {
+    pub(super) fn meta(id: &str, cwd: &str, parent: Option<&str>) -> String {
         let source = match parent {
             Some(parent) => json!({ "subagent": { "thread_spawn": { "parent_thread_id": parent } } }),
             None => json!("exec"),
         };
         line("session_meta", json!({ "id": id, "cwd": cwd, "timestamp": "2026-11-01T10:00:00Z", "originator": "codex_exec", "source": source }))
     }
-    fn item(item: serde_json::Value) -> String {
+    pub(super) fn item(item: serde_json::Value) -> String {
         line("event_msg", json!({ "type": "item_completed", "item": item }))
     }
-    fn said(id: &str, text: &str) -> String {
+    pub(super) fn said(id: &str, text: &str) -> String {
         item(json!({ "type": "UserMessage", "id": id, "content": [{ "type": "text", "text": text, "text_elements": [] }] }))
     }
-    fn replied(id: &str, text: &str) -> String {
+    pub(super) fn replied(id: &str, text: &str) -> String {
         item(json!({ "type": "AgentMessage", "id": id, "content": [{ "type": "text", "text": text }] }))
     }
 
@@ -881,6 +881,394 @@ mod conductor {
         let title: String = core.db.lock().unwrap().query_row("SELECT title FROM workspaces WHERE path=?1", params![tokyo.to_string_lossy()], |row| row.get(0)).unwrap();
         assert_eq!(title, "tokyo");
     }
+}
+
+mod t3code {
+    use super::codex::{meta, replied, said};
+    use super::*;
+    use crate::import_worktrees::tests::{repo, worktree};
+    use crate::t3code_import::fixture::{Fixture, ThreadRow};
+
+    /// A Claude Code session whose transcript is still there.
+    const KEPT: &str = "11111111-1111-4111-8111-111111111111";
+    /// One Claude Code deleted (it keeps 30 days by default).
+    const GONE: &str = "22222222-2222-4222-8222-222222222222";
+    const CODEX: &str = "01a1f9f8-cbdc-7a20-a62a-3e214132a143";
+
+    struct Home {
+        t3: PathBuf,
+        claude: Vec<PathBuf>,
+        codex: Vec<PathBuf>,
+        worktree: PathBuf,
+    }
+
+    /// A home where T3 Code ran, for one repo: a Claude thread in a worktree
+    /// whose transcript is still there, an archived and pinned Claude
+    /// thread whose transcript is gone, a Codex thread, and a deleted one.
+    fn home(root: &Path) -> Home {
+        let home = root.canonicalize().unwrap();
+        let main = repo(&home.join("code"), "shop");
+        let tree = worktree(&main, &home.join(".t3/worktrees/shop/feat-discount-07db51fef00c511d"), "feat/discount");
+        write(&home.join(format!(".claude/projects/-shop/{KEPT}.jsonl")), &session(KEPT, &tree.to_string_lossy(), "add a discount helper"));
+        let codex_home = home.join(".codex");
+        write(
+            &codex_home.join(format!("sessions/2026/11/20/rollout-2026-11-20T17-19-54-{CODEX}.jsonl")),
+            // Not the test's temp folder: Codex's import leaves chats run there out as background runs.
+            &[meta(CODEX, "/work/shop", None), said("u1", "round prices"), replied("a1", "Rounded.")].join("\n"),
+        );
+        let fixture = Fixture::in_base(&home.join(".t3"), 102);
+        fixture.project("p", &main, "shop");
+        let row = |id, title, driver, native| ThreadRow { id, project: "p", title, driver, native, updated_at: "2026-11-20T17:20:00.000Z", ..ThreadRow::default() };
+        fixture.thread(&ThreadRow { branch: Some("feat/discount"), worktree: Some(&tree), ..row("t-kept", "Add a discount helper", "claudeAgent", Some(KEPT)) });
+        fixture.thread(&ThreadRow { archived: true, pinned: true, ..row("t-gone", "Casual conversation", "claudeAgent", Some(GONE)) });
+        fixture.message("t-gone", "m1", "user", "hi", "2026-09-07T20:35:00.000Z", false);
+        fixture.message("t-gone", "m2", "assistant", "Hi! What are we working on today?", "2026-09-07T20:35:01.000Z", false);
+        fixture.thread(&row("t-codex", "Round prices", "codex", Some(CODEX)));
+        fixture.thread(&ThreadRow { deleted: true, ..row("t-deleted", "Deleted", "claudeAgent", None) });
+        fixture.message("t-deleted", "d1", "user", "never comes over", "2026-11-01T00:00:00.000Z", false);
+        Home {
+            t3: home.join(".t3"),
+            claude: claude_import::config_roots(&home, None, &[]),
+            codex: vec![codex_home.canonicalize().unwrap()],
+            worktree: tree,
+        }
+    }
+
+    fn start(core: &Arc<BridgeCore>, tool: &str) -> wire::ImportJob {
+        let mut job = new_job();
+        job.tool = tool.into();
+        save(core, &job, None).unwrap();
+        core.import_job_running.store(true, Ordering::SeqCst);
+        job
+    }
+
+    fn run_t3(core: &Arc<BridgeCore>, home: &Home) -> wire::ImportJob {
+        let job = start(core, t3code_import::PROVIDER);
+        let (claude, codex) = (home.claude.clone(), home.codex.clone());
+        run_with(core, job, std::slice::from_ref(&home.t3), None, &move |source| match source {
+            Source::Claude => claude.clone(),
+            Source::Codex => codex.clone(),
+            _ => Vec::new(),
+        });
+        status(core).unwrap().unwrap()
+    }
+
+    /// Every imported chat: title, harness, archived, workspace path, native key, entries.
+    fn chats(core: &BridgeCore) -> Vec<(String, String, bool, Option<String>, Option<String>, i64)> {
+        let db = core.db.lock().unwrap();
+        let mut statement = db
+            .prepare(
+                "SELECT s.title, s.harness, s.archived_at IS NOT NULL, w.path,
+                    (SELECT native_key FROM import_native_sessions n WHERE n.session_id=s.id),
+                    (SELECT COUNT(*) FROM session_entries e WHERE e.session_id=s.id)
+                 FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.kind='imported' ORDER BY s.title",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get::<_, Option<String>>(0)?.unwrap_or_default(), row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    #[test]
+    fn threads_come_over_natively_or_as_t3s_copy_under_the_adopted_worktree() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+
+        let job = run_t3(&core, &home);
+
+        assert_eq!(job.status, "done", "{job:?}");
+        assert_eq!((job.total, job.imported, job.failed, job.workspaces), (3, 3, 0, 1), "{job:?}");
+        let tree = home.worktree.to_string_lossy().into_owned();
+        assert_eq!(
+            chats(&core),
+            vec![
+                ("Add a discount helper".into(), "claude".into(), false, Some(tree.clone()), Some(format!("claude:{KEPT}")), 2),
+                ("Casual conversation".into(), "claude".into(), true, None, Some(format!("claude:{GONE}")), 2),
+                ("Round prices".into(), "codex".into(), false, None, Some(format!("codex:{CODEX}")), 2),
+            ]
+        );
+        let texts: Vec<(&str, u64)> = job.not_carried.iter().map(|item| (item.text.as_str(), item.count)).collect();
+        assert!(texts.contains(&("pins: Bridge has no pinned chats yet", 1)), "{texts:?}");
+        assert!(home.worktree.join("README.md").is_file(), "T3 Code's folder is untouched");
+
+        let again = run_t3(&core, &home);
+        assert_eq!((again.imported, again.already_in_bridge, again.workspaces, again.failed), (0, 3, 0, 0), "{again:?}");
+        assert_eq!(chats(&core).len(), 3);
+    }
+
+    #[test]
+    fn importing_claude_code_before_or_after_t3_code_makes_one_chat() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+
+        // Claude Code first: T3 Code's import finds the chat and gives it T3 Code's title.
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        let claude = run_job(&core, &home.claude);
+        assert_eq!(claude.imported, 1, "{claude:?}");
+        let job = run_t3(&core, &home);
+        assert_eq!((job.imported, job.already_in_bridge), (2, 1), "{job:?}");
+        let titles: Vec<String> = chats(&core).into_iter().map(|chat| chat.0).collect();
+        assert_eq!(titles, vec!["Add a discount helper", "Casual conversation", "Round prices"]);
+
+        // T3 Code first: a Claude Code import after it brings nothing twice.
+        let scratch = tempfile::tempdir().unwrap();
+        let core = super::core(scratch.path());
+        let job = run_t3(&core, &home);
+        assert_eq!(job.imported, 3, "{job:?}");
+        let claude = run_job(&core, &home.claude);
+        assert_eq!((claude.imported, claude.already_in_bridge), (0, 1), "{claude:?}");
+        let codex = super::codex::run_codex(&core, &home.codex);
+        assert_eq!((codex.imported, codex.already_in_bridge), (0, 1), "{codex:?}");
+        assert_eq!(chats(&core).len(), 3);
+    }
+
+    #[test]
+    fn a_title_renamed_in_bridge_is_kept() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        run_job(&core, &home.claude);
+        core.db.lock().unwrap().execute("UPDATE sessions SET title='Mine', title_source=NULL WHERE kind='imported'", []).unwrap();
+        run_t3(&core, &home);
+        let titles: Vec<String> = chats(&core).into_iter().map(|chat| chat.0).collect();
+        assert!(titles.contains(&"Mine".to_owned()), "{titles:?}");
+    }
+
+    #[test]
+    fn only_the_named_claude_sessions_are_listed_and_temp_folder_runs_are_not() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().canonicalize().unwrap().join(".claude");
+        write(&claude.join("projects/-work-shop/wanted.jsonl"), "{}");
+        write(&claude.join("projects/-work-shop/other.jsonl"), "{}");
+        write(&claude.join("projects/-work-shop/wanted.txt"), "{}");
+        write(&claude.join("projects/-private-var-folders-xy-T-probe/wanted2.jsonl"), "{}");
+        write(&claude.join("projects/-work-api/wanted2.jsonl"), "{}");
+        // A file where a project folder would be, and a folder named like a transcript.
+        write(&claude.join("projects/wanted.jsonl"), "{}");
+        fs::create_dir_all(claude.join("projects/-work-x/wanted.jsonl")).unwrap();
+        let roots = vec![claude.clone()];
+        let work = claude_import::job_work_for_sessions(&roots, &HashSet::from(["wanted", "wanted2"])).unwrap();
+        let mut found: Vec<String> = work
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.canonical_source_ref.trim_start_matches(&*claude.to_string_lossy()).to_owned())
+            .collect();
+        found.sort();
+        assert_eq!(found, vec!["/projects/-work-api/wanted2.jsonl", "/projects/-work-shop/wanted.jsonl"]);
+        assert!(work.artifacts.iter().all(|artifact| artifact.kind == CandidateKind::Conversation));
+    }
+
+    #[test]
+    fn only_the_named_codex_threads_are_listed_and_background_runs_are_counted() {
+        let root = tempfile::tempdir().unwrap();
+        let codex = root.path().canonicalize().unwrap().join(".codex");
+        let id = |n: u8| format!("01a1f9f8-cbdc-7a20-a62a-3e214132a14{n}");
+        let rollout = |n: u8, cwd: &str| {
+            write(&codex.join(format!("sessions/2026/11/20/rollout-2026-11-20T17-19-5{n}-{}.jsonl", id(n))), &[meta(&id(n), cwd, None), said("u", "hi")].join("\n"));
+        };
+        rollout(1, "/work/shop");
+        rollout(2, "/private/var/folders/xy/T/probe");
+        rollout(3, "/work/shop");
+        let ids = [id(1), id(2)];
+        let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        let work = codex_import::job_work_for_threads(&[codex.clone()], &wanted).unwrap();
+        assert_eq!(work.artifacts.len(), 1);
+        assert!(work.artifacts[0].canonical_source_ref.ends_with(&format!("{}.jsonl", id(1))));
+        assert_eq!(work.left_out, 1, "the background run is counted, not listed");
+    }
+
+    #[test]
+    fn rollout_and_transcript_names_give_their_session_ids() {
+        let uuid = "01a1f9f8-cbdc-7a20-a62a-3e214132a143";
+        assert_eq!(codex_import::rollout_thread_id(Path::new(&format!("/s/rollout-2026-11-20T17-19-54-{uuid}.jsonl"))).as_deref(), Some(uuid));
+        assert_eq!(codex_import::rollout_thread_id(Path::new(&format!("/s/{uuid}.jsonl"))), None, "no dash before the id");
+        assert_eq!(codex_import::rollout_thread_id(Path::new("/s/rollout-short.jsonl")), None);
+        assert_eq!(codex_import::rollout_thread_id(Path::new(&format!("/s/x{uuid}.jsonl"))), None);
+        let artifact = |path: &str| super::artifact(path, 1);
+        assert_eq!(native_id(Source::Claude, &artifact("/c/projects/-w/abc-1.jsonl")).as_deref(), Some("abc-1"));
+        assert_eq!(native_id(Source::Codex, &artifact(&format!("/x/rollout-2026-11-20T17-19-54-{uuid}.jsonl"))).as_deref(), Some(uuid));
+        assert_eq!(native_id(Source::OpenCode, &artifact("/d/opencode.db#ses_1")).as_deref(), Some("ses_1"));
+        assert_eq!(native_id(Source::T3Code, &artifact("/d/statev2.sqlite#t")), None);
+        assert_eq!(native_id(Source::Conductor, &artifact("/x")), None);
+        assert_eq!([Source::Claude, Source::Codex, Source::OpenCode].map(harness_of), [Some("claude"), Some("codex"), Some("opencode")]);
+        assert_eq!(harness_of(Source::T3Code), None);
+        assert_eq!(harness_of(Source::Conductor), None);
+    }
+
+    #[test]
+    fn t3_codes_title_and_archived_state_go_on_chats_its_agents_imported() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        run_job(&core, &home.claude);
+        let (mut store, _) = crate::t3code_import::read(&crate::t3code_import::Paths::at(&home.t3)).unwrap();
+        for thread in &mut store.threads {
+            if thread.id == "t-kept" {
+                thread.archived = true;
+            }
+        }
+        let db = core.db.lock().unwrap();
+        let first = crate::t3code_import::overlay(&db, &store).unwrap();
+        assert_eq!(first, crate::t3code_import::Overlay { titled: 1, archived: 1 });
+        let (title, archived): (String, bool) = db
+            .query_row("SELECT title, archived_at IS NOT NULL FROM sessions WHERE kind='imported'", [], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap();
+        assert_eq!((title.as_str(), archived), ("Add a discount helper", true));
+        assert_eq!(crate::t3code_import::overlay(&db, &store).unwrap(), crate::t3code_import::Overlay::default(), "nothing left to change");
+    }
+
+    #[test]
+    fn the_overlay_does_nothing_before_any_import() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        let (store, _) = crate::t3code_import::read(&crate::t3code_import::Paths::at(&home.t3)).unwrap();
+        let db = core.db.lock().unwrap();
+        assert_eq!(crate::t3code_import::overlay(&db, &store).unwrap(), crate::t3code_import::Overlay::default());
+    }
+
+    #[test]
+    fn archived_worktrees_and_pull_request_links_are_reported() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        let store = crate::t3code_import::Paths::at(&home.t3).store_v2;
+        {
+            let fixture = rusqlite::Connection::open(&store).unwrap();
+            fixture.execute_batch(&format!(
+                "UPDATE orchestration_v2_projection_threads SET payload_json=json_set(payload_json,'$.worktreePath','{}/gone','$.pullRequests',json('[{{\"number\":7}}]')) WHERE thread_id='t-gone';",
+                home.t3.display()
+            )).unwrap();
+        }
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        let job = run_t3(&core, &home);
+        let texts: Vec<(&str, u64)> = job.not_carried.iter().map(|item| (item.text.as_str(), item.count)).collect();
+        assert!(texts.contains(&("worktrees whose threads are all archived in T3 Code", 1)), "{texts:?}");
+        assert!(texts.contains(&("pull request links on threads", 1)), "{texts:?}");
+    }
+
+    #[test]
+    fn a_t3_database_bridge_does_not_know_stops_with_its_version() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        let store = crate::t3code_import::Paths::at(&home.t3).store_v2;
+        rusqlite::Connection::open(&store).unwrap().execute("INSERT INTO effect_sql_migrations(migration_id,name) VALUES(140,'Future')", []).unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        let job = run_t3(&core, &home);
+        assert_eq!(job.status, "failed", "{job:?}");
+        assert!(job.errors.iter().any(|error| error.contains("newer than Bridge knows (version 140)")), "{:?}", job.errors);
+        assert_eq!(chats(&core).len(), 0);
+    }
+}
+
+/// The T3 Code job against this Mac's real T3 Code store (`$T3CODE_HOME`,
+/// else `~/.t3`) and its real Claude Code, Codex and OpenCode folders, into a
+/// scratch database. Prints aggregate numbers only.
+#[test]
+#[ignore = "reads the real ~/.t3; run by hand to measure"]
+fn measure_the_t3code_job_on_this_machine() {
+    let host = crate::provider_accounts::HostHomes::from_env();
+    let paths = crate::t3code_import::Paths::from_env(&host.home);
+    let (store, path) = crate::t3code_import::read(&paths).unwrap();
+    let live = crate::t3code_import::chats(&store).count();
+    println!("MEASURE store={} version={} era={:?} threads={} live_chats={}", path.display(), store.version, store.era, store.threads.len(), live);
+    let scratch = tempfile::tempdir().unwrap();
+    let core = core(scratch.path());
+    let mut job = new_job();
+    job.tool = crate::t3code_import::PROVIDER.into();
+    save(&core, &job, None).unwrap();
+    core.import_job_running.store(true, Ordering::SeqCst);
+    let started = Instant::now();
+    run(&core, job, &[paths.base.clone()], None);
+    let job = status(&core).unwrap().unwrap();
+    println!(
+        "MEASURE job_secs={:.2} status={} total={} imported={} already={} failed={} workspaces={} not_carried={:?} errors={:?}",
+        started.elapsed().as_secs_f64(), job.status, job.total, job.imported, job.already_in_bridge, job.failed, job.workspaces,
+        job.not_carried.iter().map(|item| (item.text.clone(), item.count)).collect::<Vec<_>>(), job.errors
+    );
+    let db = core.db.lock().unwrap();
+    let mut statement = db
+        .prepare("SELECT harness, archived_at IS NOT NULL, workspace_id IS NOT NULL, (SELECT COUNT(*) FROM session_entries e WHERE e.session_id=s.id), (SELECT native_key IS NOT NULL FROM import_native_sessions n WHERE n.session_id=s.id) FROM sessions s WHERE kind='imported' ORDER BY started_at")
+        .unwrap();
+    for row in statement
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?, row.get::<_, bool>(2)?, row.get::<_, i64>(3)?, row.get::<_, Option<bool>>(4)?)))
+        .unwrap()
+    {
+        println!("MEASURE chat {:?}", row.unwrap());
+    }
+}
+
+/// For the import fidelity eval (`T3_EVAL_OUT=<file>`): the T3 Code job
+/// against this Mac's T3 Code store (`$T3CODE_HOME`, else `~/.t3`) into a
+/// scratch database, then every imported chat's title, project, source and
+/// user and assistant texts, as JSON.
+#[test]
+#[ignore = "reads the real T3 Code store; run by hand for the eval"]
+fn dump_the_t3code_import_for_the_eval() {
+    let out = std::env::var("T3_EVAL_OUT").expect("set T3_EVAL_OUT");
+    let host = crate::provider_accounts::HostHomes::from_env();
+    let paths = crate::t3code_import::Paths::from_env(&host.home);
+    let (store, _) = crate::t3code_import::read(&paths).unwrap();
+    let project_of = |key: Option<&str>, title: &str| -> Option<String> {
+        store
+            .threads
+            .iter()
+            .find(|thread| key.is_some_and(|key| thread.native.as_ref().map(|native| native.key()).as_deref() == Some(key)) || thread.title.as_deref() == Some(title))
+            .and_then(|thread| store.projects.get(&thread.project_id))
+            .map(|project| project.root.to_string_lossy().into_owned())
+    };
+    let scratch = tempfile::tempdir().unwrap();
+    let core = core(scratch.path());
+    let mut job = new_job();
+    job.tool = crate::t3code_import::PROVIDER.into();
+    save(&core, &job, None).unwrap();
+    core.import_job_running.store(true, Ordering::SeqCst);
+    run(&core, job, &[paths.base.clone()], None);
+    let job = status(&core).unwrap().unwrap();
+    println!("EVAL job status={} imported={} failed={}", job.status, job.imported, job.failed);
+    let db = core.db.lock().unwrap();
+    let mut sessions = db
+        .prepare("SELECT s.id, s.title, (SELECT native_key FROM import_native_sessions n WHERE n.session_id=s.id) FROM sessions s WHERE kind='imported' AND parent_session_id IS NULL")
+        .unwrap();
+    let rows: Vec<(String, String, Option<String>)> = sessions
+        .query_map([], |row| Ok((row.get(0)?, row.get::<_, Option<String>>(1)?.unwrap_or_default(), row.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let mut chats = Vec::new();
+    for (id, title, key) in rows {
+        let mut entries = db.prepare("SELECT kind, payload FROM session_entries WHERE session_id=?1 ORDER BY sequence").unwrap();
+        let mut source = String::new();
+        let texts: Vec<serde_json::Value> = entries
+            .query_map([&id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .filter_map(|(kind, payload)| {
+                let payload: serde_json::Value = serde_json::from_str(&payload).ok()?;
+                if source.is_empty() {
+                    source = payload["importSource"].as_str().unwrap_or_default().to_owned();
+                }
+                let role = match kind.as_str() {
+                    "user.message" => "user",
+                    "assistant.message" => "assistant",
+                    _ => return None,
+                };
+                Some(json!({ "role": role, "text": payload["text"].as_str().unwrap_or_default() }))
+            })
+            .collect();
+        chats.push(json!({ "title": title, "project": project_of(key.as_deref(), &title), "source": source, "nativeKey": key, "entries": texts }));
+    }
+    fs::write(&out, serde_json::to_string_pretty(&chats).unwrap()).unwrap();
+    println!("EVAL wrote {} chats to {out}", chats.len());
 }
 
 /// The Codex job against this Mac's real Codex home, into a scratch

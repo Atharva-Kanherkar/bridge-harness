@@ -18,11 +18,9 @@
 //!   database that cannot be read, falls back to Path A with a note.
 
 use crate::import_worktrees::{self, Candidate, Scripts};
-use rusqlite::types::ValueRef;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 /// The import id the Import page and the job use.
 pub const PROVIDER: &str = "conductor";
@@ -131,128 +129,26 @@ pub struct Store {
 }
 
 #[cfg(test)]
-thread_local! {
-    /// Every statement the reader ran on this thread, for the deny-list test.
-    pub(crate) static STATEMENTS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
-}
+pub(crate) use crate::import_sqlite::STATEMENTS;
+use crate::import_sqlite::{int, text, Allowed, Cell};
 
-fn log(sql: &str) {
-    #[cfg(test)]
-    STATEMENTS.with(|statements| statements.borrow_mut().push(sql.to_owned()));
-    #[cfg(not(test))]
-    let _ = sql;
-}
+const ALLOWED: Allowed = Allowed { tool: "Conductor", tables: ALLOWED_TABLES };
 
-/// Open `conductor.db` without writing anything next to it.
-///
-/// It is a WAL database. While Conductor runs, its `-wal` and `-shm` files
-/// hold changes not yet in the main file, so Bridge opens it read-only and
-/// reads through them. Once Conductor quits they are gone, and even a
-/// read-only open would create them; so with no live WAL the file is opened
-/// immutable, which reads it as it is and creates nothing.
+/// Open `conductor.db` without writing anything next to it (see
+/// [`crate::import_sqlite::open`]).
 fn open(path: &Path) -> rusqlite::Result<Connection> {
-    let wal = PathBuf::from(format!("{}-wal", path.to_string_lossy()));
-    let live = std::fs::metadata(&wal).is_ok_and(|metadata| metadata.len() > 0);
-    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI;
-    let uri = |query: &str| format!("file:{}?{query}", uri_path(path));
-    let conn = if live {
-        Connection::open_with_flags(uri("mode=ro"), flags).or_else(|_| Connection::open_with_flags(uri("mode=ro&immutable=1"), flags))?
-    } else {
-        Connection::open_with_flags(uri("mode=ro&immutable=1"), flags)?
-    };
-    conn.busy_timeout(Duration::from_secs(3))?;
-    Ok(conn)
-}
-
-/// A path as a `file:` URI path: everything but unreserved characters and
-/// `/` percent-encoded (`Application Support` has a space).
-fn uri_path(path: &Path) -> String {
-    path.to_string_lossy()
-        .bytes()
-        .map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => (byte as char).to_string(),
-            other => format!("%{other:02X}"),
-        })
-        .collect()
+    crate::import_sqlite::open(path)
 }
 
 /// A table's columns, for an allowed table only.
 fn columns(conn: &Connection, table: &str) -> rusqlite::Result<HashSet<String>> {
-    assert!(ALLOWED_TABLES.contains(&table), "Conductor table {table} is not on the allowed list");
-    let sql = format!("SELECT name FROM pragma_table_info('{table}')");
-    log(&sql);
-    let mut statement = conn.prepare(&sql)?;
-    let names = statement.query_map([], |row| row.get::<_, String>(0))?;
-    names.collect()
+    ALLOWED.columns(conn, table)
 }
 
 /// Rows of an allowed table, as the wanted columns that exist; a missing
 /// column reads as `None`.
 fn select(conn: &Connection, table: &str, wanted: &[&str]) -> rusqlite::Result<Vec<HashMap<String, Cell>>> {
-    let present = columns(conn, table)?;
-    if present.is_empty() {
-        return Ok(Vec::new());
-    }
-    let chosen: Vec<&str> = wanted.iter().copied().filter(|column| present.contains(*column)).collect();
-    if chosen.is_empty() {
-        return Ok(Vec::new());
-    }
-    let sql = format!("SELECT {} FROM {table}", chosen.iter().map(|column| format!("\"{column}\"")).collect::<Vec<_>>().join(", "));
-    log(&sql);
-    let mut statement = conn.prepare(&sql)?;
-    let mut rows = statement.query([])?;
-    let mut out = Vec::new();
-    while let Some(row) = rows.next()? {
-        let mut cells = HashMap::new();
-        for (index, column) in chosen.iter().enumerate() {
-            cells.insert((*column).to_owned(), Cell::of(row.get_ref(index)?));
-        }
-        out.push(cells);
-    }
-    Ok(out)
-}
-
-/// One value, read loosely: Conductor's columns are mostly untyped.
-#[derive(Debug, Clone, PartialEq)]
-enum Cell {
-    Null,
-    Int(i64),
-    Text(String),
-}
-
-impl Cell {
-    fn of(value: ValueRef<'_>) -> Self {
-        match value {
-            ValueRef::Integer(number) => Self::Int(number),
-            ValueRef::Real(number) => Self::Text(number.to_string()),
-            ValueRef::Text(bytes) => Self::Text(String::from_utf8_lossy(bytes).into_owned()),
-            ValueRef::Null | ValueRef::Blob(_) => Self::Null,
-        }
-    }
-
-    fn text(&self) -> Option<String> {
-        match self {
-            Self::Text(text) => Some(text.clone()).filter(|text| !text.trim().is_empty()),
-            Self::Int(number) => Some(number.to_string()),
-            Self::Null => None,
-        }
-    }
-
-    fn int(&self) -> Option<i64> {
-        match self {
-            Self::Int(number) => Some(*number),
-            Self::Text(text) => text.trim().parse().ok(),
-            Self::Null => None,
-        }
-    }
-}
-
-fn text(row: &HashMap<String, Cell>, column: &str) -> Option<String> {
-    row.get(column).and_then(Cell::text)
-}
-
-fn int(row: &HashMap<String, Cell>, column: &str) -> Option<i64> {
-    row.get(column).and_then(Cell::int)
+    ALLOWED.select(conn, table, wanted)
 }
 
 /// Why Bridge did not read Conductor's database, for the person.
