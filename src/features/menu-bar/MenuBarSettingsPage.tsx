@@ -127,7 +127,7 @@ export function MenuBarSettingsPage() {
           onChange={quotaWindow => void save({ quotaWindow: quotaWindow as MenuBarSettings["quotaWindow"] })} />} />
       </SettingsGroup>
       <SettingsGroup label="Menu icon layout">
-        {settings.separateProviderIcons && <p className="px-3.5 py-2.5 text-meta text-muted-foreground">Custom layouts apply to the single Bridge icon. Separate provider icons use the standard display selected above.</p>}
+        {settings.separateProviderIcons && <p className="px-3.5 py-2.5 text-meta leading-relaxed text-muted-foreground">Custom layouts apply to the single Bridge icon. Separate provider icons use the standard display selected above.</p>}
         <MenuBarLayoutEditor key={JSON.stringify(settings.statusLayout ?? [])} layout={settings.statusLayout ?? []} busy={busy || !!settings.separateProviderIcons}
           onSave={statusLayout => save({ statusLayout })} />
       </SettingsGroup>
@@ -163,7 +163,7 @@ export function MenuBarSettingsPage() {
         })}
         {settings.claudeEnabled && <p className="px-3.5 py-2.5 text-meta text-muted-foreground">Claude limits come from your Claude Code subscription sign-in. Claude Code handles authentication and renewal. If limits are unavailable, open Claude Code, check your account, then refresh usage.</p>}
         <SettingsRow label="Provider beside the icon" description={settings.separateProviderIcons ? "Each favorite with account usage enabled has its own icon and usage." : "Uses your first favorite, or the first enabled provider when no favorites are set."}
-          control={<span className="text-sm text-muted-foreground" aria-label="Provider beside the icon">{settings.separateProviderIcons ? enabledFavorites.map(provider => provider.name).join(", ") || "None" : visible[0]?.name ?? enabled[0]?.name ?? "None"}</span>} />
+          control={<span className="text-ui text-muted-foreground" aria-label="Provider beside the icon">{settings.separateProviderIcons ? enabledFavorites.map(provider => provider.name).join(", ") || "None" : visible[0]?.name ?? enabled[0]?.name ?? "None"}</span>} />
         <SettingsRow label="OpenCode Go account" description="Sign in using your default browser, then copy your API key below. Already connected through OpenCode? Enable usage and click Refresh usage."
           control={<GhostButton disabled={busy}
             onClick={() => { setConnection(null); void bridgeApi.connectMenuBarOpenCode().catch(() => setError("Could not open your default browser. Visit opencode.ai/auth to sign in.")); }}>Connect OpenCode</GhostButton>} />

@@ -101,16 +101,16 @@ export function VoiceSettingsPage({ onError, onChanged }: {
         control={status ? <StatusPill tone={tone(status.state)}>{STATE_LABEL[status.state]}</StatusPill> : <StatusPill>{loadError ? "Unavailable" : "Checking…"}</StatusPill>} />
       {loadError && <SettingsBlockRow>
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p role="alert" className="text-xs text-destructive">{loadError}</p>
+          <p role="alert" className="text-meta text-destructive">{loadError}</p>
           <GhostButton disabled={busy} onClick={() => void refresh()}><RotateCcw size={12} aria-hidden="true" />Retry status</GhostButton>
         </div>
       </SettingsBlockRow>}
       {status?.reason && <SettingsBlockRow label={status.state === "failed" ? "Setup failed" : "Availability"}>
-        <p role={status.state === "failed" ? "alert" : undefined} className={status.state === "failed" ? "text-xs leading-relaxed text-destructive" : "text-xs leading-relaxed text-muted-foreground"}>{status.reason}</p>
+        <p role={status.state === "failed" ? "alert" : undefined} className={status.state === "failed" ? "text-meta leading-relaxed text-destructive" : "text-meta leading-relaxed text-muted-foreground"}>{status.reason}</p>
       </SettingsBlockRow>}
       {status && status.state !== "ready" && status.state !== "unsupported" && <SettingsBlockRow>
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="text-xs text-muted-foreground">{bytes(status.downloadBytes)} download · about {bytes(status.installedBytes)} installed</p>
+          <p className="text-meta text-muted-foreground">{bytes(status.downloadBytes)} download · about {bytes(status.installedBytes)} installed</p>
           <GhostButton disabled={busy || active} onClick={() => void mutate("setup")}>
             {status.state === "failed" ? <RotateCcw size={12} aria-hidden="true" /> : <Download size={12} aria-hidden="true" />}
             {busy ? "Starting…" : active ? STATE_LABEL[status.state] : status.state === "failed" ? "Retry download" : "Download and install"}
@@ -125,7 +125,7 @@ export function VoiceSettingsPage({ onError, onChanged }: {
       {status?.state === "ready" && <VoiceMicrophoneTest onActiveChange={setTesting} />}
       {status && <SettingsRow label="Model details" description="Engine, storage and license" onOpen={() => setDetails(value => !value)} expanded={details} />}
       {details && status && <SettingsBlockRow>
-        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-meta">
           <dt className="text-muted-foreground">Model</dt><dd className="text-foreground">NVIDIA Nemotron Speech Streaming</dd>
           <dt className="text-muted-foreground">Engine</dt><dd className="font-mono text-foreground">sherpa-onnx {status.engineVersion}</dd>
           <dt className="text-muted-foreground">Storage</dt><dd className="text-foreground">About {bytes(status.installedBytes)}</dd>

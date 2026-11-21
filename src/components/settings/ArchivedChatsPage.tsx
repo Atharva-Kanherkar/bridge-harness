@@ -88,7 +88,7 @@ export function ArchivedChatsPage() {
         <div className="flex flex-wrap gap-2 p-3">
           <GhostButton onClick={() => readConversation()}>Root conversation</GhostButton>
           {children.map(child => <GhostButton key={child.id} ariaLabel={`Read ${child.title}`} onClick={() => readConversation(child)}>{child.title}</GhostButton>)}
-          {childrenLoading && <span role="status" className="text-xs text-muted-foreground">Loading related conversations...</span>}
+          {childrenLoading && <span role="status" className="text-meta text-muted-foreground">Loading related conversations...</span>}
         </div>
         <div className="flex gap-2 px-3 pb-3">
           {childrenOffset > 0 && <GhostButton disabled={childrenLoading} onClick={() => setChildrenOffset(value => Math.max(0, value - 50))}>Previous related chats</GhostButton>}
@@ -109,11 +109,11 @@ export function ArchivedChatsPage() {
     </> : <>
       <Field type="search" label="Search archived chats" placeholder="Search by chat or project name" width="w-full" value={query} onChange={next => { setQuery(next); setOffset(0); }} />
       {loading ? <SkeletonRows label="Loading archived chats" rows={4} trailing /> : <SettingsGroup label="Conversations">
-        {chats.length === 0 ? <div className="p-8 text-center text-muted-foreground"><Archive size={24} className="mx-auto mb-3" /><p className="text-sm">{query ? "No archived chats match your search." : "No archived chats yet."}</p></div> : <ul className="divide-y divide-border">
+        {chats.length === 0 ? <div className="p-8 text-center text-muted-foreground"><Archive size={24} className="mx-auto mb-3" /><p className="text-ui">{query ? "No archived chats match your search." : "No archived chats yet."}</p></div> : <ul className="divide-y divide-border">
           {chats.map(chat => <li key={chat.id} className="flex flex-wrap items-center gap-3 p-4">
             <button type="button" className="min-w-0 flex-1 text-left" onClick={() => { setSelected(chat); readConversation(); setChildrenOffset(0); setChildren([]); setMoreChildren(false); }}>
-              <span className="block truncate text-sm font-medium text-foreground">{chat.title}</span>
-              <span className="mt-1 block text-xs text-muted-foreground">{chat.workspaceTitle ?? "Direct chat"} · {chat.harness} · {new Date(chat.archivedAt).toLocaleDateString()}</span>
+              <span className="block truncate text-ui font-medium text-foreground">{chat.title}</span>
+              <span className="mt-1 block text-meta text-muted-foreground">{chat.workspaceTitle ?? "Direct chat"} · {chat.harness} · {new Date(chat.archivedAt).toLocaleDateString()}</span>
             </button>
             <GhostButton disabled={busy} ariaLabel={`Unarchive ${chat.title}`} onClick={() => void unarchive(chat)}><ArchiveRestore size={14} />Unarchive</GhostButton>
           </li>)}

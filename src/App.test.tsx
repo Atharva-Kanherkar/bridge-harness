@@ -1185,9 +1185,28 @@ describe("the dock in the session view", () => {
 
   it("keeps AppTitleBar unchanged on every other view", async () => {
     await mountApp();
-    await click(container.querySelector<HTMLButtonElement>('button[title^="Open settings"]')!);
+    await click(container.querySelector<HTMLButtonElement>('nav[aria-label="Main navigation"] button[aria-label^="Apps"]')!);
+    await click(document.body.querySelector<HTMLElement>('[role="option"][aria-label^="Mission Control"]')!);
     expect(appTitleBar()).not.toBeNull();
     expect(container.querySelector('button[aria-label="Toggle dock"]')).toBeNull();
+  });
+
+  it("gives Settings the sidebar's place and returns from its Back row", async () => {
+    await mountApp();
+    await click(container.querySelector<HTMLButtonElement>('button[title^="Open settings"]')!);
+    // The settings screen is a lazy chunk.
+    for (let round = 0; round < 100 && !container.querySelector('nav[aria-label="Settings"]'); round++) {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+    }
+    // One navigation column: the chat sidebar steps aside for the settings rail.
+    expect(container.querySelector('nav[aria-label="Settings"]')).not.toBeNull();
+    expect(container.querySelector('nav[aria-label="Main navigation"]')?.closest(".hidden")).not.toBeNull();
+    expect(appTitleBar()).toBeNull();
+    const back = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Back to app")!;
+    await click(back);
+    await settle(4);
+    expect(container.querySelector('nav[aria-label="Settings"]')).toBeNull();
+    expect(container.querySelector('nav[aria-label="Main navigation"]')?.closest(".hidden")).toBeNull();
   });
 
   // #457 / #458: the screens stay in the tree, but nothing in the mounted

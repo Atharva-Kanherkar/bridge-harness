@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Skeleton, SkeletonRegion, SkeletonRows } from "@/components/ui/skeleton";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../api";
 import { MenuBarSettingsPage } from "../features/menu-bar/MenuBarSettingsPage";
 import { profileDraftsFromSetup } from "../modelProfiles";
@@ -11,8 +11,7 @@ import type { SuggestionSettingsSnapshot } from "../protocol/generated/protocol"
 import { type OpenCodeAdvancedSettings } from "./OpenCodeHarnessSettings";
 import { ImportHarnessSection } from "./ImportHarnessSection";
 import { SettingsRail } from "./settings/SettingsRail";
-import { SETTINGS_COLUMN } from "./settings/kit";
-import { cn } from "@/lib/utils";
+import { SettingsPage } from "./settings/kit";
 import { AppearancePage } from "./settings/AppearancePage";
 import { UpdatesPage } from "./settings/UpdatesPage";
 import { NotificationsPage } from "./settings/NotificationsPage";
@@ -28,7 +27,7 @@ import { ArchivedChatsPage } from "./settings/ArchivedChatsPage";
 import { WorkersPage } from "./settings/WorkersPage";
 import { KeysPage } from "./settings/KeysPage";
 import { PAGE_ROWS, SETTINGS_ROWS, type SearchableRow } from "./settings/settingsSearch";
-import { canonicalSection, type PageId, type Section } from "./settings/sections";
+import { canonicalSection, PAGES, type PageId, type Section } from "./settings/sections";
 import { ChatDefaultsPage } from "./settings/ChatDefaultsPage";
 import { VoiceSettingsPage } from "./settings/VoiceSettingsPage";
 
@@ -42,7 +41,11 @@ export function adapterSupportsAgentRole(adapter: AdapterDescriptor, role: strin
   return supportsSandbox("read_only");
 }
 
-export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "general", onModelSetupChange, onSuggestionSettingsChange, onVoiceChanged, onOpenWorkBoard, onHealthChange = () => undefined, availableUpdate, onUpdate = () => undefined, onError, storageCopilot }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onOpenWorkBoard?: () => void; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onHealthChange?: () => void; onVoiceChanged?: () => void; availableUpdate?: UpdateInfo; onUpdate?: (update: UpdateInfo | undefined) => void; onError: (message: string) => void; /** The storage page's docked chat. */ storageCopilot?: StorageCopilotHost }) {
+/** Pages drawn from the shared config or model setup. Only these wait on that
+ *  load; every other page fetches its own data and shows its own skeleton. */
+const CONFIG_PAGES: ReadonlySet<PageId> = new Set(["chatDefaults", "permissions", "agents", "codingAgents", "models"]);
+
+export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "general", onModelSetupChange, onSuggestionSettingsChange, onVoiceChanged, onOpenWorkBoard, onExit, onHealthChange = () => undefined, availableUpdate, onUpdate = () => undefined, onError, storageCopilot }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onOpenWorkBoard?: () => void; /** Leave Settings; the rail's Back row. */ onExit?: () => void; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onHealthChange?: () => void; onVoiceChanged?: () => void; availableUpdate?: UpdateInfo; onUpdate?: (update: UpdateInfo | undefined) => void; onError: (message: string) => void; /** The storage page's docked chat. */ storageCopilot?: StorageCopilotHost }) {
   // Always a real page: a retired id from an old deep link lands on the page
   // that replaced it.
   const [section, setSection] = useState<PageId>(() => canonicalSection(initialSection));
@@ -279,6 +282,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     if (row.target?.kind === "agent") setPresetDetailId(row.target.id);
     if (row.id) setReveal(row.id);
   };
+  const waitingForConfig = CONFIG_PAGES.has(section) && (section === "models" ? !modelSetup : !config);
   return <div className="flex h-full min-h-0 flex-col md:flex-row">
     <SettingsRail
       section={section}
@@ -292,13 +296,19 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       onSelect={navigate}
       onSearchSelect={openSearchHit}
       onResetAll={() => void resetEverything()}
+      onExit={onExit}
     />
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
+    {/* The window's title strip over the page column: it drags the window and
+        lines the first heading up with the rail's search, nothing more. */}
+    <div data-tauri-drag-region="deep" aria-hidden="true" className="hidden h-11 shrink-0 md:block" />
     <div ref={contentRef} className="relative min-h-0 min-w-0 flex-1 overflow-y-auto">
 
-      {busy && !config ? <SkeletonRegion label="Loading settings" className={cn("space-y-6", SETTINGS_COLUMN)}>
-        <div className="space-y-2"><Skeleton className="h-6 w-48" /><Skeleton index={1} className="w-72 max-w-full" /></div>
-        <SkeletonRows rows={4} trailing />
-      </SkeletonRegion> : null}
+      {/* The same loading look as every page that fetches its own data: the
+          real title, then skeleton rows where the groups will be. */}
+      {waitingForConfig && busy ? <SettingsPage title={PAGES[section].label} description={PAGES[section].description}>
+        <SkeletonRows label="Loading settings" rows={4} trailing />
+      </SettingsPage> : null}
 
       {section === "chatDefaults" && config && <ChatDefaultsPage adapters={adapters} agents={config.agents} />}
       {section === "general" && <AppearancePage />}
@@ -372,6 +382,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
         onRefreshCatalogs={async () => { await bridgeApi.refreshModelCatalogs(); }}
         onError={onError}
       />}
+    </div>
     </div>
   </div>;
 }

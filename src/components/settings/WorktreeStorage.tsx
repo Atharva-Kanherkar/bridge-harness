@@ -70,7 +70,7 @@ function RepoBreakdown({ repositories, totalBytes, onSelect }: {
           onClick={() => onSelect(repo.repoRoot)}
           onMouseEnter={() => setHover(index)}
           onMouseLeave={() => setHover(current => (current === index ? null : current))}
-          className={cn("flex items-center gap-1.5 rounded-md px-1 py-0.5 text-xs outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring", hover === index && "bg-accent")}
+          className={cn("flex items-center gap-1.5 rounded-md px-1 py-0.5 text-meta outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring", hover === index && "bg-accent")}
         >
           <span className={cn("size-2 shrink-0 rounded-full", swatch(index))} />
           <span className="truncate text-foreground" title={repo.repoRoot}>{repoName(repo.repoRoot)}</span>

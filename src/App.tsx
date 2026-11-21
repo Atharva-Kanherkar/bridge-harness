@@ -154,6 +154,7 @@ import { welcomeHeadline } from "./greetings";
 import { useThemePreference } from "./theme";
 import { startAppPreferenceSync } from "./appPreferences";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
+import { SettingsScreenSkeleton } from "./components/settings/SettingsScreenSkeleton";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
 import { readLastDraftModel, writeLastDraftModel, type LastDraftModel } from "./lastDraftModel";
 import { resolveDraftHarnessModel as resolveNewChatModel } from "./newChatModel";
@@ -194,6 +195,8 @@ const UsageScreen = lazy(() => import("./components/UsageScreen").then(module =>
 const NotesScreen = lazy(() => import("./components/NotesScreen").then(module => ({ default: module.NotesScreen })));
 import { NotesScreenSkeleton } from "./components/notes/NotesSkeleton";
 import type { NoteChatRequest, NotesCopilotHost } from "./components/NotesScreen";
+/** Views drawn by SettingsScreen, which replaces the sidebar while open. */
+const SETTINGS_VIEWS: ReadonlySet<AppView> = new Set<AppView>(["settings", "archives", "saved-setups", "briefing-settings"]);
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
 const WorkView = lazy(() => import("./components/WorkView").then(module => ({ default: module.WorkView })));
 const TerminalPane = lazy(() => import("./components/TerminalPane").then(module => ({ default: module.TerminalPane })));
@@ -1025,6 +1028,16 @@ function AppContent() {
 
   const canBack = navPlaces.index > 0;
   const canForward = navPlaces.index < navPlaces.stack.length - 1;
+  // Settings' Back row returns to the last place that was not a settings page,
+  // so a hop from Archived chats to Permissions still leaves in one click.
+  const leaveSettings = useCallback(() => {
+    const place = navPlaces.stack.slice(0, navPlaces.index).reverse().find(entry => !SETTINGS_VIEWS.has(entry.view))
+      ?? { view: "workspace" as const, sessionId: selectedSessionId ?? null, paradigm: "single" as const };
+    if (place.view === "personal-app") setPersonalAppId(place.appId ?? null);
+    setSelectedSessionId(place.sessionId ?? undefined);
+    setParadigm(place.paradigm);
+    setView(place.view);
+  }, [navPlaces, selectedSessionId]);
   useEffect(() => {
     const previous = browserSessionRef.current;
     browserSessionRef.current = selectedSessionId;
@@ -3752,6 +3765,8 @@ function AppContent() {
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
   const isSessionChrome = view === "workspace" && paradigm !== "grid" && !!session;
+  // Settings takes the sidebar's place with its own rail and title strip.
+  const settingsView = SETTINGS_VIEWS.has(view);
   const changeChatOptions = async (access: AccessMode, input?: ActiveTurnInput) => {
     if (!session) {patchDraft(input ? {access,activeTurnInput:input} : {access});return;}
     if (!currentChatConfiguration) return;
@@ -3869,9 +3884,11 @@ function AppContent() {
   const welcomeWorkspace = state.workspaces.find(item => item.id === resolvedWelcomeWorkspaceId) ?? null;
 
   return <div data-fullscreen={chromeFullscreen ? "" : undefined} className="u-app-shell relative flex h-[100dvh] flex-row overflow-hidden text-foreground">
-    {sidebar}
+    {/* Hidden rather than unmounted, so its search and scroll survive a visit
+        to Settings. */}
+    <div className={settingsView ? "hidden" : "contents"}>{sidebar}</div>
     <div className="u-vibrancy-canvas relative z-10 flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-    {!isSessionChrome && <AppTitleBar
+    {!isSessionChrome && !settingsView && <AppTitleBar
       flush
       hideBrand
       title={chromeTitle}
@@ -3881,8 +3898,8 @@ function AppContent() {
       sidebarHidden={sidebarCollapsed}
     />}
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
-      {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-3xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
-      <HealthWarnings warnings={health.warnings ?? []} className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-3xl" />
+      {!adaptersReady && !settingsView && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-3xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
+      {!settingsView && <HealthWarnings warnings={health.warnings ?? []} className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-3xl" />}
       {view === "work" ? <Suspense fallback={<PanelLoading label="Opening work…"/>}><WorkView
         board={workBoard}
         error={workError}
@@ -3944,7 +3961,7 @@ function AppContent() {
         projects={state.projects}
         onJumpToFile={jumpFromPulls}
         onAddProject={() => setNewProjectOpen(true)}
-      /> : ["settings", "archives", "saved-setups", "briefing-settings"].includes(view) ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} key={view} initialSection={view === "archives" ? "archives" : view === "saved-setups" ? "agents" : view === "briefing-settings" ? "work" : settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onVoiceChanged={voice.retry} onHealthChange={invalidateHealth} availableUpdate={availableUpdate} onUpdate={setAvailableUpdate} onError={setError} storageCopilot={storageCopilot} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
+      /> : settingsView ? <Suspense fallback={<SettingsScreenSkeleton />}><SettingsScreen onOpenWorkBoard={openWorkBoard} onExit={leaveSettings} adapters={adapters} autoApprovals={autoApprovals} key={view} initialSection={view === "archives" ? "archives" : view === "saved-setups" ? "agents" : view === "briefing-settings" ? "work" : settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onVoiceChanged={voice.retry} onHealthChange={invalidateHealth} availableUpdate={availableUpdate} onUpdate={setAvailableUpdate} onError={setError} storageCopilot={storageCopilot} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
         workspaces={state.workspaces}
         initialWorkspaceId={workspace?.id ?? welcomeWorkspaceId}
         onOpenProjects={() => setView("projects")}
