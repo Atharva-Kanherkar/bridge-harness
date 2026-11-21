@@ -21,6 +21,24 @@ const InlineFileEditor = lazy(() => import("./editor/InlineFileEditor").then(mod
  *  burst is worth ten during it. */
 export const STATS_REFRESH_DEBOUNCE_MS = 300;
 
+/** How often an on-screen Changes pane re-reads the changeset. The stats drift
+ *  is the fast path; this catches the edits it cannot see: an agent rewriting
+ *  an already-changed line leaves the "+1 −1" counts exactly as they were. */
+export const CHANGES_POLL_MS = 4000;
+
+const sameFile = (a: WorkspaceFileChange, b: WorkspaceFileChange) =>
+  a.path === b.path && a.patch === b.patch && a.additions === b.additions && a.deletions === b.deletions
+  && a.changeKind === b.changeKind && a.binary === b.binary && a.importance === b.importance
+  && a.lowSignal === b.lowSignal && a.patchTruncated === b.patchTruncated && a.previousPath === b.previousPath
+  && a.labels.join("\0") === b.labels.join("\0");
+
+/** A poll that found the same changeset must not re-render every open diff. */
+export function sameChangeset(a: WorkspaceChangesResult | undefined, b: WorkspaceChangesResult): boolean {
+  return !!a && a.repositoryState === b.repositoryState && a.baseCommit === b.baseCommit
+    && a.filesTruncated === b.filesTruncated && a.totalFiles === b.totalFiles
+    && a.files.length === b.files.length && a.files.every((file, index) => sameFile(file, b.files[index]));
+}
+
 const IMPORTANCE_RANK: Record<RiskTier, number> = { high: 0, medium: 1, low: 2 };
 const IMPORTANCE_BADGE: Record<RiskTier, { label: string; variant: "error" | "warning" | "outline" }> = {
   high: { label: "High", variant: "error" },
@@ -151,15 +169,22 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
   </div>;
 }
 
-export function ChangesPanel({ workspace, onQuote, onOpenFile }: {
+export function ChangesPanel({ workspace, visible = false, onQuote, onOpenFile, onSaved }: {
   workspace: Workspace;
+  /** On screen: poll the changeset as well as following the stats drift. */
+  visible?: boolean;
   onQuote?: (path: string, range?: HunkRange) => void;
   onOpenFile?: (path: string) => void;
+  /** A file was saved from an inline editor, so the workspace stats are stale. */
+  onSaved?: () => void;
 }) {
   const [changes, setChanges] = useState<WorkspaceChangesResult>();
   const [loadError, setLoadError] = useState<string>();
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
-  const [viewedPaths, setViewedPaths] = useState<Set<string>>(new Set());
+  // Viewed is a claim about *this* patch. Keyed by the patch text, so a file
+  // the agent changes again after you marked it comes back unviewed (as on
+  // GitHub) instead of hiding new work behind a faded row.
+  const [viewedPatches, setViewedPatches] = useState<Map<string, string>>(new Map());
   const [showLowSignal, setShowLowSignal] = useState(false);
   const requestGeneration = useRef(0);
   const statsSeen = useRef<string>();
@@ -171,7 +196,7 @@ export function ChangesPanel({ workspace, onQuote, onOpenFile }: {
     try {
       const next = await bridgeApi.workspaceChanges(workspace.id);
       if (generation !== requestGeneration.current) return;
-      setChanges(next);
+      setChanges(current => sameChangeset(current, next) ? current : next);
       setLoadError(undefined);
     } catch (error) {
       if (generation !== requestGeneration.current) return;
@@ -180,7 +205,7 @@ export function ChangesPanel({ workspace, onQuote, onOpenFile }: {
   }, [workspace.id]);
 
   useEffect(() => {
-    setChanges(undefined); setLoadError(undefined); setExpandedPaths(new Set()); setViewedPaths(new Set()); setShowLowSignal(false); statsSeen.current = undefined;
+    setChanges(undefined); setLoadError(undefined); setExpandedPaths(new Set()); setViewedPatches(new Map()); setShowLowSignal(false); statsSeen.current = undefined;
     void reloadChanges();
     return () => { requestGeneration.current += 1; };
   }, [reloadChanges]);
@@ -200,15 +225,39 @@ export function ChangesPanel({ workspace, onQuote, onOpenFile }: {
     return () => window.clearTimeout(timer);
   }, [workspace.dirtyFiles, workspace.additions, workspace.deletions, reloadChanges]);
 
+  // While on screen, re-read on a slow serial clock (first read after one
+  // interval: mounting already loaded). A failed poll keeps the last good diff.
+  useEffect(() => {
+    if (!visible) return;
+    let timer: number | undefined;
+    let live = true;
+    const tick = () => {
+      timer = window.setTimeout(() => void reloadChanges().finally(() => { if (live) tick(); }), CHANGES_POLL_MS);
+    };
+    tick();
+    return () => { live = false; window.clearTimeout(timer); };
+  }, [visible, reloadChanges]);
+
+  const handleSaved = useCallback(() => {
+    void reloadChanges();
+    onSaved?.();
+  }, [reloadChanges, onSaved]);
+
   const sortedFiles = useMemo(() => [...(changes?.files ?? [])].sort((a, b) =>
     IMPORTANCE_RANK[a.importance] - IMPORTANCE_RANK[b.importance] || a.path.localeCompare(b.path)
   ), [changes]);
   const visibleFiles = sortedFiles.filter(file => showLowSignal || !file.lowSignal);
   const lowSignalCount = sortedFiles.length - sortedFiles.filter(file => !file.lowSignal).length;
 
-  const toggle = (setter: typeof setExpandedPaths, path: string) => setter(previous => {
+  const toggleExpanded = (path: string) => setExpandedPaths(previous => {
     const next = new Set(previous);
     if (next.has(path)) next.delete(path); else next.add(path);
+    return next;
+  });
+  const isViewed = (file: WorkspaceFileChange) => viewedPatches.get(file.path) === file.patch;
+  const toggleViewed = (file: WorkspaceFileChange) => setViewedPatches(previous => {
+    const next = new Map(previous);
+    if (next.get(file.path) === file.patch) next.delete(file.path); else next.set(file.path, file.patch);
     return next;
   });
 
@@ -218,7 +267,7 @@ export function ChangesPanel({ workspace, onQuote, onOpenFile }: {
 
   const totalAdditions = changes.files.reduce((sum, file) => sum + file.additions, 0);
   const totalDeletions = changes.files.reduce((sum, file) => sum + file.deletions, 0);
-  const viewedCount = sortedFiles.filter(file => viewedPaths.has(file.path)).length;
+  const viewedCount = sortedFiles.filter(isViewed).length;
   const reportedFileCount = changes.totalFiles ?? changes.files.length;
   const fileCountLabel = changes.filesTruncated && changes.totalFiles == null ? `${changes.files.length}+` : `${reportedFileCount}`;
   const diffBasis = changes.repositoryState === "unborn"
@@ -233,6 +282,12 @@ export function ChangesPanel({ workspace, onQuote, onOpenFile }: {
     <p className="mb-2 font-mono text-caption text-muted-foreground">
       {diffBasis}
     </p>
+    {/* The turn cards in the chat show what this chat's agent edited; this
+        pane is the folder's git state. Without the line, "3 files" in the
+        chat and "241 files" here read as the same claim disagreeing. */}
+    {changes.files.length > 0 && <p className="mb-2 text-caption leading-relaxed text-muted-foreground">
+      Everything uncommitted in this folder, from any chat, agent, or editor. Each turn in the chat lists only its own edits.
+    </p>}
     {changes.files.length === 0
       ? <p className="text-ui leading-relaxed text-muted-foreground">{changes.repositoryState === "unborn" ? "Create or stage a file to begin the first review." : "No uncommitted changes against HEAD."}</p>
       : <>
@@ -254,11 +309,11 @@ export function ChangesPanel({ workspace, onQuote, onOpenFile }: {
             key={file.path}
             file={file}
             workspaceId={workspace.id}
-            onSaved={() => void reloadChanges()}
-            viewed={viewedPaths.has(file.path)}
+            onSaved={handleSaved}
+            viewed={isViewed(file)}
             expanded={expandedPaths.has(file.path)}
-            onToggleViewed={() => toggle(setViewedPaths, file.path)}
-            onToggleExpanded={() => toggle(setExpandedPaths, file.path)}
+            onToggleViewed={() => toggleViewed(file)}
+            onToggleExpanded={() => toggleExpanded(file.path)}
             onQuote={onQuote}
             onOpenFile={onOpenFile}
           />)}

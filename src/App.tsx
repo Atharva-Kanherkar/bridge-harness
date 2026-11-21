@@ -3999,7 +3999,11 @@ function AppContent() {
           actions={hasRepo && workspace && workspace.dirtyFiles > 0 ? <button
             type="button"
             onClick={() => dispatchDock({ type: "open-pane", pane: "changes" })}
-            aria-label={`Review changes in ${workspace.dirtyFiles} ${workspace.dirtyFiles === 1 ? "file" : "files"}`}
+            aria-label={`Review uncommitted changes in ${workspace.dirtyFiles} ${workspace.dirtyFiles === 1 ? "file" : "files"}`}
+            // This counts the folder's whole working tree against HEAD (other
+            // chats, agents, and your own edits included), not this chat's
+            // turns. Say so where the number is.
+            title={`Uncommitted in ${workspace.branch ? `${workspace.branch}` : "this folder"} vs HEAD: every change in the folder, not only this chat's`}
             aria-pressed={dock.open && dock.pane === "changes"}
             className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-2 text-meta text-foreground shadow-xs transition-colors hover:bg-accent"
           >
@@ -4396,7 +4400,7 @@ function AppContent() {
                  Without the key a save would aim the old path at the new
                  workspace. */
               if (pane === "github") return <GitHubPane key={workspace.id} workspaceId={workspace.id} workspaceBranch={workspace.branch ?? null} sessionId={session?.id} intent={githubIntent} onJumpToFile={jumpToReviewComment} />;
-              if (pane === "changes") return <ChangesPanel key={workspace.id} workspace={workspace} onQuote={quoteToComposer} onOpenFile={openFileInDock} />;
+              if (pane === "changes") return <ChangesPanel key={workspace.id} workspace={workspace} visible={dock.open && dock.pane === "changes"} onQuote={quoteToComposer} onOpenFile={openFileInDock} onSaved={() => void refreshWorkspaceStats(workspace.id)} />;
               if (pane === "code") return <Suspense fallback={<PanelLoading label="Opening editor…"/>}><CodePanel key={workspace.id} workspaceId={workspace.id} visible={dock.open && dock.pane === "code"} reveal={codeReveal} driftSignal={`${workspace.dirtyFiles}:${workspace.additions}:${workspace.deletions}`} onSaved={() => void refreshWorkspaceStats(workspace.id)}/></Suspense>;
               return <Suspense fallback={<PanelLoading label="Opening terminal…"/>}><TerminalPane key={workspace.id} workspaceId={workspace.id} workspacePath={workspace.path ?? undefined} visible={dock.open && dock.pane === "terminal" && !fullscreen} onActivity={setTerminalActivity}/></Suspense>;
             }}

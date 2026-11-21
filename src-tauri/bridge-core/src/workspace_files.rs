@@ -49,7 +49,13 @@ const IGNORED_DIRS: &[&str] = &[
 /// bounded directory walk for non-git folders.
 pub fn list_files(root: &Path) -> Result<Vec<String>, BridgeError> {
     if let Some(files) = git_tracked(root) {
-        return Ok(files);
+        // Only what can actually be opened: a tracked file deleted on disk, a
+        // submodule, or a nested repository (`nested/`) is listed by git but
+        // every read of it fails, and the tree drew it as a file.
+        return Ok(files
+            .into_iter()
+            .filter(|path| !path.ends_with('/') && root.join(path).is_file())
+            .collect());
     }
     let mut out = Vec::new();
     walk(root, root, &mut out);
@@ -59,24 +65,35 @@ pub fn list_files(root: &Path) -> Result<Vec<String>, BridgeError> {
     Ok(out)
 }
 
+/// Tracked files first, then untracked ones, under one shared cap. Asked for
+/// in a single `--cached --others` call, git lists the untracked files first,
+/// so a repository with a few thousand stray files lost its tracked sources,
+/// `src/main.rs` included, from the tree.
 fn git_tracked(root: &Path) -> Option<Vec<String>> {
+    let mut files = git_list(root, &["--cached"], MAX_FILES)?;
+    if files.len() < MAX_FILES {
+        let remaining = MAX_FILES - files.len();
+        files.extend(git_list(root, &["--others", "--exclude-standard"], remaining)?);
+    }
+    files.sort();
+    files.dedup();
+    Some(files)
+}
+
+fn git_list(root: &Path, selection: &[&str], limit: usize) -> Option<Vec<String>> {
     let mut child = crate::git::git_command(root)
-        .args([
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ])
+        .arg("ls-files")
+        .args(selection)
+        .arg("-z")
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
     let stdout = child.stdout.take()?;
     let mut reader = BufReader::new(stdout);
-    let mut files = Vec::with_capacity(MAX_FILES);
+    let mut files = Vec::with_capacity(limit);
     let mut buffer = Vec::new();
-    while files.len() < MAX_FILES {
+    while files.len() < limit {
         buffer.clear();
         let read = reader.read_until(0, &mut buffer).ok()?;
         if read == 0 {
@@ -90,14 +107,12 @@ fn git_tracked(root: &Path) -> Option<Vec<String>> {
             files.push(path);
         }
     }
-    if files.len() == MAX_FILES {
+    if files.len() == limit {
         let _ = child.kill();
         let _ = child.wait();
     } else if !child.wait().ok()?.success() {
         return None;
     }
-    files.sort();
-    files.dedup();
     Some(files)
 }
 
@@ -536,6 +551,39 @@ pub fn write_file(
         )));
     }
 
+    // A symlink (`CLAUDE.md -> AGENTS.md`) is edited through: the rename below
+    // would replace the link itself with a regular file and leave its target
+    // holding the old text. Writing in place gives up crash atomicity for
+    // this one case, and keeps the link. `open_with` still refuses a target
+    // outside the workspace.
+    if dir
+        .symlink_metadata(path)
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        match inspect(&dir, path)? {
+            Some(now) if now.sha256 == expected => {}
+            Some(_) => {
+                return Err(BridgeError::Invalid(format!(
+                    "{path} changed on disk since it was opened"
+                )))
+            }
+            None => {
+                return Err(BridgeError::Invalid(format!(
+                    "{path} no longer exists on disk"
+                )))
+            }
+        }
+        let mut file = dir.open_with(
+            path,
+            cap_std::fs::OpenOptions::new().write(true).truncate(true),
+        )?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        return Ok(WriteOutcome {
+            sha256: hash_bytes(content.as_bytes()),
+        });
+    }
+
     // Write through a scratch file and rename, so a crash mid-write leaves the
     // original intact rather than a half-file.
     let temp = temp_name(path);
@@ -546,6 +594,15 @@ pub fn write_file(
         )?;
         file.write_all(content.as_bytes())?;
         file.sync_all()?;
+    }
+    // The scratch file is born with default permissions; renamed over the
+    // original as-is, it silently dropped the executable bit from every
+    // script saved in the editor.
+    if let Ok(original) = dir.metadata(path) {
+        if let Err(error) = dir.set_permissions(&temp, original.permissions()) {
+            let _ = dir.remove_file(&temp);
+            return Err(error.into());
+        }
     }
     // Last look before the swap. See the note above: this narrows the race, it
     // does not remove it.
@@ -896,5 +953,83 @@ mod tests {
         std::fs::write(outside.path(), "outside sentinel").unwrap();
         symlink(outside.path(), root.path().join("outside-link")).unwrap();
         assert!(mention_context(Some(root.path()), "@outside-link").is_none());
+    }
+
+    fn git(cwd: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&status.stderr));
+    }
+
+    fn repo() -> tempfile::TempDir {
+        let dir = workspace();
+        git(dir.path(), &["init", "-q"]);
+        git(dir.path(), &["config", "user.email", "bridge-test@example.invalid"]);
+        git(dir.path(), &["config", "user.name", "Bridge Test"]);
+        git(dir.path(), &["config", "commit.gpgsign", "false"]);
+        dir
+    }
+
+    #[test]
+    fn lists_only_files_that_can_be_opened() {
+        let dir = repo();
+        std::fs::write(dir.path().join("kept.rs"), "a\n").unwrap();
+        std::fs::write(dir.path().join("gone.rs"), "b\n").unwrap();
+        git(dir.path(), &["add", "."]);
+        git(dir.path(), &["commit", "-qm", "seed"]);
+        std::fs::remove_file(dir.path().join("gone.rs")).unwrap();
+        let nested = dir.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        git(&nested, &["init", "-q"]);
+        std::fs::write(nested.join("inner.rs"), "c\n").unwrap();
+        std::fs::write(dir.path().join("new.rs"), "d\n").unwrap();
+
+        assert_eq!(list_files(dir.path()).unwrap(), ["kept.rs", "new.rs"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_keeps_the_executable_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = workspace();
+        let script = dir.path().join("run.sh");
+        std::fs::write(&script, "echo one\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let base = read_file(dir.path(), "run.sh").unwrap().sha256;
+
+        write_file(dir.path(), "run.sh", "echo two\n", Some(&base)).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&script).unwrap(), "echo two\n");
+        assert_eq!(std::fs::metadata(&script).unwrap().permissions().mode() & 0o777, 0o755);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_through_a_symlink_edits_its_target_and_keeps_the_link() {
+        let dir = workspace();
+        std::fs::write(dir.path().join("AGENTS.md"), "old\n").unwrap();
+        std::os::unix::fs::symlink("AGENTS.md", dir.path().join("CLAUDE.md")).unwrap();
+        let base = read_file(dir.path(), "CLAUDE.md").unwrap().sha256;
+
+        write_file(dir.path(), "CLAUDE.md", "new\n", Some(&base)).unwrap();
+
+        assert!(std::fs::symlink_metadata(dir.path().join("CLAUDE.md")).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap(), "new\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_through_a_symlink_still_refuses_a_moved_target() {
+        let dir = workspace();
+        std::fs::write(dir.path().join("AGENTS.md"), "old\n").unwrap();
+        std::os::unix::fs::symlink("AGENTS.md", dir.path().join("CLAUDE.md")).unwrap();
+        let base = read_file(dir.path(), "CLAUDE.md").unwrap().sha256;
+        std::fs::write(dir.path().join("AGENTS.md"), "agent\n").unwrap();
+
+        assert!(write_file(dir.path(), "CLAUDE.md", "mine\n", Some(&base)).is_err());
+        assert_eq!(std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap(), "agent\n");
     }
 }
