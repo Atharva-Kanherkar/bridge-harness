@@ -281,28 +281,13 @@ pub(crate) fn tidy_imported_chats(core: &Arc<BridgeCore>) -> Result<(usize, crat
     Ok((removed, placement))
 }
 
-/// On startup: tidy chats earlier imports brought (in the background), and
-/// carry on with an import Bridge quit in the middle of, from the tool it was
-/// importing.
+/// On startup, carry on with an import Bridge quit in the middle of.
+///
+/// Do not tidy earlier imports here. Even a background worker holds the
+/// shared database during each purge batch, blocking host readiness and the
+/// desktop's main thread on large histories. Tidying remains part of import
+/// completion, rather than work every launch must wait for.
 pub fn start_import_maintenance(core: Arc<BridgeCore>) {
-    let tidy = core.clone();
-    let spawned = std::thread::Builder::new().name("bridge-import-tidy".into()).spawn(move || {
-        if tidy.import_job_running.load(Ordering::SeqCst) {
-            return;
-        }
-        match tidy_imported_chats(&tidy) {
-            Ok((removed, placement)) if removed > 0 || placement.placed > 0 => eprintln!(
-                "bridge: tidied imported chats: removed {removed} runs that were not chats, filed {} under {} new projects",
-                placement.placed,
-                placement.created.len()
-            ),
-            Ok(_) => {}
-            Err(error) => eprintln!("bridge: could not tidy imported chats: {error}"),
-        }
-    });
-    if let Err(error) = spawned {
-        eprintln!("bridge: could not start tidying imported chats: {error}");
-    }
     if let Err(error) = resume_with(&core, |source| source.machine_roots(&core)) {
         eprintln!("bridge: could not resume the import: {error}");
     }

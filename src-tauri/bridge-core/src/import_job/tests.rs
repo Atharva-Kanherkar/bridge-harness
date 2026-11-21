@@ -417,7 +417,7 @@ mod placement {
     }
 
     #[test]
-    fn on_startup_runs_an_earlier_import_brought_are_removed_and_chats_filed() {
+    fn explicit_tidy_removes_earlier_imported_runs_and_files_chats() {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().canonicalize().unwrap();
         let data = home.join("bridge-data");
@@ -450,6 +450,49 @@ mod placement {
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].0, "old-real");
         assert!(left[0].1.is_some());
+    }
+
+    #[test]
+    fn startup_maintenance_leaves_existing_imported_chats_untouched() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().canonicalize().unwrap();
+        let data = home.join("bridge-data");
+        let core = Arc::new(BridgeCore::for_tests(&data));
+        let app = repo(&home.join("code"), "app");
+        {
+            let db = core.db.lock().unwrap();
+            for (id, cwd) in [
+                ("old-slack", data.join("chats/9")),
+                ("old-real", app),
+            ] {
+                db.execute(
+                    "INSERT INTO sessions(id,harness,label,status,metric_source,kind,cwd) VALUES(?1,'claude','x','stopped','imported','imported',?2)",
+                    params![id, cwd.to_string_lossy()],
+                ).unwrap();
+            }
+        }
+
+        let owners = Arc::strong_count(&core);
+        start_import_maintenance(core.clone());
+        // Any maintenance worker owns a core clone. Wait for it to finish
+        // before checking history, so the old tidy thread cannot race the
+        // assertions and make this regression test pass accidentally.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while Arc::strong_count(&core) > owners {
+            assert!(std::time::Instant::now() < deadline, "startup maintenance did not settle");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let db = core.db.lock().unwrap();
+        let chats: Vec<(String, Option<String>)> = db
+            .prepare("SELECT id, workspace_id FROM sessions WHERE kind='imported' ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(chats, vec![("old-real".into(), None), ("old-slack".into(), None)]);
+        assert!(!core.import_job_running.load(Ordering::SeqCst));
     }
 }
 
