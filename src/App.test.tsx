@@ -9,15 +9,28 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished,
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     options: Record<string, unknown> = {};
+    unicode = { activeVersion: "" };
+    modes = { bracketedPasteMode: false };
+    cols = 80;
+    rows = 24;
     open() {}
     loadAddon() {}
     dispose() {}
     onData() { return { dispose() {} }; }
-    write() {}
+    onBinary() { return { dispose() {} }; }
+    attachCustomKeyEventHandler() {}
+    write(_data: string, done?: () => void) { done?.(); }
     writeln() {}
+    reset() {}
+    resize() {}
+    focus() {}
+    blur() {}
+    hasSelection() { return false; }
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+// The WebGL renderer draws a canvas at import; jsdom has none.
+vi.mock("@xterm/addon-webgl", () => ({ WebglAddon: class { onContextLoss() { return { dispose() {} }; } dispose() {} } }));
 
 // Spy on the headline without changing its behaviour, so a test can assert
 // what the welcome hero feeds it (the owning project name, not the workspace
@@ -682,7 +695,7 @@ describe("the dock in the session view", () => {
       console.log("PANE HTML:", html.slice(at, at + 700));
     }
     expect(dockAside()!.querySelector('button[aria-label="New shell"]')).not.toBeNull();
-    expect(dockAside()!.textContent).toContain("MB scrollback");
+    expect(dockAside()!.textContent).toContain("lines scrollback");
   });
 
   // Contract: testing/feat-dock-tasks.md §4.
