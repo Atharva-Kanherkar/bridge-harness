@@ -3,24 +3,42 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
-import { CodePanel } from "./CodePanel";
+import { CodePanel, OPEN_FILE_PROBE_MS } from "./CodePanel";
 import { STATS_REFRESH_DEBOUNCE_MS } from "./ChangesPanel";
 
 // CodeMirror owns a real DOM and its own measurement loop, neither of which
 // jsdom provides usefully. The document itself is covered by `fileBuffer`
 // tests; what this file checks is the panel's wiring around it.
-vi.mock("./editor/CodeEditor", () => ({
-  CodeEditor: ({ docKey, doc, revealLine, onChange, onSave }: {
-    docKey: string; doc: string; revealLine?: { line: number; nonce: number }; onChange: (value: string) => void; onSave: () => void;
-  }) => <textarea
-    data-testid="editor"
-    data-dockey={docKey}
-    data-revealline={revealLine ? `${revealLine.line}:${revealLine.nonce}` : undefined}
-    defaultValue={doc}
-    onChange={event => onChange(event.target.value)}
-    onKeyDown={event => { if (event.key === "s") onSave(); }}
-  />,
-}));
+vi.mock("./editor/CodeEditor", async () => {
+  const { useEffect, useRef } = await vi.importActual<typeof import("react")>("react");
+  return {
+    CodeEditor: function MockEditor({ docKey, doc, path, revealLine, syncDoc, onChange, onSave }: {
+      docKey: string; doc: string; path: string; revealLine?: { line: number; nonce: number };
+      syncDoc?: { text: string; version: number }; onChange: (value: string) => void; onSave: () => void;
+    }) {
+      const node = useRef<HTMLTextAreaElement>(null);
+      const seen = useRef(syncDoc?.version ?? 0);
+      // The real editor applies `syncDoc` in place and reports the change.
+      useEffect(() => {
+        if (!syncDoc || syncDoc.version === seen.current || !node.current) return;
+        seen.current = syncDoc.version;
+        if (node.current.value === syncDoc.text) return;
+        node.current.value = syncDoc.text;
+        onChange(syncDoc.text);
+      }, [syncDoc, onChange]);
+      return <textarea
+        ref={node}
+        data-testid="editor"
+        data-path={path}
+        data-dockey={docKey}
+        data-revealline={revealLine ? `${revealLine.line}:${revealLine.nonce}` : undefined}
+        defaultValue={doc}
+        onChange={event => onChange(event.target.value)}
+        onKeyDown={event => { if (event.key === "s") onSave(); }}
+      />;
+    },
+  };
+});
 
 vi.mock("../api", () => ({
   bridgeApi: {
@@ -73,6 +91,8 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 
@@ -146,9 +166,14 @@ describe("CodePanel", () => {
     expect(container.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!.defaultValue).toBe("const a = 1;");
 
     read.mockResolvedValue({ path: "src/App.tsx", content: "const a = 2;", sha256: "sha-agent", tooLarge: false, binary: false, sizeBytes: 12 });
+    const keyBefore = container.querySelector('[data-testid="editor"]')!.getAttribute("data-dockey");
     await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "b" });
     await settleDrift();
-    expect(container.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!.defaultValue).toBe("const a = 2;");
+    const editor = container.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!;
+    expect(editor.value).toBe("const a = 2;");
+    // In place: the same editor instance, so caret, scroll and undo survive.
+    expect(editor.getAttribute("data-dockey")).toBe(keyBefore);
+    expect(text()).toContain("Saved");
     expect(text()).not.toContain("Changed on disk");
   });
 
@@ -315,6 +340,7 @@ describe("CodePanel", () => {
       return { path: "src/App.tsx", content: "theirs", sha256: "sha9", tooLarge: false, binary: false, sizeBytes: 6 };
     });
     await click([...container.querySelectorAll("button")].find(node => node.textContent === "Reload"));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
     await click([...container.querySelectorAll("button")].find(node => node.getAttribute("aria-label")?.startsWith("Close")));
     await act(async () => { release(undefined); await slow; });
     expect(container.querySelector("[data-testid=editor]")).toBeNull();
@@ -327,5 +353,142 @@ describe("CodePanel", () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "p", metaKey: true, bubbles: true }));
     });
     expect(container.querySelector("input[aria-label='Go to file']")).toBeNull();
+  });
+
+  const editorFor = (path: string) => container.querySelector<HTMLTextAreaElement>(`[data-testid="editor"][data-path="${path}"]`)!;
+  const button = (label: string) => [...container.querySelectorAll("button")].find(node => node.textContent === label || node.textContent?.startsWith(label));
+  const readFor = () => read.mockImplementation(async (_workspace, path) => ({ path, content: `disk ${path}`, sha256: `sha-${path}`, tooLarge: false, binary: false, sizeBytes: 9 }));
+
+  it("keeps unsaved text on screen across a tab switch", async () => {
+    // One editor re-seeded per switch showed the last *saved* text, while ⌘S
+    // still wrote the hidden edit.
+    readFor();
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 } });
+    await typeInto(editorFor("src/App.tsx"), "unsaved work");
+    await click(rowNamed("README.md"));
+    await click([...container.querySelectorAll("button[title='src/App.tsx']")][0]);
+    expect(editorFor("src/App.tsx").value).toBe("unsaved work");
+    expect(text()).toContain("Unsaved changes");
+  });
+
+  it("stays unsaved when you type while a save is in flight", async () => {
+    let finish: (value: { sha256: string }) => void = () => undefined;
+    write.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 } });
+    await typeInto(editorFor("src/App.tsx"), "first");
+    await click(button("Save"));
+    await typeInto(editorFor("src/App.tsx"), "first and more");
+    await act(async () => { finish({ sha256: "sha2" }); });
+    expect(write).toHaveBeenCalledWith("w", "src/App.tsx", "first", "sha1");
+    expect(text()).toContain("Unsaved changes");
+    expect(container.querySelector("[aria-label*='discarding unsaved changes']")).toBeTruthy();
+  });
+
+  it("writes once when two saves land in the same tick", async () => {
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 } });
+    await typeInto(editorFor("src/App.tsx"), "edit");
+    const save = button("Save") as HTMLElement;
+    await act(async () => { save.click(); save.click(); });
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(text()).not.toContain("changed on disk");
+  });
+
+  it("does not rewrite a clean file on ⌘S", async () => {
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 } });
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "s", metaKey: true, bubbles: true }));
+    });
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("still counts a failed save as unsaved work", async () => {
+    write.mockRejectedValue(new Error("permission denied"));
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 } });
+    await typeInto(editorFor("src/App.tsx"), "mine");
+    await click(button("Save"));
+    expect(text()).toContain("permission denied");
+    expect(container.querySelector("[aria-label*='discarding unsaved changes']")).toBeTruthy();
+    expect(button("Save")).toBeTruthy();
+  });
+
+  it("asks before closing a tab with unsaved changes", async () => {
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 } });
+    await typeInto(editorFor("src/App.tsx"), "mine");
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await click(container.querySelector("[aria-label^='Close src/App.tsx']"));
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(editorFor("src/App.tsx").value).toBe("mine");
+
+    confirm.mockReturnValue(true);
+    await click(container.querySelector("[aria-label^='Close src/App.tsx']"));
+    expect(container.querySelector("[data-testid=editor]")).toBeNull();
+  });
+
+  it("closes a clean tab without asking and focuses its neighbour", async () => {
+    readFor();
+    tree.mockResolvedValue(["a.ts", "b.ts", "c.ts"]);
+    const confirm = vi.spyOn(window, "confirm");
+    await render();
+    await click(rowNamed("a.ts"));
+    await click(rowNamed("b.ts"));
+    await click(rowNamed("c.ts"));
+    await click([...container.querySelectorAll("button[title='b.ts']")][0]);
+    await click(container.querySelector("[aria-label='Close b.ts']"));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(editorFor("c.ts").parentElement!.className).not.toContain("hidden");
+  });
+
+  it("still probes when a tab changes inside the drift debounce", async () => {
+    // The probe effect used to depend on the tab list: any tab update in the
+    // debounce window cancelled the timer, and the signal was already spent.
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "a" });
+    read.mockResolvedValue({ path: "src/App.tsx", content: "agent wrote", sha256: "sha-agent", tooLarge: false, binary: false, sizeBytes: 11 });
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "b" });
+    await typeInto(editorFor("src/App.tsx"), "typed during the debounce");
+    await settleDrift();
+    expect(text()).toContain("Changed on disk while you were editing");
+  });
+
+  it("picks up files the agent created when the stats drift", async () => {
+    await render({ driftSignal: "a" });
+    tree.mockResolvedValue(["README.md", "NEW.md", "src/App.tsx", "src/components/ui/button.tsx"]);
+    await render({ driftSignal: "b" });
+    await settleDrift();
+    expect(rowNamed("NEW.md")).toBeTruthy();
+  });
+
+  it("re-reads open files on a slow clock while on screen, even with no drift", async () => {
+    // "+1 −1" stays "+1 −1" when an agent rewrites an already-changed line.
+    vi.useFakeTimers();
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 } });
+    read.mockResolvedValue({ path: "src/App.tsx", content: "rewritten", sha256: "sha-new", tooLarge: false, binary: false, sizeBytes: 9 });
+    await act(async () => { await vi.advanceTimersByTimeAsync(OPEN_FILE_PROBE_MS + 10); });
+    expect(editorFor("src/App.tsx").value).toBe("rewritten");
+  });
+
+  it("does not poll while hidden", async () => {
+    vi.useFakeTimers();
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 }, visible: false });
+    read.mockClear();
+    await act(async () => { await vi.advanceTimersByTimeAsync(OPEN_FILE_PROBE_MS * 3); });
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("offers the file list as a drawer when the pane is too narrow for the sidebar", async () => {
+    await render();
+    const toggle = container.querySelector<HTMLButtonElement>("[aria-label='Show file list']")!;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    await click(button("Browse files"));
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector("aside")!.className).toContain("absolute");
+    await click(rowNamed("README.md"));
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("shows the size notice for a file too large to edit", async () => {
+    read.mockResolvedValue({ path: "src/App.tsx", content: "", sha256: "", tooLarge: true, binary: false, sizeBytes: 3 * 1024 * 1024 });
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 } });
+    expect(text()).toContain("too large to open in the editor");
+    expect(container.querySelector("[data-testid=editor]")).toBeNull();
   });
 });

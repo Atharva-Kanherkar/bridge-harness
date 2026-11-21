@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "../types";
-import { ChangesPanel, STATS_REFRESH_DEBOUNCE_MS } from "./ChangesPanel";
+import { CHANGES_POLL_MS, ChangesPanel, STATS_REFRESH_DEBOUNCE_MS, sameChangeset } from "./ChangesPanel";
 import { bridgeApi } from "../api";
 
 // Contracts: testing/feat-dock-changes.md §1–§4 and
@@ -88,6 +88,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe("ChangesPanel in the dock", () => {
@@ -326,5 +327,56 @@ describe("ChangesPanel in the dock", () => {
     await mount(<ChangesPanel workspace={workspace()} onOpenFile={onOpenFile} />);
     await click(button("Open src-tauri/bridge-core/src/policy.rs in the Code pane")!);
     expect(onOpenFile).toHaveBeenCalledWith("src-tauri/bridge-core/src/policy.rs");
+  });
+
+  it("re-reads the changeset on a slow clock while on screen", async () => {
+    // An agent rewriting an already-changed line leaves the stats identical,
+    // so the drift signal alone never refreshed the diff.
+    vi.useFakeTimers();
+    const spy = vi.spyOn(bridgeApi, "workspaceChanges").mockResolvedValue(changesResult([fileChange("a.ts")]));
+    await act(async () => { root.render(<ChangesPanel workspace={workspace()} visible />); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockResolvedValue(changesResult([fileChange("a.ts", { patch: "@@ -1 +1 @@\n-old\n+newer\n" })]));
+    await act(async () => { await vi.advanceTimersByTimeAsync(CHANGES_POLL_MS + 10); });
+    expect(spy).toHaveBeenCalledTimes(2);
+    await click(container.querySelector("button[aria-expanded]")!);
+    expect(container.textContent).toContain("newer");
+  });
+
+  it("does not poll while hidden", async () => {
+    vi.useFakeTimers();
+    const spy = vi.spyOn(bridgeApi, "workspaceChanges").mockResolvedValue(changesResult([fileChange("a.ts")]));
+    await act(async () => { root.render(<ChangesPanel workspace={workspace()} />); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(CHANGES_POLL_MS * 3); });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("un-marks a viewed file when the agent changes it again", async () => {
+    const spy = vi.spyOn(bridgeApi, "workspaceChanges").mockResolvedValue(changesResult([fileChange("a.ts"), fileChange("b.ts")]));
+    await mount(<ChangesPanel workspace={workspace()} />);
+    await click(button("Mark a.ts as viewed")!);
+    await click(button("Mark b.ts as viewed")!);
+    expect(container.textContent).toContain("2/2 viewed");
+
+    spy.mockResolvedValue(changesResult([fileChange("a.ts", { patch: "@@ -1 +1 @@\n-old\n+again\n" }), fileChange("b.ts")]));
+    await mount(<ChangesPanel workspace={workspace({ additions: 999 })} />);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, STATS_REFRESH_DEBOUNCE_MS + 40)); });
+    expect(button("Mark a.ts as viewed")).not.toBeNull();
+    expect(button("Mark b.ts as not viewed")).not.toBeNull();
+    expect(container.textContent).toContain("1/2 viewed");
+  });
+
+  it("says the pane is the whole folder, not this chat's turns", async () => {
+    await mount(<ChangesPanel workspace={workspace()} />);
+    expect(container.textContent).toContain("Everything uncommitted in this folder");
+  });
+
+  it("treats an identical poll result as no change", () => {
+    const a = changesResult([fileChange("a.ts", { labels: ["x"] })]);
+    expect(sameChangeset(a, changesResult([fileChange("a.ts", { labels: ["x"] })]))).toBe(true);
+    expect(sameChangeset(a, changesResult([fileChange("a.ts", { labels: ["y"] })]))).toBe(false);
+    expect(sameChangeset(a, changesResult([fileChange("a.ts", { labels: ["x"], patch: "@@ -1 +1 @@\n+z\n" })]))).toBe(false);
+    expect(sameChangeset(undefined, a)).toBe(false);
   });
 });

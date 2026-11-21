@@ -23,8 +23,10 @@ export interface FileBuffer {
 /** Nothing to type into: the editor shows a notice instead. */
 export const isReadOnly = (buffer: FileBuffer): boolean => buffer.binary || buffer.tooLarge;
 
+/** Unsaved work the person would lose by closing the tab. A failed save is
+ *  still unsaved: only a *read* failure (no `baseSha`) holds nothing typed. */
 export const isDirty = (buffer: FileBuffer): boolean =>
-  buffer.state === "dirty" || buffer.state === "conflict";
+  buffer.state === "dirty" || buffer.state === "conflict" || (buffer.state === "error" && buffer.baseSha !== "");
 
 /** Read a file into a fresh buffer. Failures become an `error` buffer, so a
  *  caller never has to special-case "the tab exists but the read threw". */
@@ -77,9 +79,24 @@ export async function saveBuffer(workspaceId: string, buffer: FileBuffer, conten
  * inside an already-dirty file must not re-render the surrounding UI.
  */
 export function stateAfterEdit(buffer: FileBuffer, value: string): FileState | null {
+  // A failed save keeps its message while the text still differs; undoing
+  // back to what is on disk is the one edit that genuinely resolves it.
+  if (buffer.state === "error") return buffer.baseSha && value === buffer.saved ? "clean" : null;
   if (buffer.state !== "clean" && buffer.state !== "dirty") return null;
   const next: FileState = value === buffer.saved ? "clean" : "dirty";
   return next === buffer.state ? null : next;
+}
+
+/**
+ * The buffer a finished save should leave behind. Typing does not stop while
+ * a write is in flight, and `saveBuffer` only knows the text it was handed:
+ * when the live document has moved on, the result is still dirty. Reporting
+ * it "Saved" let a tab close without warning over text that never reached
+ * disk.
+ */
+export function settleSave(result: FileBuffer, live: string | undefined): FileBuffer {
+  if (result.state !== "clean" || live === undefined || live === result.saved) return result;
+  return { ...result, state: "dirty" };
 }
 
 /** What the status line says about a buffer. */

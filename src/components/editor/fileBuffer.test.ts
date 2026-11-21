@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { isDirty, isReadOnly, loadBuffer, saveBuffer, stateAfterEdit, statusLabel, type FileBuffer } from "./fileBuffer";
+import { isDirty, isReadOnly, loadBuffer, saveBuffer, settleSave, stateAfterEdit, statusLabel, type FileBuffer } from "./fileBuffer";
 import { bridgeApi } from "../../api";
 
 vi.mock("../../api", () => ({
@@ -105,5 +105,33 @@ describe("buffer predicates", () => {
     expect(statusLabel(buffer())).toBe("Saved");
     expect(statusLabel(buffer({ binary: true }))).toBe("Binary — read only");
     expect(statusLabel(buffer({ state: "conflict", message: "x changed on disk" }))).toBe("x changed on disk");
+  });
+});
+
+describe("settleSave", () => {
+  it("keeps a buffer dirty when typing continued during the write", () => {
+    expect(settleSave(buffer({ saved: "written" }), "written and more").state).toBe("dirty");
+  });
+
+  it("reports clean when the live text is what was written", () => {
+    expect(settleSave(buffer({ saved: "written" }), "written").state).toBe("clean");
+  });
+
+  it("leaves a refused or failed write as it came back", () => {
+    expect(settleSave(buffer({ state: "conflict" }), "other").state).toBe("conflict");
+    expect(settleSave(buffer({ state: "error" }), "other").state).toBe("error");
+  });
+});
+
+describe("failed saves", () => {
+  it("count as unsaved work; a failed read does not", () => {
+    expect(isDirty(buffer({ state: "error", baseSha: "aaa" }))).toBe(true);
+    expect(isDirty(buffer({ state: "error", baseSha: "" }))).toBe(false);
+  });
+
+  it("clear when the edit is undone back to the disk text, and only then", () => {
+    expect(stateAfterEdit(buffer({ state: "error", saved: "one" }), "one")).toBe("clean");
+    expect(stateAfterEdit(buffer({ state: "error", saved: "one" }), "two")).toBeNull();
+    expect(stateAfterEdit(buffer({ state: "error", baseSha: "", saved: "" }), "")).toBeNull();
   });
 });
