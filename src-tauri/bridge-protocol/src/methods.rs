@@ -303,6 +303,8 @@ methods![
     (ListHistorySources, "usage", "list_history_sources"),
     (ScanHistory, "usage", "scan_history"),
     (UsageInsights, "usage", "insights"),
+    (UsageRecordPresence, "usage", "record_presence"),
+    (UsageScreenTime, "usage", "screen_time"),
     // menu-bar meter (CodexBar port)
     (GetMeterSnapshot, "meter", "get_meter_snapshot"),
     (RefreshMeter, "meter", "refresh_meter"),

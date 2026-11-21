@@ -186,6 +186,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { createBridgeQueryClient } from "./queryClient";
 import { useUiStore } from "./uiStore";
 import { useBridgeServerState } from "./serverState";
+import { startPresenceTracking } from "./screenTime";
 
 const WorkflowsScreen = lazy(() => import("./components/WorkflowsScreen").then(module => ({ default: module.WorkflowsScreen })));
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
@@ -367,6 +368,10 @@ function AppContent() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [highlightEntryId, setHighlightEntryId] = useState<string | null>(null);
   const [error, setError] = useState<string>();
+  // Screen Time: report the minutes this window is in front and in use. The
+  // minutes stay in the local database; the Time tab under Usage reads them.
+  useEffect(() => startPresenceTracking(minutes => bridgeApi.recordPresence({ minutes })), []);
+
   const codexVersion = health?.adapters.find(adapter => adapter.id === "codex")?.version ?? undefined;
   const [latestCodex, setLatestCodex] = useState<string>();
   const [codexUpdateNotice, setCodexUpdateNotice] = useState(false);

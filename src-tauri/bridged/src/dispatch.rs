@@ -905,6 +905,14 @@ pub fn dispatch(
             let p: wire::InsightsParams = decode(method, params)?;
             reply(api::usage_insights(core, &p))
         }
+        MethodName::UsageRecordPresence => {
+            let p: wire::RecordPresenceParams = decode(method, params)?;
+            reply(api::usage_record_presence(core, &p))
+        }
+        MethodName::UsageScreenTime => {
+            let p: wire::ScreenTimeParams = decode(method, params)?;
+            reply(api::usage_screen_time(core, &p))
+        }
         MethodName::ListUsagePriceOverrides => reply(api::list_usage_price_overrides(core)),
         MethodName::SetUsagePriceOverride => {
             let p: wire::SetPriceOverrideParams = decode(method, params)?;

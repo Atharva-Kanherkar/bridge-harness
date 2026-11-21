@@ -1671,6 +1671,33 @@ async fn insights(
 }
 
 #[tauri::command]
+async fn record_presence(
+    minutes: Vec<i64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::UsageRecordPresenceResult, BridgeError> {
+    let core = state.inner().clone();
+    let params = bridge_protocol::messages::RecordPresenceParams { minutes };
+    tauri::async_runtime::spawn_blocking(move || api::usage_record_presence(&core, &params))
+        .await
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?
+}
+
+#[tauri::command]
+async fn screen_time(
+    since_day: String,
+    until_day: String,
+    time_zone: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::UsageScreenTimeResult, BridgeError> {
+    let core = state.inner().clone();
+    let params = bridge_protocol::messages::ScreenTimeParams { since_day, until_day, time_zone };
+    // Reads every agent minute ever recorded: off the async runtime.
+    tauri::async_runtime::spawn_blocking(move || api::usage_screen_time(&core, &params))
+        .await
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?
+}
+
+#[tauri::command]
 async fn list_price_overrides(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Vec<bridge_core::usage_pricing::PriceOverride>, BridgeError> {
@@ -3852,6 +3879,8 @@ pub fn run() -> i32 {
             list_history_sources,
             scan_history,
             insights,
+            record_presence,
+            screen_time,
             get_meter_snapshot,
             save_opencode_usage_session,
             get_provider_usage_overviews,

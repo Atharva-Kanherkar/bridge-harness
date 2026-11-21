@@ -27,6 +27,7 @@ import type { ApiKeysSnapshot, ChatApiKey, SaveApiKeyParams, SavedApiKey } from 
 import { guessKeyKind } from "./apiKeys";
 import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, SummaryParams, UsageBucket, UsageHistorySource, UsagePriceOverride, UsagePricingStatus, UsageSummaryResult } from "./types";
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
+import type { RecordPresenceParams, ScreenTimeParams, UsageRecordPresenceResult, UsageScreenTimeResult } from "./types";
 import type { MemoryActivityEntry, MemoryInsightsResult, MemoryRecallStats } from "./types";
 import type { DiskDeleteResult, DiskEntry, DiskListing, DiskOverview, EmptyTrashResult } from "./types";
 import type { Note, NoteAsset, NoteAssetData, NoteAssetPart, NoteEditResult, NoteHistory, NotePage, NotePageChangedPayload, NotePassProgressPayload, NotesList, NotesSettings, NoteVersionPage } from "./types";
@@ -972,6 +973,38 @@ const mockMeterRegistry: MeterRegistry = {
   nominalIntervalSeconds: 300,
   attribution: "Meter math ported from steipete/CodexBar (MIT)",
 };
+// Browser-mode stand-in for the Time tab: deterministic days (lighter at
+// weekends, agents two to four times your time), plus whatever this tab's
+// own tracker reported today. Never shown inside Tauri.
+const mockPresenceMinutes = new Set<number>();
+function mockScreenTime(params: ScreenTimeParams): UsageScreenTimeResult {
+  const shift = (day: string, delta: number) => {
+    const [year, month, date] = day.split("-").map(Number);
+    return new Date(Date.UTC(year, month - 1, date + delta)).toISOString().slice(0, 10);
+  };
+  const seed = (day: string) => { const n = [...day].reduce((hash, char) => hash * 31 + char.charCodeAt(0), 7) % 100_003; return Math.abs(Math.sin(n * 12.9898) * 43_758.5453) % 1; };
+  const days: UsageScreenTimeResult["days"] = [];
+  for (let day = params.sinceDay; day <= params.untilDay; day = shift(day, 1)) {
+    const weekday = new Date(`${day}T12:00:00Z`).getUTCDay();
+    const weekend = weekday === 0 || weekday === 6;
+    const humanMinutes = Math.round((weekend ? 40 : 150) + seed(day) * (weekend ? 60 : 180));
+    const agentMinutes = Math.round(humanMinutes * (2 + seed(`${day}a`) * 2));
+    days.push({ day, humanSeconds: humanMinutes * 60, agentSeconds: agentMinutes * 60 });
+  }
+  const today = days[days.length - 1];
+  if (today) today.humanSeconds += mockPresenceMinutes.size * 60;
+  const humanSeconds = days.reduce((sum, day) => sum + day.humanSeconds, 0);
+  const agentSeconds = days.reduce((sum, day) => sum + day.agentSeconds, 0);
+  return {
+    sinceDay: params.sinceDay,
+    untilDay: params.untilDay,
+    timeZone: params.timeZone ?? "UTC",
+    days,
+    allTime: { humanSeconds: humanSeconds + 212 * 3_600, agentSeconds: agentSeconds + 731 * 3_600, humanSinceDay: shift(params.untilDay, -79), agentSinceDay: shift(params.untilDay, -140) },
+    agentHistory: "complete",
+  };
+}
+
 // Browser-mode stand-in for the Insights tab: the shape a real run returns,
 // with figures that exercise every chart. Never shown inside Tauri.
 let mockInsights: UsageInsightsResult | null = null;
@@ -2500,6 +2533,16 @@ export const bridgeApi = {
   // comes back at once when `refresh` is false.
   usageInsights: (params: InsightsParams): Promise<UsageInsightsResult> =>
     hasBackend() ? call("usage/insights", params) : new Promise(resolve => setTimeout(() => resolve(mockUsageInsights(params)), params.refresh ? 900 : 0)),
+  /** Screen Time: the minutes you were active in this window. Recording one twice stores it once. */
+  recordPresence: (params: RecordPresenceParams): Promise<UsageRecordPresenceResult> => {
+    if (hasBackend()) return call("usage/record_presence", params);
+    const before = mockPresenceMinutes.size;
+    for (const minute of params.minutes) mockPresenceMinutes.add(minute);
+    return Promise.resolve({ recorded: mockPresenceMinutes.size - before });
+  },
+  /** Screen Time: your time and agent time per local day, and the all-time totals. */
+  screenTime: (params: ScreenTimeParams): Promise<UsageScreenTimeResult> =>
+    hasBackend() ? call("usage/screen_time", params) : Promise.resolve(mockScreenTime(params)),
   listUsagePriceOverrides: (): Promise<UsagePriceOverride[]> =>
     hasBackend() ? call("usage/list_price_overrides") : Promise.resolve(structuredClone(mockPriceOverrides)),
   setUsagePriceOverride: (params: SetPriceOverrideParams): Promise<UsagePriceOverride[]> => {

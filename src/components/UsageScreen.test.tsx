@@ -194,6 +194,19 @@ describe("UsageScreen", () => {
     expect(text()).toContain("$0.00");
   });
 
+  it("opens the Time tab with your time and agent time", async () => {
+    const screenTime = vi.spyOn(bridgeApi, "screenTime");
+    await mount();
+    expect(screenTime).not.toHaveBeenCalled();
+    click(container.querySelector('[role="radiogroup"][aria-label="View"] [role="radio"]:last-child')!);
+    await flush();
+    await flush();
+    expect(screenTime).toHaveBeenCalledTimes(1);
+    expect(text()).toContain("in Bridge today");
+    expect(text()).toContain("Your total time");
+    expect(container.querySelector('[aria-label="History sources"]')).toBeNull();
+  });
+
   it("saves a price override in micro-USD per million tokens", async () => {
     const set = vi.spyOn(bridgeApi, "setUsagePriceOverride").mockResolvedValue([{ model: "fable", inputMicrousdPerMtok: 3_000_000, outputMicrousdPerMtok: 15_000_000, cacheReadMicrousdPerMtok: null, cacheWriteMicrousdPerMtok: null, updatedAt: "2026-09-09T00:00:00Z" }]);
     await mount();
