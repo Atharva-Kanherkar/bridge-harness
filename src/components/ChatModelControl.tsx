@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
-import { Brain, Check, ChevronDown, LoaderCircle, RefreshCw, Search, Star } from "lucide-react";
+import { Check, ChevronDown, LoaderCircle, RefreshCw, Search, Star } from "lucide-react";
 import type { AdapterDescriptor, Harness, ModelOption } from "../types";
 import { harnessLabel } from "../utils";
 import { accountLabel, normalizeAccount, type AccountChoice } from "../providerAccounts";
@@ -563,7 +563,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
 
   // Picking restarts the provider session; said once, as a caption under the
   // thinking row, or under the list on a surface without one.
-  const switchNote = <p className="shrink-0 px-3 pb-2 pt-1 text-caption leading-4 text-faint">Switching restarts the provider session. History stays.</p>;
+  const switchNote = <p className="shrink-0 px-3.5 pb-3 pt-1 text-caption leading-4 text-faint">Switching restarts the provider session. History stays.</p>;
 
   const renderRow = (adapter: AdapterDescriptor, groupAccount: string | null, option: ModelOption, extra: { favoritesRow?: boolean; accountName?: string | null } = {}) => {
     const selected = adapter.id === activeHarness && groupAccount === activeAccount && (option.id ? option.id === activeModel : !activeModel);
@@ -578,7 +578,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
         data-model-row="" data-favorite-row={extra.favoritesRow ? "" : undefined}
         onClick={() => pickModel(adapter.id as Harness, option.id || null, groupAccount)}
         className={cn(
-          "flex h-8 w-full items-center gap-1.5 rounded-md pl-1.5 text-left text-ui outline-none transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-40",
+          "flex h-8 w-full items-center gap-2.5 rounded-md pl-1.5 text-left text-ui outline-none transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-40",
           favorite ? "pr-9" : "pr-2",
           // Selected and hover never share a ground: the chat's own model is
           // the selection color, a row under the pointer only a faint wash.
@@ -626,7 +626,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
             thinking, then speed and access. The strip comes first in the
             document so Tab reaches it before the search box; `order` draws it
             under the search. */}
-        <div role="toolbar" aria-label="Harnesses" aria-orientation="horizontal" data-picker-zone="rail" className="order-2 flex h-10 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border px-2">
+        <div role="toolbar" aria-label="Harnesses" aria-orientation="horizontal" data-picker-zone="rail" className="order-2 flex h-11 shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border px-3">
           {railItems.map(item => {
             const lit = item.section === railSection;
             return <button
@@ -634,7 +634,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
               tabIndex={item.section === railTabStop ? 0 : -1}
               aria-label={item.label} aria-current={lit || undefined} title={item.title}
               onClick={() => jumpTo(item.section)}
-              className={cn("relative grid size-7 shrink-0 place-items-center rounded-md outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring", lit ? "bg-accent" : "hover:bg-accent/50", item.dim && "opacity-40")}
+              className={cn("relative grid size-8 shrink-0 place-items-center rounded-md outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring", lit ? "bg-accent" : "hover:bg-accent/50", item.dim && "opacity-40")}
             >
               {lit && <span aria-hidden="true" className="absolute -bottom-1.5 h-0.5 w-4 rounded-full bg-foreground" />}
               {item.icon}
@@ -642,7 +642,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
           })}
         </div>
         <div data-picker-zone="models" className="contents">
-          <div className="order-1 flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
+          <div className="order-1 flex h-11 shrink-0 items-center gap-2.5 border-b border-border pl-3.5 pr-2.5">
             <Search size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
             <input
               ref={searchRef}
@@ -662,13 +662,13 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
             </button>}
           </div>
           {refreshError && <p role="alert" className="order-2 px-3 py-2 text-xs text-destructive">{refreshError}</p>}
-          <div ref={listRef} onScroll={onListScroll} role="listbox" aria-label={`${roleLabel} models`} aria-busy={switchInFlight || showAwaiting || undefined} className={cn("relative order-3 min-h-0 flex-1 overflow-y-auto px-1.5 pb-1.5", tight && "min-h-24 shrink-0", switchInFlight && "cursor-progress")}>
+          <div ref={listRef} onScroll={onListScroll} role="listbox" aria-label={`${roleLabel} models`} aria-busy={switchInFlight || showAwaiting || undefined} className={cn("relative order-3 min-h-0 flex-1 overflow-y-auto px-2 pb-2", tight && "min-h-24 shrink-0", switchInFlight && "cursor-progress")}>
                 {showAwaiting
                   ? <SkeletonRows label="Loading models…" rows={4} meta={false} framed={false} className="divide-y-0" rowClassName="min-h-8 px-2 py-1.5" />
                   : <>
                     {showFavorites && <div role="group" aria-label="Favorites" data-section={FAVORITES_SECTION}>
                       <div className={GROUP_HEADER}>
-                        <Star size={11} aria-hidden="true" className="fill-current text-muted-foreground opacity-70" />
+                        <span aria-hidden="true" className="grid size-4 shrink-0 place-items-center"><Star size={12} className="fill-current text-muted-foreground opacity-70" /></span>
                         <span className="text-caption font-medium text-muted-foreground">Favorites</span>
                       </div>
                       {favoriteRows.map(row => renderRow(row.adapter, row.groupAccount, row.option, { favoritesRow: true, accountName: row.accountName }))}
@@ -683,7 +683,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
                             the models beneath it. An unavailable harness is
                             dimmed and flagged, its rows shown but greyed. */}
                         <div className={cn(GROUP_HEADER, (index > 0 || showFavorites) && "mt-1")}>
-                          <HarnessMark harness={adapter.id} size={11} className={cn("opacity-70", !adapter.available && "opacity-30")} />
+                          <span aria-hidden="true" className="grid size-4 shrink-0 place-items-center"><HarnessMark harness={adapter.id} size={12} className={cn("opacity-70", !adapter.available && "opacity-30")} /></span>
                           <span className="min-w-0 flex-1 truncate text-caption font-medium text-muted-foreground">{label}</span>
                           {adapter.capabilities.includes("reasoning") && <span className="shrink-0 rounded-full border border-border px-1.5 py-0.5 font-mono text-caption font-medium text-muted-foreground">thinking</span>}
                           {!adapter.available && <span className="shrink-0 text-caption text-muted-foreground">unavailable</span>}
@@ -698,25 +698,24 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
         {/* Thinking: one full-width row under the list, in the user's chosen
             style, so a model can be picked and its effort set in one open. */}
         {effortSurface && <div data-picker-zone="thinking" className="order-4 flex shrink-0 flex-col border-t border-border">
-          <div className="flex h-8 shrink-0 items-center gap-1.5 px-3 text-caption text-muted-foreground">
-            <Brain size={13} className="shrink-0" aria-hidden="true" />
-            <span className="shrink-0 font-medium">Thinking effort</span>
+          <div className="flex h-10 shrink-0 items-center gap-3 px-3.5 text-meta text-muted-foreground">
+            <span className="shrink-0 text-ui font-medium text-foreground">Thinking effort</span>
             {/* What the level means; the control alone only says where it sits. */}
             {!showAwaiting && showEffort && effortStyle !== "list" && <span className="ml-auto min-w-0 truncate">{effortIndex(effortLevels, effortValue) >= 0 ? effortMeaning(effortValue!) : "The provider's own default."}</span>}
             {!showAwaiting && showEffort && effortStyle === "list" && <span className="ml-auto shrink-0 text-faint">1–{Math.min(9, effortLevels.length)} jumps to a level</span>}
           </div>
           {showAwaiting ? null : showEffort
             ? effortStyle === "list"
-              ? <div data-testid="effort-control" className="max-h-36 overflow-y-auto px-1.5 pb-1"><EffortList {...effortProps} /></div>
-              : <div data-testid="effort-control" className="h-[72px] shrink-0 px-3 pb-2 pt-1 [contain:layout]">
+              ? <div data-testid="effort-control" className="max-h-36 overflow-y-auto px-2 pb-1"><EffortList {...effortProps} /></div>
+              : <div data-testid="effort-control" className="h-[72px] shrink-0 px-3.5 pb-2 pt-1 [contain:layout]">
                   {effortStyle === "sentence" ? <EffortSentence {...effortProps} /> : <EffortSlider {...effortProps} />}
                 </div>
-            : <p className="px-3 pb-1 text-meta leading-5 text-muted-foreground">No thinking control for this model.</p>}
+            : <p className="px-3.5 pb-1 text-meta leading-5 text-muted-foreground">No thinking control for this model.</p>}
           {switchNote}
         </div>}
         {/* Footer: speed where the model has a faster tier, and the access
             mode. They wrap rather than overlap when both are wide. */}
-        {(speedControl || accessControl) && <div data-picker-zone="footer" className="order-5 flex min-h-11 shrink-0 flex-wrap items-center gap-2 border-t border-border px-2.5 py-1.5">
+        {(speedControl || accessControl) && <div data-picker-zone="footer" className="order-5 flex min-h-11 shrink-0 flex-wrap items-center gap-3 border-t border-border px-3 py-2">
           {speedControl}
           {accessControl && <div className="ml-auto flex shrink-0 items-center">{accessControl}</div>}
         </div>}
@@ -731,7 +730,7 @@ const FAVORITES_SECTION = "@favorites";
 
 /** A section label that stays at the top of the list while its models scroll
  *  under it, with its badges kept to the right and never squeezed together. */
-const GROUP_HEADER = "sticky top-0 z-10 flex h-7 items-center gap-1.5 bg-popover px-2";
+const GROUP_HEADER = "sticky top-0 z-10 flex h-8 items-center gap-2.5 bg-popover pl-1.5 pr-2";
 
 /** Moves focus to the next (or previous) tab stop inside the picker, wrapping
  *  at either end. Rows, rail marks and slider ticks carry tabindex -1, so the
