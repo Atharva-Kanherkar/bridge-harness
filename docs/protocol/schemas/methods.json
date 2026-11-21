@@ -1647,6 +1647,20 @@
       "resultSchema": "usage-insights-result.json"
     },
     {
+      "command": "record_presence",
+      "domain": "usage",
+      "method": "usage/record_presence",
+      "paramsSchema": "record-presence-params.json",
+      "resultSchema": "usage-record-presence-result.json"
+    },
+    {
+      "command": "screen_time",
+      "domain": "usage",
+      "method": "usage/screen_time",
+      "paramsSchema": "screen-time-params.json",
+      "resultSchema": "usage-screen-time-result.json"
+    },
+    {
       "command": "get_meter_snapshot",
       "domain": "meter",
       "method": "meter/get_meter_snapshot",
@@ -2454,7 +2468,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 46
+    "minor": 47
   },
   "reserved": {
     "cancel": "$/cancel",

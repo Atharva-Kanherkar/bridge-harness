@@ -205,6 +205,7 @@ pub mod verification_pipeline;
 pub mod voice;
 pub mod usage;
 pub mod usage_pricing;
+pub mod screen_time;
 pub mod usage_insights;
 pub mod usage_summary;
 mod usage_dashboard;

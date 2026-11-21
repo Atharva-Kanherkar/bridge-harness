@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 87;
+const LATEST_SCHEMA_VERSION: i64 = 88;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -810,6 +810,10 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // Claude rows the per-turn fix of migration 54 still wrote as
             // session running totals, made per-turn.
             87 => migration_87_claude_running_total_repair(&transaction)?,
+            // Screen Time: minutes you spent in Bridge and minutes your chats
+            // worked, with a trigger for new entries and a resumable cursor
+            // for the ones before it. See `screen_time`.
+            88 => crate::screen_time::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"

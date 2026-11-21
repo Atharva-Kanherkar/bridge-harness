@@ -5328,6 +5328,30 @@ pub fn usage_insights(
     crate::usage_insights::insights(core, params)
 }
 
+/// Screen Time: stores the minutes the person was active in a Bridge window.
+pub fn usage_record_presence(
+    core: &Arc<BridgeCore>,
+    params: &wire::RecordPresenceParams,
+) -> Result<wire::UsageRecordPresenceResult, BridgeError> {
+    let now_minute = chrono::Utc::now().timestamp().div_euclid(60);
+    let recorded = crate::screen_time::record_presence(&lock_db(core), &params.minutes, now_minute)?;
+    Ok(wire::UsageRecordPresenceResult { recorded })
+}
+
+/// Screen Time: your time and agent time per local day, plus all-time totals.
+/// The first ask also starts counting agent time from before Screen Time
+/// existed, off the core mutex; the result says `counting` until it is done.
+pub fn usage_screen_time(
+    core: &Arc<BridgeCore>,
+    params: &wire::ScreenTimeParams,
+) -> Result<wire::UsageScreenTimeResult, BridgeError> {
+    let result = crate::screen_time::screen_time(&lock_db(core), params)?;
+    if result.agent_history == wire::ScreenTimeAgentHistory::Counting {
+        crate::screen_time::ensure_backfill(core);
+    }
+    Ok(result)
+}
+
 pub fn list_usage_price_overrides(
     core: &Arc<BridgeCore>,
 ) -> Result<Vec<usage_pricing::PriceOverride>, BridgeError> {
@@ -5549,7 +5573,7 @@ pub fn resume_limit_recovery(core: &Arc<BridgeCore>, session_id: &str) -> Result
     crate::limit_recovery::status(&lock_db(core), session_id)
 }
 
-/// The store lock for the limit-recovery methods, through a poisoned mutex.
+/// The store lock, through a poisoned mutex.
 fn lock_db(core: &Arc<BridgeCore>) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
     core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }

@@ -455,6 +455,8 @@ typed_methods![
     (ListHistorySources, _, ListHistorySourcesResult),
     (ScanHistory, ScanHistoryParams, ScanHistoryResult),
     (UsageInsights, InsightsParams, UsageInsightsResult),
+    (UsageRecordPresence, RecordPresenceParams, UsageRecordPresenceResult),
+    (UsageScreenTime, ScreenTimeParams, UsageScreenTimeResult),
     (GetMeterSnapshot, _, MeterRegistry),
     (RefreshMeter, _, UnitResult),
     (SaveOpencodeUsageSession, SaveOpencodeUsageSessionParams, UnitResult),
