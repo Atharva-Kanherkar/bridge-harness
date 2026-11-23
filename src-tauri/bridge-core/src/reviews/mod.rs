@@ -7,6 +7,7 @@
 //! and `steps` for the work a job does.
 
 pub mod contract;
+pub mod post;
 pub mod prepare;
 pub mod runner;
 pub mod session;
