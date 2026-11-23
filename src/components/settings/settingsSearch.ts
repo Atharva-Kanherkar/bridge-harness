@@ -64,6 +64,7 @@ export const SETTINGS_ROWS: RegistryRow[] = [
   { page: "chatDefaults", id: "limit-recovery", label: "When a usage limit stops a chat", description: "Resume automatically when the limit resets, or switch to a backup model" },
 
   { page: "codingAgents", id: "installed-agents", label: "Installed coding agents", description: "Coding agents Bridge can start right now, and ones it can install" },
+  { page: "codingAgents", id: "early-compaction", label: "Early compaction", description: "Smaller context for an idle Claude or Codex chat, off by default" },
 
   { page: "models", id: "model-catalog", label: "Available models", description: "Provider model catalogs and their freshness, for chats, background tasks and verification" },
 

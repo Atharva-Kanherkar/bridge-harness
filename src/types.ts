@@ -233,6 +233,10 @@ export type {
 } from "./protocol/generated/protocol";
 
 export type {
+  EarlyCompactionSettingsView as EarlyCompactionSettings,
+} from "./protocol/generated/protocol";
+
+export type {
   HarnessId as Harness,
   Effort as ReasoningEffort,
   CheckRun as CompletionCheckRun,

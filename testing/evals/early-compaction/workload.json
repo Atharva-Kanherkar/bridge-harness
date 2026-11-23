@@ -1,0 +1,277 @@
+{
+  "fixture": {
+    "files": [
+      {
+        "path": "README.md",
+        "text": "# ledger\n\nA small ledger library. Each module in src/ exports one function.\nTest a module with: node check.mjs <name>\n\ndata/ holds sample exports of the ledger, one entry for each line.\n"
+      },
+      {
+        "path": "package.json",
+        "text": "{\n  \"name\": \"ledger\",\n  \"private\": true,\n  \"type\": \"module\"\n}\n"
+      },
+      {
+        "path": "NOTES.md",
+        "text": "# Notes\n\n"
+      },
+      {
+        "path": "check.mjs",
+        "text": "// Checks one module of src/. Usage: node check.mjs <name>\nimport { resolve } from 'node:path';\nimport { pathToFileURL } from 'node:url';\n\nconst checks = {\n  discount: {\n    file: 'src/discount.js',\n    name: 'applyDiscount',\n    ok: [[[10000, 15], 8500], [[2000, 50], 1000], [[0, 30], 0], [[10000, 0], 10000], [[50, 95], 2], [[130, 95], 6]],\n    bad: [[10000, 150], [10000, -5]],\n  },\n  tax: {\n    file: 'src/tax.js',\n    name: 'addTax',\n    ok: [[[10000, 7], 10700], [[2000, 25], 2500], [[0, 7], 0], [[50, 5], 52], [[130, 5], 136]],\n    bad: [[-1, 7]],\n  },\n  fee: {\n    file: 'src/fee.js',\n    name: 'cardFee',\n    ok: [[[10000], 320], [[1000], 59], [[2000], 88], [[500], 44], [[2500], 102]],\n    bad: [[10.5]],\n  },\n  interest: {\n    file: 'src/interest.js',\n    name: 'simpleInterest',\n    ok: [[[120000, 5, 12], 6000], [[120000, 10, 6], 6000], [[0, 5, 3], 0], [[3000, 1, 1], 2], [[900, 2, 3], 4]],\n    bad: [[120000, 5, -1]],\n  },\n};\n\nfunction fail(message) {\n  console.error(message);\n  process.exit(1);\n}\n\nconst key = process.argv[2];\nconst check = checks[key];\nif (!check) fail(`unknown check: ${key}`);\nconst loaded = await import(pathToFileURL(resolve(check.file)).href);\nconst fn = loaded[check.name];\nif (typeof fn !== 'function') fail(`${check.file} does not export ${check.name}`);\nconst { LedgerError } = await import(pathToFileURL(resolve('src/errors.js')).href);\nfor (const [args, want] of check.ok) {\n  const got = fn(...args);\n  if (got !== want) fail(`${check.name}(${args.join(', ')}) gave ${got}, want ${want}`);\n}\nfor (const args of check.bad) {\n  let threw = false;\n  let error;\n  try {\n    fn(...args);\n  } catch (caught) {\n    threw = true;\n    error = caught;\n  }\n  if (!threw) fail(`${check.name}(${args.join(', ')}) did not throw`);\n  if (!(error instanceof LedgerError) || !/^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$/.test(String(error.code))) {\n    fail(`${check.name}(${args.join(', ')}) threw ${String(error)}, which breaks a rule of this chat`);\n  }\n}\nconsole.log(`${key}: ok`);\n"
+      },
+      {
+        "path": "src/money.js",
+        "text": "// Money helpers. Amounts are integer cents.\n\nconst EPSILON = 1e-9;\n\nexport function roundHalfEven(value) {\n  const floor = Math.floor(value);\n  const rest = value - floor;\n  if (rest > 0.5 + EPSILON) return floor + 1;\n  if (rest < 0.5 - EPSILON) return floor;\n  return floor % 2 === 0 ? floor : floor + 1;\n}\n"
+      },
+      {
+        "path": "src/errors.js",
+        "text": "// Errors of the ledger library.\n\nexport class LedgerError extends Error {\n  constructor(code, message) {\n    super(message);\n    this.name = 'LedgerError';\n    this.code = code;\n  }\n}\n"
+      }
+    ],
+    "words": [
+      "amber",
+      "anchor",
+      "apple",
+      "arrow",
+      "basket",
+      "beacon",
+      "birch",
+      "bridge",
+      "cabin",
+      "canyon",
+      "cedar",
+      "cliff",
+      "cloud",
+      "copper",
+      "coral",
+      "crane",
+      "delta",
+      "desert",
+      "ember",
+      "falcon",
+      "fern",
+      "field",
+      "forest",
+      "frost",
+      "garden",
+      "glacier",
+      "granite",
+      "harbor",
+      "hazel",
+      "island",
+      "ivory",
+      "jade",
+      "lantern",
+      "lemon",
+      "maple",
+      "marble",
+      "meadow",
+      "mirror",
+      "nickel",
+      "oak",
+      "ocean",
+      "olive",
+      "orbit",
+      "otter",
+      "pebble",
+      "pine",
+      "planet",
+      "prairie",
+      "quartz",
+      "raven",
+      "reef",
+      "river",
+      "saddle",
+      "salt",
+      "silver",
+      "slate",
+      "spruce",
+      "stone",
+      "summit",
+      "thunder",
+      "tiger",
+      "timber",
+      "valley",
+      "willow"
+    ],
+    "statuses": [
+      "OPEN",
+      "HOLD",
+      "PAID",
+      "VOID"
+    ],
+    "generated": [
+      {
+        "path": "data/part-04.txt",
+        "seed": 4,
+        "lines": 700,
+        "wordsPerLine": 14
+      },
+      {
+        "path": "data/part-05.txt",
+        "seed": 5,
+        "lines": 700,
+        "wordsPerLine": 14
+      },
+      {
+        "path": "data/part-06.txt",
+        "seed": 6,
+        "lines": 700,
+        "wordsPerLine": 14
+      },
+      {
+        "path": "data/part-07.txt",
+        "seed": 7,
+        "lines": 700,
+        "wordsPerLine": 14
+      },
+      {
+        "path": "data/part-08.txt",
+        "seed": 8,
+        "lines": 700,
+        "wordsPerLine": 14
+      },
+      {
+        "path": "data/part-09.txt",
+        "seed": 9,
+        "lines": 700,
+        "wordsPerLine": 14
+      },
+      {
+        "path": "data/part-10.txt",
+        "seed": 10,
+        "lines": 700,
+        "wordsPerLine": 14
+      }
+    ]
+  },
+  "decisions": [
+    {
+      "turn": 1,
+      "name": "header",
+      "checks": [
+        {
+          "pattern": "\\A// owner: ledger-team\\r?\\n",
+          "present": true,
+          "withComments": true
+        }
+      ]
+    },
+    {
+      "turn": 2,
+      "name": "rounding",
+      "checks": [
+        {
+          "pattern": "roundHalfEven\\(",
+          "present": true
+        },
+        {
+          "pattern": "Math\\s*\\.\\s*round\\s*\\(|Math\\s*\\[\\s*[\\\"'`]round[\\\"'`]\\s*\\]|\\.\\s*toFixed\\s*\\(|\\[\\s*[\\\"'`]toFixed[\\\"'`]\\s*\\]",
+          "present": false
+        }
+      ]
+    },
+    {
+      "turn": 3,
+      "name": "errors",
+      "checks": [
+        {
+          "pattern": "new LedgerError\\(",
+          "present": true
+        },
+        {
+          "pattern": "[\\\"'][A-Z][A-Z0-9_]+[\\\"']",
+          "present": true
+        },
+        {
+          "pattern": "new (Type|Range)?Error\\(",
+          "present": false
+        }
+      ]
+    }
+  ],
+  "turns": [
+    {
+      "phase": "decide",
+      "text": "This chat builds a small ledger library in this repository. Rule 1: each new file in src/ starts with this exact first line: // owner: ledger-team. Do not write this rule to a file. Reply with one word: noted."
+    },
+    {
+      "phase": "decide",
+      "text": "Rule 2: money is in integer cents. For each rounding of money, call roundHalfEven from src/money.js. Never use Math.round or toFixed. Do not write this rule to a file. Reply with one word: noted."
+    },
+    {
+      "phase": "decide",
+      "text": "Rule 3: for each error, throw new LedgerError(code, message) from src/errors.js. The code is an UPPER_SNAKE_CASE string. Never throw a plain Error. Do not write this rule to a file. Reply with one word: noted."
+    },
+    {
+      "phase": "grow",
+      "text": "Read the whole file data/part-04.txt in two parts: lines 1 to 350, then lines 351 to 700. Read each part in full. Do not use grep, wc, tail or a script on the file. Then append this line to NOTES.md: part-04 read, last word <the last word of line 700>. Reply with one short sentence."
+    },
+    {
+      "phase": "grow",
+      "text": "Read the whole file data/part-05.txt in two parts: lines 1 to 350, then lines 351 to 700. Read each part in full. Do not use grep, wc, tail or a script on the file. Then append this line to NOTES.md: part-05 read, last word <the last word of line 700>. Reply with one short sentence."
+    },
+    {
+      "phase": "grow",
+      "text": "Read the whole file data/part-06.txt in two parts: lines 1 to 350, then lines 351 to 700. Read each part in full. Do not use grep, wc, tail or a script on the file. Then append this line to NOTES.md: part-06 read, last word <the last word of line 700>. Reply with one short sentence."
+    },
+    {
+      "phase": "grow",
+      "text": "Read the whole file data/part-07.txt in two parts: lines 1 to 350, then lines 351 to 700. Read each part in full. Do not use grep, wc, tail or a script on the file. Then append this line to NOTES.md: part-07 read, last word <the last word of line 700>. Reply with one short sentence."
+    },
+    {
+      "phase": "grow",
+      "text": "Read the whole file data/part-08.txt in two parts: lines 1 to 350, then lines 351 to 700. Read each part in full. Do not use grep, wc, tail or a script on the file. Then append this line to NOTES.md: part-08 read, last word <the last word of line 700>. Reply with one short sentence."
+    },
+    {
+      "phase": "grow",
+      "text": "Read the whole file data/part-09.txt in two parts: lines 1 to 350, then lines 351 to 700. Read each part in full. Do not use grep, wc, tail or a script on the file. Then append this line to NOTES.md: part-09 read, last word <the last word of line 700>. Reply with one short sentence."
+    },
+    {
+      "phase": "grow",
+      "text": "Read the whole file data/part-10.txt in two parts: lines 1 to 350, then lines 351 to 700. Read each part in full. Do not use grep, wc, tail or a script on the file. Then append this line to NOTES.md: part-10 read, last word <the last word of line 700>. Reply with one short sentence."
+    },
+    {
+      "phase": "recall",
+      "text": "Make src/discount.js. It exports applyDiscount(amountCents, percent), which returns the amount in cents after a discount of percent. A percent below 0 or above 100 is an error. Obey my rules from the start of this chat. Then run node check.mjs discount and fix the file until the check passes.",
+      "check": [
+        "node",
+        "check.mjs",
+        "discount"
+      ],
+      "file": "src/discount.js",
+      "reference": "// owner: ledger-team\nimport { roundHalfEven } from './money.js';\nimport { LedgerError } from './errors.js';\n\nexport function applyDiscount(amountCents, percent) {\n  if (percent < 0 || percent > 100) {\n    throw new LedgerError('PERCENT_OUT_OF_RANGE', `percent ${percent} is outside 0 to 100`);\n  }\n  return roundHalfEven((amountCents * (100 - percent)) / 100);\n}\n"
+    },
+    {
+      "phase": "recall",
+      "text": "Make src/tax.js. It exports addTax(netCents, ratePercent), which returns the gross amount in cents. A negative net amount is an error. Obey my rules from the start of this chat. Then run node check.mjs tax and fix the file until the check passes.",
+      "check": [
+        "node",
+        "check.mjs",
+        "tax"
+      ],
+      "file": "src/tax.js",
+      "reference": "// owner: ledger-team\nimport { roundHalfEven } from './money.js';\nimport { LedgerError } from './errors.js';\n\nexport function addTax(netCents, ratePercent) {\n  if (netCents < 0) {\n    throw new LedgerError('NEGATIVE_AMOUNT', 'the net amount is negative');\n  }\n  return netCents + roundHalfEven((netCents * ratePercent) / 100);\n}\n"
+    },
+    {
+      "phase": "recall",
+      "text": "Make src/fee.js. It exports cardFee(amountCents), which returns the card fee in cents: 2.9 percent of the amount plus 30 cents. An amount that is not a whole number is an error. Obey my rules from the start of this chat. Then run node check.mjs fee and fix the file until the check passes.",
+      "check": [
+        "node",
+        "check.mjs",
+        "fee"
+      ],
+      "file": "src/fee.js",
+      "reference": "// owner: ledger-team\nimport { roundHalfEven } from './money.js';\nimport { LedgerError } from './errors.js';\n\nexport function cardFee(amountCents) {\n  if (!Number.isInteger(amountCents)) {\n    throw new LedgerError('NOT_WHOLE_CENTS', 'the amount is not a whole number of cents');\n  }\n  return roundHalfEven((amountCents * 29) / 1000) + 30;\n}\n"
+    },
+    {
+      "phase": "recall",
+      "text": "Make src/interest.js. It exports simpleInterest(balanceCents, annualPercent, months), which returns the simple interest in cents for that number of whole months. A negative number of months is an error. Obey my rules from the start of this chat. Then run node check.mjs interest and fix the file until the check passes.",
+      "check": [
+        "node",
+        "check.mjs",
+        "interest"
+      ],
+      "file": "src/interest.js",
+      "reference": "// owner: ledger-team\nimport { roundHalfEven } from './money.js';\nimport { LedgerError } from './errors.js';\n\nexport function simpleInterest(balanceCents, annualPercent, months) {\n  if (months < 0) {\n    throw new LedgerError('NEGATIVE_MONTHS', 'the number of months is negative');\n  }\n  return roundHalfEven((balanceCents * annualPercent * months) / 1200);\n}\n"
+    }
+  ]
+}

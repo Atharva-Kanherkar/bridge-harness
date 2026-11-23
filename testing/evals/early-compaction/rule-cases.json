@@ -1,0 +1,470 @@
+{
+  "start": "2026-11-20T10:00:00Z",
+  "cases": [
+    {
+      "name": "codex fires once after the idle delay",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 10}, {"sweep": "too_soon"},
+        {"advance": 10}, {"sweep": "fire"},
+        {"advance": 2}, {"sweep": "none"},
+        {"turnStart": "turn-c"}, "boundary", {"turnEnd": {}},
+        {"advance": 30}, {"sweep": "none"}
+      ]
+    },
+    {
+      "name": "claude fires on the reading after the turn end",
+      "harness": "claude",
+      "steps": [
+        {"turnStart": "turn-1"}, {"turnEnd": {}},
+        {"advance": 1}, {"reading": {"used": 150000}},
+        {"advance": 19}, {"sweep": "fire"},
+        {"advance": 2}, "boundary", {"turnEnd": {}},
+        {"advance": 30}, {"sweep": "none"}
+      ]
+    },
+    {
+      "name": "a claude reading from before the turn end waits as no_reading",
+      "harness": "claude",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}},
+        {"advance": 5}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "no_reading"},
+        {"advance": 2}, {"sweep": "no_reading"},
+        {"reading": {"used": 150000}},
+        {"advance": 2}, {"sweep": "fire"}
+      ]
+    },
+    {
+      "name": "a chat with no reading waits until the warm limit, then goes cold",
+      "harness": "claude",
+      "steps": [
+        {"turnStart": "turn-1"}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "no_reading"},
+        {"advance": 80}, {"sweep": "no_reading"},
+        {"advance": 1}, {"sweep": "cache_cold"},
+        {"advance": 2}, {"sweep": "none"}
+      ]
+    },
+    {
+      "name": "a window below the threshold drops the mark",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 99999}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "below_threshold"},
+        {"advance": 2}, {"sweep": "none"}
+      ]
+    },
+    {
+      "name": "a window at the threshold fires",
+      "harness": "claude",
+      "steps": [
+        {"turnStart": "turn-1"}, {"turnEnd": {}},
+        {"reading": {"used": 100000}},
+        {"advance": 20}, {"sweep": "fire"}
+      ]
+    },
+    {
+      "name": "a sweep at the warm limit still fires",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 100}, {"sweep": "fire"}
+      ]
+    },
+    {
+      "name": "a mark past the warm limit is cache_cold",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 101}, {"sweep": "cache_cold"},
+        {"sweep": "none"}
+      ]
+    },
+    {
+      "name": "an open approval waits, then the chat fires",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"state": {"approval": "present"}},
+        {"advance": 20}, {"sweep": "approval_open"},
+        {"state": {"approval": "clear"}},
+        {"advance": 2}, {"sweep": "fire"}
+      ]
+    },
+    {
+      "name": "an open tool waits, then the chat fires",
+      "harness": "claude",
+      "steps": [
+        {"turnStart": "turn-1"}, {"turnEnd": {}}, {"advance": 1}, {"reading": {"used": 150000}},
+        {"state": {"tool": "present"}},
+        {"advance": 19}, {"sweep": "tool_open"},
+        {"state": {"tool": "clear"}},
+        {"advance": 2}, {"sweep": "fire"}
+      ]
+    },
+    {
+      "name": "live children wait, then the chat fires",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"state": {"children": "present"}},
+        {"advance": 20}, {"sweep": "children_live"},
+        {"advance": 30}, {"sweep": "children_live"},
+        {"state": {"children": "clear"}},
+        {"advance": 2}, {"sweep": "fire"}
+      ]
+    },
+    {
+      "name": "queued input waits, then the chat fires",
+      "harness": "claude",
+      "steps": [
+        {"turnStart": "turn-1"}, {"turnEnd": {}}, {"advance": 1}, {"reading": {"used": 150000}},
+        {"state": {"queue": "present"}},
+        {"advance": 19}, {"sweep": "queued_input"},
+        {"state": {"queue": "clear"}},
+        {"advance": 2}, {"sweep": "fire"}
+      ]
+    },
+    {
+      "name": "an unknown state waits until the warm limit, then goes cold",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"state": {"tool": "unknown"}},
+        {"advance": 20}, {"sweep": "state_unknown"},
+        {"advance": 80}, {"sweep": "state_unknown"},
+        {"advance": 1}, {"sweep": "cache_cold"}
+      ]
+    },
+    {
+      "name": "a busy status keeps the mark",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"state": {"status": "checkpointing"}},
+        {"advance": 20}, {"sweep": "turn_active"},
+        {"state": {"status": "ready"}},
+        {"advance": 2}, {"sweep": "fire"}
+      ]
+    },
+    {
+      "name": "a new turn keeps the mark, and its end replaces the mark",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 10}, {"turnStart": "turn-2"},
+        {"advance": 10}, {"sweep": "turn_active"},
+        {"reading": {"used": 160000}}, {"turnEnd": {}},
+        {"advance": 10}, {"sweep": "too_soon"},
+        {"advance": 10}, {"sweep": "fire"}
+      ]
+    },
+    {
+      "name": "the switch turned off drops the mark and makes no new mark",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"state": {"switch": false}},
+        {"advance": 20}, {"sweep": "disabled"},
+        {"sweep": "none"},
+        {"turnStart": "turn-2"}, {"reading": {"used": 160000}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "none"}
+      ]
+    },
+    {
+      "name": "an opted out chat drops the mark",
+      "harness": "claude",
+      "steps": [
+        {"turnStart": "turn-1"}, {"turnEnd": {}}, {"advance": 1}, {"reading": {"used": 150000}},
+        {"state": {"optedOut": true}},
+        {"advance": 19}, {"sweep": "opted_out"},
+        {"sweep": "none"}
+      ]
+    },
+    {
+      "name": "an opencode mark is harness_not_allowed",
+      "harness": "opencode",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "harness_not_allowed"}
+      ]
+    },
+    {
+      "name": "the rule refuses the mark of an orchestrator",
+      "harness": "claude",
+      "kind": "orchestrator",
+      "steps": [
+        {"turnStart": "turn-1"}, {"turnEnd": {}}, {"advance": 1}, {"reading": {"used": 150000}},
+        {"advance": 19}, {"sweep": "not_direct"}
+      ]
+    },
+    {
+      "name": "the rule refuses the mark of a worker",
+      "harness": "codex",
+      "kind": "orchestrator",
+      "parent": "orchestrator-1",
+      "depth": 1,
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "not_direct"}
+      ]
+    },
+    {
+      "name": "the rule refuses the mark of a workflow session",
+      "harness": "claude",
+      "kind": "workflow",
+      "steps": [
+        {"turnStart": "turn-1"}, {"turnEnd": {}}, {"advance": 1}, {"reading": {"used": 150000}},
+        {"advance": 19}, {"sweep": "not_direct"}
+      ]
+    },
+    {
+      "name": "the rule refuses the mark of a direct chat with a parent",
+      "harness": "codex",
+      "parent": "chat-0",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "has_parent"}
+      ]
+    },
+    {
+      "name": "a runtime with no compaction command drops the mark",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"state": {"support": "unsupported"}},
+        {"advance": 20}, {"sweep": "unsupported"}
+      ]
+    },
+    {
+      "name": "a released process drops the mark",
+      "harness": "claude",
+      "steps": [
+        {"turnStart": "turn-1"}, {"turnEnd": {}}, {"advance": 1}, {"reading": {"used": 150000}},
+        {"state": {"runtime": false}},
+        {"advance": 19}, {"sweep": "no_runtime"}
+      ]
+    },
+    {
+      "name": "a native resume in the idle delay is launch_mismatch",
+      "harness": "claude",
+      "steps": [
+        {"turnStart": "turn-1"}, {"turnEnd": {}}, {"advance": 1}, {"reading": {"used": 150000}},
+        {"advance": 5}, {"relaunch": {}},
+        {"advance": 14}, {"sweep": "launch_mismatch"}
+      ]
+    },
+    {
+      "name": "a relaunch on a new thread is launch_mismatch",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 5}, {"relaunch": {"thread": "thread-2"}},
+        {"advance": 15}, {"sweep": "launch_mismatch"}
+      ]
+    },
+    {
+      "name": "a mark with no launch is launch_mismatch",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {"noLaunch": true}},
+        {"advance": 20}, {"sweep": "launch_mismatch"}
+      ]
+    },
+    {
+      "name": "a model switch in the idle delay is reading_mismatch",
+      "harness": "claude",
+      "steps": [
+        {"turnStart": "turn-1"}, {"turnEnd": {}}, {"advance": 1}, {"reading": {"used": 150000}},
+        {"state": {"model": "claude-sonnet-5-5"}},
+        {"advance": 19}, {"sweep": "reading_mismatch"}
+      ]
+    },
+    {
+      "name": "a codex reading of another turn after the turn end is reading_mismatch",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"turnEnd": {}},
+        {"advance": 1}, {"reading": {"used": 150000, "turn": "turn-9"}},
+        {"advance": 19}, {"sweep": "reading_mismatch"}
+      ]
+    },
+    {
+      "name": "a codex reading of an older turn from before the turn end is no_reading",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000, "turn": "turn-0"}},
+        {"advance": 1}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "no_reading"}
+      ]
+    },
+    {
+      "name": "a reading of another thread is reading_mismatch",
+      "harness": "claude",
+      "steps": [
+        {"turnStart": "turn-1"}, {"turnEnd": {}},
+        {"advance": 1}, {"reading": {"used": 150000, "thread": "thread-0"}},
+        {"advance": 19}, {"sweep": "reading_mismatch"}
+      ]
+    },
+    {
+      "name": "a claude reading with a turn id is reading_mismatch",
+      "harness": "claude",
+      "steps": [
+        {"turnStart": "turn-1"}, {"turnEnd": {}},
+        {"advance": 1}, {"reading": {"used": 150000, "turn": "turn-1"}},
+        {"advance": 19}, {"sweep": "reading_mismatch"}
+      ]
+    },
+    {
+      "name": "an early compaction makes no mark, and the next turn is marked again",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "fire"},
+        {"turnStart": "turn-c"}, "boundary", {"turnEnd": {}},
+        {"advance": 30}, {"sweep": "none"},
+        {"turnStart": "turn-2"}, {"reading": {"used": 60000, "next": true}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "below_threshold"},
+        {"turnStart": "turn-3"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "fire"}
+      ]
+    },
+    {
+      "name": "an ineffective codex compaction stops the launch until a relaunch",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "fire"},
+        {"turnStart": "turn-c"}, "boundary", {"turnEnd": {}},
+        {"turnStart": "turn-2"}, {"reading": {"used": 140000, "next": true}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "launch_attempt_ineffective"},
+        {"sweep": "none"},
+        {"relaunch": {}},
+        {"turnStart": "turn-3"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "fire"}
+      ]
+    },
+    {
+      "name": "an ineffective claude compaction stops the launch",
+      "harness": "claude",
+      "steps": [
+        {"turnStart": "turn-1"}, {"turnEnd": {}}, {"advance": 1}, {"reading": {"used": 150000}},
+        {"advance": 19}, {"sweep": "fire"},
+        {"advance": 3}, "boundary", {"turnEnd": {}},
+        {"advance": 1}, {"reading": {"used": 130000, "next": true}},
+        {"turnStart": "turn-2"}, {"advance": 5}, {"turnEnd": {}},
+        {"advance": 1}, {"reading": {"used": 140000}},
+        {"advance": 19}, {"sweep": "launch_attempt_ineffective"}
+      ]
+    },
+    {
+      "name": "a failed attempt stops the launch",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "fire"},
+        {"settle": "failed"},
+        {"turnStart": "turn-2"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "launch_attempt_failed"}
+      ]
+    },
+    {
+      "name": "an unsettled attempt stops the launch",
+      "harness": "claude",
+      "steps": [
+        {"turnStart": "turn-1"}, {"turnEnd": {}}, {"advance": 1}, {"reading": {"used": 150000}},
+        {"advance": 19}, {"sweep": "fire"},
+        {"advance": 300}, {"settle": "unsettled"},
+        {"turnStart": "turn-2"}, {"turnEnd": {}}, {"advance": 1}, {"reading": {"used": 150000}},
+        {"advance": 19}, {"sweep": "launch_attempt_failed"}
+      ]
+    },
+    {
+      "name": "an unsupported outcome stops the launch",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "fire"},
+        {"settle": "unsupported"},
+        {"turnStart": "turn-2"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "launch_attempt_failed"}
+      ]
+    },
+    {
+      "name": "an interrupted attempt does not stop the launch",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "fire"},
+        {"settle": "interrupted"},
+        {"turnStart": "turn-2"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "fire"}
+      ]
+    },
+    {
+      "name": "the turn of an attempt that ends with no boundary makes no mark",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "fire"},
+        {"turnStart": "turn-c"}, {"turnEnd": {}}, {"settle": "ended_without_boundary"},
+        {"advance": 20}, {"sweep": "none"},
+        {"turnStart": "turn-2"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "fire"}
+      ]
+    },
+    {
+      "name": "a receipt that lands after the fire waits, and the boundary drops it",
+      "harness": "claude",
+      "steps": [
+        {"turnStart": "turn-1"}, {"turnEnd": {}}, {"advance": 1}, {"reading": {"used": 150000}},
+        {"advance": 19}, {"sweep": "fire"},
+        {"receipt": "turn-2"},
+        {"advance": 20}, {"sweep": "attempt_open"},
+        "boundary", {"turnEnd": {}},
+        {"advance": 5}, {"sweep": "none"}
+      ]
+    },
+    {
+      "name": "a manual compaction drops the pending mark",
+      "harness": "claude",
+      "steps": [
+        {"turnStart": "turn-1"}, {"turnEnd": {}}, {"advance": 1}, {"reading": {"used": 150000}},
+        {"advance": 5}, {"state": {"status": "working"}}, "boundary", {"turnEnd": {}},
+        {"advance": 1}, {"reading": {"used": 120000}},
+        {"advance": 14}, {"sweep": "none"},
+        {"advance": 90}, {"sweep": "none"}
+      ]
+    },
+    {
+      "name": "a compaction that the harness starts in a turn makes no mark",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, "boundary", {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "none"},
+        {"turnStart": "turn-2"}, {"reading": {"used": 150000}}, {"turnEnd": {}},
+        {"advance": 20}, {"sweep": "fire"}
+      ]
+    },
+    {
+      "name": "a failed turn after a boundary still clears the flag",
+      "harness": "claude",
+      "steps": [
+        {"state": {"status": "working"}}, "boundary", {"turnEnd": {"marks": false}},
+        {"turnStart": "turn-2"}, {"turnEnd": {}}, {"advance": 1}, {"reading": {"used": 150000}},
+        {"advance": 19}, {"sweep": "fire"}
+      ]
+    },
+    {
+      "name": "a failed turn makes no mark",
+      "harness": "codex",
+      "steps": [
+        {"turnStart": "turn-1"}, {"reading": {"used": 150000}}, {"turnEnd": {"marks": false}},
+        {"advance": 20}, {"sweep": "none"}
+      ]
+    }
+  ]
+}
