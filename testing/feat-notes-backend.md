@@ -218,7 +218,7 @@ fails without its fix.
    `adapters::tests::resume_requests_carry_the_bridge_session_into_launches`.
 10. **Embedded handlers accept omitted defaults.** Every defaulted notes param is
     optional on the wire and in the Tauri command. Tests:
-    `tests::notes_commands_take_every_optional_field_as_option` (src-tauri) and
+    `tests::every_command_takes_every_optional_field_as_option` (src-tauri) and
     `notes params deserialize from {}` in bridge-protocol.
 11. **Failed projections are retried.** Pages whose committed version was never
     mirrored are re-projected on open and every maintenance tick. Test:
