@@ -733,3 +733,13 @@ fn a_batch_finds_its_latest_slot_past_a_thousand_of_them() {
     let now = at("2026-11-24T10:07:00Z");
     assert_eq!(batch_slot(&db, &workflow, &batch, now).unwrap(), Some(at("2026-11-24T10:00:00Z")));
 }
+
+#[test]
+fn a_slack_preview_with_a_healthy_read_but_no_history_says_so() {
+    let (_dir, core) = test_support::core();
+    let now = at("2026-11-24T12:00:00Z");
+    crate::connector_inbox::record_poll_success(&core.db.lock().unwrap(), crate::work_connectors::ConnectorFamily::Slack, &workflow_trigger::stamp(now)).unwrap();
+    let empty = preview(&core, &event_trigger(wire::WorkflowEventKind::SlackMention), &FakeGh::default(), now);
+    assert_eq!(empty.matches, 0);
+    assert!(empty.note.as_deref().is_some_and(|note| note.starts_with("Bridge has no Slack messages from this week yet")), "{:?}", empty.note);
+}
