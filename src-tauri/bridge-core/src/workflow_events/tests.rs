@@ -652,3 +652,17 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn an_unapproved_event_workflow_records_nothing_and_starts_no_ingress() {
+    // A template saved by "Try it" is a draft: it must not listen.
+    let (dir, core) = test_support::core();
+    let db = core.db.lock().unwrap();
+    let draft = listening_workflow(&db, dir.path(), event_trigger(wire::WorkflowEventKind::SlackMention), "2026-11-20T00:00:00Z");
+    db.execute("UPDATE workflow_revisions SET approved_at=NULL WHERE id=?1", params![draft.revision_id]).unwrap();
+    assert!(!workflows::require(&db, &draft.id).unwrap().approved);
+    let fresh = [slack(ItemKind::Mention, "#eng", "Priya", "1.0", "2026-11-24T00:00:00Z")];
+    assert_eq!(observe_inbox(&db, &fresh, at("2026-11-24T00:00:01Z")).unwrap(), 0);
+    assert!(pending(&db, &draft.id).is_empty());
+    assert!(!listens_for(&db, crate::work_connectors::ConnectorFamily::Slack).unwrap());
+}

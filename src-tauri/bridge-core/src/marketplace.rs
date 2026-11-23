@@ -442,16 +442,18 @@ fn connector_probe() -> ClaudeSdkConfiguration {
     claude_sdk_configuration_from(ClaudeDiscovery::ALL, CONNECTOR_PROBE_TIMEOUT, neutral_probe_dir().as_deref())
 }
 
+/// What a probe answers without a `claude` to ask: nothing, and why, so the
+/// cache never holds it as a fresh, empty list.
+fn claude_not_installed() -> ClaudeSdkConfiguration {
+    ClaudeSdkConfiguration {
+        diagnostics: vec![capability_diagnostic("runtime", "unavailable", "Claude CLI is not installed")],
+        ..Default::default()
+    }
+}
+
 fn claude_sdk_configuration_from(discovery: ClaudeDiscovery, mcp_timeout: Duration, cwd: Option<&Path>) -> ClaudeSdkConfiguration {
     let Some(binary_path) = binary::resolve("claude") else {
-        return ClaudeSdkConfiguration {
-            diagnostics: vec![capability_diagnostic(
-                "runtime",
-                "unavailable",
-                "Claude CLI is not installed",
-            )],
-            ..Default::default()
-        };
+        return claude_not_installed();
     };
     let mut diagnostics = Vec::new();
     let plugins = if !discovery.plugins {
@@ -2383,6 +2385,10 @@ mod tests {
         let (failed, refresh) = cold.read(start, CONNECTOR_FRESH);
         assert!(failed.is_some() && refresh);
         assert!(connector_answer_problem(&failed.unwrap()).is_some());
+        // Without Claude installed, the answer says so and is never fresh.
+        let missing = claude_not_installed();
+        assert_eq!(connector_answer_problem(&missing).as_deref(), Some("Claude CLI is not installed"));
+        assert!(!connector_answer_usable(&missing));
     }
 
     #[test]
