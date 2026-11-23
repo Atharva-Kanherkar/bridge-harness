@@ -404,6 +404,16 @@ fn a_slack_preview_counts_the_weeks_matches_from_the_ledger() {
         *channel = Some("eng".into());
     }
     assert_eq!(preview(&core, &trigger, &gh, now).matches, 4);
+
+    // Each kind reads back as itself: a DM and a thread reply are not mentions.
+    {
+        let db = core.db.lock().unwrap();
+        let stamp = workflow_trigger::stamp(now - Duration::hours(1));
+        crate::connector_inbox::record_arrivals(&db, &[slack(ItemKind::DirectMessage, "Sam", "Sam", "20.0", &stamp), slack(ItemKind::ThreadReply, "#eng", "Kim", "21.0", &stamp)]).unwrap();
+    }
+    for (kind, count) in [(wire::WorkflowEventKind::SlackMention, 7), (wire::WorkflowEventKind::SlackDirectMessage, 1), (wire::WorkflowEventKind::SlackThreadReply, 1)] {
+        assert_eq!(preview(&core, &event_trigger(kind), &gh, now).matches, count, "{kind:?}");
+    }
     assert_eq!(*gh.calls.lock().unwrap(), 0, "Slack previews never call gh");
 }
 
