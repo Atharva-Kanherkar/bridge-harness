@@ -3151,7 +3151,43 @@ fn backfill_agent_events(transaction: &Transaction<'_>) -> Result<(), BridgeErro
     Ok(())
 }
 
+const WORKSPACE_COLUMNS: &str =
+    "id,project_id,city,title,branch,path,status,dirty_files,additions,deletions,created_at";
+
+fn workspace_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Workspace> {
+    Ok(Workspace { id:r.get(0)?, project_id:r.get(1)?, city:r.get(2)?, title:r.get(3)?, branch:r.get(4)?, path:r.get(5)?, status:status(&r.get::<_,String>(6)?), dirty_files:r.get(7)?, additions:r.get(8)?, deletions:r.get(9)?, created_at:r.get(10)? })
+}
+
+/// One workspace row, as the app state carries it.
+pub fn workspace(db: &Connection, workspace_id: &str) -> Result<Option<Workspace>, BridgeError> {
+    Ok(db
+        .query_row(
+            &format!("SELECT {WORKSPACE_COLUMNS} FROM workspaces WHERE id=?1"),
+            params![workspace_id],
+            workspace_from_row,
+        )
+        .optional()?)
+}
+
+/// The app's state: every project, workspace and session a person can open.
+///
+/// Bridge's own background runs (connector polls, suggestions, briefings,
+/// extractions, evaluations, consolidations, chat searches) are left out.
+/// They are minted on timers, so on a lived-in install they were two thirds
+/// of the sessions (58,344 of 87,686) and most of a 59 MB document that the
+/// app filtered out again after paying to build, send and parse it. Workflow
+/// runs stay: the Workflows page opens them by id.
 pub fn state(db: &Connection) -> Result<BridgeState, BridgeError> {
+    state_including(db, false)
+}
+
+/// Every session, Bridge's background runs included: the `state/get_state`
+/// document, unchanged for clients that read it.
+pub fn state_with_background_runs(db: &Connection) -> Result<BridgeState, BridgeError> {
+    state_including(db, true)
+}
+
+fn state_including(db: &Connection, background_runs: bool) -> Result<BridgeState, BridgeError> {
     let projects = query(
         db,
         "SELECT id,name,path,created_at FROM projects ORDER BY created_at",
@@ -3164,13 +3200,25 @@ pub fn state(db: &Connection) -> Result<BridgeState, BridgeError> {
             })
         },
     )?;
-    let workspaces = query(db, "SELECT id,project_id,city,title,branch,path,status,dirty_files,additions,deletions,created_at FROM workspaces ORDER BY created_at", |r| Ok(Workspace { id:r.get(0)?, project_id:r.get(1)?, city:r.get(2)?, title:r.get(3)?, branch:r.get(4)?, path:r.get(5)?, status:status(&r.get::<_,String>(6)?), dirty_files:r.get(7)?, additions:r.get(8)?, deletions:r.get(9)?, created_at:r.get(10)? }))?;
-    let sessions = query(db, "WITH RECURSIVE archived(id) AS (
+    let workspaces = query(
+        db,
+        &format!("SELECT {WORKSPACE_COLUMNS} FROM workspaces ORDER BY created_at"),
+        workspace_from_row,
+    )?;
+    let background = if background_runs {
+        String::new()
+    } else {
+        format!(
+            "AND coalesce(s.kind,'direct') NOT IN ({})",
+            crate::chat_search::index::HIDDEN_KINDS_SQL
+        )
+    };
+    let sessions = query(db, &format!("WITH RECURSIVE archived(id) AS (
              SELECT id FROM sessions WHERE archived_at IS NOT NULL
              UNION SELECT s.id FROM sessions s JOIN archived a ON s.parent_session_id=a.id
          ) SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh'),s.continuation_fidelity,s.title,s.kind,s.cwd,s.fork_parent_session_id,s.fork_parent_entry_id,s.account,CASE WHEN s.title_ladder_for IS s.title THEN s.title_ladder END,s.speed FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id
-         WHERE NOT EXISTS(SELECT 1 FROM archived a WHERE a.id=s.id)
-         ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), continuation_fidelity:continuation_fidelity(&r.get::<_,String>(18)?), title:r.get(19)?, kind:r.get(20)?, cwd:r.get(21)?, fork_parent_session_id:r.get(22)?, fork_parent_entry_id:r.get(23)?, account:r.get(24)?, title_ladder:crate::title_jobs::read_ladder(r.get::<_,Option<String>>(25)?.as_deref()), speed:r.get(26)? }))?;
+         WHERE NOT EXISTS(SELECT 1 FROM archived a WHERE a.id=s.id) {background}
+         ORDER BY s.rowid"), |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), continuation_fidelity:continuation_fidelity(&r.get::<_,String>(18)?), title:r.get(19)?, kind:r.get(20)?, cwd:r.get(21)?, fork_parent_session_id:r.get(22)?, fork_parent_entry_id:r.get(23)?, account:r.get(24)?, title_ladder:crate::title_jobs::read_ladder(r.get::<_,Option<String>>(25)?.as_deref()), speed:r.get(26)? }))?;
     let events = query(
         db,
         // Latency rows are measurements, not activity: the app's recent-events
@@ -7182,6 +7230,38 @@ mod tests {
         assert!(columns.iter().any(|name| name == "revision"), "{columns:?}");
         // Later migrations may follow; this one must have run.
         assert!(current_schema_version(&db).unwrap() >= 73);
+    }
+
+    #[test]
+    fn the_app_state_leaves_out_background_runs_and_get_state_keeps_them() {
+        let db = open(Path::new(":memory:")).unwrap();
+        let hidden: Vec<String> = crate::chat_search::index::HIDDEN_KINDS_SQL
+            .split(',')
+            .map(|kind| kind.trim_matches('\'').to_owned())
+            .collect();
+        let shown = ["direct", "orchestrator", "harness_subagent", "imported", "workflow", "workflow_draft"];
+        for kind in hidden.iter().map(String::as_str).chain(shown) {
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind) VALUES(?1,NULL,'claude','Run','ready','reported',?1)",
+                params![kind],
+            )
+            .unwrap();
+        }
+        // A chat with no kind is a direct chat.
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('untyped',NULL,'claude','Chat','ready','reported')",
+            [],
+        )
+        .unwrap();
+
+        let app: Vec<String> = state(&db).unwrap().sessions.into_iter().map(|session| session.id).collect();
+        let mut expected: Vec<String> = shown.iter().map(|kind| kind.to_string()).collect();
+        expected.push("untyped".into());
+        assert_eq!(app, expected, "the app state keeps every kind a person can open");
+
+        let full = state_with_background_runs(&db).unwrap().sessions;
+        assert_eq!(full.len(), hidden.len() + shown.len() + 1, "get_state is unchanged");
+        assert!(hidden.iter().all(|kind| full.iter().any(|session| &session.id == kind)));
     }
 
     #[test]

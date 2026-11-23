@@ -547,6 +547,24 @@ fn base_branch_divergence_mirrors_core() {
     assert_mirrors::<wire::WriteWorkspaceFileResult>(&crate::workspace_files::WriteOutcome {
         sha256: "e3b0c442".into(),
     });
+    assert_mirrors::<wire::RefreshWorkspaceStatsResult>(&crate::workspaces::RefreshedWorkspace {
+        workspace: Some(model::Workspace {
+            id: "w-1".into(),
+            project_id: Some("p-1".into()),
+            city: None,
+            title: "Payments".into(),
+            branch: Some("bridge/payments".into()),
+            path: Some("/repos/demo".into()),
+            status: model::SessionStatus::Idle,
+            dirty_files: 2,
+            additions: 40,
+            deletions: 3,
+            created_at: "now".into(),
+        }),
+    });
+    assert_mirrors::<wire::RefreshWorkspaceStatsResult>(&crate::workspaces::RefreshedWorkspace {
+        workspace: None,
+    });
     assert_mirrors::<wire::BaseBranchDivergence>(&crate::git::BaseBranchDivergence {
         base_ref: Some("origin/main".into()),
         base_commit: Some("90ce51c".into()),

@@ -5,13 +5,21 @@
 //! or filesystem scans, and event emission after a mutation. Everything that
 //! reads or writes runtime state lives here.
 
-use crate::model::BridgeState;
+use crate::model::{BridgeState, Workspace};
 use crate::runtime::BridgeCore;
 use crate::{git, store, BridgeError};
 use chrono::Utc;
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
+
+/// `workspaces/refresh_workspace_stats`'s result: the workspace as stored
+/// after the read, absent when it was archived while Git ran.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshedWorkspace {
+    pub workspace: Option<Workspace>,
+}
 
 impl BridgeCore {
     /// Clone a GitHub repository, then deliberately reuse the normal folder
@@ -159,25 +167,23 @@ impl BridgeCore {
     /// Record the result of a Git status scan produced by [`git::stats`].
     /// When `branch` is set, the stored checkout name is refreshed too so a
     /// switch made in the terminal is not stuck on the previous chip.
+    /// Store a workspace's Git counts and branch, and return the workspace.
+    /// `None` when it was archived between the path read and this write.
+    /// Writes only when something moved: the app polls this every few seconds.
     pub fn record_workspace_git_stats(
         &self,
         workspace_id: &str,
         (dirty, additions, deletions): (i64, i64, i64),
         branch: Option<&str>,
-    ) -> Result<BridgeState, BridgeError> {
+    ) -> Result<Option<Workspace>, BridgeError> {
         let db = self.db.lock().unwrap();
-        if let Some(branch) = branch {
-            db.execute(
-                "UPDATE workspaces SET dirty_files=?2,additions=?3,deletions=?4,branch=?5 WHERE id=?1",
-                params![workspace_id, dirty, additions, deletions, branch],
-            )?;
-        } else {
-            db.execute(
-                "UPDATE workspaces SET dirty_files=?2,additions=?3,deletions=?4 WHERE id=?1",
-                params![workspace_id, dirty, additions, deletions],
-            )?;
-        }
-        store::state(&db)
+        db.execute(
+            "UPDATE workspaces SET dirty_files=?2,additions=?3,deletions=?4,branch=COALESCE(?5,branch)
+             WHERE id=?1 AND (dirty_files IS NOT ?2 OR additions IS NOT ?3 OR deletions IS NOT ?4
+                              OR (?5 IS NOT NULL AND branch IS NOT ?5))",
+            params![workspace_id, dirty, additions, deletions, branch],
+        )?;
+        store::workspace(&db, workspace_id)
     }
 
     /// Archive a clean, fully-stopped workspace: delete its dependent records
@@ -561,8 +567,14 @@ mod tests {
             .unwrap()
             .query_row("SELECT id FROM workspaces", [], |row| row.get(0))
             .unwrap();
-        core.record_workspace_git_stats(&workspace_id, (3, 10, 2), None)
-            .unwrap();
+        let recorded = core
+            .record_workspace_git_stats(&workspace_id, (3, 10, 2), None)
+            .unwrap()
+            .expect("the workspace exists");
+        assert_eq!(
+            (recorded.dirty_files, recorded.additions, recorded.deletions),
+            (3, 10, 2)
+        );
         let (dirty, adds, dels): (i64, i64, i64) = core
             .db
             .lock()
@@ -575,10 +587,11 @@ mod tests {
             .unwrap();
         assert_eq!((dirty, adds, dels), (3, 10, 2));
         // The refresh race: a workspace archived between the path resolve and
-        // the stats write updates zero rows and still returns a snapshot.
+        // the stats write updates zero rows and is reported as gone, not as an error.
         assert!(core
             .record_workspace_git_stats("already-archived", (1, 1, 1), None)
-            .is_ok());
+            .unwrap()
+            .is_none());
     }
 
     /// Workspace 'w' backed by a real worktree of a real repository.

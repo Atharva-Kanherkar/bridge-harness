@@ -1186,7 +1186,16 @@ async fn marketplace_action(
 
 #[tauri::command]
 async fn get_state(state: State<'_, Arc<BridgeCore>>) -> Result<BridgeState, BridgeError> {
-    api::get_state(state.inner())
+    // Waits on the database lock: keep that wait off the async runtime's
+    // workers, which every other invoke shares.
+    let core = state.inner().clone();
+    blocking("State read", move || api::get_state(&core)).await
+}
+
+#[tauri::command]
+async fn get_app_state(state: State<'_, Arc<BridgeCore>>) -> Result<BridgeState, BridgeError> {
+    let core = state.inner().clone();
+    blocking("State read", move || api::get_app_state(&core)).await
 }
 
 #[tauri::command]
@@ -3257,6 +3266,18 @@ async fn refresh_workspace(
 }
 
 #[tauri::command]
+async fn refresh_workspace_stats(
+    workspace_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::workspaces::RefreshedWorkspace, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workspace refresh", move || {
+        api::refresh_workspace_stats(&core, &workspace_id)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn list_workspace_branches(
     workspace_id: String,
     state: State<'_, Arc<BridgeCore>>,
@@ -3889,6 +3910,7 @@ pub fn run() -> i32 {
             get_review_job_settings,
             save_review_job_settings,
             get_state,
+            get_app_state,
             get_session_forest,
             get_session_forest_digest,
             get_context_breakdown,
@@ -4111,6 +4133,7 @@ pub fn run() -> i32 {
             cancel_provider_login,
             stop_session,
             refresh_workspace,
+            refresh_workspace_stats,
             list_workspace_branches,
             checkout_workspace_branch,
             archive_workspace,

@@ -178,6 +178,7 @@ import { CodexUpdateDialog, type CodexUpdatePhase } from "./components/CodexUpda
 import { mergeForestSnapshot } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { createCoalescedRefresh, startSerialPoll } from "./polling";
+import { withWorkspace } from "./workspaceStats";
 import { reviewBadge, useChatChanges } from "./chatChanges";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { TRANSIENT_ALERT_TTL_MS, TransientAlert } from "./components/TransientAlert";
@@ -1991,8 +1992,8 @@ function AppContent() {
     if (!workspaceId || !hasRepo || backendMode() === "mock") return;
     let active = true;
     const stop = startSerialPoll(async () => {
-      const next = await bridgeApi.refreshWorkspace(workspaceId).catch(() => undefined);
-      if (active && next) setState(next);
+      const next = await bridgeApi.refreshWorkspaceStats(workspaceId).catch(() => undefined);
+      if (active && next) setState(current => withWorkspace(current, next));
     }, 5000);
     return () => { active = false; stop(); };
   }, [workspace?.id, hasRepo]);
@@ -2000,8 +2001,8 @@ function AppContent() {
   /** Pull the workspace's Git stats now, rather than waiting out the poll —
    *  a save should move the Changes badge immediately. */
   const refreshWorkspaceStats = useCallback(async (workspaceId: string) => {
-    const next = await bridgeApi.refreshWorkspace(workspaceId).catch(() => undefined);
-    if (next) setState(next);
+    const next = await bridgeApi.refreshWorkspaceStats(workspaceId).catch(() => undefined);
+    if (next) setState(current => withWorkspace(current, next));
   }, []);
 
   // Poll real subscription usage for every provider, independent of the chat on screen.
