@@ -37,7 +37,7 @@ fn commit(repo: &Path, message: &str) -> String {
 
 struct Fixture {
     _dir: tempfile::TempDir,
-    _gh: tempfile::TempDir,
+    gh: tempfile::TempDir,
     root: PathBuf,
     local: PathBuf,
     remote: PathBuf,
@@ -63,6 +63,12 @@ impl Fixture {
         assert!(self.checkouts().is_empty(), "checkouts left: {:?}", self.checkouts());
         assert!(subdirectories(&self.layout().jobs).is_empty(), "job folders left");
         assert!(self.registered().is_empty(), "git still lists: {:?}", self.registered());
+        let refs = git(&self.local, &["for-each-ref", "--format=%(refname)", "refs/bridge/reviews"]);
+        assert_eq!(refs, "", "fetched refs left");
+    }
+
+    fn invocations(&self) -> String {
+        std::fs::read_to_string(self.gh.path().join("invocations.log")).unwrap_or_default()
     }
 }
 
@@ -93,8 +99,10 @@ fn fixture() -> Fixture {
     std::fs::write(local.join("old.txt"), "moving\nfile\ncontents\n").unwrap();
     std::fs::write(local.join("gone.txt"), "bye\n").unwrap();
     std::fs::write(local.join("bin.dat"), [0u8, 1, 2, 3]).unwrap();
+    std::fs::write(local.join("zz.txt"), "last\n").unwrap();
     commit(&local, "base");
-    git(&root, &["init", "-q", "--bare", remote.to_str().unwrap()]);
+    // Named, so the suite does not depend on init.defaultBranch.
+    git(&root, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);
     git(&local, &["remote", "add", "origin", remote.to_str().unwrap()]);
     git(&local, &["push", "-q", "origin", "main"]);
 
@@ -127,11 +135,15 @@ fn fixture() -> Fixture {
         )
         .unwrap();
     }
-    Fixture { _dir: dir, _gh: gh, root, local, remote, core, head }
+    Fixture { _dir: dir, gh, root, local, remote, core, head }
 }
 
 /// Queue a job for PR `number` at `head` and claim it, as the runner would.
 fn claimed(fixture: &Fixture, number: u64, head: &str) -> JobRow {
+    claimed_with(fixture, number, head, "claude")
+}
+
+fn claimed_with(fixture: &Fixture, number: u64, head: &str, harness: &str) -> JobRow {
     let db = fixture.core.db.lock().unwrap();
     store::insert(
         &db,
@@ -145,7 +157,7 @@ fn claimed(fixture: &Fixture, number: u64, head: &str) -> JobRow {
             incremental_from_sha: None,
             trigger: Default::default(),
             post_mode: Default::default(),
-            harnesses: vec!["claude".into()],
+            harnesses: vec![harness.into()],
             retry_of: None,
             publication_key: None,
         },
@@ -153,6 +165,17 @@ fn claimed(fixture: &Fixture, number: u64, head: &str) -> JobRow {
     )
     .unwrap();
     store::claim_next(&db, "test", chrono::Utc::now()).unwrap().expect("a claim")
+}
+
+/// The runner that held `job` died: its lease expires and the job is claimed
+/// again, as a new attempt.
+fn reclaimed(fixture: &Fixture, job: &JobRow) -> JobRow {
+    let db = fixture.core.db.lock().unwrap();
+    let later = chrono::Utc::now() + chrono::Duration::seconds(store::LEASE_SECONDS + 1);
+    store::reclaim_expired(&db, later).unwrap();
+    let again = store::claim_next(&db, "test", later).unwrap().expect("the job is claimed again");
+    assert_eq!(again.id, job.id);
+    again
 }
 
 fn prepare_job(fixture: &Fixture, job: &JobRow) -> Result<Prepared, StepError> {
@@ -207,7 +230,7 @@ fn a_fork_pr_prepares_from_its_pull_ref() {
     // Someone else's fork: its own clone, its own commit, pushed to the base
     // repository's pull ref only, as GitHub does for a fork PR.
     let fork = fixture.root.join("fork");
-    git(&fixture.root, &["clone", "-q", fixture.remote.to_str().unwrap(), fork.to_str().unwrap()]);
+    git(&fixture.root, &["clone", "-q", "--branch", "main", fixture.remote.to_str().unwrap(), fork.to_str().unwrap()]);
     identity(&fork);
     std::fs::write(fork.join("from-fork.txt"), "fork work\n").unwrap();
     let head = commit(&fork, "fork change");
@@ -265,7 +288,7 @@ fn context_files_describe_the_pr() {
     let job = claimed(&fixture, 7, &fixture.head);
     let prepared = prepare_job(&fixture, &job).unwrap();
     let context = prepared.context.clone().unwrap();
-    assert_eq!(context, fixture.layout().job_dir(&job.id).join("context"));
+    assert_eq!(context, fixture.layout().attempt_dir(&job).join("context"), "each attempt has its own context");
     let pr = read_json(&context.join("pr.json"));
     assert_pr_json(&pr, &fixture);
     assert_files_json(&read_json(&context.join("files.json")));
@@ -331,15 +354,7 @@ fn cleanup_is_idempotent_and_removes_every_attempt() {
     let job = claimed(&fixture, 7, &fixture.head);
     let first = prepare_job(&fixture, &job).unwrap();
     // The job is reclaimed and claimed again: a second attempt, a second checkout.
-    let second_claim = {
-        let db = fixture.core.db.lock().unwrap();
-        db.execute(
-            "UPDATE review_jobs SET status='queued', lease_owner=NULL, lease_expires_at=NULL, worktree_path=NULL WHERE id=?1",
-            params![job.id],
-        )
-        .unwrap();
-        store::claim_next(&db, "test", chrono::Utc::now()).unwrap().unwrap()
-    };
+    let second_claim = reclaimed(&fixture, &job);
     assert_eq!(second_claim.attempts, 2);
     let second = prepare_job(&fixture, &second_claim).unwrap();
     assert_ne!(first.worktree, second.worktree);
@@ -646,4 +661,186 @@ fn worktrees_are_gone_after_a_cancel_mid_review() {
     }
     assert_eq!(status(&fixture, &cancelled), Status::Cancelled);
     fixture.assert_clean();
+}
+
+// --- regressions for review 6018851502 ------------------------------------------
+
+#[test]
+fn a_sweep_during_checkout_creation_keeps_the_new_checkout() {
+    let fixture = fixture();
+    let paused = fixture.root.join("paused");
+    let resume = fixture.root.join("resume");
+    let hook = fixture.local.join(".git/hooks/post-checkout");
+    std::fs::write(
+        &hook,
+        format!("#!/bin/sh\ntouch '{}'\nwhile [ ! -f '{}' ]; do sleep 0.02; done\n", paused.display(), resume.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    let job = claimed(&fixture, 7, &fixture.head);
+    let preparing = {
+        let (core, job) = (fixture.core.clone(), job.clone());
+        std::thread::spawn(move || prepare(&core, &PrepareConfig::default(), &job, &CancelToken::new()))
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !paused.exists() {
+        assert!(Instant::now() < deadline, "git worktree add never ran its hook");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // The checkout's directory exists now, mid-creation. A sweep runs.
+    let sweeping = {
+        let core = fixture.core.clone();
+        std::thread::spawn(move || reap(&core))
+    };
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!sweeping.is_finished(), "the sweep waits for the checkout being cut");
+    std::fs::write(&resume, "go").unwrap();
+    let prepared = preparing.join().unwrap().unwrap();
+    sweeping.join().unwrap().unwrap();
+    std::fs::remove_file(&hook).unwrap();
+
+    let checkout = prepared.worktree.clone().unwrap();
+    assert!(checkout.join("new.txt").exists(), "the sweep did not remove the new checkout");
+    assert_eq!(fixture.registered(), std::slice::from_ref(&checkout));
+}
+
+#[test]
+fn a_superseded_attempts_guard_leaves_the_replacement_context() {
+    let fixture = fixture();
+    let job = claimed(&fixture, 7, &fixture.head);
+    let first = prepare_job(&fixture, &job).unwrap();
+    let again = reclaimed(&fixture, &job);
+    let second = prepare_job(&fixture, &again).unwrap();
+    let (second_head, _) = attempt_refs(&again);
+    let (first_head, _) = attempt_refs(&job);
+    drop(first);
+    let context = second.context.clone().unwrap();
+    for file in ["pr.json", "diff.patch", "files.json", "threads.json"] {
+        assert!(context.join(file).exists(), "attempt 2's {file} survives attempt 1's guard");
+    }
+    assert!(second.worktree.as_ref().unwrap().join("new.txt").exists());
+    assert_eq!(git::resolve_commit(&fixture.local, &second_head).unwrap(), fixture.head);
+    assert!(git::resolve_commit(&fixture.local, &first_head).is_err(), "attempt 1 removed only its own refs");
+    drop(second);
+    fixture.assert_clean();
+}
+
+#[test]
+fn a_type_change_keeps_both_halves_with_its_file() {
+    let fixture = fixture();
+    git(&fixture.local, &["checkout", "-q", "-b", "typechange"]);
+    std::fs::remove_file(fixture.local.join("a.txt")).unwrap();
+    std::os::unix::fs::symlink("zz.txt", fixture.local.join("a.txt")).unwrap();
+    std::fs::write(fixture.local.join("zz.txt"), "last\nand more\n").unwrap();
+    let head = commit(&fixture.local, "a.txt becomes a link; zz.txt changes");
+    git(&fixture.local, &["push", "-q", "origin", "HEAD:refs/pull/9/head"]);
+    git(&fixture.local, &["checkout", "-q", "main"]);
+
+    let job = claimed(&fixture, 9, &head);
+    let prepared = prepare_job(&fixture, &job).unwrap();
+    let context = prepared.context.clone().unwrap();
+    let files = read_json(&context.join("files.json"));
+    let statuses: Vec<(String, String)> = files
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| (file["path"].as_str().unwrap().to_owned(), file["status"].as_str().unwrap().to_owned()))
+        .collect();
+    assert_eq!(statuses, [("a.txt".into(), "typechange".into()), ("zz.txt".into(), "modified".into())]);
+    let patch = std::fs::read_to_string(context.join("diff.patch")).unwrap();
+    assert_eq!(patch.matches("diff --git a/a.txt b/a.txt").count(), 2, "both halves of the type change");
+    assert!(patch.contains("+and more"), "zz.txt is not dropped:\n{patch}");
+    let pr = read_json(&context.join("pr.json"));
+    assert_eq!(pr["omittedFiles"], serde_json::json!([]));
+    assert_eq!(pr["diffTruncated"], false);
+}
+
+#[test]
+fn a_reclaimed_attempt_counts_against_the_budget_until_it_cuts_its_checkout() {
+    let fixture = fixture();
+    {
+        let db = fixture.core.db.lock().unwrap();
+        crate::reviews::settings::save(&db, &wire::ReviewJobSettings { max_review_worktrees: 1, ..Default::default() }).unwrap();
+    }
+    let job = claimed(&fixture, 7, &fixture.head);
+    let first = prepare_job(&fixture, &job).unwrap();
+    // The runner dies; its guard runs as the process unwinds, removing the
+    // checkout; then the job is claimed again.
+    {
+        let db = fixture.core.db.lock().unwrap();
+        store::reclaim_expired(&db, chrono::Utc::now() + chrono::Duration::seconds(store::LEASE_SECONDS + 1)).unwrap();
+    }
+    drop(first);
+    assert!(fixture.checkouts().is_empty());
+    let again = reclaimed_queued(&fixture, &job);
+    assert_eq!(again.worktree_path, None, "the old attempt's checkout is not the new one's");
+    assert!(!has_capacity(&fixture.core), "the replacement holds the only slot before it cuts its checkout");
+    let prepared = prepare_job(&fixture, &again).unwrap();
+    assert!(!has_capacity(&fixture.core));
+    drop(prepared);
+}
+
+/// Claim a job a reclaim already put back in the queue.
+fn reclaimed_queued(fixture: &Fixture, job: &JobRow) -> JobRow {
+    let db = fixture.core.db.lock().unwrap();
+    let later = chrono::Utc::now() + chrono::Duration::seconds(store::LEASE_SECONDS + 2);
+    let again = store::claim_next(&db, "test", later).unwrap().expect("the job is claimed again");
+    assert_eq!(again.id, job.id);
+    again
+}
+
+#[test]
+fn metadata_and_threads_come_from_the_jobs_repository() {
+    let fixture = fixture();
+    // The job was queued for fixture/project; by the time it runs, gh points
+    // the workspace at a fork.
+    std::fs::write(fixture.gh.path().join("default-repository"), "someone/fork").unwrap();
+    let job = claimed(&fixture, 7, &fixture.head);
+    prepare_job(&fixture, &job).unwrap();
+    let invocations = fixture.invocations();
+    let view = invocations.lines().find(|line| line.starts_with("pr view 7")).expect("a pr view");
+    assert!(view.contains("--repo fixture/project"), "{view}");
+    let threads = invocations.lines().find(|line| line.starts_with("api graphql")).expect("a threads read");
+    assert!(threads.contains("owner=fixture") && threads.contains("name=project"), "{threads}");
+    assert!(!invocations.contains("someone/fork --json") && !invocations.contains("owner=someone"));
+}
+
+#[test]
+fn concurrent_jobs_on_the_same_pr_number_fetch_into_their_own_refs() {
+    let fixture = fixture();
+    let first = claimed_with(&fixture, 7, &fixture.head, "claude");
+    let first_prepared = prepare_job(&fixture, &first).unwrap();
+    // The PR moves on before the second job fetches.
+    git(&fixture.local, &["checkout", "-q", "-b", "moved", &fixture.head]);
+    std::fs::write(fixture.local.join("new.txt"), "moved on\n").unwrap();
+    let moved = commit(&fixture.local, "a second PR commit");
+    git(&fixture.local, &["push", "-q", "-f", "origin", "HEAD:refs/pull/7/head"]);
+    git(&fixture.local, &["checkout", "-q", "main"]);
+    let second = claimed_with(&fixture, 7, &fixture.head, "codex");
+    let second_prepared = prepare_job(&fixture, &second).unwrap();
+
+    let (first_ref, _) = attempt_refs(&first);
+    let (second_ref, _) = attempt_refs(&second);
+    assert_ne!(first_ref, second_ref);
+    assert_eq!(git::resolve_commit(&fixture.local, &first_ref).unwrap(), fixture.head, "the first job keeps what it fetched");
+    assert_eq!(git::resolve_commit(&fixture.local, &second_ref).unwrap(), moved);
+    assert_eq!(first_prepared.head_sha, fixture.head);
+    assert_eq!(second_prepared.head_sha, moved);
+}
+
+#[test]
+fn a_shallow_clone_is_deepened_to_find_the_merge_base() {
+    let fixture = fixture();
+    let shallow = fixture.root.join("shallow");
+    let url = format!("file://{}", fixture.remote.display());
+    git(&fixture.root, &["clone", "-q", "--depth=1", "--branch", "main", &url, shallow.to_str().unwrap()]);
+    assert!(git::is_shallow(&shallow));
+    fixture.core.db.lock().unwrap().execute("UPDATE workspaces SET path=?1", params![shallow.to_string_lossy()]).unwrap();
+    let job = claimed(&fixture, 7, &fixture.head);
+    let prepared = prepare_job(&fixture, &job).unwrap();
+    let pr = read_json(&prepared.context.clone().unwrap().join("pr.json"));
+    let expected = git(&fixture.local, &["merge-base", "main", &fixture.head]);
+    assert_eq!(pr["mergeBase"], expected.as_str(), "the real merge base, found by deepening");
+    assert_eq!(pr["changedFiles"], 5);
 }

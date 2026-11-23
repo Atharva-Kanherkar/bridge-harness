@@ -207,7 +207,7 @@ fn repository_with_a_pull_request(repo: &Path, github: &Path) {
     std::fs::write(repo.join("README.md"), "base\n").unwrap();
     git(repo, &["add", "."]);
     git(repo, &["commit", "-q", "-m", "base"]);
-    git(github, &["init", "-q", "--bare"]);
+    git(github, &["init", "-q", "--bare", "-b", "main"]);
     git(repo, &["remote", "add", "origin", github.to_str().unwrap()]);
     git(repo, &["push", "-q", "origin", "main"]);
     git(repo, &["checkout", "-q", "-b", "pr"]);

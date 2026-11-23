@@ -2,10 +2,17 @@
 //! own, and a context folder with what the reviewer needs, so the reviewer
 //! reads the PR's real code with no network, no `gh` and no shell.
 //!
-//! The checkout is `<worktrees>/reviews/pr-<n>-<job12>-<attempt>`: per attempt,
-//! so a driver that lost its job can only ever remove its own checkout. It is
-//! detached, fetched into Bridge's ref namespace, and registers no workspace,
-//! so the person's checkout, branches and sidebar never change.
+//! Everything an attempt makes is the attempt's own: the checkout
+//! `<worktrees>/reviews/pr-<n>-<job12>-<attempt>`, the folder
+//! `<data>/review-jobs/<job>/<attempt>/`, and the refs
+//! `refs/bridge/reviews/<job12>-<attempt>/{head,base}`. A driver that lost its
+//! job can only ever remove what it made. The checkout is detached and
+//! registers no workspace, so the person's checkout, branches and sidebar
+//! never change.
+//!
+//! Its ownership is reserved (`review_jobs.worktree_path`) before it exists,
+//! and reserving, cutting, removing and sweeping all hold one lock, so a sweep
+//! never takes a checkout being cut for an orphan.
 //!
 //! Four layers remove it, so a leak needs all four to fail:
 //! 1. the [`Guard`] in [`Prepared`], dropped when the step that holds it ends,
@@ -16,6 +23,7 @@
 //! 4. the budget itself ([`has_capacity`]): a job stays queued rather than cut
 //!    a checkout past `maxReviewWorktrees`.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
@@ -25,7 +33,7 @@ use super::steps::{
     CancelToken, Guard, PassOutcome, PassRequest, PostedReview, Prepared, ReviewSteps, StepError, UnavailableSteps,
 };
 use super::store::{self, JobRow};
-use crate::github_surface::GithubSurfaceError;
+use crate::github_surface::{GithubRepository, GithubSurfaceError};
 use crate::runtime::BridgeCore;
 use crate::worktree_registry::{self, canonical_key, NewWorktree};
 use crate::{git, BridgeError};
@@ -35,14 +43,20 @@ use crate::{git, BridgeError};
 pub const MAX_DIFF_BYTES: usize = 400 * 1024;
 /// How much of the full patch is read to fill it.
 const PATCH_READ_LIMIT: usize = 16 * 1024 * 1024;
+/// How a shallow clone is deepened, in turn, until the PR and its base meet.
+const DEEPEN_STEPS: [git::Deepen; 4] =
+    [git::Deepen::By(64), git::Deepen::By(512), git::Deepen::By(4096), git::Deepen::Unshallow];
+/// Where fetched review refs live.
+const REF_ROOT: &str = "refs/bridge/reviews/";
 
 /// Where review checkouts and job folders live.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layout {
     /// `<worktrees>/reviews`: one checkout per job attempt, directly inside.
     pub reviews: PathBuf,
-    /// `<data dir>/review-jobs`: one folder per job, outside the worktree
-    /// namespace so the inventory never mistakes it for a checkout.
+    /// `<data dir>/review-jobs`: one folder per job, one per attempt inside,
+    /// outside the worktree namespace so the inventory never mistakes it for a
+    /// checkout.
     pub jobs: PathBuf,
 }
 
@@ -53,12 +67,26 @@ impl Layout {
     }
 
     pub fn checkout(&self, job: &JobRow) -> PathBuf {
-        self.reviews.join(format!("pr-{}-{}-{}", job.number, job_tag(&job.id), job.attempts.max(1)))
+        self.reviews.join(format!("pr-{}-{}-{}", job.number, job_tag(&job.id), attempt(job)))
     }
 
     pub fn job_dir(&self, job_id: &str) -> PathBuf {
         self.jobs.join(job_id)
     }
+
+    pub fn attempt_dir(&self, job: &JobRow) -> PathBuf {
+        self.job_dir(&job.id).join(attempt(job).to_string())
+    }
+}
+
+fn attempt(job: &JobRow) -> u32 {
+    job.attempts.max(1)
+}
+
+/// The refs one attempt fetches into.
+fn attempt_refs(job: &JobRow) -> (String, String) {
+    let prefix = format!("{REF_ROOT}{}-{}", job_tag(&job.id), attempt(job));
+    (format!("{prefix}/head"), format!("{prefix}/base"))
 }
 
 /// The first 12 hex digits of a job id: enough to tell jobs apart in a name.
@@ -159,6 +187,10 @@ fn fetch_error(what: &str, error: BridgeError) -> StepError {
     }
 }
 
+fn fatal(error: BridgeError) -> StepError {
+    StepError::Fatal(error.to_string())
+}
+
 /// The remote whose URL is the pull request's repository, so a fork setup
 /// (origin = your fork, upstream = the PR's repository) fetches from the
 /// right one. Falls back to the branch's push/upstream remote, then `origin`.
@@ -171,6 +203,60 @@ fn remote_for(workspace: &Path, owner: &str, name: &str) -> String {
         .ok()
         .and_then(|remotes| remotes.into_iter().find(|(_, url)| matches(url)).map(|(remote, _)| remote))
         .unwrap_or_else(|| crate::github_surface::resolve_remote_name(workspace))
+}
+
+/// The repository the job was started for, on the host the workspace
+/// resolves to: metadata and threads are read from it, never from whatever
+/// the workspace points at by the time the job runs.
+fn job_repository(core: &BridgeCore, workspace: &Path, job: &JobRow) -> GithubRepository {
+    let host = core
+        .github_surface
+        .resolve_repository(workspace)
+        .map(|repository| repository.host)
+        .unwrap_or_else(|_| "github.com".to_owned());
+    GithubRepository { host, owner: job.repo_owner.clone(), name: job.repo_name.clone() }
+}
+
+/// The best common ancestor of the PR and its base. A shallow clone may not
+/// hold it yet: deepen the two refs step by step, and only call the PR
+/// unrelated once the whole history is there.
+fn find_merge_base(workspace: &Path, remote: &str, refspecs: &[String], base: &str, head: &str) -> Result<String, StepError> {
+    let mut last = match git::merge_base(workspace, base, head) {
+        Ok(found) => return Ok(found),
+        Err(error) => error,
+    };
+    for deepen in DEEPEN_STEPS {
+        if !git::is_shallow(workspace) {
+            break;
+        }
+        git::fetch_deepening(workspace, remote, refspecs, deepen)
+            .map_err(|error| StepError::Transient(format!("Could not fetch more history: {error}")))?;
+        match git::merge_base(workspace, base, head) {
+            Ok(found) => return Ok(found),
+            Err(error) => last = error,
+        }
+    }
+    Err(StepError::Fatal(format!("The pull request shares no history with its base branch: {last}")))
+}
+
+/// What one attempt left: its checkout, its folder (and the job's, once
+/// empty) and its refs. Takes the checkout lock.
+fn remove_attempt(core: &BridgeCore, layout: &Layout, workspace: &Path, checkout: &Path, attempt_dir: &Path, refs: &[String]) {
+    {
+        let _checkouts = core.reviews.checkouts();
+        remove_checkout(core, layout, checkout);
+    }
+    remove_dir_inside(&layout.jobs, attempt_dir, 2);
+    if let Some(job_dir) = attempt_dir.parent() {
+        // Only when empty: another attempt may still be using its own, and
+        // then this fails, which is the point.
+        drop(std::fs::remove_dir(job_dir));
+    }
+    for name in refs {
+        if let Err(error) = git::delete_ref(workspace, name) {
+            eprintln!("[reviews] could not delete {name}: {error}");
+        }
+    }
 }
 
 /// Check the PR head out for `job` and write its context folder. See the
@@ -186,76 +272,93 @@ pub fn prepare(
     if !git::is_repository(&workspace) {
         return Err(StepError::Fatal(format!("{} is not a git repository", workspace.display())));
     }
-    let remote = remote_for(&workspace, &job.repo_owner, &job.repo_name);
-    let number = job.number;
-
-    let head = git::fetch_ref(&workspace, &remote, &format!("refs/pull/{number}/head"), &format!("refs/bridge/reviews/pr-{number}"))
-        .map_err(|error| fetch_error(&format!("pull request #{number}"), error))?;
-    if cancel.is_cancelled() {
-        return Err(StepError::Cancelled);
-    }
-    let detail = core.github_surface.pr_detail(&workspace, number).map_err(surface_error)?;
-    let base_ref = detail.base_branch.clone();
-    let base_tip = git::fetch_ref(&workspace, &remote, &format!("refs/heads/{base_ref}"), &format!("refs/bridge/reviews/base-{number}"))
-        .map_err(|error| fetch_error(&format!("the base branch {base_ref}"), error))?;
-    let merge_base = git::merge_base(&workspace, &base_tip, &head)
-        .map_err(|error| StepError::Fatal(format!("The pull request shares no history with {base_ref}: {error}")))?;
-    let threads = core.github_surface.pr_review_threads(&workspace, number).map_err(surface_error)?;
-    if cancel.is_cancelled() {
-        return Err(StepError::Cancelled);
-    }
-
     let layout = Layout::for_core(core);
     let checkout = layout.checkout(job);
-    let job_dir = layout.job_dir(&job.id);
-    // An earlier try of this very attempt may have left its checkout behind.
-    remove_checkout(core, &layout, &checkout);
-    git::add_detached_worktree(&workspace, &checkout, &head)
-        .map_err(|error| StepError::Transient(format!("Could not check out the pull request: {error}")))?;
+    let attempt_dir = layout.attempt_dir(job);
+    let (head_ref, base_ref) = attempt_refs(job);
+    // From here on, however this ends, what this attempt made goes with it.
     let guard = {
         let core = Arc::downgrade(core);
-        let layout = layout.clone();
-        let checkout = checkout.clone();
-        let job_dir = job_dir.clone();
+        let (layout, workspace, checkout, attempt_dir) = (layout.clone(), workspace.clone(), checkout.clone(), attempt_dir.clone());
+        let refs = vec![head_ref.clone(), base_ref.clone()];
         Arc::new(Guard::new(move || {
             if let Some(core) = core.upgrade() {
-                remove_checkout(&core, &layout, &checkout);
+                remove_attempt(&core, &layout, &workspace, &checkout, &attempt_dir, &refs);
             }
-            remove_job_dir(&layout, &job_dir);
         }))
     };
-    let recorded = {
-        let db = super::lock_db(core);
-        let recorded = store::set_worktree(&db, &job.id, &claim, &canonical_key(&checkout)).map_err(fatal)?;
-        if recorded {
-            worktree_registry::register(
-                &db,
-                &NewWorktree {
-                    kind: worktree_registry::KIND_REVIEW.to_owned(),
-                    repo_root: workspace.to_string_lossy().into_owned(),
-                    path: checkout.to_string_lossy().into_owned(),
-                    branch: None,
-                    owner_session_id: None,
-                    owner_workspace_id: Some(job.workspace_id.clone()),
-                    base_commit: Some(head.clone()),
-                },
-            )
-            .map_err(fatal)?;
-        }
-        recorded
-    };
-    if !recorded {
-        // The claim lost the job; the guard removes the checkout on return.
+
+    let repository = job_repository(core, &workspace, job);
+    let remote = remote_for(&workspace, &job.repo_owner, &job.repo_name);
+    let number = job.number;
+    let detail = core.github_surface.pr_detail_in(&workspace, &repository, number).map_err(surface_error)?;
+    let head_spec = format!("+refs/pull/{number}/head:{head_ref}");
+    let base_spec = format!("+refs/heads/{}:{base_ref}", detail.base_branch);
+    let head = git::fetch_ref(&workspace, &remote, &format!("refs/pull/{number}/head"), &head_ref)
+        .map_err(|error| fetch_error(&format!("pull request #{number}"), error))?;
+    let base_tip = git::fetch_ref(&workspace, &remote, &format!("refs/heads/{}", detail.base_branch), &base_ref)
+        .map_err(|error| fetch_error(&format!("the base branch {}", detail.base_branch), error))?;
+    let merge_base = find_merge_base(&workspace, &remote, &[head_spec, base_spec], &base_ref, &head_ref)?;
+    let threads = core.github_surface.pr_review_threads_in(&workspace, &repository, number).map_err(surface_error)?;
+    if cancel.is_cancelled() {
         return Err(StepError::Cancelled);
     }
 
-    let context = job_dir.join("context");
-    write_context(&workspace, &context, config, job, &detail, &threads, &head, &base_tip, &merge_base)?;
+    // Reserve, then cut, under the checkout lock: a sweep that runs meanwhile
+    // waits, and then finds the checkout owned.
+    let cut = {
+        let _checkouts = core.reviews.checkouts();
+        cut_checkout(core, &workspace, job, &claim, &checkout, &head)
+    };
+    cut?;
+    {
+        let db = super::lock_db(core);
+        worktree_registry::register(
+            &db,
+            &NewWorktree {
+                kind: worktree_registry::KIND_REVIEW.to_owned(),
+                repo_root: workspace.to_string_lossy().into_owned(),
+                path: checkout.to_string_lossy().into_owned(),
+                branch: None,
+                owner_session_id: None,
+                owner_workspace_id: Some(job.workspace_id.clone()),
+                base_commit: Some(head.clone()),
+            },
+        )
+        .map_err(fatal)?;
+    }
+
+    let context = attempt_dir.join("context");
+    let facts = ContextFacts { job, detail: &detail, threads: &threads, head: &head, base_tip: &base_tip, merge_base: &merge_base };
+    write_context(&workspace, &context, config, &facts)?;
     Ok(Prepared { worktree: Some(checkout), context: Some(context), head_sha: head, guard: Some(guard) })
 }
 
-fn fatal(error: BridgeError) -> StepError {
-    StepError::Fatal(error.to_string())
+/// Reserve the checkout for the claim, then cut it. Runs under the checkout
+/// lock. A reservation that cannot be cut is given back.
+fn cut_checkout(core: &BridgeCore, workspace: &Path, job: &JobRow, claim: &str, checkout: &Path, head: &str) -> Result<(), StepError> {
+    let reserved = store::set_worktree(&super::lock_db(core), &job.id, claim, &canonical_key(checkout)).map_err(fatal)?;
+    if !reserved {
+        return Err(StepError::Cancelled);
+    }
+    // An earlier try of this very attempt may have left its checkout behind.
+    remove_checkout(core, &Layout::for_core(core), checkout);
+    if let Err(error) = git::add_detached_worktree(workspace, checkout, head) {
+        if let Err(clear) = store::clear_worktree(&super::lock_db(core), &job.id, claim) {
+            eprintln!("[reviews] could not give back the reservation of {}: {clear}", job.id);
+        }
+        return Err(StepError::Transient(format!("Could not check out the pull request: {error}")));
+    }
+    Ok(())
+}
+
+struct ContextFacts<'a> {
+    job: &'a JobRow,
+    detail: &'a crate::github_surface::PullRequestDetail,
+    threads: &'a [crate::github_surface::ReviewThread],
+    head: &'a str,
+    base_tip: &'a str,
+    merge_base: &'a str,
 }
 
 fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), StepError> {
@@ -263,18 +366,8 @@ fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), StepError> {
     std::fs::write(path, text).map_err(|error| StepError::Fatal(format!("Could not write {}: {error}", path.display())))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn write_context(
-    workspace: &Path,
-    context: &Path,
-    config: &PrepareConfig,
-    job: &JobRow,
-    detail: &crate::github_surface::PullRequestDetail,
-    threads: &[crate::github_surface::ReviewThread],
-    head: &str,
-    base_tip: &str,
-    merge_base: &str,
-) -> Result<(), StepError> {
+fn write_context(workspace: &Path, context: &Path, config: &PrepareConfig, facts: &ContextFacts<'_>) -> Result<(), StepError> {
+    let ContextFacts { job, detail, threads, head, base_tip, merge_base } = facts;
     std::fs::create_dir_all(context).map_err(|error| StepError::Fatal(error.to_string()))?;
     let files = git::diff_files(workspace, merge_base, head).map_err(fatal)?;
     let (patch, omitted) = capped_patch(workspace, merge_base, head, &files, config.max_diff_bytes)?;
@@ -319,9 +412,31 @@ fn write_context(
     Ok(())
 }
 
+/// The path a `diff --git a/<p> b/<p>` header names, when both sides name the
+/// same path (everything but a rename or copy).
+fn section_path(section: &[u8]) -> Option<&[u8]> {
+    let header = section.split(|byte| *byte == b'\n').next()?;
+    let names = header.strip_prefix(b"diff --git ")?;
+    // `a/<p> b/<p>`, possibly quoted as `"a/<p>" "b/<p>"`: two equal halves
+    // around one space, once the a/ and b/ prefixes are set aside.
+    if names.len() % 2 == 0 {
+        return None;
+    }
+    let half = names.len() / 2;
+    let (left, right) = (&names[..half], &names[half + 1..]);
+    fn strip<'a>(side: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
+        side.strip_prefix(prefix).or_else(|| side.strip_prefix(b"\"").and_then(|rest| rest.strip_prefix(prefix)))
+    }
+    let (left, right) = (strip(left, b"a/")?, strip(right, b"b/")?);
+    (left == right).then_some(left)
+}
+
 /// The patch, whole files only, within `max` bytes, and the files left out.
-/// `git diff` prints files in the order `diff_files` lists them, so the n-th
-/// `diff --git` section is the n-th file.
+///
+/// `git diff` prints files in the order `diff_files` lists them, but one file
+/// can take several sections (a type change is a deletion and an addition of
+/// the same path), so consecutive sections of one path are grouped first and
+/// each group is one file.
 fn capped_patch(
     workspace: &Path,
     merge_base: &str,
@@ -346,11 +461,26 @@ fn capped_patch(
     if let (Some(&last), false) = (starts.last(), read_truncated) {
         sections.push(&full[last..]);
     }
+    let mut groups: Vec<Vec<&[u8]>> = Vec::new();
+    for section in sections {
+        let joins = groups.last().and_then(|group| group.last()).is_some_and(|previous| {
+            section_path(previous).is_some_and(|path| section_path(section) == Some(path))
+        });
+        match groups.last_mut() {
+            Some(group) if joins => group.push(section),
+            _ => groups.push(vec![section]),
+        }
+    }
     let mut patch = Vec::new();
     let mut omitted = Vec::new();
     for (index, file) in files.iter().enumerate() {
-        match sections.get(index) {
-            Some(section) if patch.len() + section.len() <= max => patch.extend_from_slice(section),
+        let size = groups.get(index).map(|group| group.iter().map(|section| section.len()).sum::<usize>());
+        match (groups.get(index), size) {
+            (Some(group), Some(size)) if patch.len() + size <= max => {
+                for section in group {
+                    patch.extend_from_slice(section);
+                }
+            }
             _ => omitted.push(file.path.clone()),
         }
     }
@@ -358,7 +488,8 @@ fn capped_patch(
 }
 
 /// Remove one review checkout and what git knows of it. Only ever touches a
-/// directory directly inside `layout.reviews`.
+/// directory directly inside `layout.reviews`. The caller holds the checkout
+/// lock.
 fn remove_checkout(core: &BridgeCore, layout: &Layout, checkout: &Path) {
     let inside = checkout.parent().is_some_and(|parent| canonical_key(parent) == canonical_key(&layout.reviews));
     if !inside {
@@ -389,11 +520,12 @@ fn remove_checkout(core: &BridgeCore, layout: &Layout, checkout: &Path) {
     }
 }
 
-fn remove_job_dir(layout: &Layout, job_dir: &Path) {
-    let inside = job_dir.parent().is_some_and(|parent| canonical_key(parent) == canonical_key(&layout.jobs));
-    if inside && job_dir.exists() {
-        if let Err(error) = std::fs::remove_dir_all(job_dir) {
-            eprintln!("[reviews] could not remove {}: {error}", job_dir.display());
+/// Remove a directory `depth` levels inside `root`, and nothing else.
+fn remove_dir_inside(root: &Path, dir: &Path, depth: usize) {
+    let inside = dir.ancestors().nth(depth).is_some_and(|ancestor| canonical_key(ancestor) == canonical_key(root));
+    if inside && dir.exists() {
+        if let Err(error) = std::fs::remove_dir_all(dir) {
+            eprintln!("[reviews] could not remove {}: {error}", dir.display());
         }
     }
 }
@@ -410,17 +542,33 @@ fn subdirectories(root: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// Remove every checkout of `job_id`, all attempts, and its job folder.
-/// Idempotent.
+/// Remove every checkout of `job_id`, all attempts, its job folder and its
+/// fetched refs. Idempotent.
 pub fn cleanup(core: &BridgeCore, job_id: &str) {
     let layout = Layout::for_core(core);
     let tag = job_tag(job_id);
-    for checkout in subdirectories(&layout.reviews) {
-        if checkout.file_name().is_some_and(|name| belongs_to(&name.to_string_lossy(), &tag)) {
-            remove_checkout(core, &layout, &checkout);
+    {
+        let _checkouts = core.reviews.checkouts();
+        for checkout in subdirectories(&layout.reviews) {
+            if checkout.file_name().is_some_and(|name| belongs_to(&name.to_string_lossy(), &tag)) {
+                remove_checkout(core, &layout, &checkout);
+            }
         }
     }
-    remove_job_dir(&layout, &layout.job_dir(job_id));
+    remove_dir_inside(&layout.jobs, &layout.job_dir(job_id), 1);
+    let workspace = {
+        let db = super::lock_db(core);
+        store::get_job(&db, job_id).ok().flatten().map(|job| job.workspace_id)
+    }
+    .and_then(|workspace_id| core.workspace_path(&workspace_id).ok())
+    .map(PathBuf::from);
+    if let Some(workspace) = workspace.filter(|workspace| workspace.is_dir()) {
+        for name in git::refs_with_prefix(&workspace, &format!("{REF_ROOT}{tag}-")).unwrap_or_default() {
+            if let Err(error) = git::delete_ref(&workspace, &name) {
+                eprintln!("[reviews] could not delete {name}: {error}");
+            }
+        }
+    }
 }
 
 /// What a reap removed.
@@ -429,21 +577,24 @@ pub struct Reaped {
     pub checkouts: usize,
     pub job_dirs: usize,
     pub registrations: usize,
+    pub refs: usize,
 }
 
-/// Remove every review checkout and job folder no live job owns, and every
-/// registration git still holds for a review checkout that is gone.
+/// Remove every review checkout, job or attempt folder, git registration and
+/// fetched ref that no live job's current attempt owns. Holds the checkout
+/// lock throughout, so nothing is cut while it decides.
 pub fn reap(core: &BridgeCore) -> Result<Reaped, BridgeError> {
+    let _checkouts = core.reviews.checkouts();
     let layout = Layout::for_core(core);
-    let (live, live_jobs, repos) = {
+    let (live, attempts, repos) = {
         let db = super::lock_db(core);
-        let live = store::live_worktrees(&db)?;
-        let live_jobs = store::live_job_ids(&db)?;
+        let live: HashSet<String> = store::live_worktrees(&db)?.into_iter().collect();
+        let attempts = store::live_attempts(&db)?;
         let mut statement = db.prepare(
             "SELECT path FROM workspaces WHERE COALESCE(path,'')<>'' UNION SELECT path FROM projects WHERE COALESCE(path,'')<>''",
         )?;
         let repos = statement.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
-        (live, live_jobs, repos)
+        (live, attempts, repos)
     };
     let mut reaped = Reaped::default();
     for checkout in subdirectories(&layout.reviews) {
@@ -453,16 +604,32 @@ pub fn reap(core: &BridgeCore) -> Result<Reaped, BridgeError> {
         }
     }
     for job_dir in subdirectories(&layout.jobs) {
-        let owned = job_dir.file_name().is_some_and(|name| live_jobs.iter().any(|id| name.to_string_lossy() == *id));
-        if !owned {
-            remove_job_dir(&layout, &job_dir);
-            reaped.job_dirs += 1;
+        let name = job_dir.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        match attempts.iter().find(|(id, _)| *id == name) {
+            None => {
+                remove_dir_inside(&layout.jobs, &job_dir, 1);
+                reaped.job_dirs += 1;
+            }
+            // A live job: only its current attempt's folder stays.
+            Some((_, current)) => {
+                for attempt_dir in subdirectories(&job_dir) {
+                    if attempt_dir.file_name().is_some_and(|name| name.to_string_lossy() != current.max(&1).to_string()) {
+                        remove_dir_inside(&layout.jobs, &attempt_dir, 2);
+                        reaped.job_dirs += 1;
+                    }
+                }
+            }
         }
     }
-    // Review registrations git still holds that no live job owns, including
-    // those whose directory someone else deleted.
+    let live_refs: HashSet<String> =
+        attempts.iter().map(|(id, current)| format!("{REF_ROOT}{}-{}/", job_tag(id), current.max(&1))).collect();
     let reviews_key = canonical_key(&layout.reviews);
     for repo in repos.iter().map(PathBuf::from).filter(|repo| repo.is_dir()) {
+        for name in git::refs_with_prefix(&repo, REF_ROOT).unwrap_or_default() {
+            if !live_refs.iter().any(|prefix| name.starts_with(prefix)) && git::delete_ref(&repo, &name).is_ok() {
+                reaped.refs += 1;
+            }
+        }
         let Ok(entries) = git::list_worktrees(&repo) else { continue };
         let stale: Vec<PathBuf> = entries
             .into_iter()
@@ -484,19 +651,26 @@ pub fn reap(core: &BridgeCore) -> Result<Reaped, BridgeError> {
     Ok(reaped)
 }
 
-/// Review checkouts in use: those on disk, plus claimed jobs that have not
-/// cut theirs yet.
+/// Review checkouts in use: those on disk or reserved by a job preparing or
+/// reviewing, plus claimed jobs that have not reserved theirs yet.
 fn in_use(core: &BridgeCore, layout: &Layout) -> usize {
-    let pending = store::claimed_without_worktree(&super::lock_db(core)).unwrap_or(0);
-    subdirectories(&layout.reviews).len() + pending
+    let (reserved, pending) = {
+        let db = super::lock_db(core);
+        (store::reserved_worktrees(&db).unwrap_or_default(), store::claimed_without_worktree(&db).unwrap_or(0))
+    };
+    let mut checkouts: HashSet<String> = subdirectories(&layout.reviews).iter().map(|path| canonical_key(path)).collect();
+    checkouts.extend(reserved);
+    checkouts.len() + pending
 }
 
 /// Whether one more job may cut a checkout without passing
 /// `maxReviewWorktrees`. Sweeps first when the budget looks full.
 pub fn has_capacity(core: &BridgeCore) -> bool {
-    let budget = usize::from(super::settings::load(&super::lock_db(core)).map(|settings| settings.max_review_worktrees).unwrap_or(
-        bridge_protocol::messages::DEFAULT_MAX_REVIEW_WORKTREES,
-    ));
+    let budget = usize::from(
+        super::settings::load(&super::lock_db(core))
+            .map(|settings| settings.max_review_worktrees)
+            .unwrap_or(bridge_protocol::messages::DEFAULT_MAX_REVIEW_WORKTREES),
+    );
     let layout = Layout::for_core(core);
     if in_use(core, &layout) < budget {
         return true;
