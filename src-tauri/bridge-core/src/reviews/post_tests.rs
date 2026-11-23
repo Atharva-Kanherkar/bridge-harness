@@ -347,6 +347,7 @@ mod live {
     use crate::reviews::steps::{DraftFinding, PassOutcome, PassRequest, Prepared, ReviewSteps};
     use crate::runtime::BridgeCore;
     use rusqlite::params;
+    use std::path::Path;
     use std::time::Duration;
 
     /// A `gh` that keeps the PR's reviews in files: a POST stores the review
@@ -640,5 +641,150 @@ esac
         fixture.drive();
         assert_eq!(fixture.job(&id).status, Status::Posted, "and posts once fixed");
         assert_eq!(fixture.posts(), 2);
+    }
+
+    fn gh_text(gh: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new(gh).args(args).output().unwrap();
+        assert!(output.status.success(), "gh {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    /// Posts one `COMMENT` review to a real pull request with a single-line,
+    /// a multi-line and a LEFT comment, checks GitHub placed each where it was
+    /// sent, and checks a second post finds the marker instead of posting
+    /// again. Run only against a sandbox repository:
+    /// `BRIDGE_REVIEW_LIVE_REPO=owner/name BRIDGE_REVIEW_LIVE_PR=n cargo test
+    /// -p bridge-core --lib live_post_on_a_sandbox_pr -- --ignored --nocapture`.
+    /// The PR needs a hunk with two added lines and a hunk with an old line.
+    #[test]
+    #[ignore = "posts to a real sandbox pull request"]
+    fn live_post_on_a_sandbox_pr() {
+        let repository = std::env::var("BRIDGE_REVIEW_LIVE_REPO").expect("BRIDGE_REVIEW_LIVE_REPO=owner/name");
+        let number: u64 = std::env::var("BRIDGE_REVIEW_LIVE_PR").expect("BRIDGE_REVIEW_LIVE_PR=n").parse().unwrap();
+        let (owner, name) = repository.split_once('/').expect("owner/name");
+        let gh = which::which("gh").expect("gh on PATH");
+        let n = number.to_string();
+        let head = gh_text(&gh, &["pr", "view", &n, "--repo", &repository, "--json", "headRefOid", "-q", ".headRefOid"]);
+        let diff = gh_text(&gh, &["pr", "diff", &n, "--repo", &repository]);
+        let hunks = crate::reviews::contract::hunks(&diff);
+        let (range_path, range) = hunks
+            .iter()
+            .flat_map(|(path, hunks)| hunks.iter().map(move |hunk| (path, hunk)))
+            .find(|(_, hunk)| hunk.new.len() >= 2)
+            .map(|(path, hunk)| (path.clone(), (hunk.new[0], hunk.new[1])))
+            .expect("a hunk with two lines on the new side");
+        let (left_path, left_line) = hunks
+            .iter()
+            .flat_map(|(path, hunks)| hunks.iter().map(move |hunk| (path, hunk)))
+            .find(|(_, hunk)| !hunk.old.is_empty())
+            .map(|(path, hunk)| (path.clone(), hunk.old[0]))
+            .expect("a hunk with an old line");
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let mut core = BridgeCore::for_tests(&dir.path().join("data"));
+        core.github_surface = crate::github_surface::GithubSurface::discover_on_path(gh.parent().unwrap());
+        let core = Arc::new(core);
+        let job_id = {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Live',?1,'now')", params![workspace.to_string_lossy()])
+                .unwrap();
+            db.execute(
+                "INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at)
+                 VALUES('w','p','Oslo','Live','main',?1,'ready','now')",
+                params![workspace.to_string_lossy()],
+            )
+            .unwrap();
+            let (job, _) = store::insert(
+                &db,
+                &store::NewJob {
+                    workspace_id: "w".into(),
+                    repo_owner: owner.into(),
+                    repo_name: name.into(),
+                    number,
+                    head_sha: head.clone(),
+                    base_sha: None,
+                    incremental_from_sha: None,
+                    trigger: ReviewTrigger::Manual,
+                    post_mode: ReviewPostMode::Draft,
+                    harnesses: vec!["claude".into()],
+                    retry_of: None,
+                    publication_key: None,
+                },
+                chrono::Utc::now(),
+            )
+            .unwrap();
+            let token = store::claim_next(&db, "live", chrono::Utc::now()).unwrap().unwrap().lease_owner.unwrap();
+            assert!(store::advance(&db, &job.id, &token, Status::Preparing, Status::Reviewing, false).unwrap());
+            let pass = store::begin_pass(&db, &job.id, &token, 0, "claude", chrono::Utc::now()).unwrap().unwrap();
+            let mut single = draft(&range_path, range.1, ReviewSide::Right, false);
+            single.title = "Live test: one line".into();
+            let mut ranged = draft(&range_path, range.1, ReviewSide::Right, false);
+            ranged.start_line = Some(range.0);
+            ranged.title = "Live test: a range".into();
+            let mut left = draft(&left_path, left_line, ReviewSide::Left, false);
+            left.title = "Live test: an old line".into();
+            let mut outside = draft(&range_path, 99_999, ReviewSide::Right, true);
+            outside.title = "Live test: outside the diff".into();
+            let outcome = PassOutcome {
+                summary: "Bridge live posting test. Safe to ignore.".into(),
+                findings: vec![single, ranged, left, outside],
+                ..Default::default()
+            };
+            assert!(store::complete_pass(&db, &job.id, &token, &pass, &outcome, chrono::Utc::now()).unwrap());
+            assert!(store::finish_review(&db, &job.id, &token, "Bridge live posting test. Safe to ignore.", true).unwrap());
+            let decisions: Vec<wire::ReviewFindingDecisionInput> = store::findings(&db, &job.id)
+                .unwrap()
+                .into_iter()
+                .map(|finding| wire::ReviewFindingDecisionInput {
+                    finding_id: finding.id,
+                    decision: ReviewFindingDecision::Kept,
+                    edited_body: None,
+                })
+                .collect();
+            store::decide(&db, &job.id, &decisions, chrono::Utc::now()).unwrap();
+            store::request_post(&db, &job.id).unwrap();
+            job.id
+        };
+        let job = store::claim_next(&core.db.lock().unwrap(), "live", chrono::Utc::now()).unwrap().unwrap();
+        assert_eq!(job.id, job_id);
+
+        let posted = crate::reviews::post::post(&core, &job, &CancelToken::new()).unwrap();
+        println!("posted {}", posted.url);
+        let review: Value = serde_json::from_str(&gh_text(
+            &gh,
+            &["api", &format!("repos/{repository}/pulls/{number}/reviews/{}", posted.review_id)],
+        ))
+        .unwrap();
+        assert_eq!(review["state"], "COMMENTED", "{review}");
+        assert_eq!(review["commit_id"], json!(head));
+        let comments: Value = serde_json::from_str(&gh_text(
+            &gh,
+            &["api", &format!("repos/{repository}/pulls/{number}/reviews/{}/comments", posted.review_id)],
+        ))
+        .unwrap();
+        let placed: Vec<(String, u64, String, Option<u64>)> = comments
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|comment| {
+                (
+                    comment["path"].as_str().unwrap().to_owned(),
+                    comment["original_line"].as_u64().unwrap(),
+                    comment["side"].as_str().unwrap().to_owned(),
+                    comment["original_start_line"].as_u64(),
+                )
+            })
+            .collect();
+        println!("placed {placed:?}");
+        assert!(placed.contains(&(range_path.clone(), u64::from(range.1), "RIGHT".into(), None)), "{placed:?}");
+        assert!(placed.contains(&(range_path.clone(), u64::from(range.1), "RIGHT".into(), Some(u64::from(range.0)))), "{placed:?}");
+        assert!(placed.contains(&(left_path.clone(), u64::from(left_line), "LEFT".into(), None)), "{placed:?}");
+        assert_eq!(posted.findings.iter().filter(|finding| finding.comment_id.is_some()).count(), 3, "{posted:?}");
+
+        let found = crate::reviews::post::find_posted(&core, &job).unwrap().expect("the marker finds the review");
+        assert_eq!(found.review_id, posted.review_id, "a retry would post nothing new");
+        assert_eq!(found.findings.len(), 4, "the found review holds every finding: {found:?}");
     }
 }
