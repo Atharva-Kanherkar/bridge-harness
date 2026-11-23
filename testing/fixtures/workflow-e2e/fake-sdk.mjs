@@ -200,6 +200,18 @@ export function query({ prompt, options = {} }) {
       yield* finish(summary + resultBlock(edited ? "done" : "not_done", summary));
       return;
     }
+    if (brief.includes("E2E:slow")) {
+      // A run that takes a while, so a burst of runs overlaps and the queue
+      // has something to hold back.
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    const event = text.match(/```workflow-event\n([\s\S]*?)\n```/);
+    if (event) {
+      const records = JSON.parse(event[1]);
+      const summary = `Handled ${records.length} event${records.length === 1 ? "" : "s"}: ${records.map((record) => record.title).join("; ")}`;
+      yield* finish(summary + resultBlock("done", summary));
+      return;
+    }
     yield* finish(`Nothing to do.${resultBlock("done", "Nothing to do.")}`);
   }
 
