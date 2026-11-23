@@ -277,6 +277,7 @@ impl World {
             completed_at: self.now,
             launch: with_launch.then(|| self.launch.clone()),
             harness: self.session.harness.clone(),
+            generation: self.tracker.generation(),
         }
     }
 

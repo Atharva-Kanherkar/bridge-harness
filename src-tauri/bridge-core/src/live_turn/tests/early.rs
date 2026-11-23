@@ -487,6 +487,7 @@ impl World {
             completed_at: Utc::now(),
             launch: Some(crate::early_compaction::Launch { started_at, provider_session_id }),
             harness: harness.to_owned(),
+            generation: self.core.early_compaction.generation(),
         }));
         Ok(())
     }

@@ -97,7 +97,8 @@ pub fn stored_switch(db: &Connection) -> bool {
 
 /// Runs `write` under the input lease and the database lock, then loads the
 /// stored switch into memory before the lease ends. The lease comes first,
-/// the same order as a send. With the switch off, each due mark goes at once.
+/// the same order as a send. With the switch off, each due mark goes at once,
+/// and so does each due receipt that the frame path built before this write.
 pub fn with_switch_write<T>(
     core: &BridgeCore,
     write: impl FnOnce(&Connection) -> Result<T, BridgeError>,
@@ -108,7 +109,7 @@ pub fn with_switch_write<T>(
     let enabled = stored_switch(&db);
     core.early_compaction.set_enabled(enabled);
     if !enabled {
-        core.early_compaction.clear_marks();
+        core.early_compaction.invalidate_marks();
     }
     result
 }
@@ -380,6 +381,9 @@ mod tests {
     #[test]
     fn a_save_that_turns_the_switch_off_drops_each_due_mark() {
         use crate::early_compaction::{DueMark, Receipt};
+        let (_scratch, core) = core();
+        direct(&core, "chat-3");
+        let core = Arc::new(core);
         let mark = |session_id: &str| {
             Receipt::Due(DueMark {
                 session_id: session_id.into(),
@@ -387,11 +391,9 @@ mod tests {
                 completed_at: chrono::Utc::now(),
                 launch: None,
                 harness: "claude".into(),
+                generation: core.early_compaction.generation(),
             })
         };
-        let (_scratch, core) = core();
-        direct(&core, "chat-3");
-        let core = Arc::new(core);
         save(&core, &global(Some(true))).unwrap();
         core.early_compaction.accept(mark("chat-1"));
         core.early_compaction.accept(mark("chat-2"));
@@ -407,5 +409,43 @@ mod tests {
         core.early_compaction.accept(mark("chat-1"));
         crate::api::reset_all_config(&core).unwrap();
         assert!(core.early_compaction.marks().is_empty(), "a due mark outlived the reset");
+    }
+
+    #[test]
+    fn a_receipt_built_before_an_off_and_on_cycle_adds_no_mark() -> Result<(), BridgeError> {
+        use crate::early_compaction::{Frame, Receipt};
+        let frame = Frame {
+            session_id: "chat-1",
+            harness: "claude",
+            direct: true,
+            depth: 0,
+            turn_completed: true,
+            turn_failed: false,
+            checkpoint_turn: false,
+            prompt_control: false,
+            turn_id: Some("turn-1"),
+            boundary: None,
+            launch: Some(("2026-11-23T10:00:00+00:00", "thread-1")),
+            error: None,
+        };
+        let (_scratch, core) = core();
+        save(&core, &global(Some(true)))?;
+        // The frame path builds the receipt under the database lock, and it
+        // accepts the receipt after the lock.
+        let staged = core.early_compaction.receipt(&frame, chrono::Utc::now());
+        assert!(matches!(staged, Some(Receipt::Due(_))), "{staged:?}");
+        // Saves in that gap turn the switch off and on again.
+        save(&core, &global(Some(false)))?;
+        save(&core, &global(Some(true)))?;
+        if let Some(receipt) = staged {
+            crate::early_compaction::accept(&core, receipt, chrono::Utc::now());
+        }
+        assert!(core.early_compaction.marks().is_empty(), "a receipt from before the switch went off made a mark");
+        // A receipt built after the saves makes a mark.
+        if let Some(receipt) = core.early_compaction.receipt(&frame, chrono::Utc::now()) {
+            crate::early_compaction::accept(&core, receipt, chrono::Utc::now());
+        }
+        assert_eq!(core.early_compaction.marks().len(), 1);
+        Ok(())
     }
 }

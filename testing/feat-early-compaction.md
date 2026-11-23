@@ -64,6 +64,7 @@ Bridge asks a top-level direct Claude or Codex chat to compact its own window at
 - The flag does not use a turn id. Claude sends no turn start for a compaction, and its turn end has no turn id.
 - The mark holds the turn id, the time of the turn end, the launch (`started_at` and `provider_session_id`) and the harness.
 - After the lock, `early_compaction::accept` puts the mark in memory. A new mark of the same chat replaces the old mark.
+- The mark also holds the generation of the tracker from inside the lock. A save that leaves the switch off makes a new generation and drops each mark, in one tracker lock. `accept` keeps a mark of the current generation only. So a receipt built before an off save makes no mark, also when an on save comes before `accept`.
 - A fire removes the mark. A new mark needs a new completed turn that is not a compaction.
 
 ### One dispatch path
@@ -212,6 +213,7 @@ Bridge asks a top-level direct Claude or Codex chat to compact its own window at
 - `a_configuration_reset_turns_it_off`
 - `get_reports_the_scope_of_a_chat` (a missing id, a worker, a depth 1 direct chat, an OpenCode chat and eligible chats)
 - `an_opt_out_for_a_chat_outside_the_scope_is_refused`
+- `a_receipt_built_before_an_off_and_on_cycle_adds_no_mark`
 
 `live_turn::tests`, the due mark:
 

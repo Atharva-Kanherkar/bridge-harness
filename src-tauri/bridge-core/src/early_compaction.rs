@@ -70,6 +70,10 @@ pub struct DueMark {
     /// `None` when the frame path did not know the launch.
     pub launch: Option<Launch>,
     pub harness: String,
+    /// The [`Tracker::generation`] when the frame path built the mark. A save
+    /// that turns the switch off makes a new generation, and
+    /// [`Tracker::accept`] keeps a mark of the current generation only.
+    pub generation: u64,
 }
 
 /// How an attempt ended.
@@ -667,6 +671,8 @@ struct Memory {
     stopped: HashMap<String, (Launch, LaunchStop)>,
     /// Lost at restart, so the next reading of that attempt stays null.
     fills: HashMap<String, Fill>,
+    /// One more for each save that leaves the switch off.
+    generation: u64,
 }
 
 impl Tracker {
@@ -682,12 +688,23 @@ impl Tracker {
         self.enabled.store(enabled, Ordering::SeqCst);
     }
 
-    /// A due mark replaces the mark of the same chat. A settlement closes
-    /// the open attempt that it names.
+    /// The generation of the switch. [`Tracker::receipt`] puts it in each due
+    /// mark.
+    pub fn generation(&self) -> u64 {
+        self.memory().generation
+    }
+
+    /// A due mark replaces the mark of the same chat. A due mark of another
+    /// generation makes no mark: the frame path built it before a save that
+    /// turned the switch off. A settlement closes the open attempt that it
+    /// names.
     pub fn accept(&self, receipt: Receipt) {
         match receipt {
             Receipt::Due(mark) => {
-                self.memory().due.insert(mark.session_id.clone(), mark);
+                let mut memory = self.memory();
+                if mark.generation == memory.generation {
+                    memory.due.insert(mark.session_id.clone(), mark);
+                }
             }
             Receipt::Settle(settlement) => {
                 self.settle(
@@ -846,6 +863,10 @@ impl Tracker {
                 error,
             }));
         }
+        // The generation comes before the switch. So a save that turns the
+        // switch off between the two reads gives no receipt, or a receipt of
+        // an older generation.
+        let generation = self.generation();
         let due = self.enabled()
             && frame.turn_completed
             && !frame.turn_failed
@@ -862,6 +883,7 @@ impl Tracker {
             completed_at: now,
             launch: Some(launch),
             harness: frame.harness.to_owned(),
+            generation,
         }))
     }
 
@@ -874,6 +896,16 @@ impl Tracker {
     /// The sweep calls this when the switch is off.
     pub fn clear_marks(&self) {
         self.memory().due.clear();
+    }
+
+    /// A save that leaves the switch off calls this. It drops each due mark
+    /// and makes a new generation in the same lock. So a receipt that the
+    /// frame path built before the save makes no mark, also when a later
+    /// save turns the switch on before the frame path accepts the receipt.
+    pub fn invalidate_marks(&self) {
+        let mut memory = self.memory();
+        memory.generation = memory.generation.wrapping_add(1);
+        memory.due.clear();
     }
 
     pub fn open_attempts(&self) -> Vec<(String, OpenAttempt)> {

@@ -50,6 +50,7 @@ fn mark(harness: &str) -> DueMark {
         completed_at: at(0),
         launch: Some(launch()),
         harness: harness.to_owned(),
+        generation: 0,
     }
 }
 
