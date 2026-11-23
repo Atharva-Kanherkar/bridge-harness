@@ -120,6 +120,9 @@ fn codex_scenario(run: &mut Run) {
 struct Run {
     scratch: tempfile::TempDir,
     core: Arc<BridgeCore>,
+    /// The rows that the store holds when it opens: the migrations and the
+    /// seed rows. The trace leaves them out.
+    opened: serde_json::Map<String, Value>,
     events: crate::events::EventReceiver,
     calls: CallLog,
     turns: HashMap<&'static str, Arc<Mutex<Option<String>>>>,
@@ -131,6 +134,7 @@ impl Run {
     fn new(switch: Switch) -> Self {
         let scratch = tempfile::tempdir().unwrap();
         let mut core = BridgeCore::for_tests(scratch.path());
+        let opened = table_rows(&core.db.lock().unwrap());
         let mut registry = AdapterRegistry::empty();
         registry.register(Box::new(TraceHarness::new("claude"))).unwrap();
         registry.register(Box::new(TraceHarness::new("codex"))).unwrap();
@@ -149,7 +153,7 @@ impl Run {
         }
         let attention_seen = crate::attention::revision(&core.db.lock().unwrap()).unwrap_or(0);
         let events = core.events.subscribe();
-        Self { scratch, core, events, calls, turns, steps: Vec::new(), attention_seen }
+        Self { scratch, core, opened, events, calls, turns, steps: Vec::new(), attention_seen }
     }
 
     fn send(&mut self, session: &str, text: &str) {
@@ -190,8 +194,8 @@ impl Run {
     }
 
     fn finish(self) -> Value {
-        let Run { scratch, core, steps, .. } = self;
-        let rows = table_rows(&core.db.lock().unwrap());
+        let Run { scratch, core, opened, steps, .. } = self;
+        let rows = rows_since(&opened, table_rows(&core.db.lock().unwrap()));
         let transcript: serde_json::Map<String, Value> = [CLAUDE_CHAT, CODEX_CHAT]
             .into_iter()
             .map(|session| (session.to_owned(), serde_json::to_value(core.replay_session_events(session, 0, None, None).unwrap()).unwrap()))
@@ -573,6 +577,20 @@ fn table_rows(db: &Connection) -> serde_json::Map<String, Value> {
         }
     }
     rows
+}
+
+/// The rows of `now` that are not in `opened`, compared as whole rows. A
+/// migration of main or a seed row of the store does not change the trace. A
+/// seed row that the scenario changes stays, with its new value. A table with
+/// no row left goes out.
+fn rows_since(opened: &serde_json::Map<String, Value>, now: serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
+    now.into_iter()
+        .filter_map(|(name, table)| {
+            let before = opened.get(&name).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+            let kept: Vec<Value> = table.as_array().into_iter().flatten().filter(|row| !before.contains(row)).cloned().collect();
+            if kept.is_empty() { None } else { Some((name, Value::Array(kept))) }
+        })
+        .collect()
 }
 
 /// The switch and the opt-out rows are reads the contract allows. A write of

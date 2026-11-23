@@ -131,6 +131,7 @@ Bridge asks a top-level direct Claude or Codex chat to compact its own window at
 - For any sequence of sends, provider frames, sweeps and manual `/compact` commands, the change keeps four things equal to the base code.
 - The four things: the ordered adapter calls with equal bytes, the ordered published `CoreEvent` values, the rows of each base table, and the transcript projection.
 - The row comparison replaces timestamps and generated ids with fixed values.
+- The row comparison keeps only the rows that the scenario writes or changes. The rows that the store holds when it opens, such as the migrations and the seed rows, are left out, so a new migration on main does not change the trace.
 - Allowed differences: the empty new table and its two indexes, reads of the switch, the protocol minor and the two new methods.
 - If the switch goes off with an open attempt, settlement writes only that attempt row. After that, the guarantee holds.
 - The golden trace `testing/fixtures/early-compaction/off-trace.json` comes from the base code, before any hook of this change.
