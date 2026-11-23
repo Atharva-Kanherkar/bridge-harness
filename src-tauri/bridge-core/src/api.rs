@@ -7461,6 +7461,16 @@ pub fn approve_workflow(core: &Arc<BridgeCore>, params: &wire::ApproveWorkflowPa
 }
 
 pub fn delete_workflow(core: &Arc<BridgeCore>, params: &wire::DeleteWorkflowParams) -> Result<wire::UnitResult, BridgeError> {
+    // A run still going would otherwise keep working, unrecorded, in a folder
+    // this removes. Stop it first.
+    let cancelled = {
+        let db = core.db.lock().unwrap();
+        crate::workflows::require(&db, &params.workflow_id)?;
+        crate::workflow_trigger::cancel_active(&db, &params.workflow_id, chrono::Utc::now())?
+    };
+    for session_id in cancelled.iter().filter_map(|run| run.session_id.as_deref()) {
+        crate::workflow_run::stop(core, session_id);
+    }
     crate::workflows::delete(&core.db.lock().unwrap(), &workflow_data_dir(core), &params.workflow_id)?;
     publish_workflows_changed(core, [params.workflow_id.clone()]);
     Ok(wire::UnitResult(()))

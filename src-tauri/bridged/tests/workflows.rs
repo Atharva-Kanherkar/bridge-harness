@@ -460,14 +460,18 @@ fn e3_a_daemon_killed_after_one_write_reclaims_the_run_without_repeating_it() {
     child.wait().unwrap();
     drop(rpc);
 
-    // A new owner of the directory. Nothing happens until the lease expires;
-    // then the run is reclaimed, and the executed write is not repeated.
+    // A new owner of the directory. A data directory has one owner, so every
+    // lease it finds is the dead one's: it settles the run at boot instead of
+    // leaving a dead run holding the workflow's slot until the lease expires.
+    // The executed write is not repeated.
     let running = RunningDaemon::start(data_dir);
     let mut rpc = running.rpc();
-    assert!(rpc.runs(&workflow_id).iter().any(|run| run["id"] == json!(run_id) && run["status"] == json!("waiting_approval")));
-    tick_at(&running.daemon, Utc::now() + ChronoDuration::minutes(16));
-    let run = rpc.wait_run(&workflow_id, &run_id, "the reclaim", |run| run["status"] == json!("failed"));
-    assert_eq!(run["failureCode"], json!("lease_expired"));
+    let run = rpc.wait_run(&workflow_id, &run_id, "the boot settlement", |run| run["status"] == json!("failed"));
+    assert_eq!(run["failureCode"], json!("interrupted"));
+    // Run now works straight away rather than returning the dead run.
+    let again = rpc.call("workflows/run_workflow", json!({ "workflowId": workflow_id, "requestId": "after-restart", "dryRun": true }));
+    assert_eq!(again["created"], json!(true));
+    assert_ne!(again["run"]["id"], json!(run_id));
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(writes(&home), vec!["slack_send_message".to_owned()], "the executed write is not repeated");
     assert_eq!(effects(&running.daemon, &run_id), vec![(SLACK_POST.to_owned(), "approved".to_owned())]);
