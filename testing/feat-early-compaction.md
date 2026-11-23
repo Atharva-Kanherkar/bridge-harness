@@ -326,6 +326,9 @@ Frontend:
 - Both arms start `start_queued_input_maintenance`, the loop that the daemon starts. Both arms use the shipped constants.
 - After each turn, both arms wait until the due mark has a final decision, or until `WARM_LIMIT`.
 - Rubric for turns 11 to 14: R1 gives 1 point when the check command passes. R2 gives 1 point when the files keep each decision. The maximum is 8 points for each arm.
+- R1 runs the `check.mjs` text of the workload from a new temporary folder, not the copy in the chat directory. The working directory is the chat directory.
+- Before each score, the eval compares `src/money.js` and `src/errors.js` with the workload. A changed or missing helper fails the arm with `fixture_changed`.
+- Unit tests in `early_compaction_eval::driver::tests`: `a_checker_that_the_chat_disabled_does_not_pass_a_wrong_module`, `a_changed_helper_fails_the_arm_with_a_named_reason`.
 - The check of each function has two or more half-even ties, where `Math.round` and `toFixed` give a different answer. It also needs a `LedgerError` with an UPPER_SNAKE `code` for each error case.
 - R2 reads the file with no comments, so a rule only in a comment gives no point. Only the header rule reads its comment line. R2 also refuses `Math["round"]`, `Math['round']` and `["toFixed"]`.
 - Unit tests in `early_compaction_eval::workload::tests`: `a_rule_only_in_a_comment_gives_no_point`, `a_forbidden_rounding_by_its_quoted_name_gives_no_point`.

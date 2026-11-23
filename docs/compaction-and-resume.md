@@ -88,6 +88,8 @@ These values change the run:
 
 The workload is `testing/evals/early-compaction/workload.json`. Turns 1 to 3 give three rules in the chat only. Turns 4 to 10 read large data files, so the window goes past the threshold. Turns 11 to 14 need the rules. Each of these turns gets 1 point when its check command passes, and 1 point when its file obeys each rule. The maximum is 8 points for each arm. The check has half-even ties that `Math.round` and `toFixed` fail, and it needs a `LedgerError` with an UPPER_SNAKE code. The rule check reads the file with no comments, except for the header line.
 
+The chat can write each file of the fixture, so the eval does not trust the copy of `check.mjs` in the chat directory. It writes the `check.mjs` text of the workload to a new temporary folder and runs that copy, with the chat directory as the working directory. Before each score, it compares `src/money.js` and `src/errors.js` with the bytes of the workload. If the chat changed or removed one of them, the arm fails with `fixture_changed`.
+
 The two arms of one harness run at the same time, each with its own data directory. After each turn, the two arms wait until the due mark has a final decision, or until the warm limit. An open attempt gets up to the settle limit. The eval adds the tokens of each chat from `usage_ledger` after the last turn. Then it stops the harness process with no checkpoint turn, so no checkpoint row goes into the sums.
 
 A harness passes when all of these are true:

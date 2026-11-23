@@ -26,7 +26,7 @@ use crate::runtime::BridgeCore;
 use crate::usage_pricing::Pricing;
 
 use super::report::{Arm, ArmRun, AttemptRow, LedgerRow, WaitEnd};
-use super::workload::{score_turn, Phase, Rubric, Turn, TurnScore, Workload};
+use super::workload::{score_turn, Phase, Rubric, Turn, TurnScore, Workload, CHECKER};
 
 /// The default model of each harness.
 pub(super) const DEFAULTS: [(&str, &str); 2] = [("claude", "claude-haiku-5-5"), ("codex", "gpt-6.2-sol")];
@@ -44,6 +44,8 @@ const CREATE_LIMIT: Duration = Duration::from_secs(40);
 const POLL: Duration = Duration::from_secs(1);
 /// The check output that the report keeps, in characters.
 const OUTPUT_TAIL: usize = 300;
+/// The name of the arm failure when the chat changed a helper file.
+const FIXTURE_CHANGED: &str = "fixture_changed";
 /// A chat in one of these statuses has no turn and no compaction.
 const IDLE_STATUSES: [&str; 2] = ["ready", "idle"];
 /// A chat in one of these statuses cannot take the next turn.
@@ -293,6 +295,7 @@ fn play(
         let ended = Instant::now();
         run.turns_finished = number;
         if turn.phase == Phase::Recall {
+            helpers_kept(cwd, rubric).map_err(|error| format!("turn {number}: {error}"))?;
             run.scores.push(score(cwd, rubric, number, turn));
         }
         let wait = wait_rule(core, session_id, ended)?;
@@ -412,12 +415,38 @@ fn latest_reading(db: &Connection, session_id: &str) -> Result<Option<i64>, Stri
     .map_err(text)
 }
 
+/// An error when the chat changed a helper file that the checker and the
+/// modules import. A score on changed helpers is not true.
+fn helpers_kept(cwd: &Path, rubric: &Rubric) -> Result<(), String> {
+    let changed = rubric.changed_helpers(cwd);
+    if changed.is_empty() {
+        return Ok(());
+    }
+    Err(format!("{FIXTURE_CHANGED}: the chat changed {}", changed.join(", ")))
+}
+
 /// R1 and R2 of one recall turn, from the files as the turn left them.
 fn score(cwd: &Path, rubric: &Rubric, number: usize, turn: &Turn) -> TurnScore {
     let command = turn.check.as_deref().unwrap_or_default();
-    let (passed, output) = run_check(cwd, command).unwrap_or_else(|error| (false, error));
+    let (passed, output) = run_own_check(cwd, rubric, command).unwrap_or_else(|error| (false, error));
     let file = turn.file.as_ref().and_then(|file| std::fs::read_to_string(cwd.join(file)).ok());
     score_turn(number, passed, rubric.keeps(file.as_deref()), output)
+}
+
+/// Run `command` in `cwd` with the checker of the workload, not with the copy
+/// in `cwd`. The checker goes to a new temporary folder that the chat does not
+/// know. The checker reads the modules from `cwd`.
+fn run_own_check(cwd: &Path, rubric: &Rubric, command: &[String]) -> Result<(bool, String), String> {
+    let folder = tempfile::Builder::new()
+        .prefix("bridge-early-compaction-check-")
+        .tempdir()
+        .map_err(text)?;
+    let checker = folder.path().join(CHECKER);
+    std::fs::write(&checker, rubric.checker()).map_err(text)?;
+    let own = checker.display().to_string();
+    let command: Vec<String> =
+        command.iter().map(|arg| if arg == CHECKER { own.clone() } else { arg.clone() }).collect();
+    run_check(cwd, &command)
 }
 
 /// Run `command` in `cwd`. True when it exits with 0. The output goes to a
@@ -610,6 +639,64 @@ mod tests {
         assert_eq!(wait_step(&watch(warm + 60, false, false, Some(140), false)), None);
         assert_eq!(wait_step(&watch(warm + 60, false, false, Some(140), true)), Some(WaitEnd::Decided));
         assert_eq!(wait_step(&watch(settle + 30, false, true, Some(settle), false)), Some(WaitEnd::SettleLimit));
+    }
+
+    /// `reference` with each `return` line changed to `return roundHalfEven(0);`.
+    /// The header, the imports and the error branch stay, so R2 still holds.
+    fn returns_zero(reference: &str) -> String {
+        let lines: Vec<&str> = reference
+            .lines()
+            .map(|line| if line.trim_start().starts_with("return ") { "  return roundHalfEven(0);" } else { line })
+            .collect();
+        format!("{}\n", lines.join("\n"))
+    }
+
+    #[test]
+    fn a_checker_that_the_chat_disabled_does_not_pass_a_wrong_module() -> Result<(), String> {
+        let workload = super::super::workload::load()?;
+        let rubric = workload.rubric()?;
+        let root = tempfile::tempdir().map_err(text)?;
+        workload.write_fixture(root.path())?;
+        std::fs::write(root.path().join("check.mjs"), "console.log('checks disabled');\n").map_err(text)?;
+        let recall = workload.turns.iter().enumerate().filter(|(_, turn)| turn.phase == Phase::Recall);
+        let mut points = 0;
+        for (index, turn) in recall {
+            let number = index + 1;
+            let file = turn.file.as_deref().ok_or("a recall turn with no file")?;
+            let reference = turn.reference.as_deref().ok_or("a recall turn with no reference")?;
+            // The right module passes, so the checker of the score works.
+            std::fs::write(root.path().join(file), reference).map_err(text)?;
+            let right = score(root.path(), &rubric, number, turn);
+            if right.points() != 2 {
+                return Err(format!("turn {number}: the reference scored {right:?}"));
+            }
+            std::fs::write(root.path().join(file), returns_zero(reference)).map_err(text)?;
+            let wrong = score(root.path(), &rubric, number, turn);
+            if wrong.check_passed {
+                return Err(format!("turn {number}: a module that returns 0 passed the check: {wrong:?}"));
+            }
+            points += wrong.points();
+        }
+        if points != 4 {
+            return Err(format!("four wrong modules scored {points} of 8, not 4 (R2 only)"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_changed_helper_fails_the_arm_with_a_named_reason() -> Result<(), String> {
+        let workload = super::super::workload::load()?;
+        let rubric = workload.rubric()?;
+        let root = tempfile::tempdir().map_err(text)?;
+        workload.write_fixture(root.path())?;
+        helpers_kept(root.path(), &rubric)?;
+        std::fs::write(root.path().join("src/errors.js"), "export class LedgerError extends Error {}\n").map_err(text)?;
+        let changed = helpers_kept(root.path(), &rubric).err().ok_or("a changed errors.js passed")?;
+        assert_eq!(changed, format!("{FIXTURE_CHANGED}: the chat changed src/errors.js"));
+        std::fs::remove_file(root.path().join("src/money.js")).map_err(text)?;
+        let changed = helpers_kept(root.path(), &rubric).err().ok_or("a missing money.js passed")?;
+        assert_eq!(changed, format!("{FIXTURE_CHANGED}: the chat changed src/money.js, src/errors.js"));
+        Ok(())
     }
 
     #[test]

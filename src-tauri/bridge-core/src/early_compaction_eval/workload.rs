@@ -19,6 +19,12 @@ pub(super) const TURNS: usize = 14;
 const DECIDE: std::ops::RangeInclusive<usize> = 1..=3;
 /// The turns that grow the window, by number.
 const GROW: std::ops::RangeInclusive<usize> = 4..=10;
+/// The fixture file that checks a module. The chat can change its copy, so R1
+/// runs the text of the workload instead.
+pub(super) const CHECKER: &str = "check.mjs";
+/// The fixture files that the modules and the checker import. The score is
+/// only true while they stay as the fixture wrote them.
+pub(super) const HELPERS: [&str; 2] = ["src/money.js", "src/errors.js"];
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -103,9 +109,12 @@ pub(super) struct Turn {
 }
 
 /// The compiled checks of each decision: the pattern, `present` and
-/// `with_comments`.
+/// `with_comments`. Also the text of the checker and of each helper file, as
+/// the workload holds them.
 pub(super) struct Rubric {
     decisions: Vec<(String, Vec<(Regex, bool, bool)>)>,
+    checker: String,
+    helpers: Vec<(String, String)>,
 }
 
 /// The points of one recall turn.
@@ -168,6 +177,9 @@ impl Workload {
             if scored != (phase == Phase::Recall) {
                 return Err(format!("turn {number}: only a recall turn has a check and a file"));
             }
+            if scored && !turn.check.iter().flatten().any(|arg| arg == CHECKER) {
+                return Err(format!("turn {number}: the check command must run {CHECKER}"));
+            }
         }
         if self.fixture.words.is_empty() || self.fixture.statuses.is_empty() {
             return Err("the fixture needs words and statuses".into());
@@ -175,7 +187,19 @@ impl Workload {
         if self.decisions.iter().any(|decision| !DECIDE.contains(&decision.turn)) {
             return Err("each decision belongs to turns 1 to 3".into());
         }
+        for path in std::iter::once(CHECKER).chain(HELPERS) {
+            self.fixture_text(path)?;
+        }
         Ok(())
+    }
+
+    fn fixture_text(&self, path: &str) -> Result<String, String> {
+        self.fixture
+            .files
+            .iter()
+            .find(|file| file.path == path)
+            .map(|file| file.text.clone())
+            .ok_or_else(|| format!("the fixture has no {path}"))
     }
 
     /// The decision checks, compiled.
@@ -196,7 +220,11 @@ impl Workload {
                 Ok((decision.name.clone(), checks))
             })
             .collect::<Result<Vec<_>, String>>()?;
-        Ok(Rubric { decisions })
+        let helpers = HELPERS
+            .iter()
+            .map(|path| Ok(((*path).to_owned(), self.fixture_text(path)?)))
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(Rubric { decisions, checker: self.fixture_text(CHECKER)?, helpers })
     }
 
     /// The highest score of one arm: 2 points for each recall turn.
@@ -309,6 +337,22 @@ impl Rubric {
                 });
                 (name.clone(), kept)
             })
+            .collect()
+    }
+
+    /// The text of the checker as the workload holds it. The chat cannot
+    /// change it.
+    pub fn checker(&self) -> &str {
+        &self.checker
+    }
+
+    /// Each helper file below `root` that is missing or that has other bytes
+    /// than the fixture.
+    pub fn changed_helpers(&self, root: &Path) -> Vec<String> {
+        self.helpers
+            .iter()
+            .filter(|(path, text)| !std::fs::read(root.join(path)).is_ok_and(|bytes| bytes == text.as_bytes()))
+            .map(|(path, _)| path.clone())
             .collect()
     }
 }
