@@ -1,4 +1,4 @@
-import { briefingOptions, isBriefing, wireServerName } from "./briefing.mjs";
+import { briefingOptions, isBriefing, wireServerName, workflowDeniedServers } from "./briefing.mjs";
 import { readOnlyOptions } from "./read-only.mjs";
 
 /** The `bridge` server's tools that only read or display. */
@@ -149,9 +149,30 @@ export function withDeniedServers(settings, names = []) {
   return added.length ? { ...settings, deniedMcpServers: [...existing, ...added] } : settings;
 }
 
+/** The built-in tools a worktree workflow keeps: reading, editing and running
+ * code in its own worktree. An allow-list, so a built-in Claude Code adds
+ * later is absent until someone decides it belongs in an unattended code job.
+ * A name this Claude Code does not have is ignored. */
+export const WORKTREE_WORKFLOW_TOOLS = [
+  "Bash", "BashOutput", "KillShell", "Monitor", "TaskStop", "TaskOutput",
+  "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Glob", "Grep", "LS",
+  "TodoWrite", "WebFetch", "WebSearch", "Skill", "ToolSearch",
+];
+
+/** Built-ins an unattended run must never reach: they delegate, message
+ * other sessions, act on the account remotely, schedule more work, publish,
+ * or move the run out of its worktree. Several run without a permission
+ * prompt, so the hook refuses them even if a future option lets one in. */
+export const WORKFLOW_ESCAPE_TOOLS = [
+  "Task", "Agent", "SendMessage", "ListAgents", "RemoteTrigger", "PushNotification", "Workflow",
+  "CronCreate", "CronDelete", "CronList", "ScheduleWakeup", "PublishPlugin", "ShareOnboardingGuide",
+  "DesignSync", "EnterWorktree", "ExitWorktree",
+];
+
 /** PreToolUse runs before user allow rules, including on native subagents.
  * File and shell tools keep Isolated permissions; MCP is always refused. */
 function worktreeWorkflowOptions() {
+  const escapes = new Set(WORKFLOW_ESCAPE_TOOLS);
   return {
     ...permissionOptions("Isolated"),
     settingSources: ["user"],
@@ -159,9 +180,10 @@ function worktreeWorkflowOptions() {
     plugins: [],
     mcpServers: {},
     strictMcpConfig: true,
+    tools: WORKTREE_WORKFLOW_TOOLS,
     disallowedTools: ["mcp__*", "Task", "Agent"],
     hooks: {
-      PreToolUse: [{ hooks: [async (input = {}) => (input.tool_name?.startsWith("mcp__") || ["Task", "Agent"].includes(input.tool_name)) ? {
+      PreToolUse: [{ hooks: [async (input = {}) => (input.tool_name?.startsWith("mcp__") || escapes.has(input.tool_name)) ? {
         continue: true,
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
@@ -210,7 +232,10 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
   // Reasoning effort is handled natively by the SDK; low/medium are honoured
   // rather than dropped the way the old thinking-budget mapping dropped them.
   const resolvedEffort = sdkEffort(effort);
-  const flagSettings = withDeniedServers(sdkFlagSettings({ effort, speed }), selection?.deniedMcpServers);
+  const flagSettings = withDeniedServers(sdkFlagSettings({ effort, speed }), [
+    ...(selection?.deniedMcpServers ?? []),
+    ...workflowDeniedServers(briefing, mcpServers),
+  ]);
   // A toolless briefing answers from text alone: no tool definitions are sent
   // at all, and its instructions replace the coding preset instead of riding
   // on it. Rust only sets this for a policy with an empty scope, and the

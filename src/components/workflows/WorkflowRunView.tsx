@@ -91,6 +91,30 @@ export function runSteps(events: AgentEvent[], active = true): Step[] {
   });
 }
 
+/** The most events one replay call returns. */
+const REPLAY_PAGE = 1000;
+/** A ceiling on pages, so a cursor that stops moving cannot loop forever. */
+const MAX_REPLAY_PAGES = 50;
+
+/**
+ * Every durable event of a run, oldest first. A long run outgrows one page
+ * (a call is several events), and its pending approval and last message are
+ * at the end, so a run read only from its first page could never be answered
+ * here.
+ */
+export async function allSessionEvents(sessionId: string): Promise<AgentEvent[]> {
+  const events: AgentEvent[] = [];
+  let after = 0;
+  for (let page = 0; page < MAX_REPLAY_PAGES; page += 1) {
+    const batch = await bridgeApi.replaySessionEvents(sessionId, after, REPLAY_PAGE);
+    events.push(...batch);
+    const last = batch.at(-1)?.sequence;
+    if (batch.length < REPLAY_PAGE || last === undefined || last <= after) break;
+    after = last;
+  }
+  return events;
+}
+
 export function WorkflowRunView({ workflow, run, onBack, onContinue }: {
   workflow: Workflow;
   run: WorkflowRun;
@@ -105,7 +129,7 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue }: {
   const load = useCallback(async () => {
     if (!run.sessionId) return;
     try {
-      setEvents(await bridgeApi.replaySessionEvents(run.sessionId, 0, 500));
+      setEvents(await allSessionEvents(run.sessionId));
     } catch (reason) {
       setError(errorText(reason));
     }

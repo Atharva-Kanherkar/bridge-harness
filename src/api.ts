@@ -1703,10 +1703,10 @@ const mockWorkflowOptions: WorkflowOptions = {
   harnesses: [
     { id: "claude", label: "Claude Code", available: true, connectorsAllowed: true, connectorsReason: null, worktreeAllowed: true, defaultModel: "haiku",
       models: [{ id: "haiku", label: "Claude Haiku", tier: "fast", defaultForBriefing: true }, { id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForBriefing: false }] },
-    { id: "codex", label: "Codex", available: true, connectorsAllowed: false, worktreeAllowed: true, defaultModel: "gpt-5.5",
+    { id: "codex", label: "Codex", available: true, connectorsAllowed: false, worktreeAllowed: false, defaultModel: "gpt-5.5",
       connectorsReason: "the app-server protocol has no per-tool authority, so an exact connector read cannot be isolated from a mutation",
       models: [{ id: "gpt-5.5", label: "GPT-5.5", tier: "standard", defaultForBriefing: false }] },
-    { id: "opencode", label: "OpenCode", available: true, connectorsAllowed: false, worktreeAllowed: true, defaultModel: null,
+    { id: "opencode", label: "OpenCode", available: true, connectorsAllowed: false, worktreeAllowed: false, defaultModel: null,
       connectorsReason: "its permission rules are coarse families, so one reviewed connector tool cannot be admitted without admitting its neighbours", models: [] },
   ],
   servers: [
