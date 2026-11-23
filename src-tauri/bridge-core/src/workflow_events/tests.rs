@@ -578,6 +578,14 @@ fn a_pull_request_event_carries_its_description_size_and_files_into_the_run() {
     assert!(details.get("detailsUnavailable").is_none());
     // The run's first turn carries it, fenced.
     assert!(event_turn(&events).contains("fix/upload"));
+
+    // Exactly the most it lists: every file, and no note of more.
+    let exact: Vec<Value> = (0..MAX_FILES).map(|index| json!({ "path": format!("f{index}") })).collect();
+    let answer = json!({ "files": exact }).to_string();
+    let mut events = vec![github_event(wire::WorkflowEventKind::GithubPullRequestOpened, 8)];
+    enrich_github(&mut events, &ViewGh::new(move |_| Ok(answer.clone())));
+    assert_eq!(events[0].payload["files"].as_array().unwrap().len(), MAX_FILES);
+    assert!(events[0].payload.get("filesNotListed").is_none());
 }
 
 #[test]

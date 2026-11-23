@@ -28,7 +28,10 @@ fn fake_model() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let e2e = fixtures().join("workflow-e2e");
-        let mut paths = vec![e2e.join("bin")];
+        // `gh-bin` holds a fake `gh` for the GitHub event journeys. It is a
+        // directory of its own: other suites put `bin` first on `PATH` for the
+        // fake `claude` and bring their own `gh`.
+        let mut paths = vec![e2e.join("bin"), e2e.join("gh-bin")];
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
         std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
         std::env::set_var("BRIDGE_CLAUDE_SIDECAR", e2e.join("sidecar.mjs"));
