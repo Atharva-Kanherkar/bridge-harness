@@ -5318,6 +5318,20 @@ mod tests {
     }
 
     #[test]
+    fn history_snapshots_space_out_as_the_database_grows() {
+        use bridge_core::live_turn::{history_snapshot_interval, HISTORY_SNAPSHOT_MAX_INTERVAL};
+        const GIB: u64 = 1 << 30;
+        // Small databases keep the 15-minute cadence.
+        assert_eq!(history_snapshot_interval(0), HISTORY_SNAPSHOT_INTERVAL);
+        assert_eq!(history_snapshot_interval(200 << 20), HISTORY_SNAPSHOT_INTERVAL);
+        assert_eq!(history_snapshot_interval(GIB), HISTORY_SNAPSHOT_INTERVAL);
+        // The measured 7.9 GB database: every two hours, not every fifteen minutes.
+        assert_eq!(history_snapshot_interval(7_899_316_224), Duration::from_secs(2 * 60 * 60));
+        // Never longer than the ceiling.
+        assert_eq!(history_snapshot_interval(500 * GIB), HISTORY_SNAPSHOT_MAX_INTERVAL);
+    }
+
+    #[test]
     fn pressure_compaction_starts_only_at_seventy_five_percent_with_new_work() {
         let db = policy_fixture();
         session_forest::SessionForest::new(&db)

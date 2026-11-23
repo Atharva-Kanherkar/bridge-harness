@@ -11594,6 +11594,25 @@ pub fn start_learning_maintenance(core: Arc<BridgeCore>) {
 
 pub const HISTORY_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
+/// The longest a database may go without a history snapshot, however large.
+pub const HISTORY_SNAPSHOT_MAX_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// How old the newest history snapshot may get before the next export, for a
+/// database of `size_bytes`: [`HISTORY_SNAPSHOT_INTERVAL`] per GiB started,
+/// at most [`HISTORY_SNAPSHOT_MAX_INTERVAL`].
+///
+/// Each export is a full copy plus a full-file hash. At a flat 15 minutes an
+/// 8 GB database was copied and hashed four times an hour: 32 GB written an
+/// hour, and in a debug build one core busy about ten minutes of every
+/// fifteen. Scaling with size keeps that work roughly constant per hour.
+pub fn history_snapshot_interval(size_bytes: u64) -> Duration {
+    const GIB: u64 = 1 << 30;
+    let started_gib = u32::try_from(size_bytes.div_ceil(GIB).max(1)).unwrap_or(u32::MAX);
+    HISTORY_SNAPSHOT_INTERVAL
+        .saturating_mul(started_gib)
+        .min(HISTORY_SNAPSHOT_MAX_INTERVAL)
+}
+
 /// One history-snapshot export, skipped when the newest snapshot is younger
 /// than `max_age`. This is also the boot export: it runs on the maintenance
 /// thread rather than inside `BridgeCore::boot` because `VACUUM INTO` plus a
@@ -11637,14 +11656,13 @@ pub fn start_worktree_maintenance(core: Arc<BridgeCore>) {
 }
 
 pub fn start_history_snapshot_maintenance(core: Arc<BridgeCore>) {
-    thread::spawn(move || {
-        // The boot export, gated on staleness so a development restart loop
-        // still does not export once per restart; then one export per tick.
-        let _ = run_history_snapshot_pass(&core, HISTORY_SNAPSHOT_INTERVAL);
-        loop {
-            thread::sleep(HISTORY_SNAPSHOT_INTERVAL);
-            let _ = run_history_snapshot_pass(&core, Duration::ZERO);
-        }
+    thread::spawn(move || loop {
+        // Every pass, the boot one included, is gated on the newest snapshot's
+        // age, so a development restart loop does not export once per restart
+        // and a large database is not copied every tick.
+        let size = std::fs::metadata(&core.database_path).map(|meta| meta.len()).unwrap_or(0);
+        let _ = run_history_snapshot_pass(&core, history_snapshot_interval(size));
+        thread::sleep(HISTORY_SNAPSHOT_INTERVAL);
     });
 }
 
