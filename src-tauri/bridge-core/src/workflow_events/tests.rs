@@ -106,6 +106,7 @@ fn each_malformed_event_trigger_is_refused_with_its_reason() {
         }
     };
     let long = "x".repeat(MAX_FILTER_CHARS + 1);
+    let longest = "é".repeat(MAX_FILTER_CHARS);
     let cases = [
         (trigger(K::GithubPullRequestOpened, None, None, None, None), "Choose the repository"),
         (trigger(K::GithubIssueOpened, Some("acme"), None, None, None), "not a repository"),
@@ -126,6 +127,8 @@ fn each_malformed_event_trigger_is_refused_with_its_reason() {
         trigger(K::GithubPullRequestOpened, Some("acme/app.rs"), None, None, None),
         trigger(K::GithubReviewRequested, None, None, None, None),
         trigger(K::SlackThreadReply, None, Some("#eng"), Some("Alex"), Some(("0 9 * * 1-5", "Asia/Tokyo"))),
+        // Exactly the limit, counted in characters rather than bytes.
+        trigger(K::SlackMention, None, Some(&longest), Some(&longest), None),
     ] {
         assert_eq!(validate(&EventTrigger::of(&ok).unwrap()), Ok(()), "{ok:?}");
     }
