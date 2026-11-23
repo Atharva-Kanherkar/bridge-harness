@@ -161,7 +161,7 @@ impl Runner {
     /// restart. Interrupt it and remove what it left on disk.
     pub fn recover(&self) -> Result<Vec<String>, BridgeError> {
         let interrupted = {
-            let db = self.core.db.lock().unwrap();
+            let db = super::lock_db(&self.core);
             store::interrupt_in_flight(&db, (self.clock)())?
         };
         let steps = self.core.reviews.steps();
@@ -177,7 +177,7 @@ impl Runner {
     pub fn tick(&self) -> Result<Vec<JoinHandle<()>>, BridgeError> {
         let now = (self.clock)();
         let (reclaimed, limit) = {
-            let db = self.core.db.lock().unwrap();
+            let db = super::lock_db(&self.core);
             let reclaimed = store::reclaim_expired(&db, now)?;
             let limit = crate::reviewer_settings::load(&db)
                 .map(|settings| settings.max_concurrent_reviews)
@@ -190,7 +190,7 @@ impl Runner {
         let mut handles = Vec::new();
         while self.active() < limit {
             let claimed = {
-                let db = self.core.db.lock().unwrap();
+                let db = super::lock_db(&self.core);
                 store::claim_next(&db, &self.owner, (self.clock)())?
             };
             let Some(job) = claimed else { break };
@@ -215,7 +215,7 @@ impl Runner {
 
 /// Started once per host beside the other maintenance loops.
 pub fn start_review_maintenance(core: Arc<BridgeCore>) {
-    let _ = std::thread::Builder::new().name("review-runner".into()).spawn(move || {
+    let spawned = std::thread::Builder::new().name("review-runner".into()).spawn(move || {
         let runner = Runner::new(core.clone());
         if let Err(error) = runner.recover() {
             eprintln!("[reviews] startup recovery failed: {error}");
@@ -227,6 +227,9 @@ pub fn start_review_maintenance(core: Arc<BridgeCore>) {
             core.reviews.wait(runner.config.poll);
         }
     });
+    if let Err(error) = spawned {
+        eprintln!("[reviews] could not start the review runner: {error}");
+    }
 }
 
 /// Frees its slot however the driver ends, panics included.
@@ -265,8 +268,8 @@ impl Driver {
             Err(StepError::Fatal(format!("The review stopped unexpectedly: {detail}")))
         });
         finished.store(true, Ordering::SeqCst);
-        if let Some(heartbeat) = heartbeat {
-            let _ = heartbeat.join();
+        if heartbeat.is_some_and(|heartbeat| heartbeat.join().is_err()) {
+            eprintln!("[reviews] the lease heartbeat of {job_id} panicked");
         }
         self.settle(&job_id, outcome);
         self.core.reviews.unregister(&job_id);
@@ -300,7 +303,7 @@ impl Driver {
                     return;
                 }
                 let renewed = {
-                    let db = core.db.lock().unwrap();
+                    let db = super::lock_db(&core);
                     store::renew(&db, &job_id, &owner, clock()).unwrap_or(false)
                 };
                 if !renewed {
@@ -317,7 +320,7 @@ impl Driver {
         if job.status == Status::Preparing {
             let prepared = self.retrying(token, || steps.prepare(&job, token))?;
             if !prepared.head_sha.is_empty() && prepared.head_sha != job.head_sha {
-                let db = self.core.db.lock().unwrap();
+                let db = super::lock_db(&self.core);
                 if store::set_head(&db, &job.id, &self.owner, &prepared.head_sha).map_err(fatal)? {
                     job.head_sha = prepared.head_sha.clone();
                 }
@@ -338,7 +341,7 @@ impl Driver {
 
     fn advance(&self, job: &JobRow, from: Status, to: Status, release: bool) -> Result<(), StepError> {
         let moved = {
-            let db = self.core.db.lock().unwrap();
+            let db = super::lock_db(&self.core);
             store::advance(&db, &job.id, &self.owner, from, to, release).map_err(fatal)?
         };
         if !moved {
@@ -375,7 +378,7 @@ impl Driver {
     /// at least one pass finished.
     fn review(&self, job: &JobRow, prepared: &Prepared, steps: &dyn ReviewSteps, token: &CancelToken) -> Result<(), StepError> {
         let fallbacks = {
-            let db = self.core.db.lock().unwrap();
+            let db = super::lock_db(&self.core);
             crate::reviewer_settings::load(&db).map(|settings| settings.fallback_harnesses).unwrap_or_default()
         };
         let mut summaries = Vec::new();
@@ -389,13 +392,13 @@ impl Driver {
                     return Err(StepError::Cancelled);
                 }
                 let pass_id = {
-                    let db = self.core.db.lock().unwrap();
+                    let db = super::lock_db(&self.core);
                     store::insert_pass(&db, &job.id, slot as u32, &harness, self.now()).map_err(fatal)?
                 };
                 super::publish(&self.core, &job.id);
                 let request = PassRequest { job, prepared, pass_id: &pass_id, harness: &harness };
                 let result = self.retrying(token, || steps.review(request, token));
-                let db = self.core.db.lock().unwrap();
+                let db = super::lock_db(&self.core);
                 match result {
                     Ok(outcome) => {
                         store::finish_pass(&db, &pass_id, ReviewPassStatus::Done, None, Some(&outcome), self.now()).map_err(fatal)?;
@@ -443,7 +446,7 @@ impl Driver {
         if finished == 0 {
             return Err(last_error.unwrap_or_else(|| StepError::Fatal("No reviewer finished".into())));
         }
-        let db = self.core.db.lock().unwrap();
+        let db = super::lock_db(&self.core);
         store::set_summary(&db, &job.id, &summaries.join("\n\n")).map_err(fatal)?;
         Ok(())
     }
@@ -455,7 +458,7 @@ impl Driver {
             None => steps.post(job, token),
         })?;
         let marked = {
-            let db = self.core.db.lock().unwrap();
+            let db = super::lock_db(&self.core);
             store::mark_posted(&db, &job.id, &self.owner, &posted.review_id, &posted.url, self.now()).map_err(fatal)?
         };
         if !marked {
@@ -469,7 +472,7 @@ impl Driver {
     fn settle(&self, job_id: &str, outcome: Result<(), StepError>) {
         let now = self.now();
         let settled = {
-            let db = self.core.db.lock().unwrap();
+            let db = super::lock_db(&self.core);
             match &outcome {
                 // Cancelled by a person (already written) or the lease was
                 // lost (another runner owns the job): nothing to write.
@@ -488,7 +491,7 @@ impl Driver {
             eprintln!("[reviews] could not settle {job_id}: {error}");
         }
         let terminal = {
-            let db = self.core.db.lock().unwrap();
+            let db = super::lock_db(&self.core);
             store::get_job(&db, job_id).ok().flatten().is_some_and(|job| job.status.is_terminal())
         };
         if terminal {

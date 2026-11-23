@@ -34,10 +34,16 @@ pub struct PrHead {
     pub base_sha: Option<String>,
 }
 
+/// The store lock, through a poisoned mutex: one panicking job must not stop
+/// every other review.
+pub(crate) fn lock_db(core: &BridgeCore) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
+    core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Tell clients where a job is now.
 pub fn publish(core: &Arc<BridgeCore>, job_id: &str) {
     let job = {
-        let db = core.db.lock().unwrap();
+        let db = lock_db(core);
         store::get_job(&db, job_id).ok().flatten().and_then(|job| store::to_wire(&db, &job).ok())
     };
     if let Some(job) = job {
@@ -49,7 +55,7 @@ pub fn publish(core: &Arc<BridgeCore>, job_id: &str) {
 /// default, else the first available of Claude, Codex and OpenCode.
 pub fn resolve_harnesses(core: &Arc<BridgeCore>, requested: Option<&[String]>) -> Result<Vec<String>, BridgeError> {
     let settings = {
-        let db = core.db.lock().unwrap();
+        let db = lock_db(core);
         crate::reviewer_settings::load(&db)?
     };
     let asked = match requested {
@@ -102,7 +108,7 @@ pub fn start_with(core: &Arc<BridgeCore>, params: &wire::StartReviewParams, head
     core.workspace_path(&params.workspace_id)?;
     let harnesses = resolve_harnesses(core, params.harnesses.as_deref())?;
     let (job, created) = {
-        let db = core.db.lock().unwrap();
+        let db = lock_db(core);
         let post_mode = crate::reviewer_settings::load(&db)?.post_mode;
         let (job, created) = store::insert(
             &db,
@@ -131,7 +137,7 @@ pub fn start_with(core: &Arc<BridgeCore>, params: &wire::StartReviewParams, head
 }
 
 pub fn list(core: &Arc<BridgeCore>, params: &wire::ListReviewsParams) -> Result<wire::ReviewJobList, BridgeError> {
-    let db = core.db.lock().unwrap();
+    let db = lock_db(core);
     let jobs = store::list(&db, &params.workspace_id, params.number)?
         .iter()
         .map(|job| store::to_wire(&db, job))
@@ -140,7 +146,7 @@ pub fn list(core: &Arc<BridgeCore>, params: &wire::ListReviewsParams) -> Result<
 }
 
 pub fn get(core: &Arc<BridgeCore>, job_id: &str) -> Result<wire::ReviewJobDetail, BridgeError> {
-    let db = core.db.lock().unwrap();
+    let db = lock_db(core);
     let job = store::require_job(&db, job_id)?;
     Ok(wire::ReviewJobDetail {
         job: store::to_wire(&db, &job)?,
@@ -153,21 +159,21 @@ pub fn get(core: &Arc<BridgeCore>, job_id: &str) -> Result<wire::ReviewJobDetail
 /// token, and its runner cleans up; one nobody is driving is cleaned up here.
 pub fn cancel(core: &Arc<BridgeCore>, job_id: &str) -> Result<wire::ReviewJob, BridgeError> {
     {
-        let db = core.db.lock().unwrap();
+        let db = lock_db(core);
         store::cancel(&db, job_id, Utc::now())?;
     }
     if !core.reviews.trip(job_id) {
         core.reviews.steps().cleanup(job_id);
     }
     publish(core, job_id);
-    let db = core.db.lock().unwrap();
+    let db = lock_db(core);
     store::to_wire(&db, &store::require_job(&db, job_id)?)
 }
 
 /// A new job with the same inputs as a failed, interrupted or cancelled one.
 pub fn retry(core: &Arc<BridgeCore>, job_id: &str) -> Result<wire::ReviewJob, BridgeError> {
     let (job, created) = {
-        let db = core.db.lock().unwrap();
+        let db = lock_db(core);
         let (job, created) = store::retry(&db, job_id, Utc::now())?;
         (store::to_wire(&db, &job)?, created)
     };
