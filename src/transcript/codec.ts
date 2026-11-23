@@ -139,7 +139,7 @@ const APP_EVENT_KIND = "app.event";
 /** Families the Rust side owns. A new member of one of these is not unknown. */
 const KNOWN_PREFIXES = [
   "message.", "reasoning.", "tool.", "command.", "file_change.", "diff.",
-  "plan.", "approval.", "permission.", "question.", "delegation.", "artifact.",
+  "subagent.", "plan.", "approval.", "permission.", "question.", "delegation.", "artifact.",
   "compaction.", "turn.", "session.", "worker.", "workspace.", "provider.",
   "raw.", "model.", "mode.", "config.", "commands.", "todo.", "extension.",
   "usage.", "branch.", "handoff.", "runtime.", "effort.", "checkpoint.",
@@ -219,9 +219,33 @@ function reportUnknown(kind: string, origin: string): void {
  * Total by construction: every kind lands on a variant, and anything outside
  * the vocabulary lands on `unknown`.
  */
+function localSessionData(sessionId: string, data: Record<string, unknown>): Record<string, unknown> {
+  if (data.childSessionId !== sessionId) return data;
+  const { subagent: _source, ...local } = data;
+  return local;
+}
+
+function subagentPointer(kind: string, envelope: TranscriptEnvelope, data: Record<string, unknown>, status?: string): TranscriptEvent {
+  const child = stringValue(data.childSessionId);
+  if (child === envelope.sessionId) {
+    if (data.turnStarted === true) return { type: "turn.started", envelope };
+    if (data.turnCompleted === true || kind === "subagent.completed") return { type: "turn.completed", envelope, status };
+    return { type: "session.lifecycle", envelope, settles: false };
+  }
+  if (!child || !["subagent.started", "subagent.completed"].includes(kind)) return { type: "session.lifecycle", envelope, settles: false };
+  const source = objectValue(data.subagent);
+  return {
+    type: "delegation.updated",
+    envelope: { ...envelope, providerData: { ...data, harnessSubagent: true, ...(kind === "subagent.completed" ? { delivered: true } : {}) } },
+    title: stringValue(source.title) ?? "Subagent",
+    text: "",
+    status: kind === "subagent.started" ? "running" : status ?? "completed",
+  };
+}
+
 export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
   const kind = readWireKind(raw.kind);
-  const data = raw.data;
+  const data = localSessionData(raw.sessionId, raw.data);
   const itemId = raw.itemId ?? undefined;
   const text = raw.text ?? "";
   const title = raw.title ?? undefined;
@@ -238,6 +262,7 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
     adapter: stringValue(objectValue(raw.providerMeta).adapter),
     providerData: data,
   };
+  if (kind.startsWith("subagent.")) return subagentPointer(kind, envelope, data, status);
   const tool = (surface: ToolSurface): ToolCallDisplay =>
     readToolCall({ title, text, status, surface, data });
 
@@ -300,6 +325,7 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
         title: title ?? (interaction === "permission" ? "Permission required" : "Question"),
         text,
         status: status ?? "pending",
+        askingCall: askingCall(interaction, itemId, data),
       };
     }
     return {
@@ -444,6 +470,20 @@ function liveKey(kind: string, itemId: string | undefined, eventId: number): str
   return `${kind}:${eventId}`;
 }
 
+/**
+ * The tool call a question is, when the call does nothing but ask.
+ *
+ * Claude's `AskUserQuestion`, OpenCode's `question` and Codex's
+ * `item/tool/requestUserInput` each arrive twice under one id: as the tool
+ * call and as the question. Codex's MCP elicitation is the exception: its id
+ * names an MCP call that does real work and is only pausing for input, so that
+ * call keeps its row.
+ */
+function askingCall(interaction: "permission" | "question", itemId: string | undefined, data: Record<string, unknown>): string | undefined {
+  if (interaction !== "question" || !itemId) return undefined;
+  return data.requestMethod === "mcpServer/elicitation/request" ? undefined : itemId;
+}
+
 function interactionKind(kind: string): "permission" | "question" | undefined {
   if (kind.startsWith("permission.")) return "permission";
   if (kind.startsWith("question.")) return "question";
@@ -567,7 +607,7 @@ export function normalizeSessionEntry(entry: SessionEntry): TranscriptEvent | nu
   const nested = objectValue(payload.data);
   const itemId = stringValue(payload.itemId);
   const status = stringValue(payload.status);
-  const flat = { ...payload, ...nested };
+  const flat = localSessionData(entry.sessionId, { ...payload, ...nested });
   const envelope: TranscriptEnvelope = {
     sessionId: entry.sessionId,
     sequence: entry.sequence,
@@ -584,6 +624,7 @@ export function normalizeSessionEntry(entry: SessionEntry): TranscriptEvent | nu
     // live one it is a twin of. Card-shaped entries keep their envelope below.
     providerData: flat,
   };
+  if (kind.startsWith("subagent.")) return subagentPointer(kind, envelope, flat, status);
   const raw = entry.kind.startsWith("provider.")
     || entry.kind.startsWith("raw.")
     || entry.contextVisibility.toLowerCase().includes("raw");
@@ -596,7 +637,7 @@ export function normalizeSessionEntry(entry: SessionEntry): TranscriptEvent | nu
       inspectable: true,
     };
   }
-  const carded = { ...envelope, providerData: payload };
+  const carded = { ...envelope, providerData: nested.childSessionId === entry.sessionId ? { ...payload, data: localSessionData(entry.sessionId, nested) } : payload };
   const text = stringValue(payload.text) ?? "";
 
   if (kind === "user.message" || kind === "assistant.message") {
@@ -675,7 +716,7 @@ export function normalizeSessionEntry(entry: SessionEntry): TranscriptEvent | nu
   const interaction = interactionKind(kind);
   if (interaction) {
     if (kind.endsWith(".requested")) {
-      return { type: "interaction.requested", envelope, interaction, title, text: body, status: status ?? "pending" };
+      return { type: "interaction.requested", envelope, interaction, title, text: body, status: status ?? "pending", askingCall: askingCall(interaction, itemId, flat) };
     }
     return {
       type: "interaction.settled",

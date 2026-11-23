@@ -335,6 +335,10 @@ pub fn dispatch(
             let p: wire::WorkspaceChangesParams = decode(method, params)?;
             reply(api::workspace_changes(core, &p.workspace_id))
         }
+        MethodName::SessionChanges => {
+            let p: wire::SessionChangesParams = decode(method, params)?;
+            reply(api::session_changes(core, &p.session_id, p.include_patches.unwrap_or(false)))
+        }
 
         MethodName::GetSessionForest => {
             let p: wire::GetSessionForestParams = decode(method, params)?;
@@ -648,7 +652,11 @@ pub fn dispatch(
         }
         MethodName::WriteTerminal => {
             let p: wire::WriteTerminalParams = decode(method, params)?;
-            reply(api::write_terminal(core, &p.workspace_id, &p.terminal_id, &p.data))
+            reply(if p.binary {
+                api::write_terminal_binary(core, &p.workspace_id, &p.terminal_id, &p.data)
+            } else {
+                api::write_terminal(core, &p.workspace_id, &p.terminal_id, &p.data)
+            })
         }
         MethodName::ResizeTerminal => {
             let p: wire::ResizeTerminalParams = decode(method, params)?;
@@ -912,6 +920,14 @@ pub fn dispatch(
         MethodName::UsageInsights => {
             let p: wire::InsightsParams = decode(method, params)?;
             reply(api::usage_insights(core, &p))
+        }
+        MethodName::UsageRecordPresence => {
+            let p: wire::RecordPresenceParams = decode(method, params)?;
+            reply(api::usage_record_presence(core, &p))
+        }
+        MethodName::UsageScreenTime => {
+            let p: wire::ScreenTimeParams = decode(method, params)?;
+            reply(api::usage_screen_time(core, &p))
         }
         MethodName::ListUsagePriceOverrides => reply(api::list_usage_price_overrides(core)),
         MethodName::SetUsagePriceOverride => {
@@ -1405,6 +1421,31 @@ pub fn dispatch(
         MethodName::MarkWorkflowRunsRead => {
             let p: wire::MarkWorkflowRunsReadParams = decode(method, params)?;
             reply(api::mark_workflow_runs_read(core, &p))
+        }
+        MethodName::StartReview => {
+            let p: wire::StartReviewParams = decode(method, params)?;
+            reply(api::start_review(core, &p))
+        }
+        MethodName::ListReviews => {
+            let p: wire::ListReviewsParams = decode(method, params)?;
+            reply(api::list_reviews(core, &p))
+        }
+        MethodName::GetReview => {
+            let p: wire::GetReviewParams = decode(method, params)?;
+            reply(api::get_review(core, &p))
+        }
+        MethodName::CancelReview => {
+            let p: wire::CancelReviewParams = decode(method, params)?;
+            reply(api::cancel_review(core, &p))
+        }
+        MethodName::RetryReview => {
+            let p: wire::RetryReviewParams = decode(method, params)?;
+            reply(api::retry_review(core, &p))
+        }
+        MethodName::GetReviewJobSettings => reply(api::get_review_job_settings(core)),
+        MethodName::SaveReviewJobSettings => {
+            let p: wire::SaveReviewJobSettingsParams = decode(method, params)?;
+            reply(api::save_review_job_settings(core, &p))
         }
         MethodName::AlwaysAllowTool => {
             let p: wire::AlwaysAllowToolParams = decode(method, params)?;

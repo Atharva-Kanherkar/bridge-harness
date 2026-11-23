@@ -335,6 +335,9 @@ pub struct ImportJob {
     pub failed: u64,
     /// Background runs from the OS temp folder, not imported.
     pub left_out: u64,
+    /// Workspaces adopted in place from the tool's worktrees (T3 Code).
+    #[serde(default)]
+    pub workspaces: u64,
     /// The folder of the chat being read now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_project: Option<String>,
@@ -389,6 +392,9 @@ pub struct ContinuedImportedChat {
 pub struct ImportJobStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<ImportJob>,
+    /// The latest import from each tool, so each tool's section shows its own.
+    #[serde(default)]
+    pub jobs: Vec<ImportJob>,
 }
 
 #[cfg(test)]

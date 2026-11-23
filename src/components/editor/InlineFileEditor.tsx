@@ -3,7 +3,7 @@ import { SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 import { LoaderCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { CodeEditor } from "./CodeEditor";
-import { isDirty, isReadOnly, loadBuffer, saveBuffer, stateAfterEdit, statusLabel, type FileBuffer } from "./fileBuffer";
+import { isDirty, isReadOnly, loadBuffer, saveBuffer, settleSave, stateAfterEdit, statusLabel, type FileBuffer } from "./fileBuffer";
 import { modKey } from "@/lib/platform";
 
 /**
@@ -39,21 +39,39 @@ export function InlineFileEditor({ workspaceId, path, onDirtyChange, onSaved }: 
     return () => { live = false; };
   }, [path, workspaceId]);
 
+  // The latest buffer for callbacks fired between renders (⌘S and a click in
+  // one tick), and the write in flight; see CodePanel's `saving`.
+  const latest = useRef(buffer);
+  latest.current = buffer;
+  const saving = useRef(false);
+  const live = useRef(true);
+  useEffect(() => () => { live.current = false; }, []);
+
   const save = useCallback(async (force = false) => {
-    const current = buffer;
-    if (!current || isReadOnly(current) || current.state === "saving") return;
+    const current = latest.current;
+    if (!current || isReadOnly(current) || saving.current) return;
+    if (current.state === "error" && !current.baseSha) return;
+    const text = content.current;
+    if (!force && current.state === "clean" && text === current.saved) return;
+    saving.current = true;
     setBuffer({ ...current, state: "saving", message: undefined });
-    const next = await saveBuffer(workspaceId, current, content.current, force);
-    setBuffer(next);
-    if (next.state === "clean") onSaved?.();
-  }, [buffer, onSaved, workspaceId]);
+    try {
+      const next = await saveBuffer(workspaceId, current, text, force);
+      if (next.state === "clean") onSaved?.();
+      // Text typed while the write was in flight is still unsaved.
+      if (live.current) setBuffer(settleSave(next, content.current));
+    } finally {
+      saving.current = false;
+    }
+  }, [onSaved, workspaceId]);
 
   const reload = useCallback(async () => {
-    const seed = (buffer?.seed ?? 0) + 1;
+    const seed = (latest.current?.seed ?? 0) + 1;
     const loaded = await loadBuffer(workspaceId, path, seed);
+    if (!live.current) return;
     content.current = loaded.saved;
     setBuffer(loaded);
-  }, [buffer?.seed, path, workspaceId]);
+  }, [path, workspaceId]);
 
   if (!buffer) return <SkeletonRegion label={`Opening ${path}`} className="px-3.5 py-4"><SkeletonText lines={6} /></SkeletonRegion>;
 
@@ -77,7 +95,7 @@ export function InlineFileEditor({ workspaceId, path, onDirtyChange, onSaved }: 
           content.current = value;
           setBuffer(current => {
             const next = current && stateAfterEdit(current, value);
-            return next && current ? { ...current, state: next } : current;
+            return next && current ? { ...current, state: next, message: next === "clean" ? undefined : current.message } : current;
           });
         }}
         onSave={() => void save()}

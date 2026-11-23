@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Bot, ChevronDown, FolderGit2, GitBranch, GitFork, Plus } from "lucide-react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -27,6 +28,8 @@ export type ComposerContextStripProps = {
   onSelectAgent?: (agent: AgentDefinition | null) => void;
   /** Opens the Agents page to create one. */
   onCreateAgent?: () => void;
+  /** Drawn at the strip's right end, from a medium width up: the composer's key hints. */
+  trailing?: ReactNode;
 };
 
 const CHIP =
@@ -61,6 +64,7 @@ export function ComposerContextStrip({
   agent = null,
   onSelectAgent,
   onCreateAgent,
+  trailing,
 }: ComposerContextStripProps) {
   const repoMenu = useMenuPanel<HTMLButtonElement>({ width: 280, height: 260 });
   const branchMenu = useMenuPanel<HTMLButtonElement>({ width: 280, height: 260 });
@@ -191,7 +195,8 @@ export function ComposerContextStrip({
           className={cn(CHIP, "ml-auto min-w-0 max-w-[12rem] shrink-0", agentMenu.open && "bg-accent text-foreground")}
         >
           <Bot size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
-          <span className="hidden min-w-0 truncate @xl/composer-context:inline">{agent?.name ?? "No agent"}</span>
+          {/* "No agent" is the default; spelling it out only crowded the row. */}
+          {agent && <span className="hidden min-w-0 truncate @xl/composer-context:inline">{agent.name}</span>}
           <ChevronDown size={10} className="shrink-0 opacity-60" aria-hidden="true" />
         </button>
         <MenuPanel controller={agentMenu} label="Agent">
@@ -218,6 +223,7 @@ export function ComposerContextStrip({
           <ContextHelp text={agents.length === 0 ? "No agents are enabled. Create one in Settings." : "Start this chat with one of your agents instead of the orchestrator."} />
         </MenuPanel>
       </>}
+      {trailing && <div className={cn("hidden shrink-0 items-center pl-2 @xl/composer-context:flex", !onSelectAgent && "ml-auto")}>{trailing}</div>}
     </div>
   );
 }

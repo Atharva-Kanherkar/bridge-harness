@@ -240,6 +240,14 @@ describe("PatchView", () => {
       expect(foldBar()).toBeNull();
     });
 
+    it("keeps an expansion while the same patch keeps growing", () => {
+      act(() => { root.render(<PatchView patch={TWO_HUNKS} path="a.ts" foldAfterHunks={1} />); });
+      act(() => foldBar()!.click());
+      act(() => { root.render(<PatchView patch={`${TWO_HUNKS}\n@@ -80,1 +80,1 @@\n+const q = 0;`} path="a.ts" foldAfterHunks={1} />); });
+      expect(foldBar()).toBeNull();
+      expect(container.textContent).toContain("const q = 0;");
+    });
+
     it("re-folds when the patch is replaced, so one expansion does not leak into the next", () => {
       act(() => { root.render(<PatchView patch={TWO_HUNKS} path="a.ts" foldAfterHunks={1} />); });
       act(() => foldBar()!.click());

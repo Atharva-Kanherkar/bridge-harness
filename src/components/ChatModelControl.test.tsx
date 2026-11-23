@@ -754,7 +754,7 @@ describe("ChatModelControl effort styles", () => {
       await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} effort="high" onEffortChange={vi.fn()} />));
       await act(async () => trigger().click());
       expect(panel().className).toContain("top-full");
-      expect(panel().style.maxHeight).toBe("420px");
+      expect(panel().style.maxHeight).toBe("520px");
     });
 
     it("stays up and shortens itself when the room above is between the bounds", async () => {
@@ -798,7 +798,7 @@ describe("ChatModelControl effort styles", () => {
       const onEffortChange = vi.fn();
       await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={onChange} effort="high" onEffortChange={onEffortChange} />));
       await act(async () => trigger().click());
-      expect(panel().className).toContain("w-[460px]");
+      expect(panel().className).toContain("w-[380px]");
       const radios = control().querySelectorAll('[role="radio"]');
       expect(radios).toHaveLength(5);
       expect(control().querySelector('[role="radio"][aria-checked="true"]')!.getAttribute("data-effort")).toBe("high");
@@ -850,7 +850,7 @@ describe("ChatModelControl effort styles", () => {
     it("keeps the pane, and its width, for a model with no effort knob", async () => {
       await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="haiku" onChange={vi.fn()} effort="high" onEffortChange={vi.fn()} />));
       await act(async () => trigger().click());
-      expect(panel().className).toContain("w-[460px]");
+      expect(panel().className).toContain("w-[380px]");
       expect(panel().querySelector('[data-testid="effort-control"]')).toBeNull();
       expect(panel().textContent).toContain("No thinking control for this model.");
     });
@@ -858,7 +858,7 @@ describe("ChatModelControl effort styles", () => {
     it("stays single-pane on a surface that does not do effort", async () => {
       await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} />));
       await act(async () => trigger().click());
-      expect(panel().className).toContain("w-[340px]");
+      expect(panel().className).toContain("w-[380px]");
       expect(panel().textContent).not.toContain("Thinking effort");
     });
   });

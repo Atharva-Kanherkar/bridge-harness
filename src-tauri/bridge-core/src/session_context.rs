@@ -54,9 +54,21 @@ struct Envelope<'a> {
 /// absent or blank section is omitted rather than emitted empty, and nothing
 /// to say is `None` rather than an empty frame.
 pub fn build(capabilities: &str, memory_packet: Option<&str>) -> Option<SessionContext> {
+    build_with_handoff(capabilities, memory_packet, None)
+}
+
+/// [`build`] plus what a resumed thread missed while the chat ran on another
+/// model (`provider_threads`). It rides here, in the tail, for the same reason
+/// the packet does: the resumed thread's system prompt must stay as it was.
+pub fn build_with_handoff(
+    capabilities: &str,
+    memory_packet: Option<&str>,
+    since_you_left: Option<&str>,
+) -> Option<SessionContext> {
     let capabilities = canonical_text(capabilities);
     let memory_packet = memory_packet.map(canonical_text).unwrap_or_default();
-    let mut sections = Vec::with_capacity(2);
+    let since_you_left = since_you_left.map(canonical_text).unwrap_or_default();
+    let mut sections = Vec::with_capacity(3);
     if !capabilities.is_empty() {
         sections.push(NamedText {
             name: "session_capabilities",
@@ -67,6 +79,12 @@ pub fn build(capabilities: &str, memory_packet: Option<&str>) -> Option<SessionC
         sections.push(NamedText {
             name: "memory_packet",
             text: &memory_packet,
+        });
+    }
+    if !since_you_left.is_empty() {
+        sections.push(NamedText {
+            name: "conversation_since_you_left",
+            text: &since_you_left,
         });
     }
     if sections.is_empty() {
@@ -193,6 +211,25 @@ mod tests {
     const CAPABILITIES: &str = "Authorize the call with the request header `x-bridge-proxy-auth: aaaa`.";
     const OTHER_CAPABILITIES: &str =
         "Authorize the call with the request header `x-bridge-proxy-auth: bbbb`.";
+
+    #[test]
+    fn a_returned_thread_is_handed_what_it_missed_after_the_other_sections() {
+        let plain = build(CAPABILITIES, Some("Prefers tabs")).unwrap();
+        assert_eq!(build_with_handoff(CAPABILITIES, Some("Prefers tabs"), None).unwrap(), plain);
+        assert_eq!(build_with_handoff(CAPABILITIES, Some("Prefers tabs"), Some("  ")).unwrap(), plain);
+        let returned =
+            build_with_handoff(CAPABILITIES, Some("Prefers tabs"), Some("user.message: asked codex")).unwrap();
+        let text = returned.text();
+        assert!(text.contains("\"name\":\"conversation_since_you_left\""), "{text}");
+        assert!(text.contains("asked codex"), "{text}");
+        assert!(
+            text.find("memory_packet").unwrap() < text.find("conversation_since_you_left").unwrap(),
+            "fixed order: capabilities, packet, then the delta"
+        );
+        assert_ne!(returned.digest(), plain.digest());
+        let only = build_with_handoff("", None, Some("user.message: hi")).unwrap();
+        assert!(only.text().contains("conversation_since_you_left"));
+    }
 
     #[test]
     fn the_frame_is_deterministic_and_names_both_sections() {

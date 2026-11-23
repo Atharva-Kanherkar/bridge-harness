@@ -35,7 +35,6 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
@@ -141,6 +140,8 @@ pub fn discover_external_import(
     let request: external_import::DiscoveryRequest = protocol_wire(params.clone())?;
     let discovery = match request.provider.as_str() {
         claude_import::PROVIDER => claude_import::ClaudeCodeImporter.discover(&request)?,
+        crate::codex_import::PROVIDER => crate::codex_import::CodexImporter.discover(&request)?,
+        crate::opencode_import::PROVIDER => crate::opencode_import::OpenCodeImporter.discover(&request)?,
         provider => {
             return Err(BridgeError::Invalid(format!(
                 "External import provider '{provider}' is not available in this build"
@@ -170,6 +171,12 @@ pub fn preview_external_import(
     let candidates = match discovery.provider.as_str() {
         claude_import::PROVIDER => {
             claude_import::ClaudeCodeImporter.preview(&discovery, &selection)?
+        }
+        crate::codex_import::PROVIDER => {
+            crate::codex_import::CodexImporter.preview(&discovery, &selection)?
+        }
+        crate::opencode_import::PROVIDER => {
+            crate::opencode_import::OpenCodeImporter.preview(&discovery, &selection)?
         }
         provider => {
             return Err(BridgeError::Invalid(format!(
@@ -205,12 +212,29 @@ fn preview_summaries(
 
 /// Read-only: which tools on this machine Bridge can import from.
 pub fn detect_import_sources(
-    _core: &Arc<BridgeCore>,
+    core: &Arc<BridgeCore>,
 ) -> Result<wire::ImportSourcesDetection, BridgeError> {
     let (home, claude_config_dir) = claude_import::claude_env()
         .ok_or_else(|| BridgeError::Invalid("HOME is not set; Bridge cannot look for other tools".into()))?;
+    // The account folders in Settings count too: the import reads them.
+    let homes = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::import_continue::sign_in_homes(&db).unwrap_or_default()
+    };
+    let accounts = crate::import_sources::AccountFolders {
+        claude: crate::import_continue::folders(&homes.claude),
+        codex: crate::import_continue::folders(&homes.codex),
+        opencode: crate::import_continue::folders(&homes.opencode),
+        bridge_data: crate::import_placement::Rules::for_core(core).bridge_dirs,
+    };
     Ok(wire::ImportSourcesDetection {
-        sources: crate::import_sources::detect(&home, claude_config_dir.as_deref(), &[]),
+        sources: crate::import_sources::detect_with(
+            &home,
+            claude_config_dir.as_deref(),
+            &accounts,
+            std::env::var_os("CODEX_HOME").filter(|value| !value.is_empty()).map(std::path::PathBuf::from).as_deref(),
+            std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()).map(std::path::PathBuf::from).as_deref(),
+        ),
         detected_at: chrono::Utc::now().to_rfc3339(),
     })
 }
@@ -243,7 +267,7 @@ pub fn continue_imported_chat(
 
 /// The latest background import, running or finished.
 pub fn import_status(core: &Arc<BridgeCore>) -> Result<wire::ImportJobStatus, BridgeError> {
-    Ok(wire::ImportJobStatus { job: crate::import_job::status(core)? })
+    Ok(wire::ImportJobStatus { job: crate::import_job::status(core)?, jobs: crate::import_job::status_by_tool(core)? })
 }
 
 /// Chats written per transaction. A big import commits batch by batch so the
@@ -413,6 +437,12 @@ pub fn commit_external_import(
         claude_import::PROVIDER => {
             claude_import::ClaudeCodeImporter.preview(&discovery, &selection)?
         }
+        crate::codex_import::PROVIDER => {
+            crate::codex_import::CodexImporter.preview(&discovery, &selection)?
+        }
+        crate::opencode_import::PROVIDER => {
+            crate::opencode_import::OpenCodeImporter.preview(&discovery, &selection)?
+        }
         provider => {
             return Err(BridgeError::Invalid(format!(
                 "External import provider '{provider}' is not available in this build"
@@ -428,6 +458,8 @@ pub fn commit_external_import(
         .filter(|candidate| candidate.kind != external_import::CandidateKind::Unsupported)
         .map(|candidate| match candidate.source.provider.as_str() {
             claude_import::PROVIDER => claude_import::ClaudeCodeImporter.normalize(candidate),
+            crate::codex_import::PROVIDER => crate::codex_import::CodexImporter.normalize(candidate),
+            crate::opencode_import::PROVIDER => crate::opencode_import::OpenCodeImporter.normalize(candidate),
             provider => Err(BridgeError::Invalid(format!(
                 "External import provider '{provider}' is not available in this build"
             ))),
@@ -1444,6 +1476,42 @@ pub fn github_review(
     Ok(result)
 }
 
+// ── reviews ──────────────────────────────────────────────────────────────────
+// Pull-request reviews as stored background jobs on Bridge's own runner. See
+// `reviews`. `github_review` above keeps its worker path until the pipeline
+// steps land.
+
+pub fn start_review(core: &Arc<BridgeCore>, params: &wire::StartReviewParams) -> Result<wire::ReviewJobResult, BridgeError> {
+    Ok(wire::ReviewJobResult { job: crate::reviews::start(core, params)? })
+}
+
+pub fn list_reviews(core: &Arc<BridgeCore>, params: &wire::ListReviewsParams) -> Result<wire::ReviewJobList, BridgeError> {
+    crate::reviews::list(core, params)
+}
+
+pub fn get_review(core: &Arc<BridgeCore>, params: &wire::GetReviewParams) -> Result<wire::ReviewJobDetail, BridgeError> {
+    crate::reviews::get(core, &params.job_id)
+}
+
+pub fn cancel_review(core: &Arc<BridgeCore>, params: &wire::CancelReviewParams) -> Result<wire::ReviewJobResult, BridgeError> {
+    Ok(wire::ReviewJobResult { job: crate::reviews::cancel(core, &params.job_id)? })
+}
+
+pub fn retry_review(core: &Arc<BridgeCore>, params: &wire::RetryReviewParams) -> Result<wire::ReviewJobResult, BridgeError> {
+    Ok(wire::ReviewJobResult { job: crate::reviews::retry(core, &params.job_id)? })
+}
+
+pub fn get_review_job_settings(core: &Arc<BridgeCore>) -> Result<wire::ReviewJobSettings, BridgeError> {
+    crate::reviews::job_settings(core)
+}
+
+pub fn save_review_job_settings(
+    core: &Arc<BridgeCore>,
+    params: &wire::SaveReviewJobSettingsParams,
+) -> Result<wire::ReviewJobSettings, BridgeError> {
+    crate::reviews::save_job_settings(core, &params.settings)
+}
+
 /// How the pull-request reviewer launches on one harness, decided before a
 /// session is spent on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1911,6 +1979,22 @@ pub fn workspace_changes(
     core.workspace_path(workspace_id)?;
     let path = locked_workspace_path(core, workspace_id)?;
     git::workspace_changeset(Path::new(&path))
+}
+
+/// What one chat's own turns changed, rather than everything uncommitted in
+/// its folder. Resolves the folder under the lock, then runs Git outside it.
+/// See [`crate::chat_changes`].
+pub fn session_changes(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    include_patches: bool,
+) -> Result<crate::chat_changes::SessionChanges, BridgeError> {
+    match core.session_workspace_root(session_id) {
+        Some(root) => crate::chat_changes::session_changes(&root, session_id, include_patches),
+        None => Ok(crate::chat_changes::SessionChanges::unavailable(
+            crate::chat_changes::SessionChangesUnavailable::NoFolder,
+        )),
+    }
 }
 
 pub fn archive_workspace(
@@ -3395,6 +3479,52 @@ fn finish_interaction(
     finish_interaction_with_answers(core, session_id, event_id, interaction_kind, decision, option_id, actor, reason, adapter_id, is_worker, item_id, failure, None)
 }
 
+/// Record an approval the provider had already settled as resolved.
+#[allow(clippy::too_many_arguments)]
+fn finish_settled_permission(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    event_id: i64,
+    decision: &str,
+    option_id: Option<&str>,
+    actor: &str,
+    adapter_id: &str,
+    is_worker: bool,
+    item_id: Option<&str>,
+    provider_message: &str,
+) -> Result<wire::InteractionResolutionResult, BridgeError> {
+    drop(store::event(
+        &core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        "permission",
+        "permission.already_settled",
+        session_id,
+        provider_message,
+    ));
+    finish_interaction(
+        core,
+        session_id,
+        event_id,
+        "permission",
+        decision,
+        option_id,
+        actor,
+        Some("the agent had already settled this request"),
+        adapter_id,
+        is_worker,
+        item_id,
+        None,
+    )
+}
+
+/// Whether a provider's refusal to take an approval means it no longer has
+/// the request at all (already answered or cleared), rather than an error.
+fn provider_already_settled(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("permissionnotfound")
+        || (lower.contains("404") && lower.contains("permission"))
+        || lower.contains("permission request not found")
+}
+
 /// `finish_interaction`, also recording what a question was answered with so
 /// the card can say so after a reload. Secret fields never reach this map.
 #[allow(clippy::too_many_arguments)]
@@ -3643,6 +3773,16 @@ fn resolve_provider_permission(
         )),
     };
     drop(adapters);
+    // The agent may have settled this request itself before the answer
+    // reached it: OpenCode clears every pending call a "for this session"
+    // approval covers, so a second, concurrent approval comes back 404. That
+    // is a resolved request, not a failed one; recording it as failed left the
+    // session showing "waiting for approval" while it kept working.
+    if let Err(error) = &response {
+        if provider_already_settled(&error.to_string()) {
+            return finish_settled_permission(core, session_id, event_id, &decision, option_id.as_deref(), actor, &adapter_id, is_worker, item_id.as_deref(), &error.to_string());
+        }
+    }
     if let Err(error) = response {
         let message = error.to_string();
         let _ = finish_interaction(
@@ -3994,7 +4134,9 @@ pub fn close_terminal(
         crate::terminal_workspace::closed(core, workspace_id, terminal_id)?;
     }
     let runtime = core.runtimes.lock().unwrap().remove(&runtime_id);
-    if let Some(mut runtime) = runtime { let _ = runtime.child.kill(); }
+    if let Some(mut runtime) = runtime {
+        crate::terminal_workspace::end_child(runtime.child.as_mut());
+    }
 
     Ok(())
 }
@@ -4018,13 +4160,45 @@ pub fn write_terminal(
     terminal_id: &str,
     data: &str,
 ) -> Result<(), BridgeError> {
-    let mut sessions = core.runtimes.lock().unwrap();
-    let runtime = sessions
-        .get_mut(&terminal_runtime_id(workspace_id, terminal_id))
-        .ok_or_else(|| BridgeError::Invalid("Workspace terminal is not open".into()))?;
-    runtime.writer.write_all(data.as_bytes())?;
-    runtime.writer.flush()?;
-    Ok(())
+    send_terminal_input(core, workspace_id, terminal_id, data.as_bytes().to_vec())
+}
+
+/// Write input that is bytes rather than text. xterm.js reports X10 mouse
+/// events (what macOS terminfo's `kmous=\E[M` selects for ncurses apps) as a
+/// binary string: one char per byte, some above 0x7F. Encoding those chars as
+/// UTF-8 would turn one byte into two, so each char is taken as its byte.
+pub fn write_terminal_binary(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    terminal_id: &str,
+    data: &str,
+) -> Result<(), BridgeError> {
+    let bytes = data
+        .chars()
+        .map(|char| u8::try_from(u32::from(char)))
+        .collect::<Result<Vec<u8>, _>>()
+        .map_err(|_| BridgeError::Invalid("Binary terminal input must be one byte per character".into()))?;
+    send_terminal_input(core, workspace_id, terminal_id, bytes)
+}
+
+/// Queue bytes for one terminal's writer thread. The map lock covers only the
+/// lookup: writing to a PTY whose program is not reading blocks, and a block
+/// here used to freeze every terminal and every session stop with it.
+fn send_terminal_input(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    terminal_id: &str,
+    bytes: Vec<u8>,
+) -> Result<(), BridgeError> {
+    let closed = || BridgeError::Invalid("Workspace terminal is not open".into());
+    let input = core
+        .runtimes
+        .lock()
+        .unwrap()
+        .get(&terminal_runtime_id(workspace_id, terminal_id))
+        .map(|runtime| runtime.input.clone())
+        .ok_or_else(closed)?;
+    input.send(bytes).map_err(|_| closed())
 }
 
 pub fn resize_terminal(core: &Arc<BridgeCore>, workspace_id: &str, terminal_id: &str, rows: u16, cols: u16) -> Result<(), BridgeError> {
@@ -4202,10 +4376,7 @@ pub fn start_provider_login(
     let account_launch = provider_login_account(core, provider, account)?;
     let mut command = provider_login_command(core, provider)?;
     apply_provider_login_account(&mut command, account_launch.as_ref());
-    command.env("TERM", "xterm-256color");
-    if let Some(path) = binary::hydrated_command_path() {
-        command.env("PATH", path);
-    }
+    crate::terminal_workspace::pty_environment(&mut command);
     if let Some(home) = std::env::var_os("HOME") {
         command.cwd(home);
     }
@@ -4234,7 +4405,7 @@ pub fn start_provider_login(
     core.runtimes.lock().unwrap().insert(
         runtime_id.clone(),
         RuntimeSession {
-            writer,
+            input: crate::terminal_workspace::spawn_pty_writer(writer),
             master: pair.master,
             child,
             epoch,
@@ -4247,11 +4418,15 @@ pub fn start_provider_login(
     let runtime_reader = runtime_id;
     thread::spawn(move || {
         let mut buf = [0u8; 8192];
+        let mut text = crate::terminal_workspace::Utf8Stream::default();
         loop {
-            match reader.read(&mut buf) {
+            match crate::terminal_workspace::read_pty(&mut reader, &mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let data = text.push(&buf[..n]);
+                    if data.is_empty() {
+                        continue;
+                    }
                     core_reader.events.publish(CoreEvent::SessionOutput {
                         session_id: workspace_reader.clone(),
                         terminal_id: terminal_reader.clone(),
@@ -4260,17 +4435,18 @@ pub fn start_provider_login(
                 }
             }
         }
-        {
+        let ended = {
             let mut sessions = core_reader.runtimes.lock().unwrap();
             match sessions.get(&runtime_reader) {
-                Some(entry) if entry.epoch == epoch => {
-                    sessions.remove(&runtime_reader);
-                }
+                Some(entry) if entry.epoch == epoch => sessions.remove(&runtime_reader),
                 Some(_) => {
                     return;
                 }
-                None => {}
+                None => None,
             }
+        };
+        if let Some(mut runtime) = ended {
+            crate::terminal_workspace::settle_exit(runtime.child.as_mut());
         }
         // The sign-in that just ended may have changed what a probe would
         // answer, and an adapter that records its probe would otherwise keep
@@ -4310,7 +4486,7 @@ pub fn cancel_provider_login(
     let runtime_id = terminal_runtime_id(PROVIDER_LOGIN_WORKSPACE_ID, &terminal_id);
     let removed = core.runtimes.lock().unwrap().remove(&runtime_id);
     if let Some(mut runtime) = removed {
-        let _ = runtime.child.kill();
+        crate::terminal_workspace::end_child(runtime.child.as_mut());
     }
     Ok(())
 }
@@ -5239,6 +5415,30 @@ pub fn usage_insights(
     crate::usage_insights::insights(core, params)
 }
 
+/// Screen Time: stores the minutes the person was active in a Bridge window.
+pub fn usage_record_presence(
+    core: &Arc<BridgeCore>,
+    params: &wire::RecordPresenceParams,
+) -> Result<wire::UsageRecordPresenceResult, BridgeError> {
+    let now_minute = chrono::Utc::now().timestamp().div_euclid(60);
+    let recorded = crate::screen_time::record_presence(&lock_db(core), &params.minutes, now_minute)?;
+    Ok(wire::UsageRecordPresenceResult { recorded })
+}
+
+/// Screen Time: your time and agent time per local day, plus all-time totals.
+/// The first ask also starts counting agent time from before Screen Time
+/// existed, off the core mutex; the result says `counting` until it is done.
+pub fn usage_screen_time(
+    core: &Arc<BridgeCore>,
+    params: &wire::ScreenTimeParams,
+) -> Result<wire::UsageScreenTimeResult, BridgeError> {
+    let result = crate::screen_time::screen_time(&lock_db(core), params)?;
+    if result.agent_history == wire::ScreenTimeAgentHistory::Counting {
+        crate::screen_time::ensure_backfill(core);
+    }
+    Ok(result)
+}
+
 pub fn list_usage_price_overrides(
     core: &Arc<BridgeCore>,
 ) -> Result<Vec<usage_pricing::PriceOverride>, BridgeError> {
@@ -5460,7 +5660,7 @@ pub fn resume_limit_recovery(core: &Arc<BridgeCore>, session_id: &str) -> Result
     crate::limit_recovery::status(&lock_db(core), session_id)
 }
 
-/// The store lock for the limit-recovery methods, through a poisoned mutex.
+/// The store lock, through a poisoned mutex.
 fn lock_db(core: &Arc<BridgeCore>) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
     core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }

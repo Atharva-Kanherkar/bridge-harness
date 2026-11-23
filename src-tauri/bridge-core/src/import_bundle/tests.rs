@@ -66,6 +66,7 @@ pub(crate) fn chat(key: &str, harness: &str, native: Option<&str>, entries: Vec<
             transcript_path: None,
         }),
         parent_chat_key: None,
+        parent_native_key: None,
         agent_role: None,
         entries_source: EntriesSource::Native,
         entries,
@@ -302,6 +303,36 @@ fn a_missing_or_cyclic_parent_keeps_the_chat_at_the_top_level() {
     assert!(resolved.chats.iter().any(|chat| chat.parent_identity.is_none() && chat.identity == "claude:o"));
     let lowered = lower(&resolved);
     assert_eq!(lowered.candidates.len(), 3);
+}
+
+/// A subagent read in a later batch than its parent (Codex keeps each in
+/// its own file) still lands under it: the writer finds the parent in the
+/// store by its native key.
+#[test]
+fn a_child_whose_parent_was_imported_earlier_finds_it_by_native_key() {
+    let db = database();
+    let mut first = TransferBundle::new(source("codex"));
+    first.chats.push(chat("codex:p", "codex", Some("p"), rich_entries()));
+    import(&db, vec![first]);
+    let mut later = TransferBundle::new(source("codex"));
+    let mut child = chat("codex:c", "codex", Some("c"), rich_entries());
+    child.title = Some("child task".into());
+    child.parent_chat_key = Some("codex:p".into());
+    child.parent_native_key = Some("codex:p".into());
+    later.chats.push(child);
+
+    let resolved = resolve(vec![later]).unwrap();
+    assert!(!resolved.diagnostics.iter().any(|d| d.code == "parent_chat_missing"));
+    import(&db, vec![TransferBundle { chats: resolved_bundle_chats(&resolved), ..TransferBundle::new(source("codex")) }]);
+
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM sessions c JOIN import_native_sessions n ON n.native_key='codex:p' WHERE c.title='child task' AND c.parent_session_id=n.session_id"),
+        1
+    );
+}
+
+fn resolved_bundle_chats(resolved: &crate::import_bundle::ResolvedImport) -> Vec<BundleChat> {
+    resolved.chats.iter().map(|chat| chat.chat.clone()).collect()
 }
 
 #[test]
@@ -872,6 +903,7 @@ fn a_session_bridge_ran_stays_bridges_after_a_harness_switch() {
         crate::model::CapabilityTier::Standard,
         ("claude", Some("sonnet")),
         false,
+        None,
     )
     .unwrap();
     assert_eq!(switched, 1);

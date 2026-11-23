@@ -10,14 +10,16 @@ import { useSessionStops } from "./sessionStop";
 import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
+import { useChatChangedFiles } from "./chatChangedFiles";
+import { COMPOSER_MENTION_TRIGGERS, FileMentionMenu } from "./components/FileMentionMenu";
 import { findReferences, insertMention, referenceAlias, removeReferenceToken, type ReferenceChipModel } from "./referenceChip";
 import type { ImportContinuation, ImportJob, ResolveReferenceResult, WorkflowDraft, WorkflowRun } from "./protocol/generated/protocol";
 import { workflowNotification } from "./components/workflows/notify";
 import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, History, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, Check, CircleDot, Clock3, Code2, History, FileCode2, FileDiff, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
-import { continuationNotice, importedChatBadge } from "./importSources";
+import { continuationNotice, importedChatBadge, importSourceLabel } from "./importSources";
 import { abandonFlight, beginNewChat, beginSend, bindNewChat, markFlight, markSubmitted } from "./sendLatency";
 import { pickPath } from "./pathPicker";
 import { isTransportError } from "./webDaemon";
@@ -35,12 +37,13 @@ import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
 import { ComposerContextStrip } from "./components/ComposerContextStrip";
+import { ComposerKeyHints } from "./components/ComposerKeyHints";
 import { ProjectsScreen } from "./components/ProjectsScreen";
 import { NewProjectDialog } from "./components/NewProjectDialog";
 import type { GithubRepository, QuestionAction, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
-import { byRecency, chatName, isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
+import { byRecency, chatName, importedSubagents, isHiddenSession, isWorkerSession, liveAgentSessions } from "./components/sidebarChats";
 import { AppLauncher } from "./components/AppLauncher";
 import { appById, appForView, appsBadge, badgeText, builtinEntry, isAppId, personalEntry, personalIdOf, personalKey, type AppKey, type LaunchEntry } from "./apps/registry";
 import { setPinned, togglePin } from "./apps/pins";
@@ -62,6 +65,7 @@ import { GitHubPane } from "./components/GitHubPane";
 import { useChatPullRequests, useSidebarPullRequests } from "./components/ChatPullRequests";
 import { ChatWorkShelf } from "./components/WorkShelf";
 import { ChatWorkPane, type WorkFocus } from "./components/WorkPane";
+import { ChatOverview } from "./components/ChatOverview";
 import { useBackgroundTaskCount } from "./components/useBackgroundTasks";
 import { backgroundWork } from "./backgroundTasks";
 import { chatPrStatus } from "./chatPullRequests";
@@ -146,10 +150,11 @@ import { readAgentOnboardingComplete, shouldShowAgentOnboarding, writeAgentOnboa
 import { resolveAsideModel } from "./asideModel";
 import { parseSideChatCommand, quoteSelection } from "./sideChat";
 import { parseFindCommand } from "./chatSearch";
-import { pickGreeting } from "./greetings";
+import { welcomeHeadline } from "./greetings";
 import { useThemePreference } from "./theme";
 import { startAppPreferenceSync } from "./appPreferences";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
+import { SettingsScreenSkeleton } from "./components/settings/SettingsScreenSkeleton";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
 import { readLastDraftModel, writeLastDraftModel, type LastDraftModel } from "./lastDraftModel";
 import { resolveDraftHarnessModel as resolveNewChatModel } from "./newChatModel";
@@ -173,6 +178,7 @@ import { CodexUpdateDialog, type CodexUpdatePhase } from "./components/CodexUpda
 import { mergeForestSnapshot } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { createCoalescedRefresh, startSerialPoll } from "./polling";
+import { reviewBadge, useChatChanges } from "./chatChanges";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { TRANSIENT_ALERT_TTL_MS, TransientAlert } from "./components/TransientAlert";
 import { Badge } from "@/components/ui/badge";
@@ -182,6 +188,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { createBridgeQueryClient } from "./queryClient";
 import { useUiStore } from "./uiStore";
 import { useBridgeServerState } from "./serverState";
+import { startPresenceTracking } from "./screenTime";
 
 const WorkflowsScreen = lazy(() => import("./components/WorkflowsScreen").then(module => ({ default: module.WorkflowsScreen })));
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
@@ -189,6 +196,8 @@ const UsageScreen = lazy(() => import("./components/UsageScreen").then(module =>
 const NotesScreen = lazy(() => import("./components/NotesScreen").then(module => ({ default: module.NotesScreen })));
 import { NotesScreenSkeleton } from "./components/notes/NotesSkeleton";
 import type { NoteChatRequest, NotesCopilotHost } from "./components/NotesScreen";
+/** Views drawn by SettingsScreen, which replaces the sidebar while open. */
+const SETTINGS_VIEWS: ReadonlySet<AppView> = new Set<AppView>(["settings", "archives", "saved-setups", "briefing-settings"]);
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
 const WorkView = lazy(() => import("./components/WorkView").then(module => ({ default: module.WorkView })));
 const TerminalPane = lazy(() => import("./components/TerminalPane").then(module => ({ default: module.TerminalPane })));
@@ -363,6 +372,10 @@ function AppContent() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [highlightEntryId, setHighlightEntryId] = useState<string | null>(null);
   const [error, setError] = useState<string>();
+  // Screen Time: report the minutes this window is in front and in use. The
+  // minutes stay in the local database; the Time tab under Usage reads them.
+  useEffect(() => startPresenceTracking(minutes => bridgeApi.recordPresence({ minutes })), []);
+
   const codexVersion = health?.adapters.find(adapter => adapter.id === "codex")?.version ?? undefined;
   const [latestCodex, setLatestCodex] = useState<string>();
   const [codexUpdateNotice, setCodexUpdateNotice] = useState(false);
@@ -1016,6 +1029,16 @@ function AppContent() {
 
   const canBack = navPlaces.index > 0;
   const canForward = navPlaces.index < navPlaces.stack.length - 1;
+  // Settings' Back row returns to the last place that was not a settings page,
+  // so a hop from Archived chats to Permissions still leaves in one click.
+  const leaveSettings = useCallback(() => {
+    const place = navPlaces.stack.slice(0, navPlaces.index).reverse().find(entry => !SETTINGS_VIEWS.has(entry.view))
+      ?? { view: "workspace" as const, sessionId: selectedSessionId ?? null, paradigm: "single" as const };
+    if (place.view === "personal-app") setPersonalAppId(place.appId ?? null);
+    setSelectedSessionId(place.sessionId ?? undefined);
+    setParadigm(place.paradigm);
+    setView(place.view);
+  }, [navPlaces, selectedSessionId]);
   useEffect(() => {
     const previous = browserSessionRef.current;
     browserSessionRef.current = selectedSessionId;
@@ -1129,11 +1152,15 @@ function AppContent() {
     [listPrs, session?.id, chatPrs.loaded, chatPrs.prs],
   );
   const backgroundTaskCount = useBackgroundTaskCount(session?.id);
+  // What this chat's own turns changed, for the Review badge and the dock's
+  // Changes count. The folder's whole uncommitted state is the fallback.
+  const chatChanges = useChatChanges(session?.id, hasRepo && !!workspace);
+  const review = workspace ? reviewBadge(chatChanges.result, chatChanges.loaded, workspace) : null;
   const dockPanes: DockPaneDescriptor[] = [
     // First in the strip, always available: a chat's PRs and background work
     // need no repository of their own to be listed.
     { id: "work", label: "Work", icon: ListChecks, available: true, badge: (chatPrs.prs.length + backgroundTaskCount) || undefined, alert: chatPrs.prs.some(pr => ["failing", "conflicts"].includes(chatPrStatus(pr).phase)) || undefined },
-    { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
+    { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: review?.files || undefined },
     { id: "code", label: "Code", icon: Code2, available: hasRepo && !!workspace, unavailableReason: "Code needs a repository. This chat has no worktree to read files from." },
     { id: "terminal", label: "Terminal", icon: TerminalSquare, available: hasRepo && !!workspace, unavailableReason: "The terminal needs a repository. This chat has no worktree to run a shell in.", badge: terminalActivity && terminalActivity.running > 1 ? terminalActivity.running : undefined, alert: terminalActivity?.attention || undefined },
     // One browser: your own pages.
@@ -1201,6 +1228,9 @@ function AppContent() {
     dispatchDock({ type: "open-pane", pane: "terminal" });
     return requestTerminalRun(runWorkspaceId, command);
   }, [runWorkspaceId, dispatchDock]);
+  // A turn's changes card hands off to the Changes pane, where the header's
+  // Review goes too. Stable so a settled turn's card does not redraw.
+  const reviewTurnChanges = useCallback(() => dispatchDock({ type: "open-pane", pane: "changes" }), [dispatchDock]);
   function openFileInDock(path: string, line?: number) {
     revealNonce.current += 1;
     setCodeReveal({ path, line, nonce: revealNonce.current });
@@ -1219,6 +1249,13 @@ function AppContent() {
     setAgentFocus({ sessionId, nonce: agentFocusNonce.current });
     dispatchDock({ type: "open-pane", pane: "tasks" });
   }
+  // A fan-out card's opener: the pane on its lineage, not on whichever
+  // agent's chat it last showed.
+  const showAgentsInDock = useCallback(() => {
+    agentFocusNonce.current += 1;
+    setAgentFocus({ sessionId: null, nonce: agentFocusNonce.current });
+    dispatchDock({ type: "open-pane", pane: "tasks" });
+  }, [dispatchDock]);
 
   // ── GitHub surface glue ────────────────────────────────────────────────────
   // Deep links into the GitHub dock pane (CI toasts, GitHub links clicked
@@ -1236,7 +1273,7 @@ function AppContent() {
     void bridgeApi.onImportProgress(job => {
       if (job.status === "running") return;
       setImportToast(job);
-      const notice = importNotice(job);
+      const notice = importNotice(job, importSourceLabel(job.tool));
       void notifyAttention(notice.title, notice.body);
     }).then(unlisten => { if (disposed) unlisten(); else stop = unlisten; });
     return () => { disposed = true; stop?.(); };
@@ -1494,7 +1531,7 @@ function AppContent() {
   // A focused worker is watchable, its approvals are resolvable, and it can be
   // steered — the composer says "steer", not "message", because the worker still
   // answers to the objective its orchestrator gave it.
-  const isWorkerView = !!session?.parentSessionId;
+  const isWorkerView = isWorkerSession(session);
   const workerRuntime = useMemo(
     () => forest?.workerRuntimes.find(runtime => runtime.sessionId === session?.id),
     [forest?.workerRuntimes, session?.id],
@@ -1520,6 +1557,9 @@ function AppContent() {
   const notesSession = useMemo(() => notesChatId ? state.sessions.find(candidate => candidate.id === notesChatId) : undefined, [notesChatId, state.sessions]);
   const notesPending = useMemo(() => pending.filter(item => item.sessionId === notesChatId), [pending, notesChatId]);
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id), [pending, session?.id]);
+  // Chats with a send on its way: the sidebar's Running group counts them as
+  // a turn in flight, as `turnActive` below does for the open chat.
+  const sendingChatIds = useMemo(() => new Set(pending.map(item => item.sessionId)), [pending]);
   const conversationStarted = useMemo(() => {
     if (!session) return false;
     if (session.activeTurnId || session.status === "working") return true;
@@ -1535,6 +1575,7 @@ function AppContent() {
   // Agents still running under each chat. The sidebar reads the whole map; the
   // composer reads this chat's slice to stay stoppable after the turn ends.
   const liveAgents = useMemo(() => liveAgentSessions(state.sessions), [state.sessions]);
+  const subagents = useMemo(() => importedSubagents(visibleSessions), [visibleSessions]);
   const chatAgents = useMemo(() => (session ? liveAgents.get(session.id) ?? [] : []), [liveAgents, session]);
   useAgentSpawns(session?.id, chatAgents, showAgentInDock);
   const [worktreeOn, setWorktreeOn] = useState(false);
@@ -1674,8 +1715,7 @@ function AppContent() {
     () => state.events.filter(event => event.kind === "approval.auto_allowed"),
     [state.events],
   );
-  const legacyActiveTurnInput = useActiveTurnInput();
-  const activeTurnInput = currentChatConfiguration && currentChatConfiguration.revision > 0 ? currentChatConfiguration.settings.activeTurnInput : legacyActiveTurnInput;
+  const activeTurnInput = useActiveTurnInput(currentChatConfiguration);
   const activeAction = activeTurnAction(adapters.find(adapter => adapter.id === session?.harness)?.capabilities, activeTurnInput);
   const voice = useVoiceDictation({
     ownerKey: composerOwnerRef.current,
@@ -1734,6 +1774,8 @@ function AppContent() {
   }, [mentionQuery, workspaceFileOptions]);
   const mentionOpen = !slashToken && mentionQuery != null && fileMatches.length > 0 && !mentionDismissed;
   const mentionListRef = useRef<HTMLDivElement>(null);
+  // Files this chat already wrote, marked M or A in the menu. Read only while it is open.
+  const mentionChanges = useChatChangedFiles({ enabled: mentionOpen, sessionId: session?.id, entries: forest?.entries, activeLeafId: forest?.head?.activeEntryId, events: sessionEvents, roots: [session?.cwd, workspace?.path] });
   // #agent shortcut: leading-only, and only while the target token is being
   // typed. The host resolves the selected token again from persisted config;
   // these rows are discovery, never execution authority.
@@ -3359,6 +3401,12 @@ function AppContent() {
     title: chatName(chat),
     detail: state.workspaces.find(item => item.id === chat.workspaceId)?.title,
   })), [topSessions, state.workspaces]);
+  // What ⌘1-9 opens, in the order the jump-to-chat handler indexes.
+  const launcherNumberedChats = useMemo(() => topSessions.slice(0, 9).map(chat => ({
+    id: chat.id,
+    title: chatName(chat),
+    detail: state.workspaces.find(item => item.id === chat.workspaceId)?.title,
+  })), [topSessions, state.workspaces]);
 
   // "Remember this" on an assistant message opens Memory with the reply as a
   // draft to cut down to the one thing worth keeping. It never saves the reply:
@@ -3387,13 +3435,14 @@ function AppContent() {
   const stopWorker = useCallback(async (childSessionId: string) => {
     setState(await bridgeApi.stopSession(childSessionId));
   }, []);
-  // Stop ends everything this chat has running: the orchestrator's turn if it
-  // has one, and every live agent under it. Sending is untouched, so a message
-  // typed while agents run still goes only to the orchestrator.
+  const stoppableAgentIds = useMemo(() => chatAgents.filter(id =>
+    state.sessions.find(item => item.id === id)?.kind !== "harness_subagent"), [chatAgents, state.sessions]);
+  // Stop cancels this chat's turn and its Bridge workers. Provider-owned
+  // children use the Stop on their own row.
   const stopChat = useCallback(() => {
     if (turnActive) requestStop();
-    for (const id of chatAgents) void stopWorker(id).catch(value => setError(errorMessage(value)));
-  }, [turnActive, requestStop, chatAgents, stopWorker]);
+    for (const id of stoppableAgentIds) void stopWorker(id).catch(value => setError(errorMessage(value)));
+  }, [turnActive, requestStop, stoppableAgentIds, stopWorker]);
   const retryWorkerTask = useCallback(async (childSessionId: string) => {
     await bridgeApi.retryWorkerTask(childSessionId);
     await reload();
@@ -3721,6 +3770,8 @@ function AppContent() {
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
   const isSessionChrome = view === "workspace" && paradigm !== "grid" && !!session;
+  // Settings takes the sidebar's place with its own rail and title strip.
+  const settingsView = SETTINGS_VIEWS.has(view);
   const changeChatOptions = async (access: AccessMode, input?: ActiveTurnInput) => {
     if (!session) {patchDraft(input ? {access,activeTurnInput:input} : {access});return;}
     if (!currentChatConfiguration) return;
@@ -3732,7 +3783,9 @@ function AppContent() {
     finally {setBusy(false);}
   };
   const effectiveSettings = session ? currentChatConfiguration?.settings : draftSettings.settings;
-  const accessControl = <><AccessControl disabled={busy} policy={effectiveSettings ? {...(permissionPolicy ?? {workerPromptProposalRoles:[],updatedAt:""}),autoApproveProviderPermissions:effectiveSettings.access === "full"} : undefined} onChange={mode => void changeChatOptions(mode)} />
+  // The model picker repeats the access mode in its footer.
+  const accessModeControl = <AccessControl disabled={busy} policy={effectiveSettings ? {...(permissionPolicy ?? {workerPromptProposalRoles:[],updatedAt:""}),autoApproveProviderPermissions:effectiveSettings.access === "full"} : undefined} onChange={mode => void changeChatOptions(mode)} />;
+  const accessControl = <>{accessModeControl}
     {session
       ? !session.parentSessionId && session.kind !== "worker" && <ChatToolsControl sessionId={session.id} harness={session.harness} account={session.account ?? null} />
       : draftSettings.settings && <ChatToolsControl
@@ -3791,6 +3844,10 @@ function AppContent() {
       onCloseMobile={() => setNavOpen(false)}
       chats={topSessions}
       liveAgents={liveAgents}
+      sessions={visibleSessions}
+      liveEvents={agentEvents}
+      sendingChatIds={sendingChatIds}
+      subagents={subagents}
       unread={unread.byChat}
       pullRequests={sidebarPrs}
       workspaces={state.workspaces}
@@ -3832,9 +3889,11 @@ function AppContent() {
   const welcomeWorkspace = state.workspaces.find(item => item.id === resolvedWelcomeWorkspaceId) ?? null;
 
   return <div data-fullscreen={chromeFullscreen ? "" : undefined} className="u-app-shell relative flex h-[100dvh] flex-row overflow-hidden text-foreground">
-    {sidebar}
+    {/* Hidden rather than unmounted, so its search and scroll survive a visit
+        to Settings. */}
+    <div className={settingsView ? "hidden" : "contents"}>{sidebar}</div>
     <div className="u-vibrancy-canvas relative z-10 flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-    {!isSessionChrome && <AppTitleBar
+    {!isSessionChrome && !settingsView && <AppTitleBar
       flush
       hideBrand
       title={chromeTitle}
@@ -3844,8 +3903,8 @@ function AppContent() {
       sidebarHidden={sidebarCollapsed}
     />}
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
-      {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-3xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
-      <HealthWarnings warnings={health.warnings ?? []} className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-3xl" />
+      {!adaptersReady && !settingsView && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-3xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
+      {!settingsView && <HealthWarnings warnings={health.warnings ?? []} className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-3xl" />}
       {view === "work" ? <Suspense fallback={<PanelLoading label="Opening work…"/>}><WorkView
         board={workBoard}
         error={workError}
@@ -3907,7 +3966,7 @@ function AppContent() {
         projects={state.projects}
         onJumpToFile={jumpFromPulls}
         onAddProject={() => setNewProjectOpen(true)}
-      /> : ["settings", "archives", "saved-setups", "briefing-settings"].includes(view) ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} key={view} contextual={view !== "settings"} initialSection={view === "archives" ? "archives" : view === "saved-setups" ? "agents" : view === "briefing-settings" ? "work" : settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onVoiceChanged={voice.retry} onHealthChange={invalidateHealth} availableUpdate={availableUpdate} onUpdate={setAvailableUpdate} onError={setError} storageCopilot={storageCopilot} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
+      /> : settingsView ? <Suspense fallback={<SettingsScreenSkeleton />}><SettingsScreen onOpenWorkBoard={openWorkBoard} onExit={leaveSettings} adapters={adapters} autoApprovals={autoApprovals} key={view} initialSection={view === "archives" ? "archives" : view === "saved-setups" ? "agents" : view === "briefing-settings" ? "work" : settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onVoiceChanged={voice.retry} onHealthChange={invalidateHealth} availableUpdate={availableUpdate} onUpdate={setAvailableUpdate} onError={setError} storageCopilot={storageCopilot} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
         workspaces={state.workspaces}
         initialWorkspaceId={workspace?.id ?? welcomeWorkspaceId}
         onOpenProjects={() => setView("projects")}
@@ -3959,17 +4018,24 @@ function AppContent() {
             setRecallOpen(open => !open);
           }}
           recallOpen={recallOpen}
-          actions={hasRepo && workspace && workspace.dirtyFiles > 0 ? <button
+          actions={hasRepo && workspace && review ? <button
             type="button"
             onClick={() => dispatchDock({ type: "open-pane", pane: "changes" })}
-            aria-label={`Review changes in ${workspace.dirtyFiles} ${workspace.dirtyFiles === 1 ? "file" : "files"}`}
+            aria-label={review.scope === "chat"
+              ? `Review this chat's changes in ${review.files} ${review.files === 1 ? "file" : "files"}`
+              : `Review uncommitted changes in ${review.files} ${review.files === 1 ? "file" : "files"}`}
+            // Say which number this is where the number is: the chat's own
+            // turns, or (when the chat cannot be measured yet) the folder.
+            title={review.scope === "chat"
+              ? "Files this chat's turns changed. The Changes pane also shows everything uncommitted in the folder."
+              : `Uncommitted in ${workspace.branch ? `${workspace.branch}` : "this folder"} vs HEAD: every change in the folder, not only this chat's`}
             aria-pressed={dock.open && dock.pane === "changes"}
             className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-2 text-meta text-foreground shadow-xs transition-colors hover:bg-accent"
           >
             <FileDiff size={13} aria-hidden="true" />
             <span className="hidden md:inline">Review</span>
-            <span>{workspace.dirtyFiles} {workspace.dirtyFiles === 1 ? "file" : "files"}</span>
-            <span className="hidden gap-1.5 pl-1 font-mono text-caption tabular-nums xl:inline-flex"><span className="text-success">+{workspace.additions}</span><span className="text-destructive">−{workspace.deletions}</span></span>
+            <span>{review.files} {review.files === 1 ? "file" : "files"}</span>
+            <span className="hidden gap-1.5 pl-1 font-mono text-caption tabular-nums xl:inline-flex"><span className="text-success">+{review.additions}</span><span className="text-destructive">−{review.deletions}</span></span>
           </button> : undefined}
           onEnd={sessionConnected ? () => void endChat() : undefined}
           busy={busy}
@@ -4069,6 +4135,10 @@ function AppContent() {
                   onRefreshBase={refreshWorkspaceBase}
                   onRetryWorker={retryWorkerTask}
                   onOpenAgent={showAgentInDock}
+                  workerSessions={visibleSessions}
+                  workerRuntimes={forest?.workerRuntimes}
+                  onStopWorker={stopWorker}
+                  onOpenAgents={showAgentsInDock}
                   onRetryCompaction={() => retryCompaction(session.id)}
                   pendingAdoptions={pendingAdoptions}
                   onResolveAdoption={resolveAdoption}
@@ -4080,9 +4150,10 @@ function AppContent() {
                    queuedFollowUps={queuedFollowUpCount}
                    onResolve={resolveApproval}
                    onAnswerQuestion={resolveQuestion}
-                   onFollowUp={followUpToComposer}
-                   onRetryTurn={retryFailedTurn}
-                   onEditTurn={editFailedTurn}
+                   onFollowUp={session.kind === "harness_subagent" ? undefined : followUpToComposer}
+                   onRetryTurn={session.kind === "harness_subagent" ? undefined : retryFailedTurn}
+                   onEditTurn={session.kind === "harness_subagent" ? undefined : editFailedTurn}
+                   onReviewChanges={session.kind !== "harness_subagent" && hasRepo && workspace ? reviewTurnChanges : undefined}
                    onAskAside={quoted => {
                      // Selecting transcript prose and asking aside: the same
                      // side-chat contract as /btw, with the excerpt quoted as
@@ -4094,11 +4165,11 @@ function AppContent() {
                   onRunInTerminal={runWorkspaceId ? runInTerminal : undefined}
                   highlightEntryId={highlightEntryId}
                   onRemember={rememberMessage}
-                  onForkSession={(snapshotSessionId, entryId) => {
+                  onForkSession={session.kind === "harness_subagent" ? undefined : (snapshotSessionId, entryId) => {
                     setForkError(null);
                     setForkDraft({ sessionId: snapshotSessionId, entryId });
                   }}
-                  onRewindEntry={(snapshotSessionId, entryId) => {
+                  onRewindEntry={session.kind === "harness_subagent" ? undefined : (snapshotSessionId, entryId) => {
                     // Naming the entry id here told the reader nothing — it is
                     // a uuid. Describe the effect instead.
                     if (window.confirm("Rewind to this message? Everything after it becomes inactive. Your history is kept and no files are changed.")) {
@@ -4143,8 +4214,12 @@ function AppContent() {
                 {/* A worker gets a steering composer, not the chat composer: what
                     you type amends the objective its orchestrator gave it, and
                     the orchestrator is told so it does not fight the change. */}
-                {isWorkerView ? <div className="mx-auto max-w-conversation px-4 sm:px-6">
-                  <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-meta text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator — steer it here to amend that objective.</span></div>
+                {session.kind === "harness_subagent" ? <div className="mx-auto flex max-w-conversation items-center gap-3 px-4 py-3 text-meta text-muted-foreground sm:px-6">
+                  <span className="flex-1">Started by {harnessLabel(session.harness)} in its parent chat. Runs with that chat’s permissions. Not a Bridge worker.</span>
+                  {/* A child waiting on an approval has no turn of its own to interrupt. */}
+                  {(turnActive || session.status === "waiting") && <button type="button" onClick={() => void stopWorker(session.id).catch(value => setError(errorMessage(value)))} className="shrink-0 rounded-md border border-border px-3 py-1.5 hover:bg-accent">Stop subagent</button>}
+                </div> : isWorkerView ? <div className="mx-auto max-w-conversation px-4 sm:px-6">
+                  <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-meta text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator. Steer it here to amend that objective.</span></div>
                   <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2" trailing={contextRing}/>
                 </div> : <div className="relative mx-auto max-w-conversation-frame">
                   {agentShortcutOpen && <div id="agent-shortcut-listbox" role="listbox" aria-label="Specialist agents" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
@@ -4167,18 +4242,7 @@ function AppContent() {
                       })}
                     </div>
                   </div>}
-                  {mentionOpen && <div id="file-mention-listbox" role="listbox" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
-                    <div className="shrink-0 px-3 py-1.5 text-caption text-muted-foreground/70 border-b border-border flex items-center gap-2 font-medium">
-                      <span>Reference a file</span>
-                      <span className="normal-case tracking-normal text-muted-foreground/50">{fileMatches.length}</span>
-                    </div>
-                    <div ref={mentionListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onWheel={e => e.stopPropagation()}>
-                      {fileMatches.map((file, index) => { const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/") + 1) : ""; const base = file.slice(dir.length); return <button id={`file-mention-option-${index}`} role="option" aria-selected={index === mentionIndex} key={file} type="button" data-mention-index={index} onMouseEnter={() => setMentionIndex(index)} onMouseDown={e => { e.preventDefault(); applyFileMention(file); }} className={`min-h-11 w-full flex items-center gap-2 px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${index === mentionIndex ? "bg-accent" : "hover:bg-accent"}`}>
-                        <FileText size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-                        <span className="flex-1 min-w-0 text-meta whitespace-nowrap overflow-hidden text-ellipsis"><span className="text-muted-foreground">{dir}</span><span className="text-foreground">{base}</span></span>
-                      </button>; })}
-                    </div>
-                  </div>}
+                  {mentionOpen && <FileMentionMenu id="file-mention-listbox" optionIdPrefix="file-mention-option-" files={fileMatches} query={mentionQuery ?? ""} activeIndex={mentionIndex} changes={mentionChanges} triggers={COMPOSER_MENTION_TRIGGERS} listRef={mentionListRef} className="absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 max-h-[min(420px,55vh)]" onActiveIndexChange={setMentionIndex} onPick={applyFileMention} />}
                   {slashOpen && <div id="slash-listbox" role="listbox" aria-label="Commands and skills" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-caption text-muted-foreground/70 border-b border-border flex items-center gap-2 font-medium">
                       <span>Commands & skills</span>
@@ -4236,7 +4300,7 @@ function AppContent() {
                     activeAction={activeAction}
                     activeActionNote={activeTurnInput === "steer" && !adapters.find(adapter => adapter.id === session.harness)?.capabilities.includes("steering") ? "Steer interrupts the current turn and continues with your guidance." : undefined}
                     stopping={stopping}
-                    agentsWorking={chatAgents.length > 0}
+                    agentsWorking={stoppableAgentIds.length > 0}
                     onStop={session ? stopChat : undefined}
                     voiceAvailable={voice.available}
                     voiceState={voice.state}
@@ -4258,7 +4322,7 @@ function AppContent() {
                     header={<ChatWorkShelf sessionId={session.id} harness={session.harness} prs={chatPrs.prs} onOpen={showWorkInDock} onFix={draftPullRequestFix} />}
                     leading={contextRing}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
-                      ? <ChatModelControl adapters={adapters} accounts={providerAccounts} account={session.account ?? null} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model, account) => void changeChatModel(harness, model, account)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} speed={session.speed ?? null} onSpeedChange={speed => void changeChatSpeed(speed)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
+                      ? <ChatModelControl adapters={adapters} accounts={providerAccounts} account={session.account ?? null} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model, account) => void changeChatModel(harness, model, account)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} speed={session.speed ?? null} onSpeedChange={speed => void changeChatSpeed(speed)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} accessControl={accessModeControl} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-ui rounded-full">{harnessLabel(session.harness)}</span>}
                     accessControl={accessControl}
                     footer={<ComposerContextStrip
@@ -4276,6 +4340,7 @@ function AppContent() {
                       onRequestBranches={() => { if (workspace) void requestWorkspaceBranches(workspace.id); }}
                       onSelectBranch={branch => { if (workspace) void switchWorkspaceBranch(workspace.id, branch); }}
                       onToggleWorktree={() => { if (!workspace) return; void retargetWorkspace(workspace.id, !worktreeOn); }}
+                      trailing={<ComposerKeyHints state={turnActive ? activeAction : "idle"} />}
                     />}
                   />
                   <div className="mx-4 sm:mx-6"><ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} /></div>
@@ -4308,6 +4373,7 @@ function AppContent() {
                 onFix={draftPullRequestFix}
                 onOpenGithub={hasRepo && workspace ? (number, tab) => openGithubPane({ kind: "pull", number, tab }) : undefined}
                 onEscape={() => (document.querySelector<HTMLElement>("[data-work-shelf-open]") ?? composerRef.current)?.focus()}
+                overview={<ChatOverview session={session} workspace={hasRepo ? workspace : undefined} projectName={projectName} entries={forest?.entries} activeLeafId={forest?.head?.activeEntryId ?? null} events={sessionEvents} completion={forest?.completion} turnActive={turnActive} visible={dock.open && dock.pane === "work" && !fullscreen} onOpenPane={pane => dispatchDock({ type: "open-pane", pane })} onOpenTurn={revealEntryInConversation} />}
               />;
               if (pane === "tasks") return <TasksPane
                 key={session.id}
@@ -4359,7 +4425,7 @@ function AppContent() {
                  Without the key a save would aim the old path at the new
                  workspace. */
               if (pane === "github") return <GitHubPane key={workspace.id} workspaceId={workspace.id} workspaceBranch={workspace.branch ?? null} sessionId={session?.id} intent={githubIntent} onJumpToFile={jumpToReviewComment} />;
-              if (pane === "changes") return <ChangesPanel key={workspace.id} workspace={workspace} onQuote={quoteToComposer} onOpenFile={openFileInDock} />;
+              if (pane === "changes") return <ChangesPanel key={`${workspace.id}:${session.id}`} workspace={workspace} sessionId={session.id} chatSignal={chatChanges.signal} visible={dock.open && dock.pane === "changes"} onQuote={quoteToComposer} onOpenFile={openFileInDock} onSaved={() => void refreshWorkspaceStats(workspace.id)} />;
               if (pane === "code") return <Suspense fallback={<PanelLoading label="Opening editor…"/>}><CodePanel key={workspace.id} workspaceId={workspace.id} visible={dock.open && dock.pane === "code"} reveal={codeReveal} driftSignal={`${workspace.dirtyFiles}:${workspace.additions}:${workspace.deletions}`} onSaved={() => void refreshWorkspaceStats(workspace.id)}/></Suspense>;
               return <Suspense fallback={<PanelLoading label="Opening terminal…"/>}><TerminalPane key={workspace.id} workspaceId={workspace.id} workspacePath={workspace.path ?? undefined} visible={dock.open && dock.pane === "terminal" && !fullscreen} onActivity={setTerminalActivity}/></Suspense>;
             }}
@@ -4367,6 +4433,7 @@ function AppContent() {
         </section>
       </> : <Welcome
         accessControl={accessControl}
+        modelAccessControl={accessModeControl}
         onVoiceSetup={() => { setSettingsSection("voice"); setView("settings"); }}
         adapters={adapters}
         harness={welcomeHarness}
@@ -4562,6 +4629,9 @@ function AppContent() {
       onSearchThisChat={() => commandRef.current("open-recall")}
       onSearchChats={searchAllChats}
       onTogglePin={id => togglePin(id, pins)}
+      onRunCommand={(id, index) => commandRef.current(id, index)}
+      dockPanes={dockPanes}
+      numberedChats={launcherNumberedChats}
     />
     {session && <ContextLensDialog open={contextLensFor === session.id} sessionId={session.id} refreshKey={session.contextPercent} onClose={() => setContextLensFor(null)} onCompact={async id => { await bridgeApi.submitInput(id, "/compact"); }} />}
   </div>;
@@ -4593,7 +4663,7 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
 
 const NEW_CHAT_VOICE_OWNER = "new-chat";
 
-function Welcome({ adapters, accounts, account, harness, model, knownLabel, loading, slashCommands, suggestionSettings, effort, onSelectEffort, speed, onSelectSpeed, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, agents, selectedAgent, onSelectAgent, defaultsNotice, onOpenAgents, onVoiceSetup }: {
+function Welcome({ adapters, accounts, account, harness, model, knownLabel, loading, slashCommands, suggestionSettings, effort, onSelectEffort, speed, onSelectSpeed, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, modelAccessControl, agents, selectedAgent, onSelectAgent, defaultsNotice, onOpenAgents, onVoiceSetup }: {
   onOpenAgents: () => void;
   agents: AgentDefinition[];
   selectedAgent: AgentDefinition | null;
@@ -4642,11 +4712,13 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
   onToggleWorktree: (draft?: string) => void;
   /** The composer's access-mode control, owned by App so both composers agree. */
   accessControl?: ReactNode;
+  /** The access mode alone, for the model picker's footer. */
+  modelAccessControl?: ReactNode;
 }) {
   // Names the owning project in the hero when one is selected, dotted-underlined.
   // Falls back to the workspace title only when it has no distinct project.
   const heroProject = projectName ?? workspace?.title;
-  const greeting = useMemo(() => pickGreeting("welcome", heroProject), [heroProject]);
+  const greeting = welcomeHeadline(heroProject);
   const sessionModeHintId = useId();
   const [draft, setDraftValue] = useState("");
   // Same revisioned draft as the chat composer: dictation must see edits that
@@ -4730,22 +4802,18 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
       .then(pasted => setAttachments(current => [...current, ...pasted]))
       .catch(error => setComposerError(errorMessage(error)));
   };
+  const failure = composerError ?? harnessShortcutFailure;
+  const modeToggle = !!workspace && !agent;
   return <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-8 sm:px-10 animate-page-enter">
-    <div className="mx-auto my-auto w-full max-w-3xl py-8">
-    {!adapters.some(adapter => adapter.available && adapter.id !== "bridge") && <div className="mb-6 rounded-xl border border-border bg-card p-4">
+    <div className="mx-auto my-auto w-full max-w-3xl pb-[10vh] pt-8">
+    {!adapters.some(adapter => adapter.available && adapter.id !== "bridge") && <div className="mb-10 rounded-xl border border-border bg-card p-4">
       <h2 className="text-sm font-medium">Connect your first agent</h2>
       <p className="mt-1 mb-3 text-ui text-muted-foreground">Install an agent and sign in here. Bridge handles the setup commands.</p>
       <ManagedAgentsPanel adapters={adapters} onChanged={onHealthChange} />
     </div>}
-    <p className="mb-3 text-meta font-medium text-muted-foreground">Your workspace, ready.</p>
-    <h1 className="mb-3 max-w-2xl font-display text-[26px] font-semibold leading-tight tracking-[-0.03em] text-foreground sm:text-[30px]">
-      {greeting.parts.length > 1
-        ? greeting.parts.map((part, index) => part.kind === "project"
-          ? <span key={index} className="text-foreground">{part.text}</span>
-          : <span key={index}>{part.text}</span>)
-        : greeting.headline}
+    <h1 className="mb-7 text-balance text-center font-display text-[26px] font-medium leading-tight tracking-[-0.025em] text-foreground sm:text-[30px]">
+      {greeting.parts.map((part, index) => <span key={index} className={part.kind === "project" ? "font-semibold" : undefined}>{part.text}</span>)}
     </h1>
-    <p className="mb-7 max-w-xl text-ui leading-relaxed text-muted-foreground">Ask a question, explore an idea, or pick a project and get to work.</p>
     <div className="relative">
     {slashOpen && <ComposerSlashMenu id="welcome-slash-listbox" commands={slashMatches} index={Math.min(slashIndex, slashMatches.length - 1)} onIndex={setSlashIndex} onSelect={applySlash} />}
     <ComposerPill
@@ -4788,7 +4856,7 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
       onVoiceCancel={voice.cancel}
       onVoiceRetry={voice.retry}
       onVoiceSetup={onVoiceSetup}
-      placeholder={canStartChat ? "Ask Bridge… / skills & commands · $ provider · paste a repo to open it" : "Paste a repo to open it, or install a model adapter to chat…"}
+      placeholder={canStartChat ? "Ask Bridge anything, or type / for commands" : "Paste a repo, or install an agent…"}
       // Opening a project (typing a bare repo URL, or the folder `+` below)
       // needs no adapter — only starting an actual chat turn does, and
       // submitNewChatDraft already guards that with its own adaptersReady
@@ -4797,10 +4865,10 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
       disabled={busy}
       // The unstarted draft is a real chat-in-waiting: let the model be chosen
       // before the first message, the same picker the session composer uses.
-      modelControl={<ChatModelControl adapters={adapters} accounts={agent ? undefined : accounts} account={account} harness={harness} model={model} knownLabel={knownLabel} loading={loading} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} allowedEfforts={agent ? WORKER_EFFORTS : undefined} onEffortChange={onSelectEffort} speed={speed} onSpeedChange={agent ? undefined : onSelectSpeed} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
+      modelControl={<ChatModelControl adapters={adapters} accounts={agent ? undefined : accounts} account={account} harness={harness} model={model} knownLabel={knownLabel} loading={loading} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} allowedEfforts={agent ? WORKER_EFFORTS : undefined} onEffortChange={onSelectEffort} speed={speed} onSpeedChange={agent ? undefined : onSelectSpeed} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} accessControl={modelAccessControl} />}
       accessControl={accessControl}
-      trailing={workspace && !agent ? <SessionModeToggle value={sessionKind} onChange={onSelectSessionKind} disabled={busy || !canStartChat} describedBy={sessionModeHintId} /> : undefined}
-      footer={workspaces.length > 0 ? <ComposerContextStrip
+      footer={workspaces.length > 0 ? <div className="flex min-w-0 items-center gap-2 px-0.5">
+        <div className="min-w-0 flex-1"><ComposerContextStrip
         workspaces={workspaces}
         workspace={workspace}
         worktree={worktree}
@@ -4817,29 +4885,35 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
         agent={agent}
         onCreateAgent={onOpenAgents}
         onSelectAgent={onSelectAgent}
-      /> : undefined}
+        /></div>
+        {modeToggle && <SessionModeToggle value={sessionKind} onChange={onSelectSessionKind} disabled={busy || !canStartChat} describedBy={sessionModeHintId} />}
+      </div> : undefined}
     />
-    {defaultsNotice && <p role="status" className="mt-2 text-xs text-muted-foreground">{defaultsNotice}</p>}
-    <ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} />
+    {/* One reserved line for status, so a notice that comes and goes on
+        first load does not shift the centered hero. */}
+    <div className="mt-1.5 min-h-5 px-2.5 text-left">
+      {defaultsNotice && <p role="status" className="text-caption text-muted-foreground">{defaultsNotice}</p>}
+      {failure && <p role="alert" className="text-caption text-destructive">{failure}</p>}
+      <ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} />
     </div>
-    {(composerError || harnessShortcutFailure) && <p role="alert" className="mt-2 max-w-3xl text-left text-caption text-destructive">{composerError ?? harnessShortcutFailure}</p>}
-    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-caption text-muted-foreground">
-      {workspace && agent
-        ? <span id={sessionModeHintId}><span className="font-medium text-foreground">{agent.name}</span> · Your first message goes straight to this agent.</span>
-        : workspace
-        ? <span id={sessionModeHintId}><span className="font-medium text-foreground">{sessionKind === "direct" ? "Direct" : "Orchestrator"}</span> · {sessionModeDescription(sessionKind)}</span>
-        : <span>{greeting.hint}</span>}
-      <span className="shrink-0"><kbd className="font-sans">↵</kbd> Send <span className="mx-1.5" aria-hidden="true">·</span><kbd className="font-sans">⇧↵</kbd> New line</span>
     </div>
-    {workspaces.length === 0 && <div className="mt-6 flex justify-center">
+    {modeToggle && <span id={sessionModeHintId} className="sr-only">{sessionModeDescription(sessionKind)}</span>}
+    {workspaces.length === 0 ? <div className="mt-6 flex justify-center">
       <button type="button" onClick={onNewWorkspace} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />Add project</button>
-    </div>}
-    {workspaces.length > 0 && <section aria-label="Choose a project" className="mt-9 border-t border-border pt-5">
-      <div className="mb-3 flex items-center justify-between"><h2 className="text-meta font-medium text-muted-foreground">Projects</h2><button type="button" onClick={onNewWorkspace} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-meta text-muted-foreground hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />Add project</button></div>
-      <div className="grid gap-2 sm:grid-cols-2">{workspaces.slice(0, 4).map(item => <button key={item.id} type="button" disabled={busy} onClick={() => onSelectWorkspace(item.id)} aria-pressed={workspace?.id === item.id} className={cn("flex min-w-0 items-center gap-3 rounded-xl border p-3 text-left transition-colors disabled:opacity-50", workspace?.id === item.id ? "border-ring/50 bg-selection" : "border-border bg-card hover:border-input")}>
-        <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-accent text-muted-foreground"><FolderGit2 size={17} strokeWidth={1.6} aria-hidden="true" /></span>
-        <span className="min-w-0 flex-1"><span className="block truncate text-ui font-medium text-foreground">{item.title}</span><span className="mt-0.5 block truncate text-caption text-muted-foreground">{item.branch ?? "Choose a project folder"}</span></span>
-      </button>)}</div>
+    </div> : <section aria-label="Choose a project" className="mt-10">
+      <div className="mb-1 flex items-center justify-between pl-2.5">
+        <h2 className="text-caption font-medium text-faint">Projects</h2>
+        <button type="button" onClick={onNewWorkspace} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={12} aria-hidden="true" />Add project</button>
+      </div>
+      <ul className="flex flex-col">{workspaces.slice(0, 4).map(item => {
+        const selected = workspace?.id === item.id;
+        return <li key={item.id}><button type="button" disabled={busy} onClick={() => onSelectWorkspace(item.id)} aria-pressed={selected} className={cn("flex h-9 w-full min-w-0 items-center gap-2.5 rounded-lg px-2.5 text-left transition-colors hover:bg-accent disabled:opacity-50", selected && "bg-accent/60")}>
+          <FolderGit2 size={14} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+          <span className="min-w-0 shrink truncate text-ui text-foreground">{item.title}</span>
+          {item.branch && <span className="min-w-0 flex-1 truncate text-caption text-faint">{item.branch}</span>}
+          {selected && <Check size={14} className="ml-auto shrink-0 text-muted-foreground" aria-hidden="true" />}
+        </button></li>;
+      })}</ul>
     </section>}
     </div>
   </div>;

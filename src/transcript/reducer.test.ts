@@ -100,6 +100,67 @@ describe("reduceTranscript", () => {
     expect(items[1].itemId).toBeUndefined();
   });
 
+  describe("a question card stands for the call that asked it", () => {
+    // Claude's AskUserQuestion reaches Bridge twice: as the assistant's
+    // tool_use and as the can_use_tool request that becomes the card. Both
+    // carry the same tool id, and the card is the one the person answers.
+    const questionData = { tool_use_id: "toolu_q", tool_name: "AskUserQuestion", requestMethod: "claude.askUserQuestion", interactionKind: "question" };
+    const toolData = (phase: string) => ({ type: "tool_use", id: "toolu_q", name: "AskUserQuestion", phase });
+    const questionLive = (id: number) => live(id, "question.requested", { itemId: "toolu_q", title: "Junk chats", status: "pending", data: questionData });
+    const toolStarted = (id: number, phase: string) => live(id, "tool.started", { itemId: "toolu_q", title: "AskUserQuestion", status: "inProgress", data: toolData(phase) });
+    const toolCompleted = (id: number) => live(id, "tool.completed", { itemId: "toolu_q", status: "completed", data: { type: "tool_result", tool_use_id: "toolu_q" } });
+
+    it("hides the tool row when the question arrives first", () => {
+      const items = reduce([
+        questionLive(1),
+        live(2, "reasoning.completed", { itemId: "r1", status: "completed", text: "Asking which way to go." }),
+        toolStarted(3, "preparing"),
+        toolStarted(4, "running"),
+      ]);
+      expect(items.map(item => item.type)).toEqual(["question", "reasoning"]);
+    });
+
+    it("hides the tool row when the tool arrives first and after it completes", () => {
+      const items = reduce([
+        toolStarted(1, "preparing"),
+        toolStarted(2, "running"),
+        questionLive(3),
+        live(4, "question.resolved", { itemId: "toolu_q", status: "answered", data: { requestEventId: 3, decision: "answer" } }),
+        toolCompleted(5),
+      ]);
+      expect(items.map(item => item.type)).toEqual(["question"]);
+      expect(items[0].status).toBe("answered");
+    });
+
+    it("hides the replayed tool row too", () => {
+      const items = reduceTranscript([
+        entry("e1", null, "question.requested", { itemId: "toolu_q", status: "pending", title: "Junk chats", data: questionData }, 1),
+        entry("e2", "e1", "tool.started", { itemId: "toolu_q", status: "inProgress", title: "AskUserQuestion", data: toolData("running") }, 2),
+        entry("e3", "e2", "tool.completed", { itemId: "toolu_q", status: "completed", data: { type: "tool_result", tool_use_id: "toolu_q" } }, 3),
+      ].map(value => normalizeSessionEntry(value)!));
+      expect(items.map(item => item.type)).toEqual(["question"]);
+    });
+
+    it("keeps an MCP tool row its elicitation asks about", () => {
+      // Codex's elicitation names the MCP call that is doing real work; the
+      // call is not the question, so its row stays beside the card.
+      const items = reduce([
+        live(1, "tool.started", { itemId: "mcp-1", title: "deploy", status: "inProgress", data: { type: "mcpToolCall", tool: "deploy" } }),
+        live(2, "question.requested", { itemId: "mcp-1", title: "Tool input required", status: "pending", data: { requestMethod: "mcpServer/elicitation/request", interactionKind: "question" } }),
+      ]);
+      expect(items.map(item => item.type)).toEqual(["activity", "question"]);
+    });
+
+    it("keeps unrelated tool rows", () => {
+      const items = reduce([
+        live(1, "command.started", { itemId: "toolu_cmd", title: "ls", status: "inProgress", data: { command: "ls" } }),
+        questionLive(2),
+        toolStarted(3, "running"),
+      ]);
+      expect(items.map(item => [item.type, item.itemId])).toEqual([["activity", "toolu_cmd"], ["question", undefined]]);
+    });
+  });
+
   it("settles a thinking.started row of default status when the turn ends", () => {
     const items = reduce([
       live(1, "reasoning.started", { itemId: "r1", text: "Thinking deeply..." }),

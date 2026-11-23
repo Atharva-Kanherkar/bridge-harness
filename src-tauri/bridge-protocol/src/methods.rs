@@ -94,6 +94,7 @@ methods![
     (CheckoutWorkspaceBranch, "workspaces", "checkout_workspace_branch"),
     (ArchiveWorkspace, "workspaces", "archive_workspace"),
     (WorkspaceChanges, "workspaces", "workspace_changes"),
+    (SessionChanges, "workspaces", "session_changes"),
     // sessions
     (GetSessionForest, "sessions", "get_session_forest"),
     (GetSessionForestDigest, "sessions", "get_session_forest_digest"),
@@ -305,6 +306,8 @@ methods![
     (ListHistorySources, "usage", "list_history_sources"),
     (ScanHistory, "usage", "scan_history"),
     (UsageInsights, "usage", "insights"),
+    (UsageRecordPresence, "usage", "record_presence"),
+    (UsageScreenTime, "usage", "screen_time"),
     // menu-bar meter (CodexBar port)
     (GetMeterSnapshot, "meter", "get_meter_snapshot"),
     (RefreshMeter, "meter", "refresh_meter"),
@@ -447,6 +450,14 @@ methods![
     (DraftWorkflowFromText, "workflows", "draft_workflow_from_text"),
     (DraftWorkflowFromSession, "workflows", "draft_workflow_from_session"),
     (MarkWorkflowRunsRead, "workflows", "mark_workflow_runs_read"),
+    // reviews: pull-request reviews as stored background jobs Bridge runs
+    (StartReview, "reviews", "start_review"),
+    (ListReviews, "reviews", "list_reviews"),
+    (GetReview, "reviews", "get_review"),
+    (CancelReview, "reviews", "cancel_review"),
+    (RetryReview, "reviews", "retry_review"),
+    (GetReviewJobSettings, "reviews", "get_review_job_settings"),
+    (SaveReviewJobSettings, "reviews", "save_review_job_settings"),
 ];
 
 impl MethodName {

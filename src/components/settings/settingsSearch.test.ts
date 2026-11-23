@@ -1,39 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { filterSettingsRows, STATIC_SETTINGS_ROWS, type SearchableRow } from "./settingsSearch";
+import { filterSettingsRows, PAGE_ROWS, SETTINGS_ROWS, type SearchableRow } from "./settingsSearch";
+import { ALL_PAGES } from "./sections";
 
 const rows: SearchableRow[] = [
-  { section: "permissions", label: "Auto-approve provider permissions", description: "Accept provider permission requests automatically" },
-  { section: "composer", label: "Suggestion model", description: "Which model writes the inline continuation" },
-  { section: "harnesses", label: "OpenCode", description: "Bridge-managed · 1.18.3" },
-  { section: "harnesses", label: "Codex", description: "Your own install" },
+  { page: "permissions", label: "Auto-approve provider permissions", description: "Accept provider permission requests automatically" },
+  { page: "composer", label: "Suggestion model", description: "Which model writes the inline continuation" },
+  { page: "codingAgents", label: "OpenCode", description: "Bridge-managed · 1.18.3", target: { kind: "harness", id: "opencode" } },
+  { page: "codingAgents", label: "Codex", description: "Your own install", target: { kind: "harness", id: "codex" } },
 ];
 
 describe("filterSettingsRows", () => {
-  it("returns every row, grouped, when the query is empty", () => {
+  it("returns every row, grouped in rail order, when the query is empty", () => {
     const groups = filterSettingsRows("", rows);
-    expect(groups.map(group => group.section)).toEqual(["permissions", "composer", "harnesses"]);
+    expect(groups.map(group => group.page)).toEqual(["composer", "codingAgents", "permissions"]);
     expect(groups.flatMap(group => group.rows)).toHaveLength(4);
   });
 
-  it("matches on the row label", () => {
-    const groups = filterSettingsRows("opencode", rows);
-    expect(groups).toHaveLength(1);
-    expect(groups[0].rows.map(row => row.label)).toEqual(["OpenCode"]);
-  });
-
-  it("matches on the row description, so a setting is findable by what it does", () => {
-    const groups = filterSettingsRows("inline continuation", rows);
-    expect(groups.flatMap(group => group.rows.map(row => row.label))).toEqual(["Suggestion model"]);
-  });
-
-  it("is case-insensitive and ignores surrounding whitespace", () => {
-    expect(filterSettingsRows("  AUTO-APPROVE ", rows)[0].rows[0].label)
-      .toBe("Auto-approve provider permissions");
+  it("matches on the row label and description, case-insensitively", () => {
+    expect(filterSettingsRows("opencode", rows)[0].rows.map(row => row.label)).toEqual(["OpenCode"]);
+    expect(filterSettingsRows("inline continuation", rows).flatMap(group => group.rows.map(row => row.label))).toEqual(["Suggestion model"]);
+    expect(filterSettingsRows("  AUTO-APPROVE ", rows)[0].rows[0].label).toBe("Auto-approve provider permissions");
   });
 
   it("names the page each hit belongs to", () => {
     const groups = filterSettingsRows("install", rows);
-    expect(groups).toHaveLength(1);
     expect(groups[0].pageLabel).toBe("Coding agents");
   });
 
@@ -42,24 +32,34 @@ describe("filterSettingsRows", () => {
   });
 });
 
-describe("STATIC_SETTINGS_ROWS", () => {
-  // The search is the only way some rows are reachable without browsing all
-  // nine pages, so every page has to contribute at least one row to it.
-  it("covers every page that has a fixed row", () => {
-    const covered = new Set(STATIC_SETTINGS_ROWS.map(row => row.section));
-    for (const section of ["appearance", "permissions", "composer", "agents", "models", "prompts", "harnesses", "work", "import"] as const) {
-      expect(covered.has(section)).toBe(true);
-    }
+describe("the search index", () => {
+  it("finds every page by its name", () => {
+    expect(PAGE_ROWS.map(row => row.page)).toEqual(ALL_PAGES);
+  });
+
+  it("gives every fixed row a unique anchor id", () => {
+    const ids = SETTINGS_ROWS.map(row => row.id);
+    expect(new Set(ids).size).toBe(ids.length);
   });
 
   // Contract: testing/feat-plain-browser-only.md. Browser clones are off.
   it("offers no browser clone rows", () => {
-    expect(STATIC_SETTINGS_ROWS.some(row => (row.section as string) === "clones")).toBe(false);
-    for (const query of ["clone", "cookies", "browser copies"]) expect(filterSettingsRows(query, STATIC_SETTINGS_ROWS)).toEqual([]);
+    for (const query of ["clone", "cookies", "browser copies"]) expect(filterSettingsRows(query, [...PAGE_ROWS, ...SETTINGS_ROWS])).toEqual([]);
   });
 
-  it("finds the inline suggestion model on Composer, not on Models", () => {
-    const groups = filterSettingsRows("suggestion", STATIC_SETTINGS_ROWS);
-    expect(groups.map(group => group.section)).toEqual(["composer"]);
+  it("finds the inline suggestion model on Typing & search, not on Models", () => {
+    expect(filterSettingsRows("suggestion", SETTINGS_ROWS).map(group => group.page)).toEqual(["composer"]);
+  });
+
+  it("finds Input while running on New chats, the only place it is set", () => {
+    const groups = filterSettingsRows("while running", SETTINGS_ROWS);
+    expect(groups.map(group => group.page)).toEqual(["chatDefaults"]);
+    expect(filterSettingsRows("active-turn", [...PAGE_ROWS, ...SETTINGS_ROWS])).toEqual([]);
+  });
+
+  it("finds the early compaction switch on Coding agents", () => {
+    const groups = filterSettingsRows("compaction", [...PAGE_ROWS, ...SETTINGS_ROWS]);
+    expect(groups.map(group => group.page)).toEqual(["codingAgents"]);
+    expect(groups[0].rows.map(row => [row.id, row.label])).toEqual([["early-compaction", "Early compaction"]]);
   });
 });

@@ -570,8 +570,7 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
           {plan.queue === "rail" && queue}
         </> : <div role="status" className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
           <LayoutGrid size={28} strokeWidth={1.2} className="text-muted-foreground" aria-hidden="true" />
-          <h2 className="text-lg font-medium">Nothing running right now</h2>
-          <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">Chats and agents appear here automatically while they work or wait for you. Drag any chat from the sidebar to keep it here, even when idle.</p>
+          <h2 className="text-lg font-medium">Nothing running</h2>
         </div>}
       </div>
     </div>

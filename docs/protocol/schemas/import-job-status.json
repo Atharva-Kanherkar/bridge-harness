@@ -86,6 +86,13 @@
         },
         "updatedAt": {
           "type": "string"
+        },
+        "workspaces": {
+          "default": 0,
+          "description": "Workspaces adopted in place from the tool's worktrees (T3 Code).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
         }
       },
       "required": [
@@ -134,6 +141,14 @@
           "type": "null"
         }
       ]
+    },
+    "jobs": {
+      "default": [],
+      "description": "The latest import from each tool, so each tool's section shows its own.",
+      "items": {
+        "$ref": "#/definitions/ImportJob"
+      },
+      "type": "array"
     }
   },
   "title": "ImportJobStatus",

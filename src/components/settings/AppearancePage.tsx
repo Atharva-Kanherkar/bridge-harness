@@ -10,11 +10,12 @@ import type { ReactNode } from "react";
 import { useThemePreference, type EffortSelectorStyle, type ThemePreference, type ThemeSkin } from "../../theme";
 import { useShowWorkerChatsInMissionControl } from "../../missionControlSettings";
 import { useAutoExpandEditActivity, useShowThinking } from "../../transcriptSettings";
-import { SettingsGroup, SettingsPage, SettingsRow, Switch, TextButton } from "./kit";
+import { SettingsFold, SettingsGroup, SettingsPage, SettingsRow, Switch, TextButton } from "./kit";
 import { cn } from "@/lib/utils";
 import { canZoom, stepZoom, useZoomLevel } from "../../zoom";
 import { useOmarchyTheme } from "../../omarchy";
 import { chordLabel } from "../../keymap";
+import { PAGES } from "./sections";
 
 /** A tile previews either two swatches or a drawn figure, never both. */
 type Tile<T> = { id: T; label: string; hint: string } & ({ swatches: [string, string]; preview?: undefined } | { preview: ReactNode; swatches?: undefined });
@@ -84,7 +85,9 @@ function TileGrid<T extends string>({ name, tiles, value, onChange, columns }: {
         }}
         onClick={() => onChange(tile.id)}
         className={cn(
-          "rounded-lg border p-2.5 text-left transition-colors",
+          // A column from the top: a button centers its content by default,
+          // so a tile whose hint wraps pushed its neighbours' swatches down.
+          "flex flex-col items-stretch justify-start rounded-lg border p-2.5 text-left transition-colors",
           selected ? "border-foreground" : "border-border-card hover:bg-accent",
         )}
       >
@@ -99,7 +102,7 @@ function TileGrid<T extends string>({ name, tiles, value, onChange, columns }: {
         <span className="flex items-center gap-1.5">
           <span aria-hidden="true" className={cn(
             "grid size-3 shrink-0 place-items-center rounded-full border",
-            selected ? "border-foreground" : "border-border",
+            selected ? "border-foreground" : "border-muted-foreground/50",
           )}>{selected && <span className="size-1.5 rounded-full bg-foreground" />}</span>
           <span className="min-w-0 flex-1 truncate text-ui text-foreground">{tile.label}</span>
         </span>
@@ -121,7 +124,7 @@ function ZoomControl({ level, onChange }: { level: number; onChange: (next: numb
   </div>;
 }
 
-export function AppearancePage({ title = "Appearance", extra }: { title?: string; extra?: ReactNode }) {
+export function AppearancePage() {
   const { preference, resolved, setPreference, skin, setSkin, effortSelector, setEffortSelector } = useThemePreference();
   const [showWorkerChats, setShowWorkerChats] = useShowWorkerChatsInMissionControl();
   const [showThinking, setShowThinking] = useShowThinking();
@@ -133,48 +136,51 @@ export function AppearancePage({ title = "Appearance", extra }: { title?: string
   const shownSkin: ThemeSkin = skin === "omarchy" && !omarchy ? "graphite" : skin;
   const onOmarchy = shownSkin === "omarchy" && omarchy;
   return <SettingsPage
-    title={title}
-    description={onOmarchy
-      ? `Following your Omarchy theme${omarchy.themeName ? ` (${omarchy.themeName})` : ""}. Switch themes in Omarchy and Bridge retints.`
-      : `Bridge follows macOS by default. Currently showing ${resolved === "dark" ? "graphite" : "paper"}.`}
+    title={PAGES.general.label}
+    description={PAGES.general.description}
   >
-    {extra}
-    <SettingsGroup label="Mode" note={onOmarchy ? "Your Omarchy theme decides light or dark" : undefined}>
+    <SettingsGroup anchor="mode" label="Mode" note={onOmarchy
+      ? `Following your Omarchy theme${omarchy.themeName ? ` (${omarchy.themeName})` : ""}, which decides light or dark`
+      : `Follows macOS by default. Showing ${resolved === "dark" ? "graphite" : "paper"} now`}>
       <TileGrid name="Mode" tiles={MODES} value={preference} onChange={setPreference} columns="@min-[580px]/settings:grid-cols-3" />
     </SettingsGroup>
-    <SettingsGroup label="Window background" note="Solid or tinted by your desktop">
+    <SettingsGroup anchor="window-background" label="Window background" note="Solid or tinted by your desktop">
       <TileGrid name="Shell" tiles={skins} value={shownSkin} onChange={setSkin} columns={omarchy ? "@min-[580px]/settings:grid-cols-3" : "@min-[480px]/settings:grid-cols-2"} />
-    </SettingsGroup>
-    <SettingsGroup label="Conversation" note="What appears while your agent works">
-      <SettingsRow
-        label="Show thinking"
-        description="Show the thinking text an agent shares while it works. When off, Bridge still shows a working indicator."
-        control={<Switch label="Show thinking" checked={showThinking} onChange={setShowThinking} />}
-      />
-      <SettingsRow
-        label="Open edit activity automatically"
-        description="Off by default. Short Activity sections with a file diff stay collapsed until you click them. Turn this on to open them automatically."
-        control={<Switch label="Open edit activity automatically" checked={autoExpandEditActivity} onChange={setAutoExpandEditActivity} />}
-      />
     </SettingsGroup>
     <SettingsGroup label="Zoom" note={`Also on ${chordLabel("zoom-in")} and ${chordLabel("zoom-out")}`}>
       <SettingsRow
+        anchor="zoom"
         label="Window zoom"
         description={`Scales the whole window, the way ${chordLabel("zoom-in")} does in a browser. Kept between launches.`}
         control={<ZoomControl level={zoom} onChange={setZoom} />}
       />
     </SettingsGroup>
-    <details className="text-ui"><summary className="cursor-pointer text-muted-foreground">Advanced display options</summary><div className="mt-3 space-y-5">
-    <SettingsGroup label="Thinking control" note="How the model picker sets reasoning effort">
+    <SettingsGroup label="Conversation" note="What appears while your agent works">
+      <SettingsRow
+        anchor="show-thinking"
+        label="Show thinking"
+        description="Show the thinking text an agent shares while it works. When off, Bridge still shows a working indicator."
+        control={<Switch label="Show thinking" checked={showThinking} onChange={setShowThinking} />}
+      />
+      <SettingsRow
+        anchor="edit-activity"
+        label="Open edit activity automatically"
+        description="Off by default. Short Activity sections with a file diff stay collapsed until you click them. Turn this on to open them automatically."
+        control={<Switch label="Open edit activity automatically" checked={autoExpandEditActivity} onChange={setAutoExpandEditActivity} />}
+      />
+    </SettingsGroup>
+    <SettingsFold>
+    <SettingsGroup anchor="thinking-control" label="Thinking control" note="How the model picker sets reasoning effort">
       <TileGrid name="Thinking control" tiles={EFFORT_STYLES} value={effortSelector} onChange={setEffortSelector} columns="@min-[580px]/settings:grid-cols-3" />
     </SettingsGroup>
     <SettingsGroup label="Mission Control">
       <SettingsRow
+        anchor="mission-control"
         label="Show worker chats in Mission Control"
         description="Off by default: only your main chat appears automatically. Turn on to also show chats for background tasks."
         control={<Switch label="Show worker chats in Mission Control" checked={showWorkerChats} onChange={setShowWorkerChats} />}
       />
     </SettingsGroup>
-    </div></details>
+    </SettingsFold>
   </SettingsPage>;
 }

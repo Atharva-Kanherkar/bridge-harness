@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Archive, AtSign, Blocks, Check, CheckCheck, ChevronRight, CircleDot, Clock, Copy, Folder, FolderPlus, GitFork, Home, MoreHorizontal, PinOff, Plus, Search, Settings2, SquarePen, Workflow as WorkflowIcon, type LucideIcon } from "lucide-react";
+import { Archive, AtSign, Blocks, Bot, Check, CheckCheck, ChevronRight, CircleDot, Clock, Copy, Folder, FolderPlus, GitFork, Home, MoreHorizontal, PinOff, Plus, Search, Settings2, SquarePen, Workflow as WorkflowIcon, type LucideIcon } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import type { AppKey, BadgeText, LaunchEntry } from "../apps/registry";
 import { HarnessMark } from "./harnessMarks";
 import { FittedTitle } from "./FittedTitle";
-import type { AttentionKind, Session, SessionStatus, Workspace } from "../types";
+import type { AgentEvent, AttentionKind, Session, SessionStatus, Workspace } from "../types";
 import type { SessionPullRequest } from "../protocol/generated/protocol";
 import { PullRequestGlyph, type SidebarPullRequests } from "./ChatPullRequests";
 import { SHELF_TONE } from "./WorkShelf";
@@ -22,6 +22,8 @@ import { SidebarFilterMenu } from "./SidebarFilterMenu";
 import { ChatSearchResults } from "./ChatSearchResults";
 import { CHAT_SEARCH_MIN_CHARS, enterAction, useChatSearch } from "../chatSearch";
 import { SIDEBAR_CHAT_DRAG } from "./missionControl/drag";
+import { SidebarRunning } from "./SidebarRunning";
+import { rememberRunning, runningChats } from "../sidebarRunning";
 import {
   GROUP_ROW_CAP,
   NO_PROJECT_GROUP_KEY,
@@ -33,6 +35,7 @@ import {
   groupChats,
   readChatView,
   statusBucket,
+  type ImportedSubagent,
   type LiveAgents,
   writeChatView,
   type ChatView,
@@ -227,6 +230,63 @@ function ChatRow({
     />
     <HarnessMark harness={chat.harness} size={13} className={cn("mr-2 shrink-0", !active && "text-muted-foreground")} />
     </span>
+  );
+}
+
+/**
+ * A chat's imported subagents, under its row: how many, and when unfolded,
+ * one row each, nested by depth. They open like any imported chat.
+ */
+function SubagentList({ chatName: parentName, rows, open, indented, activeSessionId, now, onToggle, onOpenSession }: {
+  chatName: string;
+  rows: readonly ImportedSubagent[];
+  open: boolean;
+  indented: boolean;
+  activeSessionId?: string;
+  now: number;
+  onToggle: () => void;
+  onOpenSession: (id: string) => void;
+}) {
+  const count = `${rows.length} subagent${rows.length === 1 ? "" : "s"}`;
+  return (
+    <div className="flex flex-col gap-0.5" data-subagents-of={parentName}>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        aria-label={`${open ? "Hide" : "Show"} ${count} of ${parentName}`}
+        className={cn(
+          "flex h-6 w-full items-center gap-1 rounded-md pr-2 text-left text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+          indented ? "pl-9" : "pl-4",
+        )}
+      >
+        <ChevronRight size={11} strokeWidth={1.7} className={cn("shrink-0 transition-transform", open && "rotate-90")} aria-hidden="true" />
+        <span className="truncate">{count}</span>
+      </button>
+      {open && rows.map(({ chat, depth }) => {
+        const active = chat.id === activeSessionId;
+        const time = chatListTime(chatTimestamp(chat), now);
+        return (
+          <button
+            key={chat.id}
+            type="button"
+            onClick={() => onOpenSession(chat.id)}
+            aria-current={active ? "page" : undefined}
+            title={`${chatName(chat)} — subagent of ${parentName}`}
+            data-subagent-row={chat.id}
+            style={{ paddingLeft: `${(indented ? 2.25 : 1) + depth * 0.75}rem` }}
+            className={cn(
+              "flex h-8 w-full min-w-0 items-center gap-1.5 rounded-md pr-2 text-left text-meta transition-colors",
+              active ? "bg-selection text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            )}
+          >
+            <Bot size={12} strokeWidth={1.6} className="shrink-0" aria-hidden="true" />
+            <span className={cn("min-w-0 flex-1 truncate", active && "font-medium")}>{chatName(chat)}</span>
+            {time && <span className="shrink-0 tabular-nums text-caption text-faint">{time}</span>}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -525,6 +585,18 @@ export type BridgeSidebarProps = {
   /** Each chat's live descendant agents. Workers never reach `chats`, so the
    * host counts them from every session and hands the answer in. */
   liveAgents?: LiveAgents;
+  /** Every session, workers included: the Running group reads their states.
+   * Without it a live worker counts as working. */
+  sessions?: readonly Session[];
+  /** The live event buffer: when a turn started and the step it is on. */
+  liveEvents?: readonly AgentEvent[];
+  /** Chats with a send still on its way, which the transcript already counts
+   * as a turn in flight. */
+  sendingChatIds?: ReadonlySet<string>;
+  /** Imported subagent chats, keyed by the top-level chat they belong to
+   * (`importedSubagents`). Like workers they never reach `chats`; unlike
+   * workers they are history, listed under their chat's row to open. */
+  subagents?: ReadonlyMap<string, readonly ImportedSubagent[]>;
   /** Top-level chat id to the strongest unread kind in its tree
    * (`attention/unread_summary`'s `byChat`). */
   unread?: Readonly<Record<string, AttentionKind>>;
@@ -594,6 +666,10 @@ export type BridgeSidebarProps = {
 export function BridgeSidebar({
   chats,
   liveAgents,
+  sessions,
+  liveEvents,
+  sendingChatIds,
+  subagents,
   unread,
   pullRequests,
   workspaces,
@@ -645,6 +721,18 @@ export function BridgeSidebar({
   const [query, setQuery] = useState("");
   const [shownInFull, setShownInFull] = useState<Set<string>>(new Set());
   const [foldedGroups, setFoldedGroups] = useState<Set<string>>(new Set());
+  // Chats whose imported subagents are unfolded. The chat holding the open
+  // subagent unfolds by itself, so the open row is always on screen.
+  const [openSubagents, setOpenSubagents] = useState<Set<string>>(new Set());
+  const activeSubagentOf = useMemo(() => {
+    if (!activeSessionId || !subagents) return undefined;
+    for (const [chatId, rows] of subagents) if (rows.some(row => row.chat.id === activeSessionId)) return chatId;
+    return undefined;
+  }, [activeSessionId, subagents]);
+  useEffect(() => {
+    if (activeSubagentOf) setOpenSubagents(current => current.has(activeSubagentOf) ? current : new Set(current).add(activeSubagentOf));
+  }, [activeSubagentOf]);
+  const toggleSubagents = useCallback((chatId: string) => setOpenSubagents(current => toggleKey(current, chatId)), []);
   const [now, setNow] = useState(() => Date.now());
   const widthRef = useRef(width);
   const resizeHandleRef = useRef<HTMLDivElement>(null);
@@ -786,6 +874,16 @@ export function BridgeSidebar({
     () => groupChats(visible, { groupBy: view.groupBy, sortBy: view.sortBy, workspaces, now, liveAgents }),
     [visible, view.groupBy, view.sortBy, workspaces, now, liveAgents],
   );
+  // Every chat with a turn or a worker in flight, whatever the filters say.
+  // The clocks carry from pass to pass, so a run whose start the live buffer
+  // has since dropped keeps the time it had rather than starting over.
+  const runningSeen = useRef<ReadonlyMap<string, number>>(new Map());
+  const running = useMemo(() => {
+    const rows = runningChats({ chats, liveAgents, sessions, sending: sendingChatIds, events: liveEvents, seen: runningSeen.current, now: Date.now() });
+    runningSeen.current = rememberRunning(rows);
+    return rows;
+  }, [chats, liveAgents, sessions, sendingChatIds, liveEvents]);
+  const showRunning = running.length > 0 && !searching;
 
   // Collapsing takes the rail off the screen entirely; the panel controls move
   // to the canvas' chrome row, which is the only way back in besides ⌘B. The
@@ -923,7 +1021,9 @@ export function BridgeSidebar({
             else lives in the launcher, so a new app costs the sidebar nothing. */}
         <nav aria-label="Main navigation" className="mb-4 shrink-0 space-y-0.5">
           <ActionRow icon={Blocks} label="Apps" chord="open-launcher" onClick={onOpenApps} badge={appsBadge} />
-          {pinnedApps.map(pin => {
+          {/* While something runs, the Active group below carries the way into
+              Mission Control, so its pin would only repeat it. */}
+          {pinnedApps.filter(pin => !(pin.app.key === "mission-control" && showRunning)).map(pin => {
             const { app } = pin;
             const row = <ActionRow icon={app.icon} label={app.name} onClick={() => onOpenApp(app.key)} active={activeApp === app.key} badge={pin.badge} unpinnable={Boolean(onUnpinApp)} />;
             if (!onUnpinApp) return <div key={app.key}>{row}</div>;
@@ -945,6 +1045,18 @@ export function BridgeSidebar({
             );
           })}
         </nav>
+
+        {/* Above Projects and out of their scroll, so what is running stays in
+            view. A search has the rail to itself. */}
+        {showRunning && (
+          <SidebarRunning
+            rows={running}
+            activeSessionId={activeSessionId}
+            onOpenSession={onOpenSession}
+            onOpenMissionControl={() => onOpenApp("mission-control")}
+            missionControlActive={activeApp === "mission-control"}
+          />
+        )}
 
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
           {searchOpen && query.trim().length >= CHAT_SEARCH_MIN_CHARS && (
@@ -1009,9 +1121,10 @@ export function BridgeSidebar({
                 // names a delegated worker, and workers never reach this list.
                 const forkedFrom = chat.forkParentSessionId;
                 const source = forkedFrom ? chatsById.get(forkedFrom) : undefined;
+                const kids = subagents?.get(chat.id);
                 return (
+                  <div key={chat.id} className="flex flex-col gap-0.5">
                   <ChatRow
-                    key={chat.id}
                     chat={chat}
                     active={chat.id === activeSessionId}
                     indented={!!group.label}
@@ -1030,6 +1143,17 @@ export function BridgeSidebar({
                     onMarkRead={onMarkChatRead && (() => onMarkChatRead(chat.id))}
                     onMarkUnread={onMarkChatUnread && (() => onMarkChatUnread(chat.id))}
                   />
+                  {kids && kids.length > 0 && <SubagentList
+                    chatName={chatName(chat)}
+                    rows={kids}
+                    open={openSubagents.has(chat.id)}
+                    indented={!!group.label}
+                    activeSessionId={activeSessionId}
+                    now={now}
+                    onToggle={() => toggleSubagents(chat.id)}
+                    onOpenSession={onOpenSession}
+                  />}
+                  </div>
                 );
               })}
                 {overCap && !folded && (

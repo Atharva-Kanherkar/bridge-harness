@@ -352,6 +352,13 @@
       "resultSchema": "workspace-changes-result.json"
     },
     {
+      "command": "session_changes",
+      "domain": "workspaces",
+      "method": "workspaces/session_changes",
+      "paramsSchema": "session-changes-params.json",
+      "resultSchema": "session-changes-result.json"
+    },
+    {
       "command": "get_session_forest",
       "domain": "sessions",
       "method": "sessions/get_session_forest",
@@ -1661,6 +1668,20 @@
       "resultSchema": "usage-insights-result.json"
     },
     {
+      "command": "record_presence",
+      "domain": "usage",
+      "method": "usage/record_presence",
+      "paramsSchema": "record-presence-params.json",
+      "resultSchema": "usage-record-presence-result.json"
+    },
+    {
+      "command": "screen_time",
+      "domain": "usage",
+      "method": "usage/screen_time",
+      "paramsSchema": "screen-time-params.json",
+      "resultSchema": "usage-screen-time-result.json"
+    },
+    {
       "command": "get_meter_snapshot",
       "domain": "meter",
       "method": "meter/get_meter_snapshot",
@@ -2464,11 +2485,60 @@
       "method": "workflows/mark_workflow_runs_read",
       "paramsSchema": "mark-workflow-runs-read-params.json",
       "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "start_review",
+      "domain": "reviews",
+      "method": "reviews/start_review",
+      "paramsSchema": "start-review-params.json",
+      "resultSchema": "review-job-result.json"
+    },
+    {
+      "command": "list_reviews",
+      "domain": "reviews",
+      "method": "reviews/list_reviews",
+      "paramsSchema": "list-reviews-params.json",
+      "resultSchema": "review-job-list.json"
+    },
+    {
+      "command": "get_review",
+      "domain": "reviews",
+      "method": "reviews/get_review",
+      "paramsSchema": "get-review-params.json",
+      "resultSchema": "review-job-detail.json"
+    },
+    {
+      "command": "cancel_review",
+      "domain": "reviews",
+      "method": "reviews/cancel_review",
+      "paramsSchema": "cancel-review-params.json",
+      "resultSchema": "review-job-result.json"
+    },
+    {
+      "command": "retry_review",
+      "domain": "reviews",
+      "method": "reviews/retry_review",
+      "paramsSchema": "retry-review-params.json",
+      "resultSchema": "review-job-result.json"
+    },
+    {
+      "command": "get_review_job_settings",
+      "domain": "reviews",
+      "method": "reviews/get_review_job_settings",
+      "paramsSchema": null,
+      "resultSchema": "review-job-settings.json"
+    },
+    {
+      "command": "save_review_job_settings",
+      "domain": "reviews",
+      "method": "reviews/save_review_job_settings",
+      "paramsSchema": "save-review-job-settings-params.json",
+      "resultSchema": "review-job-settings.json"
     }
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 47
+    "minor": 51
   },
   "reserved": {
     "cancel": "$/cancel",

@@ -14,7 +14,6 @@ use crate::{
 use portable_pty::{Child, MasterPty};
 use std::{
     collections::HashMap,
-    io::Write,
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     thread,
@@ -38,7 +37,11 @@ pub(crate) fn lock_operation(operation: &Mutex<()>) -> MutexGuard<'_, ()> {
 }
 
 pub struct RuntimeSession {
-    pub writer: Box<dyn Write + Send>,
+    /// Bytes for the PTY, written in order by a thread that owns the writer.
+    /// A program that stops reading its input blocks only that thread, never
+    /// a caller holding the `runtimes` map (see
+    /// [`crate::terminal_workspace::spawn_pty_writer`]).
+    pub input: std::sync::mpsc::Sender<Vec<u8>>,
     pub master: Box<dyn MasterPty + Send>,
     pub child: Box<dyn Child + Send + Sync>,
     /// Which spawn this entry belongs to. A reader thread draining a dead
@@ -189,6 +192,9 @@ pub struct BridgeCore {
     /// The early compaction switch in memory and the marks of the trigger.
     /// Only `early_compaction_settings` sets the switch, after a write.
     pub early_compaction: crate::early_compaction::Tracker,
+    /// The review runner's live state in this process: the steps it runs,
+    /// the cancel token of each job it is driving, and its wake signal.
+    pub reviews: crate::reviews::ReviewRuntime,
 }
 
 /// An exclusive per-session lifecycle claim; released on drop.
@@ -423,6 +429,7 @@ impl BridgeCore {
             suggestion_engine: SuggestionEngine::new(),
             usage_overview: crate::usage_overview::UsageOverviewService::default(),
             early_compaction: crate::early_compaction::Tracker::default(),
+            reviews: crate::reviews::ReviewRuntime::default(),
         }
     }
 
@@ -597,6 +604,7 @@ impl BridgeCore {
             suggestion_engine: SuggestionEngine::new(),
             usage_overview: crate::usage_overview::UsageOverviewService::default(),
             early_compaction,
+            reviews: crate::reviews::ReviewRuntime::default(),
         })
     }
 }

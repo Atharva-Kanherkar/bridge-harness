@@ -111,7 +111,6 @@ describe("Apps catalog", () => {
     expect([...view.host.querySelectorAll('[aria-label="Store sections"] button')].map(item => item.textContent)).toEqual(["Apps", "Plugins", "Skills"]);
     expect(managed).not.toHaveBeenCalled(); expect(schedules).not.toHaveBeenCalled();
     await view.click(view.button("Skills"));
-    expect(view.text()).toContain("Add capabilities to your coding agents");
     await view.unmount();
   });
   it("shows a list skeleton while the catalog is in flight", async () => {

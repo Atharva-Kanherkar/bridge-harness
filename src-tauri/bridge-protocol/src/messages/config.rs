@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkerSettings {
     pub default_harness: Option<String>,
+    /// Workers running at once in this workspace. `0` means no limit.
     pub max_concurrent_workers: usize,
+    /// Workers one orchestrator message may start. `0` means no limit.
     pub max_workers_per_turn: usize,
     pub stall_timeout_seconds: u64,
     pub warm_retention_minutes: i64,
@@ -18,7 +20,7 @@ pub struct WorkerSettings {
 
 impl Default for WorkerSettings {
     fn default() -> Self {
-        Self { default_harness: None, max_concurrent_workers: 2, max_workers_per_turn: 3,
+        Self { default_harness: None, max_concurrent_workers: 0, max_workers_per_turn: 0,
             stall_timeout_seconds: 600, warm_retention_minutes: 5, automatic_retry: true, provider_failover: true }
     }
 }
@@ -1004,5 +1006,40 @@ mod tests {
             serde_json::to_value(&deleted_state).unwrap(),
             json!({"state": "deleted"})
         );
+    }
+
+    /// `ReviewerSettings` and its result exactly as protocol 1.49 published
+    /// them, strict as they were. A 1.49 client still pairs with this host,
+    /// so it must decode what this host sends.
+    #[derive(Debug, Default, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+    #[allow(dead_code)]
+    struct ReviewerSettings149 {
+        harnesses: std::collections::BTreeMap<String, ReviewerHarnessSettings>,
+        system_prompt: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    #[allow(dead_code)]
+    struct ReviewerSettingsResult149 {
+        settings: ReviewerSettings149,
+        default_system_prompt: String,
+    }
+
+    #[test]
+    fn a_1_49_client_decodes_the_reviewer_settings_response() {
+        let mut custom = ReviewerSettings::default();
+        custom.harnesses.insert(
+            "codex".into(),
+            ReviewerHarnessSettings { model: Some("gpt-5-codex".into()), effort: Some(Effort::High) },
+        );
+        custom.system_prompt = "Review #{number}.".into();
+        for settings in [ReviewerSettings::default(), custom] {
+            let response = serde_json::to_value(ReviewerSettingsResult { settings, default_system_prompt: "d".into() }).unwrap();
+            if let Err(error) = serde_json::from_value::<ReviewerSettingsResult149>(response.clone()) {
+                panic!("a 1.49 client cannot decode {response}: {error}");
+            }
+        }
     }
 }

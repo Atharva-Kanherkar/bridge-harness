@@ -14,6 +14,21 @@ describe("modelChangeDetail", () => {
       .toBe("window 200k · same thread");
   });
 
+  it("says a switch went back to the app's earlier thread and what it was handed", () => {
+    expect(modelChangeDetail({
+      previousWindowTokens: 128_000, windowTokens: 200_000, freshProviderSession: false,
+      returnedToThread: true, addedEntries: 2,
+    })).toBe("window 128k → 200k · earlier thread · 2 messages added");
+    expect(modelChangeDetail({
+      previousWindowTokens: 200_000, windowTokens: 200_000, freshProviderSession: false,
+      returnedToThread: true, addedEntries: 1,
+    })).toBe("window 200k · earlier thread · 1 message added");
+    expect(modelChangeDetail({
+      previousWindowTokens: 200_000, windowTokens: 200_000, freshProviderSession: false,
+      returnedToThread: true, addedEntries: 0,
+    })).toBe("window 200k · earlier thread");
+  });
+
   it("singularizes and skips empty carries", () => {
     expect(modelChangeDetail({
       previousWindowTokens: 400_000, windowTokens: 128_000, freshProviderSession: true,

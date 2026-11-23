@@ -1,86 +1,100 @@
-// The rail search: one query over every row on every page.
+// The rail search: one query over every page and every row.
 //
-// Settings grew to nine pages, and "which page is the inline suggestion model
-// on" stopped having an obvious answer. Rather than guess at an information
-// architecture that makes every row findable by browsing, the rail searches the
-// rows themselves and names the page each hit belongs to.
-//
-// The static index below covers the rows a page always has. Rows that only
-// exist because of the user's data (a harness, a preset, a prompt section) are
-// contributed at render time through `extraRows`, so a search for "opencode"
-// finds the runtime as well as the word in a description.
+// The index is built from the page registry (`sections.ts`) and the row list
+// below. Each row's `id` is the `anchor` a page renders on that row through
+// the kit, and a test mounts every page to prove each id is really there, so
+// the index cannot drift from what the pages draw. Rows that only exist
+// because of the user's data (a harness, an agent) are contributed at render
+// time and open that item's own detail page.
 
-import { SECTION_LABELS, type Section } from "./sections";
+import { ALL_PAGES, PAGES, type PageId } from "./sections";
+
+export type SearchTarget = { kind: "harness" | "agent"; id: string };
 
 export type SearchableRow = {
-  section: Section;
+  page: PageId;
   label: string;
   description?: string;
+  /** The `anchor` the page renders on this row. Absent: the hit opens the page. */
+  id?: string;
+  /** Opens a harness or agent detail page instead of a row. */
+  target?: SearchTarget;
 };
 
 export type SearchGroup = {
-  section: Section;
+  page: PageId;
   pageLabel: string;
   rows: SearchableRow[];
 };
 
-/** Every row a page shows regardless of what the user has configured. */
-export const STATIC_SETTINGS_ROWS: SearchableRow[] = [
-  { section: "chatDefaults", label: "New chat defaults", description: "Project agent, model, effort, access, worktree and input defaults" },
-  { section: "chatDefaults", label: "When a usage limit stops a chat", description: "Resume automatically when the limit resets, or switch to a backup model and effort" },
-  { section: "general", label: "Active-turn behavior", description: "Steer or Queue messages sent while an agent is working" },
-  { section: "menuBar", label: "Menu Bar icon", description: "Show the icon, quota used or remaining, and today's spend" },
-  { section: "menuBar", label: "Providers & accounts", description: "Codex account, plan, token and model breakdown, refresh interval" },
-  { section: "notifications", label: "Notices", description: "Toast, banner and sound for needs you, a waiting result, failed and completed turns" },
-  { section: "notifications", label: "Quiet hours", description: "No banners or sounds between two times" },
-  { section: "updates", label: "Beta nightly builds", description: "Opt in to signed nightly updates" },
-  { section: "updates", label: "Check for updates", description: "Check the selected channel now" },
-  { section: "workers", label: "Background task limits", description: "Preferred coding agent, tasks running at once, retries, usage limits and wait time" },
-  { section: "workers", label: "Pull request reviewer", description: "Model, effort and instructions per harness for GitHub PR reviews" },
-  { section: "archives", label: "Archived chats", description: "Search, read and unarchive conversations without restoring worktrees" },
-  { section: "storage", label: "Worktree storage", description: "Disk usage, safe cleanup, repositories and retention" },
-  { section: "appearance", label: "Mode", description: "Match macOS, Paper, or Graphite" },
-  { section: "appearance", label: "Window background", description: "Solid or tinted by your desktop" },
-  { section: "appearance", label: "Thinking control", description: "Slider, Sentence, or List effort picker" },
-  { section: "appearance", label: "Show thinking", description: "Draw or hide the model's reasoning text in the transcript" },
-  { section: "appearance", label: "Open edit activity automatically", description: "Open short Activity sections with file diffs in the transcript" },
+/** A row the page always renders, whatever the user has configured. */
+export type RegistryRow = SearchableRow & { id: string };
 
-  { section: "permissions", label: "Let agents act without asking", description: "Accept provider permission requests automatically" },
-  { section: "permissions", label: "Sending or publishing from a browser", description: "Always asks, whatever the switch says" },
-  { section: "permissions", label: "Recent auto-approvals", description: "The audit log of automatic decisions" },
+export const SETTINGS_ROWS: RegistryRow[] = [
+  { page: "general", id: "mode", label: "Mode", description: "Match macOS, Paper, or Graphite" },
+  { page: "general", id: "window-background", label: "Window background", description: "Solid or tinted by your desktop" },
+  { page: "general", id: "zoom", label: "Window zoom", description: "Scale the whole window" },
+  { page: "general", id: "show-thinking", label: "Show thinking", description: "Draw or hide the model's reasoning text in the transcript" },
+  { page: "general", id: "edit-activity", label: "Open edit activity automatically", description: "Open short Activity sections with file diffs in the transcript" },
+  { page: "general", id: "thinking-control", label: "Thinking control", description: "Slider, Sentence, or List effort picker" },
+  { page: "general", id: "mission-control", label: "Show worker chats in Mission Control", description: "Also show chats for background tasks" },
 
-  { section: "composer", label: "Inline suggestions", description: "Ghost-text continuations of your draft, accepted with Tab" },
-  { section: "composer", label: "Suggestion model", description: "Which model writes the inline continuation" },
-  { section: "voice", label: "Local dictation", description: "Download or remove the private on-device English speech model" },
-  { section: "composer", label: "Search deeper", description: "Let chat search ask a small model when the index is unsure" },
-  { section: "composer", label: "Search model", description: "Which Claude model chat search uses" },
+  { page: "notifications", id: "notices", label: "Notices", description: "Toast, banner and sound for needs you, a waiting result, failed and completed turns" },
+  { page: "notifications", id: "quiet-hours", label: "Quiet hours", description: "No banners or sounds between two times" },
 
-  { section: "agents", label: "New agent", description: "Create an agent with reusable instructions" },
+  { page: "voice", id: "local-dictation", label: "Local dictation", description: "Download or remove the private on-device English speech model" },
 
-  { section: "models", label: "Your chats", description: "The model you talk to" },
-  { section: "models", label: "Background tasks", description: "Agents the orchestrator delegates to" },
-  { section: "models", label: "Verification", description: "Verification roles with a specialized rubric" },
-  { section: "models", label: "Catalog", description: "Provider model catalogs and their freshness" },
+  { page: "composer", id: "inline-suggestions", label: "Inline suggestions", description: "Ghost-text continuations of your draft, accepted with Tab" },
+  { page: "composer", id: "suggestion-model", label: "Suggestion model", description: "Which model writes the inline continuation" },
+  { page: "composer", id: "search-deeper", label: "Search deeper", description: "Let chat search ask a small model when the index is unsure" },
+  { page: "composer", id: "search-model", label: "Search model", description: "Which Claude model chat search uses" },
 
-  { section: "prompts", label: "Instructions for", description: "Orchestrator, worker roles, or direct session" },
-  { section: "prompts", label: "Export overrides", description: "Write every prompt override to a JSON file" },
-  { section: "prompts", label: "Import overrides", description: "Apply prompt overrides from a JSON file" },
+  { page: "menuBar", id: "menu-display", label: "Show in menu bar", description: "Show the icon, quota used or remaining, and today's spend" },
+  { page: "menuBar", id: "menu-favorites", label: "Favorite providers", description: "Which providers appear first in the menu" },
+  { page: "menuBar", id: "menu-providers", label: "Providers & accounts", description: "Read usage for each provider account" },
+  { page: "menuBar", id: "menu-usage", label: "Usage & spend", description: "Account, overview, daily history, tokens and spend" },
+  { page: "menuBar", id: "menu-refresh", label: "Refresh account usage", description: "How often the menu bar refreshes usage" },
 
-  { section: "harnesses", label: "Installed", description: "Coding agents Bridge can start right now" },
-  { section: "harnesses", label: "Available", description: "Coding agents Bridge can install for you" },
-  { section: "harnesses", label: "Early compaction", description: "Smaller context for an idle Claude or Codex chat, off by default" },
+  { page: "chatDefaults", id: "default-target", label: "Agent or chat mode", description: "Which agent a new chat starts with" },
+  { page: "chatDefaults", id: "default-model", label: "Default model", description: "The model a new chat starts on" },
+  { page: "chatDefaults", id: "default-effort", label: "Default thinking effort", description: "Thinking effort for new chats" },
+  { page: "chatDefaults", id: "default-access", label: "Access", description: "User approval or full access for new chats" },
+  { page: "chatDefaults", id: "default-location", label: "Work location", description: "Project checkout or a new isolated worktree" },
+  { page: "chatDefaults", id: "input-while-running", label: "Input while running", description: "Steer or queue messages sent while an agent is working" },
+  { page: "chatDefaults", id: "limit-recovery", label: "When a usage limit stops a chat", description: "Resume automatically when the limit resets, or switch to a backup model" },
 
-  { section: "keys", label: "Saved keys", description: "API keys agents can use on the sites you allow, without seeing them" },
-  { section: "keys", label: "Add a key", description: "Save an API key or token in the Keychain for every chat" },
-  { section: "keys", label: "Pasted in chats", description: "Keys you pasted into a chat, and where each may be sent" },
+  { page: "codingAgents", id: "installed-agents", label: "Installed coding agents", description: "Coding agents Bridge can start right now, and ones it can install" },
+  { page: "codingAgents", id: "early-compaction", label: "Early compaction", description: "Smaller context for an idle Claude or Codex chat, off by default" },
 
-  { section: "work", label: "Daily briefing", description: "Slack, GitHub, and other integration activity from the past 24 hours" },
-  { section: "work", label: "What it reads", description: "Which connected tools the briefing may read" },
-  { section: "work", label: "Refresh frequency", description: "How often the briefing runs" },
-  { section: "work", label: "Refresh on focus", description: "Also refresh when Bridge regains focus" },
+  { page: "models", id: "model-catalog", label: "Available models", description: "Provider model catalogs and their freshness, for chats, background tasks and verification" },
 
-  { section: "import", label: "Import", description: "Bring your Claude Code chats and setup into Bridge with one click" },
+  { page: "agents", id: "your-agents", label: "New agent", description: "Create an agent with reusable instructions" },
+
+  { page: "permissions", id: "auto-approve", label: "Let agents act without asking", description: "Accept provider permission requests automatically" },
+  { page: "permissions", id: "instruction-proposals", label: "Suggested instruction changes", description: "Let background agents suggest improvements to their instructions" },
+  { page: "permissions", id: "personal-apps", label: "Allow personal apps through OpenCode", description: "Off by default, less safe" },
+  { page: "permissions", id: "always-asks", label: "Sending or publishing from a browser", description: "Always asks, whatever the switch says" },
+  { page: "permissions", id: "auto-approvals", label: "Recent auto-approvals", description: "The audit log of automatic decisions" },
+
+  { page: "keys", id: "saved-keys", label: "Saved keys", description: "API keys agents can use on the sites you allow, without seeing them" },
+  { page: "keys", id: "pasted-keys", label: "Pasted in chats", description: "Keys you pasted into a chat, and where each may be sent" },
+
+  { page: "data", id: "worktree-storage", label: "Worktree storage", description: "Project copies, safe cleanup, repositories and retention" },
+
+  { page: "workers", id: "preferred-agent", label: "Preferred coding agent", description: "Which coding agent background tasks use first" },
+  { page: "workers", id: "task-limits", label: "Background task limits", description: "Tasks running at once, per message, and wait time" },
+  { page: "workers", id: "orchestrator-notices", label: "Orchestrator notices", description: "Which worker notices cost an orchestrator a model turn" },
+  { page: "workers", id: "reviewer", label: "Pull request reviewer", description: "Model, effort and instructions per harness for GitHub PR reviews" },
+
+  { page: "work", id: "briefing", label: "Integration briefing", description: "Slack, GitHub, and other integration activity from the past 24 hours, and what it reads" },
+  { page: "work", id: "briefing-schedule", label: "Refresh frequency", description: "How often the briefing runs, and refresh on focus" },
+
+  { page: "updates", id: "beta-builds", label: "Beta nightly builds", description: "Opt in to signed nightly updates" },
+  { page: "updates", id: "check-updates", label: "Check for updates", description: "Check the selected channel now" },
 ];
+
+/** Each page itself is a hit, found by its name or what it is for. */
+export const PAGE_ROWS: SearchableRow[] = ALL_PAGES.map(page => ({ page, label: PAGES[page].label, description: PAGES[page].description }));
 
 function matches(row: SearchableRow, needle: string): boolean {
   return row.label.toLowerCase().includes(needle)
@@ -88,25 +102,20 @@ function matches(row: SearchableRow, needle: string): boolean {
 }
 
 /**
- * Rows that match `query`, grouped by the page that owns them and kept in the
- * rail's page order. An empty query returns every row, so a caller can render
- * the same list for "show me everything" without a second code path.
+ * Rows that match `query`, grouped by the page that owns them, in rail order.
+ * An empty query returns every row.
  */
 export function filterSettingsRows(query: string, rows: SearchableRow[]): SearchGroup[] {
   const needle = query.trim().toLowerCase();
   const hits = needle ? rows.filter(row => matches(row, needle)) : rows;
-  const bySection = new Map<Section, SearchableRow[]>();
+  const byPage = new Map<PageId, SearchableRow[]>();
   for (const row of hits) {
-    const existing = bySection.get(row.section);
-    if (existing) existing.push(row); else bySection.set(row.section, [row]);
+    const existing = byPage.get(row.page);
+    if (existing) existing.push(row); else byPage.set(row.page, [row]);
   }
-  // Preserve the order rows arrived in, which is the rail's page order for the
-  // static index and the user's own order for contributed rows.
-  const seen: Section[] = [];
-  for (const row of hits) if (!seen.includes(row.section)) seen.push(row.section);
-  return seen.map(section => ({
-    section,
-    pageLabel: SECTION_LABELS[section],
-    rows: bySection.get(section) ?? [],
+  return ALL_PAGES.filter(page => byPage.has(page)).map(page => ({
+    page,
+    pageLabel: PAGES[page].label,
+    rows: byPage.get(page) ?? [],
   }));
 }

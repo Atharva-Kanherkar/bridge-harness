@@ -8,7 +8,7 @@ import { costSourceLabel, formatCount, formatPercent, formatTokens, formatUsd, t
 import { axisFraction, evenTicks, TOKEN_KINDS, type TokenKind } from "../usageGeometry";
 
 // Pieces every Usage layout shares, so the honesty rules are written once:
-// the partial badge, the `API estimate` caption, the `~` on a partly unpriced
+// the `API estimate` caption, the `~` on a partly unpriced
 // cost, reasoning stated inside output, and keyboard scrubbing for charts.
 
 export interface UsageLayoutProps {
@@ -18,8 +18,6 @@ export interface UsageLayoutProps {
   window: UsageWindow;
   windowDays: UsageWindowDays;
   metric: UsageMetric;
-  /** Why the headline is not final yet, or null when it is. */
-  partial: string | null;
 }
 
 export const LAYOUT_CARD = "u-surface rounded-2xl p-5";
@@ -43,13 +41,6 @@ export function windowTitle(days: UsageWindowDays): string {
 
 export function periodNoun(window: UsageWindow): string {
   return window.resolution === "hour" ? "Hourly" : "Daily";
-}
-
-export function PartialBadge({ label, className }: { label: string | null; className?: string }) {
-  if (!label) return null;
-  return <span role="status" className={cn("inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-1 text-caption text-muted-foreground", className)}>
-    <span className="size-1.5 rounded-full bg-muted-foreground/50" aria-hidden="true" />Partial total · {label}
-  </span>;
 }
 
 /** First load only: the hero and chart shapes until the first summary lands. Later loads keep the last figures on screen. */
@@ -118,7 +109,7 @@ export function TokenComposition({ report, className }: { report: UsageReport; c
       </div>)}
     </dl>
     <p className="mt-4 text-ui text-muted-foreground">
-      Cache reuse saved <span className="font-medium tabular-nums text-foreground">{formatUsd(report.totals.cacheSavingsMicrousd)}</span> compared with paying uncached input for the same tokens. Reasoning ({formatTokens(report.totals.reasoningTokens)}) is counted inside output, never added to it.
+      Cache reuse saved <span className="font-medium tabular-nums text-foreground">{formatUsd(report.totals.cacheSavingsMicrousd)}</span>.
     </p>
   </section>;
 }

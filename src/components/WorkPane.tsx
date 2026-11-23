@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowUpRight, CloudOff, PanelRight, RotateCw } from "lucide-react";
 import type { SessionPullRequest } from "../protocol/generated/protocol";
 import { formatElapsed, type BackgroundTaskView } from "../backgroundTasks";
@@ -144,7 +144,9 @@ function TaskRow({ task, harness, open, onToggle }: { task: BackgroundTaskView; 
   </li>;
 }
 
-export function WorkPane({ prs, tasks, harness, refreshing, focus, onAttach, onRetry, onFix, onOpenGithub, onEscape }: {
+export function WorkPane({ overview, prs, tasks, harness, refreshing, focus, onAttach, onRetry, onFix, onOpenGithub, onEscape }: {
+  /** The chat overview, drawn above the pull requests and background work. */
+  overview?: ReactNode;
   prs: SessionPullRequest[];
   tasks: BackgroundTaskView[];
   harness?: string | null;
@@ -189,12 +191,14 @@ export function WorkPane({ prs, tasks, harness, refreshing, focus, onAttach, onR
 
   const empty = ordered.length === 0 && tasks.length === 0;
   return <div data-work-pane onKeyDown={onKeyDown} className="h-full overflow-y-auto overscroll-contain px-2 pb-4">
-    {empty && <div className="px-2 pb-2 pt-6">
+    {overview}
+    {empty && !overview && <div className="px-2 pb-2 pt-6">
       <p className="text-ui font-medium text-foreground">Nothing running</p>
-      <p className="mt-1 max-w-sm text-meta leading-relaxed text-muted-foreground">Pull requests this chat opens and work its agent leaves running show up here, and in one line above the composer.</p>
     </div>}
     <section aria-label="Pull requests">
-      {!empty && <h3 className={SECTION}>Pull requests<span className="tabular-nums">{ordered.length || ""}</span></h3>}
+      {(!empty || overview) && <h3 className={SECTION}>Pull requests<span className="tabular-nums">{ordered.length || ""}</span></h3>}
+      {/* Under the overview, "Nothing running" would contradict a chat that is working: say what lands here instead. */}
+      {empty && overview && <p className="px-2 pb-1 text-meta leading-relaxed text-faint">Pull requests this chat opens and work its agent leaves running show up here.</p>}
       {ordered.length > 0 && <ul className="grid gap-px">
         {ordered.map(pr => {
           const key = chatPrKey(pr);

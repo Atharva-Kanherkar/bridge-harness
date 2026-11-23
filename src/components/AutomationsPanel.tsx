@@ -113,8 +113,8 @@ export function AutomationsPanel({ initialCatalog, embedded = false }: { initial
   return <div className={embedded ? "" : "h-full min-h-0 overflow-y-auto"}>
     <div className={embedded ? "" : SCREEN_CONTENT}>
       {embedded
-        ? <div className="flex flex-wrap items-center gap-3"><p className="min-w-0 flex-1 text-ui text-muted-foreground">Schedules your coding agents keep themselves. Their own apps run them; Bridge lists and edits them.</p>{actions}</div>
-        : <ScreenHeading title="Scheduled tasks" description="Run recurring work using schedules supported by your coding agents." action={actions} />}
+        ? <div className="flex flex-wrap items-center gap-3"><span className="flex-1" />{actions}</div>
+        : <ScreenHeading title="Scheduled tasks" action={actions} />}
 
       <div className="mt-5 flex flex-wrap gap-2">
         <div className="u-segmented flex-wrap w-fit" aria-label="Filter automations by provider">{(["all", ...(catalog?.providers ?? []).map(state => state.provider)] as Array<AutomationProvider | "all">).map(value => <button type="button" key={value} data-active={provider === value} aria-pressed={provider === value} onClick={() => setProvider(value)} className="u-segmented-item">{value === "all" ? "All providers" : providerLabel(value)}</button>)}</div>

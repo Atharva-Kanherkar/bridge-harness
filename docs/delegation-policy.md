@@ -58,7 +58,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --bin router-replay -- /path/to/b
 
 The report includes recommendation coverage, changed recommendations, shadow alternatives, outcomes, pass rate, latency, normalized cost, retries, human intervention, and policy-violation counts. It is an offline sensitivity report, not a claim of causal model superiority.
 
-Default limits are three workers per user turn, one strong worker, 24 capability units, and one automatic retry. These counters are derived from durable usage-ledger rows keyed by the orchestrator turn. Provider model names are audit data; routing is expressed as `fast`, `standard`, or `strong` capability tiers.
+Worker counts are unlimited by default: no cap on workers per turn, strong workers, capability units, or workers running at once. A workspace can set its own caps in Settings > Background tasks (0 means no limit). The gates that protect correctness are not counts and still apply: depth, write scope and its provenance, one writer per worktree, approvals, and independent verification. One automatic attempt per objective covers a transient retry, a quota reroute, or a crash relaunch, whichever comes first. These counters are derived from durable usage-ledger rows keyed by the orchestrator turn. Provider model names are audit data; routing is expressed as `fast`, `standard`, or `strong` capability tiers.
 
 ## Offline policy replay
 

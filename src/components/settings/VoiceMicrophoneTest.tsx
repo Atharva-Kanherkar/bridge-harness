@@ -57,7 +57,7 @@ export function VoiceMicrophoneTest({ onActiveChange }: { onActiveChange(active:
       <textarea ref={input} aria-label="Microphone test transcript" rows={2} readOnly={voice.active}
         value={voice.active ? voice.draftPreview ?? text : text} placeholder="Your words will appear here…"
         onChange={event => update(event.target.value)}
-        className="block min-h-14 w-full resize-none bg-transparent text-sm leading-relaxed text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring" />
+        className="block min-h-14 w-full resize-none bg-transparent text-ui leading-relaxed text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring" />
       <VoiceStatus {...voice} />
       <div className="mt-1 flex items-center justify-between gap-2">
         <span className="text-caption text-muted-foreground">Audio stays on this Mac.</span>

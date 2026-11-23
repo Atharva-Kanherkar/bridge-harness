@@ -52,6 +52,7 @@ mod models;
 mod notes;
 mod outgoing;
 mod projects;
+mod reviews;
 mod routing;
 mod sessions;
 mod skills;
@@ -96,6 +97,7 @@ pub use models::*;
 pub use notes::*;
 pub use outgoing::*;
 pub use projects::*;
+pub use reviews::*;
 pub use routing::*;
 pub use sessions::*;
 pub use skills::*;
@@ -241,6 +243,7 @@ typed_methods![
     (CheckoutWorkspaceBranch, CheckoutWorkspaceBranchParams, BridgeState),
     (ArchiveWorkspace, ArchiveWorkspaceParams, BridgeState),
     (WorkspaceChanges, WorkspaceChangesParams, WorkspaceChangesResult),
+    (SessionChanges, SessionChangesParams, SessionChangesResult),
     // sessions
     (GetSessionForest, GetSessionForestParams, SessionForestSnapshot),
     (GetSessionForestDigest, GetSessionForestDigestParams, SessionForestDigestResult),
@@ -457,6 +460,8 @@ typed_methods![
     (ListHistorySources, _, ListHistorySourcesResult),
     (ScanHistory, ScanHistoryParams, ScanHistoryResult),
     (UsageInsights, InsightsParams, UsageInsightsResult),
+    (UsageRecordPresence, RecordPresenceParams, UsageRecordPresenceResult),
+    (UsageScreenTime, ScreenTimeParams, UsageScreenTimeResult),
     (GetMeterSnapshot, _, MeterRegistry),
     (RefreshMeter, _, UnitResult),
     (SaveOpencodeUsageSession, SaveOpencodeUsageSessionParams, UnitResult),
@@ -586,6 +591,14 @@ typed_methods![
     (DraftWorkflowFromText, DraftWorkflowFromTextParams, WorkflowDraftResult),
     (DraftWorkflowFromSession, DraftWorkflowFromSessionParams, WorkflowDraftResult),
     (MarkWorkflowRunsRead, MarkWorkflowRunsReadParams, UnitResult),
+    // reviews
+    (StartReview, StartReviewParams, ReviewJobResult),
+    (ListReviews, ListReviewsParams, ReviewJobList),
+    (GetReview, GetReviewParams, ReviewJobDetail),
+    (CancelReview, CancelReviewParams, ReviewJobResult),
+    (RetryReview, RetryReviewParams, ReviewJobResult),
+    (GetReviewJobSettings, _, ReviewJobSettings),
+    (SaveReviewJobSettings, SaveReviewJobSettingsParams, ReviewJobSettings),
 ];
 
 /// The documented exceptions to result typing: every method whose result is

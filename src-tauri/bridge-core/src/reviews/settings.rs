@@ -1,0 +1,165 @@
+//! How review jobs run: default and fallback harnesses, the runner's pool
+//! size, and whether findings wait for triage. One record for the account,
+//! stored apart from the reviewer's model and prompt (`reviewer_settings`) so
+//! saving either never touches the other.
+
+use bridge_protocol::messages::{ReviewJobSettings, MAX_CONCURRENT_REVIEWS_RANGE};
+use rusqlite::{params, Connection, OptionalExtension};
+
+use crate::BridgeError;
+
+const KIND: &str = "review_job_settings";
+const ID: &str = "global";
+
+/// Reviewers one job may ask for: one, or two for a second opinion.
+pub const MAX_REVIEW_HARNESSES: usize = 2;
+
+pub fn load(db: &Connection) -> Result<ReviewJobSettings, BridgeError> {
+    let payload: Option<String> = db
+        .query_row(
+            "SELECT payload FROM configuration_entries WHERE kind=?1 AND id=?2",
+            params![KIND, ID],
+            |row| row.get(0),
+        )
+        .optional()?;
+    payload
+        .map(|payload| serde_json::from_str(&payload).map_err(|error| BridgeError::Invalid(error.to_string())))
+        .unwrap_or_else(|| Ok(ReviewJobSettings::default()))
+}
+
+pub fn save(db: &Connection, settings: &ReviewJobSettings) -> Result<ReviewJobSettings, BridgeError> {
+    if !MAX_CONCURRENT_REVIEWS_RANGE.contains(&settings.max_concurrent_reviews) {
+        return Err(BridgeError::Invalid(format!(
+            "Reviews at once must be between {} and {}",
+            MAX_CONCURRENT_REVIEWS_RANGE.start(),
+            MAX_CONCURRENT_REVIEWS_RANGE.end()
+        )));
+    }
+    let default_harnesses = harnesses(&settings.default_harnesses, "default reviewer")?;
+    if default_harnesses.len() > MAX_REVIEW_HARNESSES {
+        return Err(BridgeError::Invalid(format!("A review runs on at most {MAX_REVIEW_HARNESSES} harnesses")));
+    }
+    let normalized = ReviewJobSettings {
+        default_harnesses,
+        fallback_harnesses: harnesses(&settings.fallback_harnesses, "fallback reviewer")?,
+        ..settings.clone()
+    };
+    db.execute(
+        "INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at)
+         VALUES(?1,?2,?3,?4,?4) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
+        params![
+            KIND,
+            ID,
+            serde_json::to_string(&normalized).map_err(|error| BridgeError::Invalid(error.to_string()))?,
+            chrono::Utc::now().to_rfc3339()
+        ],
+    )?;
+    load(db)
+}
+
+/// A list of harnesses a review job may run on, canonicalized and without
+/// repeats. Cursor Bugbot is refused: it reviews on GitHub, not as a pass.
+/// `label` names the list in errors ("reviewer", "default reviewer", ...).
+pub fn harnesses(ids: &[String], label: &str) -> Result<Vec<String>, BridgeError> {
+    let mut harnesses: Vec<String> = Vec::new();
+    for id in ids {
+        if id.trim().is_empty() {
+            continue;
+        }
+        let canonical = match crate::reviewer_settings::canonical_harness(id) {
+            Some(canonical) if canonical != "cursor-bugbot" => canonical,
+            Some(_) => {
+                return Err(BridgeError::Invalid(format!(
+                    "Cursor Bugbot cannot be a {label} harness: it reviews on GitHub"
+                )))
+            }
+            None => return Err(BridgeError::Invalid(format!("Unknown {label} harness `{id}`"))),
+        };
+        if !harnesses.contains(&canonical) {
+            harnesses.push(canonical);
+        }
+    }
+    Ok(harnesses)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bridge_protocol::messages::{self as wire, ReviewerHarnessSettings, ReviewerSettings};
+
+    fn db() -> (tempfile::TempDir, Connection) {
+        let scratch = tempfile::tempdir().unwrap();
+        let db = crate::store::open(&scratch.path().join("test.db")).unwrap();
+        (scratch, db)
+    }
+
+    #[test]
+    fn runner_settings_default_and_validate() {
+        let (_scratch, db) = db();
+        let defaults = load(&db).unwrap();
+        assert_eq!(defaults, ReviewJobSettings::default());
+        assert_eq!(defaults.max_concurrent_reviews, 2);
+        assert_eq!(defaults.post_mode, wire::ReviewPostMode::Draft);
+
+        for refused in [0, 5] {
+            let settings = ReviewJobSettings { max_concurrent_reviews: refused, ..Default::default() };
+            assert!(save(&db, &settings).unwrap_err().to_string().contains("between 1 and 4"), "{refused}");
+        }
+        let settings = ReviewJobSettings {
+            default_harnesses: vec!["claude-code".into(), "codex".into(), "claude".into()],
+            fallback_harnesses: vec!["open-code".into(), " ".into(), "codex".into()],
+            max_concurrent_reviews: 4,
+            post_mode: wire::ReviewPostMode::Auto,
+        };
+        let stored = save(&db, &settings).unwrap();
+        assert_eq!(stored.default_harnesses, ["claude", "codex"], "aliases fold and repeats drop");
+        assert_eq!(stored.fallback_harnesses, ["opencode", "codex"]);
+        assert_eq!(stored.max_concurrent_reviews, 4);
+        assert_eq!(stored.post_mode, wire::ReviewPostMode::Auto);
+
+        let three = ReviewJobSettings { default_harnesses: vec!["claude".into(), "codex".into(), "opencode".into()], ..Default::default() };
+        assert!(save(&db, &three).unwrap_err().to_string().contains("at most 2"));
+        let bugbot = ReviewJobSettings { fallback_harnesses: vec!["bugbot".into()], ..Default::default() };
+        assert!(save(&db, &bugbot).unwrap_err().to_string().contains("Cursor Bugbot"));
+        let unknown = ReviewJobSettings { default_harnesses: vec!["shell".into()], ..Default::default() };
+        assert!(save(&db, &unknown).unwrap_err().to_string().contains("Unknown default reviewer harness"));
+        assert_eq!(load(&db).unwrap(), stored, "a refused save stores nothing");
+    }
+
+    #[test]
+    fn saving_reviewer_settings_leaves_review_job_settings_alone() {
+        let (_scratch, db) = db();
+        let jobs = save(
+            &db,
+            &ReviewJobSettings {
+                default_harnesses: vec!["codex".into()],
+                fallback_harnesses: vec!["claude".into()],
+                max_concurrent_reviews: 1,
+                post_mode: wire::ReviewPostMode::Auto,
+            },
+        )
+        .unwrap();
+        // What the existing reviewer form sends: only the two fields it edits.
+        let mut reviewer = ReviewerSettings { system_prompt: "Only security, PR {number}.".into(), ..Default::default() };
+        reviewer
+            .harnesses
+            .insert("codex".into(), ReviewerHarnessSettings { model: Some("gpt-5-codex".into()), effort: None });
+        crate::reviewer_settings::save(&db, &reviewer).unwrap();
+        assert_eq!(load(&db).unwrap(), jobs, "a reviewer model or prompt save never resets job settings");
+        save(&db, &ReviewJobSettings::default()).unwrap();
+        assert_eq!(crate::reviewer_settings::load(&db).unwrap().system_prompt, "Only security, PR {number}.");
+    }
+
+    #[test]
+    fn a_record_with_fields_from_a_newer_build_still_loads() {
+        let (_scratch, db) = db();
+        db.execute(
+            "INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES(?1,?2,?3,'now','now')",
+            params![KIND, ID, r#"{"postMode":"auto","autoReview":"mine"}"#],
+        )
+        .unwrap();
+        let loaded = load(&db).unwrap();
+        assert_eq!(loaded.post_mode, wire::ReviewPostMode::Auto);
+        assert_eq!(loaded.max_concurrent_reviews, 2, "a field it lacks takes its default");
+    }
+}

@@ -226,7 +226,10 @@ export function shortcutFor(id: CommandId): Shortcut {
   return found;
 }
 
-/** The chord a command advertises, for a tooltip or an aria-label. */
-export function chordLabel(id: CommandId): string {
-  return formatChord(shortcutFor(id));
+/** The chord a command advertises, for a tooltip or an aria-label. For a digit
+ *  family, `digit` names one member (⌥⌘3) rather than the range (⌥⌘1-9). */
+export function chordLabel(id: CommandId, digit?: number): string {
+  const shortcut = shortcutFor(id);
+  if (digit === undefined || !shortcut.digits) return formatChord(shortcut);
+  return formatChord({ ...shortcut, displayKey: String(digit) });
 }

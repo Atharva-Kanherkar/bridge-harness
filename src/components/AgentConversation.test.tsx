@@ -474,6 +474,7 @@ describe("AgentConversation", () => {
   it("keeps the greeting for a loaded-but-empty chat", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={[]} />);
     expect(html).not.toContain('aria-label="Loading conversation"');
+    expect(html).toContain("What should we build?");
   });
 
   it("shows live content through a forest refetch instead of the skeleton", () => {
@@ -491,8 +492,9 @@ describe("AgentConversation", () => {
     expect(html).toContain("abcdef123456");
     expect(html).toContain("Browser unavailable");
     expect(html).toContain("Skipped");
-    expect(html).toContain("border-x-2");
-    expect(html).toContain("border-x-warning");
+    // One even border, no side accents: a light 2px tick on each side drew
+    // the card as a pair of brackets.
+    expect(html).not.toContain("border-x-2");
     expect(html).not.toContain("border-l-2");
   });
 
@@ -587,8 +589,17 @@ describe("AgentConversation", () => {
     const automatic = event(42, "permission.requested", { status:"settling", title:"Run command", data:{resolvedBy:"policy",reason:"Auto-approve provider permissions",actions:[{decision:"accept",label:"Allow once"}]} });
     const policyHtml = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[automatic]}/>);
     expect(policyHtml).toContain("Applying decision");
-    expect(policyHtml).toContain("by policy");
+    expect(policyHtml).toContain("by policy · Auto-approve provider permissions");
+    expect(policyHtml).not.toContain("—");
     expect(policyHtml).not.toContain("Allow once</button>");
+  });
+
+  it("shows a permission's command once, in its well", () => {
+    const command = "git fetch origin -q && git log --oneline -3";
+    const requested = event(43, "permission.requested", { status:"pending", title:"Run this command?", text:command, data:{command,actions:[{decision:"accept",label:"Allow once"}]} });
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[requested]}/>);
+    expect(html.split("git fetch origin -q").length - 1).toBe(1);
+    expect(html).toContain("<code");
   });
 
   it("holds permission actions disabled until a deferred resolution settles", async () => {
@@ -770,11 +781,11 @@ describe("AgentConversation", () => {
       },
     });
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[failed]} onRetryWorker={async () => undefined} onOpenSession={() => undefined}/>);
-    // The cause, not "Subagent finished".
+    // The cause, not "Worker finished".
     expect(html).toContain("a check the worker ran failed: cargo test store");
     expect(html).toContain("Retry this task");
     expect(html).toContain('role="alert"');
-    expect(html).not.toContain("Subagent finished");
+    expect(html).not.toContain("Worker finished");
   });
 
   it("says plainly when a worker's result could not be read, and does not dress it as a task failure", () => {
@@ -802,7 +813,8 @@ describe("AgentConversation", () => {
       data: { childSessionId: "w3", delivered: true, status: "completed", canRetry: false },
     });
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[done]} onRetryWorker={async () => undefined}/>);
-    expect(html).toContain("Subagent finished");
+    // A worker, never a "subagent": Bridge's own word for what it delegates to.
+    expect(html).toContain("Worker finished");
     expect(html).not.toContain("Retry this task");
   });
 
@@ -815,11 +827,13 @@ describe("AgentConversation", () => {
     data: { childSessionId: "w1", modelLabel: "Fable", effort: "high" },
   });
 
-  it("keeps a running worker to one quiet row, never a live card", () => {
+  it("keeps a running worker to one quiet row, never a live worker card", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[spawned]} onOpenSession={() => undefined} onOpenAgent={() => undefined}/>);
     expect(html).toContain("Delegated");
     expect(html).toContain("Fable · high");
-    // The worker is watched in the Agents pane: no status, feed, clock or Stop here.
+    // The worker is watched in the Agents pane: its row carries no status,
+    // feed or Stop. Counting the delegation's workers is the fan-out card's
+    // job (FanOutCard.test.tsx), and it offers Stop only when the host can.
     expect(html).not.toContain('aria-label="Worker ');
     expect(html).not.toContain("WORKING");
     expect(html).not.toContain(">Stop<");
@@ -854,7 +868,7 @@ describe("AgentConversation", () => {
       text: "Rotation added.", data: { childSessionId: "w1", delivered: true, status: "completed" },
     });
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[spawned, result]} onOpenAgent={() => undefined}/>);
-    expect(html.split("Subagent finished").length - 1).toBe(1);
+    expect(html.split("Worker finished").length - 1).toBe(1);
     expect(html).not.toContain("Delegated");
     expect(html).toContain("Show in Agents");
   });
@@ -1057,4 +1071,27 @@ describe("AgentConversation", () => {
       await act(async () => root.unmount());
     }
   });
+});
+
+it("folds a provider Agent call and its lifecycle into one quiet child pointer", () => {
+  const subagent={sessionId:"agent-tool",agent:"Explore",title:"Check authentication"};
+  const events=[
+    event(1,"tool.started",{itemId:"agent-tool",title:"Agent",status:"running",data:{name:"Agent",input:{description:"Check authentication",prompt:"Read auth",subagent_type:"Explore"}}}),
+    event(2,"subagent.started",{status:"working",data:{childSessionId:"bridge-child",subagent}}),
+    event(3,"tool.completed",{itemId:"agent-tool",status:"completed",text:"Async agent launched successfully. Internal metadata",data:{name:"Agent",input:{prompt:"Read auth",subagent_type:"Explore"},aggregatedOutput:"Async agent launched successfully"}}),
+    event(4,"subagent.completed",{status:"completed",data:{childSessionId:"bridge-child",subagent}}),
+  ];
+  const html=renderToStaticMarkup(<AgentConversation session={session} events={events} onResolve={()=>undefined} onOpenAgent={()=>undefined}/>);
+  expect(html).not.toContain("Async agent launched");
+  expect(html.split("Show in Agents").length-1).toBe(1);
+  expect(html).not.toContain("Subagent finished");
+  expect(html).toContain("Subagent");
+});
+
+it("keeps a known child's final report out of the parent's collaboration tool card", () => {
+  const data={childSessionId:"bridge-child",subagent:{sessionId:"provider-child",agent:"codex",title:"Research"}};
+  const events=[event(1,"subagent.started",{data}),event(2,"tool.completed",{itemId:"wait-call",title:"wait",status:"completed",data:{type:"collabAgentToolCall",tool:"wait",receiverThreadIds:["provider-child"],agentsStates:{"provider-child":{status:"completed",message:"CHILD_ONLY_REPORT"}}}}),event(3,"subagent.completed",{data,status:"completed"})];
+  const html=renderToStaticMarkup(<AgentConversation session={session} events={events} onResolve={()=>undefined} onOpenAgent={()=>undefined}/>);
+  expect(html).not.toContain("CHILD_ONLY_REPORT");
+  expect(html.split("Show in Agents").length-1).toBe(1);
 });

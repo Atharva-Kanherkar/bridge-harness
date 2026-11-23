@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { DetectedImportSource, ImportJob } from "./protocol/generated/protocol";
 import { finishedLabel, folderLabel, importNotice, importPercent, newerJob, sourceSummary, timeLeft } from "./moveToBridge";
 
-const source = (counts: Partial<DetectedImportSource["counts"]>, installed = true): DetectedImportSource => ({
-  tool: "claude_code", label: "Claude Code", installed, supported: true, roots: [], note: null,
+const source = (counts: Partial<DetectedImportSource["counts"]>, installed = true, roots: string[] = []): DetectedImportSource => ({
+  tool: "claude_code", label: "Claude Code", installed, supported: true, roots, note: null,
   counts: { chats: 0, projects: 0, workspaces: 0, memories: 0, setup: 0, background: 0, ...counts },
 });
 
@@ -21,6 +21,12 @@ describe("Move to Bridge logic", () => {
     expect(sourceSummary(source({ projects: 2, workspaces: 5 }))).toBe("5 workspaces in 2 repos");
     expect(sourceSummary(source({}))).toBe("Found, but nothing to bring over yet");
     expect(sourceSummary(source({ chats: 9 }, false))).toBe("Not found on this Mac");
+  });
+
+  it("says when a tool's chats come from more than one folder, as with an account in Settings", () => {
+    expect(sourceSummary(source({ chats: 305, projects: 4, setup: 1 }, true, ["/Users/you/.claude", "/Users/you/.claude_work"]))).toBe("305 chats in 4 projects · from 2 folders · 1 setup item");
+    expect(sourceSummary(source({ chats: 3, projects: 1 }, true, ["/Users/you/.claude"]))).toBe("3 chats in 1 project");
+    expect(sourceSummary({ ...source({ projects: 2, workspaces: 5 }, true, ["/a", "/b"]), supported: false })).toBe("5 workspaces in 2 repos");
   });
 
   it("shortens folders to their last two segments", () => {
@@ -56,6 +62,8 @@ describe("Move to Bridge logic", () => {
       .toEqual({ title: "Import finished", body: "33,019 items came over from Claude Code, 12 already in Bridge. 2 could not be imported.", failed: false });
     expect(importNotice(job({ status: "done", imported: 0, alreadyInBridge: 608 })).body).toBe("Nothing new came over from Claude Code. 608 already in Bridge.");
     expect(importNotice(job({ status: "done", imported: 1 })).body).toBe("1 item came over from Claude Code.");
+    expect(importNotice(job({ status: "done", imported: 5, workspaces: 2, alreadyInBridge: 1 }), "T3 Code").body).toBe("5 items and 2 workspaces came over from T3 Code, 1 already in Bridge.");
+    expect(importNotice(job({ status: "done", imported: 0, workspaces: 1 }), "T3 Code").body).toBe("1 workspace came over from T3 Code.");
     expect(importNotice(job({ status: "failed", errors: ["Claude Code was not found on this Mac"] })))
       .toEqual({ title: "Import stopped", body: "Claude Code was not found on this Mac", failed: true });
   });

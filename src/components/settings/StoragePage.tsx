@@ -22,9 +22,10 @@ import { cleanupTotal, diskBytes, displayPath, storageSnapshot, withSnapshot, ty
 import { StorageAgentContext, type StorageAgentHost } from "../StoragePlanCard";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogTitle } from "../ui/dialog";
-import { GhostButton, PrimaryButton, StatusPill, TextButton } from "./kit";
+import { GhostButton, PrimaryButton, SETTINGS_COLUMN_WIDE, StatusPill, TextButton } from "./kit";
 import type { StorageCopilotHost } from "./StorageCopilot";
 import { WorktreeStorage } from "./WorktreeStorage";
+import { PAGES } from "./sections";
 
 const POLL_MS = 1500;
 
@@ -525,7 +526,7 @@ function OutcomeToast({ outcome, busy, onEmptyTrash, onDismiss }: { outcome: Out
 const VISIT_REFRESH_MS = 60_000;
 let lastVisitRefresh = 0;
 
-export function StoragePage({ onError, title = "Storage", extra, copilot }: {
+export function StoragePage({ onError, title = PAGES.data.label, extra, copilot }: {
   onError?: (message: string) => void;
   title?: string;
   extra?: ReactNode;
@@ -693,7 +694,7 @@ export function StoragePage({ onError, title = "Storage", extra, copilot }: {
     reply: text => { ask(text); },
   };
 
-  return <div data-settings-column className="@container/settings mx-auto w-full max-w-page-wide px-5 pb-16 pt-6 sm:px-8">
+  return <div data-settings-column className={cn("@container/settings", SETTINGS_COLUMN_WIDE)}>
     <div
       ref={gridRef}
       // The rail column takes the dragged width, but never less than RAIL_MIN
@@ -706,7 +707,6 @@ export function StoragePage({ onError, title = "Storage", extra, copilot }: {
         <header className="flex flex-wrap items-end gap-x-4 gap-y-1">
           <div className="min-w-0 flex-1">
             <h2 className="font-display text-title font-semibold leading-tight tracking-tight text-foreground">{title}</h2>
-            <p className="mt-1 text-ui leading-relaxed text-muted-foreground">What is using space on this Mac, and what you can let go of. Deleting moves to the Trash first.</p>
           </div>
           {measuring && overview && <span role="status" className="flex items-center gap-1.5 pb-0.5 text-caption text-muted-foreground">
             <LoaderCircle size={12} aria-hidden="true" className="animate-spin" />Updating sizes

@@ -4,7 +4,7 @@ import { harnessLabel } from "../utils";
 import { harnessChartFill } from "./harnessMarks";
 import { formatPercent, formatPeriodLabel, formatTokens, formatUsd } from "../usageReport";
 import { flowBandPath, flowLayout, harnessesByMetric, harnessValue, modelsOf, modelValue, spreadLabels, stackColumns, type FlowNode } from "../usageGeometry";
-import { AxisLabels, EstimateMark, EYEBROW, formatMetric, HeroCaption, KIND_SHADE, LAYOUT_CARD, PartialBadge, periodNoun, type UsageLayoutProps } from "./UsageLayoutParts";
+import { AxisLabels, EstimateMark, EYEBROW, formatMetric, HeroCaption, KIND_SHADE, LAYOUT_CARD, periodNoun, type UsageLayoutProps } from "./UsageLayoutParts";
 
 // Layout C: where the tokens go. Bands run harness → model → token kind, so
 // the dominant fact of most histories (nearly everything is a cache read)
@@ -29,7 +29,7 @@ function Leader({ x, from, to, side }: { x: number; from: number; to: number; si
   return <path d={`M${x},${from} L${x + reach},${to}`} className="fill-none stroke-muted-foreground/40" strokeWidth={1} />;
 }
 
-export function UsageFlow({ report, window, metric, partial }: UsageLayoutProps) {
+export function UsageFlow({ report, window, metric }: UsageLayoutProps) {
   const format = formatMetric(metric);
   // The drawing grows with the number of labels it has to carry, so a long
   // model list or many harnesses never stack their labels on top of each other.
@@ -60,7 +60,6 @@ export function UsageFlow({ report, window, metric, partial }: UsageLayoutProps)
 
   return <div className="space-y-6">
     <section aria-label="Summary">
-      <PartialBadge label={partial} className="mb-4" />
       {empty ? <h2 className="text-[2rem] font-normal leading-tight tracking-[-0.03em] text-foreground">No activity in this window.</h2> : metric === "tokens"
         ? <h2 className="max-w-3xl text-[2rem] font-normal leading-tight tracking-[-0.03em] text-foreground">{formatPercent(cacheShare, 0)} of what you processed was a cache read. <span className="text-muted-foreground">Here is where the other {formatTokens(processed - report.totals.cacheReadTokens)} went.</span></h2>
         : <h2 className="max-w-3xl text-[2rem] font-normal leading-tight tracking-[-0.03em] text-foreground">{harnessLabel(lead!.harness)} carried {formatPercent(leadShare, 0)} of the cost. <span className="text-muted-foreground">Here is how it splits by model.</span></h2>}
@@ -114,7 +113,7 @@ export function UsageFlow({ report, window, metric, partial }: UsageLayoutProps)
           </g>);
         })()}
       </svg>
-      {metric === "cost" && <p className="mt-3 text-caption text-muted-foreground">Cost is recorded per model, not per token kind, so this view stops at the model. Switch to Tokens to follow each token to cache, input, or output.</p>}
+      {metric === "cost" && <p className="mt-3 text-caption text-muted-foreground">Switch to Tokens to see token kinds.</p>}
 
       <div className="mt-5 border-t border-border pt-4">
         <div className="mb-2.5 flex items-center justify-between">

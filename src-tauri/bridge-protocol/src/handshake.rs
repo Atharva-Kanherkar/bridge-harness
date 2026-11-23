@@ -173,13 +173,31 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// `sessions/create_configured_chat`. A 1.45 client still pairs: it never
 /// sends the field.
 ///
-/// **1.47 adds the early compaction switch**:
+/// **1.47 adds Screen Time**: `usage/record_presence` and
+/// `usage/screen_time`. A 1.46 client still pairs: it never calls them.
+///
+/// **1.48 adds binary terminal input**: an optional `binary` on
+/// `terminal/write_terminal`, for xterm's X10 mouse reports. A 1.48 client
+/// always sends the field, so it must not pair with a 1.47 daemon, which
+/// would refuse it as unknown on every keystroke; a 1.47 client still pairs
+/// with a 1.48 daemon.
+///
+/// **1.49 adds chat-scoped changes**: `workspaces/session_changes`. A 1.48
+/// client still pairs: it never calls it.
+///
+/// **1.50 adds the reviews domain**: `reviews/*` methods and the
+/// `reviews/job_updated` notification. Review job settings are their own
+/// record, so `ReviewerSettings` keeps its 1.49 shape. A 1.49 client still
+/// pairs: it never calls `reviews/*`, and every response it can ask for
+/// decodes as before.
+///
+/// **1.51 adds the early compaction switch**:
 /// `config/get_early_compaction_settings` and
-/// `config/save_early_compaction_settings`. A 1.46 client still pairs: it
+/// `config/save_early_compaction_settings`. A 1.50 client still pairs: it
 /// never calls them.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 47,
+    minor: 51,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -510,12 +528,44 @@ mod tests {
     }
 
     #[test]
-    fn early_compaction_client_rejects_a_daemon_without_it() {
+    fn a_1_46_client_pairs_with_a_1_47_daemon() {
         let before = ProtocolVersion { major: 1, minor: 46 };
-        let early = ProtocolVersion { major: 1, minor: 47 };
+        let screen_time = ProtocolVersion { major: 1, minor: 47 };
+        assert!(screen_time.accepts(before), "a 1.46 client still pairs with a 1.47 daemon");
+        assert!(!before.accepts(screen_time), "a 1.47 client needs the Screen Time methods");
+    }
+
+    #[test]
+    fn a_binary_input_client_rejects_a_daemon_that_refuses_the_field() {
+        let before = ProtocolVersion { major: 1, minor: 47 };
+        let binary = ProtocolVersion { major: 1, minor: 48 };
+        assert!(binary.accepts(before), "a 1.47 client still pairs with a 1.48 daemon");
+        assert!(!before.accepts(binary), "a 1.48 client sends `binary` on every terminal write");
+    }
+
+    #[test]
+    fn a_1_48_client_pairs_with_a_chat_changes_daemon() {
+        let before = ProtocolVersion { major: 1, minor: 48 };
+        let chat_changes = ProtocolVersion { major: 1, minor: 49 };
+        assert!(chat_changes.accepts(before), "a 1.48 client never calls session_changes");
+        assert!(!before.accepts(chat_changes), "a 1.49 client needs session_changes");
+    }
+
+    #[test]
+    fn a_1_49_client_pairs_with_a_reviews_daemon() {
+        let before = ProtocolVersion { major: 1, minor: 49 };
+        let reviews = ProtocolVersion { major: 1, minor: 50 };
+        assert!(reviews.accepts(before), "a 1.49 client never calls reviews/*");
+        assert!(!before.accepts(reviews), "a 1.50 client needs the reviews domain");
+    }
+
+    #[test]
+    fn early_compaction_client_rejects_a_daemon_without_it() {
+        let before = ProtocolVersion { major: 1, minor: 50 };
+        let early = ProtocolVersion { major: 1, minor: 51 };
         assert_eq!(PROTOCOL_VERSION, early);
-        assert!(!before.accepts(early), "a 1.47 client needs the switch methods");
-        assert!(early.accepts(before), "a 1.46 client still pairs with a 1.47 daemon");
+        assert!(!before.accepts(early), "a 1.51 client needs the switch methods");
+        assert!(early.accepts(before), "a 1.50 client still pairs with a 1.51 daemon");
         assert!(PROTOCOL_VERSION.accepts(before));
     }
 

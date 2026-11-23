@@ -20,8 +20,9 @@ import { ManagedAgentDetail, ManagedAgentRows, type ManagedAgents } from "../Man
 import { OpenCodeHarnessSettings, type OpenCodeAdvancedSettings } from "../OpenCodeHarnessSettings";
 import { accountsOf, supportsAccounts } from "../../providerAccounts";
 import { ProviderAccountsSettings } from "./ProviderAccountsSettings";
+import { PAGES } from "./sections";
 import {
-  Field, SaveBar, Select, SettingsBlockRow, SettingsGroup, SettingsPage, SettingsRow, StatusPill,
+  Field, SaveBar, Select, SettingsBlockRow, SettingsFold, SettingsGroup, SettingsPage, SettingsRow, StatusPill,
   Switch, TextArea, TextButton, useSavedFlash,
 } from "./kit";
 
@@ -58,15 +59,16 @@ export function HarnessesPage(props: Shared & {
   detailId: string | null;
   onOpenDetail: (id: string) => void;
   onCloseDetail: () => void;
-  preferences?: ReactNode;
+  /** Settings for every coding agent at once, drawn on the list under the agents. */
+  extra?: ReactNode;
 }) {
-  const { harnesses, managed, adapters, detailId, onOpenDetail, onCloseDetail, onAuthenticationChanged } = props;
+  const { harnesses, managed, adapters, detailId, onOpenDetail, onCloseDetail, onAuthenticationChanged, extra } = props;
   const detail = detailId ? harnesses.find(item => item.id === detailId) : undefined;
   if (detail) return <HarnessDetail {...props} harness={detail} onBack={onCloseDetail} />;
 
   const bridge = harnesses.find(item => item.id === "bridge");
   return <SettingsPage
-    title="Coding agents"
+    title={PAGES.codingAgents.label}
     description="Use coding agents already on your computer, or let Bridge install a separate copy. Open an agent to manage sign-in and defaults for new chats."
   >
     <ManagedAgentRows state={managed} adapters={adapters} onOpen={onOpenDetail} onAuthenticationChanged={onAuthenticationChanged} />
@@ -79,8 +81,8 @@ export function HarnessesPage(props: Shared & {
           control={<StatusPill tone={adapter?.available ? "success" : "neutral"}>{adapter?.available ? "Available" : "Unavailable"}</StatusPill>} />
       </SettingsGroup>;
     })}
-    {props.preferences}
-    {bridge && <details className="text-ui"><summary className="cursor-pointer text-muted-foreground">Advanced Bridge defaults</summary><div className="mt-3"><SettingsGroup label="Defaults" note="Bridge's own routing">
+    {extra}
+    {bridge && <SettingsFold><SettingsGroup label="Bridge defaults" note="Bridge's own routing">
       <SettingsRow
         lead={<HarnessMark harness="bridge" size={14} />}
         label={bridge.label}
@@ -89,7 +91,7 @@ export function HarnessesPage(props: Shared & {
         onOpen={() => onOpenDetail("bridge")}
         control={<StatusPill tone="success">Always on</StatusPill>}
       />
-    </SettingsGroup></div></details>}
+    </SettingsGroup></SettingsFold>}
     {managed.confirmation}
   </SettingsPage>;
 }

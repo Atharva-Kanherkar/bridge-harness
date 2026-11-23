@@ -30,7 +30,7 @@ it("keeps the saved setting visible until the backend confirms a change", async 
   expect(toggle().disabled).toBe(true);
   await act(async () => finish({ ...settings, enabled: false }));
   expect(toggle().getAttribute("aria-checked")).toBe("false");
-  expect(container.querySelector('[role="status"]')?.textContent).toContain("saved");
+  expect(container.querySelector('[role="status"]')?.textContent).toBe("Saved");
 });
 
 it("retains stored settings and reports a failed save", async () => {

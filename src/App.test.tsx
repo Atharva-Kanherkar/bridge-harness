@@ -3,32 +3,45 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 // xterm paints to canvas, which jsdom lacks; the pane's own suite covers the
 // terminal wiring, and here it only needs to mount.
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     options: Record<string, unknown> = {};
+    unicode = { activeVersion: "" };
+    modes = { bracketedPasteMode: false };
+    cols = 80;
+    rows = 24;
     open() {}
     loadAddon() {}
     dispose() {}
     onData() { return { dispose() {} }; }
-    write() {}
+    onBinary() { return { dispose() {} }; }
+    attachCustomKeyEventHandler() {}
+    write(_data: string, done?: () => void) { done?.(); }
     writeln() {}
+    reset() {}
+    resize() {}
+    focus() {}
+    blur() {}
+    hasSelection() { return false; }
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+// The WebGL renderer draws a canvas at import; jsdom has none.
+vi.mock("@xterm/addon-webgl", () => ({ WebglAddon: class { onContextLoss() { return { dispose() {} }; } dispose() {} } }));
 
-// Spy on the greeting picker without changing its behaviour, so a test can
-// assert what the welcome hero feeds it (the owning project name, not the
-// workspace title) regardless of which line the picker lands on.
+// Spy on the headline without changing its behaviour, so a test can assert
+// what the welcome hero feeds it (the owning project name, not the workspace
+// title).
 vi.mock("./greetings", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./greetings")>();
-  return { ...actual, pickGreeting: vi.fn(actual.pickGreeting) };
+  return { ...actual, welcomeHeadline: vi.fn(actual.welcomeHeadline) };
 });
 
 import { App, ChatModelControl } from "./App";
-import { pickGreeting } from "./greetings";
+import { welcomeHeadline } from "./greetings";
 // Pre-resolve the lazy pane chunks so Suspense settles inside act().
 import "./components/TerminalPane";
 import "./components/CodePanel";
@@ -188,12 +201,13 @@ const openFromLauncher = async (name: string) => {
   await click(option);
 };
 
-/** Open a workspace session identified by its dirty-file pill ("4 files" is
- * demo-1, "7 files" is demo-2 in the mock state). */
+/** Open a workspace session identified by its Review pill. The pill counts
+ * the chat's own changes: in the browser mock, demo-1's chats own "2 files"
+ * and demo-2's own "1 file" (see `mockSessionChanges`). */
 async function openWorkspaceSession(pill: string) {
   for (const row of chatRows()) {
     await click(row);
-    if (container.textContent?.includes(pill)) return;
+    if (container.querySelector(`button[aria-label="Review this chat's changes in ${pill}"]`)) return;
   }
   throw new Error(`no session showed "${pill}"`);
 }
@@ -229,17 +243,18 @@ describe("the dock in the session view", () => {
   // The mock state's workspace ("Build session supervisor") sits under a project
   // named "Bridge"; the hero must name the project, not the workspace's own title.
   it("feeds the welcome hero its owning project name, not the workspace title", async () => {
-    vi.mocked(pickGreeting).mockClear();
+    vi.mocked(welcomeHeadline).mockClear();
     // Select the mock workspace ("Build session supervisor", project "Bridge")
     // as the welcome target, the way returning to a repo would.
     localStorage.setItem("bridge.chat.lastWorkspaceId", "demo-1");
     await mountApp();
-    const welcomeCalls = vi.mocked(pickGreeting).mock.calls.filter(args => args[0] === "welcome");
+    const welcomeCalls = vi.mocked(welcomeHeadline).mock.calls;
     expect(welcomeCalls.length).toBeGreaterThan(0);
     // Once the workspace resolves, the hero is fed the owning project ("Bridge").
-    expect(welcomeCalls.at(-1)?.[1]).toBe("Bridge");
+    expect(welcomeCalls.at(-1)?.[0]).toBe("Bridge");
+    expect(container.querySelector("h1")?.textContent).toBe("What should we build in Bridge?");
     // And it is never fed the workspace's own title, on any render.
-    expect(welcomeCalls.some(args => args[1] === "Build session supervisor")).toBe(false);
+    expect(welcomeCalls.some(args => args[0] === "Build session supervisor")).toBe(false);
   });
 
   it("services a tray refresh without raising the app or opening an in-app meter", async () => {
@@ -287,7 +302,7 @@ describe("the dock in the session view", () => {
 
   it("keeps the conversation and an open pane on screen together, with the composer usable", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
 
     const toolbar = container.querySelector("h1")!.parentElement!;
     expect(toolbar.querySelector('[role="tablist"]')).toBeNull();
@@ -304,14 +319,14 @@ describe("the dock in the session view", () => {
 
   it("keys dock state to the workspace", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     await click(dockToggle()!);
     expect(dockToggle()!.getAttribute("aria-pressed")).toBe("true");
 
-    await openWorkspaceSession("7 files");
+    await openWorkspaceSession("1 file");
     expect(dockToggle()!.getAttribute("aria-pressed")).toBe("false");
 
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     expect(dockToggle()!.getAttribute("aria-pressed")).toBe("true");
   });
 
@@ -331,7 +346,7 @@ describe("the dock in the session view", () => {
 
   it("conceals the dock in fullscreen without destroying it", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     await click(dockToggle()!);
     const bodyBefore = container.querySelector('aside[aria-label="Dock"] .h-full > *');
     expect(bodyBefore).not.toBeNull();
@@ -346,7 +361,7 @@ describe("the dock in the session view", () => {
 
   it("renders the open dock as a sheet below the split threshold", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     await click(dockToggle()!);
     expect(container.querySelector('[aria-label="Resize dock"]')).not.toBeNull();
 
@@ -360,7 +375,7 @@ describe("the dock in the session view", () => {
 
   it("answers the dock chords", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
 
     await key({ ...chord, code: "Enter", key: "Enter" });
     expect(container.querySelector('button[aria-label="Restore dock"]')).toBeNull();
@@ -384,7 +399,8 @@ describe("the dock in the session view", () => {
   // Contract: testing/feat-dock-changes.md §5.
   it("quotes a file and a hunk from the diff into the composer", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await // policy.rs is one of demo-2's own changes in the browser mock.
+    await openWorkspaceSession("1 file");
     await key({ ...chord, code: "Digit1", key: "1" });
     await settle(3);
 
@@ -402,7 +418,8 @@ describe("the dock in the session view", () => {
 
   it("opens a file from the diff in the Code pane", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await // policy.rs is one of demo-2's own changes in the browser mock.
+    await openWorkspaceSession("1 file");
     await key({ ...chord, code: "Digit1", key: "1" });
     await settle(3);
 
@@ -419,7 +436,7 @@ describe("the dock in the session view", () => {
     resetMockApps();
     resetAppsStore();
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     await key({ ...chord, code: "Digit2", key: "2" });
     await settle(3);
     const codeTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Code")!;
@@ -465,7 +482,7 @@ describe("the dock in the session view", () => {
   // Contract: testing/feat-dock-code.md §4.
   it("turns a sent mention into a live link back into the editor", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
 
     const textarea = composer()!;
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
@@ -487,10 +504,47 @@ describe("the dock in the session view", () => {
     expect([...container.querySelectorAll("button[title]")].some(node => node.getAttribute("title") === "src/App.tsx")).toBe(true);
   });
 
+  // Contract: testing/feat-t3-inspired-chat-ui.md §H.
+  it("lists @ files name first, marks the ones this chat changed, and inserts the picked path unchanged", async () => {
+    // jsdom has no scrollIntoView; the menu keeps its active row in view with it.
+    const scrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = () => undefined;
+    onTestFinished(() => { Element.prototype.scrollIntoView = scrollIntoView; });
+    await mountApp();
+    await openWorkspaceSession("2 files");
+
+    const textarea = composer()!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(textarea, "check @to");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle(2);
+
+    const listbox = container.querySelector<HTMLElement>("#file-mention-listbox")!;
+    expect(listbox.textContent).toContain("matching “to”");
+    expect(textarea.getAttribute("aria-controls")).toBe("file-mention-listbox");
+    // The mock chat edited src/auth/tokenStore.ts in its stored history.
+    const option = [...listbox.querySelectorAll<HTMLElement>('[role="option"]')].find(row => row.title === "src/auth/tokenStore.ts")!;
+    expect(option.querySelector("[data-mention-name]")!.textContent).toBe("tokenStore.ts");
+    expect([...option.querySelectorAll("[data-mention-name] mark")].map(mark => mark.textContent)).toEqual(["to"]);
+    expect(option.querySelector("[data-mention-folder]")!.textContent).toBe("src/auth");
+    expect(option.querySelector("[data-mention-change]")!.textContent).toBe("M");
+    expect(listbox.textContent).toContain("changed in this chat");
+    expect(listbox.lastElementChild!.textContent).toBe("↵Insert#agents/commands$provider");
+
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    await settle(1);
+    expect(composer()!.value).toBe("check @src/auth/tokenStore.ts ");
+    expect(container.querySelector("#file-mention-listbox")).toBeNull();
+  });
+
   // Contract: testing/feat-dock-transcript.md §4.
   it("opens the transcript with the session's replayed events, in repo sessions and direct chats", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     await key({ ...chord, code: "Digit5", key: "5" });
     await settle(3);
     expect(container.textContent).toContain("tool.started");
@@ -513,7 +567,7 @@ describe("the dock in the session view", () => {
       scrolled.push((this as HTMLElement).id);
     };
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     await key({ ...chord, code: "Digit5", key: "5" });
     await settle(3);
     const entriesTab = [...dockAside()!.querySelectorAll("button")].find(button => button.textContent === "entries")!;
@@ -544,7 +598,7 @@ describe("the dock in the session view", () => {
   // Contract: testing/feat-dock-browser.md §3.
   it("opens the browser pane from the toolbar menu and keeps it across pane switches", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     await click(container.querySelector('button[aria-label="Session actions"]')!);
     const item = [...document.querySelectorAll('[role="menu"] [role="menuitemcheckbox"]')].find(node => node.textContent?.includes("Browser"))!;
     await click(item);
@@ -586,7 +640,7 @@ describe("the dock in the session view", () => {
   // Contract: testing/feat-plain-browser-only.md. Browser clones are off.
   it("shows the plain browser in the Browser pane and keeps it across pane switches", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     await click(container.querySelector('button[aria-label="Session actions"]')!);
     const item = [...document.querySelectorAll('[role="menu"] [role="menuitemcheckbox"]')].find(node => node.textContent?.startsWith("Browser"))!;
     await click(item);
@@ -623,7 +677,7 @@ describe("the dock in the session view", () => {
 
   it("never marks the Browser tab for attention and mounts no clone request card", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     await click(dockToggle()!);
     await key({ ...chord, code: "Digit4", key: "4" });
     await settle(3);
@@ -635,7 +689,7 @@ describe("the dock in the session view", () => {
   // Contract: testing/feat-dock-terminal.md §4.
   it("opens the multi-shell terminal pane on the third chord", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     await key({ ...chord, code: "Digit3", key: "3" });
     await settle(4);
     if (!dockAside()!.querySelector('button[aria-label="New shell"]')) {
@@ -644,20 +698,21 @@ describe("the dock in the session view", () => {
       console.log("PANE HTML:", html.slice(at, at + 700));
     }
     expect(dockAside()!.querySelector('button[aria-label="New shell"]')).not.toBeNull();
-    expect(dockAside()!.textContent).toContain("MB scrollback");
+    expect(dockAside()!.textContent).toContain("lines scrollback");
   });
 
   // Contract: testing/feat-dock-tasks.md §4.
   it("opens the agents pane on the sixth chord with only what is running", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     await key({ ...chord, code: "Digit6", key: "6" });
     await settle(3);
     const dock = dockAside()!;
     expect(dock.textContent).toContain(agentName("session-1w"));
     expect(dock.textContent).toContain("Implementation");
     expect(dock.textContent).toContain("Refactor the auth module to use the new token store");
-    expect(dock.textContent).toContain("WORKING");
+    // The lineage writes states in sentence case.
+    expect(dock.textContent).toContain("Working");
     // The finished verification worker is the chat's history, not a running agent.
     expect(dock.textContent).not.toContain("Verification");
     expect(dock.textContent).toContain("Update the auth serializer");
@@ -666,7 +721,7 @@ describe("the dock in the session view", () => {
 
   it("carries the running count on the agents descriptor before the pane ever mounts", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     await click(dockToggle()!);
     const agentsTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Agents")!;
     expect(agentsTab.textContent).toContain("1");
@@ -674,7 +729,7 @@ describe("the dock in the session view", () => {
 
   it("mounts the context ring beside a worker's steer composer", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     await click(dockToggle()!);
     await key({ ...chord, code: "Digit6", key: "6" });
     await settle(3);
@@ -689,6 +744,56 @@ describe("the dock in the session view", () => {
     expect(container.querySelector('[aria-label^="Context window"]')).not.toBeNull();
   });
 
+  it("keeps a full-page harness child view read-only instead of offering a worker steer", async () => {
+    const real = await bridgeApi.state();
+    const spy = vi.spyOn(bridgeApi,"state").mockResolvedValue({ ...real, sessions: real.sessions.map(item => item.id === "session-1w" ? { ...item, kind: "harness_subagent" } : item) });
+    try {
+      await mountApp();
+      await openWorkspaceSession("2 files");
+      await click(dockToggle()!);
+      await key({ ...chord, code: "Digit6", key: "6" });
+      await settle(3);
+      await click(dockAside()!.querySelector<HTMLButtonElement>(`button[aria-label="View ${agentName("session-1w")}"]`)!);
+      await click(dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="Open session"]')!);
+      expect(container.textContent).toContain("Not a Bridge worker.");
+      expect(container.textContent).not.toContain("This is a background worker.");
+      expect(container.querySelector("textarea")).toBeNull();
+    } finally { spy.mockRestore(); }
+  });
+
+  it("offers Stop on a full-page harness child that is waiting for an approval", async () => {
+    const real = await bridgeApi.state();
+    // A Claude child carries no turn id, so waiting is its only live signal.
+    const spy = vi.spyOn(bridgeApi,"state").mockResolvedValue({ ...real, sessions: real.sessions.map(item => item.id === "session-1w" ? { ...item, kind: "harness_subagent", status: "waiting", activeTurnId: null } : item) });
+    const stop = vi.spyOn(bridgeApi,"stopSession").mockResolvedValue(real);
+    try {
+      await mountApp();
+      await openWorkspaceSession("2 files");
+      await click(dockToggle()!);
+      await key({ ...chord, code: "Digit6", key: "6" });
+      await settle(3);
+      await click(dockAside()!.querySelector<HTMLButtonElement>(`button[aria-label="View ${agentName("session-1w")}"]`)!);
+      await click(dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="Open session"]')!);
+      const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent === "Stop subagent");
+      expect(button).toBeDefined();
+      await click(button!);
+      expect(stop).toHaveBeenCalledWith("session-1w");
+    } finally { spy.mockRestore(); stop.mockRestore(); }
+  });
+
+  it("the parent composer Stop preserves harness subagents", async () => {
+    const real=await bridgeApi.state();
+    const state=vi.spyOn(bridgeApi,"state").mockResolvedValue({ ...real,sessions:real.sessions.map(item=>item.id==="session-1w"?{...item,kind:"harness_subagent"}:item) });
+    const stop=vi.spyOn(bridgeApi,"stopSession").mockResolvedValue(real);
+    const interrupt=vi.spyOn(bridgeApi,"interruptTurn").mockResolvedValue();
+    try {
+      await mountApp();await openWorkspaceSession("2 files");
+      await click(container.querySelector<HTMLButtonElement>('button[aria-label="Stop"]')!);
+      expect(interrupt).toHaveBeenCalledWith("session-1");
+      expect(stop).not.toHaveBeenCalledWith("session-1w");
+    } finally {state.mockRestore();stop.mockRestore();interrupt.mockRestore();}
+  });
+
   it("keeps the usage dot out of the title bar", async () => {
     await mountApp();
     expect(container.querySelector("header")).not.toBeNull();
@@ -697,7 +802,7 @@ describe("the dock in the session view", () => {
 
   it("puts the context ring in the composer and the usage dot in the sidebar rail", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     const ring = container.querySelector<HTMLButtonElement>('[data-composer-frame] [aria-label^="Context window"]');
     expect(ring).not.toBeNull();
     expect(container.querySelector('[data-composer-frame] [aria-label^="Open usage"]')).toBeNull();
@@ -709,7 +814,7 @@ describe("the dock in the session view", () => {
 
   it("opens the Context lens as a modal from the composer ring, not in the dock", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     await click(container.querySelector<HTMLButtonElement>('[data-composer-frame] [aria-label^="Context window"]')!);
     await settle(3);
     const lens = document.body.querySelector<HTMLElement>('[role="dialog"][aria-label="Context lens"]');
@@ -723,7 +828,7 @@ describe("the dock in the session view", () => {
 
   it("lets Escape restore an expanded pane before it leaves fullscreen", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     await key({ ...chord, code: "Digit0", key: "0" });
     await key({ ...chord, code: "Enter", key: "Enter" });
     expect(container.querySelector('button[aria-label="Restore dock"]')).not.toBeNull();
@@ -751,14 +856,14 @@ describe("the dock in the session view", () => {
 
   it("collapses to one chrome row on the session view — no second AppTitleBar strip", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     expect(appTitleBar()).toBeNull();
     expect(container.querySelector('button[aria-label="Toggle dock"]')).not.toBeNull();
   });
 
   it("carries the model picker only in the composer, not the toolbar", async () => {
     await mountApp();
-    await openWorkspaceSession("7 files");
+    await openWorkspaceSession("1 file");
     // The toolbar no longer duplicates the composer's model control; the sole
     // picker lives below and opens upward, into the view.
     const pickers = [...container.querySelectorAll<HTMLButtonElement>('button[aria-label*="model:"]')];
@@ -774,7 +879,7 @@ describe("the dock in the session view", () => {
   // conversation, which stays selected and untouched underneath.
   it("opens a $harness shortcut as an aside over the current chat", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     const titleBefore = container.querySelector("h1")!.textContent;
     const box = composer()!;
     await act(async () => {
@@ -803,7 +908,7 @@ describe("the dock in the session view", () => {
 
   it("rejects an unknown $harness inside a chat and preserves the draft", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     const box = composer()!;
     const createAside = vi.spyOn(bridgeApi, "createAsideChat");
     const prepareTurn = vi.spyOn(bridgeApi, "prepareTurn");
@@ -859,7 +964,7 @@ describe("the dock in the session view", () => {
   // side chat's own model through update_chat_model, never the chat underneath.
   it("switches the side chat's model through update_chat_model on the aside session", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     const box = composer()!;
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
@@ -886,7 +991,7 @@ describe("the dock in the session view", () => {
   // and the turn is delivered to the aside session, never to the parent.
   it("opens /btw as a side chat that reads the parent and never writes to it", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     const titleBefore = container.querySelector("h1")!.textContent;
     const createSpy = vi.spyOn(bridgeApi, "createAsideChat");
     const submitSpy = vi.spyOn(bridgeApi, "submitInput");
@@ -916,7 +1021,7 @@ describe("the dock in the session view", () => {
 
   it("treats /side as the same side-chat command", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     const box = composer()!;
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
@@ -931,7 +1036,7 @@ describe("the dock in the session view", () => {
 
   it("answers a bare /btw with guidance instead of opening an empty aside", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     const box = composer()!;
     // A refused ask costs nothing: the image stays on the composer with the
     // draft, because it was never handed to an aside.
@@ -963,7 +1068,7 @@ describe("the dock in the session view", () => {
   // excerpt quoted as its first message — the parent conversation untouched.
   it("offers Ask aside on a transcript selection and quotes the excerpt", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     // Earlier cases leave this a new chat, whose transcript is only its
     // greeting now that the session-start marker draws no card. Send one
     // message so there is transcript prose to select.
@@ -1004,7 +1109,7 @@ describe("the dock in the session view", () => {
   // its own, so a selection anchored outside the transcript must not raise it.
   it("does not offer Ask aside for selections outside the transcript", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     const title = [...container.querySelectorAll("h1, h2")].find(node => (node.textContent ?? "").trim().length > 3);
     expect(title).toBeTruthy();
     const range = document.createRange();
@@ -1023,7 +1128,7 @@ describe("the dock in the session view", () => {
   // clean.
   it("carries composer attachments with the /btw side chat's first message", async () => {
     await mountApp();
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     const box = composer()!;
     const file = new File(["fake-image-bytes"], "side.png", { type: "image/png" });
     const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
@@ -1083,9 +1188,28 @@ describe("the dock in the session view", () => {
 
   it("keeps AppTitleBar unchanged on every other view", async () => {
     await mountApp();
-    await click(container.querySelector<HTMLButtonElement>('button[title^="Open settings"]')!);
+    await click(container.querySelector<HTMLButtonElement>('nav[aria-label="Main navigation"] button[aria-label^="Apps"]')!);
+    await click(document.body.querySelector<HTMLElement>('[role="option"][aria-label^="Mission Control"]')!);
     expect(appTitleBar()).not.toBeNull();
     expect(container.querySelector('button[aria-label="Toggle dock"]')).toBeNull();
+  });
+
+  it("gives Settings the sidebar's place and returns from its Back row", async () => {
+    await mountApp();
+    await click(container.querySelector<HTMLButtonElement>('button[title^="Open settings"]')!);
+    // The settings screen is a lazy chunk.
+    for (let round = 0; round < 100 && !container.querySelector('nav[aria-label="Settings"]'); round++) {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+    }
+    // One navigation column: the chat sidebar steps aside for the settings rail.
+    expect(container.querySelector('nav[aria-label="Settings"]')).not.toBeNull();
+    expect(container.querySelector('nav[aria-label="Main navigation"]')?.closest(".hidden")).not.toBeNull();
+    expect(appTitleBar()).toBeNull();
+    const back = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Back to app")!;
+    await click(back);
+    await settle(4);
+    expect(container.querySelector('nav[aria-label="Settings"]')).toBeNull();
+    expect(container.querySelector('nav[aria-label="Main navigation"]')?.closest(".hidden")).toBeNull();
   });
 
   // #457 / #458: the screens stay in the tree, but nothing in the mounted
@@ -1109,7 +1233,7 @@ describe("the dock in the session view", () => {
     expect(namedControls(container), "welcome chrome").toEqual([]);
     expect(container.querySelector("h1")?.textContent).not.toMatch(hiddenNav);
 
-    await openWorkspaceSession("4 files");
+    await openWorkspaceSession("2 files");
     expect(namedControls(container), "session chrome").toEqual([]);
     expect(container.querySelector("h1")?.textContent).not.toMatch(hiddenNav);
 
@@ -1124,7 +1248,7 @@ describe("the dock in the session view", () => {
     // Open the demo orchestrator; its transcript carries entry-bearing
     // messages, so the hover actions exist in the DOM even before a hover
     // reveals them.
-    await openWorkspaceSession("4");
+    await openWorkspaceSession("2 files");
     // The transcript projects from the fetched forest; let the effects land.
     await settle(8);
     // Earlier tests mutate the shared mock (extra orchestrators, fresh
@@ -1154,7 +1278,7 @@ describe("the dock in the session view", () => {
 
   it("renders a pasted session reference as a chip that says history attaches on send, and removes it on ×", async () => {
     await mountApp();
-    await openWorkspaceSession("4");
+    await openWorkspaceSession("2 files");
     await settle(6);
     const textarea = composer()!;
     await act(async () => {
@@ -1187,7 +1311,7 @@ describe("the dock in the session view", () => {
 
   it("copies the alias and mentions a chat from the row's three-dot menu", async () => {
     await mountApp();
-    await openWorkspaceSession("4");
+    await openWorkspaceSession("2 files");
     await settle(6);
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
@@ -1220,7 +1344,7 @@ describe("the dock in the session view", () => {
   // could never render. Drive it through the real App, not the component.
   it("leaves a fork reachable in the rail, with a breadcrumb back to its source", async () => {
     await mountApp();
-    await openWorkspaceSession("4");
+    await openWorkspaceSession("2 files");
     await settle(8);
     let forkButton = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Fork from here");
     for (const row of chatRows()) {

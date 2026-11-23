@@ -105,6 +105,8 @@ interface Fold {
   requests: Map<string, ConversationItem>;
   /** Rows a later lifecycle half can join, keyed by provider item id. */
   byItemId: Map<string, ConversationItem>;
+  /** Tool calls that are a question a card already shows. */
+  askedBy: Set<string>;
   /** Assistant prose emitted inside a compaction maintenance window. */
   internal: Set<ConversationItem>;
   compacting: boolean;
@@ -146,6 +148,7 @@ export function reduceTranscript(events: TranscriptEvent[]): ConversationItem[] 
     thinkingCandidates: new StreamingCandidates(true),
     requests: new Map(),
     byItemId: new Map(),
+    askedBy: new Set(),
     internal: new Set(),
     compacting: false,
     turn: 0,
@@ -157,7 +160,9 @@ export function reduceTranscript(events: TranscriptEvent[]): ConversationItem[] 
     applyEvent(fold, event);
   }
 
+  const answeredByCard = questionCalls(fold);
   const reduced = [...fold.items.values()]
+    .filter(item => !answeredByCard.has(item))
     .filter(item => item.type !== "message" || !fold.internal.has(item))
     .map(item => item.type === "message"
       ? { ...item, text: stripBridgeFences(stripWorkerResultBlocks(item.text)) }
@@ -351,6 +356,7 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
       item.title = event.title;
       item.text = event.text;
       item.data = { ...item.data, ...envelope.providerData };
+      if (envelope.itemId) item.callId = envelope.itemId;
       fold.requests.set(`approval:${envelope.eventId}`, item);
       return;
     }
@@ -373,7 +379,9 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
       item.title = event.title;
       item.text = event.text;
       item.data = { ...item.data, ...envelope.providerData };
+      if (envelope.itemId) item.callId = envelope.itemId;
       fold.requests.set(`${event.interaction}:${envelope.eventId}`, item);
+      if (event.askingCall) fold.askedBy.add(event.askingCall);
       return;
     }
 
@@ -461,6 +469,20 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
 }
 
 /* ── Fold helpers ──────────────────────────────────────────────────────── */
+
+/**
+ * The tool rows a question card already stands for (`askingCall`). Read after
+ * the fold because the two halves arrive in either order: the question can
+ * land before the call it is when the model thinks first.
+ */
+function questionCalls(fold: Fold): Set<ConversationItem> {
+  const rows = new Set<ConversationItem>();
+  for (const callId of fold.askedBy) {
+    const row = fold.byItemId.get(callId);
+    if (row?.type === "activity") rows.add(row);
+  }
+  return rows;
+}
 
 /**
  * The one place a row comes into existence — and therefore the one place the
@@ -613,7 +635,32 @@ function adoptStreamingAssistant(
   return undefined;
 }
 
+/** Rows that ask the reader something about a call rather than being one. */
+const INTERACTION_TYPES = new Set<ConversationItemType>(["approval", "permission", "question"]);
+
+/**
+ * The identity an interaction row shares with its twin on the other projection.
+ *
+ * Not the call's item id: that is the tool row's identity, and the stored
+ * payload flattens it into `data` while the live frame keeps it on the
+ * envelope, so reading it off `data` gave the stored card the tool's identity
+ * and the live card its request id, and the merge drew both. Not the request id
+ * alone either, which restarts at 1 with every sidecar. The pair is what both
+ * projections carry and what no other row has.
+ */
+function interactionIdentity(item: ConversationItem): string | undefined {
+  const request = ["requestId", "approvalId", "questionId"]
+    .map(key => item.data[key])
+    .find((value): value is string => typeof value === "string" && value !== "");
+  if (!request && !item.callId) return undefined;
+  return `${item.type}:${item.callId ?? ""}:${request ?? ""}`;
+}
+
 function withIdentity(item: ConversationItem): ConversationItem {
+  if (INTERACTION_TYPES.has(item.type)) {
+    const identity = interactionIdentity(item);
+    return { ...item, identity: identity ?? itemIdentity(item) };
+  }
   const itemId = item.itemId ?? (typeof item.data.itemId === "string" ? item.data.itemId : undefined);
   const next = itemId && item.itemId !== itemId ? { ...item, itemId } : item;
   return { ...next, identity: itemIdentity(next) };

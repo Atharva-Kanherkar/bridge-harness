@@ -1032,6 +1032,76 @@ async fn mark_workflow_runs_read(
 }
 
 #[tauri::command]
+async fn start_review(
+    workspace_id: String,
+    number: u64,
+    harnesses: Option<Vec<String>>,
+    trigger: Option<bridge_protocol::messages::ReviewTrigger>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewJobResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Review", move || {
+        api::start_review(&core, &bridge_protocol::messages::StartReviewParams { workspace_id, number, harnesses, trigger })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_reviews(
+    workspace_id: String,
+    number: Option<u64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewJobList, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Reviews", move || {
+        api::list_reviews(&core, &bridge_protocol::messages::ListReviewsParams { workspace_id, number })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_review(
+    job_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewJobDetail, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Review", move || api::get_review(&core, &bridge_protocol::messages::GetReviewParams { job_id })).await
+}
+
+#[tauri::command]
+async fn cancel_review(
+    job_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewJobResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Review", move || api::cancel_review(&core, &bridge_protocol::messages::CancelReviewParams { job_id })).await
+}
+
+#[tauri::command]
+async fn retry_review(
+    job_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewJobResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Review", move || api::retry_review(&core, &bridge_protocol::messages::RetryReviewParams { job_id })).await
+}
+
+#[tauri::command]
+async fn get_review_job_settings(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewJobSettings, BridgeError> {
+    api::get_review_job_settings(state.inner())
+}
+
+#[tauri::command]
+async fn save_review_job_settings(
+    settings: bridge_protocol::messages::ReviewJobSettings,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewJobSettings, BridgeError> {
+    api::save_review_job_settings(state.inner(), &bridge_protocol::messages::SaveReviewJobSettingsParams { settings })
+}
+
+#[tauri::command]
 async fn always_allow_tool(
     workflow_id: String,
     session_id: String,
@@ -1680,6 +1750,33 @@ async fn insights(
     };
     // Runs a harness turn: minutes of blocking work, so off the async runtime.
     tauri::async_runtime::spawn_blocking(move || api::usage_insights(&core, &params))
+        .await
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?
+}
+
+#[tauri::command]
+async fn record_presence(
+    minutes: Vec<i64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::UsageRecordPresenceResult, BridgeError> {
+    let core = state.inner().clone();
+    let params = bridge_protocol::messages::RecordPresenceParams { minutes };
+    tauri::async_runtime::spawn_blocking(move || api::usage_record_presence(&core, &params))
+        .await
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?
+}
+
+#[tauri::command]
+async fn screen_time(
+    since_day: String,
+    until_day: String,
+    time_zone: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::UsageScreenTimeResult, BridgeError> {
+    let core = state.inner().clone();
+    let params = bridge_protocol::messages::ScreenTimeParams { since_day, until_day, time_zone };
+    // Reads every agent minute ever recorded: off the async runtime.
+    tauri::async_runtime::spawn_blocking(move || api::usage_screen_time(&core, &params))
         .await
         .map_err(|error| BridgeError::Invalid(error.to_string()))?
 }
@@ -2567,9 +2664,15 @@ async fn write_terminal(
     workspace_id: String,
     terminal_id: String,
     data: String,
+    binary: bool,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    api::write_terminal(state.inner(), &workspace_id, &terminal_id, &data)
+    // Enqueue only: the PTY write itself happens on the terminal's own thread.
+    if binary {
+        api::write_terminal_binary(state.inner(), &workspace_id, &terminal_id, &data)
+    } else {
+        api::write_terminal(state.inner(), &workspace_id, &terminal_id, &data)
+    }
 }
 
 #[tauri::command]
@@ -3215,6 +3318,21 @@ async fn workspace_changes(
     .await
 }
 
+#[tauri::command]
+async fn session_changes(
+    session_id: String,
+    include_patches: Option<bool>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::chat_changes::SessionChanges, BridgeError> {
+    // A live snapshot walks the folder; keep it off the async runtime, same
+    // as workspace_changes.
+    let core = state.inner().clone();
+    blocking("Chat changes", move || {
+        api::session_changes(&core, &session_id, include_patches.unwrap_or(false))
+    })
+    .await
+}
+
 /// Which runtime host this app process runs behind, decided once in setup.
 /// The invoke handler reads it on every command: embedded commands run the
 /// `bridge_core::api` bodies in-process; daemon mode proxies the same wire
@@ -3613,6 +3731,7 @@ fn setup_embedded(
     bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
     bridge_core::memory_consolidation_live::start_consolidation_maintenance(core.clone());
     bridge_core::title_jobs_live::start_title_maintenance(core.clone());
+    bridge_core::reviews::start_review_maintenance(core.clone());
     bridge_core::limit_recovery::start_limit_recovery_maintenance(core.clone());
     bridge_core::notes::live::start_note_maintenance(core.clone());
     live_turn::start_queued_input_maintenance(core.clone());
@@ -3776,6 +3895,13 @@ pub fn run() -> i32 {
             draft_workflow_from_text,
             draft_workflow_from_session,
             mark_workflow_runs_read,
+            start_review,
+            list_reviews,
+            get_review,
+            cancel_review,
+            retry_review,
+            get_review_job_settings,
+            save_review_job_settings,
             get_state,
             get_session_forest,
             get_session_forest_digest,
@@ -3868,6 +3994,8 @@ pub fn run() -> i32 {
             list_history_sources,
             scan_history,
             insights,
+            record_presence,
+            screen_time,
             get_meter_snapshot,
             save_opencode_usage_session,
             get_provider_usage_overviews,
@@ -4002,7 +4130,8 @@ pub fn run() -> i32 {
             list_workspace_branches,
             checkout_workspace_branch,
             archive_workspace,
-            workspace_changes
+            workspace_changes,
+            session_changes
         ]);
     let application = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -5980,6 +6109,11 @@ mod tests {
             requires_user_approval: false,
             child_worktrees_available: false,
         });
+        // Counts are uncapped by default; this checks that a workspace cap is
+        // scoped to the parent turn, so it sets one.
+        let mut settings = bridge_core::worker_settings::load(&db, "w").unwrap();
+        settings.max_workers_per_turn = 3;
+        bridge_core::worker_settings::save(&db, "w", &settings).unwrap();
         for index in 0..3 {
             policy::record_spawn_usage(
                 &db,

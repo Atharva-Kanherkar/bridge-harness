@@ -70,7 +70,7 @@ function RepoBreakdown({ repositories, totalBytes, onSelect }: {
           onClick={() => onSelect(repo.repoRoot)}
           onMouseEnter={() => setHover(index)}
           onMouseLeave={() => setHover(current => (current === index ? null : current))}
-          className={cn("flex items-center gap-1.5 rounded-md px-1 py-0.5 text-xs outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring", hover === index && "bg-accent")}
+          className={cn("flex items-center gap-1.5 rounded-md px-1 py-0.5 text-meta outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring", hover === index && "bg-accent")}
         >
           <span className={cn("size-2 shrink-0 rounded-full", swatch(index))} />
           <span className="truncate text-foreground" title={repo.repoRoot}>{repoName(repo.repoRoot)}</span>
@@ -211,7 +211,7 @@ export function WorktreeStorage({ onError }: { onError?: (message: string) => vo
     return [entry.path, entry.branch, entry.repoRoot, entry.retainedReason, entry.ownerSessionId].some(value => value?.toLowerCase().includes(query.trim().toLowerCase()));
   }).sort((a, b) => sort === "idle" ? b.idleSeconds - a.idleSeconds : sort === "name" ? (a.branch ?? a.path).localeCompare(b.branch ?? b.path) : (b.sizeBytes ?? -1) - (a.sizeBytes ?? -1));
 
-  return <section aria-label="Project copies" className="space-y-3">
+  return <section aria-label="Project copies" data-settings-row="worktree-storage" className="scroll-mt-6 space-y-3 rounded-xl outline-offset-4 transition-[outline-color] duration-300 data-search-highlight:outline-2 data-search-highlight:outline-foreground/25">
     <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
       <h3 className="text-ui font-medium text-foreground">Project copies</h3>
       {usage && <span className="text-caption tabular-nums text-muted-foreground">

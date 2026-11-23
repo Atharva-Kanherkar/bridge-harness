@@ -1142,7 +1142,7 @@ fn ensure_inactive(active: bool, operation: &str) -> Result<(), BridgeError> {
 /// Whether git recognizes the directory as a repository at all — the cheapest
 /// question to answer before any operation that would otherwise fail with raw
 /// stderr deep in its first command.
-fn is_repository(path: &Path) -> bool {
+pub(crate) fn is_repository(path: &Path) -> bool {
     run(path, ["rev-parse", "--git-dir"]).is_ok()
 }
 
@@ -1323,6 +1323,102 @@ pub fn workspace_changeset(path: &Path) -> Result<WorkspaceChangeset, BridgeErro
     })
 }
 
+/// The changeset between two snapshot trees, keeping only the paths `keep`
+/// accepts, in the shape the Changes pane already renders, so a chat's own
+/// changes and the folder's uncommitted ones read the same way.
+///
+/// Gitlinks are ignored: a nested repository snapshotted inside the tree is
+/// another checkout, not this chat's edit. Without `include_patches` only the
+/// counts are computed, which is what a badge polls for.
+pub(crate) fn tree_changeset(
+    repo: &Path,
+    from: &str,
+    to: &str,
+    keep: &dyn Fn(&str) -> bool,
+    include_patches: bool,
+) -> Result<(WorkspaceChangeset, (i64, i64)), BridgeError> {
+    let diff = |format: &'static str| {
+        run_bounded_bytes(
+            repo,
+            [
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--ignore-submodules=all",
+                format,
+                "-z",
+                "--find-renames",
+                from,
+                to,
+            ],
+            MAX_WORKSPACE_METADATA_BYTES,
+            &[0],
+        )
+    };
+    let raw = diff("--raw")?;
+    let numstat = diff("--numstat")?;
+    let stats = parse_numstat(complete_nul_records(&numstat));
+    let mut descriptors: Vec<_> = parse_raw_changes(complete_nul_records(&raw))
+        .into_iter()
+        .filter(|descriptor| {
+            keep(&descriptor.path) || descriptor.previous_path.as_deref().is_some_and(keep)
+        })
+        .collect();
+    for descriptor in &mut descriptors {
+        if let Some((additions, deletions, binary)) = stats.get(&descriptor.path) {
+            descriptor.additions = *additions;
+            descriptor.deletions = *deletions;
+            descriptor.binary = *binary;
+        }
+    }
+    descriptors.sort_by(|left, right| {
+        risk_rank(completion::risk_tier_for_path(&left.path))
+            .cmp(&risk_rank(completion::risk_tier_for_path(&right.path)))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    // Totals over every kept file, not just the bounded window below: the
+    // badge reads them, and a sum of the first hundred would undercount.
+    let totals = descriptors.iter().fold((0, 0), |(additions, deletions), descriptor| {
+        (additions + descriptor.additions, deletions + descriptor.deletions)
+    });
+    let metadata_truncated = raw.truncated || numstat.truncated;
+    let total_files = (!metadata_truncated).then_some(descriptors.len());
+    let files_truncated = metadata_truncated || descriptors.len() > MAX_WORKSPACE_CHANGE_FILES;
+    let mut remaining_patch_bytes = MAX_WORKSPACE_TOTAL_PATCH_BYTES;
+    let mut files = Vec::new();
+    for mut descriptor in descriptors.into_iter().take(MAX_WORKSPACE_CHANGE_FILES) {
+        let (patch, patch_truncated) = if descriptor.binary || !include_patches {
+            (String::new(), false)
+        } else {
+            file_patch(
+                repo,
+                &[from, to],
+                &descriptor.path,
+                descriptor.previous_path.as_deref(),
+                remaining_patch_bytes.min(MAX_WORKSPACE_PATCH_BYTES),
+            )?
+        };
+        if descriptor.change_kind == WorkspaceChangeKind::Modified
+            && descriptor.additions == 0
+            && descriptor.deletions == 0
+            && patch.lines().any(|line| line.starts_with("old mode "))
+        {
+            descriptor.change_kind = WorkspaceChangeKind::ModeOnly;
+        }
+        remaining_patch_bytes = remaining_patch_bytes.saturating_sub(patch.len());
+        files.push(workspace_file_change(descriptor, patch, patch_truncated));
+    }
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    let changeset = WorkspaceChangeset {
+        base_commit: None,
+        repository_state: WorkspaceRepositoryState::Normal,
+        files,
+        total_files,
+        files_truncated,
+    };
+    Ok((changeset, totals))
+}
+
 #[derive(Debug)]
 struct ChangeDescriptor {
     path: String,
@@ -1420,20 +1516,35 @@ fn tracked_file_patch(
     previous_path: Option<&str>,
     budget: usize,
 ) -> Result<(String, bool), BridgeError> {
+    file_patch(worktree, &[base], relative_path, previous_path, budget)
+}
+
+/// One file's patch between `revisions`: a single base (against the working
+/// tree) or a `from`/`to` pair of trees.
+fn file_patch(
+    worktree: &Path,
+    revisions: &[&str],
+    relative_path: &str,
+    previous_path: Option<&str>,
+    budget: usize,
+) -> Result<(String, bool), BridgeError> {
     if budget == 0 {
         return Ok((String::new(), true));
     }
     // A pathspec of only the new name hides the old name's deletion from git,
     // so it has nothing to pair the addition with and can't detect the rename
     // — it emits a full "file added" patch instead of a rename+modify one.
+    // Literal: a path is a path, not a glob. `app/[id].tsx` as a pattern also
+    // matches `app/i.tsx`, and that file's whole diff rendered under this row.
     let mut args = vec![
+        "--literal-pathspecs",
         "diff",
         "--no-ext-diff",
         "--no-textconv",
         "--find-renames",
-        base,
-        "--",
     ];
+    args.extend_from_slice(revisions);
+    args.push("--");
     if let Some(previous_path) = previous_path {
         args.push(previous_path);
     }
@@ -1461,7 +1572,14 @@ fn truncate_utf8(mut value: String, limit: usize) -> String {
 }
 
 fn inspect_untracked_file(worktree: &Path, relative_path: &str) -> (i64, bool) {
-    let mut file = match std::fs::File::open(worktree.join(relative_path)) {
+    let full = worktree.join(relative_path);
+    // Git diffs a symlink as its target path (one added line), never as the
+    // file it points at. Following it counted the target's lines instead, and
+    // flagged links to directories or nowhere as binary.
+    if std::fs::symlink_metadata(&full).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return (1, false);
+    }
+    let mut file = match std::fs::File::open(&full) {
         Ok(file) => file,
         Err(_) => return (0, true),
     };
@@ -1469,6 +1587,7 @@ fn inspect_untracked_file(worktree: &Path, relative_path: &str) -> (i64, bool) {
     let mut additions = 0_i64;
     let mut any = false;
     let mut last = 0_u8;
+    let mut offset = 0_usize;
     loop {
         let read = match file.read(&mut buffer) {
             Ok(0) => break,
@@ -1477,9 +1596,13 @@ fn inspect_untracked_file(worktree: &Path, relative_path: &str) -> (i64, bool) {
         };
         any = true;
         last = buffer[read - 1];
-        if buffer[..read].contains(&0) {
+        // Git's binary sniff looks at the first 8000 bytes only; a NUL deeper
+        // in is still a text file to `git diff`, so it must be one here too.
+        let sniff = GIT_BINARY_SNIFF_BYTES.saturating_sub(offset).min(read);
+        if buffer[..sniff].contains(&0) {
             return (0, true);
         }
+        offset += read;
         additions += buffer[..read].iter().filter(|byte| **byte == b'\n').count() as i64;
     }
     if any && last != b'\n' {
@@ -1579,10 +1702,23 @@ fn parse_numstat(bytes: &[u8]) -> HashMap<String, (i64, i64, bool)> {
     stats
 }
 
+/// How far into a file git looks for a NUL before calling it binary.
+const GIT_BINARY_SNIFF_BYTES: usize = 8000;
+
+/// An untracked entry git would not descend into: with `--untracked-files=all`
+/// the only directory-shaped (`dir/`) entries left are nested repositories:
+/// other checkouts, agent worktrees parked inside the repo, vendored clones.
+/// They are not this repository's changes, have no diff, and cannot be opened;
+/// counted, a folder of worktrees turned the header into "241 files".
+fn is_nested_repository_entry(path: &[u8]) -> bool {
+    path.last() == Some(&b'/')
+}
+
 fn parse_untracked_paths(bytes: &[u8]) -> Vec<String> {
     bytes
         .split(|byte| *byte == 0)
         .filter_map(|record| record.strip_prefix(b"?? "))
+        .filter(|path| !is_nested_repository_entry(path))
         .map(path_string)
         .collect()
 }
@@ -1595,6 +1731,9 @@ fn count_porcelain_entries(bytes: &[u8]) -> i64 {
     let mut records = bytes.split(|byte| *byte == 0).filter(|record| !record.is_empty());
     let mut count = 0_i64;
     while let Some(record) = records.next() {
+        if record.strip_prefix(b"?? ").is_some_and(is_nested_repository_entry) {
+            continue;
+        }
         count += 1;
         if matches!(record.first(), Some(b'R') | Some(b'C'))
             || matches!(record.get(1), Some(b'R') | Some(b'C'))
@@ -2802,5 +2941,60 @@ mod tests {
         );
         assert_eq!(adds, 5, "3 + 2 added lines from untracked files");
         assert_eq!(dels, 0);
+    }
+
+    #[test]
+    fn nested_repositories_are_not_counted_as_changed_files() {
+        // Agent worktrees parked inside the repo show up as `?? .worktrees/x/`.
+        // They are other repositories: no diff, nothing to open, and counting
+        // them turned the header badge into "241 files".
+        let (_fixture, repo) = repository();
+        let nested = repo.join(".worktrees/other");
+        std::fs::create_dir_all(&nested).unwrap();
+        git(&nested, &["init", "-q"]);
+        std::fs::write(nested.join("inside.txt"), "x\n").unwrap();
+        std::fs::write(repo.join("real.txt"), "one\ntwo\n").unwrap();
+
+        assert_eq!(stats(&repo).unwrap(), (1, 2, 0));
+        let changeset = workspace_changeset(&repo).unwrap();
+        let paths: Vec<_> = changeset.files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, ["real.txt"]);
+        assert_eq!(changeset.total_files, Some(1));
+    }
+
+    #[test]
+    fn file_patch_treats_its_path_literally() {
+        let (_fixture, repo) = repository();
+        commit_file(&repo, "app/i.tsx", "i\n", "seed i");
+        commit_file(&repo, "app/[id].tsx", "id\n", "seed id");
+        std::fs::write(repo.join("app/i.tsx"), "i changed\n").unwrap();
+        std::fs::write(repo.join("app/[id].tsx"), "id changed\n").unwrap();
+
+        let changeset = workspace_changeset(&repo).unwrap();
+        let bracket = changeset.files.iter().find(|file| file.path == "app/[id].tsx").unwrap();
+        assert!(bracket.patch.contains("id changed"));
+        assert!(!bracket.patch.contains("i changed"), "glob matched app/i.tsx: {}", bracket.patch);
+    }
+
+    #[test]
+    fn untracked_counts_follow_git_for_late_nuls_and_symlinks() {
+        let (_fixture, repo) = repository();
+        let mut late_nul = vec![b'a'; 9000];
+        late_nul.push(b'\n');
+        late_nul[8500] = 0;
+        std::fs::write(repo.join("late.txt"), &late_nul).unwrap();
+        assert_eq!(inspect_untracked_file(&repo, "late.txt"), (1, false));
+
+        std::fs::write(repo.join("early.bin"), b"\0abc\n").unwrap();
+        assert_eq!(inspect_untracked_file(&repo, "early.bin"), (0, true));
+
+        #[cfg(unix)]
+        {
+            std::fs::write(repo.join("target.txt"), "a\nb\nc\nd\n").unwrap();
+            std::os::unix::fs::symlink("target.txt", repo.join("link.txt")).unwrap();
+            std::os::unix::fs::symlink("missing", repo.join("dangling")).unwrap();
+            assert_eq!(inspect_untracked_file(&repo, "link.txt"), (1, false));
+            assert_eq!(inspect_untracked_file(&repo, "dangling"), (1, false));
+        }
     }
 }

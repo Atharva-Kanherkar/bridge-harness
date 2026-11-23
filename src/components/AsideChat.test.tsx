@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { writeActiveTurnInput } from "../activeTurnSettings";
+import { acceptApplicationChatDefaults } from "../activeTurnSettings";
 import { AsideChat } from "./AsideChat";
 import { asWireKind } from "../transcript/wire";
 import { bridgeApi } from "../api";
@@ -170,13 +170,15 @@ describe("AsideChat", () => {
     expect(pill.disabled).toBe(true);
   });
 
-  it("uses the global preference and shows fallback and durable queue count", async () => {
+  it("follows the New chats default like the main composer, and shows fallback and durable queue count", async () => {
+    const setDefault = (activeTurnInput: "steer" | "queue") => acceptApplicationChatDefaults({ application: { revision: 1, defaults: { activeTurnInput } } });
+    await act(async () => setDefault("steer"));
     await mount({ working: true, adapters: adapters.map(adapter => ({ ...adapter, capabilities: ["steering"] })), queuedFollowUpCount: 2 });
     expect(document.body.querySelector('button[aria-label="Steer"]')).not.toBeNull();
-    await act(async () => writeActiveTurnInput("queue"));
+    await act(async () => setDefault("queue"));
     expect(document.body.querySelector('button[aria-label="Queue"]')).not.toBeNull();
     expect(document.body.textContent).toContain("2 follow-ups queued");
-    await act(async () => writeActiveTurnInput("steer"));
+    await act(async () => setDefault("steer"));
     await mount({ working: true });
     expect(document.body.querySelector<HTMLButtonElement>('button[aria-label="Steer"]')!.title).toContain("interrupts");
   });
@@ -371,12 +373,43 @@ describe("AsideChat", () => {
       setter.call(box, "@App");
       box.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    expect(dialog().textContent).toContain("Reference a file");
-    expect(dialog().textContent).toContain("src/App.tsx");
+    const listbox = dialog().querySelector<HTMLElement>("#aside-file-mention-listbox")!;
+    expect(listbox.textContent).toContain("Files");
+    expect(listbox.textContent).toContain("matching “App”");
+    const option = listbox.querySelector<HTMLElement>("#aside-file-mention-option-0")!;
+    expect(option.getAttribute("title")).toBe("src/App.tsx");
+    expect(option.querySelector("[data-mention-name]")!.textContent).toBe("App.tsx");
+    expect(option.querySelector("[data-mention-folder]")!.textContent).toBe("src");
     await act(async () => {
       box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     });
     expect(box.value).toBe("@src/App.tsx ");
+  });
+
+  it("marks a file the side chat already changed, and Tab still inserts the row", async () => {
+    const edit: AgentEvent = {
+      id: 40, sessionId: "aside-1", sequence: 40, protocolVersion: 1, kind: asWireKind("file_change.completed"), itemId: "edit-1", role: null, status: "completed",
+      title: "api.ts", text: null, data: { path: "src/api.ts", additions: 2, deletions: 1 }, providerMeta: {}, createdAt: "now",
+    };
+    // Another chat's edit to App.tsx is not this chat's change.
+    const elsewhere: AgentEvent = { ...edit, id: 41, sequence: 41, sessionId: "other-chat", itemId: "edit-2", data: { path: "src/App.tsx" } };
+    await mount({ workspaceFiles: ["src/App.tsx", "src/api.ts"], events: [edit, elsewhere] });
+    const box = document.body.querySelector<HTMLTextAreaElement>("textarea")!;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(box, "@a");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const options = [...dialog().querySelectorAll<HTMLElement>('#aside-file-mention-listbox [role="option"]')];
+    const marks = Object.fromEntries(options.map(option => [option.title, option.querySelector("[data-mention-change]")?.textContent ?? null]));
+    expect(marks).toEqual({ "src/App.tsx": null, "src/api.ts": "M" });
+    await act(async () => {
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    });
+    await act(async () => {
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+    });
+    expect(box.value).toBe(`@${options[1].title} `);
   });
 
   it("completes slash tokens without sending, and never offers a $harness shortcut", async () => {

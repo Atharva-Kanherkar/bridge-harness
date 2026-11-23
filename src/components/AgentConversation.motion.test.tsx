@@ -206,12 +206,35 @@ describe("pending bubbles", () => {
     expect(bubblesWith("first time")).toHaveLength(1);
   });
 
+  const STEER = "Steer · lands after this step";
+  const QUEUED = "Queued · sent when this step finishes";
+  const captions = () => [...host.querySelectorAll<HTMLElement>("p[data-delivery-caption]")];
+  /** The caption sits directly above its bubble, right-aligned. */
+  const expectAbove = (caption: HTMLElement, text: string) => {
+    expect(caption.className).toContain("justify-end");
+    expect(caption.nextElementSibling?.textContent).toBe(text);
+    expect(caption.previousElementSibling?.textContent ?? "").not.toBe(text);
+  };
+
   it("says how a mid-turn send was taken", () => {
     mount([], { working: true, pendingMessages: [{ text: "also check the docs", delivery: "steered" }, { text: "then deploy", delivery: "queued" }, { text: "plain" }] });
-    expect(host.textContent).toContain("Steering");
-    expect(host.textContent).toContain("Queued — sent when this step finishes");
-    const labels = [...host.querySelectorAll("p")].filter(node => node.textContent === "Steering" || node.textContent?.startsWith("Queued"));
+    expect(host.textContent).toContain(STEER);
+    expect(host.textContent).toContain(QUEUED);
+    const labels = [...host.querySelectorAll("p")].filter(node => node.textContent === STEER || node.textContent?.startsWith("Queued"));
     expect(labels).toHaveLength(2);
+  });
+
+  it("captions an optimistic steer and a queued send above their bubbles", () => {
+    mount([], { working: true, pendingMessages: [{ text: "also check the docs", delivery: "steered" }, { text: "then deploy", delivery: "queued" }, { text: "plain" }] });
+    const [steer, queued] = captions();
+    expect(steer.dataset.deliveryCaption).toBe("steered");
+    expect(steer.textContent).toBe(STEER);
+    expect(steer.querySelector("svg"), "the ↪ glyph leads the steer caption").not.toBeNull();
+    expectAbove(steer, "also check the docs");
+    expect(queued.dataset.deliveryCaption).toBe("queued");
+    expect(queued.querySelector("svg")).toBeNull();
+    expectAbove(queued, "then deploy");
+    expect(captions()).toHaveLength(2);
   });
 
   it("keeps the queued label once the real row replaces the optimistic one", async () => {
@@ -219,20 +242,22 @@ describe("pending bubbles", () => {
     mount([acknowledged], { working: true, queuedFollowUps: 1, pendingMessages: [{ text: "then run lint", delivery: "queued" }] });
     await settle();
     expect(bubblesWith("then run lint")).toHaveLength(1);
-    expect([...host.querySelectorAll("p")].filter(node => node.textContent === "Queued — sent when this step finishes")).toHaveLength(1);
+    expect([...host.querySelectorAll("p")].filter(node => node.textContent === QUEUED)).toHaveLength(1);
+    expectAbove(captions()[0], "then run lint");
 
     // Delivered: the queue let it go, so the note goes too.
     mount([acknowledged], { working: true, queuedFollowUps: 0 });
-    expect(host.textContent).not.toContain("Queued — sent when this step finishes");
+    expect(host.textContent).not.toContain(QUEUED);
   });
 
-  it("says Steering on an acknowledged steer until the step answers", () => {
+  it("captions an acknowledged steer above its bubble until the step answers", () => {
     const steer = event(1, "message.completed", { role: "user", text: "use the old store", data: { delivery: "steered" } });
     mount([steer], { working: true });
     expect(bubblesWith("use the old store")).toHaveLength(1);
-    expect(host.textContent).toContain("Steering");
+    expect(host.textContent).toContain(STEER);
+    expectAbove(captions()[0], "use the old store");
     mount([steer, event(2, "message.completed", { role: "assistant", text: "Switching to the old store." })], { working: true });
-    expect(host.textContent).not.toContain("Steering");
+    expect(host.textContent).not.toContain(STEER);
   });
 
   it("draws every image of a send in that send's own bubble", () => {

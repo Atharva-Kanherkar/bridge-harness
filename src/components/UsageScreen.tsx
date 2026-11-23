@@ -7,6 +7,7 @@ import type { UsageHistorySource, UsagePriceOverride, UsageSummaryResult } from 
 import { HarnessMark } from "./harnessMarks";
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
 import { UsageInsights } from "./UsageInsights";
+import { UsageScreenTime } from "./UsageScreenTime";
 import { UsageLedger } from "./UsageLedger";
 import { UsageStrips } from "./UsageStrips";
 import { UsageFlow } from "./UsageFlow";
@@ -14,6 +15,7 @@ import { UsageMosaic } from "./UsageMosaic";
 import { UsageCalendar } from "./UsageCalendar";
 import type { UsageLayoutProps } from "./UsageLayoutParts";
 import { UsageLoadingState } from "./UsageLayoutParts";
+import { Skeleton } from "./ui/skeleton";
 import { useProviderUsageOverviews } from "./UsageDot";
 import { UsageResetRow } from "./UsageResetRow";
 import {
@@ -58,7 +60,7 @@ export function clearUsageCacheForTests(): void {
 }
 
 type Breakdown = "model" | "time";
-type UsageTab = "usage" | "insights";
+type UsageTab = "usage" | "insights" | "time";
 
 const LAYOUT_LABELS: Record<UsageLayout, string> = { ledger: "Ledger", strips: "Strips", flow: "Flow", mosaic: "Mosaic", calendar: "Calendar" };
 
@@ -197,7 +199,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         do {
           passes += 1;
           if (passes > MAX_SCAN_PASSES) {
-            warnings.add(`History scan stopped after ${MAX_SCAN_PASSES} batches with more to go. Press Scan history to continue.`);
+            warnings.add(`History scan stopped after ${MAX_SCAN_PASSES} batches. Scan again to continue.`);
             break;
           }
           const result = await bridgeApi.scanUsageHistory(sourceIds ? { sourceIds } : {});
@@ -228,13 +230,13 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         } while (sourceIds.length > 0);
         if (warnings.size === 0) lastAutoScanAt = Date.now();
         setScanNote(warnings.size > 0
-          ? `Imported ${formatCount(imported)} records. ${[...warnings].join(" ")} Totals are incomplete.`
+          ? `Imported ${formatCount(imported)} records. ${[...warnings].join(" ")}`
           : `Imported ${formatCount(imported)} records in ${(durationMs / 1000).toFixed(1)} s.`);
       } catch (error) {
         if (!cancelled) {
           const message = error instanceof Error ? error.message : String(error);
           setScanFailed(true);
-          setScanNote(`History could not finish: ${message}. Totals are incomplete.`);
+          setScanNote(`History could not finish: ${message}.`);
           onError(message);
         }
       } finally {
@@ -285,29 +287,21 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
   const incompleteSources = preferences.includeImported
     ? sources.filter(source => source.origin !== "dashboard" && source.coverageState !== "complete" && source.coverageState !== "empty")
     : [];
-  const dashboardSources = preferences.includeImported ? summary?.sources.filter(source => source.origin === "dashboard") ?? [] : [];
-  // The stored figures stay on screen while a scan or refetch runs: they are
-  // what the last finished scan imported, and the refetch replaces them in
-  // place. Only a source that is actually incomplete marks the total partial,
-  // not the scan being in flight.
-  const historyIncomplete = preferences.includeImported && (scanFailed || incompleteSources.some(source => source.capability === "supported")
-    || dashboardSources.some(source => source.coverageState !== "complete" && source.coverageState !== "empty"));
-  const partialLabel = historyIncomplete ? "History incomplete" : null;
+  const blockedSources = incompleteSources.filter(source => source.coverageState === "unsupported" || source.coverageState === "stale" || source.coverageState === "unreadable");
   const otherWindow = shown !== null && shown.key !== key;
 
   return <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
       <ScreenHeading
         title="Usage"
-        description={tab === "usage" ? "Tokens processed across harnesses and what they would cost at API rates. Not money spent: subscription plans bill separately." : "What your usage says about how you work, written by your harness from Bridge's own records."}
         action={<span className="inline-flex shrink-0 items-center gap-2">
-          <Segmented<UsageTab> label="View" value={tab} options={[{ value: "usage", label: "Usage" }, { value: "insights", label: "Insights" }]} onChange={setTab} />
+          <Segmented<UsageTab> label="View" value={tab} options={[{ value: "usage", label: "Usage" }, { value: "insights", label: "Insights" }, { value: "time", label: "Time" }]} onChange={setTab} />
           {onOpenMeter && <button type="button" onClick={onOpenMeter} aria-label="Open usage meter" title="Usage meter" className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Gauge size={14} aria-hidden="true" /></button>}
           <button type="button" onClick={() => { setRefreshTick(tick => tick + 1); providerUsage.refresh(); }} disabled={loading || scanning} aria-label="Refresh usage" aria-busy={loading || scanning} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading || scanning ? "animate-spin" : ""} /></button>
         </span>}
       />
 
-      {tab === "insights" ? <UsageInsights windowDays={preferences.windowDays} onError={onError} /> : <>
+      {tab === "time" ? <UsageScreenTime onError={onError} refreshKey={refreshTick} /> : tab === "insights" ? <UsageInsights windowDays={preferences.windowDays} onError={onError} /> : <>
       {providerUsage.overviews?.providers.filter(snapshot => !snapshot.accountId).map(snapshot =>
         <div key={snapshot.provider} className="mb-3 empty:hidden"><UsageResetRow snapshot={snapshot} onUpdated={providerUsage.refresh} /></div>)}
       <div className="mb-5 flex flex-wrap items-start gap-3">
@@ -319,19 +313,17 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         </select>
       </div>
 
-      {report && !otherWindow && (incompleteSources.length > 0 || dashboardSources.length > 0 || summary!.duplicatesDropped > 0 || report.totals.unpricedRecords > 0) && <ul className="mb-5 space-y-1 text-caption text-muted-foreground" aria-label="Coverage notes">
-        {incompleteSources.map(source => <li key={source.id}>{source.coverageState === "unsupported"
-          ? `${harnessLabel(source.agent)}: ${source.coverageReason ?? "History is unavailable."}`
-          : source.coverageState === "stale" || source.coverageState === "unreadable" ? `${harnessLabel(source.agent)} history needs a refresh.`
-          : `${harnessLabel(source.agent)} history is still loading.`}</li>)}
-        {dashboardSources.map(source => <li key={source.id}>{source.coverageReason}</li>)}
-        {summary!.duplicatesDropped > 0 && <li>{formatCount(summary!.duplicatesDropped)} live records were counted once against their imported transcripts.</li>}
-        {report.totals.unpricedRecords > 0 && <li>{formatCount(report.totals.unpricedRecords)} records have no known rate or complete pricing inputs; their cost is unknown, not free. Their tokens are included.</li>}
+      {(loading || scanning) && summary && <div role="status" aria-label="Loading usage" className="mb-5"><Skeleton className="h-0.5 w-full rounded-full" /></div>}
+
+      {report && !otherWindow && (scanFailed || blockedSources.length > 0 || report.totals.unpricedRecords > 0) && <ul className="mb-5 space-y-1 text-caption text-muted-foreground" aria-label="Coverage notes">
+        {scanFailed && <li>History scan failed</li>}
+        {blockedSources.map(source => <li key={source.id}>{harnessLabel(source.agent)}: {source.coverageState === "unsupported" ? "unavailable" : "needs a refresh"}</li>)}
+        {report.totals.unpricedRecords > 0 && <li>{formatCount(report.totals.unpricedRecords)} unpriced {report.totals.unpricedRecords === 1 ? "record" : "records"}</li>}
       </ul>}
 
       {loading && !summary ? <UsageLoadingState /> : report && <>
         <div aria-busy={loading || scanning} className={cn("transition-opacity", otherWindow && "opacity-50")}>
-          <LayoutView report={report} summary={summary!} periods={periods} window={window_} windowDays={preferences.windowDays} metric={metric} partial={partialLabel} />
+          <LayoutView report={report} summary={summary!} periods={periods} window={window_} windowDays={preferences.windowDays} metric={metric} />
           <section className={cn(CARD, "mt-6 py-3")} aria-label="Breakdown table">
             <button type="button" aria-expanded={tableOpen} aria-controls="usage-breakdown-table" onClick={() => setTableOpen(open => !open)} className="flex w-full items-center gap-2 text-left">
               <h2 className="text-ui font-medium text-foreground">Breakdown table</h2>
@@ -346,7 +338,6 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-ui font-medium text-foreground">History sources</h2>
-              <p className="text-caption text-muted-foreground">Local Claude Code, Codex, and OpenCode history, plus Cursor dashboard usage. Only usage metadata is saved, never prompt or completion text.</p>
             </div>
             <button type="button" onClick={() => void scan()} disabled={scanning} className="inline-flex h-8 items-center gap-2 rounded-lg border border-border px-3 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-40">
               {scanning ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />}Scan history

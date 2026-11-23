@@ -195,6 +195,10 @@ pub struct BundleChat {
     pub effort: Option<String>,
     pub native_ref: Option<NativeRef>,
     pub parent_chat_key: Option<String>,
+    /// The parent's native identity (`codex:<thread>`), for a parent read in
+    /// another import batch: the writer finds it in the store by that key.
+    #[serde(default)]
+    pub parent_native_key: Option<String>,
     pub agent_role: Option<AgentRole>,
     pub entries_source: EntriesSource,
     #[serde(default)]
@@ -683,8 +687,15 @@ impl Resolver {
 
     fn finish(mut self) -> ResolvedImport {
         for (tool, child_identity, parent_key) in std::mem::take(&mut self.pending_parent) {
-            let Some(parent_identity) = self.local_identity.get(&(tool.clone(), parent_key)).cloned()
-            else {
+            let found = self.local_identity.get(&(tool.clone(), parent_key)).cloned();
+            // Not in this batch: a parent named by its native identity is
+            // found in the store when the chat is written.
+            let by_native = || {
+                self.chat_index
+                    .get(&child_identity)
+                    .and_then(|index| self.out.chats[*index].chat.parent_native_key.clone())
+            };
+            let Some(parent_identity) = found.or_else(by_native) else {
                 self.out.diagnostics.push(info(
                     "parent_chat_missing",
                     format!("A {tool} chat named a parent that was not in the import; it was kept as a top-level chat"),

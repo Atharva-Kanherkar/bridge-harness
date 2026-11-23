@@ -10,7 +10,7 @@ import { answerSummary, canSubmit, cleanAnswers, fieldAnswered, initialAnswers, 
 
 export type ResolveQuestion = (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => Promise<InteractionResolutionResult | void> | void;
 
-const PANEL = "min-w-0 overflow-hidden rounded-xl border border-border border-x-2 border-x-info bg-card";
+const PANEL = "min-w-0 overflow-hidden rounded-xl border border-border bg-card";
 const WELL = "block max-h-72 overflow-auto rounded-md border border-border bg-code px-3 py-2.5 font-mono text-meta leading-relaxed whitespace-pre text-foreground";
 const BTN_PRIMARY = "inline-flex min-h-8 items-center gap-1.5 rounded-lg bg-primary px-3 py-1 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50";
 const BTN_SECONDARY = "inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-input px-3 py-1 text-ui font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50";

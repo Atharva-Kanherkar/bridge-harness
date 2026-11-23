@@ -9,6 +9,7 @@ export function EarlyCompactionSetting() {
   const { view, error, busy, set } = useEarlyCompaction();
   return <SettingsGroup label="Context" note="Off by default">
     <SettingsRow
+      anchor="early-compaction"
       label="Early compaction"
       description={EARLY_COMPACTION_DESCRIPTION}
       control={<Switch

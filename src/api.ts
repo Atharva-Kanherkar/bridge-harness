@@ -3,6 +3,7 @@ import { mockChatTools, mockSaveFirstToolChoice, mockUpdateChatTools } from "./c
 import type { GetChatToolsParams, GetChatToolsResult, UpdateChatToolsParams, UpdateChatToolsResult } from "./protocol/generated/protocol";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
 import type { AppPreferences, AppPreferenceValues } from "./protocol/generated/protocol";
+import type { ReviewJob, ReviewJobDetail, ReviewJobList, ReviewJobResult, ReviewJobSettings, ReviewTrigger } from "./protocol/generated/protocol";
 import type { LimitRecoverySettings, LimitRecoveryStatus } from "./protocol/generated/protocol";
 import type { AlwaysAllowToolResult, RunWorkflowResult, WorkflowDraftResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary } from "./protocol/generated/protocol";
 import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, MarkAttentionUnreadResult, ReportPresenceResult, UnreadSummary } from "./protocol/generated/protocol";
@@ -28,6 +29,7 @@ import type { ApiKeysSnapshot, ChatApiKey, SaveApiKeyParams, SavedApiKey } from 
 import { guessKeyKind } from "./apiKeys";
 import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, SummaryParams, UsageBucket, UsageHistorySource, UsagePriceOverride, UsagePricingStatus, UsageSummaryResult } from "./types";
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
+import type { RecordPresenceParams, ScreenTimeParams, UsageRecordPresenceResult, UsageScreenTimeResult } from "./types";
 import type { MemoryActivityEntry, MemoryInsightsResult, MemoryRecallStats } from "./types";
 import type { DiskDeleteResult, DiskEntry, DiskListing, DiskOverview, EmptyTrashResult } from "./types";
 import type { Note, NoteAsset, NoteAssetData, NoteAssetPart, NoteEditResult, NoteHistory, NotePage, NotePageChangedPayload, NotePassProgressPayload, NotesList, NotesSettings, NoteVersionPage } from "./types";
@@ -77,6 +79,7 @@ import type {
   DispatchAgentShortcutResult,
   SubmitInputResult,
   WorkspaceChangesResult,
+  SessionChangesResult,
   WorkBoard,
   WorkBriefReceipt,
   WorkBriefingOptions,
@@ -127,6 +130,7 @@ import type {
   ConnectorItemResolvedPayload,
 } from "./connectorSurface";
 import { recommendedProfileDrafts } from "./modelProfiles";
+import { mockDeckForest, mockDeckWorkers } from "./mockWorkerFanOut";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 /** The browser's daemon connection, when this tab has one. Never in Tauri. */
@@ -134,6 +138,9 @@ const webDaemon = () => (isTauri() ? null : activeWebDaemon());
 /** A real backend answers: the desktop shell, or a daemon over WebSocket.
  *  Without one, everything below serves mock data. */
 const hasBackend = () => isTauri() || webDaemon() !== null;
+const REVIEWS_NEED_DESKTOP = "Reviewing pull requests requires the Bridge desktop app.";
+// Browser preview's review job settings: the host's defaults, kept in memory.
+let mockReviewJobSettings: ReviewJobSettings = { defaultHarnesses: [], fallbackHarnesses: [], maxConcurrentReviews: 2, postMode: "draft" };
 export type BackendMode = "tauri" | "web" | "mock";
 /** Which transport this window is on, for the few surfaces outside api.ts
  *  that behave differently per host (folder pickers, polls, the demo shell). */
@@ -544,7 +551,8 @@ let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
     { id: "session-1w", workspaceId: "demo-1", harness: "claude", label: "Implementation · strong", title: "Refactor the auth module to use the new token store", status: "working", startedAt: now, endedAt: null, contextPercent: 21, usagePercent: 14, metricSource: "reported", providerSessionId: "mock-claude-1", activeTurnId: "mock-turn-1w", model: "fable", requestedTier: "strong", effort: "high", parentSessionId: "session-1", depth: 1, restorationMode: "native", continuationFidelity: "native", kind: "worker" },
     { id: "session-1w2", workspaceId: "demo-1", harness: "codex", label: "Verification · strong", status: "ready", startedAt: now, endedAt: null, contextPercent: 9, usagePercent: 6, metricSource: "reported", providerSessionId: "mock-codex-2", activeTurnId: null, model: "gpt-5.6-sol", requestedTier: "strong", effort: "xhigh", parentSessionId: "session-1", depth: 1, restorationMode: "checkpoint_restored", continuationFidelity: "projected_at_boundary", kind: "worker" },
     { id: "session-2", workspaceId: "demo-2", harness: "codex", label: "Orchestrator", status: "ready", startedAt: now, endedAt: null, contextPercent: 12, usagePercent: 8, metricSource: "reported", providerSessionId: "mock-thread-2", activeTurnId: null, model: "gpt-5.6-luna", requestedTier: "fast", effort: null, parentSessionId: null, depth: 0, restorationMode: "fresh", continuationFidelity: "native", kind: "orchestrator" },
-    { id: "session-2w", workspaceId: "demo-2", harness: "opencode", label: "Docs · fast", status: "working", startedAt: now, endedAt: null, contextPercent: 7, usagePercent: 3, metricSource: "reported", providerSessionId: "mock-opencode-2w", activeTurnId: "mock-turn-2w", model: "opencode/space-bunny-free", requestedTier: "fast", effort: null, parentSessionId: "session-2", depth: 1, restorationMode: "native", continuationFidelity: "native", kind: "worker" }
+    { id: "session-2w", workspaceId: "demo-2", harness: "opencode", label: "Docs · fast", title: "Sidebar running section", status: "working", startedAt: now, endedAt: null, contextPercent: 7, usagePercent: 3, metricSource: "reported", providerSessionId: "mock-opencode-2w", activeTurnId: "mock-turn-2w", model: "opencode/space-bunny-free", requestedTier: "fast", effort: null, parentSessionId: "session-2", depth: 1, restorationMode: "native", continuationFidelity: "native", kind: "worker" },
+    ...mockDeckWorkers(now),
   ],
   events: [
     { id: 2, source: "git", kind: "workspace.changed", entityId: "demo-1", body: "4 files changed · +284 −31", createdAt: now },
@@ -614,6 +622,94 @@ const MOCK_VISUAL = {
   }],
   followUps: ["Split Sep 30 by model", "Show tokens instead"],
 };
+/** One timed turn of the session-1 demo, between the drafted reply and the app turns. */
+const retryTurnAt = (entry: SessionEntry, seconds: number): SessionEntry => ({ ...entry, createdAt: new Date(Date.parse(now) + seconds * 1000).toISOString() });
+const RETRY_PATCHES = {
+  policy: [
+    "--- a/src-tauri/bridge-core/src/policy.rs",
+    "+++ b/src-tauri/bridge-core/src/policy.rs",
+    "@@ -88,3 +88,11 @@ pub struct PolicyLimits {",
+    "     pub max_workers_per_turn: u32,",
+    "     pub max_depth: u32,",
+    "+    /// Failures a chat may absorb inside `retry_window` before it stops and asks.",
+    "+    pub retry_budget: u32,",
+    "+    pub retry_window: Duration,",
+    " }",
+    "+",
+    "+impl PolicyLimits {",
+    "+    pub const DEFAULT_RETRY_BUDGET: u32 = 3;",
+    "+    pub const DEFAULT_RETRY_WINDOW: Duration = Duration::from_secs(600);",
+    "+}",
+  ].join("\n"),
+  coordinator: [
+    "--- a/src-tauri/bridge-core/src/policy_coordinator.rs",
+    "+++ b/src-tauri/bridge-core/src/policy_coordinator.rs",
+    "@@ -212,4 +212,9 @@ impl PolicyCoordinator {",
+    "     fn on_worker_failed(&mut self, worker: &WorkerId) -> Decision {",
+    "-        self.retries.entry(worker.chat()).or_default().push(Instant::now());",
+    "-        Decision::Retry",
+    "+        let failures = self.retries.entry(worker.chat()).or_default();",
+    "+        failures.retain(|at| at.elapsed() < self.limits.retry_window);",
+    "+        failures.push(Instant::now());",
+    "+        if failures.len() as u32 >= self.limits.retry_budget {",
+    "+            return Decision::AskUser(Reason::RetryBudgetSpent);",
+    "+        }",
+    "+        Decision::Retry",
+    "     }",
+  ].join("\n"),
+  coordinatorTest: [
+    "--- a/src-tauri/bridge-core/src/policy_coordinator.rs",
+    "+++ b/src-tauri/bridge-core/src/policy_coordinator.rs",
+    "@@ -301,2 +307,15 @@ mod tests {",
+    "     use super::*;",
+    "+",
+    "+    #[test]",
+    "+    fn a_spent_retry_budget_asks_instead_of_retrying() {",
+    "+        let mut coordinator = PolicyCoordinator::with_limits(PolicyLimits::default());",
+    "+        let worker = WorkerId::test(\"w1\");",
+    "+        for _ in 0..2 {",
+    "+            assert_eq!(coordinator.on_worker_failed(&worker), Decision::Retry);",
+    "+        }",
+    "+        assert_eq!(",
+    "+            coordinator.on_worker_failed(&worker),",
+    "+            Decision::AskUser(Reason::RetryBudgetSpent),",
+    "+        );",
+    "+    }",
+    " }",
+  ].join("\n"),
+  card: [
+    "--- a/src/components/PolicyCard.tsx",
+    "+++ b/src/components/PolicyCard.tsx",
+    "@@ -41,4 +41,4 @@ export function PolicyCard({ limits }: { limits: PolicyLimits }) {",
+    "       <Row label=\"Workers per turn\" value={limits.maxWorkersPerTurn}/>",
+    "       <Row label=\"Depth\" value={limits.maxDepth}/>",
+    "-      <Row label=\"Retries\" value=\"Unlimited\"/>",
+    "+      <Row label=\"Retry budget\" value={`${limits.retryBudget} in ${minutes(limits.retryWindowSecs)}`}/>",
+    "     </dl>",
+  ].join("\n"),
+  contract: [
+    "--- /dev/null",
+    "+++ b/testing/feat-retry-budget.md",
+    "@@ -0,0 +1,6 @@",
+    "+# feat/retry-budget: Test Contract",
+    "+",
+    "+- A worker that fails three times in ten minutes stops and raises an approval card.",
+    "+- Failures older than the window do not count.",
+    "+- Routing can rank candidates but never grants an extra retry.",
+    "+- `cargo test -p bridge-core policy::` passes.",
+  ].join("\n"),
+};
+const MOCK_RETRY_TURN: SessionEntry[] = [
+  retryTurnAt(forestEntry("entry-retry-user", "session-1", 25, "user.message", { text: "Add a retry budget to the policy engine. Workers should stop retrying after three failures in ten minutes and ask me instead. Run the policy tests.", itemId: "user-retry" }, "entry-20b"), 0),
+  retryTurnAt(forestEntry("entry-retry-read", "session-1", 26, "tool.completed", { status: "completed", title: "Read policy.rs", data: { type: "readFile", path: "src-tauri/bridge-core/src/policy.rs", durationMs: 200 } }, "entry-retry-user"), 2),
+  retryTurnAt(forestEntry("entry-retry-policy", "session-1", 27, "file_change.completed", { status: "completed", title: "policy.rs", data: { path: "src-tauri/bridge-core/src/policy.rs", additions: 8, deletions: 0, durationMs: 300, patch: RETRY_PATCHES.policy } }, "entry-retry-read"), 6),
+  retryTurnAt(forestEntry("entry-retry-coordinator", "session-1", 28, "file_change.completed", { status: "completed", title: "policy_coordinator.rs", data: { path: "src-tauri/bridge-core/src/policy_coordinator.rs", additions: 7, deletions: 2, durationMs: 300, patch: RETRY_PATCHES.coordinator } }, "entry-retry-policy"), 10),
+  retryTurnAt(forestEntry("entry-retry-coordinator-test", "session-1", 29, "file_change.completed", { status: "completed", title: "policy_coordinator.rs", data: { path: "src-tauri/bridge-core/src/policy_coordinator.rs", additions: 13, deletions: 0, durationMs: 300, patch: RETRY_PATCHES.coordinatorTest } }, "entry-retry-coordinator"), 13),
+  retryTurnAt(forestEntry("entry-retry-card", "session-1", 30, "file_change.completed", { status: "completed", title: "PolicyCard.tsx", data: { path: "src/components/PolicyCard.tsx", additions: 1, deletions: 1, durationMs: 300, patch: RETRY_PATCHES.card } }, "entry-retry-coordinator-test"), 17),
+  retryTurnAt(forestEntry("entry-retry-contract", "session-1", 31, "file_change.completed", { status: "completed", title: "feat-retry-budget.md", data: { path: "testing/feat-retry-budget.md", additions: 6, deletions: 0, durationMs: 200, patch: RETRY_PATCHES.contract } }, "entry-retry-card"), 20),
+  retryTurnAt(forestEntry("entry-retry-test", "session-1", 32, "command.completed", { status: "completed", title: "cargo test -p bridge-core policy::", data: { type: "commandExecution", command: "cargo test -p bridge-core policy::", exitCode: 0, durationMs: 12_000, aggregatedOutput: "running 42 tests\n...\ntest result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 174 filtered out; finished in 11.82s" } }, "entry-retry-contract"), 22),
+  retryTurnAt(forestEntry("entry-retry-reply", "session-1", 33, "assistant.message", { text: "Added a per-chat retry budget to the policy engine. A worker that fails three times in ten minutes now stops and raises an approval card instead of retrying.\n\nThe budget lives in `PolicyLimits` next to the existing concurrency gate, so routing can still rank candidates but can never grant an extra retry. `cargo test -p bridge-core policy::` passes, 42 tests." }, "entry-retry-test"), 36),
+];
 const demoEntries: SessionEntry[] = [
   forestEntry("entry-1", "session-1", 1, "user.message", { text: "Build the structured session supervisor.", itemId: "user-1" }, null),
   forestEntry("entry-2", "session-1", 2, "checkpoint", { schemaVersion: 1, summary: "Policy and schema decisions are durable", decisions: ["SQLite is authoritative"] }, "entry-1"),
@@ -656,11 +752,16 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-18b", "session-1", 22, "user.message", { text: "Tell #dev in the deploy thread that staging is done and I'll watch errors before promoting.", itemId: "user-outgoing" }, "entry-17b"),
   forestEntry("entry-19b", "session-1", 23, "tool.completed", { status: "completed", title: "mcp__bridge__outgoing_draft", data: { type: "tool_use", name: "mcp__bridge__outgoing_draft", input: { to: { slack: { channel: "#dev", thread: "https://acme.slack.com/archives/C01/p1730000000" } }, body: "Deploy to staging is done \u2014 all checks green.", reason: "tell #dev the staging deploy finished" }, aggregatedOutput: JSON.stringify({ id: MOCK_OUTGOING_ID, state: "draft", destination: "Slack \u00b7 #dev \u00b7 thread" }) } }, "entry-18b"),
   forestEntry("entry-20b", "session-1", 24, "assistant.message", { text: "Drafted a reply for the #dev deploy thread. Edit or copy it from the card." }, "entry-19b"),
-  forestEntry("entry-raw", "session-1", 25, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-20b"),
-  forestEntry("entry-app-user", "session-1", 26, "user.message", { text: "Build me a small app to find and message a teammate on Slack.", itemId: "user-app" }, "entry-raw"),
-  forestEntry("entry-app-draft", "session-1", 27, "tool.completed", { status: "completed", title: "mcp__bridge__apps_draft", data: { type: "tool_use", name: "mcp__bridge__apps_draft", input: { name: "Slack DM" }, aggregatedOutput: JSON.stringify({ draftId: MOCK_APP_DRAFT_ID, contentHash: MOCK_APP_HASH }) } }, "entry-app-user"),
-  forestEntry("entry-app-open-user", "session-1", 28, "user.message", { text: "Message Ada that the preview is ready.", itemId: "user-app-open" }, "entry-app-draft"),
-  forestEntry("entry-app-open", "session-1", 29, "tool.completed", { status: "completed", title: "mcp__bridge__apps_open", data: { type: "tool_use", name: "mcp__bridge__apps_open", input: { app_id: "slack-dm" }, aggregatedOutput: JSON.stringify({ openId: MOCK_APP_OPEN_ID, contentHash: MOCK_APP_HASH }) } }, "entry-app-open-user")
+  // A settled turn that edits four files across three folders, one of them
+  // twice and one of them new, then answers: `bun run dev` shows the turn's
+  // changes card and the turn line under its reply. Timed, so the card's
+  // caption and the Worked for header have a real span to agree on.
+  ...MOCK_RETRY_TURN,
+  forestEntry("entry-raw", "session-1", 34, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-retry-reply"),
+  forestEntry("entry-app-user", "session-1", 35, "user.message", { text: "Build me a small app to find and message a teammate on Slack.", itemId: "user-app" }, "entry-raw"),
+  forestEntry("entry-app-draft", "session-1", 36, "tool.completed", { status: "completed", title: "mcp__bridge__apps_draft", data: { type: "tool_use", name: "mcp__bridge__apps_draft", input: { name: "Slack DM" }, aggregatedOutput: JSON.stringify({ draftId: MOCK_APP_DRAFT_ID, contentHash: MOCK_APP_HASH }) } }, "entry-app-user"),
+  forestEntry("entry-app-open-user", "session-1", 37, "user.message", { text: "Message Ada that the preview is ready.", itemId: "user-app-open" }, "entry-app-draft"),
+  forestEntry("entry-app-open", "session-1", 38, "tool.completed", { status: "completed", title: "mcp__bridge__apps_open", data: { type: "tool_use", name: "mcp__bridge__apps_open", input: { app_id: "slack-dm" }, aggregatedOutput: JSON.stringify({ openId: MOCK_APP_OPEN_ID, contentHash: MOCK_APP_HASH }) } }, "entry-app-open-user")
 ];
 // Seed memory for the mock host: a spread the Memory surface can actually
 // render — pinned + accepted + proposed records, a supersession lineage, a
@@ -719,6 +820,7 @@ let mockExtractionSettings: MemoryExtractionSettings = { scopeKey: "account:loca
 const mockMemoryMaxRecords = 200;
 let mockMemoryInjection = true;
 const mockForests: Record<string, SessionForestSnapshot> = {
+  "session-2": mockDeckForest(now),
   "session-1": {
     sessionId: "session-1", entries: demoEntries, head: { sessionId: "session-1", activeEntryId: "entry-app-open", nativeProviderSessionId: "mock-thread-1", restorationMode: "hot", resumeEligibility: "native", latestCheckpointEntryId: "entry-2", updatedAt: now }, leaves: [demoEntries[4], demoEntries[demoEntries.length - 1]],
     workerLeases: [
@@ -877,6 +979,38 @@ const mockMeterRegistry: MeterRegistry = {
   nominalIntervalSeconds: 300,
   attribution: "Meter math ported from steipete/CodexBar (MIT)",
 };
+// Browser-mode stand-in for the Time tab: deterministic days (lighter at
+// weekends, agents two to four times your time), plus whatever this tab's
+// own tracker reported today. Never shown inside Tauri.
+const mockPresenceMinutes = new Set<number>();
+function mockScreenTime(params: ScreenTimeParams): UsageScreenTimeResult {
+  const shift = (day: string, delta: number) => {
+    const [year, month, date] = day.split("-").map(Number);
+    return new Date(Date.UTC(year, month - 1, date + delta)).toISOString().slice(0, 10);
+  };
+  const seed = (day: string) => { const n = [...day].reduce((hash, char) => hash * 31 + char.charCodeAt(0), 7) % 100_003; return Math.abs(Math.sin(n * 12.9898) * 43_758.5453) % 1; };
+  const days: UsageScreenTimeResult["days"] = [];
+  for (let day = params.sinceDay; day <= params.untilDay; day = shift(day, 1)) {
+    const weekday = new Date(`${day}T12:00:00Z`).getUTCDay();
+    const weekend = weekday === 0 || weekday === 6;
+    const humanMinutes = Math.round((weekend ? 40 : 150) + seed(day) * (weekend ? 60 : 180));
+    const agentMinutes = Math.round(humanMinutes * (2 + seed(`${day}a`) * 2));
+    days.push({ day, humanSeconds: humanMinutes * 60, agentSeconds: agentMinutes * 60 });
+  }
+  const today = days[days.length - 1];
+  if (today) today.humanSeconds += mockPresenceMinutes.size * 60;
+  const humanSeconds = days.reduce((sum, day) => sum + day.humanSeconds, 0);
+  const agentSeconds = days.reduce((sum, day) => sum + day.agentSeconds, 0);
+  return {
+    sinceDay: params.sinceDay,
+    untilDay: params.untilDay,
+    timeZone: params.timeZone ?? "UTC",
+    days,
+    allTime: { humanSeconds: humanSeconds + 212 * 3_600, agentSeconds: agentSeconds + 731 * 3_600, humanSinceDay: shift(params.untilDay, -79), agentSinceDay: shift(params.untilDay, -140) },
+    agentHistory: "complete",
+  };
+}
+
 // Browser-mode stand-in for the Insights tab: the shape a real run returns,
 // with figures that exercise every chart. Never shown inside Tauri.
 let mockInsights: UsageInsightsResult | null = null;
@@ -1165,7 +1299,10 @@ function emitState() { stateListeners.forEach(listener => listener()); }
 function emitMemoryChanged(scopeKey: string) { memoryListeners.forEach(listener => listener({ scopeKey })); }
 function appendAgent(sessionId: string, kind: string, fields: Partial<AgentEvent> = {}) {
   const event = agentEvent(nextEventId++, sessionId, kind, fields);
-  event.sequence = Math.max(0, ...mockState.agentEvents.filter(item => item.sessionId === sessionId).map(item => item.sequence)) + 1;
+  // After the stored history too, as the core's log is: a demo chat's forest
+  // runs past its seeded frames, and a message sent into it belongs at the end.
+  const stored = mockForests[sessionId]?.entries.map(entry => entry.sequence) ?? [];
+  event.sequence = Math.max(0, ...mockState.agentEvents.filter(item => item.sessionId === sessionId).map(item => item.sequence), ...stored) + 1;
   mockState.agentEvents.push(event);
   // Cloned per listener so no subscriber can mutate the stored row or another
   // subscriber's copy — the same isolation a wire round-trip gives.
@@ -1759,17 +1896,17 @@ function startMockImport(tool: string): ImportJob {
   return job;
 }
 
-/** Mock-mode tools: Claude Code found with history, two ADEs found, the rest absent. */
+/** Mock-mode tools: Claude Code, Codex and OpenCode found with history, an ADE found, the rest absent. */
 function mockImportSources(): ImportSourcesDetection {
   const absent = (tool: string, label: string, note: string) => ({ tool, label, installed: false, supported: false, roots: [], counts: { chats: 0, projects: 0, workspaces: 0, memories: 0, setup: 0, background: 0 }, note });
   return {
     detectedAt: new Date().toISOString(),
     sources: [
       { tool: "claude_code", label: "Claude Code", installed: true, supported: true, roots: ["/mock/.claude"], counts: { chats: 3, projects: 1, workspaces: 0, memories: 1, setup: 1, background: 0 }, note: "Chats with their tool calls, thinking, images and subagents, plus setup. Claude Code keeps using its own memory." },
-      { tool: "codex", label: "Codex", installed: true, supported: false, roots: ["/mock/.codex/sessions"], counts: { chats: 12, projects: 0, workspaces: 0, memories: 0, setup: 0, background: 0 }, note: "Codex chats are next. Nothing is read until then." },
-      absent("opencode", "OpenCode", "OpenCode chats are coming. Nothing is read until then."),
-      { tool: "conductor", label: "Conductor", installed: true, supported: false, roots: ["/mock/conductor/workspaces"], counts: { chats: 0, projects: 2, workspaces: 5, memories: 0, setup: 0, background: 0 }, note: "Conductor runs Claude Code, so its chats come over with the Claude Code import. Its workspace names and scripts are coming." },
-      absent("t3code", "T3 Code", "T3 Code runs Claude Code, so its Claude chats come over with the Claude Code import. Thread titles and projects are coming."),
+      { tool: "codex", label: "Codex", installed: true, supported: true, roots: ["/mock/.codex"], counts: { chats: 12, projects: 2, workspaces: 0, memories: 0, setup: 0, background: 4 }, note: "Chats with their commands, edits and MCP calls. Codex keeps using its own memory." },
+      { tool: "opencode", label: "OpenCode", installed: true, supported: true, roots: ["/mock/.local/share/opencode"], counts: { chats: 9, projects: 3, workspaces: 0, memories: 0, setup: 0, background: 6 }, note: "Chats with their commands, edits and subagents. OpenCode keeps its own memory and setup." },
+      { tool: "conductor", label: "Conductor", installed: true, supported: true, roots: ["/mock/conductor"], counts: { chats: 0, projects: 2, workspaces: 5, memories: 0, setup: 0, background: 0 }, note: "Workspaces come over as Bridge workspaces, left where they are, so Conductor keeps working with them. Their chats come over with the Claude Code and Codex imports." },
+      { tool: "t3code", label: "T3 Code", installed: true, supported: true, roots: ["/mock/.t3"], counts: { chats: 6, projects: 2, workspaces: 2, memories: 0, setup: 0, background: 0 }, note: "Threads come over as chats, with their full Claude Code, Codex or OpenCode history, or T3 Code's own copy when that is gone. Worktrees come over as Bridge workspaces, left where they are, so T3 Code keeps working with them." },
       absent("orca", "Orca", "Orca's Claude Code chats come over with the Claude Code import. Its projects and multi-agent runs are coming."),
       absent("superset", "Superset", "Superset's Claude Code chats come over with the Claude Code import. Its workspaces and agent settings are coming."),
     ],
@@ -1981,6 +2118,32 @@ export const bridgeApi = {
     hasBackend() ? call("github/github_act", { workspaceId, action, confirmed }) : Promise.resolve(mockGithubAct(action, confirmed)),
   githubReview: (workspaceId: string, number: number, harness: string, sessionId?: string): Promise<GithubReviewResult> =>
     hasBackend() ? call("github/github_review", { workspaceId, number, harness, sessionId }) : Promise.resolve(mockGithubReview(number, harness)),
+  // Reviews: PR reviews as background jobs on Bridge's own runner. The browser
+  // preview has no runner and no GitHub, so it lists nothing and starts nothing
+  // rather than inventing a job.
+  startReview: (params: { workspaceId: string; number: number; harnesses?: string[]; trigger?: ReviewTrigger }): Promise<ReviewJobResult> =>
+    hasBackend()
+      ? call("reviews/start_review", { workspaceId: params.workspaceId, number: params.number, harnesses: params.harnesses ?? null, trigger: params.trigger ?? null })
+      : Promise.reject(new Error(REVIEWS_NEED_DESKTOP)),
+  listReviews: (workspaceId: string, number?: number): Promise<ReviewJobList> =>
+    hasBackend() ? call("reviews/list_reviews", { workspaceId, number: number ?? null }) : Promise.resolve({ jobs: [] }),
+  getReview: (jobId: string): Promise<ReviewJobDetail> =>
+    hasBackend() ? call("reviews/get_review", { jobId }) : Promise.reject(new Error(`No review job ${jobId}`)),
+  cancelReview: (jobId: string): Promise<ReviewJobResult> =>
+    hasBackend() ? call("reviews/cancel_review", { jobId }) : Promise.reject(new Error(`No review job ${jobId}`)),
+  retryReview: (jobId: string): Promise<ReviewJobResult> =>
+    hasBackend() ? call("reviews/retry_review", { jobId }) : Promise.reject(new Error(`No review job ${jobId}`)),
+  onReviewJobUpdated: (handler: (payload: { job: ReviewJob }) => void): Promise<UnlistenFn> =>
+    hasBackend() ? subscribe<{ job: ReviewJob }>("reviews/job_updated", handler) : Promise.resolve(() => {}),
+  getReviewJobSettings: async (): Promise<ReviewJobSettings> => {
+    if (hasBackend()) return call("reviews/get_review_job_settings");
+    return structuredClone(mockReviewJobSettings);
+  },
+  saveReviewJobSettings: async (settings: ReviewJobSettings): Promise<ReviewJobSettings> => {
+    if (hasBackend()) return call("reviews/save_review_job_settings", { settings });
+    mockReviewJobSettings = { ...mockReviewJobSettings, ...structuredClone(settings) };
+    return structuredClone(mockReviewJobSettings);
+  },
   githubCheckout: (workspaceId: string, number: number): Promise<GithubCheckoutResult> =>
     hasBackend() ? call("github/github_checkout", { workspaceId, number }) : Promise.resolve(mockGithubCheckout(workspaceId, number)),
   githubConnect: (workspaceId: string, remoteUrl: string): Promise<GithubConnectResult> =>
@@ -2416,6 +2579,16 @@ export const bridgeApi = {
   // comes back at once when `refresh` is false.
   usageInsights: (params: InsightsParams): Promise<UsageInsightsResult> =>
     hasBackend() ? call("usage/insights", params) : new Promise(resolve => setTimeout(() => resolve(mockUsageInsights(params)), params.refresh ? 900 : 0)),
+  /** Screen Time: the minutes you were active in this window. Recording one twice stores it once. */
+  recordPresence: (params: RecordPresenceParams): Promise<UsageRecordPresenceResult> => {
+    if (hasBackend()) return call("usage/record_presence", params);
+    const before = mockPresenceMinutes.size;
+    for (const minute of params.minutes) mockPresenceMinutes.add(minute);
+    return Promise.resolve({ recorded: mockPresenceMinutes.size - before });
+  },
+  /** Screen Time: your time and agent time per local day, and the all-time totals. */
+  screenTime: (params: ScreenTimeParams): Promise<UsageScreenTimeResult> =>
+    hasBackend() ? call("usage/screen_time", params) : Promise.resolve(mockScreenTime(params)),
   listUsagePriceOverrides: (): Promise<UsagePriceOverride[]> =>
     hasBackend() ? call("usage/list_price_overrides") : Promise.resolve(structuredClone(mockPriceOverrides)),
   setUsagePriceOverride: (params: SetPriceOverrideParams): Promise<UsagePriceOverride[]> => {
@@ -2890,7 +3063,7 @@ export const bridgeApi = {
   },
   workerSettings: async (workspaceId: string): Promise<WorkerSettings> => {
     if (hasBackend()) return call("config/get_worker_settings", { workspaceId });
-    return { defaultHarness: null, maxConcurrentWorkers: 2, maxWorkersPerTurn: 3, stallTimeoutSeconds: 600, warmRetentionMinutes: 5, automaticRetry: true, providerFailover: true };
+    return { defaultHarness: null, maxConcurrentWorkers: 0, maxWorkersPerTurn: 0, stallTimeoutSeconds: 600, warmRetentionMinutes: 5, automaticRetry: true, providerFailover: true };
   },
   saveWorkerSettings: async (workspaceId: string, settings: WorkerSettings): Promise<WorkerSettings> => {
     if (hasBackend()) return call("config/save_worker_settings", { workspaceId, settings });
@@ -3659,7 +3832,7 @@ export const bridgeApi = {
   },
   listWorkspaceFiles: (sessionId: string): Promise<string[]> => hasBackend()
     ? call("workspaces/list_workspace_files", { sessionId })
-    : Promise.resolve(["src/App.tsx", "src/api.ts", "src/types.ts", "src-tauri/src/lib.rs", "README.md"]),
+    : Promise.resolve(["README.md", "docs/delegation-policy.md", "src/App.tsx", "src/api.ts", "src/types.ts", "src/auth/client.ts", "src/auth/tokenStore.ts", "src/components/PolicyCard.tsx", "src-tauri/src/lib.rs", "src-tauri/bridge-core/src/policy.rs", "src-tauri/bridge-core/src/policy_coordinator.rs", "src-tauri/bridge-core/tests/policy_tests.rs"]),
   connectWorkspaceFolder: async (workspaceId: string, path: string): Promise<BridgeState> => {
     if (hasBackend()) return call("workspaces/connect_workspace_folder", { workspaceId, path });
     const workspace = mockState.workspaces.find(item => item.id === workspaceId); if (workspace) { workspace.path = path; workspace.branch = "main"; }
@@ -3847,7 +4020,8 @@ export const bridgeApi = {
   /** The live channel dropped frames. Durable ones come back by cursor replay. */
   onStreamLagged: async (handler: () => void): Promise<UnlistenFn> => hasBackend() ? subscribe("stream-lagged", handler) : () => undefined,
   openTerminal: (workspaceId: string, terminalId: string): Promise<void> => hasBackend() ? unit(call("terminal/open_terminal", { workspaceId, terminalId })) : Promise.resolve(),
-  writeTerminal: (workspaceId: string, terminalId: string, data: string): Promise<void> => hasBackend() ? unit(call("terminal/write_terminal", { workspaceId, terminalId, data })) : Promise.resolve(),
+  /** `binary` marks a string whose chars are bytes (xterm's X10 mouse reports), not text. Always sent: a Tauri command argument cannot be omitted. */
+  writeTerminal: (workspaceId: string, terminalId: string, data: string, binary = false): Promise<void> => hasBackend() ? unit(call("terminal/write_terminal", { workspaceId, terminalId, data, binary })) : Promise.resolve(),
   resizeTerminal: (workspaceId: string, terminalId: string, rows: number, cols: number): Promise<void> => hasBackend() ? unit(call("terminal/resize_terminal", { workspaceId, terminalId, rows, cols })) : Promise.resolve(),
   closeTerminal: (workspaceId: string, terminalId: string): Promise<void> => hasBackend() ? unit(call("terminal/close_terminal", { workspaceId, terminalId })) : Promise.resolve(mockCloseTerminal(workspaceId, terminalId)),
   listTerminals: async (workspaceId: string): Promise<string[]> => {
@@ -3903,6 +4077,10 @@ export const bridgeApi = {
   },
   workspaceChanges: (workspaceId: string): Promise<WorkspaceChangesResult> =>
     hasBackend() ? call("workspaces/workspace_changes", { workspaceId }) : Promise.resolve(mockWorkspaceChanges()),
+  /** What one chat's own turns changed. Without `includePatches` only the
+   *  counts come back, which is what the header badge polls for. */
+  sessionChanges: (sessionId: string, includePatches = false): Promise<SessionChangesResult> =>
+    hasBackend() ? call("workspaces/session_changes", { sessionId, includePatches }) : Promise.resolve(mockSessionChanges(sessionId, includePatches)),
   listWorkspaceTree: (workspaceId: string): Promise<string[]> =>
     hasBackend() ? call("workspaces/list_workspace_tree", { workspaceId }) : Promise.resolve(mockTreePaths()),
   // `async` rather than `Promise.resolve(mock…())`: the mocks throw on the
@@ -4372,6 +4550,27 @@ function mockWriteFile(path: string, content: string, baseSha256: string | null)
 /** Browser-mode fixture for the Changes tab: one file per importance tier,
  * plus a lockfile, so the collapse-by-default affordance has something to
  * hide even without a daemon. */
+/** The browser build's chats: each owns a few of its folder's files, and the
+ *  two demo workspaces' chats own different ones, so they can be told apart. */
+function mockSessionChanges(sessionId: string, includePatches: boolean): SessionChangesResult {
+  const folder = mockWorkspaceChanges();
+  const workspaceId = mockState.sessions.find(session => session.id === sessionId)?.workspaceId;
+  const own = workspaceId === "demo-2"
+    ? ["src-tauri/bridge-core/src/policy.rs"]
+    : ["src/components/ChangesPanel.tsx", "src/utils.ts"];
+  const files = folder.files
+    .filter(file => own.includes(file.path))
+    .map(file => includePatches ? file : { ...file, patch: "" });
+  return {
+    available: true,
+    turns: 3,
+    since: new Date(Date.now() - 42 * 60_000).toISOString(),
+    additions: files.reduce((sum, file) => sum + file.additions, 0),
+    deletions: files.reduce((sum, file) => sum + file.deletions, 0),
+    changes: { ...folder, baseCommit: null, files, totalFiles: files.length },
+  };
+}
+
 function mockWorkspaceChanges(): WorkspaceChangesResult {
   return {
     baseCommit: "a1b2c3d4",

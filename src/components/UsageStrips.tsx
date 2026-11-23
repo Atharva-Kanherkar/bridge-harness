@@ -4,7 +4,7 @@ import { harnessLabel } from "../utils";
 import { harnessChartDot, harnessChartText } from "./harnessMarks";
 import { chartY, formatPercent, formatPeriodLabel, formatTokens, formatUsd, type ChartGeometry } from "../usageReport";
 import { axisFraction, harnessesByMetric, harnessValue, modelValue, periodHarnessValue, periodValue, straightPaths } from "../usageGeometry";
-import { AxisLabels, EstimateMark, formatMetric, HarnessName, HeroCaption, LAYOUT_CARD, PartialBadge, periodNoun, useScrub, type UsageLayoutProps } from "./UsageLayoutParts";
+import { AxisLabels, EstimateMark, formatMetric, HarnessName, HeroCaption, LAYOUT_CARD, periodNoun, useScrub, type UsageLayoutProps } from "./UsageLayoutParts";
 
 // Layout B: small multiples. One strip per harness on one shared clock, so
 // no series is ever drawn over another. A single rule scrubs every strip at
@@ -33,7 +33,7 @@ function Strip({ values, max, geometry, index, harness, gradientId }: { values: 
   </div>;
 }
 
-export function UsageStrips({ report, window, metric, partial }: UsageLayoutProps) {
+export function UsageStrips({ report, window, metric }: UsageLayoutProps) {
   const [scale, setScale] = useState<StripScale>("shared");
   const format = formatMetric(metric);
   const id = useId().replace(/:/g, "");
@@ -54,7 +54,6 @@ export function UsageStrips({ report, window, metric, partial }: UsageLayoutProp
   return <div className="space-y-5">
     <section aria-label="Summary" className="flex flex-wrap items-end justify-between gap-6">
       <div>
-        <PartialBadge label={partial} className="mb-3" />
         <div className="text-[2.75rem] font-light leading-none tracking-[-0.04em] tabular-nums text-foreground">{format(metric === "cost" ? report.totals.costMicrousd : report.totals.processedTokens)}{metric === "cost" && <EstimateMark report={report} large />}</div>
         <p className="mt-2.5 text-body text-muted-foreground">{metric === "cost"
           ? <>at API rates · <span className="font-medium tabular-nums text-foreground">{formatTokens(report.totals.processedTokens)}</span> tokens processed</>

@@ -486,3 +486,78 @@ mod tests {
         assert_eq!(serde_json::to_value(UsageInsightsStatus::Unavailable).unwrap(), json!("unavailable"));
     }
 }
+
+/// Params for `usage/record_presence`: epoch minutes (UTC, seconds / 60) in
+/// which the person was active in a Bridge window. Recording a minute twice
+/// stores it once, so a retry or a second window never double counts. Minutes
+/// beyond the current one or older than 7 days are dropped; more than 1,440
+/// in one call is refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecordPresenceParams {
+    pub minutes: Vec<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageRecordPresenceResult {
+    /// Minutes newly stored by this call.
+    pub recorded: i64,
+}
+
+/// Params for `usage/screen_time`: an inclusive range of local days, at most
+/// 92 of them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScreenTimeParams {
+    /// Inclusive first day, `YYYY-MM-DD` in `time_zone`.
+    pub since_day: String,
+    /// Inclusive last day, `YYYY-MM-DD` in `time_zone`.
+    pub until_day: String,
+    /// IANA zone the caller lives in; UTC when absent.
+    #[serde(default)]
+    pub time_zone: Option<String>,
+}
+
+/// One local day. Your time is minutes the window was focused and in use;
+/// agent time is minutes counted chats spent working, added across chats.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenTimeDay {
+    pub day: String,
+    pub human_seconds: i64,
+    pub agent_seconds: i64,
+}
+
+/// Everything ever recorded, regardless of the range asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenTimeTotals {
+    pub human_seconds: i64,
+    pub agent_seconds: i64,
+    /// Local day of the first recorded minute of your time.
+    pub human_since_day: Option<String>,
+    /// Local day of the first recorded minute of agent time.
+    pub agent_since_day: Option<String>,
+}
+
+/// `counting` while entries written before Screen Time existed are still
+/// being read; agent figures grow until it reads `complete`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenTimeAgentHistory {
+    Complete,
+    Counting,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageScreenTimeResult {
+    pub since_day: String,
+    pub until_day: String,
+    pub time_zone: String,
+    /// One entry per day in the range, oldest first, zeros included.
+    pub days: Vec<ScreenTimeDay>,
+    pub all_time: ScreenTimeTotals,
+    pub agent_history: ScreenTimeAgentHistory,
+}

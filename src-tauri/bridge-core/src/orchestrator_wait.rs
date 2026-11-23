@@ -94,6 +94,65 @@ impl FireReason {
     }
 }
 
+/// The prefix a wait uses for a delegation still in `worker_queue`: it has no
+/// session id until it dispatches, and then `adopt_dispatched` swaps it in.
+pub const QUEUED_PREFIX: &str = "queue:";
+
+/// The orchestrator's delegations that are queued and not yet dispatched or
+/// closed, as `queue:<id>` wait entries. A queued worker is still coming: a
+/// wait over "all" workers that ignored it fired `all_done` while it waited for
+/// a slot, and its result then arrived as a stray turn after the summary.
+pub fn pending_queued(db: &Connection, orchestrator_session_id: &str) -> Result<Vec<String>, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT id FROM worker_queue
+         WHERE parent_session_id=?1 AND queue_status IN ('queued','dispatching','blocked_on_human')
+         ORDER BY sequence",
+    )?;
+    let rows = statement.query_map(params![orchestrator_session_id], |row| row.get::<_, String>(0))?;
+    rows.map(|row| row.map(|id| format!("{QUEUED_PREFIX}{id}")).map_err(BridgeError::from)).collect()
+}
+
+/// Where a wait entry stands: still coming (queued or running), or finished
+/// as far as the wait can tell. A dispatched queue entry resolves to its
+/// session, so a missed `adopt_dispatched` still waits for the real worker.
+fn entry_pending(db: &Connection, live: &[String], held: &[(String, String, String)], entry: &str) -> Result<bool, BridgeError> {
+    let reported = |id: &str| held.iter().any(|(child, _, _)| child == id);
+    let Some(queue_id) = entry.strip_prefix(QUEUED_PREFIX) else {
+        return Ok(!reported(entry) && live.iter().any(|worker| worker == entry));
+    };
+    let row: Option<(String, Option<String>)> = db
+        .query_row(
+            "SELECT queue_status, dispatched_session_id FROM worker_queue WHERE id=?1",
+            params![queue_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    Ok(match row {
+        Some((status, _)) if matches!(status.as_str(), "queued" | "dispatching" | "blocked_on_human") => true,
+        Some((status, Some(session))) if status == "dispatched" => !reported(&session) && live.contains(&session),
+        _ => false,
+    })
+}
+
+/// Swap a queued wait entry for the session it dispatched as, so that
+/// worker's result is held by the wait like any other.
+pub fn adopt_dispatched(db: &Connection, orchestrator_session_id: &str, queue_id: &str, session_id: &str) -> Result<bool, BridgeError> {
+    let Some(wait) = armed(db, orchestrator_session_id)? else { return Ok(false) };
+    let entry = format!("{QUEUED_PREFIX}{queue_id}");
+    if !wait.workers.contains(&entry) {
+        return Ok(false);
+    }
+    let mut workers: Vec<String> = wait.workers.into_iter().filter(|worker| worker != &entry).collect();
+    if !workers.iter().any(|worker| worker == session_id) {
+        workers.push(session_id.to_owned());
+    }
+    db.execute(
+        "UPDATE orchestrator_waits SET workers=?2 WHERE orchestrator_session_id=?1",
+        params![orchestrator_session_id, serde_json::to_string(&workers).unwrap_or_else(|_| "[]".into())],
+    )?;
+    Ok(true)
+}
+
 /// The orchestrator's live workers: its own children that have not reported.
 pub fn live_workers(db: &Connection, orchestrator_session_id: &str) -> Result<Vec<String>, BridgeError> {
     let mut statement = db.prepare(
@@ -111,21 +170,29 @@ pub fn live_workers(db: &Connection, orchestrator_session_id: &str) -> Result<Ve
 /// turn is not delivered on its own. Run inside one transaction.
 pub fn arm(db: &Connection, orchestrator_session_id: &str, request: &WaitRequest, now: DateTime<Utc>) -> Result<ArmOutcome, BridgeError> {
     let live = live_workers(db, orchestrator_session_id)?;
+    let queued = pending_queued(db, orchestrator_session_id)?;
     let workers = match &request.workers {
         WaitWorkers::All(_) => {
-            if live.is_empty() {
-                return Ok(ArmOutcome::Refused("none of your workers is running, so there is nothing to wait for".into()));
+            if live.is_empty() && queued.is_empty() {
+                return Ok(ArmOutcome::Refused("none of your workers is running or queued, so there is nothing to wait for".into()));
             }
-            live
+            live.iter().chain(queued.iter()).cloned().collect()
         }
         WaitWorkers::Listed(ids) => {
             let mut workers = Vec::new();
             for id in ids {
-                if !live.contains(id) {
-                    return Ok(ArmOutcome::Refused(format!("{id} is not one of your running workers, so no wait was armed")));
-                }
-                if !workers.contains(id) {
-                    workers.push(id.clone());
+                // A queued worker is named by its queue id, with or without the prefix.
+                let entry = if live.contains(id) {
+                    id.clone()
+                } else {
+                    let prefixed = if id.starts_with(QUEUED_PREFIX) { id.clone() } else { format!("{QUEUED_PREFIX}{id}") };
+                    if !queued.contains(&prefixed) {
+                        return Ok(ArmOutcome::Refused(format!("{id} is not one of your running or queued workers, so no wait was armed")));
+                    }
+                    prefixed
+                };
+                if !workers.contains(&entry) {
+                    workers.push(entry);
                 }
             }
             workers
@@ -254,12 +321,16 @@ pub fn due(db: &Connection, wait: &ArmedWait, now: DateTime<Utc>) -> Result<Opti
         WaitUntil::AnyDone if !held.is_empty() => return Ok(Some(FireReason::AnyDone)),
         WaitUntil::AllDone => {
             let live = live_workers(db, &wait.orchestrator_session_id)?;
-            // Done: it reported into this wait, or it is no longer running at
-            // all (stopped, archived); either way nothing more is coming.
-            let all_done = wait
-                .workers
-                .iter()
-                .all(|worker| held.iter().any(|(child, _, _)| child == worker) || !live.contains(worker));
+            // Done: it reported into this wait, or it is no longer running or
+            // queued at all (stopped, archived, rejected); either way nothing
+            // more is coming.
+            let mut all_done = true;
+            for worker in &wait.workers {
+                if entry_pending(db, &live, &held, worker)? {
+                    all_done = false;
+                    break;
+                }
+            }
             if all_done {
                 return Ok(Some(FireReason::AllDone));
             }
@@ -286,12 +357,12 @@ pub fn fire(
     let Some(wait) = armed(db, orchestrator_session_id)? else { return Ok(None) };
     let held = held(db, orchestrator_session_id)?;
     let live = live_workers(db, orchestrator_session_id)?;
-    let reported: Vec<&str> = held.iter().map(|(child, _, _)| child.as_str()).collect();
-    let still_running: Vec<&String> = wait
-        .workers
-        .iter()
-        .filter(|worker| !reported.contains(&worker.as_str()) && live.contains(worker))
-        .collect();
+    let mut still_running: Vec<&String> = Vec::new();
+    for worker in &wait.workers {
+        if entry_pending(db, &live, &held, worker)? {
+            still_running.push(worker);
+        }
+    }
     let results: Vec<Value> = held
         .iter()
         .map(|(_, _, notice)| serde_json::from_str(notice).unwrap_or_else(|_| json!({"type": "bridge-worker-result", "raw": notice})))
@@ -400,6 +471,89 @@ mod tests {
         let rows = queued(db);
         assert_eq!(rows.len(), 1, "exactly one delivery: {rows:?}");
         serde_json::from_str(&rows[0].0).unwrap()
+    }
+
+    fn enqueue_worker(db: &Connection, id: &str) {
+        db.execute("INSERT OR IGNORE INTO workspaces(id,title,status,created_at) VALUES('ws','Work','idle','2026-11-20T00:00:00Z')", []).unwrap();
+        db.execute(
+            "INSERT INTO worker_queue(id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,created_at,updated_at)
+             VALUES(?1,'orch','ws','turn','{\"role\":\"research\"}','m','queued',?2,?2)",
+            params![id, Utc::now().to_rfc3339()],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn all_done_waits_for_a_worker_still_in_the_queue() {
+        // The reported failure: two workers ran, a third waited for a slot, and
+        // the wait fired all_done with stillRunning empty before it started.
+        let (_scratch, db) = store();
+        report(&db, "w3");
+        enqueue_worker(&db, "q1");
+        let now = Utc::now();
+        let ArmOutcome::Armed { workers, .. } = arm(&db, "orch", &request("{}"), now).unwrap() else { panic!("refused") };
+        assert_eq!(workers, ["w1", "w2", "queue:q1"]);
+        deliver(&db, "w1", "completed", now);
+        deliver(&db, "w2", "completed", now);
+        assert!(queued(&db).is_empty(), "the queued worker is still coming");
+
+        // It dispatches as session w3, which the wait now holds for.
+        db.execute("UPDATE worker_runtime SET result_status='pending' WHERE session_id='w3'", []).unwrap();
+        db.execute("UPDATE worker_queue SET queue_status='dispatched',dispatched_session_id='w3' WHERE id='q1'", []).unwrap();
+        assert!(adopt_dispatched(&db, "orch", "q1", "w3").unwrap());
+        assert!(armed(&db, "orch").unwrap().unwrap().covers("w3"));
+        assert!(due(&db, &armed(&db, "orch").unwrap().unwrap(), now).unwrap().is_none());
+        deliver(&db, "w3", "completed", now);
+        let delivered = envelope(&db);
+        assert_eq!(delivered["reason"], "all_done");
+        assert_eq!(delivered["results"].as_array().unwrap().len(), 3, "all three results in one delivery");
+    }
+
+    #[test]
+    fn a_dispatched_queue_entry_still_waits_for_its_session_without_adoption() {
+        let (_scratch, db) = store();
+        report(&db, "w1");
+        report(&db, "w2");
+        report(&db, "w3");
+        enqueue_worker(&db, "q1");
+        let now = Utc::now();
+        arm(&db, "orch", &request("{}"), now).unwrap();
+        db.execute("UPDATE worker_runtime SET result_status='pending' WHERE session_id='w3'", []).unwrap();
+        db.execute("UPDATE worker_queue SET queue_status='dispatched',dispatched_session_id='w3' WHERE id='q1'", []).unwrap();
+        assert!(due(&db, &armed(&db, "orch").unwrap().unwrap(), now).unwrap().is_none(), "w3 is running");
+        report(&db, "w3");
+        assert_eq!(due(&db, &armed(&db, "orch").unwrap().unwrap(), now).unwrap(), Some(FireReason::AllDone));
+    }
+
+    #[test]
+    fn a_queued_worker_that_is_rejected_no_longer_holds_the_wait() {
+        let (_scratch, db) = store();
+        report(&db, "w2");
+        report(&db, "w3");
+        enqueue_worker(&db, "q1");
+        let now = Utc::now();
+        arm(&db, "orch", &request(r#"{"workers":["w1","q1"]}"#), now).unwrap();
+        deliver(&db, "w1", "completed", now);
+        assert!(queued(&db).is_empty());
+        let fired = fire(&db, "orch", FireReason::Timeout, None, json!([])).unwrap();
+        assert!(fired.is_some());
+        let delivered = envelope(&db);
+        assert_eq!(delivered["stillRunning"], json!(["queue:q1"]), "a queued worker is reported as still to come");
+
+        enqueue_worker(&db, "q2");
+        arm(&db, "orch", &request(r#"{"workers":["queue:q2"]}"#), now).unwrap();
+        db.execute("UPDATE worker_queue SET queue_status='rejected' WHERE id='q2'", []).unwrap();
+        assert_eq!(due(&db, &armed(&db, "orch").unwrap().unwrap(), now).unwrap(), Some(FireReason::AllDone));
+    }
+
+    #[test]
+    fn a_wait_over_only_queued_workers_arms() {
+        let (_scratch, db) = store();
+        for id in ["w1", "w2", "w3"] {
+            report(&db, id);
+        }
+        enqueue_worker(&db, "q1");
+        assert!(matches!(arm(&db, "orch", &request("{}"), Utc::now()).unwrap(), ArmOutcome::Armed { workers, .. } if workers == ["queue:q1"]));
     }
 
     #[test]

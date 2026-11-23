@@ -18,21 +18,24 @@ import {
 } from "../../modelProfiles";
 import type { AdapterDescriptor, ModelProfileDraft, ProfilePurpose, ReasoningEffort } from "../../types";
 import { HarnessMark } from "../harnessMarks";
+import { PAGES } from "./sections";
 import {
-  GhostButton, Select, SettingsGroup, SettingsPage, SettingsRow, StatusPill, Switch, useSavedFlash,
+  GhostButton, Segmented, Select, SettingsGroup, SettingsPage, SettingsRow, StatusPill, Switch, useSavedFlash,
 } from "./kit";
 
 const VERIFICATION: ProfilePurpose[] = ["reviewer", "evaluator"];
 
-const GROUPS: { label: string; note: string; includes: (purpose: ProfilePurpose) => boolean }[] = [
-  { label: "Your chats", note: "The model you talk to", includes: isOrchestratorPurpose },
+const GROUPS: { label: string; anchor: string; note: string; includes: (purpose: ProfilePurpose) => boolean }[] = [
+  { label: "Your chats", anchor: "your-chats-models", note: "The model you talk to", includes: isOrchestratorPurpose },
   {
     label: "Background tasks",
+    anchor: "background-models",
     note: "Bridge chooses an agent suited to each task",
     includes: purpose => !isOrchestratorPurpose(purpose) && !VERIFICATION.includes(purpose),
   },
   {
     label: "Verification",
+    anchor: "verification-models",
     note: "Models that check the work",
     includes: purpose => VERIFICATION.includes(purpose),
   },
@@ -67,14 +70,14 @@ export function ModelsPage({ profiles, adapters, version, busy, onSave, onRefres
   };
 
   return <SettingsPage
-    title="Model preferences"
+    title={PAGES.models.label}
     description="Choose models for your chats and the tasks Bridge runs for you. These task choices take priority over an agent's defaults."
     action={<StatusPill>{version ? "Saved preferences" : "Default preferences"}</StatusPill>}
   >
     {GROUPS.map(group => {
       const rows = profiles.filter(profile => group.includes(profile.purpose));
       if (rows.length === 0) return null;
-      return <SettingsGroup key={group.label} label={group.label} note={group.note}>
+      return <SettingsGroup key={group.label} anchor={group.anchor} label={group.label} note={group.note}>
         {rows.map(profile => <ProfileRow
           key={profile.purpose}
           profile={profile}
@@ -88,7 +91,7 @@ export function ModelsPage({ profiles, adapters, version, busy, onSave, onRefres
       </SettingsGroup>;
     })}
 
-    <SettingsGroup label="Available models" note="Model lists reported by your coding agents">
+    <SettingsGroup anchor="model-catalog" label="Available models" note="Model lists reported by your coding agents">
       {adapters.filter(adapter => adapter.available).map(adapter => {
         const catalog = adapter.modelCatalog;
         const isStale = catalog?.stale || catalog?.lastError;
@@ -190,12 +193,11 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
               description={selectionMode === "pinned"
                 ? "Uses the coding agent and model selected below. If unavailable, Bridge tries the backup choice."
                 : "Bridge chooses an available model suited to this task and may change it over time."}
-              control={<Select
+              control={<Segmented
                 label={`${profileLabels[profile.purpose]} model choice`}
                 value={selectionMode}
                 disabled={busy}
-                width="w-52"
-                options={[{ value: "track_standard", label: "Choose automatically" }, { value: "pinned", label: "Use a specific model" }]}
+                options={[{ value: "track_standard", label: "Automatic" }, { value: "pinned", label: "Specific model" }]}
                 onChange={value => {
                   const mode = value as "track_standard" | "pinned";
                   onUpdate({
@@ -249,30 +251,28 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
             />
             <SettingsRow
               label="Cost preference"
-              control={<Select
+              control={<Segmented
                 label={`${profileLabels[profile.purpose]} cost preference`}
                 value={profile.budgetPreference ?? ""}
                 disabled={busy}
-                width="w-44"
                 options={[
                   { value: "", label: "Balanced" },
                   { value: "economy", label: "Lower cost" },
-                  { value: "quality", label: "Quality first" },
+                  { value: "quality", label: "Quality" },
                 ]}
                 onChange={value => onUpdate({ budgetPreference: value || null })}
               />}
             />
             <SettingsRow
               label="Response speed"
-              control={<Select
+              control={<Segmented
                 label={`${profileLabels[profile.purpose]} response speed`}
                 value={profile.latencyPreference ?? ""}
                 disabled={busy}
-                width="w-44"
                 options={[
                   { value: "", label: "Balanced" },
-                  { value: "fast", label: "Faster responses" },
-                  { value: "patient", label: "Willing to wait" },
+                  { value: "fast", label: "Faster" },
+                  { value: "patient", label: "Can wait" },
                 ]}
                 onChange={value => onUpdate({ latencyPreference: value || null })}
               />}

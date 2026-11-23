@@ -36,7 +36,6 @@ export function ShortcutsSheet({ open, onClose }: { open: boolean; onClose: () =
             </ul>
           </section>)}
         </div>
-        <p className="mt-4 text-caption leading-relaxed text-muted-foreground">Escape steps back one layer at a time: it restores an expanded dock before it leaves the fullscreen layout.</p>
       </DialogPanel>
     </DialogContent>
   </Dialog>;

@@ -34,7 +34,7 @@
 //!   directory, so two workers building the same repository at once will wait
 //!   on each other instead of building in parallel. That is a real cost, paid
 //!   knowingly: the alternative is a multi-gigabyte target directory per
-//!   worker, and `max_concurrent_workers` is 2 by default.
+//!   worker, and worker concurrency has no default cap.
 //! - **Switching branches churns.** Artifacts for changed crates are rebuilt.
 //!   Artifacts for unchanged dependencies — the bulk — are not.
 //!

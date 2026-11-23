@@ -4,7 +4,7 @@ import { harnessLabel } from "../utils";
 import { harnessChartDot } from "./harnessMarks";
 import { formatDayShort, formatHourShort, formatPercent, formatPeriodLabel, formatTokens, formatUsd, type UsageWindow } from "../usageReport";
 import { bucketKeys, calendarAxis, calendarWeeks, harnessesByMetric, harnessValue, modelValue, orderedRange, periodValue, scopeReport } from "../usageGeometry";
-import { EstimateMark, formatMetric, HarnessName, HeroCaption, LAYOUT_CARD, PartialBadge, type UsageLayoutProps } from "./UsageLayoutParts";
+import { EstimateMark, formatMetric, HarnessName, HeroCaption, LAYOUT_CARD, type UsageLayoutProps } from "./UsageLayoutParts";
 
 // Layout E: time is the navigation. The calendar is the hero; clicking a day
 // selects it, and shift-click or a drag extends the range. Everything under
@@ -17,7 +17,7 @@ const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 /** A non-empty day never fills less than this, so a quiet day still reads as used. */
 const MIN_FILL = 0.08;
 
-export function UsageCalendar({ summary, periods, window, metric, partial }: UsageLayoutProps) {
+export function UsageCalendar({ summary, periods, window, metric }: UsageLayoutProps) {
   const format = formatMetric(metric);
   const hourly = window.resolution === "hour";
   const drag = useRef<{ anchor: number; moved: boolean } | null>(null);
@@ -140,7 +140,6 @@ export function UsageCalendar({ summary, periods, window, metric, partial }: Usa
           <span className="text-caption tabular-nums text-muted-foreground">{range ? `${label(range[0])}${range[1] !== range[0] ? ` – ${label(range[1])}` : ""}` : `${label(whole[0])} – ${label(whole[1])}`} · {scoped.periods.length} {hourly ? (scoped.periods.length === 1 ? "hour" : "hours") : scoped.periods.length === 1 ? "day" : "days"}</span>
           {range && <button type="button" onClick={() => setSelection(null)} className="ml-auto rounded-md px-2 py-0.5 text-caption text-muted-foreground hover:bg-accent hover:text-foreground">Clear</button>}
         </div>
-        <PartialBadge label={partial} className="mt-4" />
         <div className="mt-4 text-[2.5rem] font-light leading-none tracking-[-0.04em] tabular-nums text-foreground">{format(scopedTotal)}{metric === "cost" && <EstimateMark report={scoped.report} large />}</div>
         <p className="mt-2 text-ui text-muted-foreground">{metric === "cost"
           ? <>at API rates · <span className="font-medium tabular-nums text-foreground">{formatTokens(scoped.report.totals.processedTokens)}</span> tokens</>

@@ -216,6 +216,18 @@ pub struct PullRequestDetail {
     pub changed_files: u64,
 }
 
+/// A pull request's head and base, read fresh. See [`GithubSurface::pr_head`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestHead {
+    pub repository: GithubRepository,
+    pub head_sha: String,
+    pub base_sha: Option<String>,
+    pub head_ref: String,
+    pub base_ref: String,
+    pub is_draft: bool,
+    pub author: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PullRequestFile {
@@ -1054,6 +1066,60 @@ impl GithubSurface {
         )?)?;
         self.store(key, CachedResource::PullRequest(pull_request.clone()));
         Ok(pull_request)
+    }
+
+    /// Where a pull request's head and base point right now. Never cached: a
+    /// review job is keyed by the head it reviews, so a stale head would
+    /// review the wrong commit.
+    pub fn pr_head(&self, workspace: &Path, number: u64) -> Result<PullRequestHead, GithubSurfaceError> {
+        self.require_binary()?;
+        let repository = self.resolve_repository(workspace)?;
+        let bytes = self.run_gh(
+            workspace,
+            "pr view",
+            &[
+                "pr".into(),
+                "view".into(),
+                number.to_string(),
+                "--repo".into(),
+                repository.selector(),
+                "--json".into(),
+                "number,headRefOid,baseRefOid,headRefName,baseRefName,isDraft,author".into(),
+            ],
+            false,
+        )?;
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Raw {
+            head_ref_oid: String,
+            #[serde(default)]
+            base_ref_oid: Option<String>,
+            #[serde(default)]
+            head_ref_name: String,
+            #[serde(default)]
+            base_ref_name: String,
+            #[serde(default)]
+            is_draft: bool,
+            #[serde(default)]
+            author: Option<RawActorLogin>,
+        }
+        #[derive(Deserialize)]
+        struct RawActorLogin {
+            login: String,
+        }
+        let raw = parse_json::<Raw>("pull-request head", &bytes)?;
+        if raw.head_ref_oid.trim().is_empty() {
+            return Err(malformed("pull-request head", "headRefOid is empty"));
+        }
+        Ok(PullRequestHead {
+            repository,
+            head_sha: raw.head_ref_oid,
+            base_sha: raw.base_ref_oid.filter(|sha| !sha.trim().is_empty()),
+            head_ref: raw.head_ref_name,
+            base_ref: raw.base_ref_name,
+            is_draft: raw.is_draft,
+            author: raw.author.map(|author| author.login),
+        })
     }
 
     pub fn pr_files(
@@ -3839,6 +3905,28 @@ mod tests {
         );
         assert!(threads[1].is_resolved);
         assert!(threads[1].is_outdated);
+    }
+
+    #[test]
+    fn pr_head_reads_fresh_head_and_base_shas() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        let head = surface.pr_head(repository.path(), 103).unwrap();
+        assert_eq!(head.repository, expected("fixture", "project"));
+        assert_eq!(head.head_sha, "current-head-sha");
+        assert_eq!(head.base_sha, None, "a missing base oid is absent, not empty");
+        assert_eq!((head.head_ref.as_str(), head.base_ref.as_str()), ("fix/review", "main"));
+        assert_eq!(head.author.as_deref(), Some("review-author"));
+        surface.pr_head(repository.path(), 103).unwrap();
+        let reads: Vec<String> = fs::read_to_string(fake.path().join("invocations.log"))
+            .unwrap()
+            .lines()
+            .filter(|line| line.starts_with("pr view 103"))
+            .map(String::from)
+            .collect();
+        assert_eq!(reads.len(), 2, "the head is never served from cache");
+        assert!(reads[0].contains("headRefOid") && reads[0].contains("--repo fixture/project"), "{}", reads[0]);
     }
 
     #[test]

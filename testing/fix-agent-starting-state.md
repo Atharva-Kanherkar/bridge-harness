@@ -15,7 +15,8 @@ greeting), labels the worker "Research · standard", and the footer claims
   id (same id → same name, across renders and reloads). No backend storage.
 - **Header and rows.** The Agents pane shows the name in bold, then the role
   (`Research`, from the label) muted, then the status. The line below is the
-  topic. The open-agent header keeps the harness · model · family mono line.
+  topic. The open-agent header's facts line is specified in
+  `testing/fix-worker-detail-ui.md`, which supersedes the old mono line.
   A worker with no topic falls back to its label for that line.
 - **Starting state.** A worker that is not terminal and has no transcript yet
   shows a spinner with "<Name> is starting", the topic, and "Waiting for its

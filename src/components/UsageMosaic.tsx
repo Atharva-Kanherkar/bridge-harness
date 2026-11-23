@@ -4,7 +4,7 @@ import { harnessLabel } from "../utils";
 import { harnessChartDot, harnessChartFill } from "./harnessMarks";
 import { formatPercent, formatPeriodLabel, formatTokens, formatUsd, niceScale } from "../usageReport";
 import { harnessesByMetric, harnessValue, modelValue, periodHarnessValue, stackColumns, TOKEN_KINDS, treemap } from "../usageGeometry";
-import { AxisLabels, EstimateMark, formatMetric, HarnessName, HeroCaption, KIND_SHADE, LAYOUT_CARD, PartialBadge, periodNoun, useScrub, type UsageLayoutProps } from "./UsageLayoutParts";
+import { AxisLabels, EstimateMark, formatMetric, HarnessName, HeroCaption, KIND_SHADE, LAYOUT_CARD, periodNoun, useScrub, type UsageLayoutProps } from "./UsageLayoutParts";
 
 // Layout D: discrete stacked columns instead of curves, so no bar ever draws
 // a value between two real periods, beside a treemap where each model's area
@@ -15,7 +15,7 @@ const TREE = { width: 360, height: 262 };
 /** Depth by rank inside a harness: the largest model is the full hue. */
 const RANK_OPACITY = [0.92, 0.68, 0.5, 0.38];
 
-export function UsageMosaic({ report, window, metric, partial }: UsageLayoutProps) {
+export function UsageMosaic({ report, window, metric }: UsageLayoutProps) {
   const format = formatMetric(metric);
   const id = useId().replace(/:/g, "");
   const harnesses = harnessesByMetric(report, metric);
@@ -35,7 +35,6 @@ export function UsageMosaic({ report, window, metric, partial }: UsageLayoutProp
   return <div className="space-y-4">
     <section aria-label="Summary" className="flex flex-wrap items-end gap-x-10 gap-y-4 pb-2">
       <div>
-        <PartialBadge label={partial} className="mb-3" />
         <div className="text-[2.75rem] font-light leading-none tracking-[-0.04em] tabular-nums text-foreground">{format(metric === "cost" ? report.totals.costMicrousd : report.totals.processedTokens)}{metric === "cost" && <EstimateMark report={report} large />}</div>
         <p className="mt-2 text-ui text-muted-foreground">{metric === "cost"
           ? <>at API rates · <span className="font-medium tabular-nums text-foreground">{formatTokens(report.totals.processedTokens)}</span> tokens</>

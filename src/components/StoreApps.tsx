@@ -77,7 +77,7 @@ export function StoreApps({ onOpenApp }: { onOpenApp?: (key: AppKey) => void }) 
   return (
     <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
-      <ScreenHeading title="Apps" description={`Everything Bridge does, one app each. Open any of them with ${chordLabel("open-launcher")}, pin up to three to the sidebar, and turn off the ones you do not use.`} />
+      <ScreenHeading title="Apps" />
       <p role="status" className={status ? "mb-3 text-meta text-foreground" : "sr-only"}>{status}</p>
       <ul aria-label="Installed apps" className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
         {rows(apps).map(row => {
@@ -156,7 +156,6 @@ function MyApps({ apps, onOpenApp, onStatus }: { apps: readonly PersonalAppEntry
 
   return <section aria-labelledby="my-apps-heading" className="mt-8">
     <h2 id="my-apps-heading" className="mb-1 text-body font-medium text-foreground">My apps</h2>
-    <p className="mb-3 text-meta text-muted-foreground">Apps your agents built and you locked. Each runs only its locked tools, and every write asks you first.</p>
     {apps.length === 0
       ? <p className="rounded-xl border border-dashed border-border px-3.5 py-3 text-meta text-muted-foreground">No apps yet. Ask a chat to build one for an MCP server you use, then lock it.</p>
       : <ul aria-label="My apps" className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">

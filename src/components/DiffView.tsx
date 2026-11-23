@@ -134,7 +134,9 @@ export function PatchView({ patch, path = "", className, foldAfterHunks, onQuote
   // must not silently re-collapse what the reader just expanded, and a different
   // patch must not inherit the previous one's expansion.
   const [unfoldedFor, setUnfoldedFor] = useState<string | null>(null);
-  const unfolded = unfoldedFor === patch;
+  // A patch that only grew is the same patch, still streaming in; exact
+  // equality re-collapsed it on every chunk.
+  const unfolded = unfoldedFor !== null && patch.startsWith(unfoldedFor);
   const fold = foldAfterHunks !== undefined && !unfolded && hunks.length > foldAfterHunks ? foldAfterHunks : null;
   const shown = fold === null ? rows : hunks.slice(0, fold).flat();
   const hiddenHunks = fold === null ? 0 : hunks.length - fold;

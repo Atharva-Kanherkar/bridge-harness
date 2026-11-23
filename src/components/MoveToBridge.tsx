@@ -1,22 +1,30 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { LoaderCircle as CircleNotch } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { DetectedImportSource, ImportJob } from "../protocol/generated/protocol";
 import { finishedLabel, folderLabel, importPercent, newerJob, sourceSummary, timeLeft } from "../moveToBridge";
+import { cn } from "@/lib/utils";
+import { HarnessMark } from "./harnessMarks";
 import { ImportTransfer } from "./ImportTransfer";
-import { PrimaryButton, SettingsGroup, SettingsRow, StatusPill } from "./settings/kit";
+import { PrimaryButton, StatusPill } from "./settings/kit";
 
-// "Move to Bridge": the tools found on this Mac and one Import button. The
-// import runs in Bridge's own process, a small batch at a time, so this page
-// can close while it works; Bridge says when it is done.
+// "Move to Bridge": every tool found on this Mac in its own section, with its
+// mark, what it holds, and its own Import button. A tool's import runs in
+// Bridge's own process, a small batch at a time, and its progress and its last
+// result show in its own section; the page can close while it works, and
+// Bridge says when it is done. One import runs at a time.
 
 const ERRORS_SHOWN = 5;
 
+/** The marks Bridge draws for a tool; the others get their initial. */
+const TOOL_MARKS: Record<string, string> = { claude_code: "claude", codex: "codex", opencode: "opencode" };
+
 export function MoveToBridge({ onError }: { onError: (message: string) => void }) {
   const [sources, setSources] = useState<DetectedImportSource[] | null>(null);
-  const [job, setJob] = useState<ImportJob | null>(null);
-  const [starting, setStarting] = useState(false);
+  const [jobs, setJobs] = useState<Record<string, ImportJob>>({});
+  const [starting, setStarting] = useState<string | null>(null);
   const report = (error: unknown) => onError(error instanceof Error ? error.message : String(error));
+  const merge = (next: ImportJob) => setJobs(current => ({ ...current, [next.tool]: newerJob(current[next.tool] ?? null, next) }));
 
   useEffect(() => {
     let cancelled = false;
@@ -24,48 +32,84 @@ export function MoveToBridge({ onError }: { onError: (message: string) => void }
     bridgeApi.detectImportSources()
       .then(found => { if (!cancelled) setSources(found.sources); })
       .catch(error => { if (!cancelled) { setSources([]); report(error); } });
-    // The page may open in the middle of an import that started earlier.
+    // The page may open in the middle of an import, or after earlier ones:
+    // each tool's section shows its own latest.
     bridgeApi.importStatus()
-      .then(status => { if (!cancelled && status.job) setJob(current => newerJob(current, status.job!)); })
+      .then(status => {
+        if (cancelled) return;
+        const known = status.jobs?.length ? status.jobs : status.job ? [status.job] : [];
+        known.forEach(merge);
+      })
       .catch(() => undefined);
-    void bridgeApi.onImportProgress(next => { if (!cancelled) setJob(current => newerJob(current, next)); })
+    void bridgeApi.onImportProgress(next => { if (!cancelled) merge(next); })
       .then(unlisten => { if (cancelled) unlisten(); else stop = unlisten; });
     return () => { cancelled = true; stop?.(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function start(tool: string) {
-    setStarting(true);
+    setStarting(tool);
     try {
-      const started = await bridgeApi.startImport(tool);
-      setJob(current => newerJob(current, started));
+      merge(await bridgeApi.startImport(tool));
     } catch (error) { report(error); }
-    finally { setStarting(false); }
+    finally { setStarting(null); }
   }
 
-  const running = job?.status === "running";
-  return <>
-    {job && running && <ImportProgress job={job} />}
-    {job && !running && <ImportSummary job={job} />}
-    <SettingsGroup label="Found on this Mac" note="Import brings over your chats and setup. Setup arrives switched off.">
-      {sources === null && <SettingsRow label={<span className="flex items-center gap-2 text-muted-foreground"><CircleNotch size={12} strokeWidth={1.7} className="animate-spin" aria-hidden="true" />Looking for other tools…</span>} />}
-      {sources?.map(item => <SettingsRow
-        key={item.tool}
-        label={item.label}
-        disabled={!item.installed}
-        description={<span className="block">
-          <span className="block">{sourceSummary(item)}</span>
-          {item.installed && item.note && <span className="block text-muted-foreground">{item.note}</span>}
-        </span>}
-        control={item.supported && item.installed
-          ? <PrimaryButton disabled={running || starting} onClick={() => void start(item.tool)}>
-              {(running || starting) && <CircleNotch size={12} strokeWidth={1.7} className="animate-spin" aria-hidden="true" />}
-              {running ? "Importing…" : job?.tool === item.tool ? "Import again" : "Import"}
-            </PrimaryButton>
-          : <StatusPill tone={item.installed ? "warning" : "neutral"}>{item.installed ? "Coming" : "Not found"}</StatusPill>}
+  const runningTool = Object.values(jobs).find(job => job.status === "running")?.tool ?? starting;
+  return <div>
+    <h2 className="mb-2 px-0.5 text-meta font-medium text-muted-foreground">Found on this Mac</h2>
+    {sources === null && <p className="flex items-center gap-2 px-0.5 text-meta text-muted-foreground"><CircleNotch size={12} strokeWidth={1.7} className="animate-spin" aria-hidden="true" />Looking for other tools…</p>}
+    <div className="space-y-3">
+      {sources?.map(source => <ToolSection
+        key={source.tool}
+        source={source}
+        job={jobs[source.tool]}
+        starting={starting === source.tool}
+        otherRunning={!!runningTool && runningTool !== source.tool}
+        onImport={() => void start(source.tool)}
       />)}
-    </SettingsGroup>
-  </>;
+    </div>
+    {sources && sources.length > 0 && <p className="mt-3 px-0.5 text-caption text-muted-foreground">Import brings over chats and setup. Setup arrives switched off.</p>}
+  </div>;
+}
+
+function ToolMark({ tool, label }: { tool: string; label: string }) {
+  const harness = TOOL_MARKS[tool];
+  return <div className="grid size-9 shrink-0 place-items-center rounded-lg border border-border-card bg-background" aria-hidden="true" data-tool-mark={tool}>
+    {harness ? <HarnessMark harness={harness} size={18} /> : <span className="text-meta font-semibold text-muted-foreground">{label.slice(0, 1)}</span>}
+  </div>;
+}
+
+/** One tool: its mark, what it holds, its Import button, and its own import. */
+function ToolSection({ source, job, starting, otherRunning, onImport }: {
+  source: DetectedImportSource;
+  job?: ImportJob;
+  starting: boolean;
+  otherRunning: boolean;
+  onImport: () => void;
+}) {
+  const importable = source.supported && source.installed;
+  const running = job?.status === "running";
+  return <section aria-label={source.label} data-import-tool={source.tool} className={cn("rounded-xl border border-border-card bg-card", !source.installed && "opacity-60")}>
+    <div className="flex items-start gap-3 p-4">
+      <ToolMark tool={source.tool} label={source.label} />
+      <div className="min-w-0 flex-1">
+        <h3 className="text-ui font-medium text-foreground">{source.label}</h3>
+        <p className="mt-0.5 text-meta text-muted-foreground">{sourceSummary(source)}</p>
+        {source.installed && source.note && <p className="mt-0.5 text-caption text-muted-foreground/80">{source.note}</p>}
+        {importable && otherRunning && !running && <p className="mt-1 text-caption text-muted-foreground">Waits for the import that is running.</p>}
+      </div>
+      {importable
+        ? <PrimaryButton disabled={running || starting || otherRunning} onClick={onImport}>
+            {(running || starting) && <CircleNotch size={12} strokeWidth={1.7} className="animate-spin" aria-hidden="true" />}
+            {running ? "Importing…" : job ? "Import again" : "Import"}
+          </PrimaryButton>
+        : <StatusPill tone={source.installed ? "warning" : "neutral"}>{source.installed ? "Coming" : "Not found"}</StatusPill>}
+    </div>
+    {job && <div className="border-t border-border-card/70 p-4">
+      {running ? <ImportProgress job={job} /> : <ImportSummary job={job} />}
+    </div>}
+  </section>;
 }
 
 /** A number that glides to its new value instead of jumping. */
@@ -108,7 +152,7 @@ function ImportProgress({ job }: { job: ImportJob }) {
   const processed = useGliding(job.processed);
   const imported = useGliding(job.imported);
   const now = useNow();
-  return <section aria-label="Import progress" data-import-job={job.status} className="mb-6 rounded-xl border border-border-card bg-card p-4">
+  return <section aria-label="Import progress" data-import-job={job.status}>
     <div className="flex items-center gap-2 text-ui font-medium text-foreground">
       <CircleNotch size={13} strokeWidth={1.8} className="animate-spin text-muted-foreground" aria-hidden="true" />
       {counting ? "Finding your chats…" : "Bringing your chats over"}
@@ -142,28 +186,41 @@ function Count({ value, tone = "muted", result }: { value: number; tone?: "muted
   return <span data-import-result={result} className={`font-mono text-caption tabular-nums ${color}`}>{value.toLocaleString()}</span>;
 }
 
+function Stat({ label, children }: { label: string; children: ReactNode }) {
+  return <div className="min-w-0"><dt className="truncate text-caption text-muted-foreground">{label}</dt><dd>{children}</dd></div>;
+}
+
 function ImportSummary({ job }: { job: ImportJob }) {
   const failed = job.status === "failed";
   const errors = job.errors ?? [];
   const notCarried = job.notCarried ?? [];
   const extraErrors = errors.length - ERRORS_SHOWN;
-  return <>
-  {!failed && <div className="mx-auto mb-5 max-w-md px-2" data-import-done><ImportTransfer tool={job.tool} done /></div>}
-  <SettingsGroup
-    label={failed ? "Import stopped" : "Import finished"}
-    note={finishedLabel(job)}
-  >
-    <SettingsRow label="Came over" description="Imported chats are in the sidebar, under their project when Bridge knows the folder." control={<Count value={job.imported} tone="plain" result="imported" />} />
-    <SettingsRow label="Already in Bridge" description="Imported before, or chats Bridge ran itself." control={<Count value={job.alreadyInBridge} result="skipped" />} />
-    {job.changed > 0 && <SettingsRow label="Changed since the last import" description="Kept as they were imported." control={<Count value={job.changed} />} />}
-    {job.leftOut > 0 && <SettingsRow label="Background runs left out" description="Sessions Claude Code ran in a temporary folder, such as SDK probes. Not chats you had." control={<Count value={job.leftOut} />} />}
-    {job.failed > 0 && <SettingsRow label="Could not be imported" control={<Count value={job.failed} tone="warning" />} />}
-    {notCarried.length > 0 && <SettingsRow
-      label="What did not come over"
-      description={<span className="block">{notCarried.map(item => <span key={item.text} className="block">{item.count.toLocaleString()} × {item.text}</span>)}</span>}
-    />}
-    {errors.slice(0, ERRORS_SHOWN).map(error => <SettingsRow key={error} label={<span className="text-warning">{error}</span>} />)}
-    {extraErrors > 0 && <SettingsRow label={<span className="text-muted-foreground">and {extraErrors} more</span>} />}
-  </SettingsGroup>
-  </>;
+  return <div aria-label="Import result">
+    <div className="flex items-baseline gap-2">
+      <span className="text-ui font-medium text-foreground">{failed ? "Import stopped" : "Import finished"}</span>
+      <span className="ml-auto text-caption text-muted-foreground">{finishedLabel(job)}</span>
+    </div>
+    {!failed && <div className="mx-auto my-3 max-w-md px-2" data-import-done><ImportTransfer tool={job.tool} done /></div>}
+    <dl className="mt-2 grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4">
+      <Stat label="Came over"><Count value={job.imported} tone="plain" result="imported" /></Stat>
+      {(job.workspaces ?? 0) > 0 && <Stat label="Workspaces"><Count value={job.workspaces ?? 0} tone="plain" result="workspaces" /></Stat>}
+      <Stat label="Already in Bridge"><Count value={job.alreadyInBridge} result="skipped" /></Stat>
+      {job.changed > 0 && <Stat label="Changed since the last import"><Count value={job.changed} /></Stat>}
+      {job.leftOut > 0 && <Stat label={job.tool === "conductor" ? "Archived in Conductor, left out" : "Background runs left out"}><Count value={job.leftOut} /></Stat>}
+      {job.failed > 0 && <Stat label="Could not be imported"><Count value={job.failed} tone="warning" /></Stat>}
+    </dl>
+    {(job.imported > 0 || (job.workspaces ?? 0) > 0) && <p className="mt-3 text-caption text-muted-foreground">{job.tool === "conductor"
+      ? "The workspaces are in the sidebar under their project, in the same folders, so Conductor keeps working with them. Import Claude Code and Codex to bring their chats."
+      : job.tool === "t3code"
+        ? "The chats are in the sidebar under their workspace or project. T3 Code's worktrees are Bridge workspaces now, in the same folders, so T3 Code keeps working with them."
+        : "Imported chats are in the sidebar, under their project when Bridge knows the folder."}</p>}
+    {notCarried.length > 0 && <div className="mt-3">
+      <p className="text-meta font-medium text-foreground">What did not come over</p>
+      <ul className="mt-1 space-y-0.5 text-caption text-muted-foreground">{notCarried.map(item => <li key={item.text}>{item.count.toLocaleString()} × {item.text}</li>)}</ul>
+    </div>}
+    {errors.length > 0 && <ul className="mt-3 space-y-0.5 text-caption text-warning">
+      {errors.slice(0, ERRORS_SHOWN).map(error => <li key={error}>{error}</li>)}
+      {extraErrors > 0 && <li className="text-muted-foreground">and {extraErrors} more</li>}
+    </ul>}
+  </div>;
 }

@@ -16,6 +16,11 @@
 //! `live_turn::handle_agent_value`, and it never writes `sessions.status` or
 //! `sessions.active_turn_id`.
 //!
+//! The summary lands as a plain `checkpoint`, never as a compaction boundary,
+//! and a failed one leaves only its `compaction.failed`. The outgoing model
+//! saw its own thread, not the chat, so its paragraph must not replace the
+//! stored history the next cold start projects.
+//!
 //! A detached launch stays recognisable until its reader reaches EOF. Stopping
 //! the runtime *retires* the launch rather than forgetting it: adapters such as
 //! Cursor and Grok deliver a terminal frame on shutdown, and a retired launch's
@@ -24,14 +29,13 @@
 
 use crate::{
     adapters,
-    compaction_controller::{self, CheckpointOutcome, CompactionController, CompactionReason},
+    compaction_controller::{self, CheckpointOutcome, CompactionController},
     runtime::BridgeCore,
     sessions::SwitchSummaryRequest,
-    store, worker_guard,
+    store,
 };
 use rusqlite::params;
 use std::{
-    path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -225,13 +229,10 @@ pub fn deliver_and_wait(core: Arc<BridgeCore>, session_id: String) {
         std::thread::sleep(Duration::from_millis(300));
     }
 
-    let failed = matches!(
-        core.switch_summary_outcome(&request),
-        Ok(crate::sessions::SwitchSummaryOutcome::Failed)
-    );
-    if failed {
-        reconstruct_before_downgrade(&core, &session_id);
-    }
+    // A failed summary leaves only its `compaction.failed`. It used to be
+    // replaced by a reconstructed checkpoint glued from the last twelve
+    // messages, committed as a boundary: 206 messages became one paragraph.
+    // The stored history is the better handoff, and it is already there.
     finish(&core, &session_id, adapters::ShutdownReason::Completed);
 }
 
@@ -363,41 +364,6 @@ fn resend(core: &BridgeCore, session_id: &str, prompt: &str) {
     {
         let _ = runtime.send_turn(prompt);
     }
-}
-
-/// A failed summary still leaves the incoming model something: reconstruct a
-/// checkpoint from the immutable events and Git facts — but only while the new
-/// model has not spoken, since a reconstructed boundary drawn over its turns
-/// would summarise them out of its own projection. The check and the write
-/// share one database lock, so no turn can land between them.
-fn reconstruct_before_downgrade(core: &BridgeCore, session_id: &str) {
-    let workspace_path: Option<String> = core
-        .db
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT w.path FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
-            params![session_id],
-            |row| row.get(0),
-        )
-        .ok()
-        .flatten();
-    let git_status = workspace_path
-        .as_deref()
-        .map(|path| worker_guard::tracked_status(Path::new(path)).unwrap_or_default())
-        .unwrap_or_default();
-    let db = core.db.lock().unwrap();
-    let new_model_spoke =
-        compaction_controller::conversation_appended_since_request(&db, session_id).unwrap_or(true);
-    if new_model_spoke {
-        return;
-    }
-    let _ = CompactionController::reconstruct_from_normalized_events_and_git_with_reason(
-        &db,
-        session_id,
-        &git_status,
-        CompactionReason::BeforeDowngrade,
-    );
 }
 
 /// Stop the detached runtime and retire its launch. Stopping closes its
@@ -668,7 +634,11 @@ mod tests {
         let db = core.db.lock().unwrap();
         assert!(CompactionController::pending(&db, "s").unwrap().is_none(), "the request settled");
         let entries = store::session_entries(&db, "s").unwrap();
-        assert!(entries.iter().any(|entry| entry.kind == "compaction"));
+        // A handoff summary is a checkpoint, never a boundary: the next cold
+        // start must still project the history the outgoing model never saw.
+        assert_eq!(entries.iter().filter(|entry| entry.kind == "checkpoint").count(), 1);
+        assert!(!entries.iter().any(|entry| entry.kind == "compaction"), "no boundary");
+        assert!(!entries.iter().any(|entry| entry.kind == "branch.summary"), "no retained marker");
     }
 
     #[test]

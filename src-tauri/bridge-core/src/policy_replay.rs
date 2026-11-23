@@ -369,7 +369,7 @@ mod tests {
     }
 
     fn payload(input: &PolicyInput) -> String {
-        let outcome = PolicyEngine::default().decide(input);
+        let outcome = PolicyEngine::new(PolicyConfig::capped()).decide(input);
         serde_json::json!({
             "decision": outcome.decision,
             "reason": outcome.reason,
@@ -383,12 +383,12 @@ mod tests {
     #[test]
     fn current_defaults_replay_exactly_and_candidate_changes_are_explicit() {
         let loaded = parse_payloads(vec![("entry-1".into(), payload(&input(0)))]);
-        let report = replay(loaded, PolicyConfig::default());
+        let report = replay(loaded, PolicyConfig::capped());
         assert_eq!(report.exact_matches, 1);
         assert_eq!(report.changed, 0);
 
         let loaded = parse_payloads(vec![("entry-1".into(), payload(&input(0)))]);
-        let mut candidate = PolicyConfig::default();
+        let mut candidate = PolicyConfig::capped();
         candidate.max_depth = 0;
         let report = replay(loaded, candidate);
         assert_eq!(report.exact_matches, 0);
@@ -412,7 +412,7 @@ mod tests {
                 .map(|row| (row.id, row.payload.to_string()))
                 .collect(),
         );
-        let report = replay(loaded, PolicyConfig::default());
+        let report = replay(loaded, PolicyConfig::capped());
         assert_eq!(report.replayable_decisions, 1);
         assert_eq!(report.exact_matches, 1);
         assert_eq!(report.changed, 0);
@@ -469,11 +469,11 @@ mod tests {
             )
             .unwrap();
             let input = input(0);
-            let outcome = PolicyEngine::default().decide(&input);
+            let outcome = PolicyEngine::new(PolicyConfig::capped()).decide(&input);
             record_decision(&db, "parent", "turn-1", &input, &outcome).unwrap();
         }
         let loaded = load_database(file.path()).unwrap();
         assert_eq!(loaded.cases.len(), 1);
-        assert_eq!(replay(loaded, PolicyConfig::default()).exact_matches, 1);
+        assert_eq!(replay(loaded, PolicyConfig::capped()).exact_matches, 1);
     }
 }

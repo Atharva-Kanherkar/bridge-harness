@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canTransition, formatElapsed, harnessLabel, safeSlug, slashOwnershipBadge, tierRuntimeLabel } from "./utils";
+import { canTransition, formatElapsed, harnessLabel, modelLabel, safeSlug, slashOwnershipBadge, tierRuntimeLabel } from "./utils";
 
 describe("slashOwnershipBadge", () => {
   it("marks only the bridge catalog as local", () => {
@@ -66,5 +66,21 @@ describe("harnessLabel", () => {
     expect(harnessLabel(null)).toBe("Agent");
     expect(harnessLabel(undefined)).toBe("Agent");
     expect(harnessLabel("")).toBe("Agent");
+  });
+});
+
+describe("modelLabel", () => {
+  it("names a dated Claude model id the way a person would", () => {
+    expect(modelLabel("claude-opus-5-5")).toBe("Opus 5.5");
+    expect(modelLabel("claude-sonnet-5-5[1m]")).toBe("Sonnet 5.5");
+    expect(modelLabel("claude-haiku-4-5-20251001")).toBe("Haiku 4.5");
+    expect(modelLabel("claude-fable-5-2")).toBe("Fable 5.2");
+  });
+
+  it("leaves ids it does not recognise as they are", () => {
+    expect(modelLabel("opus")).toBe("Opus");
+    expect(modelLabel("claude-mystery-1-0")).toBe("claude-mystery-1-0");
+    expect(modelLabel("gpt-5.6-terra")).toBe("GPT Terra");
+    expect(modelLabel(null)).toBe("—");
   });
 });

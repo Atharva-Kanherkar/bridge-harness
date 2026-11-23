@@ -226,7 +226,6 @@ export function MemoryDialog({
       <ScreenHeading
         id="memory-title"
         title="Memory"
-        description="What Bridge remembers across your conversations."
         action={<label className="flex cursor-pointer items-center gap-2.5 text-caption text-muted-foreground">
           Use in new chats
           <input
