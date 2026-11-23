@@ -20,7 +20,7 @@ struct Script {
     starts: Mutex<Vec<(String, Option<String>, Option<String>, String)>>,
     sent: Mutex<Vec<String>>,
     declined: Mutex<Vec<Value>>,
-    rejected: Mutex<Vec<Value>>,
+    rejected: Mutex<Vec<(Value, Option<String>)>>,
     stopped: Mutex<Vec<bool>>,
 }
 
@@ -70,8 +70,8 @@ impl Session for ScriptedSession {
         Ok(())
     }
 
-    fn reject_question(&mut self, request_id: Value) -> Result<(), String> {
-        self.script.rejected.lock().unwrap().push(request_id);
+    fn reject_question(&mut self, request_id: Value, method: Option<&str>) -> Result<(), String> {
+        self.script.rejected.lock().unwrap().push((request_id, method.map(str::to_owned)));
         Ok(())
     }
 
@@ -138,7 +138,7 @@ fn permission_requests_and_questions_are_declined_at_once_and_counted() {
     let script = script(vec![vec![
         Step::Events(vec![event("turn.started"), with_data("permission.requested", json!({"requestId": "p1", "tool": "bash"}))]),
         Step::Events(vec![with_data("approval.requested", json!({"requestId": 7}))]),
-        Step::Events(vec![with_data("question.requested", json!({"requestId": "q1"}))]),
+        Step::Events(vec![with_data("question.requested", json!({"requestId": "q1", "requestMethod": "mcpServer/elicitation/request"}))]),
         Step::Events(vec![said("m", &answer(json!([]))), event("turn.completed")]),
     ]]);
     let started = Instant::now();
@@ -147,7 +147,11 @@ fn permission_requests_and_questions_are_declined_at_once_and_counted() {
     assert!(started.elapsed() < Duration::from_secs(2), "nothing waited for a person");
     assert_eq!(usage.denied_requests, 3);
     assert_eq!(script.declined.lock().unwrap().as_slice(), [json!("p1"), json!(7)]);
-    assert_eq!(script.rejected.lock().unwrap().as_slice(), [json!("q1")]);
+    assert_eq!(
+        script.rejected.lock().unwrap().as_slice(),
+        [(json!("q1"), Some("mcpServer/elicitation/request".to_owned()))],
+        "the question is refused on its own channel"
+    );
 }
 
 #[test]
@@ -250,9 +254,10 @@ fn the_stable_prefix_holds_nothing_that_varies_per_pr() {
     assert!(!instructions(checkout.path(), "x", false).contains(crate::prompts::ATTRIBUTION_HIDING_RULE));
 
     let pr = json!({"number": 42, "title": "Add retries", "changedFiles": 3, "omittedFiles": ["big.lock"]});
-    let turn = prompt(&pr);
+    let turn = prompt(&pr, ".bridge-review-0a1b2c3d4e5f");
     assert!(turn.starts_with("Review pull request #42: Add retries"));
-    assert!(turn.contains(".bridge-review-context/diff.patch") && turn.contains("3 changed files"));
+    assert!(turn.contains(".bridge-review-0a1b2c3d4e5f/diff.patch") && turn.contains("3 changed files"));
+    assert!(!stable.contains(".bridge-review-0a1b2c3d4e5f"), "the folder name varies, so it stays out of the prefix");
     assert!(turn.contains("big.lock"), "the files the diff left out are named");
     assert!(!stable.contains("#42") && !stable.contains("Add retries"), "nothing per-PR in the cached prefix");
 }
@@ -315,10 +320,13 @@ fn a_pass_reads_the_context_and_keeps_inline_and_outside_findings_apart() {
         {"path": "huge.json", "line": 1, "side": "RIGHT", "severity": "minor", "title": "Generated file checked in", "body": "b", "confidence": 0.5},
     ]);
     let script = script(vec![vec![Step::Events(vec![event("turn.started"), said("m", &answer(findings)), event("turn.completed")])]]);
-    let request = PassRequest { job: &job, prepared: &prepared, pass_id: "p", harness: "claude" };
+    let meter = crate::reviews::steps::UsageMeter::default();
+    let request = PassRequest { job: &job, prepared: &prepared, pass_id: "p", harness: "claude", usage: &meter };
     let outcome = review_pass_with(&core, &ScriptedTransport(script.clone()), request, &CancelToken::new(), Limits::default()).unwrap();
 
-    assert!(checkout.join(CONTEXT_DIR).join("diff.patch").exists(), "the context sits inside the checkout");
+    let placed: Vec<_> = std::fs::read_dir(&checkout).unwrap().filter_map(Result::ok).map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
+    assert!(placed.len() == 1 && placed[0].starts_with(CONTEXT_PREFIX) && placed[0].len() == CONTEXT_PREFIX.len() + 12, "{placed:?}");
+    assert!(checkout.join(&placed[0]).join("diff.patch").exists(), "the context sits inside the checkout");
     let inline: Vec<&str> = outcome.findings.iter().filter(|finding| !finding.outside_diff).map(|finding| finding.title.as_str()).collect();
     let outside: Vec<&str> = outcome.findings.iter().filter(|finding| finding.outside_diff).map(|finding| finding.title.as_str()).collect();
     assert_eq!(inline, ["Unwrap on user input"]);
@@ -355,7 +363,7 @@ fn live_review_on_a_fixture_pr() {
     let repo = std::fs::canonicalize(scratch.path()).unwrap().join("repo");
     std::fs::create_dir_all(repo.join("src")).unwrap();
     let git = |args: &[&str]| {
-        let output = std::process::Command::new("git").args(args).current_dir(&repo).output().unwrap();
+        let output = crate::git::git_command(&repo).args(args).output().unwrap();
         assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     };
@@ -382,7 +390,7 @@ fn live_review_on_a_fixture_pr() {
     std::fs::write(context.join("files.json"), json!([{"path": "src/lib.rs", "status": "modified", "additions": 6, "deletions": 1}]).to_string()).unwrap();
     std::fs::write(context.join("pr.json"), json!({"number": 1, "title": "Add average, adjust last", "body": "", "changedFiles": 1, "omittedFiles": []}).to_string()).unwrap();
     std::fs::write(context.join("threads.json"), "[]").unwrap();
-    let placed = place_context(&context, &repo).unwrap();
+    let (placed, context_name) = place_context(&context, &repo).unwrap();
 
     let registry = Arc::new(AdapterRegistry::built_in().unwrap());
     // OpenCode discovers its catalog in the background.
@@ -392,7 +400,7 @@ fn live_review_on_a_fixture_pr() {
     let start = SessionStart { cwd: &repo, model: model.as_deref(), effort: Some("medium"), instructions: &instructions };
     let pr = read_json(&placed.join("pr.json")).unwrap();
     let started = Instant::now();
-    let (result, usage) = run(&transport, &harness, &start, &prompt(&pr), &CancelToken::new(), Limits::default());
+    let (result, usage) = run(&transport, &harness, &start, &prompt(&pr, &context_name), &CancelToken::new(), Limits::default());
     eprintln!("{harness}: {:?} in {:?}\nusage: {usage:#?}", result.as_ref().map(|review| review.findings.len()), started.elapsed());
     let review = result.expect("a valid findings set");
     let changed = ["src/lib.rs".to_owned()].into_iter().collect();
@@ -406,4 +414,93 @@ fn live_review_on_a_fixture_pr() {
             usage.tools
         );
     }
+}
+
+#[test]
+fn a_planted_path_in_the_checkout_is_never_followed() {
+    let scratch = tempfile::tempdir().unwrap();
+    let checkout = scratch.path().join("checkout");
+    let context = scratch.path().join("context");
+    let outside = scratch.path().join("outside");
+    for dir in [&checkout, &context, &outside] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    for file in ["pr.json", "diff.patch", "files.json", "threads.json"] {
+        std::fs::write(context.join(file), "{}").unwrap();
+    }
+    std::fs::write(outside.join("pr.json"), "canary").unwrap();
+    // The PR committed the folder name as a link out of the checkout.
+    std::os::unix::fs::symlink(&outside, checkout.join(".bridge-review-planted")).unwrap();
+    assert!(place_context_as(&context, &checkout, ".bridge-review-planted").is_err(), "an existing path is refused, not followed");
+    // Or a real folder holding a link where a context file goes.
+    std::fs::create_dir(checkout.join(".bridge-review-folder")).unwrap();
+    std::os::unix::fs::symlink(outside.join("pr.json"), checkout.join(".bridge-review-folder/pr.json")).unwrap();
+    assert!(place_context_as(&context, &checkout, ".bridge-review-folder").is_err());
+    assert_eq!(std::fs::read_to_string(outside.join("pr.json")).unwrap(), "canary", "nothing outside the checkout was written");
+    // A fresh name is a fresh folder every time.
+    let (first, _) = place_context(&context, &checkout).unwrap();
+    let (second, _) = place_context(&context, &checkout).unwrap();
+    assert_ne!(first, second);
+    assert!(std::fs::symlink_metadata(first.join("pr.json")).unwrap().file_type().is_file());
+}
+
+#[test]
+fn each_invocation_counts_once_and_codex_commands_count_too() {
+    let running = |id: &str, status: &str| NormalizedEvent { item_id: Some(id.into()), status: Some(status.into()), title: Some("Read".into()), ..event("tool.started") };
+    let command = |id: &str| NormalizedEvent { item_id: Some(id.into()), data: json!({"command": "sed -n 1,40p src/a.rs"}), ..event("command.started") };
+    let mut events = vec![event("turn.started")];
+    for index in 0..3 {
+        let id = format!("toolu_{index}");
+        events.push(running(&id, "preparing"));
+        events.push(running(&id, "running"));
+    }
+    events.push(command("cmd_1"));
+    events.push(command("cmd_2"));
+    events.push(said("m", &answer(json!([]))));
+    events.push(event("turn.completed"));
+    let counted = script(vec![vec![Step::Events(events)]]);
+    let (result, usage) = run(&ScriptedTransport(counted), "codex", &start(Path::new("/tmp")), "go", &CancelToken::new(), Limits::default());
+    assert!(result.is_ok());
+    assert_eq!(usage.tool_calls, 5, "three tools (two events each) and two commands");
+    assert_eq!(usage.tools[3], "sed -n 1,40p src/a.rs");
+
+    let many: Vec<NormalizedEvent> = (0..3).map(|index| command(&format!("cmd_{index}"))).collect();
+    let codex = script(vec![vec![Step::Events([vec![event("turn.started")], many].concat())]]);
+    let limits = Limits { max_wall: Duration::from_secs(60), max_tool_calls: 2 };
+    let (result, _) = run(&ScriptedTransport(codex), "codex", &start(Path::new("/tmp")), "go", &CancelToken::new(), limits);
+    assert_eq!(result.unwrap_err(), SessionError::ToolLimit(2), "Codex commands are under the cap");
+}
+
+#[test]
+fn a_failed_pass_still_records_what_it_spent() {
+    let scratch = tempfile::tempdir().unwrap();
+    let core = BridgeCore::for_tests(scratch.path());
+    let checkout = scratch.path().join("checkout");
+    let context = scratch.path().join("context");
+    std::fs::create_dir_all(&checkout).unwrap();
+    std::fs::create_dir_all(&context).unwrap();
+    std::fs::write(context.join("pr.json"), json!({"number": 1, "title": "t", "changedFiles": 0, "omittedFiles": []}).to_string()).unwrap();
+    std::fs::write(context.join("files.json"), "[]").unwrap();
+    std::fs::write(context.join("diff.patch"), "").unwrap();
+    std::fs::write(context.join("threads.json"), "[]").unwrap();
+    let job = job(&core);
+    let prepared = Prepared { worktree: Some(checkout), context: Some(context), head_sha: "h".into(), guard: None };
+    let broken = || {
+        vec![Step::Events(vec![
+            event("turn.started"),
+            said("m", "no json here"),
+            with_data("usage.updated", json!({"usage": {"input_tokens": 100, "output_tokens": 10}, "totalCostUsd": 0.002})),
+            event("turn.completed"),
+        ])]
+    };
+    let script = script(vec![broken(), broken()]);
+    let meter = crate::reviews::steps::UsageMeter::default();
+    let request = PassRequest { job: &job, prepared: &prepared, pass_id: "p", harness: "claude", usage: &meter };
+    let failed = review_pass_with(&core, &ScriptedTransport(script), request, &CancelToken::new(), Limits::default());
+    assert!(matches!(failed, Err(StepError::Fatal(_))));
+    assert_eq!(
+        meter.total(),
+        PassUsage { tokens_in: 200, tokens_out: 20, cost_microusd: 4_000, denied_requests: 0 },
+        "both turns of a failed pass are on its meter"
+    );
 }

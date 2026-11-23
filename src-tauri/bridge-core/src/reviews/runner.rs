@@ -21,7 +21,7 @@ use bridge_protocol::messages::{ReviewJobStatus as Status, ReviewPassStatus, Rev
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use super::steps::{CancelToken, PassRequest, Prepared, ReviewSteps, StepError, UnavailableSteps};
+use super::steps::{CancelToken, PassRequest, PassUsage, Prepared, ReviewSteps, StepError, UnavailableSteps, UsageMeter};
 use super::store::{self, JobRow};
 use crate::runtime::BridgeCore;
 use crate::BridgeError;
@@ -475,10 +475,22 @@ impl Driver {
                 };
                 let Some(pass_id) = begun else { return Err(StepError::Cancelled) };
                 super::publish(&self.core, &job.id);
-                let request = PassRequest { job, prepared, pass_id: &pass_id, harness: &harness };
+                let meter = UsageMeter::default();
+                let request = PassRequest { job, prepared, pass_id: &pass_id, harness: &harness, usage: &meter };
                 let result = self.retrying(token, || steps.review(request, token));
                 let failure = match result {
-                    Ok(outcome) => {
+                    Ok(mut outcome) => {
+                        // Every attempt's spend, plus what the outcome itself reports.
+                        let spent = meter.total().plus(PassUsage {
+                            tokens_in: outcome.tokens_in,
+                            tokens_out: outcome.tokens_out,
+                            cost_microusd: outcome.cost_microusd,
+                            denied_requests: outcome.denied_requests,
+                        });
+                        outcome.tokens_in = spent.tokens_in;
+                        outcome.tokens_out = spent.tokens_out;
+                        outcome.cost_microusd = spent.cost_microusd;
+                        outcome.denied_requests = spent.denied_requests;
                         let stored = {
                             let db = super::lock_db(&self.core);
                             store::complete_pass(&db, &job.id, &self.claim, &pass_id, &outcome, self.now()).map_err(fatal)?
@@ -501,7 +513,7 @@ impl Driver {
                 };
                 let ended = {
                     let db = super::lock_db(&self.core);
-                    store::end_pass(&db, &job.id, &self.claim, &pass_id, status, error.as_deref(), self.now()).map_err(fatal)?
+                    store::end_pass(&db, &job.id, &self.claim, &pass_id, status, error.as_deref(), meter.total(), self.now()).map_err(fatal)?
                 };
                 super::publish(&self.core, &job.id);
                 if !ended {

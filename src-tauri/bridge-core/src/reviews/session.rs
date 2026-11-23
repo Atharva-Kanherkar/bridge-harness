@@ -27,17 +27,19 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::contract::{self, RawReview, OUTPUT_CONTRACT};
-use super::steps::{CancelToken, PassOutcome, PassRequest, StepError};
+use super::steps::{CancelToken, PassOutcome, PassRequest, PassUsage, StepError};
 use crate::adapters::{AdapterRegistry, AdapterRuntime, ShutdownReason, StartRequest};
 use crate::agent::NormalizedEvent;
 use crate::delegation::WriteMode;
 use crate::runtime::BridgeCore;
 use crate::worker_sandbox::ReadOnlySandbox;
 
-/// Where the context folder is copied inside the checkout, so every harness
-/// reads it with the same relative paths and none needs a directory outside
-/// its working directory.
-pub const CONTEXT_DIR: &str = ".bridge-review-context";
+/// The context folder is copied inside the checkout, so every harness reads
+/// it with relative paths and none needs a directory outside its working
+/// directory. Its name starts with this and ends with a fresh random part: the
+/// checkout is the PR's own tree, so a fixed name is one a PR could plant (as
+/// a symlink out of the checkout, say).
+pub const CONTEXT_PREFIX: &str = ".bridge-review-";
 
 /// What a review looks for when the person wrote no instructions of their own.
 pub const REVIEW_INSTRUCTIONS: &str = "Review the change for correctness bugs, security problems, risky \
@@ -81,7 +83,8 @@ pub trait Session: Send {
     fn send_turn(&mut self, text: &str) -> Result<(), String>;
     fn next(&mut self, wait: Duration) -> Next;
     fn decline(&mut self, request_id: Value) -> Result<(), String>;
-    fn reject_question(&mut self, request_id: Value) -> Result<(), String>;
+    /// Refuse a question in the shape its channel (`requestMethod`) expects.
+    fn reject_question(&mut self, request_id: Value, method: Option<&str>) -> Result<(), String>;
     fn stop(&mut self, completed: bool);
 }
 
@@ -179,11 +182,22 @@ impl Session for RegistrySession {
         self.runtime.respond(request_id, "decline").map_err(|error| error.to_string())
     }
 
-    fn reject_question(&mut self, request_id: Value) -> Result<(), String> {
-        self.runtime.reject_question(request_id.clone()).or_else(|_| self.runtime.respond(request_id, "decline")).map_err(|error| error.to_string())
+    fn reject_question(&mut self, request_id: Value, method: Option<&str>) -> Result<(), String> {
+        let refused = match method {
+            // Codex: each channel has its own result shape; a decision-shaped
+            // reply leaves the request waiting.
+            Some("item/tool/requestUserInput") => self.runtime.answer_question(request_id, serde_json::json!({"answers": {}})),
+            Some("mcpServer/elicitation/request") => {
+                self.runtime.answer_question(request_id, serde_json::json!({"action": "decline", "content": null}))
+            }
+            _ => self.runtime.reject_question(request_id.clone()).or_else(|_| self.runtime.respond(request_id, "decline")),
+        };
+        refused.map_err(|error| error.to_string())
     }
 
     fn stop(&mut self, completed: bool) {
+        // The normalizer keeps per-session stream state; this session is done.
+        self.registry.forget_session(&self.harness, self.runtime.provider_session_id());
         self.runtime.stop(if completed { ShutdownReason::Completed } else { ShutdownReason::Failed });
         self.sandbox.cleanup();
     }
@@ -196,9 +210,24 @@ pub struct Usage {
     pub tokens_out: u64,
     pub cost_microusd: u64,
     pub denied_requests: u32,
+    /// Distinct tool and command invocations, across both turns.
     pub tool_calls: usize,
     /// The tool names the session used, in order: what a live check reads.
     pub tools: Vec<String>,
+    /// Invocation ids already counted: one tool reports several lifecycle
+    /// events (preparing, running) under one id.
+    seen: std::collections::HashSet<String>,
+}
+
+impl Usage {
+    pub fn spent(&self) -> PassUsage {
+        PassUsage {
+            tokens_in: self.tokens_in,
+            tokens_out: self.tokens_out,
+            cost_microusd: self.cost_microusd,
+            denied_requests: self.denied_requests,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -297,12 +326,21 @@ fn turn(
                         usage.cost_microusd += (cost * 1_000_000.0).round() as u64;
                     }
                 }
-                "tool.started" => {
+                // A tool (Claude, OpenCode) or a command (Codex reads files
+                // through its sandboxed shell), counted once per invocation.
+                "tool.started" | "command.started" => {
                     started = true;
-                    usage.tool_calls += 1;
-                    usage.tools.push(event.title.clone().unwrap_or_default());
-                    if usage.tool_calls > limits.max_tool_calls {
-                        return Err(SessionError::ToolLimit(limits.max_tool_calls));
+                    let fresh = match &event.item_id {
+                        Some(id) => usage.seen.insert(id.clone()),
+                        None => true,
+                    };
+                    if fresh {
+                        usage.tool_calls += 1;
+                        let name = event.title.clone().or_else(|| event.data.get("command").and_then(Value::as_str).map(str::to_owned));
+                        usage.tools.push(name.unwrap_or_else(|| event.kind.clone()));
+                        if usage.tool_calls > limits.max_tool_calls {
+                            return Err(SessionError::ToolLimit(limits.max_tool_calls));
+                        }
                     }
                 }
                 // Nobody answers a hidden session: refuse at once, and count.
@@ -314,7 +352,8 @@ fn turn(
                 }
                 "question.requested" => {
                     usage.denied_requests += 1;
-                    if let Err(error) = session.reject_question(request_id(&event)) {
+                    let method = event.data.get("requestMethod").and_then(Value::as_str);
+                    if let Err(error) = session.reject_question(request_id(&event), method) {
                         eprintln!("[reviews] could not reject a question: {error}");
                     }
                 }
@@ -390,7 +429,7 @@ pub fn instructions(checkout: &Path, user_instructions: &str, hide_attribution: 
     sections.push(format!(
         "You review a pull request for Bridge. Bridge, not you, posts the review on GitHub.\n\n\
 Your working directory is the pull request's head, checked out. Everything you need is in it and in \
-`{CONTEXT_DIR}/`. You have read-only file tools and no network: do not run gh, git, curl or any other \
+the context folder your task names. You have read-only file tools and no network: do not run gh, git, curl or any other \
 command, do not edit, create or delete files, and do not ask questions; nobody will answer. A tool or \
 permission you are refused stays refused."
     ));
@@ -410,17 +449,18 @@ Bridge posts what you report below.",
     sections.join("\n\n")
 }
 
-/// What varies per PR: it goes last, in the turn.
-pub fn prompt(pr: &Value) -> String {
+/// What varies per PR: it goes last, in the turn. `context` is the context
+/// folder's name inside the checkout.
+pub fn prompt(pr: &Value, context: &str) -> String {
     let number = pr["number"].as_u64().unwrap_or_default();
     let title = pr["title"].as_str().unwrap_or("");
     let changed = pr["changedFiles"].as_u64().unwrap_or_default();
     let mut text = format!(
         "Review pull request #{number}: {title}\n\n\
-- `{CONTEXT_DIR}/pr.json`: the title, description, author, labels, base and head.\n\
-- `{CONTEXT_DIR}/diff.patch`: the change, from the merge base to the head.\n\
-- `{CONTEXT_DIR}/files.json`: the {changed} changed files with their status and line counts.\n\
-- `{CONTEXT_DIR}/threads.json`: review threads already on the PR. Do not repeat what they already say.\n\n\
+- `{context}/pr.json`: the title, description, author, labels, base and head.\n\
+- `{context}/diff.patch`: the change, from the merge base to the head.\n\
+- `{context}/files.json`: the {changed} changed files with their status and line counts.\n\
+- `{context}/threads.json`: review threads already on the PR. Do not repeat what they already say.\n\n\
 Read the diff, read the code around it, then answer as the contract says."
     );
     let omitted: Vec<&str> = pr["omittedFiles"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
@@ -442,13 +482,26 @@ fn read_json(path: &Path) -> Result<Value, StepError> {
 }
 
 /// Copy the context folder into the checkout, where every harness can read
-/// it without leaving its working directory.
-fn place_context(context: &Path, checkout: &Path) -> Result<PathBuf, StepError> {
-    let target = checkout.join(CONTEXT_DIR);
-    std::fs::create_dir_all(&target).map_err(|error| StepError::Fatal(error.to_string()))?;
-    for name in ["pr.json", "diff.patch", "files.json", "threads.json"] {
-        std::fs::copy(context.join(name), target.join(name))
-            .map_err(|error| StepError::Fatal(format!("Could not place {name} for the reviewer: {error}")))?;
+/// it without leaving its working directory. The checkout is the PR's own
+/// tree, so nothing in it is followed: the folder gets a fresh random name and
+/// must not exist yet, and each file is created new, never through a link.
+fn place_context(context: &Path, checkout: &Path) -> Result<(PathBuf, String), StepError> {
+    let name = format!("{CONTEXT_PREFIX}{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+    Ok((place_context_as(context, checkout, &name)?, name))
+}
+
+fn place_context_as(context: &Path, checkout: &Path, name: &str) -> Result<PathBuf, StepError> {
+    let target = checkout.join(name);
+    std::fs::create_dir(&target).map_err(|error| StepError::Fatal(format!("Could not make the reviewer's context folder: {error}")))?;
+    for file in ["pr.json", "diff.patch", "files.json", "threads.json"] {
+        let mut source = std::fs::File::open(context.join(file))
+            .map_err(|error| StepError::Fatal(format!("Could not read {file} for the reviewer: {error}")))?;
+        let mut copy = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(target.join(file))
+            .map_err(|error| StepError::Fatal(format!("Could not place {file} for the reviewer: {error}")))?;
+        std::io::copy(&mut source, &mut copy).map_err(|error| StepError::Fatal(format!("Could not place {file} for the reviewer: {error}")))?;
     }
     Ok(target)
 }
@@ -491,7 +544,7 @@ pub fn review_pass_with(
 ) -> Result<PassOutcome, StepError> {
     let checkout = request.prepared.worktree.as_deref().ok_or_else(|| StepError::Fatal("The review has no checkout".into()))?;
     let context = request.prepared.context.as_deref().ok_or_else(|| StepError::Fatal("The review has no context".into()))?;
-    let placed = place_context(context, checkout)?;
+    let (placed, context_name) = place_context(context, checkout)?;
     let pr = read_json(&placed.join("pr.json"))?;
     let files = read_json(&placed.join("files.json"))?;
     let patch = std::fs::read_to_string(placed.join("diff.patch")).map_err(|error| StepError::Fatal(error.to_string()))?;
@@ -505,7 +558,9 @@ pub fn review_pass_with(
     let (model, effort) = model_and_effort(core, request.harness);
     let instructions = instructions(checkout, &user_instructions, hide);
     let start = SessionStart { cwd: checkout, model: model.as_deref(), effort: Some(&effort), instructions: &instructions };
-    let (result, usage) = run(transport, request.harness, &start, &prompt(&pr), cancel, limits);
+    let (result, usage) = run(transport, request.harness, &start, &prompt(&pr, &context_name), cancel, limits);
+    // Spent either way: a failed or retried attempt cost what it cost.
+    request.usage.add(usage.spent());
     let review = result.map_err(SessionError::into_step)?;
 
     let changed = files
@@ -526,10 +581,8 @@ pub fn review_pass_with(
         session_id: None,
         model,
         effort: Some(effort),
-        tokens_in: usage.tokens_in,
-        tokens_out: usage.tokens_out,
-        cost_microusd: usage.cost_microusd,
-        denied_requests: usage.denied_requests,
+        // Already on the pass's meter, with every earlier attempt.
+        ..PassOutcome::default()
     })
 }
 
