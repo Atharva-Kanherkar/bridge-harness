@@ -6,8 +6,9 @@
 //! Fully offline. GitHub is a local bare repository holding `main` and
 //! `refs/pull/103/head`, and the shared `fake-gh.sh` (first on `PATH`) answers
 //! `gh`, resolving the repository through its default. The daemon's runner
-//! prepares a real review checkout; the reviewer itself is not in this build,
-//! so the job then fails with a plain reason, and its checkout is gone. A
+//! prepares a real review checkout and runs the hidden reviewer through
+//! Bridge's real Claude sidecar against the fake SDK in
+//! `testing/fixtures/workflow-e2e`, so the job drafts a real finding. A
 //! drafted job (which the runner never claims) gives the idempotency checks a
 //! job that holds still.
 
@@ -40,6 +41,16 @@ fn fake_gh() -> tempfile::TempDir {
     paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
     std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
     directory
+}
+
+/// Bridge's real Claude sidecar against the fake SDK, and a fake `claude` CLI
+/// first on `PATH`: everything in the reviewer but the model is real.
+fn fake_claude() {
+    let e2e = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testing/fixtures/workflow-e2e").canonicalize().unwrap();
+    let mut paths = vec![e2e.join("bin")];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+    std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+    std::env::set_var("BRIDGE_CLAUDE_SIDECAR", e2e.join("sidecar.mjs"));
 }
 
 /// A project and workspace on a repository whose origin is the fixture repo,
@@ -174,26 +185,39 @@ impl Client {
 }
 
 /// Retry queues a linked job; the daemon's runner claims it, prepares a real
-/// checkout of the PR head, and, with no reviewer in this build, fails it with
-/// a plain reason, leaving no checkout behind.
-fn retry_prepares_then_fails_cleanly(client: &mut Client, data_dir: &Path, repo: &Path, seeded: &str) -> String {
+/// checkout of the PR head, and runs the hidden reviewer through Bridge's real
+/// Claude sidecar (the model is the fake SDK). The job drafts the reviewer's
+/// finding inline, the shell it tried was refused, and no checkout is left.
+fn retry_reviews_offline_and_drafts(client: &mut Client, data_dir: &Path, repo: &Path, seeded: &str) -> String {
     let retried = client.call("reviews/retry_review", json!({"jobId": seeded}));
     let retry = &retried["result"]["job"];
     assert_eq!(retry["retryOf"], json!(seeded), "{retried}");
     let retry_id = retry["id"].as_str().unwrap().to_owned();
     assert_ne!(retry_id, seeded);
-    let failed = client.job_update(&retry_id, |job| job["status"] == json!("failed"));
-    assert_eq!(failed["error"], json!("This build cannot run PR reviews yet"));
-    client.job_update(&retry_id, |job| job["status"] == json!("preparing"));
+    let settled = client.job_update(&retry_id, |job| matches!(job["status"].as_str(), Some("drafted" | "failed")));
+    let detail = client.call("reviews/get_review", json!({"jobId": retry_id}));
+    assert_eq!(settled["status"], json!("drafted"), "{settled} {detail}");
     let reviewing = client.job_update(&retry_id, |job| job["status"] == json!("reviewing"));
     assert_ne!(reviewing["headSha"], json!("current-head-sha"), "the job moved to the head the fetch found");
-    let detail = client.call("reviews/get_review", json!({"jobId": retry_id}));
-    assert_eq!(detail["result"]["passes"][0]["error"], json!("This build cannot run PR reviews yet"), "{detail}");
+    assert_eq!(settled["findingCounts"]["minor"], json!(1));
+    let pass = &detail["result"]["passes"][0];
+    assert_eq!((pass["harness"].clone(), pass["status"].clone()), (json!("claude"), json!("done")), "{detail}");
+    let finding = &detail["result"]["findings"][0];
+    assert_eq!((finding["path"].clone(), finding["line"].clone(), finding["outsideDiff"].clone()), (json!("README.md"), json!(2), json!(false)), "{detail}");
+    assert!(finding["body"].as_str().unwrap().contains("Shell was refused"), "the read-only boundary refused the shell: {detail}");
+    assert_eq!(finding["fingerprint"].as_str().map(str::len), Some(64));
+    // Cleanup follows the drafted notification by a moment.
     let reviews = data_dir.join("worktrees").join("reviews");
-    let left: Vec<_> = std::fs::read_dir(&reviews).map(|entries| entries.filter_map(Result::ok).map(|entry| entry.path()).collect()).unwrap_or_default();
-    assert!(left.is_empty(), "review checkouts left: {left:?}");
-    let listed_worktrees = git(repo, &["worktree", "list", "--porcelain"]);
-    assert_eq!(listed_worktrees.matches("worktree ").count(), 1, "{listed_worktrees}");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let left: Vec<_> = std::fs::read_dir(&reviews).map(|entries| entries.filter_map(Result::ok).map(|entry| entry.path()).collect()).unwrap_or_default();
+        let listed_worktrees = git(repo, &["worktree", "list", "--porcelain"]);
+        if left.is_empty() && listed_worktrees.matches("worktree ").count() == 1 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "review checkouts left: {left:?}\n{listed_worktrees}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
     retry_id
 }
 
@@ -220,6 +244,7 @@ fn repository_with_a_pull_request(repo: &Path, github: &Path) {
 #[test]
 fn reviews_methods_round_trip_through_the_daemon() {
     let _gh = fake_gh();
+    fake_claude();
     let fixture = tempfile::tempdir().unwrap();
     let repo = tempfile::tempdir().unwrap();
     let github = tempfile::tempdir().unwrap();
@@ -239,8 +264,6 @@ fn reviews_methods_round_trip_through_the_daemon() {
         bridged::serve(&serve_daemon, listener).expect("accept loop serves");
     });
     let mut client = Client::connect(&daemon.socket_path, &daemon.state.auth_token);
-    let sessions_before: i64 =
-        daemon.core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0)).unwrap();
 
     // Start is idempotent: the PR head (read from gh) and harness set match the
     // drafted job, so it comes back instead of a new one.
@@ -271,7 +294,7 @@ fn reviews_methods_round_trip_through_the_daemon() {
     let again = client.call("reviews/cancel_review", json!({"jobId": seeded}));
     assert!(again["error"]["message"].as_str().unwrap().contains("already cancelled"), "{again}");
 
-    let retry_id = retry_prepares_then_fails_cleanly(&mut client, fixture.path(), repo.path(), &seeded);
+    let retry_id = retry_reviews_offline_and_drafts(&mut client, fixture.path(), repo.path(), &seeded);
     let listed = client.call("reviews/list_reviews", json!({"workspaceId": "w"}));
     let ids: Vec<&str> = listed["result"]["jobs"].as_array().unwrap().iter().map(|job| job["id"].as_str().unwrap()).collect();
     assert_eq!(ids, [retry_id.as_str(), seeded.as_str()], "newest first");
@@ -284,7 +307,22 @@ fn reviews_methods_round_trip_through_the_daemon() {
     let missing = client.call("reviews/get_review", json!({"jobId": "missing"}));
     assert!(missing["error"].is_object(), "{missing}");
 
-    let sessions_after: i64 =
-        daemon.core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0)).unwrap();
-    assert_eq!(sessions_after, sessions_before, "no review touched a chat or created a session");
+    // Other maintenance (the connector poller, once Claude is available) may
+    // start sessions of its own. No review may: no chat, orchestrator or
+    // worker, and nothing in a review checkout.
+    let review_sessions: Vec<String> = daemon
+        .core
+        .db
+        .lock()
+        .unwrap()
+        .prepare(
+            "SELECT id||' '||kind||' '||COALESCE(cwd,'') FROM sessions
+             WHERE kind IN ('direct','orchestrator','worker') OR cwd LIKE '%/worktrees/reviews/%'",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(review_sessions.is_empty(), "no review touched a chat or created a session: {review_sessions:?}");
 }

@@ -184,18 +184,18 @@ pub fn refresh_before_lock(session_id: &str) {
 /// The stamp to store with a new `kind` entry, called under the database lock.
 pub fn for_entry(db: &Connection, session_id: &str, kind: &str) -> Result<Value, BridgeError> {
     let path = crate::store::repository_path_for_session(db, session_id)?;
-    let reused = {
+    let (path, reused) = {
         let mut stamps = lock();
         if stamps.sessions.len() >= MAX_SESSIONS && !stamps.sessions.contains_key(session_id) {
             stamps.sessions.clear();
         }
         stamps.sessions.insert(session_id.to_owned(), path.clone());
-        let Some(path) = &path else {
+        let Some(path) = path else {
             return Ok(serde_json::json!({"status":"unavailable"}));
         };
-        stamps.repositories.get(path).and_then(|slot| slot.reusable(kind))
+        let reused = stamps.repositories.get(&path).and_then(|slot| slot.reusable(kind));
+        (path, reused)
     };
-    let path = path.expect("returned above when absent");
     let value = reused.unwrap_or_else(|| measure(&path));
     if changes_folder(kind) {
         if let Some(slot) = lock().repositories.get_mut(&path) {

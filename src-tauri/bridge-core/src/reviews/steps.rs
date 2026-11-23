@@ -114,6 +114,43 @@ pub struct Prepared {
     pub guard: Option<Arc<Guard>>,
 }
 
+/// What a pass spent, across every attempt of it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PassUsage {
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub cost_microusd: u64,
+    pub denied_requests: u32,
+}
+
+impl PassUsage {
+    pub fn plus(self, other: PassUsage) -> PassUsage {
+        PassUsage {
+            tokens_in: self.tokens_in + other.tokens_in,
+            tokens_out: self.tokens_out + other.tokens_out,
+            cost_microusd: self.cost_microusd + other.cost_microusd,
+            denied_requests: self.denied_requests + other.denied_requests,
+        }
+    }
+}
+
+/// Where a step records what each attempt spent, whether or not the attempt
+/// succeeds: a paid review that fails still cost what it cost, and a retried
+/// one cost every try.
+#[derive(Debug, Default)]
+pub struct UsageMeter(std::sync::Mutex<PassUsage>);
+
+impl UsageMeter {
+    pub fn add(&self, usage: PassUsage) {
+        let mut total = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *total = total.plus(usage);
+    }
+
+    pub fn total(&self) -> PassUsage {
+        *self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 /// One pass the runner asks for.
 #[derive(Debug, Clone, Copy)]
 pub struct PassRequest<'a> {
@@ -121,6 +158,8 @@ pub struct PassRequest<'a> {
     pub prepared: &'a Prepared,
     pub pass_id: &'a str,
     pub harness: &'a str,
+    /// Add each attempt's usage here, success or failure.
+    pub usage: &'a UsageMeter,
 }
 
 /// A finding as the reviewer produced it, validated, before it is stored.

@@ -21,7 +21,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use uuid::Uuid;
 
 use super::state;
-use super::steps::{DraftFinding, PassOutcome};
+use super::steps::{DraftFinding, PassOutcome, PassUsage};
 use crate::BridgeError;
 
 /// Statuses a job can still leave. One non-terminal job per dedupe key.
@@ -763,13 +763,21 @@ pub fn end_pass(
     pass_id: &str,
     status: ReviewPassStatus,
     error: Option<&str>,
+    usage: PassUsage,
     now: DateTime<Utc>,
 ) -> Result<bool, BridgeError> {
     let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
     if !holds(&transaction, job_id, claim, Status::Reviewing)? {
         return Ok(false);
     }
-    finish_pass(&transaction, pass_id, status, error, None, now)?;
+    let spent = PassOutcome {
+        tokens_in: usage.tokens_in,
+        tokens_out: usage.tokens_out,
+        cost_microusd: usage.cost_microusd,
+        denied_requests: usage.denied_requests,
+        ..PassOutcome::default()
+    };
+    finish_pass(&transaction, pass_id, status, error, Some(&spent), now)?;
     transaction.commit()?;
     Ok(true)
 }

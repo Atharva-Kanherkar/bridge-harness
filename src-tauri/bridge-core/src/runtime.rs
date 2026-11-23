@@ -328,7 +328,7 @@ impl BridgeCore {
 
     /// Every session, background runs included: `state/get_state`'s document.
     pub fn full_state_snapshot(&self) -> Result<crate::model::BridgeState, BridgeError> {
-        store::state_with_background_runs(&self.db.lock().unwrap())
+        store::state_with_background_runs(&self.db.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// Flip the reader-launch gate for `session_id` so its reader thread stops
