@@ -1739,7 +1739,18 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     // switch flow tears the adapter down across an await, and a start
     // interleaving into that window would be orphaned by its commit.
     let _lifecycle = state.claim_session_lifecycle(&session_id, "session start")?;
-    start_chat_claimed(core, session_id)
+    start_chat_claimed(core, session_id)?;
+    // Built after the launch, for the caller that shows it. Internal starts
+    // (a resume for a send, a continuation) call `launch_chat` and never pay
+    // for a state they would drop.
+    core.state_snapshot()
+}
+
+/// [`start_chat`] without the app state: for callers that only need the
+/// runtime running.
+pub fn launch_chat(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    let _lifecycle = core.claim_session_lifecycle(session_id, "session start")?;
+    start_chat_claimed(core, session_id.to_owned())
 }
 
 /// Where one cold chat launch spent its time before the provider process
@@ -1778,7 +1789,7 @@ impl LaunchTiming {
 }
 
 /// The caller owns the session lifecycle across a cancellation and continuation.
-fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeState, BridgeError> {
+fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<(), BridgeError> {
     let state = core;
     let mut timing = LaunchTiming::start();
     ensure_session_not_archived(core, &session_id)?;
@@ -2043,7 +2054,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 root_chat_reuse_marker(&db, &session_id, adapter_id),
                 &hot_check_prompt,
             )?;
-            return store::state(&db);
+            return Ok(());
         }
         invalidate_reader_launch(state, &session_id)?;
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
@@ -2574,11 +2585,8 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
     }
     timing.mark("persist");
     core.events.publish(CoreEvent::StateChanged);
-    let db = state.db.lock().unwrap();
-    let snapshot = store::state(&db);
-    timing.mark("state");
-    timing.record(&db, &session_id, adapter_id);
-    snapshot
+    timing.record(&state.db.lock().unwrap(), &session_id, adapter_id);
+    Ok(())
 }
 
 fn invalidate_reader_launch(core: &BridgeCore, session_id: &str) -> Result<(), BridgeError> {
@@ -12650,7 +12658,7 @@ fn needs_a_launch_for_send(core: &Arc<BridgeCore>, session_id: &str) -> bool {
 /// Relaunch a session's adapter so a user-initiated send can be delivered,
 /// naming the send as the reason when the resume itself fails.
 fn resume_for_send(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
-    start_chat(core, session_id.to_owned()).map(|_| ()).map_err(|error| {
+    launch_chat(core, session_id).map_err(|error| {
         BridgeError::Invalid(format!(
             "The session had stopped and Bridge could not resume it for this message: {error}"
         ))
