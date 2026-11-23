@@ -51,6 +51,16 @@ fn run_job(core: &Arc<BridgeCore>, roots: &[PathBuf]) -> wire::ImportJob {
     status(core).unwrap().unwrap()
 }
 
+#[test]
+fn what_did_not_come_over_adds_up_and_never_says_zero() {
+    let mut job = new_job();
+    not_carried(&mut job, "pins", 2);
+    not_carried(&mut job, "tags", 0);
+    not_carried(&mut job, "pins", 3);
+    let items: Vec<(&str, u64)> = job.not_carried.iter().map(|item| (item.text.as_str(), item.count)).collect();
+    assert_eq!(items, vec![("pins", 5)]);
+}
+
 /// Whether a `StateChanged` was published since `events` subscribed.
 fn changed(events: &mut crate::events::EventReceiver) -> bool {
     let mut seen = false;
