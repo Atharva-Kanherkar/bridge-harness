@@ -39,6 +39,9 @@ use crate::work_connectors::ConnectorFamily;
 /// Hidden session kind. No surface lists these.
 pub const CONNECTOR_SESSION_KIND: &str = "connector";
 
+/// The one working folder every connector run shares, under the chats folder.
+const CONNECTOR_RUNS_FOLDER: &str = "connector-runs";
+
 /// How often ingress runs.
 ///
 /// Slower than the GitHub poller's 15s on purpose: each cycle here is a model
@@ -693,7 +696,11 @@ fn launch_run(
     let harness_id = connection.harness.as_deref().unwrap_or_default();
     let (harness, model) = run_profile(core, harness_id)?;
     let session_id = Uuid::new_v4().to_string();
-    let scratch = core.chat_scratch_dir(&session_id);
+    // One folder for every connector run: Claude Code keeps per-folder state
+    // (a project entry, a memory folder), and a fresh folder per poll left a
+    // new one behind every cycle. These runs have no file tools, so sharing
+    // the folder shares nothing they can touch.
+    let scratch = core.chat_scratch_dir(CONNECTOR_RUNS_FOLDER);
     std::fs::create_dir_all(&scratch).map_err(|error| error.to_string())?;
     let cwd = scratch.to_string_lossy().to_string();
     {

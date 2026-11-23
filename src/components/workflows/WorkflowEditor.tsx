@@ -31,7 +31,8 @@ export function composeEventTrigger(fields: { event: WorkflowEventKind; repo: st
 /** "Would have run 4 times in the last 7 days." */
 export function previewSentence(preview: WorkflowTriggerPreview): string {
   if (!preview.supported) return preview.reason ?? "Bridge cannot read this yet.";
-  const times = preview.matches === 1 ? "once" : `${preview.matches} times`;
+  const atLeast = preview.note?.startsWith("At least") ? "at least " : "";
+  const times = preview.matches === 1 ? "once" : `${atLeast}${preview.matches} times`;
   return preview.matches === 0 ? `Would not have run in the last ${preview.windowDays} days.` : `Would have run ${times} in the last ${preview.windowDays} days.`;
 }
 

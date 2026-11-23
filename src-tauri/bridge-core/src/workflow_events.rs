@@ -675,7 +675,7 @@ pub fn preview(core: &Arc<BridgeCore>, trigger: &wire::WorkflowTrigger, gh: &dyn
             .ok();
         found = items.iter().map(sample_from_inbox).filter(|sample| matches(&event, sample)).collect();
         note = match polled {
-            None => Some("Bridge has not read Slack yet. It reads it every two minutes while Slack is connected in Claude.".to_owned()),
+            None => Some("Bridge has not read Slack yet. Once a workflow listens for Slack events, it reads Slack every five minutes.".to_owned()),
             Some((_, Some(error))) if !error.trim().is_empty() => Some(format!("Bridge's last Slack read failed: {error}")),
             Some(_) if items.is_empty() => Some("Bridge has no Slack messages from this week yet; it keeps the ones it reads from now on.".to_owned()),
             Some(_) => None,
@@ -686,13 +686,22 @@ pub fn preview(core: &Arc<BridgeCore>, trigger: &wire::WorkflowTrigger, gh: &dyn
             Ok(samples) => samples,
             Err(error) => return unsupported(error),
         };
+        // `gh` answers with its newest few. If every one of them is in the
+        // window, there may be more than it returned.
+        let returned = samples.len();
+        let all_recent = returned > 0 && samples.iter().all(|sample| instant(&sample.occurred_at).is_some_and(|at| at >= since));
         found = samples
             .into_iter()
             .filter(|sample| matches(&event, sample))
             .filter(|sample| event.event == wire::WorkflowEventKind::GithubReviewRequested || instant(&sample.occurred_at).is_some_and(|at| at >= since))
             .collect();
-        note = (event.event == wire::WorkflowEventKind::GithubReviewRequested)
-            .then(|| "Counts the reviews waiting for you now; GitHub does not say when each was requested.".to_owned());
+        note = if event.event == wire::WorkflowEventKind::GithubReviewRequested {
+            Some("Counts the reviews waiting for you now; GitHub does not say when each was requested.".to_owned())
+        } else if all_recent && returned >= GH_LIMIT.parse::<usize>().unwrap_or(30) {
+            Some(format!("At least {returned}: GitHub returned only its {returned} newest, all from this week. A workflow on this busy a repository runs often; collecting them and running once a day may suit it better."))
+        } else {
+            None
+        };
     }
     found.sort_by(|left, right| right.occurred_at.cmp(&left.occurred_at));
     let matches_count = found.len() as i64;

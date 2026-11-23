@@ -346,7 +346,7 @@ pub fn connectors_now() -> ClaudeSdkConfiguration {
     if let (Some(answer), _) = connector_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).read(Instant::now(), Duration::MAX) {
         return answer;
     }
-    let configuration = claude_sdk_configuration_within(ClaudeDiscovery::ALL, CONNECTOR_PROBE_TIMEOUT);
+    let configuration = connector_probe();
     let mut cache = connector_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     cache.store(configuration, Instant::now());
     cache.read(Instant::now(), Duration::MAX).0.unwrap_or_default()
@@ -363,7 +363,7 @@ pub fn connectors_peek() -> Option<ClaudeSdkConfiguration> {
     if refresh {
         let spawned = std::thread::Builder::new().name("connector-refresh".into()).spawn(|| {
             let _probe = connector_probe_lock().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let configuration = claude_sdk_configuration_within(ClaudeDiscovery::ALL, CONNECTOR_PROBE_TIMEOUT);
+            let configuration = connector_probe();
             connector_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).store(configuration, Instant::now());
         });
         if spawned.is_err() {
@@ -376,7 +376,7 @@ pub fn connectors_peek() -> Option<ClaudeSdkConfiguration> {
 /// Probe now and store the answer: a person asked for it, or the cache is cold.
 pub fn refresh_connectors() -> ClaudeSdkConfiguration {
     let _probe = connector_probe_lock().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let configuration = claude_sdk_configuration_within(ClaudeDiscovery::ALL, CONNECTOR_PROBE_TIMEOUT);
+    let configuration = connector_probe();
     let mut cache = connector_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     cache.store(configuration, Instant::now());
     cache.read(Instant::now(), Duration::MAX).0.unwrap_or_default()
@@ -424,6 +424,25 @@ pub fn claude_sdk_configuration_for(discovery: ClaudeDiscovery) -> ClaudeSdkConf
 /// [`claude_sdk_configuration_for`] with its own `mcp list` deadline: a probe
 /// nobody waits on can afford a busy Mac's 20-plus seconds.
 pub fn claude_sdk_configuration_within(discovery: ClaudeDiscovery, mcp_timeout: Duration) -> ClaudeSdkConfiguration {
+    claude_sdk_configuration_from(discovery, mcp_timeout, None)
+}
+
+/// A folder with no Claude Code project state of its own, so `mcp list`
+/// reports each connector as a workflow run (which starts in a fresh folder)
+/// sees it, not as toggled for whatever directory Bridge happens to run in.
+/// Claude Code keeps "disabled for this project" per directory.
+fn neutral_probe_dir() -> Option<PathBuf> {
+    let dir = std::env::temp_dir().join("bridge-connector-probe");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// The connector cache's probe: generous deadline, neutral folder.
+fn connector_probe() -> ClaudeSdkConfiguration {
+    claude_sdk_configuration_from(ClaudeDiscovery::ALL, CONNECTOR_PROBE_TIMEOUT, neutral_probe_dir().as_deref())
+}
+
+fn claude_sdk_configuration_from(discovery: ClaudeDiscovery, mcp_timeout: Duration, cwd: Option<&Path>) -> ClaudeSdkConfiguration {
     let Some(binary_path) = binary::resolve("claude") else {
         return ClaudeSdkConfiguration {
             diagnostics: vec![capability_diagnostic(
@@ -471,7 +490,7 @@ pub fn claude_sdk_configuration_within(discovery: ClaudeDiscovery, mcp_timeout: 
             ..Default::default()
         };
     }
-    let mcp_list = match bounded_output(&binary_path, &["mcp", "list"], mcp_timeout) {
+    let mcp_list = match bounded_output_in(&binary_path, &["mcp", "list"], mcp_timeout, cwd) {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).into_owned();
             if !claude_mcp_output_is_recognized(&text) {
@@ -1469,8 +1488,21 @@ pub(crate) fn bounded_output(
     args: &[&str],
     timeout: Duration,
 ) -> Result<std::process::Output, BridgeError> {
+    bounded_output_in(binary_path, args, timeout, None)
+}
+
+/// [`bounded_output`] run from `cwd`, when one is given.
+pub(crate) fn bounded_output_in(
+    binary_path: &Path,
+    args: &[&str],
+    timeout: Duration,
+    cwd: Option<&Path>,
+) -> Result<std::process::Output, BridgeError> {
     let mut command = Command::new(binary_path);
     binary::hydrate_command_path(&mut command);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
     command
         .args(args)
         .stdin(Stdio::null())

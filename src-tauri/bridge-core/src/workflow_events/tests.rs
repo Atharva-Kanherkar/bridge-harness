@@ -415,6 +415,12 @@ fn a_github_preview_counts_the_last_week_and_says_why_it_cannot() {
     let result = preview(&core, &trigger, &gh, now);
     assert!(result.supported);
     assert_eq!(result.matches, 1, "PR 11 is three weeks old");
+    // A busy repository: every one of gh's 30 answers is from this week.
+    let busy: Vec<String> = (0..30).map(|number| pr(100 + number, "2026-11-23T00:00:00Z")).collect();
+    gh.set(Ok(&format!("[{}]", busy.join(","))));
+    let capped = preview(&core, &trigger, &gh, now);
+    assert_eq!(capped.matches, 30);
+    assert!(capped.note.as_deref().is_some_and(|note| note.starts_with("At least 30")), "{:?}", capped.note);
     gh.set(Err("GitHub CLI (gh) is not installed"));
     let failed = preview(&core, &trigger, &gh, now);
     assert!(!failed.supported);
