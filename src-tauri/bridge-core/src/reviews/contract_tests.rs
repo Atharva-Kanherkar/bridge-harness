@@ -186,3 +186,66 @@ fn oversized_and_empty_reviews_validate() {
     let blank_title = parse(&fenced(json!({"summary": "s", "findings": [finding("src/a.rs", 3, "nit", "   ")]}))).unwrap();
     assert!(validate(blank_title, &changed(), &hunks(PATCH)).findings.is_empty(), "a finding with no title is dropped");
 }
+
+#[test]
+fn header_like_lines_inside_a_hunk_are_content() {
+    // Deleting SQL comments `-- one` and `-- two`, and adding `++ counter;`.
+    let patch = "diff --git a/schema.sql b/schema.sql
+--- a/schema.sql
++++ b/schema.sql
+@@ -1,3 +1,2 @@
+--- one
+--- two
++++ counter;
+ keep
+";
+    let files = hunks(patch);
+    let hunk = &files["schema.sql"][0];
+    assert_eq!(hunk.old, [1, 2, 3], "both deleted comment lines and the context line");
+    assert_eq!(hunk.new, [1, 2]);
+    assert!(hunk.text.contains("--- two") && hunk.text.contains("+++ counter;"));
+    let review = parse(&fenced(json!({"summary": "s", "findings": [
+        {"path": "schema.sql", "line": 2, "side": "LEFT", "severity": "minor", "title": "Second comment", "body": "b", "confidence": 0.5},
+    ]})))
+    .unwrap();
+    let changed = ["schema.sql".to_owned()].into_iter().collect();
+    assert!(!validate(review, &changed, &files).findings[0].outside_diff, "a finding on the second deleted line is inline");
+}
+
+#[test]
+fn octal_quoted_names_decode_to_the_real_path() {
+    let patch = "diff --git \"a/\\346\\227\\245.txt\" \"b/\\346\\227\\245.txt\"
+--- \"a/\\346\\227\\245.txt\"
++++ \"b/\\346\\227\\245.txt\"
+@@ -1 +1 @@
+-old
++new
+";
+    let files = hunks(patch);
+    assert!(files.contains_key("日.txt"), "{:?}", files.keys().collect::<Vec<_>>());
+    assert_eq!(unquote("a\\\"b\\\\c\\td"), "a\"b\\c\td");
+}
+
+#[test]
+fn real_git_output_round_trips_through_the_parser() {
+    // The same names git prints with its default core.quotePath.
+    let dir = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        let output = crate::git::git_command(dir.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    run(&["init", "-q", "-b", "main"]);
+    run(&["config", "user.email", "t@example.invalid"]);
+    run(&["config", "user.name", "T"]);
+    std::fs::write(dir.path().join("日.txt"), "old\n").unwrap();
+    std::fs::write(dir.path().join("q.sql"), "-- one\n-- two\nkeep\n").unwrap();
+    run(&["add", "."]);
+    run(&["commit", "-q", "-m", "base"]);
+    std::fs::write(dir.path().join("日.txt"), "new\n").unwrap();
+    std::fs::write(dir.path().join("q.sql"), "keep\n").unwrap();
+    let patch = run(&["diff"]);
+    let files = hunks(&patch);
+    assert_eq!(files["日.txt"][0].new, [1]);
+    assert_eq!(files["q.sql"][0].old, [1, 2, 3]);
+}

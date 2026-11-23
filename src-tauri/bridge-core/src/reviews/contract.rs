@@ -128,59 +128,88 @@ impl Hunk {
     }
 }
 
+/// An open hunk: what it holds so far, the next line on each side, and how
+/// many lines of each side its header said are still to come.
+struct OpenHunk {
+    hunk: Hunk,
+    old_line: u32,
+    new_line: u32,
+    old_left: u32,
+    new_left: u32,
+}
+
 /// The hunks of every file in a unified diff, keyed by the file's path on the
 /// new side (the old side for a deletion).
+///
+/// A hunk runs for exactly the line counts its header gives, so a content line
+/// that looks like a header (a deleted `-- comment` reads `--- comment`) is
+/// still content. Headers are read only between hunks.
 pub fn hunks(patch: &str) -> BTreeMap<String, Vec<Hunk>> {
     let mut files: BTreeMap<String, Vec<Hunk>> = BTreeMap::new();
     let mut current: Option<String> = None;
     let mut old_path: Option<String> = None;
-    let mut hunk: Option<(Hunk, u32, u32)> = None;
-    let mut flush = |files: &mut BTreeMap<String, Vec<Hunk>>, current: &Option<String>, hunk: &mut Option<(Hunk, u32, u32)>| {
-        if let (Some(path), Some((done, _, _))) = (current, hunk.take()) {
-            files.entry(path.clone()).or_default().push(done);
+    let mut open: Option<OpenHunk> = None;
+    let close = |files: &mut BTreeMap<String, Vec<Hunk>>, current: &Option<String>, open: &mut Option<OpenHunk>| {
+        if let (Some(path), Some(done)) = (current, open.take()) {
+            files.entry(path.clone()).or_default().push(done.hunk);
         }
     };
     for line in patch.lines() {
+        if let Some(hunk) = open.as_mut() {
+            if hunk.old_left > 0 || hunk.new_left > 0 {
+                hunk.hunk.text.push_str(line);
+                hunk.hunk.text.push('\n');
+                match line.as_bytes().first() {
+                    Some(b'+') => {
+                        hunk.hunk.new.push(hunk.new_line);
+                        hunk.new_line += 1;
+                        hunk.new_left = hunk.new_left.saturating_sub(1);
+                    }
+                    Some(b'-') => {
+                        hunk.hunk.old.push(hunk.old_line);
+                        hunk.old_line += 1;
+                        hunk.old_left = hunk.old_left.saturating_sub(1);
+                    }
+                    // "\ No newline at end of file" belongs to the line before.
+                    Some(b'\\') => {}
+                    _ => {
+                        hunk.hunk.old.push(hunk.old_line);
+                        hunk.hunk.new.push(hunk.new_line);
+                        hunk.old_line += 1;
+                        hunk.new_line += 1;
+                        hunk.old_left = hunk.old_left.saturating_sub(1);
+                        hunk.new_left = hunk.new_left.saturating_sub(1);
+                    }
+                }
+                continue;
+            }
+            if line.starts_with("\\") {
+                hunk.hunk.text.push_str(line);
+                hunk.hunk.text.push('\n');
+                continue;
+            }
+            close(&mut files, &current, &mut open);
+        }
         if line.starts_with("diff --git ") {
-            flush(&mut files, &current, &mut hunk);
             current = None;
             old_path = None;
         } else if let Some(path) = line.strip_prefix("--- ") {
-            if hunk.is_none() {
-                old_path = side_path(path, "a/");
-            }
+            old_path = side_path(path, "a/");
         } else if let Some(path) = line.strip_prefix("+++ ") {
-            if hunk.is_none() {
-                current = side_path(path, "b/").or_else(|| old_path.clone());
-            }
+            current = side_path(path, "b/").or_else(|| old_path.clone());
         } else if line.starts_with("@@ ") {
-            flush(&mut files, &current, &mut hunk);
-            if let Some((old_start, new_start)) = hunk_starts(line) {
-                hunk = Some((Hunk { text: format!("{line}\n"), ..Hunk::default() }, old_start, new_start));
-            }
-        } else if let Some((open, old_line, new_line)) = hunk.as_mut() {
-            open.text.push_str(line);
-            open.text.push('\n');
-            match line.as_bytes().first() {
-                Some(b'+') => {
-                    open.new.push(*new_line);
-                    *new_line += 1;
-                }
-                Some(b'-') => {
-                    open.old.push(*old_line);
-                    *old_line += 1;
-                }
-                Some(b'\\') => {}
-                _ => {
-                    open.old.push(*old_line);
-                    open.new.push(*new_line);
-                    *old_line += 1;
-                    *new_line += 1;
-                }
+            if let Some((old_line, old_left, new_line, new_left)) = hunk_header(line) {
+                open = Some(OpenHunk {
+                    hunk: Hunk { text: format!("{line}\n"), ..Hunk::default() },
+                    old_line,
+                    new_line,
+                    old_left,
+                    new_left,
+                });
             }
         }
     }
-    flush(&mut files, &current, &mut hunk);
+    close(&mut files, &current, &mut open);
     files
 }
 
@@ -190,35 +219,67 @@ fn side_path(raw: &str, prefix: &str) -> Option<String> {
     if raw == "/dev/null" {
         return None;
     }
-    let unquoted = raw.strip_prefix('"').and_then(|rest| rest.strip_suffix('"')).map(unescape).unwrap_or_else(|| raw.to_owned());
+    let unquoted = raw.strip_prefix('"').and_then(|rest| rest.strip_suffix('"')).map(unquote).unwrap_or_else(|| raw.to_owned());
     Some(unquoted.strip_prefix(prefix).unwrap_or(&unquoted).to_owned())
 }
 
-fn unescape(quoted: &str) -> String {
-    let mut out = String::new();
-    let mut chars = quoted.chars();
+/// Git's C-style quoting: `\t`, `\n`, `\"`, `\\` and octal escapes, the
+/// octal ones being the bytes of a UTF-8 name (`\346\227\245` is `日`).
+fn unquote(quoted: &str) -> String {
+    let mut bytes = Vec::with_capacity(quoted.len());
+    let mut chars = quoted.chars().peekable();
     while let Some(character) = chars.next() {
         if character != '\\' {
-            out.push(character);
+            let mut buffer = [0; 4];
+            bytes.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
             continue;
         }
         match chars.next() {
-            Some('t') => out.push('\t'),
-            Some('n') => out.push('\n'),
-            Some(other) => out.push(other),
+            Some(digit @ '0'..='7') => {
+                let mut value = digit.to_digit(8).unwrap_or(0);
+                for _ in 0..2 {
+                    match chars.peek().and_then(|next| next.to_digit(8)) {
+                        Some(next) => {
+                            value = value * 8 + next;
+                            chars.next();
+                        }
+                        None => break,
+                    }
+                }
+                bytes.push((value & 0xff) as u8);
+            }
+            Some('t') => bytes.push(b'\t'),
+            Some('n') => bytes.push(b'\n'),
+            Some('r') => bytes.push(b'\r'),
+            Some('a') => bytes.push(0x07),
+            Some('b') => bytes.push(0x08),
+            Some('f') => bytes.push(0x0c),
+            Some('v') => bytes.push(0x0b),
+            Some(other) => {
+                let mut buffer = [0; 4];
+                bytes.extend_from_slice(other.encode_utf8(&mut buffer).as_bytes());
+            }
             None => {}
         }
     }
-    out
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// `@@ -12,3 +14,5 @@` to (12, 14).
-fn hunk_starts(header: &str) -> Option<(u32, u32)> {
+/// `@@ -12,3 +14,5 @@` to (12, 3, 14, 5). A side without a count has one line.
+fn hunk_header(header: &str) -> Option<(u32, u32, u32, u32)> {
     let mut parts = header.split_whitespace().skip(1);
-    let start = |part: Option<&str>, sign: char| -> Option<u32> {
-        part?.strip_prefix(sign)?.split(',').next()?.parse().ok()
+    let side = |part: Option<&str>, sign: char| -> Option<(u32, u32)> {
+        let mut numbers = part?.strip_prefix(sign)?.split(',');
+        let start = numbers.next()?.parse().ok()?;
+        let count = match numbers.next() {
+            Some(count) => count.parse().ok()?,
+            None => 1,
+        };
+        Some((start, count))
     };
-    Some((start(parts.next(), '-')?, start(parts.next(), '+')?))
+    let (old_start, old_count) = side(parts.next(), '-')?;
+    let (new_start, new_count) = side(parts.next(), '+')?;
+    Some((old_start, old_count, new_start, new_count))
 }
 
 /// A title for comparison: lowercase words, punctuation dropped.
