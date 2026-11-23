@@ -1439,6 +1439,14 @@ pub fn dispatch(
             let p: wire::RetryReviewParams = decode(method, params)?;
             reply(api::retry_review(core, &p))
         }
+        MethodName::DecideReview => {
+            let p: wire::DecideReviewParams = decode(method, params)?;
+            reply(api::decide_review(core, &p))
+        }
+        MethodName::PostReview => {
+            let p: wire::PostReviewParams = decode(method, params)?;
+            reply(api::post_review(core, &p))
+        }
         MethodName::GetReviewJobSettings => reply(api::get_review_job_settings(core)),
         MethodName::SaveReviewJobSettings => {
             let p: wire::SaveReviewJobSettingsParams = decode(method, params)?;

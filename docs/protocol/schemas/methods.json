@@ -2522,6 +2522,20 @@
       "resultSchema": "review-job-result.json"
     },
     {
+      "command": "decide_review",
+      "domain": "reviews",
+      "method": "reviews/decide_review",
+      "paramsSchema": "decide-review-params.json",
+      "resultSchema": "review-finding-list.json"
+    },
+    {
+      "command": "post_review",
+      "domain": "reviews",
+      "method": "reviews/post_review",
+      "paramsSchema": "post-review-params.json",
+      "resultSchema": "review-job-result.json"
+    },
+    {
       "command": "get_review_job_settings",
       "domain": "reviews",
       "method": "reviews/get_review_job_settings",
@@ -2538,7 +2552,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 51
+    "minor": 52
   },
   "reserved": {
     "cancel": "$/cancel",

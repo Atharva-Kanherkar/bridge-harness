@@ -552,7 +552,7 @@ impl Driver {
         })?;
         let marked = {
             let db = super::lock_db(&self.core);
-            store::mark_posted(&db, &job.id, &self.claim, &posted.review_id, &posted.url, self.now()).map_err(fatal)?
+            store::mark_posted(&db, &job.id, &self.claim, &posted, self.now()).map_err(fatal)?
         };
         if !marked {
             return Err(StepError::Cancelled);

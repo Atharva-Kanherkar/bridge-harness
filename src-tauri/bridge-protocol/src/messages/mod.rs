@@ -598,6 +598,8 @@ typed_methods![
     (GetReview, GetReviewParams, ReviewJobDetail),
     (CancelReview, CancelReviewParams, ReviewJobResult),
     (RetryReview, RetryReviewParams, ReviewJobResult),
+    (DecideReview, DecideReviewParams, ReviewFindingList),
+    (PostReview, PostReviewParams, ReviewJobResult),
     (GetReviewJobSettings, _, ReviewJobSettings),
     (SaveReviewJobSettings, SaveReviewJobSettingsParams, ReviewJobSettings),
 ];

@@ -535,12 +535,13 @@ impl ReviewSteps for Hybrid {
         Ok(self.posted.lock().unwrap().iter().any(|body| body.contains(&marker)).then(|| PostedReview {
             review_id: "1".into(),
             url: "https://example.test/1".into(),
+            findings: Vec::new(),
         }))
     }
 
     fn post(&self, job: &JobRow, _cancel: &CancelToken) -> Result<PostedReview, StepError> {
         self.posted.lock().unwrap().push(post_marker(&job.publication_key));
-        Ok(PostedReview { review_id: "1".into(), url: "https://example.test/1".into() })
+        Ok(PostedReview { review_id: "1".into(), url: "https://example.test/1".into(), findings: Vec::new() })
     }
 
     fn cleanup(&self, job_id: &str) {

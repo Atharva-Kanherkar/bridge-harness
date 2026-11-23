@@ -198,9 +198,13 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// carry the app state (`sessions/start_chat`, `workspaces/refresh_workspace`
 /// and the other mutations) now leave out the background runs too; no client
 /// shows them. A 1.50 client still pairs: it never calls the new methods.
+///
+/// **1.52 adds review triage and posting**: `reviews/decide_review`,
+/// `reviews/post_review`, and `ReviewFinding.decidedAt`. A 1.51 client still
+/// pairs: it never calls them, and the new field is optional.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 51,
+    minor: 52,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -566,9 +570,17 @@ mod tests {
     fn a_1_50_client_pairs_with_a_lean_state_daemon() {
         let before = ProtocolVersion { major: 1, minor: 50 };
         let lean = ProtocolVersion { major: 1, minor: 51 };
-        assert_eq!(PROTOCOL_VERSION, lean);
         assert!(lean.accepts(before), "a 1.50 client never calls get_app_state or refresh_workspace_stats");
         assert!(!before.accepts(lean), "a 1.51 app reads its state through get_app_state");
+    }
+
+    #[test]
+    fn a_1_51_client_pairs_with_a_daemon_that_posts_reviews() {
+        let before = ProtocolVersion { major: 1, minor: 51 };
+        let posting = ProtocolVersion { major: 1, minor: 52 };
+        assert_eq!(PROTOCOL_VERSION, posting);
+        assert!(posting.accepts(before), "a 1.51 client never decides or posts a review");
+        assert!(!before.accepts(posting));
     }
 
     #[test]

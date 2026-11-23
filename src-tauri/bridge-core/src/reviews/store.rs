@@ -21,7 +21,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use uuid::Uuid;
 
 use super::state;
-use super::steps::{DraftFinding, PassOutcome, PassUsage};
+use super::steps::{DraftFinding, PassOutcome, PassUsage, PostedReview};
 use crate::BridgeError;
 
 /// Statuses a job can still leave. One non-terminal job per dedupe key.
@@ -36,6 +36,10 @@ pub const LEASE_SECONDS: i64 = 45;
 pub const RESTARTED: &str = "Bridge restarted during the review";
 pub const ABANDONED: &str = "Abandoned when the review was reclaimed";
 pub const STOPPED_RESPONDING: &str = "The review stopped responding three times";
+pub const RESTARTED_POSTING: &str = "Bridge restarted while posting; post again";
+/// The longest body a person may write for a finding. GitHub takes 65,536
+/// characters per comment; the label, title and footer need the rest.
+pub const MAX_EDITED_BODY_CHARS: usize = 60_000;
 
 pub fn install_store(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     transaction.execute_batch(
@@ -451,22 +455,28 @@ pub fn finish(
     Ok(changed == 1)
 }
 
-/// `posting -> posted`, with the review GitHub holds.
-pub fn mark_posted(
-    db: &Connection,
-    id: &str,
-    owner: &str,
-    review_id: &str,
-    url: &str,
-    now: DateTime<Utc>,
-) -> Result<bool, BridgeError> {
+/// `posting -> posted`, with the review GitHub holds, and each finding it
+/// holds marked posted (with its comment id when it is inline), in one
+/// transaction under `owner`.
+pub fn mark_posted(db: &Connection, id: &str, owner: &str, posted: &PostedReview, now: DateTime<Utc>) -> Result<bool, BridgeError> {
     state::check(Status::Posting, Status::Posted)?;
-    let changed = db.execute(
+    let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+    let changed = transaction.execute(
         "UPDATE review_jobs SET status='posted', posted_review_id=?3, posted_review_url=?4, error=NULL,
             lease_owner=NULL, lease_expires_at=NULL, finished_at=?5
          WHERE id=?1 AND status='posting' AND lease_owner=?2",
-        params![id, owner, review_id, url, stamp(now)],
+        params![id, owner, posted.review_id, posted.url, stamp(now)],
     )?;
+    if changed == 1 {
+        for finding in &posted.findings {
+            transaction.execute(
+                "UPDATE review_findings SET posted_at=?3, github_comment_id=COALESCE(?4, github_comment_id)
+                 WHERE id=?1 AND job_id=?2",
+                params![finding.finding_id, id, stamp(now), finding.comment_id],
+            )?;
+        }
+    }
+    transaction.commit()?;
     Ok(changed == 1)
 }
 
@@ -662,22 +672,119 @@ pub fn reclaim_expired(db: &Connection, now: DateTime<Utc>) -> Result<Vec<String
 }
 
 /// At boot: nothing in flight survived the restart. Every job a runner held,
-/// and every post waiting for one, becomes `interrupted`.
+/// and every post waiting for one, becomes `interrupted`, except a post a
+/// person asked for: that goes back to their draft, triage intact, to post
+/// again (the marker check keeps the next post from doubling one that got
+/// through).
 pub fn interrupt_in_flight(db: &Connection, now: DateTime<Utc>) -> Result<Vec<String>, BridgeError> {
-    let ids: Vec<String> = db
+    let ids: Vec<(String, String, String)> = db
         .prepare(
-            "SELECT id FROM review_jobs
+            "SELECT id, status, post_mode FROM review_jobs
              WHERE status IN ('preparing','reviewing','posting') OR (status='drafted' AND lease_owner IS NOT NULL)",
         )?
-        .query_map([], |row| row.get(0))?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<Result<_, _>>()?;
     let mut changed = Vec::new();
-    for id in ids {
-        if finish(db, &id, None, Status::Interrupted, Some(RESTARTED), now)? {
+    for (id, status, post_mode) in ids {
+        let settled = if status == "posting" && post_mode == ReviewPostMode::Draft.as_str() {
+            state::check(Status::Posting, Status::Drafted)?;
+            db.execute(
+                "UPDATE review_jobs SET status='drafted', error=?2, lease_owner=NULL, lease_expires_at=NULL
+                 WHERE id=?1 AND status='posting'",
+                params![id, RESTARTED_POSTING],
+            )? == 1
+        } else {
+            finish(db, &id, None, Status::Interrupted, Some(RESTARTED), now)?
+        };
+        if settled {
             changed.push(id);
         }
     }
     Ok(changed)
+}
+
+// --- triage -------------------------------------------------------------------
+
+/// A drafted job waiting for a person: no runner holds it.
+fn waiting_draft(db: &Connection, job_id: &str, action: &str) -> Result<JobRow, BridgeError> {
+    let job = require_job(db, job_id)?;
+    if job.status != Status::Drafted || job.lease_owner.is_some() {
+        return Err(BridgeError::Invalid(format!(
+            "Only a drafted review waiting for you can be {action}; this one is {}",
+            job.status.as_str()
+        )));
+    }
+    Ok(job)
+}
+
+/// Store a person's decisions on a drafted job, all or none.
+pub fn decide(
+    db: &Connection,
+    job_id: &str,
+    decisions: &[wire::ReviewFindingDecisionInput],
+    now: DateTime<Utc>,
+) -> Result<(), BridgeError> {
+    let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+    waiting_draft(&transaction, job_id, "triaged")?;
+    let mut seen = std::collections::HashSet::new();
+    for decision in decisions {
+        if !seen.insert(decision.finding_id.as_str()) {
+            return Err(BridgeError::Invalid(format!("Finding {} is decided twice", decision.finding_id)));
+        }
+        let edited_body = match (decision.decision, decision.edited_body.as_deref()) {
+            (ReviewFindingDecision::Pending, _) => {
+                return Err(BridgeError::Invalid("A decision is kept, dropped or edited".into()))
+            }
+            (ReviewFindingDecision::Edited, Some(body)) if !body.trim().is_empty() => {
+                if body.chars().count() > MAX_EDITED_BODY_CHARS {
+                    return Err(BridgeError::Invalid(format!(
+                        "An edited finding is at most {MAX_EDITED_BODY_CHARS} characters"
+                    )));
+                }
+                Some(body.trim().to_owned())
+            }
+            (ReviewFindingDecision::Edited, _) => {
+                return Err(BridgeError::Invalid("An edited finding needs its new body".into()))
+            }
+            (_, Some(_)) => {
+                return Err(BridgeError::Invalid("Only an edited finding carries a new body".into()))
+            }
+            (_, None) => None,
+        };
+        let changed = transaction.execute(
+            "UPDATE review_findings SET decision=?3, edited_body=?4, decided_at=?5 WHERE id=?1 AND job_id=?2",
+            params![decision.finding_id, job_id, decision.decision.as_str(), edited_body, stamp(now)],
+        )?;
+        if changed != 1 {
+            return Err(BridgeError::Invalid(format!("This review has no finding {}", decision.finding_id)));
+        }
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+/// `drafted -> posting` for a person's post: allowed when at least one
+/// finding is kept or edited, or the job has none (a summary-only review).
+/// The runner claims it from there.
+pub fn request_post(db: &Connection, job_id: &str) -> Result<JobRow, BridgeError> {
+    state::check(Status::Drafted, Status::Posting)?;
+    let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+    waiting_draft(&transaction, job_id, "posted")?;
+    let (total, chosen): (i64, i64) = transaction.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(decision IN ('kept','edited')), 0) FROM review_findings WHERE job_id=?1",
+        params![job_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if total > 0 && chosen == 0 {
+        return Err(BridgeError::Invalid("Keep or edit at least one finding to post this review".into()));
+    }
+    transaction.execute(
+        "UPDATE review_jobs SET status='posting', error=NULL WHERE id=?1 AND status='drafted' AND lease_owner IS NULL",
+        params![job_id],
+    )?;
+    let job = require_job(&transaction, job_id)?;
+    transaction.commit()?;
+    Ok(job)
 }
 
 /// A new job with the same inputs, linked to the one it retries. Idempotent
@@ -921,7 +1028,7 @@ const SEVERITY_RANK: &str =
 pub fn findings(db: &Connection, job_id: &str) -> Result<Vec<wire::ReviewFinding>, BridgeError> {
     let mut statement = db.prepare(&format!(
         "SELECT id, job_id, pass_id, path, line, start_line, side, severity, title, body, confidence, fingerprint,
-            agreed_by, outside_diff, decision, edited_body, github_comment_id, posted_at
+            agreed_by, outside_diff, decision, edited_body, github_comment_id, posted_at, decided_at
          FROM review_findings WHERE job_id=?1
          ORDER BY agreed_by DESC, {SEVERITY_RANK}, confidence DESC, rowid"
     ))?;
@@ -947,6 +1054,7 @@ pub fn findings(db: &Connection, job_id: &str) -> Result<Vec<wire::ReviewFinding
                 outside_diff: row.get(13)?,
                 decision: ReviewFindingDecision::parse(&decision).ok_or_else(|| invalid_column(14, &decision))?,
                 edited_body: row.get(15)?,
+                decided_at: row.get(18)?,
                 github_comment_id: row.get(16)?,
                 posted_at: row.get(17)?,
             })

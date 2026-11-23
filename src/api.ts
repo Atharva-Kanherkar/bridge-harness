@@ -3,7 +3,7 @@ import { mockChatTools, mockSaveFirstToolChoice, mockUpdateChatTools } from "./c
 import type { GetChatToolsParams, GetChatToolsResult, UpdateChatToolsParams, UpdateChatToolsResult } from "./protocol/generated/protocol";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
 import type { AppPreferences, AppPreferenceValues } from "./protocol/generated/protocol";
-import type { ReviewJob, ReviewJobDetail, ReviewJobList, ReviewJobResult, ReviewJobSettings, ReviewTrigger } from "./protocol/generated/protocol";
+import type { ReviewFindingDecisionInput, ReviewFindingList, ReviewJob, ReviewJobDetail, ReviewJobList, ReviewJobResult, ReviewJobSettings, ReviewTrigger } from "./protocol/generated/protocol";
 import type { LimitRecoverySettings, LimitRecoveryStatus } from "./protocol/generated/protocol";
 import type { AlwaysAllowToolResult, RunWorkflowResult, WorkflowDraftResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary } from "./protocol/generated/protocol";
 import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, MarkAttentionUnreadResult, ReportPresenceResult, UnreadSummary } from "./protocol/generated/protocol";
@@ -2117,6 +2117,12 @@ export const bridgeApi = {
     hasBackend() ? call("reviews/cancel_review", { jobId }) : Promise.reject(new Error(`No review job ${jobId}`)),
   retryReview: (jobId: string): Promise<ReviewJobResult> =>
     hasBackend() ? call("reviews/retry_review", { jobId }) : Promise.reject(new Error(`No review job ${jobId}`)),
+  /** Keep, drop or edit findings of a drafted review, all or none. */
+  decideReview: (jobId: string, decisions: ReviewFindingDecisionInput[]): Promise<ReviewFindingList> =>
+    hasBackend() ? call("reviews/decide_review", { jobId, decisions }) : Promise.reject(new Error(`No review job ${jobId}`)),
+  /** Post a drafted review's kept and edited findings as one comment review. */
+  postReview: (jobId: string): Promise<ReviewJobResult> =>
+    hasBackend() ? call("reviews/post_review", { jobId }) : Promise.reject(new Error(`No review job ${jobId}`)),
   onReviewJobUpdated: (handler: (payload: { job: ReviewJob }) => void): Promise<UnlistenFn> =>
     hasBackend() ? subscribe<{ job: ReviewJob }>("reviews/job_updated", handler) : Promise.resolve(() => {}),
   getReviewJobSettings: async (): Promise<ReviewJobSettings> => {

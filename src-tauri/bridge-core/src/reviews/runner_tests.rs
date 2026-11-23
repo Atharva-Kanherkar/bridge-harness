@@ -114,6 +114,7 @@ impl ReviewSteps for Script {
         Ok(github.iter().position(|body| body.contains(&marker)).map(|index| PostedReview {
             review_id: format!("review-{index}"),
             url: format!("https://github.com/octo/repo/pull/{}#pullrequestreview-{index}", job.number),
+            findings: Vec::new(),
         }))
     }
 
@@ -130,6 +131,7 @@ impl ReviewSteps for Script {
                 Ok(PostedReview {
                     review_id: format!("review-{index}"),
                     url: format!("https://github.com/octo/repo/pull/{}#pullrequestreview-{index}", job.number),
+                    findings: Vec::new(),
                 })
             }
             PostPlan::PostThenTimeOut => {

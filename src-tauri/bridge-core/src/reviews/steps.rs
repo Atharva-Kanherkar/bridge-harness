@@ -192,10 +192,20 @@ pub struct PassOutcome {
 }
 
 /// A review on GitHub, posted now or found by its marker.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PostedReview {
     pub review_id: String,
     pub url: String,
+    /// The job's findings this review holds, each with its inline comment
+    /// when it has one.
+    pub findings: Vec<PostedFinding>,
+}
+
+/// One finding GitHub holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostedFinding {
+    pub finding_id: String,
+    pub comment_id: Option<String>,
 }
 
 /// The marker every posted review body carries, so a retry can tell it

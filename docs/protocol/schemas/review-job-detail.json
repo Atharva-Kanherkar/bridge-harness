@@ -17,6 +17,13 @@
           "format": "double",
           "type": "number"
         },
+        "decidedAt": {
+          "description": "When a person last decided. Absent while `pending`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "decision": {
           "$ref": "#/definitions/ReviewFindingDecision"
         },

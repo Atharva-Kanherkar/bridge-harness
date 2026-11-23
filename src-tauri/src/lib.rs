@@ -1096,6 +1096,28 @@ async fn retry_review(
 }
 
 #[tauri::command]
+async fn decide_review(
+    job_id: String,
+    decisions: Vec<bridge_protocol::messages::ReviewFindingDecisionInput>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewFindingList, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Review", move || {
+        api::decide_review(&core, &bridge_protocol::messages::DecideReviewParams { job_id, decisions })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn post_review(
+    job_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewJobResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Review", move || api::post_review(&core, &bridge_protocol::messages::PostReviewParams { job_id })).await
+}
+
+#[tauri::command]
 async fn get_review_job_settings(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::ReviewJobSettings, BridgeError> {
@@ -3929,6 +3951,8 @@ pub fn run() -> i32 {
             get_review,
             cancel_review,
             retry_review,
+            decide_review,
+            post_review,
             get_review_job_settings,
             save_review_job_settings,
             get_state,
