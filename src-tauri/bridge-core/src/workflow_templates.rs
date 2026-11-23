@@ -287,6 +287,17 @@ mod tests {
     }
 
     #[test]
+    fn a_template_uses_the_connected_server_when_two_match() {
+        let servers = vec![server("Slack (old)", Some(false)), server("claude.ai Slack", Some(true)), server("Slack (spare)", None)];
+        let digest = templates(&context(servers)).into_iter().find(|template| template.id == "slack-morning-digest").unwrap();
+        assert_eq!(digest.definition.grants.iter().map(|grant| grant.server.as_str()).collect::<Vec<_>>(), ["claude.ai Slack"]);
+        // With none connected, the first that matches.
+        let unknown = templates(&context(vec![server("Slack (old)", Some(false)), server("Slack (spare)", None)]));
+        let digest = unknown.into_iter().find(|template| template.id == "slack-morning-digest").unwrap();
+        assert_eq!(digest.definition.grants[0].server, "Slack (old)");
+    }
+
+    #[test]
     fn every_ready_template_passes_validation() {
         let servers = ["claude.ai Slack", "claude.ai Gmail", "claude.ai Google Calendar", "claude.ai Notion", "claude.ai Linear"];
         let context = context(servers.iter().map(|id| server(id, Some(true))).collect());
