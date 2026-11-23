@@ -1458,6 +1458,122 @@ impl GithubSurface {
         self.pr_review_threads_in(workspace, &repository, number)
     }
 
+    /// Every review on a pull request, each page: id, URL and body. Never
+    /// cached: a post retry reads it to find a review that already went
+    /// through.
+    pub fn pr_reviews(
+        &self,
+        workspace: &Path,
+        repository: &GithubRepository,
+        number: u64,
+    ) -> Result<Vec<crate::reviews::post::FoundReview>, GithubSurfaceError> {
+        self.require_binary()?;
+        let bytes = self.run_gh(
+            workspace,
+            "list reviews",
+            &[
+                "api".into(),
+                "--hostname".into(),
+                repository.host.clone(),
+                "--method".into(),
+                "GET".into(),
+                format!(
+                    "repos/{}/{}/pulls/{number}/reviews?per_page=100",
+                    repository.owner, repository.name
+                ),
+                "--paginate".into(),
+            ],
+            false,
+        )?;
+        Ok(parse_pages::<RawPostedReview>("pull-request reviews", &bytes)?
+            .into_iter()
+            .map(RawPostedReview::found)
+            .collect())
+    }
+
+    /// Post one pull-request review. Only a
+    /// [`crate::reviews::post::ReviewPayload`] can be posted, and its event is
+    /// always `COMMENT`: approving or requesting changes cannot be expressed
+    /// here. The payload goes through a private temporary file.
+    pub fn create_pr_review(
+        &self,
+        workspace: &Path,
+        repository: &GithubRepository,
+        number: u64,
+        payload: &crate::reviews::post::ReviewPayload,
+    ) -> Result<crate::reviews::post::FoundReview, GithubSurfaceError> {
+        use std::io::Write;
+        self.require_binary()?;
+        let mut file = tempfile::Builder::new()
+            .prefix("bridge-review-")
+            .suffix(".json")
+            .tempfile()?;
+        serde_json::to_writer(&mut file, payload).map_err(std::io::Error::other)?;
+        file.flush()?;
+        let posted = self.run_gh(
+            workspace,
+            "post review",
+            &[
+                "api".into(),
+                "--hostname".into(),
+                repository.host.clone(),
+                "--method".into(),
+                "POST".into(),
+                format!(
+                    "repos/{}/{}/pulls/{number}/reviews",
+                    repository.owner, repository.name
+                ),
+                "--input".into(),
+                file.path().to_string_lossy().into_owned(),
+            ],
+            false,
+        );
+        // Whatever happened, the pull request's threads may have changed.
+        self.invalidate_action_resources(repository, number);
+        Ok(parse_json::<RawPostedReview>("posted review", &posted?)?.found())
+    }
+
+    /// The inline comments of one review, each page.
+    pub fn pr_review_comments(
+        &self,
+        workspace: &Path,
+        repository: &GithubRepository,
+        number: u64,
+        review_id: &str,
+    ) -> Result<Vec<crate::reviews::post::ReturnedComment>, GithubSurfaceError> {
+        self.require_binary()?;
+        let bytes = self.run_gh(
+            workspace,
+            "list review comments",
+            &[
+                "api".into(),
+                "--hostname".into(),
+                repository.host.clone(),
+                "--method".into(),
+                "GET".into(),
+                format!(
+                    "repos/{}/{}/pulls/{number}/reviews/{review_id}/comments?per_page=100",
+                    repository.owner, repository.name
+                ),
+                "--paginate".into(),
+            ],
+            false,
+        )?;
+        Ok(parse_pages::<RawPostedReviewComment>("review comments", &bytes)?
+            .into_iter()
+            .map(|comment| crate::reviews::post::ReturnedComment {
+                id: comment.id.to_string(),
+                path: comment.path,
+                line: comment.original_line.or(comment.line),
+                side: comment
+                    .side
+                    .as_deref()
+                    .and_then(bridge_protocol::messages::ReviewSide::parse),
+                body: comment.body,
+            })
+            .collect())
+    }
+
     /// [`Self::pr_review_threads`] of a named repository. See
     /// [`Self::pr_detail_in`].
     pub fn pr_review_threads_in(
@@ -2925,6 +3041,51 @@ fn parse_json<T: serde::de::DeserializeOwned>(
     bytes: &[u8],
 ) -> Result<T, GithubSurfaceError> {
     serde_json::from_slice(bytes).map_err(|error| malformed(resource, error.to_string()))
+}
+
+/// `gh api --paginate` prints one JSON array per page, back to back.
+fn parse_pages<T: serde::de::DeserializeOwned>(
+    resource: &'static str,
+    bytes: &[u8],
+) -> Result<Vec<T>, GithubSurfaceError> {
+    let mut items = Vec::new();
+    for page in serde_json::Deserializer::from_slice(bytes).into_iter::<Vec<T>>() {
+        items.extend(page.map_err(|error| malformed(resource, error.to_string()))?);
+    }
+    Ok(items)
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPostedReview {
+    id: u64,
+    #[serde(default)]
+    html_url: String,
+    #[serde(default)]
+    body: Option<String>,
+}
+
+impl RawPostedReview {
+    fn found(self) -> crate::reviews::post::FoundReview {
+        crate::reviews::post::FoundReview {
+            id: self.id.to_string(),
+            url: self.html_url,
+            body: self.body.unwrap_or_default(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPostedReviewComment {
+    id: u64,
+    path: String,
+    #[serde(default)]
+    line: Option<u32>,
+    #[serde(default)]
+    original_line: Option<u32>,
+    #[serde(default)]
+    side: Option<String>,
+    #[serde(default)]
+    body: String,
 }
 
 fn malformed(resource: &'static str, detail: impl Into<String>) -> GithubSurfaceError {

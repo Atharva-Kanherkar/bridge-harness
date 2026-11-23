@@ -337,3 +337,308 @@ fn gh_errors_map_to_retry_or_fail() {
         StepError::Fatal(_)
     ));
 }
+
+// --- posting through `gh`, with the real runner --------------------------------
+
+mod live {
+    use super::*;
+    use crate::reviews::prepare::LiveSteps;
+    use crate::reviews::runner::{Runner, RunnerConfig};
+    use crate::reviews::steps::{DraftFinding, PassOutcome, PassRequest, Prepared, ReviewSteps};
+    use crate::runtime::BridgeCore;
+    use rusqlite::params;
+    use std::time::Duration;
+
+    /// A `gh` that keeps the PR's reviews in files: a POST stores the review
+    /// it was given (so a later list finds its marker) unless told to refuse.
+    const STUB: &str = r#"#!/bin/sh
+root=$(dirname "$0")
+printf '%s\n' "$*" >> "$root/invocations.log"
+if [ "$1 $2" = "auth status" ]; then exit 0; fi
+if [ "$1" != "api" ]; then exit 1; fi
+endpoint="$6"
+if [ "$5" = "POST" ]; then
+    n=$(( $(cat "$root/posts" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$root/posts"
+    cp "$8" "$root/posted-$n.json"
+    if [ -f "$root/reject" ]; then cat "$root/reject" >&2; exit 1; fi
+    marker=$(grep -o '<!-- bridge-review:[^ ]* -->' "$8" | head -1)
+    url="https://github.com/octo/repo/pull/7#pullrequestreview-555"
+    printf '[{"id":555,"html_url":"%s","body":"Earlier.\\n\\n%s"}]' "$url" "$marker" > "$root/reviews.json"
+    if [ -f "$root/accept-then-time-out" ]; then
+        rm "$root/accept-then-time-out"
+        echo 'HTTP 504: Gateway Timeout' >&2
+        exit 1
+    fi
+    printf '{"id":555,"html_url":"%s","body":"posted"}' "$url"
+    exit 0
+fi
+case "$endpoint" in
+    */reviews/*/comments*) cat "$root/comments.json" 2>/dev/null || echo '[]' ;;
+    */reviews*) cat "$root/reviews.json" 2>/dev/null || echo '[]' ;;
+    *) exit 1 ;;
+esac
+"#;
+
+    /// Real posting; preparation and the reviewer are scripted.
+    struct Offline {
+        live: LiveSteps,
+        findings: Vec<DraftFinding>,
+    }
+
+    impl ReviewSteps for Offline {
+        fn prepare(&self, job: &JobRow, _cancel: &CancelToken) -> Result<Prepared, StepError> {
+            Ok(Prepared { head_sha: job.head_sha.clone(), ..Default::default() })
+        }
+
+        fn review(&self, _request: PassRequest<'_>, _cancel: &CancelToken) -> Result<PassOutcome, StepError> {
+            Ok(PassOutcome { summary: "One real problem.".into(), findings: self.findings.clone(), ..Default::default() })
+        }
+
+        fn find_posted(&self, job: &JobRow) -> Result<Option<PostedReview>, StepError> {
+            self.live.find_posted(job)
+        }
+
+        fn post(&self, job: &JobRow, cancel: &CancelToken) -> Result<PostedReview, StepError> {
+            self.live.post(job, cancel)
+        }
+
+        fn cleanup(&self, _job_id: &str) {}
+    }
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        gh: std::path::PathBuf,
+        core: Arc<BridgeCore>,
+        runner: Runner,
+    }
+
+    impl Fixture {
+        fn posts(&self) -> usize {
+            std::fs::read_to_string(self.gh.join("posts")).map(|text| text.trim().parse().unwrap()).unwrap_or(0)
+        }
+
+        fn posted(&self, n: usize) -> Value {
+            serde_json::from_slice(&std::fs::read(self.gh.join(format!("posted-{n}.json"))).unwrap()).unwrap()
+        }
+
+        fn invocations(&self) -> Vec<String> {
+            std::fs::read_to_string(self.gh.join("invocations.log")).unwrap_or_default().lines().map(str::to_owned).collect()
+        }
+
+        fn drive(&self) {
+            for handle in self.runner.tick().unwrap() {
+                handle.join().unwrap();
+            }
+        }
+
+        fn job(&self, id: &str) -> JobRow {
+            store::require_job(&self.core.db.lock().unwrap(), id).unwrap()
+        }
+
+        fn findings(&self, id: &str) -> Vec<wire::ReviewFinding> {
+            let mut found = store::findings(&self.core.db.lock().unwrap(), id).unwrap();
+            found.sort_by(|a, b| a.path.cmp(&b.path));
+            found
+        }
+
+        fn start(&self) -> String {
+            let params = wire::StartReviewParams {
+                workspace_id: "w".into(),
+                number: 7,
+                harnesses: Some(vec!["claude".into()]),
+                trigger: None,
+            };
+            let head = crate::reviews::PrHead {
+                repo_owner: "octo".into(),
+                repo_name: "repo".into(),
+                head_sha: HEAD.into(),
+                base_sha: None,
+            };
+            crate::reviews::start_with(&self.core, &params, head).unwrap().id
+        }
+    }
+
+    fn draft(path: &str, line: u32, side: ReviewSide, outside_diff: bool) -> DraftFinding {
+        DraftFinding {
+            path: path.into(),
+            line,
+            start_line: None,
+            side,
+            severity: ReviewSeverity::Major,
+            title: format!("Problem in {path}"),
+            body: format!("Why {path} is wrong."),
+            confidence: 0.9,
+            fingerprint: path.into(),
+            outside_diff,
+        }
+    }
+
+    fn fixture(mode: ReviewPostMode) -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let gh = dir.path().join("gh-bin");
+        std::fs::create_dir(&gh).unwrap();
+        let script = gh.join("gh");
+        std::fs::write(&script, STUB).unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+
+        let mut core = BridgeCore::for_tests(&dir.path().join("data"));
+        core.github_surface = crate::github_surface::GithubSurface::discover_on_path(&gh);
+        let core = Arc::new(core);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')", params![workspace.to_string_lossy()])
+                .unwrap();
+            db.execute(
+                "INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at)
+                 VALUES('w','p','Oslo','Demo','main',?1,'ready','now')",
+                params![workspace.to_string_lossy()],
+            )
+            .unwrap();
+            let mut settings = crate::reviews::settings::load(&db).unwrap();
+            settings.post_mode = mode;
+            crate::reviews::settings::save(&db, &settings).unwrap();
+        }
+        core.reviews.set_steps(Arc::new(Offline {
+            live: LiveSteps::new(&core),
+            findings: vec![
+                draft("a.rs", 2, ReviewSide::Right, false),
+                draft("b.rs", 5, ReviewSide::Left, false),
+                draft("c.rs", 40, ReviewSide::Right, true),
+            ],
+        }));
+        let config = RunnerConfig {
+            renew_every: Duration::from_millis(30),
+            retry_backoff: Duration::from_millis(1),
+            step_retries: 3,
+            poll: Duration::from_millis(10),
+        };
+        let runner = Runner::with(core.clone(), config, Arc::new(chrono::Utc::now));
+        Fixture { _dir: dir, gh, core, runner }
+    }
+
+    fn decide(fixture: &Fixture, job_id: &str) {
+        let ids: Vec<String> = fixture.findings(job_id).into_iter().map(|finding| finding.id).collect();
+        let decision = |id: &str, decision, edited: Option<&str>| wire::ReviewFindingDecisionInput {
+            finding_id: id.into(),
+            decision,
+            edited_body: edited.map(str::to_owned),
+        };
+        crate::reviews::decide(
+            &fixture.core,
+            &wire::DecideReviewParams {
+                job_id: job_id.into(),
+                decisions: vec![
+                    decision(&ids[0], ReviewFindingDecision::Kept, None),
+                    decision(&ids[1], ReviewFindingDecision::Dropped, None),
+                    decision(&ids[2], ReviewFindingDecision::Edited, Some("Put it in plainer words.")),
+                ],
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_draft_post_reaches_github_once_with_the_kept_findings() {
+        let fixture = fixture(ReviewPostMode::Draft);
+        std::fs::write(
+            fixture.gh.join("comments.json"),
+            r#"[{"id":901,"path":"a.rs","line":2,"original_line":2,"side":"RIGHT","body":"anything"}]"#,
+        )
+        .unwrap();
+        let id = fixture.start();
+        fixture.drive();
+        assert_eq!(fixture.job(&id).status, Status::Drafted);
+        assert_eq!(fixture.posts(), 0, "nothing reaches GitHub until a person posts");
+
+        decide(&fixture, &id);
+        let posting = crate::reviews::post(&fixture.core, &id).unwrap();
+        assert_eq!(posting.status, Status::Posting);
+        fixture.drive();
+
+        let job = fixture.job(&id);
+        assert_eq!(job.status, Status::Posted, "{:?}", job.error);
+        assert_eq!(job.posted_review_url.as_deref(), Some("https://github.com/octo/repo/pull/7#pullrequestreview-555"));
+        assert_eq!(fixture.posts(), 1);
+        let payload = fixture.posted(1);
+        assert_eq!(payload["event"], "COMMENT");
+        assert_eq!(payload["commit_id"], HEAD);
+        let comments = payload["comments"].as_array().unwrap();
+        assert_eq!(comments.len(), 1, "the dropped finding never posts: {comments:?}");
+        assert_eq!((comments[0]["path"].as_str(), comments[0]["line"].as_u64()), (Some("a.rs"), Some(2)));
+        let body = payload["body"].as_str().unwrap();
+        assert!(body.contains("Put it in plainer words.") && !body.contains("Why c.rs is wrong."), "edited as edited: {body}");
+        assert!(!body.contains("b.rs"));
+        assert!(body.ends_with(&post_marker(&id)));
+
+        let log = fixture.invocations();
+        let list = log.iter().position(|line| line.contains("--method GET") && line.ends_with("/reviews?per_page=100 --paginate"));
+        let post = log.iter().position(|line| line.contains("--method POST"));
+        assert!(list.unwrap() < post.unwrap(), "the marker is checked before posting: {log:?}");
+
+        let findings = fixture.findings(&id);
+        assert_eq!(findings[0].github_comment_id.as_deref(), Some("901"));
+        assert!(findings[0].posted_at.is_some());
+        assert!(findings[1].posted_at.is_none(), "dropped");
+        assert!(findings[2].posted_at.is_some() && findings[2].github_comment_id.is_none(), "outside the diff, in the body");
+    }
+
+    #[test]
+    fn a_post_that_timed_out_after_github_took_it_is_not_posted_twice() {
+        let fixture = fixture(ReviewPostMode::Draft);
+        std::fs::write(fixture.gh.join("accept-then-time-out"), "").unwrap();
+        let id = fixture.start();
+        fixture.drive();
+        decide(&fixture, &id);
+        crate::reviews::post(&fixture.core, &id).unwrap();
+        fixture.drive();
+        let job = fixture.job(&id);
+        assert_eq!(job.status, Status::Posted, "{:?}", job.error);
+        assert_eq!(job.posted_review_id.as_deref(), Some("555"), "the review GitHub already had");
+        assert_eq!(fixture.posts(), 1, "one review on GitHub");
+        let findings = fixture.findings(&id);
+        assert!(findings[2].posted_at.is_none(), "the found review's body does not hold the outside finding");
+    }
+
+    #[test]
+    fn an_auto_job_posts_without_anyone_deciding() {
+        let fixture = fixture(ReviewPostMode::Auto);
+        let id = fixture.start();
+        fixture.drive();
+        let job = fixture.job(&id);
+        assert_eq!(job.status, Status::Posted, "{:?}", job.error);
+        assert_eq!(fixture.posts(), 1);
+        let payload = fixture.posted(1);
+        assert_eq!(payload["event"], "COMMENT");
+        let comments = payload["comments"].as_array().unwrap();
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[1]["side"], "LEFT");
+        assert!(payload["body"].as_str().unwrap().contains("Why c.rs is wrong."));
+    }
+
+    #[test]
+    fn a_rejected_post_returns_the_draft_with_the_reason() {
+        let fixture = fixture(ReviewPostMode::Draft);
+        std::fs::write(fixture.gh.join("reject"), "HTTP 422: Unprocessable Entity (line must be part of the diff)").unwrap();
+        let id = fixture.start();
+        fixture.drive();
+        decide(&fixture, &id);
+        crate::reviews::post(&fixture.core, &id).unwrap();
+        fixture.drive();
+        let job = fixture.job(&id);
+        assert_eq!(job.status, Status::Drafted);
+        assert!(job.error.as_deref().unwrap().starts_with("GitHub refused the review"), "{:?}", job.error);
+        assert_eq!(fixture.posts(), 1, "a refusal is not retried");
+        assert_eq!(fixture.findings(&id)[0].decision, ReviewFindingDecision::Kept, "the triage stays");
+
+        std::fs::remove_file(fixture.gh.join("reject")).unwrap();
+        crate::reviews::post(&fixture.core, &id).unwrap();
+        fixture.drive();
+        assert_eq!(fixture.job(&id).status, Status::Posted, "and posts once fixed");
+        assert_eq!(fixture.posts(), 2);
+    }
+}

@@ -1063,6 +1063,24 @@ pub fn findings(db: &Connection, job_id: &str) -> Result<Vec<wire::ReviewFinding
     Ok(rows)
 }
 
+/// The harness whose pass found each finding of a job.
+pub fn finding_harnesses(db: &Connection, job_id: &str) -> Result<std::collections::HashMap<String, String>, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT f.id, p.harness FROM review_findings f JOIN review_passes p ON p.id=f.pass_id WHERE f.job_id=?1",
+    )?;
+    let rows = statement.query_map(params![job_id], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<Result<_, _>>()?;
+    Ok(rows)
+}
+
+/// The harnesses whose passes finished, in slot order, each once.
+pub fn finished_harnesses(db: &Connection, job_id: &str) -> Result<Vec<String>, BridgeError> {
+    let mut statement =
+        db.prepare("SELECT harness FROM review_passes WHERE job_id=?1 AND status='done' ORDER BY slot, created_at, rowid")?;
+    let all: Vec<String> = statement.query_map(params![job_id], |row| row.get(0))?.collect::<Result<_, _>>()?;
+    let mut seen = std::collections::HashSet::new();
+    Ok(all.into_iter().filter(|harness| seen.insert(harness.clone())).collect())
+}
+
 fn finding_counts(db: &Connection, job_id: &str) -> Result<wire::ReviewFindingCounts, BridgeError> {
     let mut counts = wire::ReviewFindingCounts::default();
     let mut statement = db.prepare("SELECT severity, COUNT(*) FROM review_findings WHERE job_id=?1 GROUP BY severity")?;

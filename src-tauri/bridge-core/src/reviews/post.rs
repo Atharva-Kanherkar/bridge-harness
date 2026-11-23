@@ -18,9 +18,13 @@ use std::collections::{HashMap, HashSet};
 use bridge_protocol::messages::{self as wire, ReviewFindingDecision, ReviewPostMode, ReviewSeverity, ReviewSide};
 use serde::{Serialize, Serializer};
 
-use super::steps::{post_marker, PostedFinding, StepError};
-use super::store::JobRow;
-use crate::github_surface::GithubSurfaceError;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use super::steps::{post_marker, CancelToken, PostedFinding, PostedReview, StepError};
+use super::store::{self, JobRow};
+use crate::github_surface::{GithubRepository, GithubSurfaceError};
+use crate::runtime::BridgeCore;
 
 /// GitHub refuses a comment or review body over 65,536 characters.
 pub const MAX_COMMENT_CHARS: usize = 65_000;
@@ -329,6 +333,65 @@ pub fn gh_error(error: GithubSurfaceError) -> StepError {
         GithubSurfaceError::Io(_) => StepError::Transient(error.to_string()),
         other => StepError::Fatal(other.to_string()),
     }
+}
+
+/// The job's workspace, and the repository it reviews on that workspace's
+/// host.
+fn target(core: &BridgeCore, job: &JobRow) -> Result<(PathBuf, GithubRepository), StepError> {
+    let workspace = PathBuf::from(core.workspace_path(&job.workspace_id).map_err(|error| StepError::Fatal(error.to_string()))?);
+    let repository = super::prepare::job_repository(core, &workspace, job);
+    Ok((workspace, repository))
+}
+
+/// The post a job makes now, from what is stored.
+fn plan(core: &BridgeCore, job: &JobRow, current_head: Option<String>) -> Result<PostPlan, StepError> {
+    let fatal = |error: crate::BridgeError| StepError::Fatal(error.to_string());
+    let (findings, harness_of, harnesses, hide_attribution) = {
+        let db = super::lock_db(core);
+        (
+            store::findings(&db, &job.id).map_err(fatal)?,
+            store::finding_harnesses(&db, &job.id).map_err(fatal)?,
+            store::finished_harnesses(&db, &job.id).map_err(fatal)?,
+            crate::attribution_settings::hide_enabled(&db),
+        )
+    };
+    let findings = findings
+        .into_iter()
+        .map(|finding| {
+            let harness = harness_of.get(&finding.id).cloned().unwrap_or_default();
+            (finding, harness)
+        })
+        .collect();
+    Ok(build(&PostInput { job, findings, harnesses, hide_attribution, current_head }))
+}
+
+/// The review this job, or the job it retried, already posted: the one whose
+/// body carries the job's marker, with the findings it holds.
+pub fn find_posted(core: &Arc<BridgeCore>, job: &JobRow) -> Result<Option<PostedReview>, StepError> {
+    let (workspace, repository) = target(core, job)?;
+    let marker = post_marker(&job.publication_key);
+    let reviews = core.github_surface.pr_reviews(&workspace, &repository, job.number).map_err(gh_error)?;
+    let Some(found) = reviews.into_iter().find(|review| review.body.contains(&marker)) else {
+        return Ok(None);
+    };
+    // Best effort: without its comments, the review still counts as posted.
+    let comments = core.github_surface.pr_review_comments(&workspace, &repository, job.number, &found.id).unwrap_or_default();
+    let findings = held_by(&plan(core, job, None)?, &found, &comments);
+    Ok(Some(PostedReview { review_id: found.id, url: found.url, findings }))
+}
+
+/// Post the job's review at the reviewed commit.
+pub fn post(core: &Arc<BridgeCore>, job: &JobRow, cancel: &CancelToken) -> Result<PostedReview, StepError> {
+    let (workspace, repository) = target(core, job)?;
+    // Best effort: a head that cannot be read only leaves out the "moved on" line.
+    let current_head = core.github_surface.pr_head(&workspace, job.number).ok().map(|head| head.head_sha);
+    let plan = plan(core, job, current_head)?;
+    if cancel.is_cancelled() {
+        return Err(StepError::Cancelled);
+    }
+    let created = core.github_surface.create_pr_review(&workspace, &repository, job.number, &plan.payload).map_err(gh_error)?;
+    let comments = core.github_surface.pr_review_comments(&workspace, &repository, job.number, &created.id).unwrap_or_default();
+    Ok(PostedReview { review_id: created.id, url: created.url, findings: posted_now(&plan, &comments) })
 }
 
 #[cfg(test)]
