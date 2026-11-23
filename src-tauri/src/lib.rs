@@ -5434,7 +5434,17 @@ mod tests {
             "aligned"
         );
 
+        // A tool changes the folder and reports it. Entry stamps come from a
+        // cache that a tool completion invalidates (see `repo_stamp`), so the
+        // reply after it is measured again.
         std::fs::write(repository.join("tracked.txt"), "changed\n").unwrap();
+        session_forest::SessionForest::new(&db)
+            .append(
+                "s",
+                session_forest::EntryKind::ToolCompleted,
+                serde_json::json!({"toolId":"edit-1","title":"Edit","status":"completed"}),
+            )
+            .unwrap();
         let dirty = session_forest::SessionForest::new(&db)
             .append(
                 "s",

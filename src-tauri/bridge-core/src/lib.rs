@@ -197,6 +197,7 @@ pub mod sessions;
 pub mod settings_tools;
 pub mod skill_marketplace;
 pub mod slash;
+pub mod repo_stamp;
 pub mod store;
 pub mod usage_import;
 pub mod suggestion_engine;

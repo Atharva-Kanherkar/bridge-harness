@@ -3247,6 +3247,9 @@ fn handle_agent_value_timed(
     let mut recover_compaction = false;
     let bridge_state_changed;
 
+    // Any `git` this frame's entries need runs now, while the database lock
+    // is free for every other chat's frames. See `repo_stamp`.
+    crate::repo_stamp::refresh_before_lock(session_id);
     {
         let lock_requested = std::time::Instant::now();
         let db = state.db.lock().unwrap();

@@ -1895,7 +1895,11 @@ pub fn write_workspace_file(
     core.workspace_path(workspace_id)?;
     with_workspace_lock(core, workspace_id, || {
         let root = core.workspace_path(workspace_id)?;
-        workspace_files::write_file(Path::new(&root), path, content, base_sha256)
+        let written = workspace_files::write_file(Path::new(&root), path, content, base_sha256)?;
+        // No tool event reports an editor save; the next message's
+        // repository stamp must not reuse one taken before it.
+        crate::repo_stamp::invalidate_containing(&Path::new(&root).join(path));
+        Ok(written)
     })
 }
 

@@ -3314,9 +3314,11 @@ pub(crate) fn append_session_entry_tx(
     let object = stored_payload.as_object_mut().ok_or_else(|| {
         BridgeError::Invalid("session entry payload must be a JSON object".into())
     })?;
+    // From the per-repository cache: `git` under this transaction would hold
+    // the core's one database lock while it scans. See `repo_stamp`.
     object.insert(
         "_bridgeRepoState".into(),
-        repository_state_for_session(transaction, session_id)?,
+        crate::repo_stamp::for_entry(transaction, session_id, kind)?,
     );
     let entry = SessionEntry {
         id: Uuid::new_v4().to_string(),
@@ -3439,7 +3441,13 @@ pub fn base_branch_path_for_session(
     }
 }
 
+/// Measure a repository's state now. Also refreshes the stamp cache that
+/// stored entries read, since the measurement is as fresh as it gets.
 pub fn repository_state_for_path(path: &Path) -> serde_json::Value {
+    crate::repo_stamp::measure(path)
+}
+
+pub(crate) fn measure_repository_state(path: &Path) -> serde_json::Value {
     let Ok(head) = crate::git::git_command(path)
         .args(["rev-parse", "HEAD"])
         .output() else {
