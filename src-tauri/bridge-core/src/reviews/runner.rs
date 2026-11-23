@@ -32,6 +32,9 @@ pub struct ReviewRuntime {
     /// job id -> (claim, token) of the claim this process drives.
     tokens: Mutex<HashMap<String, (String, CancelToken)>>,
     wake: (Mutex<bool>, Condvar),
+    /// Held while a review checkout is reserved and cut, and while one is
+    /// removed or swept, so a sweep never mistakes one being cut for an orphan.
+    checkouts: Mutex<()>,
 }
 
 impl Default for ReviewRuntime {
@@ -40,6 +43,7 @@ impl Default for ReviewRuntime {
             steps: RwLock::new(Arc::new(UnavailableSteps)),
             tokens: Mutex::new(HashMap::new()),
             wake: (Mutex::new(false), Condvar::new()),
+            checkouts: Mutex::new(()),
         }
     }
 }
@@ -97,6 +101,12 @@ impl ReviewRuntime {
             }
             None => false,
         }
+    }
+
+    /// Hold while reserving and cutting, or removing and sweeping, review
+    /// checkouts. Take it before the store lock, never while holding it.
+    pub fn checkouts(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.checkouts.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Ask the loop to tick now: a job was queued or a slot freed.

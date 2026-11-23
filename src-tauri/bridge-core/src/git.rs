@@ -212,6 +212,57 @@ pub fn fetch_ref(repo: &Path, remote: &str, source: &str, destination: &str) -> 
     resolve_commit(repo, destination)
 }
 
+/// How much history a deepening fetch adds to a shallow clone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deepen {
+    By(u32),
+    /// Fetch everything: the clone stops being shallow.
+    Unshallow,
+}
+
+/// Fetch several refspecs at once, deepening a shallow clone's history for
+/// them. Touches no branch and no working tree.
+pub fn fetch_deepening(repo: &Path, remote: &str, refspecs: &[String], deepen: Deepen) -> Result<(), BridgeError> {
+    let depth = match deepen {
+        Deepen::By(commits) => format!("--deepen={commits}"),
+        Deepen::Unshallow => "--unshallow".to_owned(),
+    };
+    let mut command = git_command(repo);
+    command.args(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", &depth, remote]).args(refspecs);
+    let output = command_output_deadline(&mut command, FETCH_DEADLINE)?;
+    if !output.status.success() {
+        return Err(BridgeError::Git(String::from_utf8_lossy(&output.stderr).trim().into()));
+    }
+    Ok(())
+}
+
+/// Whether the repository is a shallow clone.
+pub fn is_shallow(repo: &Path) -> bool {
+    run(repo, ["rev-parse", "--is-shallow-repository"]).is_ok_and(|answer| answer.trim() == "true")
+}
+
+/// Every ref under `prefix` (for example `refs/bridge/reviews/abc-`).
+pub fn refs_with_prefix(repo: &Path, prefix: &str) -> Result<Vec<String>, BridgeError> {
+    // for-each-ref matches whole path components, so list the parent and
+    // filter by the full prefix.
+    let parent = prefix.rsplit_once('/').map_or(prefix, |(parent, _)| parent);
+    Ok(run(repo, ["for-each-ref", "--format=%(refname)", parent])?
+        .lines()
+        .map(str::trim)
+        .filter(|name| name.starts_with(prefix))
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Delete a ref if it exists.
+pub fn delete_ref(repo: &Path, name: &str) -> Result<(), BridgeError> {
+    if resolve_commit(repo, name).is_err() {
+        return Ok(());
+    }
+    run(repo, ["update-ref", "-d", name])?;
+    Ok(())
+}
+
 /// Every remote and the URL it fetches from.
 pub fn remote_urls(repo: &Path) -> Result<Vec<(String, String)>, BridgeError> {
     let mut remotes = Vec::new();
@@ -2149,7 +2200,7 @@ mod tests {
         std::fs::write(local.join("a.txt"), "a\n").unwrap();
         git(&local, &["add", "."]);
         git(&local, &["commit", "-q", "-m", "base"]);
-        git(&base, &["init", "-q", "--bare", remote.to_str().unwrap()]);
+        git(&base, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);
         git(&local, &["remote", "add", "origin", remote.to_str().unwrap()]);
         git(&local, &["push", "-q", "origin", "main"]);
         // The PR: a commit pushed to refs/pull/7/head and to no branch.

@@ -353,7 +353,9 @@ pub fn claim(db: &Connection, runner: &str, now: DateTime<Utc>, take_queued: boo
                 params![id, ABANDONED, stamp(now)],
             )?;
             transaction.execute("DELETE FROM review_findings WHERE job_id=?1", params![id])?;
-            transaction.execute("UPDATE review_jobs SET summary=NULL WHERE id=?1", params![id])?;
+            // The old attempt's checkout is not this attempt's: until this one
+            // records its own, it counts as pending against the budget.
+            transaction.execute("UPDATE review_jobs SET summary=NULL, worktree_path=NULL WHERE id=?1", params![id])?;
         }
         let job = get_job(&transaction, &id)?;
         transaction.commit()?;
@@ -523,6 +525,33 @@ pub fn set_worktree(db: &Connection, id: &str, claim: &str, path: &str) -> Resul
         params![id, claim, path],
     )?;
     Ok(changed == 1)
+}
+
+/// Give up a reservation `set_worktree` made, when cutting the checkout
+/// failed.
+pub fn clear_worktree(db: &Connection, id: &str, claim: &str) -> Result<(), BridgeError> {
+    db.execute("UPDATE review_jobs SET worktree_path=NULL WHERE id=?1 AND lease_owner=?2", params![id, claim])?;
+    Ok(())
+}
+
+/// Checkouts reserved or in use by jobs preparing or reviewing now. A
+/// reservation counts against the budget before its directory exists.
+pub fn reserved_worktrees(db: &Connection) -> Result<Vec<String>, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT worktree_path FROM review_jobs WHERE status IN ('preparing','reviewing') AND worktree_path IS NOT NULL",
+    )?;
+    let paths = statement.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+    Ok(paths)
+}
+
+/// The current attempt of every live job, for sweeping what earlier attempts
+/// left.
+pub fn live_attempts(db: &Connection) -> Result<Vec<(String, u32)>, BridgeError> {
+    let mut statement = db.prepare(&format!("SELECT id, attempts FROM review_jobs WHERE status IN {ACTIVE_SQL}"))?;
+    let rows = statement
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?.max(0) as u32)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
 
 /// The checkout of every job that is still live: what the reaper must keep.
