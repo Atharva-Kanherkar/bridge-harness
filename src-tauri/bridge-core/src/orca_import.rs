@@ -640,15 +640,16 @@ pub struct Overlay {
 
 /// The Bridge chat a native session became, if any import made one.
 fn session_for(transaction: &rusqlite::Transaction<'_>, native_key: &str) -> Result<Option<String>, BridgeError> {
-    transaction
-        .query_row("SELECT session_id FROM import_native_sessions WHERE native_key=?1", params![native_key], |row| row.get(0))
-        .optional()
-        .or_else(|error| match error {
-            // No import has run yet: the table does not exist.
-            rusqlite::Error::SqliteFailure(_, Some(message)) if message.contains("no such table") => Ok(None),
-            other => Err(other),
-        })
-        .map_err(BridgeError::from)
+    // No import has run yet: there is no table to look in.
+    let table: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='import_native_sessions')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !table {
+        return Ok(None);
+    }
+    Ok(transaction.query_row("SELECT session_id FROM import_native_sessions WHERE native_key=?1", params![native_key], |row| row.get(0)).optional()?)
 }
 
 /// Give chats Orca's title (unless renamed in Bridge since) and archived

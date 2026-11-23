@@ -527,6 +527,11 @@ fn preview_copies_chats_and_lowers_configurations_to_inert_setup() {
     assert_eq!(configs.len(), 2);
     assert!(configs.iter().all(|candidate| candidate.normalized_payload["inert"] == json!(true)));
     assert!(!format!("{candidates:?}").contains(CANARY));
+    let pick = |title: &str| DiscoverySelection { artifact_ids: vec![discovery.artifacts.iter().find(|artifact| artifact.title.as_deref() == Some(title) || artifact.source_label.ends_with(title)).unwrap().artifact_id.clone()] };
+    let chat_only = SupersetImporter.preview(&discovery, &pick("c-claude")).unwrap();
+    assert_eq!(chat_only.iter().map(|candidate| (candidate.kind.clone(), candidate.title.clone())).collect::<Vec<_>>(), vec![(CandidateKind::Conversation, "Say hi".to_owned())]);
+    let config_only = SupersetImporter.preview(&discovery, &pick("My agent")).unwrap();
+    assert_eq!(config_only.iter().map(|candidate| (candidate.kind.clone(), candidate.title.clone())).collect::<Vec<_>>(), vec![(CandidateKind::ProviderInstance, "My agent".to_owned())]);
     let conversation = candidates.iter().find(|candidate| candidate.kind == CandidateKind::Conversation).unwrap().clone();
     assert_eq!(conversation.title, "Say hi", "Bridge's own title when Superset has none");
     assert_eq!(SupersetImporter.normalize(conversation.clone()).unwrap().candidate.source.provider, PROVIDER);

@@ -142,6 +142,18 @@ fn a_folder_workspace_or_launch_directory_is_the_chats_folder() {
 }
 
 #[test]
+fn an_account_folder_must_be_an_absolute_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::at(dir.path());
+    fixture.chat(&ChatRow { id: "a", account_home: Some(("CLAUDE_CONFIG_DIR", Path::new("relative/claude"))), ..ChatRow::default() });
+    fixture.chat(&ChatRow { id: "b", account_home: Some(("CLAUDE_CONFIG_DIR", Path::new("/abs/claude"))), ..ChatRow::default() });
+    let store = read_base(dir.path());
+    let home = |id: &str| store.chats.iter().find(|chat| chat.id == id).unwrap().account_home.clone();
+    assert_eq!(home("a"), None);
+    assert_eq!(home("b").map(|home| home.path), Some(PathBuf::from("/abs/claude")));
+}
+
+#[test]
 fn deleted_chats_and_chats_on_other_machines_are_left_out() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::at(dir.path());
@@ -354,6 +366,18 @@ fn a_lead_dispatching_itself_is_no_worker_and_a_terminal_leds_chat_worker_is_unl
     assert!(links.chats.is_empty() && links.sessions.is_empty(), "{links:?}");
     assert!(links.coordinators.is_empty(), "a run whose only worker is its lead leads no one");
     assert_eq!(links.unlinked, 1, "only the terminal-led run's chat worker");
+}
+
+#[test]
+fn a_chat_dispatched_twice_is_one_worker_and_every_unknown_terminal_counts() {
+    let sandbox = sandbox();
+    sandbox.fixture.run("run_1", Some("35dcaa0e"));
+    sandbox.fixture.chat_worker("run_1", "ctx_1", "16acf9ae");
+    sandbox.fixture.chat_worker("run_1", "ctx_2", "16acf9ae");
+    sandbox.fixture.terminal_worker("run_1", "ctx_3", "opencode", None);
+    sandbox.fixture.terminal_worker("run_1", "ctx_4", "opencode", None);
+    let store = read_base(&sandbox.base);
+    assert_eq!(store.runs.unwrap()[0].workers, vec![Worker::Chat("16acf9ae".into()), Worker::Unknown, Worker::Unknown]);
 }
 
 #[test]
@@ -589,6 +613,10 @@ fn only_orcas_own_safe_candidates_are_normalized() {
     let conversations: Vec<&ImportCandidate> = candidates.iter().filter(|candidate| candidate.kind == CandidateKind::Conversation).collect();
     assert_eq!(conversations.len(), 1, "{candidates:?}");
     assert_eq!(candidates.iter().filter(|candidate| candidate.kind == CandidateKind::Unsupported).count(), 2, "the two chats with no copy");
+    let only = DiscoverySelection { artifact_ids: vec![discovery.artifacts.iter().find(|artifact| artifact.title.as_deref() == Some("What is shop?")).unwrap().artifact_id.clone()] };
+    let one = OrcaImporter.preview(&discovery, &only).unwrap();
+    assert_eq!(one.len(), 1, "only what was selected: {one:?}");
+    assert_eq!(one[0].kind, CandidateKind::Conversation);
     let normalized = OrcaImporter.normalize(conversations[0].clone()).unwrap();
     assert_eq!(normalized.candidate.source.provider, PROVIDER);
     let unsupported = candidates.iter().find(|candidate| candidate.kind == CandidateKind::Unsupported).unwrap().clone();

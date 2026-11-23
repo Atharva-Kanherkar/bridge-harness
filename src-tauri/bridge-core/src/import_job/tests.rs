@@ -1569,15 +1569,27 @@ mod orca {
     fn a_worker_already_under_another_chat_keeps_its_place() {
         let root = tempfile::tempdir().unwrap();
         let home = home(root.path());
+        write(
+            &home.claude[0].join(format!("projects/-shop-contrib/{WORKER}/subagents/agent-a1.jsonl")),
+            &session(WORKER, &home.contrib.to_string_lossy(), "check the file"),
+        );
         let scratch = tempfile::tempdir().unwrap();
         let core = core(scratch.path());
         run_orca(&core, &home);
-        let (worker, _, _) = depth_and_parent(&core, &format!("claude:{WORKER}"));
+        let (worker, _, lead) = depth_and_parent(&core, &format!("claude:{WORKER}"));
         let other: String = core.db.lock().unwrap().query_row("SELECT id FROM sessions WHERE title='Say hi'", [], |row| row.get(0)).unwrap();
-        core.db.lock().unwrap().execute("UPDATE sessions SET parent_session_id=?1, depth=7 WHERE id=?2", params![other, worker]).unwrap();
+        {
+            // Placed under another chat since, with its subagent under it, and its old lead deeper.
+            let db = core.db.lock().unwrap();
+            db.execute("UPDATE sessions SET parent_session_id=?1, depth=7 WHERE id=?2", params![other, worker]).unwrap();
+            db.execute("UPDATE sessions SET depth=8 WHERE parent_session_id=?1", params![worker]).unwrap();
+            db.execute("UPDATE sessions SET depth=3 WHERE id=?1", params![lead.unwrap()]).unwrap();
+        }
         run_orca(&core, &home);
         let (_, depth, parent) = depth_and_parent(&core, &format!("claude:{WORKER}"));
         assert_eq!((depth, parent.as_deref()), (7, Some(other.as_str())), "a chat already placed is never moved");
+        let child: i64 = core.db.lock().unwrap().query_row("SELECT depth FROM sessions WHERE parent_session_id=?1", params![worker], |row| row.get(0)).unwrap();
+        assert_eq!(child, 8, "nor are its subagents");
     }
 
     #[test]
@@ -1600,6 +1612,22 @@ mod orca {
         let job = run_orca(&core, &home);
         assert_eq!(job.imported, 0, "{job:?}");
         assert!(changed(&mut events), "Orca's new title changed a chat");
+
+        // Archived in Orca since: the chat its agent's import brought is archived.
+        home.fixture.worktree_meta("local-default", &[(worktree_id(REPO, &home.login), "Login page", true)]);
+        let mut events = core.events.subscribe();
+        run_orca(&core, &home);
+        assert!(changed(&mut events), "archiving in Orca archived its chat");
+        let archived: bool = core.db.lock().unwrap().query_row("SELECT archived_at IS NOT NULL FROM sessions s JOIN import_native_sessions n ON n.session_id=s.id WHERE n.native_key='opencode:ses_a'", [], |row| row.get(0)).unwrap();
+        assert!(archived);
+
+        // A worker that lost its place is put back under its lead.
+        let (worker, _, _) = depth_and_parent(&core, &format!("claude:{WORKER}"));
+        core.db.lock().unwrap().execute("UPDATE sessions SET parent_session_id=NULL, depth=0 WHERE id=?1", params![worker]).unwrap();
+        let mut events = core.events.subscribe();
+        run_orca(&core, &home);
+        assert!(changed(&mut events), "linking a worker changed the chats");
+        assert!(depth_and_parent(&core, &format!("claude:{WORKER}")).2.is_some());
     }
 
     #[test]
