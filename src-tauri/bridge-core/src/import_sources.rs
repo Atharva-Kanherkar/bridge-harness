@@ -23,14 +23,6 @@ struct KnownTool {
 
 const OTHER_TOOLS: &[KnownTool] = &[
     KnownTool {
-        tool: "orca",
-        label: "Orca",
-        supported: false,
-        markers: &["Library/Application Support/Orca", "orca/workspaces"],
-        worktree_roots: &["orca/workspaces"],
-        note: "Orca's Claude Code chats come over with the Claude Code import. Its projects and multi-agent runs are coming.",
-    },
-    KnownTool {
         tool: "superset",
         label: "Superset",
         supported: false,
@@ -210,6 +202,7 @@ pub fn detect_with(
         opencode(home, xdg_data_home, &accounts.opencode),
         conductor(home),
         t3code(&crate::t3code_import::Paths::from_env(home)),
+        orca(&crate::orca_import::Paths::from_env(home)),
     ]
     .into_iter()
         .chain(OTHER_TOOLS.iter().map(|known| other(home, known)))
@@ -339,6 +332,36 @@ fn t3code(paths: &crate::t3code_import::Paths) -> wire::DetectedImportSource {
     }
 }
 
+/// Orca: its chats, repositories and worktrees, from its databases (opened
+/// read-only; records and named profile documents only, never a message or
+/// a secret). Chats on another machine or with an agent Bridge does not run
+/// are not counted, nor archived worktrees or main checkouts.
+fn orca(paths: &crate::orca_import::Paths) -> wire::DetectedImportSource {
+    let installed = paths.installed();
+    let mut counts = wire::ImportSourceCounts::default();
+    let mut note = "Chats come over with their full Claude Code, Codex or OpenCode history, or Orca's own copy when that is gone. Multi-agent runs keep their workers under the chat that led them. Worktrees come over as Bridge workspaces, left where they are, so Orca keeps working with them.".to_owned();
+    if installed {
+        match crate::orca_import::read(paths) {
+            Ok((store, _)) => {
+                let found = crate::orca_import::counts(&store);
+                counts.chats = found.chats;
+                counts.projects = found.projects;
+                counts.workspaces = found.workspaces;
+            }
+            Err(reason) => note = reason,
+        }
+    }
+    wire::DetectedImportSource {
+        tool: crate::orca_import::PROVIDER.into(),
+        label: "Orca".into(),
+        installed,
+        supported: true,
+        roots: if installed { vec![paths.base.to_string_lossy().into_owned()] } else { Vec::new() },
+        counts,
+        note: Some(note),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,8 +388,8 @@ mod tests {
             ]
         );
         assert!(sources.iter().all(|source| !source.installed));
-        assert!(sources.iter().take(5).all(|source| source.supported), "Claude Code, Codex, OpenCode, Conductor and T3 Code import today");
-        assert!(sources.iter().skip(5).all(|source| !source.supported));
+        assert!(sources.iter().take(6).all(|source| source.supported), "Claude Code, Codex, OpenCode, Conductor, T3 Code and Orca import today");
+        assert!(sources.iter().skip(6).all(|source| !source.supported));
     }
 
     #[test]
