@@ -614,11 +614,14 @@ fn only_github_events_with_a_valid_source_are_read_and_at_most_ten_per_run() {
     let slack = sample_from_inbox(&slack(ItemKind::Mention, "#eng", "Priya", "1.0", "2026-11-24T00:00:00Z"));
     let mut broken = github_event(wire::WorkflowEventKind::GithubPullRequestOpened, 9);
     broken.payload["repo"] = json!("not a repo; rm -rf /");
-    let mut events = vec![slack.clone(), broken];
+    let mut unnumbered = github_event(wire::WorkflowEventKind::GithubPullRequestOpened, 8);
+    unnumbered.payload["number"] = json!(0);
+    let mut events = vec![slack.clone(), broken, unnumbered];
     events.extend((10..30).map(|number| github_event(wire::WorkflowEventKind::GithubPullRequestOpened, number)));
     enrich_github(&mut events, &gh);
     let calls = gh.calls.lock().unwrap();
-    assert_eq!(calls.len(), MAX_ENRICHED - 1, "the broken source spends one of the ten without a call");
+    assert_eq!(calls.len(), MAX_ENRICHED - 2, "a broken source or number spends one of the ten without a call");
+    assert!(calls.iter().all(|args| args[2] != "0"));
     assert!(calls.iter().all(|args| args[4] == "acme/app"));
     assert_eq!(events[0].payload, slack.payload, "a Slack event is untouched");
 }
