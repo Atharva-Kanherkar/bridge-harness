@@ -19,10 +19,15 @@ authority; this file names what this branch must prove.
   first PR that makes the pipeline usable end to end. Until then `github_review`, its Bugbot
   branch and its tests stay byte-for-byte the same. `GithubReviewParams.session_id` is
   documented as deprecated.
-- **Runner settings live in `ReviewerSettings` now.** `defaultHarnesses`, `fallbackHarnesses`,
-  `maxConcurrentReviews` (default 2, range 1 to 4) and `postMode` (`draft` by default) are
-  added with serde defaults. A stored payload without them loads unchanged. UI for them is
-  sub-issue 5.
+- **Runner settings are their own record, `ReviewJobSettings`** (amended after review). An
+  earlier draft added them to `ReviewerSettings`, but that type is `deny_unknown_fields` in
+  1.49, so a 1.49 client could not decode the new response, and the existing reviewer form,
+  which saves only `{ harnesses, systemPrompt }`, reset them on every save.
+  `ReviewerSettings` keeps its 1.49 shape. `ReviewJobSettings { defaultHarnesses,
+  fallbackHarnesses, maxConcurrentReviews (default 2, range 1 to 4), postMode (draft) }` is
+  stored under its own key and served by `reviews/get_review_job_settings` and
+  `reviews/save_review_job_settings`. The record is open (no `deny_unknown_fields`), so later
+  sub-issues can add fields without breaking older decoders. UI for it is sub-issue 5.
 - **One migration for the whole epic.** Migration 89 creates all three tables, including the
   columns later sub-issues name (`summary`, `denied_requests`, `outside_diff`, `decided_at`,
   `fixed_in_sha`), so no later sub-issue needs a schema change for those.
@@ -63,6 +68,34 @@ authority; this file names what this branch must prove.
   non-terminal returns that job. After it reaches a terminal status, a new job is created.
 - Creates no `sessions` row and touches no existing chat.
 - Publishes `reviews/job_updated`.
+
+### Ownership (amended after review)
+
+- Every claim gets its own lease token (`<runner>/<uuid>`), even when one runner claims the
+  same job twice. Renewals, status writes, pass and finding writes, the summary and the
+  runtime cancel-token entry all require that exact token. A driver whose job was reclaimed
+  can write nothing, and registering a new claim for a job trips the old driver's token.
+- A completed pass is stored, with its findings, in one transaction that checks the claim.
+  The summary is written in the same transaction that moves the job to `drafted`.
+- The post-review `cleanup` runs only after that transition succeeds, so a superseded driver
+  never removes a replacement's worktree.
+- Claiming a `queued` job settles the passes an abandoned attempt left `running` (as
+  `cancelled`, "Abandoned when the review was reclaimed"), deletes that attempt's findings and
+  clears the summary, all in the claim's transaction. Passes carry the `attempt` they belong
+  to.
+
+### Recovery and identity (amended after review)
+
+- A job failed by the final lease reclaim is cleaned up by the tick that reclaimed it, because
+  no driver is left to do it.
+- When preparation finds the PR moved, the head SHA and the dedupe key change together in one
+  transaction. If another live job already reviews the new head with the same harnesses, this
+  job is cancelled as superseded ("Superseded by review <id>, which covers this head") and
+  cleaned up.
+- Every job has a durable `publication_key`: its own id, or the key of the job it retried. The
+  post marker is `<!-- bridge-review:<publication_key> -->`, so a retry of a job whose review
+  GitHub accepted (Bridge stopped before recording it) finds that review instead of posting a
+  second one.
 
 ### Runner (`reviews/runner.rs`)
 
@@ -106,8 +139,10 @@ authority; this file names what this branch must prove.
 - `reviews/get_review { jobId } -> { job, passes, findings }`
 - `reviews/cancel_review { jobId } -> { job }`: refused for a terminal job.
 - `reviews/retry_review { jobId } -> { job }`: allowed for `failed | interrupted | cancelled`.
-  Creates a new job with the same workspace, PR, head SHA, harnesses, trigger and post mode,
-  linked by `retryOf`. Idempotent like start.
+  Creates a new job with the same workspace, PR, head SHA, harnesses, trigger, post mode and
+  publication key, linked by `retryOf`. Idempotent like start.
+- `reviews/get_review_job_settings -> ReviewJobSettings` and
+  `reviews/save_review_job_settings { settings } -> ReviewJobSettings`.
 - Notification `reviews/job_updated { job }`, transient.
 - `ReviewJob { id, workspaceId, number, headSha, status, trigger, postMode, harnesses,
   findingCounts { total, critical, major, minor, nit }, error?, postedReviewUrl?, retryOf?,
@@ -158,11 +193,32 @@ authority; this file names what this branch must prove.
 - `a_panicking_step_fails_the_job_and_frees_its_slot`
 - `start_resolves_harnesses_from_the_request_then_the_settings`
 
-`reviewer_settings::tests`:
+`reviews::settings::tests`:
 - `runner_settings_default_and_validate` (concurrency 1 to 4, harness lists canonicalized,
   Bugbot refused in harness lists, post mode defaults to draft)
-- `a_payload_stored_before_runner_settings_loads_with_defaults`
+- `saving_reviewer_settings_leaves_review_job_settings_alone` (nondefault job settings survive
+  a reviewer model or prompt save)
+- `a_record_with_fields_from_a_newer_build_still_loads`
 - Existing reviewer settings tests stay green unchanged.
+
+Regressions for the review findings (`reviews::store::tests` and `reviews::runner::tests`):
+- `each_claim_gets_its_own_lease_token`
+- `a_superseded_claim_cannot_advance_or_renew_the_replacement`
+- `a_superseded_driver_cannot_store_its_pass_or_clean_up_the_replacement` (two runners, the
+  first blocked past its lease: one pass and one finding in the draft, no early cleanup)
+- `reclaiming_settles_abandoned_passes_and_drops_their_findings`
+- `a_retry_finds_the_review_its_interrupted_original_posted` (accepted marker staged, then
+  `recover()`, retry, drain: one GitHub review)
+- `a_job_failed_by_the_final_reclaim_is_cleaned_up`
+- `a_moved_head_updates_the_dedupe_key` and `a_moved_head_already_under_review_supersedes_the_job`
+
+`bridge-protocol`:
+- `a_1_49_client_decodes_the_reviewer_settings_response` (the 1.49 strict shape decodes the
+  current default response)
+
+Frontend:
+- `ReviewerSettingsSection.test.tsx`: a save sends every field of the loaded record, not only
+  the two the form edits.
 
 `bridge-protocol`:
 - The existing registry coverage tests (`TYPED_METHODS` total, wire names unique, domains
