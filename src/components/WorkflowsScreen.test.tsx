@@ -169,6 +169,19 @@ describe("WorkflowRunView", () => {
     expect(onContinue).toHaveBeenCalledWith({ sessionId: "chat-2" });
   });
 
+  it("shows what the agent said as formatted text, without rich fences", async () => {
+    const said = "- **Riskiest file:** `src/upload.rs`\n\n```html\n<b>from a PR body</b>\n```";
+    vi.spyOn(bridgeApi, "replaySessionEvents").mockImplementation(async (_session, after = 0) => after > 0 ? [] : [
+      { sequence: 1, kind: asWireKind("assistant.message"), itemId: null, data: {}, status: null, role: "assistant", text: said, title: null, providerMeta: {} } as unknown as AgentEvent,
+    ]);
+    await act(async () => root.render(<WorkflowRunView workflow={workflow} run={run} onBack={() => {}} onContinue={() => {}} />));
+    await settle();
+    expect(container.querySelector("strong")?.textContent).toBe("Riskiest file:");
+    expect(container.querySelector("code")?.textContent).toBe("src/upload.rs");
+    expect(container.textContent).not.toContain("**");
+    expect(container.querySelector("iframe")).toBeNull();
+  });
+
   it("shows the pending card of a long run whose approval comes after the first page of events", async () => {
     // A long run: hundreds of calls, then the write it is waiting on.
     const slack = "mcp__claude_ai_Slack__slack_send_message";

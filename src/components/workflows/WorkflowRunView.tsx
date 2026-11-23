@@ -7,6 +7,7 @@ import { readWireKind } from "../../transcript/wire";
 import type { ForkSessionResult, Workflow, WorkflowRun } from "../../protocol/generated/protocol";
 import { Button } from "@/components/ui/button";
 import { ScreenHeading } from "../ui/screen";
+import { Markdown } from "../Markdown";
 import { ACTIVE_RUN_STATUSES, RUN_STATUS_LABEL, formatCost, ordinal, relativeTime, runTone } from "./format";
 import { Card, ErrorNote, StatusChip, errorText } from "./parts";
 
@@ -207,7 +208,11 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
         </div>
         <div className="min-w-0 flex-1">
           <p className={`${step.icon === "say" ? "font-sans" : "font-mono"} text-meta text-foreground`}>{step.title}</p>
-          <p className="mt-0.5 whitespace-pre-wrap break-words text-caption text-muted-foreground">{step.detail}</p>
+          {step.icon === "say"
+            // What the agent said reads as it would in a chat. It may quote
+            // event text written by others, so no rich fences.
+            ? <div className="mt-0.5 break-words text-caption text-muted-foreground [&_.md]:text-caption!"><Markdown text={step.detail} richFences={false}/></div>
+            : <p className="mt-0.5 whitespace-pre-wrap break-words text-caption text-muted-foreground">{step.detail}</p>}
           {step.pending && <div className="mt-2.5 flex flex-wrap gap-1.5">
             <Button size="xs" disabled={busy} onClick={() => void act(() => bridgeApi.resolveApproval(run.sessionId!, step.pending!.sequence, "accept"))}><Check size={10}/>Allow once</Button>
             <Button size="xs" variant="secondary" disabled={busy} onClick={() => void act(() => bridgeApi.alwaysAllowWorkflowTool(workflow.id, run.sessionId!, step.pending!.sequence, step.identity ?? step.title))}><ShieldCheck size={10}/>Always allow for this workflow</Button>
