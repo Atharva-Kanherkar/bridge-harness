@@ -273,6 +273,42 @@ fn chat_config_content(
     }
 }
 
+/// What a reviewer's server must not load from the PR it reviews. Its rules
+/// already deny every tool but four reads; this keeps the PR's own tree from
+/// running code before any rule applies. A project's `.opencode/` plugins run
+/// on load, its `opencode.json` can start MCP servers, and its `.claude/`
+/// folder can carry skills; all three are switched off. Language servers and
+/// formatters run a project's toolchain (a build script, a proc macro), so the
+/// reviewer gets none. Both spellings of the project switch are set: OpenCode
+/// has read each.
+const REVIEWER_ENVIRONMENT: [(&str, &str); 5] = [
+    ("OPENCODE_DISABLE_PROJECT_CONFIG", "1"),
+    ("OPENCODE_CONFIG_PROJECT_DISABLE", "1"),
+    ("OPENCODE_DISABLE_CLAUDE_CODE", "1"),
+    ("OPENCODE_DISABLE_CLAUDE_CODE_SKILLS", "1"),
+    ("OPENCODE_DISABLE_AUTOUPDATE", "1"),
+];
+
+/// The person's own inline config (trusted), with language servers and
+/// formatters off. Inline config that does not parse is replaced: the
+/// reviewer must start without them either way.
+fn reviewer_config_content(existing: Option<&str>) -> String {
+    let mut config = existing
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    config["lsp"] = json!(false);
+    config["formatter"] = json!(false);
+    config.to_string()
+}
+
+fn apply_reviewer_isolation(command: &mut Command, existing: Option<&str>) {
+    for (name, value) in REVIEWER_ENVIRONMENT {
+        command.env(name, value);
+    }
+    command.env("OPENCODE_CONFIG_CONTENT", reviewer_config_content(existing));
+}
+
 /// Set the config content of a session on its command. With no content the
 /// command sets nothing, so the server inherits the value of Bridge as is.
 fn apply_chat_config(
@@ -342,6 +378,9 @@ fn launch(
         .then(|| crate::mcp_apps::ServerLaunch::for_session(request.session_id.filter(|_| request.interactive)))
         .flatten();
     apply_chat_config(&mut command, visualize.as_ref(), std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref(), tools);
+    if matches!(kind, SessionKind::Reviewer) {
+        apply_reviewer_isolation(&mut command, std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref());
+    }
     command
         .current_dir(request.cwd)
         .env("OPENCODE_SERVER_USERNAME", "bridge")
@@ -3571,6 +3610,25 @@ mod tests {
     }
 
     #[test]
+    fn a_reviewer_server_loads_nothing_executable_from_the_checkout() {
+        let mut command = Command::new("opencode");
+        apply_reviewer_isolation(&mut command, Some(r#"{"model":"anthropic/x","mcp":{"mine":{"type":"local"}}}"#));
+        let envs: std::collections::HashMap<String, String> = command
+            .get_envs()
+            .filter_map(|(key, value)| Some((key.to_string_lossy().into_owned(), value?.to_string_lossy().into_owned())))
+            .collect();
+        for name in ["OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_CONFIG_PROJECT_DISABLE", "OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] {
+            assert_eq!(envs.get(name).map(String::as_str), Some("1"), "{name}");
+        }
+        let config: Value = serde_json::from_str(&envs["OPENCODE_CONFIG_CONTENT"]).unwrap();
+        assert_eq!((config["lsp"].clone(), config["formatter"].clone()), (json!(false), json!(false)));
+        assert_eq!(config["model"], "anthropic/x", "the person's own inline config stays");
+        let parsed = |text: String| serde_json::from_str::<Value>(&text).unwrap();
+        assert_eq!(parsed(reviewer_config_content(Some("not json"))), json!({"lsp": false, "formatter": false}));
+        assert_eq!(parsed(reviewer_config_content(None)), json!({"lsp": false, "formatter": false}));
+    }
+
+    #[test]
     fn v2_prompts_put_turn_context_first_and_images_beside_the_text() {
         let context = TurnContext { session: Some("bridge frame"), credentials: None };
         let images = [bridge_protocol::messages::TurnImage {
@@ -4005,6 +4063,81 @@ mod tests {
     /// Saves and removes a key through 2.x's integration and credential
     /// routes. It writes a real credential, so it runs only when the whole
     /// process points OpenCode at throwaway XDG directories.
+    /// A PR plants an OpenCode plugin whose top-level code calls home. Through
+    /// Bridge's real launch path, in the offline read-only sandbox: a chat
+    /// session (which loads project config) runs it; a reviewer session does
+    /// not. Run in a throwaway environment:
+    ///
+    /// ```text
+    /// env -i HOME=$S/home PATH=... XDG_DATA_HOME=$S/data XDG_CONFIG_HOME=$S/config \
+    ///   BRIDGE_OPENCODE_LIVE_ISOLATED=1 BRIDGE_OPENCODE_LIVE_BINARY=$(which opencode) \
+    ///   <bridge_core test binary> opencode_adapter::tests::live_reviewer_never_runs_a_planted_plugin --exact --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "requires OpenCode 2.x and BRIDGE_OPENCODE_LIVE_ISOLATED=1 with throwaway XDG_DATA_HOME/XDG_CONFIG_HOME"]
+    fn live_reviewer_never_runs_a_planted_plugin() {
+        assert_eq!(std::env::var("BRIDGE_OPENCODE_LIVE_ISOLATED").as_deref(), Ok("1"));
+        let settings = OpenCodeSettings {
+            executable_path: Some(std::env::var("BRIDGE_OPENCODE_LIVE_BINARY").expect("set BRIDGE_OPENCODE_LIVE_BINARY")),
+            visible_models: Vec::new(),
+        };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".opencode/plugins")).unwrap();
+        std::fs::write(
+            project.path().join(".opencode/plugins/canary.js"),
+            format!("await fetch('http://127.0.0.1:{port}/canary').catch(() => {{}});\nexport const Canary = async () => ({{}});\n"),
+        )
+        .unwrap();
+        let called = |listener: &std::net::TcpListener| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(45);
+            while std::time::Instant::now() < deadline {
+                if listener.accept().is_ok() {
+                    return true;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            false
+        };
+        let start = |kind: &str| {
+            let sandbox = crate::worker_sandbox::ReadOnlySandbox::offline(project.path()).unwrap();
+            let request = StartRequest {
+                session_id: None,
+                cwd: project.path().to_str().unwrap(),
+                model: Some("opencode/big-pickle"),
+                effort: None,
+                speed: None,
+                instructions: None,
+                write_mode: Some(WriteMode::ReadOnly),
+                read_only_sandbox: Some(&sandbox),
+                briefing: None,
+                interactive: false,
+                account: None,
+                on_progress: None,
+            };
+            let mut started = match kind {
+                "chat" => start_with_settings(request, &settings),
+                _ => start_reviewer_with_settings(request, &settings),
+            }
+            .unwrap();
+            // A plugin loads by the first prompt at the latest.
+            let _sent = started.runtime.send_turn("Reply with the word ok.");
+            (started, sandbox)
+        };
+        let (mut chat, chat_sandbox) = start("chat");
+        let chat_called = called(&listener);
+        chat.runtime.stop(ShutdownReason::Completed);
+        chat_sandbox.cleanup();
+        assert!(chat_called, "the canary fires where project config loads, so the probe is real");
+        let (mut reviewer, reviewer_sandbox) = start("reviewer");
+        let reviewer_called = called(&listener);
+        reviewer.runtime.stop(ShutdownReason::Completed);
+        reviewer_sandbox.cleanup();
+        assert!(!reviewer_called, "a reviewer session never runs the PR's plugin");
+    }
+
     #[test]
     #[ignore = "requires OpenCode 2.x and BRIDGE_OPENCODE_LIVE_ISOLATED=1 with throwaway XDG_DATA_HOME/XDG_CONFIG_HOME"]
     fn live_v2_saves_and_removes_a_provider_key() {
