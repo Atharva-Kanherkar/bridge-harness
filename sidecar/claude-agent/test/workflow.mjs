@@ -40,6 +40,30 @@ test("the workflow gate allows a read, asks for a write, and denies everything e
   assert.equal(asked.length, 2, "denied calls never reach Bridge");
 });
 
+test("a granted connector with camelCase tool names asks for them instead of refusing the server", async () => {
+  const asked = [];
+  const atlassian = [
+    { key: "claude.ai Atlassian", wire: "claude_ai_Atlassian", read: true, write: "ask" },
+    { key: "claude.ai Asana", wire: "claude_ai_Asana", read: true, write: "never" },
+  ];
+  const gate = makeWorkflowGate({ servers: atlassian, ask: async (tool) => { asked.push(tool); return "allow"; } });
+  assert.equal((await gate("mcp__claude_ai_Atlassian__createJiraIssue", { summary: "x" })).behavior, "allow");
+  // Not a read: its words are not trusted, so it asks rather than running unasked.
+  assert.equal((await gate("mcp__claude_ai_Atlassian__getJiraIssue", {})).behavior, "allow");
+  assert.deepEqual(asked, ["mcp__claude_ai_Atlassian__createJiraIssue", "mcp__claude_ai_Atlassian__getJiraIssue"]);
+  // On a read-only grant the same name is refused as a write, by name.
+  const denied = await gate("mcp__claude_ai_Asana__getTask", {});
+  assert.equal(denied.behavior, "deny");
+  assert.match(denied.message, /is not granted to this workflow/);
+  assert.equal(asked.length, 2);
+});
+
+test("a briefing never reads a camelCase name as a scoped read", async () => {
+  const options = briefingOptions({ readScopeServers: ["claude.ai Atlassian"], allowedTools: [] }, {});
+  assert.equal((await options.canUseTool("mcp__claude_ai_Atlassian__getJiraIssue", {})).behavior, "deny");
+  assert.equal((await options.canUseTool("mcp__claude_ai_Atlassian__get_issue", {})).behavior, "allow");
+});
+
 test("a read verb beside a mutation word is a write and asks", async () => {
   const asked = [];
   const gate = makeWorkflowGate({ servers, ask: async (tool) => { asked.push(tool); return "deny"; } });

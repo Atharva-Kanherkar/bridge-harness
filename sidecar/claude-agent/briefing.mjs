@@ -56,7 +56,12 @@ export function wireServerName(server) {
   return String(server).replace(/[^A-Za-z0-9_-]/g, "_");
 }
 
-/** Split `mcp__<server>__<tool>` into its parts, or null. */
+/**
+ * Split `mcp__<server>__<tool>` into its parts, or null. A tool name that is
+ * not all lowercase (`getJiraIssue`) still names its server; `lowercase` says
+ * whether its words can be read as a verb at all, and nothing that reads
+ * words trusts a name that is not.
+ */
 function splitWireName(toolName) {
   if (!toolName.startsWith("mcp__")) return null;
   const rest = toolName.slice("mcp__".length);
@@ -64,15 +69,15 @@ function splitWireName(toolName) {
   if (split <= 0) return null;
   const server = rest.slice(0, split);
   const original = rest.slice(split + 2);
-  if (!original || original !== original.toLowerCase()) return null;
-  return { server, bare: original, words: original.split(/[_-]/) };
+  if (!original) return null;
+  return { server, bare: original, words: original.split(/[_-]/), lowercase: original === original.toLowerCase() };
 }
 
 /** Is `mcp__<server>__<tool>` a read-verb tool on a scoped server? */
 function isScopedRead(toolName, readScopeServers) {
   if (!readScopeServers.size) return false;
   const parts = splitWireName(toolName);
-  if (!parts || !readScopeServers.has(parts.server)) return false;
+  if (!parts?.lowercase || !readScopeServers.has(parts.server)) return false;
   if (parts.words.some((word) => MUTATION_WORDS.has(word))) return false;
   return parts.words.some((word) => READ_TOOL_VERBS.has(word));
 }
@@ -88,7 +93,7 @@ function isScopedRead(toolName, readScopeServers) {
 function isApprovedAction(toolName, actionScope) {
   if (!actionScope) return false;
   const parts = splitWireName(toolName);
-  if (!parts || parts.server !== actionScope.server) return false;
+  if (!parts?.lowercase || parts.server !== actionScope.server) return false;
   if (parts.words.some((word) => actionScope.forbiddenWords.has(word))) return false;
   return parts.words.some((word) => actionScope.permittedWords.has(word));
 }
@@ -184,7 +189,10 @@ export function makeWorkflowGate({ servers = [], maxArgumentBytes = 8192, ask = 
     if (bytes > maxArgumentBytes) {
       return deny(`the arguments for \`${toolName}\` are ${bytes} bytes, over the ${maxArgumentBytes}-byte limit`, toolUseID);
     }
-    const isRead = !parts.words.some((word) => MUTATION_WORDS.has(word))
+    // A name whose words cannot be read (`createJiraIssue`) is not a read:
+    // it asks like any write, rather than being refused outright.
+    const isRead = parts.lowercase
+      && !parts.words.some((word) => MUTATION_WORDS.has(word))
       && parts.words.some((word) => READ_TOOL_VERBS.has(word));
     if (isRead && server.read) return allow(toolUseID);
     if (server.write === "ask" && typeof ask === "function") {
