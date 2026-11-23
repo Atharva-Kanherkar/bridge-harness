@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 89;
+const LATEST_SCHEMA_VERSION: i64 = 90;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -817,6 +817,10 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // PR reviews as background jobs: the job, one pass per harness that
             // ran, and the findings a person keeps or drops. See `reviews`.
             89 => crate::reviews::store::install_store(&transaction)?,
+            // The checkout a review job's current attempt reads, so the reaper and
+            // the worktree inventory can tell a live review's checkout from an
+            // orphan without parsing directory names.
+            90 => add_column_if_missing(&transaction, "review_jobs", "worktree_path", "TEXT")?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"

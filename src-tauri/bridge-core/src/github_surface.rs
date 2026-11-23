@@ -3316,7 +3316,7 @@ fn parse_repository_selector(value: &str) -> Option<GithubRepository> {
     })
 }
 
-fn parse_remote_url(value: &str) -> Option<GithubRepository> {
+pub(crate) fn parse_remote_url(value: &str) -> Option<GithubRepository> {
     let value = value.trim().trim_end_matches('/').trim_end_matches(".git");
     if let Some((_, rest)) = value.split_once("://") {
         let (authority, path) = rest.split_once('/')?;

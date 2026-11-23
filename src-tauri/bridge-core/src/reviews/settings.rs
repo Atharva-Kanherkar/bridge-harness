@@ -3,7 +3,7 @@
 //! stored apart from the reviewer's model and prompt (`reviewer_settings`) so
 //! saving either never touches the other.
 
-use bridge_protocol::messages::{ReviewJobSettings, MAX_CONCURRENT_REVIEWS_RANGE};
+use bridge_protocol::messages::{ReviewJobSettings, MAX_CONCURRENT_REVIEWS_RANGE, MAX_REVIEW_WORKTREES_RANGE};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::BridgeError;
@@ -33,6 +33,13 @@ pub fn save(db: &Connection, settings: &ReviewJobSettings) -> Result<ReviewJobSe
             "Reviews at once must be between {} and {}",
             MAX_CONCURRENT_REVIEWS_RANGE.start(),
             MAX_CONCURRENT_REVIEWS_RANGE.end()
+        )));
+    }
+    if !MAX_REVIEW_WORKTREES_RANGE.contains(&settings.max_review_worktrees) {
+        return Err(BridgeError::Invalid(format!(
+            "Review checkouts must be between {} and {}",
+            MAX_REVIEW_WORKTREES_RANGE.start(),
+            MAX_REVIEW_WORKTREES_RANGE.end()
         )));
     }
     let default_harnesses = harnesses(&settings.default_harnesses, "default reviewer")?;
@@ -110,6 +117,7 @@ mod tests {
             fallback_harnesses: vec!["open-code".into(), " ".into(), "codex".into()],
             max_concurrent_reviews: 4,
             post_mode: wire::ReviewPostMode::Auto,
+            max_review_worktrees: 8,
         };
         let stored = save(&db, &settings).unwrap();
         assert_eq!(stored.default_harnesses, ["claude", "codex"], "aliases fold and repeats drop");
@@ -127,6 +135,24 @@ mod tests {
     }
 
     #[test]
+    fn max_review_worktrees_defaults_to_eight_and_is_bounded() {
+        let (_scratch, db) = db();
+        assert_eq!(load(&db).unwrap().max_review_worktrees, 8);
+        for refused in [0, 33] {
+            let settings = ReviewJobSettings { max_review_worktrees: refused, ..Default::default() };
+            assert!(save(&db, &settings).unwrap_err().to_string().contains("between 1 and 32"), "{refused}");
+        }
+        let saved = save(&db, &ReviewJobSettings { max_review_worktrees: 32, ..Default::default() }).unwrap();
+        assert_eq!(saved.max_review_worktrees, 32);
+        db.execute(
+            "UPDATE configuration_entries SET payload=?1 WHERE kind=?2",
+            params![r#"{"postMode":"draft"}"#, KIND],
+        )
+        .unwrap();
+        assert_eq!(load(&db).unwrap().max_review_worktrees, 8, "a record from before the field loads the default");
+    }
+
+    #[test]
     fn saving_reviewer_settings_leaves_review_job_settings_alone() {
         let (_scratch, db) = db();
         let jobs = save(
@@ -136,6 +162,7 @@ mod tests {
                 fallback_harnesses: vec!["claude".into()],
                 max_concurrent_reviews: 1,
                 post_mode: wire::ReviewPostMode::Auto,
+                max_review_worktrees: 3,
             },
         )
         .unwrap();

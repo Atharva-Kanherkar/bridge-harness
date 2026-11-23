@@ -37,6 +37,12 @@ pub const KIND_DIRECT: &str = "direct";
 pub const KIND_WORKER: &str = "worker";
 /// A pull request checked out for review.
 pub const KIND_GITHUB: &str = "github";
+/// A review job's detached checkout of a pull request's head. Bridge's own
+/// reviewer reads it; nobody edits it. See `reviews::prepare`.
+pub const KIND_REVIEW: &str = "review";
+/// A review checkout nothing is reviewing in is worth nothing: the next review
+/// cuts a fresh one. An hour is enough to tell a stalled job from a finished one.
+const REVIEW_IDLE_TTL: Duration = Duration::from_secs(60 * 60);
 /// Somebody else's worktree of a repository Bridge happens to know. Recorded so
 /// a storage view can show the whole picture; never Bridge's to reclaim.
 pub const KIND_EXTERNAL: &str = "external";
@@ -62,6 +68,7 @@ const KIND_DIRECTORIES: &[(&str, &str)] = &[
     ("direct", KIND_DIRECT),
     ("workers", KIND_WORKER),
     ("github", KIND_GITHUB),
+    ("reviews", KIND_REVIEW),
 ];
 
 /// How deep a kind's checkouts sit below the worktrees root.
@@ -72,7 +79,7 @@ const KIND_DIRECTORIES: &[(&str, &str)] = &[
 /// which is neither a worktree nor recognisable as one.
 fn kind_depth(kind: &str) -> usize {
     match kind {
-        KIND_GITHUB => 1,
+        KIND_GITHUB | KIND_REVIEW => 1,
         _ => 2,
     }
 }
@@ -417,6 +424,7 @@ impl WorktreeRetention {
         match kind {
             KIND_WORKER => self.worker_idle_ttl,
             KIND_GITHUB => self.github_idle_ttl,
+            KIND_REVIEW => REVIEW_IDLE_TTL,
             _ => self.orchestrator_idle_ttl,
         }
     }
@@ -524,8 +532,15 @@ fn classification_facts(
     db: &Connection,
     record: &WorktreeRecord,
 ) -> Result<ClassificationFacts, BridgeError> {
+    let mut users = live_users(db, &record.path)?;
+    if record.kind == KIND_REVIEW {
+        // A review job holds its checkout for as long as the job is live.
+        if let Some(job) = crate::reviews::store::live_job_for_worktree(db, &record.path)? {
+            users.push(format!("review {job}"));
+        }
+    }
     Ok(ClassificationFacts {
-        live_users: live_users(db, &record.path)?,
+        live_users: users,
         unadopted: unadopted_binding(db, &record.path)?,
     })
 }
@@ -1941,6 +1956,72 @@ mod tests {
         std::fs::write(worktree.join(name), "change\n").unwrap();
         git_cmd(worktree, &["add", "."]);
         git_cmd(worktree, &["commit", "-q", "-m", name]);
+    }
+
+    #[test]
+    fn a_live_review_checkout_is_retained_and_an_idle_one_is_reclaimable() {
+        let fixture = fixture();
+        let path = fixture.namespace.join("reviews").join("pr-7-abcdef012345-1");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let head = git_cmd(&fixture.repo, &["rev-parse", "HEAD"]);
+        git_cmd(&fixture.repo, &["worktree", "add", "-q", "--detach", path.to_str().unwrap(), &head]);
+        register(
+            &fixture.db.lock().unwrap(),
+            &NewWorktree {
+                kind: KIND_REVIEW.to_owned(),
+                repo_root: fixture.repo.to_string_lossy().to_string(),
+                path: path.to_string_lossy().to_string(),
+                branch: None,
+                owner_session_id: None,
+                owner_workspace_id: Some("w".to_owned()),
+                base_commit: Some(head),
+            },
+        )
+        .unwrap();
+        let job = {
+            let db = fixture.db.lock().unwrap();
+            let (job, _) = crate::reviews::store::insert(
+                &db,
+                &crate::reviews::store::NewJob {
+                    workspace_id: "w".into(),
+                    repo_owner: "o".into(),
+                    repo_name: "r".into(),
+                    number: 7,
+                    head_sha: "h".into(),
+                    base_sha: None,
+                    incremental_from_sha: None,
+                    trigger: Default::default(),
+                    post_mode: Default::default(),
+                    harnesses: vec!["claude".into()],
+                    retry_of: None,
+                    publication_key: None,
+                },
+                Utc::now(),
+            )
+            .unwrap();
+            db.execute(
+                "UPDATE review_jobs SET status='reviewing', worktree_path=?2 WHERE id=?1",
+                params![job.id, canonical_key(&path)],
+            )
+            .unwrap();
+            job
+        };
+        let row = record(&fixture, &path);
+        let live = classify(&fixture.db.lock().unwrap(), &row).unwrap();
+        assert!(
+            matches!(&live, Disposition::Retained(reason) if reason.contains(&format!("review {}", job.id))),
+            "{live:?}"
+        );
+        fixture
+            .db
+            .lock()
+            .unwrap()
+            .execute("UPDATE review_jobs SET status='failed' WHERE id=?1", params![job.id])
+            .unwrap();
+        let idle = classify(&fixture.db.lock().unwrap(), &row).unwrap();
+        assert_eq!(idle, Disposition::Reclaimable, "a finished review's clean checkout may go");
+        assert_eq!(WorktreeRetention::default().idle_ttl(KIND_REVIEW), REVIEW_IDLE_TTL);
+        assert_eq!(kind_depth(KIND_REVIEW), 1);
     }
 
     fn age(fixture: &Fixture, path: &Path, seconds: i64) {
