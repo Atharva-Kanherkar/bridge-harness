@@ -812,7 +812,7 @@ fn run_claimed(core: &Arc<BridgeCore>, claimed: ClaimedRun) {
 /// Settle what a previous owner left running ([`settle_interrupted`]) and
 /// announce it. Called once, before the first tick.
 pub fn settle_after_boot(core: &Arc<BridgeCore>, now: DateTime<Utc>) -> Result<Vec<String>, BridgeError> {
-    let settled = settle_interrupted(&core.db.lock().unwrap(), now)?;
+    let settled = settle_interrupted(&core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner), now)?;
     publish_runs(core, &settled);
     Ok(settled)
 }

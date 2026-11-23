@@ -478,7 +478,7 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
     // Stop pressed (or the workflow deleted) while the run was being set up:
     // its session has no provider yet, so nothing else can stop it. Do not
     // start one.
-    if !workflow_trigger::holds(&core.db.lock().unwrap(), &run.id, &lease_owner)? {
+    if !workflow_trigger::holds(&core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner), &run.id, &lease_owner)? {
         return Ok(());
     }
     let baseline = max_sequence(&core.db.lock().unwrap(), &session_id)?;

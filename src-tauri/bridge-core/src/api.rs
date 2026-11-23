@@ -7464,7 +7464,7 @@ pub fn delete_workflow(core: &Arc<BridgeCore>, params: &wire::DeleteWorkflowPara
     // A run still going would otherwise keep working, unrecorded, in a folder
     // this removes. Stop it first.
     let cancelled = {
-        let db = core.db.lock().unwrap();
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         crate::workflows::require(&db, &params.workflow_id)?;
         crate::workflow_trigger::cancel_active(&db, &params.workflow_id, chrono::Utc::now())?
     };
