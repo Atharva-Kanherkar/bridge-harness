@@ -197,6 +197,10 @@ const UsageScreen = lazy(() => import("./components/UsageScreen").then(module =>
 const NotesScreen = lazy(() => import("./components/NotesScreen").then(module => ({ default: module.NotesScreen })));
 import { NotesScreenSkeleton } from "./components/notes/NotesSkeleton";
 import type { NoteChatRequest, NotesCopilotHost } from "./components/NotesScreen";
+/** Longest rest between two state reads triggered by `state-changed`. Ten
+ *  running chats send one on every turn start and usage update, and slow
+ *  reads used to run end to end for as long as the chats did. */
+const STATE_RELOAD_MAX_PAUSE_MS = 750;
 /** Views drawn by SettingsScreen, which replaces the sidebar while open. */
 const SETTINGS_VIEWS: ReadonlySet<AppView> = new Set<AppView>(["settings", "archives", "saved-setups", "briefing-settings"]);
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
@@ -724,7 +728,7 @@ function AppContent() {
     setConfiguredAgents(config.agents.filter(agent => enabledHarnesses.has(agent.harness)));
     setProviderAccounts(accountChoices(config.harnesses));
     setHarnessConfigs(config.harnesses);
-  }), []);
+  }, { maxPauseMs: STATE_RELOAD_MAX_PAUSE_MS }), []);
   // The first reload can fail because a browser tab's daemon was not up yet.
   // When it attaches, load again and drop an error that only said so.
   useEffect(() => bridgeApi.onBackendAttached(() => {
