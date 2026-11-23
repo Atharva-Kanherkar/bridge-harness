@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 90;
+const LATEST_SCHEMA_VERSION: i64 = 91;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -821,6 +821,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // the worktree inventory can tell a live review's checkout from an
             // orphan without parsing directory names.
             90 => add_column_if_missing(&transaction, "review_jobs", "worktree_path", "TEXT")?,
+            // The reasons ledger is read by kind and entity under the core's
+            // database lock, once a second by the worker pool alone.
+            91 => migration_91_events_kind_entity_index(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -1067,6 +1070,19 @@ fn repair_claude_cumulative_cost(transaction: &Transaction<'_>) -> Result<(), Br
 /// carries on the same totals and keeps the difference; a row with any figure
 /// lower is the totals starting again and stays as it is. Without a record of
 /// migration 54 nothing is touched.
+/// Index the reasons ledger by `(kind, entity_id)`.
+///
+/// Most ledger reads ask "has this kind been recorded for this entity", and
+/// without an index each one scanned every row. The worker pool asks it once a
+/// second, under the database lock, for each terminal queue item: 0.55 s a
+/// pass on a 65k-row ledger, while every chat's stream waited on that lock.
+fn migration_91_events_kind_entity_index(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_events_kind_entity ON events(kind, entity_id)",
+    )?;
+    Ok(())
+}
+
 fn migration_87_claude_running_total_repair(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     if !table_exists(transaction, "usage_ledger")? || !table_exists(transaction, "schema_version")? {
         return Ok(());
@@ -7166,6 +7182,31 @@ mod tests {
         assert!(columns.iter().any(|name| name == "revision"), "{columns:?}");
         // Later migrations may follow; this one must have run.
         assert!(current_schema_version(&db).unwrap() >= 73);
+    }
+
+    #[test]
+    fn migration_91_indexes_the_ledger_so_the_worker_pool_pass_does_not_scan_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        assert!(current_schema_version(&db).unwrap() >= 91);
+        // The worker pool's once-a-second read, as `report_terminal_queue_outcomes`
+        // issues it. Before the index its correlated subquery scanned `events`.
+        let plan: Vec<String> = db
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT q.id FROM worker_queue q JOIN sessions s ON s.id=q.parent_session_id
+                 WHERE q.queue_status IN ('expired','dead_letter','rejected') AND s.status!='cancelled'
+                 AND NOT EXISTS(SELECT 1 FROM events e WHERE e.kind='worker.queue.terminal_reported' AND e.entity_id=q.id)",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|step| step.contains("idx_events_kind_entity")),
+            "{plan:?}"
+        );
+        assert!(!plan.iter().any(|step| step.contains("SCAN e")), "{plan:?}");
     }
 
     #[test]
