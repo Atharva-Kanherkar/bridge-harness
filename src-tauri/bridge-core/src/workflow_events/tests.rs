@@ -682,3 +682,13 @@ fn a_workflow_listens_only_for_its_own_events_family() {
     assert!(listens_for(&db, ConnectorFamily::Slack).unwrap());
     assert!(!listens_for(&db, ConnectorFamily::GitHub).unwrap(), "a Slack trigger starts no GitHub reads");
 }
+
+#[test]
+fn a_repository_is_owner_slash_name_in_githubs_own_charset() {
+    for good in ["acme/app", "a-b/c.d_e", "x/y", "Acme-1/App.js"] {
+        assert!(valid_repo(good), "{good}");
+    }
+    for bad in ["", "acme", "/app", "acme/", "ac me/app", "acme;rm/app", "acme/a pp", "acme/..", "acme/.", "-/../x/y?", &format!("{}/app", "a".repeat(40)), &format!("acme/{}", "b".repeat(101))] {
+        assert!(!valid_repo(bad), "{bad}");
+    }
+}
