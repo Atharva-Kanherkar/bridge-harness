@@ -1,5 +1,5 @@
 //! Reading another tool's SQLite database without changing it, and only the
-//! tables Bridge is allowed to read there (Conductor, T3 Code).
+//! tables Bridge is allowed to read there (Conductor, T3 Code, Orca).
 //!
 //! Every query names its table and columns. A table that is not on the
 //! caller's allowed list is a bug, not a runtime branch: it panics, and the
@@ -43,6 +43,14 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     };
     conn.busy_timeout(Duration::from_secs(3))?;
     Ok(conn)
+}
+
+/// `PRAGMA user_version`: the schema version of a tool that keeps no
+/// migration table (Orca).
+pub fn user_version(conn: &Connection) -> rusqlite::Result<i64> {
+    let sql = "PRAGMA user_version";
+    log(sql);
+    conn.query_row(sql, [], |row| row.get(0))
 }
 
 /// A path as a `file:` URI path: everything but unreserved characters and
@@ -113,6 +121,52 @@ impl Allowed {
             let mut cells = HashMap::new();
             for (index, column) in chosen.iter().enumerate() {
                 cells.insert((*column).to_owned(), Cell::of(row.get_ref(index)?));
+            }
+            out.push(cells);
+        }
+        Ok(out)
+    }
+
+    /// Rows of a table as the wanted columns plus named fields of one JSON
+    /// column, extracted by SQLite. The rest of that JSON never leaves the
+    /// database, for columns that also hold things Bridge must not read
+    /// (Orca keeps a worker's environment beside its session id). A field
+    /// is `(name, path)`, with `path` a fixed `$.…` JSON path; invalid JSON
+    /// reads as absent. No row comes back when the JSON column is missing.
+    pub fn select_json(
+        &self,
+        conn: &Connection,
+        table: &str,
+        wanted: &[&str],
+        json_column: &str,
+        fields: &[(&str, &str)],
+        filter: Option<&str>,
+        params: &[&dyn ToSql],
+    ) -> rusqlite::Result<Vec<Row>> {
+        let present = self.columns(conn, table)?;
+        if !present.contains(json_column) {
+            return Ok(Vec::new());
+        }
+        let chosen: Vec<&str> = wanted.iter().copied().filter(|column| present.contains(*column)).collect();
+        let mut selected: Vec<String> = chosen.iter().map(|column| format!("\"{column}\"")).collect();
+        for (name, path) in fields {
+            assert!(path.starts_with('$') && !path.contains('\'') && !chosen.contains(name), "bad JSON field {name} {path}");
+            selected.push(format!("CASE WHEN json_valid(\"{json_column}\") THEN json_extract(\"{json_column}\", '{path}') END"));
+        }
+        let mut sql = format!("SELECT {} FROM {table}", selected.join(", "));
+        if let Some(filter) = filter {
+            sql.push_str(" WHERE ");
+            sql.push_str(filter);
+        }
+        log(&sql);
+        let mut statement = conn.prepare(&sql)?;
+        let mut rows = statement.query(params)?;
+        let names: Vec<&str> = chosen.iter().copied().chain(fields.iter().map(|(name, _)| *name)).collect();
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            let mut cells = HashMap::new();
+            for (index, name) in names.iter().enumerate() {
+                cells.insert((*name).to_owned(), Cell::of(row.get_ref(index)?));
             }
             out.push(cells);
         }

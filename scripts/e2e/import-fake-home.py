@@ -8,8 +8,9 @@ Explore subagent), a billing chat with a pasted screenshot, thinking, a search,
 a failing command, a compaction and a /rename title, three small docs chats,
 600 short chats in three more projects, one background run in the OS temp
 folder, one Claude memory and a CLAUDE.md, one Codex chat, an OpenCode store
-with a chat and its subagent, Conductor's workspaces, and T3 Code's threads
-and worktree, so the "Found on this Mac" list shows every tool.
+with a chat and its subagent, Conductor's workspaces, T3 Code's threads and
+worktree, and Orca's worktree and multi-agent run, so the "Found on this Mac"
+list shows every tool.
 """
 import base64, json, os, shutil, sqlite3, subprocess, sys, uuid
 
@@ -233,6 +234,70 @@ t3_message("b87ac664", "g1", "user", "hi", "2026-09-07T20:35:00Z")
 t3_message("b87ac664", "g2", "assistant", "Hi! What are we working on today?", "2026-09-07T20:35:01Z")
 t3_thread("deleted-1", "Thrown away", "55555555-5555-4555-8555-555555555555", None, "main", deleted=True)
 t3_message("deleted-1", "x1", "user", "This thread was deleted in T3 Code.", "2026-11-20T18:00:00Z")
+db.commit()
+db.close()
+# Orca, as its 1.4.271 build lays things out (schemas dumped from what that
+# build wrote): the storefront repository with a worktree Orca made under
+# ~/orca/workspaces/, and a multi-agent run. Its lead chat ran on OpenCode's
+# "Speed up the checkout page" session, which the OpenCode import brings; its
+# worker ran as an Orca chat in the worktree, on a session OpenCode no longer
+# has, so it comes from Orca's own copy. A Pi chat (Bridge does not run Pi), a
+# deleted chat, and an OpenCode terminal worker Orca kept no session for are
+# not carried. Its settings, a worker's environment and its runtime token
+# hold canaries nothing may ever show.
+orca_tree = os.path.join(home, "orca/workspaces/storefront/refund-copy")
+git(store_repo, "worktree", "add", "-q", "-b", "refund-copy", orca_tree)
+with open(os.path.join(orca_tree, "cart.js"), "a") as out:
+    out.write("// uncommitted: refund copy\n")
+orca_tree = os.path.realpath(orca_tree)
+orca_main = os.path.realpath(store_repo)
+orca = os.path.join(home, "Library/Application Support/orca")
+orca_fixtures = os.path.join(repo, "testing/fixtures/import/orca/1.4.271")
+os.makedirs(os.path.join(orca, "profiles/local-default"))
+with open(os.path.join(orca, "orca-profile-index.json"), "w") as out:
+    json.dump({"schemaVersion": 1, "activeProfileId": "local-default", "profiles": [{"id": "local-default", "name": "Personal", "kind": "local"}]}, out)
+with open(os.path.join(orca, "orca-runtime.json"), "w") as out:
+    json.dump({"authToken": "CANARY-orca-secret"}, out)
+orca_repo = "6e1ad727-cfd9-4417-b1dc-bdcb536e895f"
+def orca_tree_id(path): return f"{orca_repo}::{path}"
+db = sqlite3.connect(os.path.join(orca, "profiles/local-default/profile-state.db"))
+db.executescript(open(os.path.join(orca_fixtures, "profile-state.sql")).read())
+def orca_document(domain, payload, revision=1):
+    db.execute("INSERT INTO profile_state_documents(domain,payload,domain_version,revision,updated_at,content_hash) VALUES(?,?,1,?,0,'h')", (domain, json.dumps(payload), revision))
+orca_document("schemaVersion", 1)
+orca_document("settings", {"opencodeSessionCookie": "CANARY-orca-secret", "agentDefaultEnv": {"ANTHROPIC_API_KEY": "CANARY-orca-secret"}})
+orca_document("repos", [{"id": orca_repo, "path": orca_main, "displayName": "storefront", "addedAt": 1795419147883, "kind": "git"}])
+orca_document("worktreeMeta", {orca_tree_id(orca_main): {"displayName": ""}, orca_tree_id(orca_tree): {"displayName": "Refund email copy", "baseRef": "main"}}, 7)
+db.commit()
+db.close()
+db = sqlite3.connect(os.path.join(orca, "agent-session-domain.db"))
+db.executescript(open(os.path.join(orca_fixtures, "agent-session-domain.sql")).read())
+def orca_chat(sid, agent, place, title, handle):
+    record = {"schemaVersion": 2, "sessionId": sid, "provider": agent, "conversationName": title, "createdAt": 1795419158665, "updatedAt": 1795419465708,
+              "location": {"executionHostId": "local", "wslDistro": None, "workspaceId": orca_tree_id(place), "workspaceKind": "git-worktree"},
+              "accountHome": {"kind": "opencode", "locator": {"kind": "unmanaged"}},
+              "providerHandleChain": [{"linkId": "l1", "handle": handle, "origin": "created", "mintedAtFence": 2, "observedAt": 1}] if handle else []}
+    db.execute("INSERT INTO agent_session_records(session_id, record_json) VALUES(?,?)", (sid, json.dumps(record)))
+def orca_items(sid, items):
+    db.execute("INSERT INTO journal_chat_state(session_id, workspace_id, epoch) VALUES(?, ?, 'e1')", (sid, orca_tree_id(orca_tree)))
+    for index, (role, text) in enumerate(items):
+        payload = {"itemId": f"{sid}-{index}", "revision": 0, "observedAt": 1795419160874 + index * 1000, "body": {"kind": "message", "role": role, "blocks": [{"type": "text", "text": text}]}}
+        db.execute("INSERT INTO journal_items(session_id, epoch, item_id, ordinal, revision, sequence, sequence_index, owner_fence, payload_json) VALUES(?, 'e1', ?, ?, 0, ?, 0, 1, ?)", (sid, f"{sid}-{index}", index, index * 2, json.dumps(payload)))
+orca_chat("orca-lead", "opencode", orca_main, "Speed up the checkout page", {"transport": "acp", "agent": "opencode", "nativeId": "ses_checkout"})
+orca_chat("orca-worker", "opencode", orca_tree, "Write the refund email copy", {"transport": "acp", "agent": "opencode", "nativeId": "ses_refund_gone"})
+orca_items("orca-worker", [("user", "Write the copy for the refund confirmation email."), ("assistant", "Done: \"Your refund is on its way. It reaches your card in 3 to 5 days.\"")])
+orca_chat("orca-pi", "pi", orca_main, "Ask Pi about fonts", {"transport": "jsonl-rpc", "agent": "pi", "nativeId": "pi-1"})
+orca_chat("orca-deleted", "opencode", orca_main, "Thrown away in Orca", {"transport": "acp", "agent": "opencode", "nativeId": "ses_deleted"})
+db.execute("INSERT INTO agent_session_store_meta(key, value) VALUES('chat.deleted:orca-deleted', ?)", (json.dumps({"chatId": "orca-deleted", "sessionIds": ["orca-deleted"]}),))
+db.commit()
+db.close()
+db = sqlite3.connect(os.path.join(orca, "orchestration.db"))
+db.executescript(open(os.path.join(orca_fixtures, "orchestration.sql")).read())
+db.execute("INSERT INTO runs(id, objective, coordinator_orca_session_id, coordinator_orca_session_id_generation, consumer_generation) VALUES('run_1', 'Ship the checkout fixes', 'orca-lead', 1, 1)")
+db.execute("INSERT INTO dispatch_contexts(id, run_id, task_id, assignee_orca_session_id, status) VALUES('ctx_1', 'run_1', 'task_1', 'orca-worker', 'completed')")
+db.execute("INSERT INTO dispatch_contexts(id, run_id, task_id, assignee_handle, status) VALUES('ctx_2', 'run_1', 'task_2', 'term_w', 'completed')")
+db.execute("INSERT INTO worker_terminal_resources(id, origin_dispatch_id, owner_dispatch_id, terminal_handle, resume_session) VALUES('w2', 'ctx_2', 'ctx_2', 'term_w', ?)",
+           (json.dumps({"agent": "opencode", "launchConfig": {"agentEnv": {"OPENAI_API_KEY": "CANARY-orca-secret"}}}),))
 db.commit()
 db.close()
 # A real chat in a subfolder of the storefront repository: it lands under the

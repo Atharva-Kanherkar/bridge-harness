@@ -81,8 +81,12 @@ describe("MoveToBridge", () => {
     expect(section("t3code").textContent).toContain("6 chats · 2 workspaces in 2 repos");
     expect(section("t3code").textContent).toContain("T3 Code's own copy when that is gone");
     expect(section("t3code").querySelector("[data-tool-mark]")?.textContent).toBe("T");
-    expect(section("orca").textContent).toContain("Not found on this Mac");
-    expect(container.querySelectorAll("button").length).toBe(5);
+    expect(button(section("orca"), "Import").disabled).toBe(false);
+    expect(section("orca").textContent).toContain("4 chats · 2 workspaces in 1 repo");
+    expect(section("orca").textContent).toContain("workers under the chat that led them");
+    expect(section("orca").querySelector("[data-tool-mark]")?.textContent).toBe("O");
+    expect(section("superset").textContent).toContain("Not found on this Mac");
+    expect(container.querySelectorAll("button").length).toBe(6);
   });
 
   it("each tool keeps its own last import", async () => {
@@ -188,6 +192,20 @@ describe("MoveToBridge", () => {
     expect(t3.textContent).toContain("pins: Bridge has no pinned chats yet");
     expect(t3.querySelector("[data-tool-initial='t3code']")?.textContent).toBe("T");
     expect(section("conductor").querySelector("[data-import-result='workspaces']")).toBeNull();
+  });
+
+  it("imports Orca's chats, worktrees and runs and says what did not come over", async () => {
+    vi.spyOn(bridgeApi, "importStatus").mockResolvedValue({ jobs: [
+      job({ jobId: "o", tool: "orca", status: "done", total: 4, processed: 4, imported: 4, workspaces: 2, notCarried: [{ text: "chats with pi, which Bridge does not run", count: 1 }], finishedAt: "2026-11-23T10:00:00Z" }),
+    ] });
+    await render();
+    const orca = section("orca");
+    expect(orca.querySelector("[data-import-result='imported']")?.textContent).toBe("4");
+    expect(orca.querySelector("[data-import-result='workspaces']")?.textContent).toBe("2");
+    expect(orca.textContent).toContain("workers under the chat that led it");
+    expect(orca.textContent).toContain("so Orca keeps working with them");
+    expect(orca.textContent).toContain("chats with pi, which Bridge does not run");
+    expect(orca.querySelector("[data-tool-initial='orca']")?.textContent).toBe("O");
   });
 
   it("lands the transfer with a check when the import ends", async () => {
