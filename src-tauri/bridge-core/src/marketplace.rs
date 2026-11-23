@@ -2370,6 +2370,11 @@ mod tests {
         let (kept, refresh) = cache.read(later, CONNECTOR_FRESH);
         assert!(kept.unwrap().mcp_servers.contains_key("claude.ai Slack"), "the real answer stands");
         assert!(refresh, "and it is still stale, so the next read retries");
+        // A refresh that ended without an answer gives up its claim, so the
+        // next read can start one; without it, no probe would ever run again.
+        assert!(!cache.read(later, CONNECTOR_FRESH).1, "claimed by the read above");
+        cache.release();
+        assert!(cache.read(later, CONNECTOR_FRESH).1, "released: the next read refreshes");
         cache.release();
         // With nothing better, a failed answer is still an answer, but never
         // a fresh one: the very next read refreshes it.
