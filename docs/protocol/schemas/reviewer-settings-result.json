@@ -12,25 +12,6 @@
       ],
       "type": "string"
     },
-    "ReviewPostMode": {
-      "description": "Whether findings wait for triage or post as soon as they are drafted.",
-      "oneOf": [
-        {
-          "description": "Findings land in the pane; nothing reaches GitHub until a person posts.",
-          "enum": [
-            "draft"
-          ],
-          "type": "string"
-        },
-        {
-          "description": "Bridge posts the review as soon as it is drafted.",
-          "enum": [
-            "auto"
-          ],
-          "type": "string"
-        }
-      ]
-    },
     "ReviewerHarnessSettings": {
       "additionalProperties": false,
       "description": "What the GitHub pull-request reviewer runs as on one harness. `None` falls through to the Reviewer model profile, then the harness default.",
@@ -58,24 +39,8 @@
     },
     "ReviewerSettings": {
       "additionalProperties": false,
-      "description": "Global settings for the subagent that reviews pull requests from the GitHub pane: per-harness model and effort, and the instructions it is given. One record, not per workspace — a reviewer's shape is a preference about the reviewer, not about the repository.\n\nEvery field has a default, so a record stored before a field existed loads with that field's default.",
+      "description": "Global settings for the subagent that reviews pull requests from the GitHub pane: per-harness model and effort, and the instructions it is given. One record, not per workspace — a reviewer's shape is a preference about the reviewer, not about the repository.",
       "properties": {
-        "defaultHarnesses": {
-          "default": [],
-          "description": "The harnesses a review runs on when the caller names none. Empty means the first available of Claude, Codex and OpenCode.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "fallbackHarnesses": {
-          "default": [],
-          "description": "Tried in order when a pass's harness fails (sign-in, usage limit, crash). Empty means a failed harness fails the review.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
         "harnesses": {
           "additionalProperties": {
             "$ref": "#/definitions/ReviewerHarnessSettings"
@@ -83,22 +48,6 @@
           "default": {},
           "description": "Keyed by harness id (`claude` | `codex` | `opencode`).",
           "type": "object"
-        },
-        "maxConcurrentReviews": {
-          "default": 2,
-          "description": "Reviews running at once, 1 to 4.",
-          "format": "uint8",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "postMode": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ReviewPostMode"
-            }
-          ],
-          "default": "draft",
-          "description": "Draft first (the default) or post as soon as findings are drafted."
         },
         "systemPrompt": {
           "default": "",

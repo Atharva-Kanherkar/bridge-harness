@@ -73,6 +73,7 @@ pub fn install_store(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
             id TEXT PRIMARY KEY,
             job_id TEXT NOT NULL REFERENCES review_jobs(id) ON DELETE CASCADE,
             slot INTEGER NOT NULL DEFAULT 0,
+            attempt INTEGER NOT NULL DEFAULT 1,
             harness TEXT NOT NULL,
             model TEXT,
             effort TEXT,
@@ -583,8 +584,8 @@ pub fn finish_pass(
 pub fn passes(db: &Connection, job_id: &str) -> Result<Vec<wire::ReviewPass>, BridgeError> {
     let mut statement = db.prepare(
         "SELECT id, job_id, slot, harness, model, effort, status, session_id, error, denied_requests,
-            tokens_in, tokens_out, cost_microusd, started_at, finished_at
-         FROM review_passes WHERE job_id=?1 ORDER BY slot, created_at, rowid",
+            tokens_in, tokens_out, cost_microusd, started_at, finished_at, attempt
+         FROM review_passes WHERE job_id=?1 ORDER BY attempt, slot, created_at, rowid",
     )?;
     let rows = statement
         .query_map(params![job_id], |row| {
@@ -593,6 +594,7 @@ pub fn passes(db: &Connection, job_id: &str) -> Result<Vec<wire::ReviewPass>, Br
                 id: row.get(0)?,
                 job_id: row.get(1)?,
                 slot: row.get::<_, i64>(2)?.max(0) as u32,
+                attempt: row.get::<_, i64>(15)?.max(1) as u32,
                 harness: row.get(3)?,
                 model: row.get(4)?,
                 effort: row.get(5)?,

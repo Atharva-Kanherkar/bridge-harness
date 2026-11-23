@@ -185,10 +185,11 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.49 adds chat-scoped changes**: `workspaces/session_changes`. A 1.48
 /// client still pairs: it never calls it.
 ///
-/// **1.50 adds the reviews domain**: `reviews/*` methods, the
-/// `reviews/job_updated` notification, and runner fields on
-/// `ReviewerSettings` that default when absent. A 1.49 client still pairs: it
-/// never calls `reviews/*`, and the settings it saves load with defaults.
+/// **1.50 adds the reviews domain**: `reviews/*` methods and the
+/// `reviews/job_updated` notification. Review job settings are their own
+/// record, so `ReviewerSettings` keeps its 1.49 shape. A 1.49 client still
+/// pairs: it never calls `reviews/*`, and every response it can ask for
+/// decodes as before.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
     minor: 50,

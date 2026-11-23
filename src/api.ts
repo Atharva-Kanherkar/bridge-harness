@@ -3,7 +3,7 @@ import { mockChatTools, mockSaveFirstToolChoice, mockUpdateChatTools } from "./c
 import type { GetChatToolsParams, GetChatToolsResult, UpdateChatToolsParams, UpdateChatToolsResult } from "./protocol/generated/protocol";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
 import type { AppPreferences, AppPreferenceValues } from "./protocol/generated/protocol";
-import type { ReviewJob, ReviewJobDetail, ReviewJobList, ReviewJobResult, ReviewTrigger } from "./protocol/generated/protocol";
+import type { ReviewJob, ReviewJobDetail, ReviewJobList, ReviewJobResult, ReviewJobSettings, ReviewTrigger } from "./protocol/generated/protocol";
 import type { LimitRecoverySettings, LimitRecoveryStatus } from "./protocol/generated/protocol";
 import type { AlwaysAllowToolResult, RunWorkflowResult, WorkflowDraftResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary } from "./protocol/generated/protocol";
 import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, MarkAttentionUnreadResult, ReportPresenceResult, UnreadSummary } from "./protocol/generated/protocol";
@@ -138,6 +138,8 @@ const webDaemon = () => (isTauri() ? null : activeWebDaemon());
  *  Without one, everything below serves mock data. */
 const hasBackend = () => isTauri() || webDaemon() !== null;
 const REVIEWS_NEED_DESKTOP = "Reviewing pull requests requires the Bridge desktop app.";
+// Browser preview's review job settings: the host's defaults, kept in memory.
+let mockReviewJobSettings: ReviewJobSettings = { defaultHarnesses: [], fallbackHarnesses: [], maxConcurrentReviews: 2, postMode: "draft" };
 export type BackendMode = "tauri" | "web" | "mock";
 /** Which transport this window is on, for the few surfaces outside api.ts
  *  that behave differently per host (folder pickers, polls, the demo shell). */
@@ -2118,6 +2120,15 @@ export const bridgeApi = {
     hasBackend() ? call("reviews/retry_review", { jobId }) : Promise.reject(new Error(`No review job ${jobId}`)),
   onReviewJobUpdated: (handler: (payload: { job: ReviewJob }) => void): Promise<UnlistenFn> =>
     hasBackend() ? subscribe<{ job: ReviewJob }>("reviews/job_updated", handler) : Promise.resolve(() => {}),
+  getReviewJobSettings: async (): Promise<ReviewJobSettings> => {
+    if (hasBackend()) return call("reviews/get_review_job_settings");
+    return structuredClone(mockReviewJobSettings);
+  },
+  saveReviewJobSettings: async (settings: ReviewJobSettings): Promise<ReviewJobSettings> => {
+    if (hasBackend()) return call("reviews/save_review_job_settings", { settings });
+    mockReviewJobSettings = { ...mockReviewJobSettings, ...structuredClone(settings) };
+    return structuredClone(mockReviewJobSettings);
+  },
   githubCheckout: (workspaceId: string, number: number): Promise<GithubCheckoutResult> =>
     hasBackend() ? call("github/github_checkout", { workspaceId, number }) : Promise.resolve(mockGithubCheckout(workspaceId, number)),
   githubConnect: (workspaceId: string, remoteUrl: string): Promise<GithubConnectResult> =>

@@ -72,3 +72,21 @@ it("saves a reviewer model on change without the unsaved prompt", async () => {
   expect(host.textContent).toContain("Saved");
   expect(host.querySelector<HTMLTextAreaElement>('[aria-label="Reviewer instructions"]')!.value).toBe("half written");
 });
+
+it("saves every field of the loaded record, not only the two the form edits", async () => {
+  // A field this form does not show (one a newer host adds) must survive a save.
+  const loaded = { harnesses: {}, systemPrompt: "stored", futureSetting: "keep me" } as ReviewerSettingsWithExtra;
+  vi.spyOn(bridgeApi, "reviewerSettings").mockResolvedValue({ settings: loaded, defaultSystemPrompt: "default" });
+  const save = vi.spyOn(bridgeApi, "saveReviewerSettings").mockImplementation(async settings => ({ settings, defaultSystemPrompt: "default" }));
+  await act(async () => { root.render(<ReviewerSettingsSection adapters={[codex]} />); });
+  const prompt = host.querySelector<HTMLTextAreaElement>('[aria-label="Reviewer instructions"]')!;
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    setter.call(prompt, "Only tests.");
+    prompt.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => { [...host.querySelectorAll("button")].find(button => button.textContent === "Save")!.click(); });
+  expect(save).toHaveBeenCalledWith({ harnesses: {}, systemPrompt: "Only tests.", futureSetting: "keep me" });
+});
+
+type ReviewerSettingsWithExtra = Parameters<typeof bridgeApi.saveReviewerSettings>[0] & { futureSetting: string };

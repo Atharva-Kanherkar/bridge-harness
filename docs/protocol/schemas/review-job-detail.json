@@ -258,6 +258,12 @@
     "ReviewPass": {
       "description": "One harness's run over a job. A fallback is a new pass in the same slot.",
       "properties": {
+        "attempt": {
+          "description": "The claim of the job this pass ran under, from 1. A pass of an earlier attempt was abandoned when its runner lost the job.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "costMicrousd": {
           "format": "uint64",
           "minimum": 0.0,
@@ -335,6 +341,7 @@
         }
       },
       "required": [
+        "attempt",
         "costMicrousd",
         "deniedRequests",
         "harness",

@@ -179,7 +179,7 @@ impl Runner {
         let (reclaimed, limit) = {
             let db = super::lock_db(&self.core);
             let reclaimed = store::reclaim_expired(&db, now)?;
-            let limit = crate::reviewer_settings::load(&db)
+            let limit = super::settings::load(&db)
                 .map(|settings| settings.max_concurrent_reviews)
                 .unwrap_or(bridge_protocol::messages::DEFAULT_MAX_CONCURRENT_REVIEWS);
             (reclaimed, usize::from(limit.clamp(1, 4)))
@@ -379,7 +379,7 @@ impl Driver {
     fn review(&self, job: &JobRow, prepared: &Prepared, steps: &dyn ReviewSteps, token: &CancelToken) -> Result<(), StepError> {
         let fallbacks = {
             let db = super::lock_db(&self.core);
-            crate::reviewer_settings::load(&db).map(|settings| settings.fallback_harnesses).unwrap_or_default()
+            super::settings::load(&db).map(|settings| settings.fallback_harnesses).unwrap_or_default()
         };
         let mut summaries = Vec::new();
         let mut finished = 0;

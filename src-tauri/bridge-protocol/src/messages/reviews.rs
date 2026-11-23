@@ -200,6 +200,9 @@ pub struct ReviewPass {
     /// Which requested reviewer this pass stands for (0, or 1 for a second
     /// opinion).
     pub slot: u32,
+    /// The claim of the job this pass ran under, from 1. A pass of an earlier
+    /// attempt was abandoned when its runner lost the job.
+    pub attempt: u32,
     pub harness: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -338,6 +341,49 @@ pub struct ReviewFinding {
     pub posted_at: Option<String>,
 }
 
+/// How review jobs run. One record for the account, separate from
+/// `ReviewerSettings` (the reviewer's model, effort and instructions) so that
+/// type keeps the shape older clients decode.
+///
+/// Open on purpose (no `deny_unknown_fields`): later minors add fields here,
+/// and an older client must still decode a newer response. Every field has a
+/// default, so a record stored before a field existed loads with it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ReviewJobSettings {
+    /// The harnesses a review runs on when the caller names none. Empty
+    /// means the first available of Claude, Codex and OpenCode.
+    pub default_harnesses: Vec<String>,
+    /// Tried in order when a pass's harness fails (sign-in, usage limit,
+    /// crash). Empty means a failed harness fails that pass.
+    pub fallback_harnesses: Vec<String>,
+    /// Reviews running at once, 1 to 4.
+    pub max_concurrent_reviews: u8,
+    /// Draft first (the default) or post as soon as findings are drafted.
+    pub post_mode: ReviewPostMode,
+}
+
+/// The default and the bounds of `ReviewJobSettings::max_concurrent_reviews`.
+pub const DEFAULT_MAX_CONCURRENT_REVIEWS: u8 = 2;
+pub const MAX_CONCURRENT_REVIEWS_RANGE: std::ops::RangeInclusive<u8> = 1..=4;
+
+impl Default for ReviewJobSettings {
+    fn default() -> Self {
+        Self {
+            default_harnesses: Vec::new(),
+            fallback_harnesses: Vec::new(),
+            max_concurrent_reviews: DEFAULT_MAX_CONCURRENT_REVIEWS,
+            post_mode: ReviewPostMode::Draft,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveReviewJobSettingsParams {
+    pub settings: ReviewJobSettings,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartReviewParams {
@@ -447,6 +493,18 @@ mod tests {
         assert!(serde_json::from_value::<GetReviewParams>(json!({ "jobId": "j", "x": 1 })).is_err());
         let list: ListReviewsParams = serde_json::from_value(json!({ "workspaceId": "w" })).unwrap();
         assert_eq!(list.number, None);
+    }
+
+    #[test]
+    fn review_job_settings_default_and_stay_open_to_newer_fields() {
+        let defaults: ReviewJobSettings = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(defaults, ReviewJobSettings::default());
+        assert_eq!(defaults.max_concurrent_reviews, 2);
+        assert_eq!(defaults.post_mode, ReviewPostMode::Draft);
+        let newer: ReviewJobSettings =
+            serde_json::from_value(json!({ "postMode": "auto", "autoReview": "mine" })).unwrap();
+        assert_eq!(newer.post_mode, ReviewPostMode::Auto, "a field from a later minor is ignored, not refused");
+        assert!(serde_json::from_value::<SaveReviewJobSettingsParams>(json!({ "settings": {}, "x": 1 })).is_err());
     }
 
     #[test]

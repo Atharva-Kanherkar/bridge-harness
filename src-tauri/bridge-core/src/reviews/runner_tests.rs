@@ -167,11 +167,11 @@ fn fixture() -> (tempfile::TempDir, Arc<BridgeCore>, Arc<Script>) {
     (scratch, core, script)
 }
 
-fn settings(core: &Arc<BridgeCore>, change: impl FnOnce(&mut wire::ReviewerSettings)) {
+fn settings(core: &Arc<BridgeCore>, change: impl FnOnce(&mut wire::ReviewJobSettings)) {
     let db = core.db.lock().unwrap();
-    let mut settings = crate::reviewer_settings::load(&db).unwrap();
+    let mut settings = crate::reviews::settings::load(&db).unwrap();
     change(&mut settings);
-    crate::reviewer_settings::save(&db, &settings).unwrap();
+    crate::reviews::settings::save(&db, &settings).unwrap();
 }
 
 fn queue(core: &Arc<BridgeCore>, number: u64, harnesses: &[&str]) -> String {

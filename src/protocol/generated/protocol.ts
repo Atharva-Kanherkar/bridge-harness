@@ -364,7 +364,9 @@ export type BridgeMethod =
   | "reviews/list_reviews"
   | "reviews/get_review"
   | "reviews/cancel_review"
-  | "reviews/retry_review";
+  | "reviews/retry_review"
+  | "reviews/get_review_job_settings"
+  | "reviews/save_review_job_settings";
 
 export const BRIDGE_METHODS = [
   { method: "health/health", domain: "health", command: "health" },
@@ -725,6 +727,8 @@ export const BRIDGE_METHODS = [
   { method: "reviews/get_review", domain: "reviews", command: "get_review" },
   { method: "reviews/cancel_review", domain: "reviews", command: "cancel_review" },
   { method: "reviews/retry_review", domain: "reviews", command: "retry_review" },
+  { method: "reviews/get_review_job_settings", domain: "reviews", command: "get_review_job_settings" },
+  { method: "reviews/save_review_job_settings", domain: "reviews", command: "save_review_job_settings" },
 ] as const;
 
 export type BridgeNotification =
@@ -1182,6 +1186,8 @@ export interface BridgeMethodParams {
   "reviews/get_review": GetReviewParams;
   "reviews/cancel_review": CancelReviewParams;
   "reviews/retry_review": RetryReviewParams;
+  "reviews/get_review_job_settings": undefined;
+  "reviews/save_review_job_settings": SaveReviewJobSettingsParams;
 }
 
 /** Result types for every registered method. */
@@ -1544,6 +1550,8 @@ export interface BridgeMethodResults {
   "reviews/get_review": ReviewJobDetail;
   "reviews/cancel_review": ReviewJobResult;
   "reviews/retry_review": ReviewJobResult;
+  "reviews/get_review_job_settings": ReviewJobSettings;
+  "reviews/save_review_job_settings": ReviewJobSettings;
 }
 
 export type ActiveTurnInput = "steer" | "queue";
@@ -3215,9 +3223,17 @@ export interface ReviewJob {
   workspaceId: string;
 }
 
+export interface ReviewJobSettings {
+  defaultHarnesses?: string[];
+  fallbackHarnesses?: string[];
+  maxConcurrentReviews?: number;
+  postMode?: ReviewPostMode;
+}
+
 export type ReviewJobStatus = "queued" | "preparing" | "reviewing" | "drafted" | "posting" | "posted" | "failed" | "cancelled" | "interrupted";
 
 export interface ReviewPass {
+  attempt: number;
   costMicrousd: number;
   deniedRequests: number;
   effort?: string | null;
@@ -3265,11 +3281,7 @@ export interface ReviewerHarnessSettings {
 }
 
 export interface ReviewerSettings {
-  defaultHarnesses?: string[];
-  fallbackHarnesses?: string[];
   harnesses?: Record<string, ReviewerHarnessSettings>;
-  maxConcurrentReviews?: number;
-  postMode?: ReviewPostMode;
   systemPrompt?: string;
 }
 
@@ -6968,6 +6980,10 @@ export interface CancelReviewParams {
 
 export interface RetryReviewParams {
   jobId: string;
+}
+
+export interface SaveReviewJobSettingsParams {
+  settings: ReviewJobSettings;
 }
 
 export interface VoiceTranscriptEvent {

@@ -1434,6 +1434,11 @@ pub fn dispatch(
             let p: wire::RetryReviewParams = decode(method, params)?;
             reply(api::retry_review(core, &p))
         }
+        MethodName::GetReviewJobSettings => reply(api::get_review_job_settings(core)),
+        MethodName::SaveReviewJobSettings => {
+            let p: wire::SaveReviewJobSettingsParams = decode(method, params)?;
+            reply(api::save_review_job_settings(core, &p))
+        }
         MethodName::AlwaysAllowTool => {
             let p: wire::AlwaysAllowToolParams = decode(method, params)?;
             reply(api::always_allow_tool(core, &p))

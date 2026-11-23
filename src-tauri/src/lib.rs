@@ -1087,6 +1087,21 @@ async fn retry_review(
 }
 
 #[tauri::command]
+async fn get_review_job_settings(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewJobSettings, BridgeError> {
+    api::get_review_job_settings(state.inner())
+}
+
+#[tauri::command]
+async fn save_review_job_settings(
+    settings: bridge_protocol::messages::ReviewJobSettings,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewJobSettings, BridgeError> {
+    api::save_review_job_settings(state.inner(), &bridge_protocol::messages::SaveReviewJobSettingsParams { settings })
+}
+
+#[tauri::command]
 async fn always_allow_tool(
     workflow_id: String,
     session_id: String,
@@ -3871,6 +3886,8 @@ pub fn run() -> i32 {
             get_review,
             cancel_review,
             retry_review,
+            get_review_job_settings,
+            save_review_job_settings,
             get_state,
             get_session_forest,
             get_session_forest_digest,

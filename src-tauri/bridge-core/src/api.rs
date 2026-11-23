@@ -1501,6 +1501,17 @@ pub fn retry_review(core: &Arc<BridgeCore>, params: &wire::RetryReviewParams) ->
     Ok(wire::ReviewJobResult { job: crate::reviews::retry(core, &params.job_id)? })
 }
 
+pub fn get_review_job_settings(core: &Arc<BridgeCore>) -> Result<wire::ReviewJobSettings, BridgeError> {
+    crate::reviews::job_settings(core)
+}
+
+pub fn save_review_job_settings(
+    core: &Arc<BridgeCore>,
+    params: &wire::SaveReviewJobSettingsParams,
+) -> Result<wire::ReviewJobSettings, BridgeError> {
+    crate::reviews::save_job_settings(core, &params.settings)
+}
+
 /// How the pull-request reviewer launches on one harness, decided before a
 /// session is spent on it.
 #[derive(Debug, Clone, PartialEq, Eq)]

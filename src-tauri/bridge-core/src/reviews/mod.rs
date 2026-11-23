@@ -7,6 +7,7 @@
 //! and `steps` for the work a job does.
 
 pub mod runner;
+pub mod settings;
 pub mod state;
 pub mod steps;
 pub mod store;
@@ -56,17 +57,17 @@ pub fn publish(core: &Arc<BridgeCore>, job_id: &str) {
 pub fn resolve_harnesses(core: &Arc<BridgeCore>, requested: Option<&[String]>) -> Result<Vec<String>, BridgeError> {
     let settings = {
         let db = lock_db(core);
-        crate::reviewer_settings::load(&db)?
+        settings::load(&db)?
     };
     let asked = match requested {
         Some([]) => return Err(BridgeError::Invalid("Pick a harness to review with".into())),
-        Some(list) => crate::reviewer_settings::review_job_harnesses(list, "reviewer")?,
-        None => crate::reviewer_settings::review_job_harnesses(&settings.default_harnesses, "default reviewer")?,
+        Some(list) => settings::harnesses(list, "reviewer")?,
+        None => settings::harnesses(&settings.default_harnesses, "default reviewer")?,
     };
-    if asked.len() > crate::reviewer_settings::MAX_REVIEW_HARNESSES {
+    if asked.len() > settings::MAX_REVIEW_HARNESSES {
         return Err(BridgeError::Invalid(format!(
             "A review runs on at most {} harnesses",
-            crate::reviewer_settings::MAX_REVIEW_HARNESSES
+            settings::MAX_REVIEW_HARNESSES
         )));
     }
     if !asked.is_empty() {
@@ -109,7 +110,7 @@ pub fn start_with(core: &Arc<BridgeCore>, params: &wire::StartReviewParams, head
     let harnesses = resolve_harnesses(core, params.harnesses.as_deref())?;
     let (job, created) = {
         let db = lock_db(core);
-        let post_mode = crate::reviewer_settings::load(&db)?.post_mode;
+        let post_mode = settings::load(&db)?.post_mode;
         let (job, created) = store::insert(
             &db,
             &store::NewJob {
@@ -182,4 +183,15 @@ pub fn retry(core: &Arc<BridgeCore>, job_id: &str) -> Result<wire::ReviewJob, Br
         core.reviews.wake();
     }
     Ok(job)
+}
+
+pub fn job_settings(core: &Arc<BridgeCore>) -> Result<wire::ReviewJobSettings, BridgeError> {
+    settings::load(&lock_db(core))
+}
+
+/// Save how review jobs run, and let the runner pick up a wider pool now.
+pub fn save_job_settings(core: &Arc<BridgeCore>, next: &wire::ReviewJobSettings) -> Result<wire::ReviewJobSettings, BridgeError> {
+    let saved = settings::save(&lock_db(core), next)?;
+    core.reviews.wake();
+    Ok(saved)
 }

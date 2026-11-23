@@ -16,9 +16,10 @@ const REVIEWER_HARNESSES: ReadonlyArray<{ id: string; label: string }> = [
 const EFFORTS = ["low", "medium", "high", "xhigh"] as const;
 
 /** The wire type leaves both fields optional (serde defaults); the form
- * always holds them. */
-type FormSettings = { harnesses: NonNullable<ReviewerSettings["harnesses"]>; systemPrompt: string };
-const normalize = (settings: ReviewerSettings): FormSettings => ({ harnesses: settings.harnesses ?? {}, systemPrompt: settings.systemPrompt ?? "" });
+ * always holds them. Every other field of the loaded record rides along
+ * untouched, so a save never resets a setting this form does not show. */
+type FormSettings = ReviewerSettings & { harnesses: NonNullable<ReviewerSettings["harnesses"]>; systemPrompt: string };
+const normalize = (settings: ReviewerSettings): FormSettings => ({ ...settings, harnesses: settings.harnesses ?? {}, systemPrompt: settings.systemPrompt ?? "" });
 
 /** Model, effort and instructions for the subagent that reviews pull requests
  * from the GitHub pane. Global rather than per workspace: it is a preference

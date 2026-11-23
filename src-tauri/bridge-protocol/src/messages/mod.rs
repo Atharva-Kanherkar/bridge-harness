@@ -595,6 +595,8 @@ typed_methods![
     (GetReview, GetReviewParams, ReviewJobDetail),
     (CancelReview, CancelReviewParams, ReviewJobResult),
     (RetryReview, RetryReviewParams, ReviewJobResult),
+    (GetReviewJobSettings, _, ReviewJobSettings),
+    (SaveReviewJobSettings, SaveReviewJobSettingsParams, ReviewJobSettings),
 ];
 
 /// The documented exceptions to result typing: every method whose result is
