@@ -671,3 +671,14 @@ fn an_unapproved_event_workflow_records_nothing_and_starts_no_ingress() {
     assert!(pending(&db, &draft.id).is_empty());
     assert!(!listens_for(&db, crate::work_connectors::ConnectorFamily::Slack).unwrap());
 }
+
+#[test]
+fn a_workflow_listens_only_for_its_own_events_family() {
+    let (dir, core) = test_support::core();
+    let db = core.db.lock().unwrap();
+    use crate::work_connectors::ConnectorFamily;
+    assert!(!listens_for(&db, ConnectorFamily::Slack).unwrap(), "nothing listens yet");
+    listening_workflow(&db, dir.path(), event_trigger(wire::WorkflowEventKind::SlackThreadReply), "2026-11-20T00:00:00Z");
+    assert!(listens_for(&db, ConnectorFamily::Slack).unwrap());
+    assert!(!listens_for(&db, ConnectorFamily::GitHub).unwrap(), "a Slack trigger starts no GitHub reads");
+}
