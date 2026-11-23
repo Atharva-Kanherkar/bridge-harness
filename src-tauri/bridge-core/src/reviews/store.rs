@@ -21,7 +21,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use uuid::Uuid;
 
 use super::state;
-use super::steps::{DraftFinding, PassOutcome};
+use super::steps::{DraftFinding, PassOutcome, PassUsage};
 use crate::BridgeError;
 
 /// Statuses a job can still leave. One non-terminal job per dedupe key.
@@ -168,12 +168,14 @@ pub struct JobRow {
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    /// The checkout the current attempt reads, once prepared.
+    pub worktree_path: Option<String>,
 }
 
 const SELECT_JOB: &str = "SELECT id, workspace_id, repo_owner, repo_name, pr_number, head_sha, base_sha,
     incremental_from_sha, trigger_kind, post_mode, harnesses, status, error, summary, posted_review_id,
     posted_review_url, retry_of, attempts, lease_owner, lease_expires_at, created_at, started_at, finished_at,
-    publication_key
+    publication_key, worktree_path
     FROM review_jobs";
 
 fn invalid_column(index: usize, text: &str) -> rusqlite::Error {
@@ -214,6 +216,7 @@ fn read_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
         started_at: row.get(21)?,
         finished_at: row.get(22)?,
         publication_key: row.get(23)?,
+        worktree_path: row.get(24)?,
     })
 }
 
@@ -317,13 +320,20 @@ pub fn list(db: &Connection, workspace_id: &str, number: Option<u64>) -> Result<
 /// passes still `running` are cancelled, and that attempt's findings and
 /// summary are dropped, so the new attempt starts clean.
 pub fn claim_next(db: &Connection, runner: &str, now: DateTime<Utc>) -> Result<Option<JobRow>, BridgeError> {
+    claim(db, runner, now, true)
+}
+
+/// [`claim_next`], but only a posting job when `take_queued` is false: the
+/// review checkout budget is full, and posting needs no checkout.
+pub fn claim(db: &Connection, runner: &str, now: DateTime<Utc>, take_queued: bool) -> Result<Option<JobRow>, BridgeError> {
     let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
     let candidates: Vec<(String, String)> = transaction
         .prepare(
-            "SELECT id, status FROM review_jobs WHERE status IN ('queued','posting') AND lease_owner IS NULL
+            "SELECT id, status FROM review_jobs
+             WHERE (status='posting' OR (?1 AND status='queued')) AND lease_owner IS NULL
              ORDER BY created_at, rowid LIMIT 16",
         )?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map(params![take_queued], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<Result<_, _>>()?;
     for (id, status) in candidates {
         let claim = format!("{runner}/{}", Uuid::new_v4());
@@ -343,7 +353,9 @@ pub fn claim_next(db: &Connection, runner: &str, now: DateTime<Utc>) -> Result<O
                 params![id, ABANDONED, stamp(now)],
             )?;
             transaction.execute("DELETE FROM review_findings WHERE job_id=?1", params![id])?;
-            transaction.execute("UPDATE review_jobs SET summary=NULL WHERE id=?1", params![id])?;
+            // The old attempt's checkout is not this attempt's: until this one
+            // records its own, it counts as pending against the budget.
+            transaction.execute("UPDATE review_jobs SET summary=NULL, worktree_path=NULL WHERE id=?1", params![id])?;
         }
         let job = get_job(&transaction, &id)?;
         transaction.commit()?;
@@ -503,6 +515,80 @@ pub fn set_head(db: &Connection, id: &str, claim: &str, head_sha: &str) -> Resul
     )?;
     transaction.commit()?;
     Ok(HeadUpdate::Moved)
+}
+
+/// Record the checkout the current attempt prepared, under `claim`. False
+/// means the claim no longer holds the job.
+pub fn set_worktree(db: &Connection, id: &str, claim: &str, path: &str) -> Result<bool, BridgeError> {
+    let changed = db.execute(
+        "UPDATE review_jobs SET worktree_path=?3 WHERE id=?1 AND lease_owner=?2 AND status='preparing'",
+        params![id, claim, path],
+    )?;
+    Ok(changed == 1)
+}
+
+/// Give up a reservation `set_worktree` made, when cutting the checkout
+/// failed.
+pub fn clear_worktree(db: &Connection, id: &str, claim: &str) -> Result<(), BridgeError> {
+    db.execute("UPDATE review_jobs SET worktree_path=NULL WHERE id=?1 AND lease_owner=?2", params![id, claim])?;
+    Ok(())
+}
+
+/// Checkouts reserved or in use by jobs preparing or reviewing now. A
+/// reservation counts against the budget before its directory exists.
+pub fn reserved_worktrees(db: &Connection) -> Result<Vec<String>, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT worktree_path FROM review_jobs WHERE status IN ('preparing','reviewing') AND worktree_path IS NOT NULL",
+    )?;
+    let paths = statement.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+    Ok(paths)
+}
+
+/// The current attempt of every live job, for sweeping what earlier attempts
+/// left.
+pub fn live_attempts(db: &Connection) -> Result<Vec<(String, u32)>, BridgeError> {
+    let mut statement = db.prepare(&format!("SELECT id, attempts FROM review_jobs WHERE status IN {ACTIVE_SQL}"))?;
+    let rows = statement
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?.max(0) as u32)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// The checkout of every job that is still live: what the reaper must keep.
+pub fn live_worktrees(db: &Connection) -> Result<Vec<String>, BridgeError> {
+    let mut statement = db.prepare(&format!(
+        "SELECT worktree_path FROM review_jobs WHERE status IN {ACTIVE_SQL} AND worktree_path IS NOT NULL"
+    ))?;
+    let paths = statement.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+    Ok(paths)
+}
+
+/// Ids of jobs that are still live.
+pub fn live_job_ids(db: &Connection) -> Result<Vec<String>, BridgeError> {
+    let mut statement = db.prepare(&format!("SELECT id FROM review_jobs WHERE status IN {ACTIVE_SQL}"))?;
+    let ids = statement.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+    Ok(ids)
+}
+
+/// Claimed jobs that will need a checkout and have none recorded yet.
+pub fn claimed_without_worktree(db: &Connection) -> Result<usize, BridgeError> {
+    let count: i64 = db.query_row(
+        "SELECT COUNT(*) FROM review_jobs WHERE status='preparing' AND worktree_path IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count.max(0) as usize)
+}
+
+/// Which live job, if any, reads the checkout at `path`.
+pub fn live_job_for_worktree(db: &Connection, path: &str) -> Result<Option<String>, BridgeError> {
+    Ok(db
+        .query_row(
+            &format!("SELECT id FROM review_jobs WHERE worktree_path=?1 AND status IN {ACTIVE_SQL} LIMIT 1"),
+            params![path],
+            |row| row.get(0),
+        )
+        .optional()?)
 }
 
 fn set_summary(db: &Connection, id: &str, summary: &str) -> Result<(), BridgeError> {
@@ -677,13 +763,21 @@ pub fn end_pass(
     pass_id: &str,
     status: ReviewPassStatus,
     error: Option<&str>,
+    usage: PassUsage,
     now: DateTime<Utc>,
 ) -> Result<bool, BridgeError> {
     let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
     if !holds(&transaction, job_id, claim, Status::Reviewing)? {
         return Ok(false);
     }
-    finish_pass(&transaction, pass_id, status, error, None, now)?;
+    let spent = PassOutcome {
+        tokens_in: usage.tokens_in,
+        tokens_out: usage.tokens_out,
+        cost_microusd: usage.cost_microusd,
+        denied_requests: usage.denied_requests,
+        ..PassOutcome::default()
+    };
+    finish_pass(&transaction, pass_id, status, error, Some(&spent), now)?;
     transaction.commit()?;
     Ok(true)
 }

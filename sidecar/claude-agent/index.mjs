@@ -30,7 +30,8 @@ import { createAskRelay } from "./ask.mjs";
 import { isTrustedFolder } from "./trust.mjs";
 import { createDirectCall } from "./mcp-call.mjs";
 import { createAppControl } from "./app-control.mjs";
-import { isAppRuntime, isDirectCall, wireServerName } from "./briefing.mjs";
+import { isAppRuntime, isDirectCall, wireServerName, workflowAccountServers, workflowGrantedServers } from "./briefing.mjs";
+import { settleWorkflowConnectors } from "./workflow-connectors.mjs";
 import { createTurnTiming } from "./timing.mjs";
 
 // Which copy of the Agent SDK to load.
@@ -94,6 +95,8 @@ function makeInputStream() {
   let closed = false;
   return {
     push(message) {
+      // A turn released after stdin closed has nobody to answer it.
+      if (closed) return;
       queue.push(message);
       if (wake) { wake(); wake = null; }
     },
@@ -165,6 +168,13 @@ const appControl = createAppControl({
   serverAllowed: appRuntimeServer !== null ? servesAppRuntime : () => true,
 });
 
+// A workflow run's turn waits for its account connectors to come up (see
+// workflow-connectors.mjs). Every other launch sends its turns at once.
+const accountConnectors = workflowAccountServers(config.briefing);
+let connectorsReady = accountConnectors.length
+  ? settleWorkflowConnectors(run, { granted: workflowGrantedServers(config.briefing), waitFor: accountConnectors })
+  : null;
+
 // Catalogue discovery is a short-lived control-plane request. It uses the
 // installed SDK/CLI itself, so new provider releases appear without a Bridge
 // code change. No user turn is submitted and the normal stream pump is skipped.
@@ -194,7 +204,9 @@ rl.on("line", (line) => {
     const blocks = userContentBlocks(frame);
     if (blocks) {
       turnTiming?.userFrame();
-      input.push(userMessage(blocks));
+      const message = userMessage(blocks);
+      if (connectorsReady) connectorsReady = connectorsReady.then(() => input.push(message));
+      else input.push(message);
     }
   } else if (frame.type === "control_response") {
     // One channel, two askers with their own request ids: a workflow run's

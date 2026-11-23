@@ -820,6 +820,14 @@ pub trait HarnessAdapter: Send + Sync + Any {
         validate_start_compatibility(&self.descriptor(), &request)?;
         self.start(request)
     }
+    /// A hidden PR reviewer: read-only file tools, no shell and no network,
+    /// every permission request answered by Bridge. The default is a
+    /// read-only start inside the caller's offline sandbox; an adapter whose
+    /// read-only mode still asks before a shell (OpenCode) overrides it.
+    fn start_reviewer(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        validate_start_compatibility(&self.descriptor(), &request)?;
+        self.start(request)
+    }
     /// A personal-app courier session that may ask for exactly one MCP tool
     /// (see `apps::courier`). Unsupported unless an adapter overrides it.
     fn start_app_courier(&self, _request: StartRequest<'_>, _permission: &str, _server: &str) -> Result<StartedAdapter, BridgeError> {
@@ -1144,6 +1152,18 @@ impl AdapterRegistry {
             return Err(BridgeError::Invalid(descriptor.unavailable_reason.unwrap_or_else(|| format!("{} is unavailable", descriptor.label))));
         }
         adapter.start_app_courier(request, permission, server)
+    }
+
+    pub fn start_reviewer(&self, id: &str, mut request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        let adapter = self.adapters.get(id).ok_or_else(|| BridgeError::Invalid(format!("No structured adapter is registered for {id}")))?;
+        crate::credential_policy::gate_adapter(id)?;
+        let descriptor = adapter.descriptor();
+        if !descriptor.available {
+            return Err(BridgeError::Invalid(descriptor.unavailable_reason.unwrap_or_else(|| format!("{} is unavailable", descriptor.label))));
+        }
+        request.effort = supported_model_effort(&descriptor, request.model, request.effort);
+        request.speed = supported_model_speed(&descriptor, request.model, request.speed);
+        adapter.start_reviewer(request)
     }
 
     pub fn start_completion(&self, id: &str, mut request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
@@ -1686,6 +1706,13 @@ impl HarnessAdapter for OpenCodeAdapter {
     }
     fn start_app_courier(&self, request: StartRequest<'_>, permission: &str, server: &str) -> Result<StartedAdapter, BridgeError> {
         let started = opencode_adapter::start_courier_with_settings(request, &self.settings(), permission, server)?;
+        Ok(StartedAdapter {
+            runtime: Box::new(started.runtime), reader: Box::new(started.reader), startup_messages: started.startup_messages, skills_dropped: false,
+        })
+    }
+    fn start_reviewer(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        self.ensure_model_is_selectable(request.model)?;
+        let started = opencode_adapter::start_reviewer_with_settings(request, &self.settings())?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime), reader: Box::new(started.reader), startup_messages: started.startup_messages, skills_dropped: false,
         })

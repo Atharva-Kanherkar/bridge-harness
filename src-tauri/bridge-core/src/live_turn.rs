@@ -1739,7 +1739,18 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     // switch flow tears the adapter down across an await, and a start
     // interleaving into that window would be orphaned by its commit.
     let _lifecycle = state.claim_session_lifecycle(&session_id, "session start")?;
-    start_chat_claimed(core, session_id)
+    start_chat_claimed(core, session_id)?;
+    // Built after the launch, for the caller that shows it. Internal starts
+    // (a resume for a send, a continuation) call `launch_chat` and never pay
+    // for a state they would drop.
+    core.state_snapshot()
+}
+
+/// [`start_chat`] without the app state: for callers that only need the
+/// runtime running.
+pub fn launch_chat(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    let _lifecycle = core.claim_session_lifecycle(session_id, "session start")?;
+    start_chat_claimed(core, session_id.to_owned())
 }
 
 /// Where one cold chat launch spent its time before the provider process
@@ -1778,7 +1789,7 @@ impl LaunchTiming {
 }
 
 /// The caller owns the session lifecycle across a cancellation and continuation.
-fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeState, BridgeError> {
+fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<(), BridgeError> {
     let state = core;
     let mut timing = LaunchTiming::start();
     ensure_session_not_archived(core, &session_id)?;
@@ -2043,7 +2054,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 root_chat_reuse_marker(&db, &session_id, adapter_id),
                 &hot_check_prompt,
             )?;
-            return store::state(&db);
+            return Ok(());
         }
         invalidate_reader_launch(state, &session_id)?;
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
@@ -2574,11 +2585,8 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
     }
     timing.mark("persist");
     core.events.publish(CoreEvent::StateChanged);
-    let db = state.db.lock().unwrap();
-    let snapshot = store::state(&db);
-    timing.mark("state");
-    timing.record(&db, &session_id, adapter_id);
-    snapshot
+    timing.record(&state.db.lock().unwrap(), &session_id, adapter_id);
+    Ok(())
 }
 
 fn invalidate_reader_launch(core: &BridgeCore, session_id: &str) -> Result<(), BridgeError> {
@@ -3253,6 +3261,9 @@ fn handle_agent_value_timed(
     let mut recover_compaction = false;
     let bridge_state_changed;
 
+    // Any `git` this frame's entries need runs now, while the database lock
+    // is free for every other chat's frames. See `repo_stamp`.
+    crate::repo_stamp::refresh_before_lock(session_id);
     {
         let lock_requested = std::time::Instant::now();
         let db = state.db.lock().unwrap();
@@ -11620,6 +11631,25 @@ pub fn start_learning_maintenance(core: Arc<BridgeCore>) {
 
 pub const HISTORY_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
+/// The longest a database may go without a history snapshot, however large.
+pub const HISTORY_SNAPSHOT_MAX_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// How old the newest history snapshot may get before the next export, for a
+/// database of `size_bytes`: [`HISTORY_SNAPSHOT_INTERVAL`] per GiB started,
+/// at most [`HISTORY_SNAPSHOT_MAX_INTERVAL`].
+///
+/// Each export is a full copy plus a full-file hash. At a flat 15 minutes an
+/// 8 GB database was copied and hashed four times an hour: 32 GB written an
+/// hour, and in a debug build one core busy about ten minutes of every
+/// fifteen. Scaling with size keeps that work roughly constant per hour.
+pub fn history_snapshot_interval(size_bytes: u64) -> Duration {
+    const GIB: u64 = 1 << 30;
+    let started_gib = u32::try_from(size_bytes.div_ceil(GIB).max(1)).unwrap_or(u32::MAX);
+    HISTORY_SNAPSHOT_INTERVAL
+        .saturating_mul(started_gib)
+        .min(HISTORY_SNAPSHOT_MAX_INTERVAL)
+}
+
 /// One history-snapshot export, skipped when the newest snapshot is younger
 /// than `max_age`. This is also the boot export: it runs on the maintenance
 /// thread rather than inside `BridgeCore::boot` because `VACUUM INTO` plus a
@@ -11663,14 +11693,13 @@ pub fn start_worktree_maintenance(core: Arc<BridgeCore>) {
 }
 
 pub fn start_history_snapshot_maintenance(core: Arc<BridgeCore>) {
-    thread::spawn(move || {
-        // The boot export, gated on staleness so a development restart loop
-        // still does not export once per restart; then one export per tick.
-        let _ = run_history_snapshot_pass(&core, HISTORY_SNAPSHOT_INTERVAL);
-        loop {
-            thread::sleep(HISTORY_SNAPSHOT_INTERVAL);
-            let _ = run_history_snapshot_pass(&core, Duration::ZERO);
-        }
+    thread::spawn(move || loop {
+        // Every pass, the boot one included, is gated on the newest snapshot's
+        // age, so a development restart loop does not export once per restart
+        // and a large database is not copied every tick.
+        let size = std::fs::metadata(&core.database_path).map(|meta| meta.len()).unwrap_or(0);
+        let _ = run_history_snapshot_pass(&core, history_snapshot_interval(size));
+        thread::sleep(HISTORY_SNAPSHOT_INTERVAL);
     });
 }
 
@@ -12622,7 +12651,7 @@ fn needs_a_launch_for_send(core: &Arc<BridgeCore>, session_id: &str) -> bool {
 /// Relaunch a session's adapter so a user-initiated send can be delivered,
 /// naming the send as the reason when the resume itself fails.
 fn resume_for_send(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
-    start_chat(core, session_id.to_owned()).map(|_| ()).map_err(|error| {
+    launch_chat(core, session_id).map_err(|error| {
         BridgeError::Invalid(format!(
             "The session had stopped and Bridge could not resume it for this message: {error}"
         ))

@@ -41,6 +41,7 @@ pub fn dispatch(
         }
         MethodName::InstallCodexUpdate => reply(api::install_codex_update()),
         MethodName::GetState => reply(api::get_state(core)),
+        MethodName::GetAppState => reply(api::get_app_state(core)),
 
         MethodName::GithubStatus => {
             let p: wire::GithubStatusParams = decode(method, params)?;
@@ -314,6 +315,10 @@ pub fn dispatch(
         MethodName::RefreshWorkspace => {
             let p: wire::RefreshWorkspaceParams = decode(method, params)?;
             reply(api::refresh_workspace(core, &p.workspace_id))
+        }
+        MethodName::RefreshWorkspaceStats => {
+            let p: wire::RefreshWorkspaceStatsParams = decode(method, params)?;
+            reply(api::refresh_workspace_stats(core, &p.workspace_id))
         }
         MethodName::ListWorkspaceBranches => {
             let p: wire::ListWorkspaceBranchesParams = decode(method, params)?;

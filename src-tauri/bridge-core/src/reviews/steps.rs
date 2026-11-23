@@ -74,8 +74,33 @@ impl StepError {
     }
 }
 
+/// Runs its cleanup once, when the last holder drops it: after success,
+/// error, cancellation or a panic unwinding through the step that held it.
+pub struct Guard(std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>);
+
+impl Guard {
+    pub fn new(cleanup: impl FnOnce() + Send + 'static) -> Self {
+        Self(std::sync::Mutex::new(Some(Box::new(cleanup))))
+    }
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        let cleanup = self.0.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+        if let Some(cleanup) = cleanup {
+            cleanup();
+        }
+    }
+}
+
+impl std::fmt::Debug for Guard {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Guard")
+    }
+}
+
 /// What preparing a job produced.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Prepared {
     /// The worktree the reviewer reads, at the PR head.
     pub worktree: Option<PathBuf>,
@@ -84,6 +109,46 @@ pub struct Prepared {
     /// The head actually checked out. When the PR moved since the job was
     /// queued, the job's `head_sha` is updated to this.
     pub head_sha: String,
+    /// Removes the checkout and the job folder when the step that holds it
+    /// ends, however it ends.
+    pub guard: Option<Arc<Guard>>,
+}
+
+/// What a pass spent, across every attempt of it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PassUsage {
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub cost_microusd: u64,
+    pub denied_requests: u32,
+}
+
+impl PassUsage {
+    pub fn plus(self, other: PassUsage) -> PassUsage {
+        PassUsage {
+            tokens_in: self.tokens_in + other.tokens_in,
+            tokens_out: self.tokens_out + other.tokens_out,
+            cost_microusd: self.cost_microusd + other.cost_microusd,
+            denied_requests: self.denied_requests + other.denied_requests,
+        }
+    }
+}
+
+/// Where a step records what each attempt spent, whether or not the attempt
+/// succeeds: a paid review that fails still cost what it cost, and a retried
+/// one cost every try.
+#[derive(Debug, Default)]
+pub struct UsageMeter(std::sync::Mutex<PassUsage>);
+
+impl UsageMeter {
+    pub fn add(&self, usage: PassUsage) {
+        let mut total = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *total = total.plus(usage);
+    }
+
+    pub fn total(&self) -> PassUsage {
+        *self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 /// One pass the runner asks for.
@@ -93,6 +158,8 @@ pub struct PassRequest<'a> {
     pub prepared: &'a Prepared,
     pub pass_id: &'a str,
     pub harness: &'a str,
+    /// Add each attempt's usage here, success or failure.
+    pub usage: &'a UsageMeter,
 }
 
 /// A finding as the reviewer produced it, validated, before it is stored.
@@ -148,8 +215,15 @@ pub trait ReviewSteps: Send + Sync {
     fn find_posted(&self, job: &JobRow) -> Result<Option<PostedReview>, StepError>;
     /// Post the job's review.
     fn post(&self, job: &JobRow, cancel: &CancelToken) -> Result<PostedReview, StepError>;
-    /// Remove whatever the job left on disk. Idempotent.
+    /// Remove whatever the job left on disk, every attempt of it. Idempotent.
     fn cleanup(&self, job_id: &str);
+    /// Whether one more job may prepare a checkout now. The runner leaves
+    /// queued jobs queued while this is false.
+    fn has_capacity(&self) -> bool {
+        true
+    }
+    /// Remove what no live job owns. Run at startup and periodically.
+    fn reap(&self) {}
 }
 
 /// The steps a build without a reviewer pipeline runs: every job fails at

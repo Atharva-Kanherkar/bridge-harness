@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { makeWorkflowGate, briefingOptions } from "../briefing.mjs";
 import { createAskRelay } from "../ask.mjs";
-import { buildOptions } from "../options.mjs";
-import { permissionDecision, query } from "../../../testing/fixtures/workflow-e2e/fake-sdk.mjs";
+import { buildOptions, WORKFLOW_ESCAPE_TOOLS } from "../options.mjs";
+import { settleWorkflowConnectors } from "../workflow-connectors.mjs";
+import { connectorStatus, permissionDecision, query } from "../../../testing/fixtures/workflow-e2e/fake-sdk.mjs";
 import { withChildPermissions, childPermissions } from "../subagents.mjs";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,6 +40,30 @@ test("the workflow gate allows a read, asks for a write, and denies everything e
   assert.equal(asked.length, 2, "denied calls never reach Bridge");
 });
 
+test("a granted connector with camelCase tool names asks for them instead of refusing the server", async () => {
+  const asked = [];
+  const atlassian = [
+    { key: "claude.ai Atlassian", wire: "claude_ai_Atlassian", read: true, write: "ask" },
+    { key: "claude.ai Asana", wire: "claude_ai_Asana", read: true, write: "never" },
+  ];
+  const gate = makeWorkflowGate({ servers: atlassian, ask: async (tool) => { asked.push(tool); return "allow"; } });
+  assert.equal((await gate("mcp__claude_ai_Atlassian__createJiraIssue", { summary: "x" })).behavior, "allow");
+  // Not a read: its words are not trusted, so it asks rather than running unasked.
+  assert.equal((await gate("mcp__claude_ai_Atlassian__getJiraIssue", {})).behavior, "allow");
+  assert.deepEqual(asked, ["mcp__claude_ai_Atlassian__createJiraIssue", "mcp__claude_ai_Atlassian__getJiraIssue"]);
+  // On a read-only grant the same name is refused as a write, by name.
+  const denied = await gate("mcp__claude_ai_Asana__getTask", {});
+  assert.equal(denied.behavior, "deny");
+  assert.match(denied.message, /is not granted to this workflow/);
+  assert.equal(asked.length, 2);
+});
+
+test("a briefing never reads a camelCase name as a scoped read", async () => {
+  const options = briefingOptions({ readScopeServers: ["claude.ai Atlassian"], allowedTools: [] }, {});
+  assert.equal((await options.canUseTool("mcp__claude_ai_Atlassian__getJiraIssue", {})).behavior, "deny");
+  assert.equal((await options.canUseTool("mcp__claude_ai_Atlassian__get_issue", {})).behavior, "allow");
+});
+
 test("a read verb beside a mutation word is a write and asks", async () => {
   const asked = [];
   const gate = makeWorkflowGate({ servers, ask: async (tool) => { asked.push(tool); return "deny"; } });
@@ -46,18 +71,104 @@ test("a read verb beside a mutation word is a write and asks", async () => {
   assert.deepEqual(asked, ["mcp__claude_ai_Slack__get_or_create_channel"]);
 });
 
-test("workflow options never pre-approve, stay strict, and reach only granted servers", () => {
+test("workflow options never pre-approve, load account connectors natively, and have no built-ins", () => {
   const options = briefingOptions(
     { workflow: { servers }, deniedBuiltins: ["Bash", "Write"], maxArgumentBytes: 4096 },
     { "claude.ai Slack": { type: "http" }, "claude.ai Linear": { type: "http" }, "claude.ai Gmail": { type: "http" } },
     async () => "deny",
   );
   assert.equal(options.allowedTools, undefined);
-  assert.equal(options.strictMcpConfig, true);
-  assert.deepEqual(Object.keys(options.mcpServers).sort(), ["claude.ai Linear", "claude.ai Slack"]);
+  // An explicit copy of a claude.ai connector has no sign-in: it reads
+  // needs-auth with no tools. Claude Code loads them itself instead.
+  assert.equal(options.strictMcpConfig, false);
+  assert.deepEqual(options.mcpServers, {});
+  // No built-in tool at all: several run without asking canUseTool.
+  assert.deepEqual(options.tools, []);
   assert.deepEqual(options.disallowedTools, ["Bash", "Write"]);
   assert.deepEqual(options.settingSources, []);
+  assert.deepEqual(options.plugins, []);
   assert.equal(typeof options.canUseTool, "function");
+});
+
+test("a workflow granting only servers it is handed keeps them explicit and strict", () => {
+  const local = [{ key: "qa-notes", wire: "qa-notes", read: true, write: "ask" }];
+  const options = briefingOptions(
+    { workflow: { servers: local } },
+    { "qa-notes": { type: "stdio", command: "node" }, "claude.ai Gmail": { type: "http" } },
+    async () => "deny",
+  );
+  assert.equal(options.strictMcpConfig, true);
+  assert.deepEqual(Object.keys(options.mcpServers), ["qa-notes"]);
+  assert.deepEqual(options.tools, []);
+});
+
+test("buildOptions denies every configured server a connector workflow was not granted", () => {
+  const configured = { "claude.ai Slack": { type: "http" }, "claude.ai Linear": { type: "http" }, "claude.ai Gmail": { type: "http" }, "claude.ai Notion": { type: "http" } };
+  const options = buildOptions({ briefing: { workflow: { servers }, deniedBuiltins: [] }, mcpServers: configured, effort: "ultracode" });
+  assert.deepEqual(options.settings.deniedMcpServers.map((entry) => entry.serverName).sort(), ["claude.ai Gmail", "claude.ai Notion"]);
+  assert.equal(options.settings.ultracode, true, "flag settings keep what they already carried");
+  assert.deepEqual(options.tools, []);
+  assert.equal(options.strictMcpConfig, false);
+
+  // An ordinary chat is unchanged: no tool list, no denied servers.
+  const chat = buildOptions({ writeMode: "Isolated", mcpServers: configured });
+  assert.equal(chat.tools, undefined);
+  assert.equal(chat.settings, undefined);
+  // A worktree workflow reaches no server, so it names none.
+  const worktree = buildOptions({ writeMode: "Isolated", briefing: { workflow: { servers: [], worktree: true } }, mcpServers: configured });
+  assert.equal(worktree.settings, undefined);
+});
+
+test("the connector wait holds until granted connectors settle and switches off the rest", async () => {
+  const calls = [];
+  let polls = 0;
+  const script = [
+    new Error("not ready"),
+    [],
+    [{ name: "claude.ai Slack", status: "pending" }, { name: "claude.ai Gmail", status: "connected" }],
+    [{ name: "claude.ai Slack", status: "connected" }, { name: "claude.ai Gmail", status: "connected" }, { name: "claude.ai Linear", status: "needs-auth" }],
+  ];
+  const run = {
+    mcpServerStatus: async () => { const next = script[Math.min(polls++, script.length - 1)]; if (next instanceof Error) throw next; return next; },
+    toggleMcpServer: async (name, enabled) => { calls.push([name, enabled]); },
+  };
+  let clock = 0;
+  const result = await settleWorkflowConnectors(run, {
+    granted: ["claude.ai Slack", "claude.ai Linear"],
+    waitFor: ["claude.ai Slack", "claude.ai Linear"],
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+  });
+  assert.equal(result.ready, true);
+  assert.equal(polls, 4, "a throwing call, an empty list and a pending server each keep it waiting");
+  assert.deepEqual(calls, [["claude.ai Gmail", false]], "an ungranted server is switched off once");
+  assert.deepEqual(result.switchedOff, ["claude.ai Gmail"]);
+});
+
+test("the connector wait gives up at its deadline and never rejects", async () => {
+  let clock = 0;
+  const run = { mcpServerStatus: async () => [{ name: "claude.ai Slack", status: "pending" }], toggleMcpServer: async () => { throw new Error("no"); } };
+  const result = await settleWorkflowConnectors(run, { granted: ["claude.ai Slack"], waitFor: ["claude.ai Slack"], timeoutMs: 1000, pollMs: 250, now: () => clock, sleep: async (ms) => { clock += ms; } });
+  assert.equal(result.ready, false);
+  assert.equal(clock, 1000);
+});
+
+test("through the fake SDK, an explicit account copy reaches nothing and the native route connects", () => {
+  const explicit = { strictMcpConfig: true, mcpServers: { "claude.ai Slack": { type: "http" } } };
+  assert.deepEqual(connectorStatus(explicit), [{ name: "claude.ai Slack", status: "needs-auth" }]);
+  const native = buildOptions({ briefing: { workflow: { servers }, deniedBuiltins: [] }, mcpServers: { "claude.ai Slack": {}, "claude.ai Linear": {}, "claude.ai Gmail": {} } });
+  assert.deepEqual(connectorStatus(native).map((entry) => `${entry.name}=${entry.status}`).sort(), ["claude.ai Linear=connected", "claude.ai Slack=connected"]);
+});
+
+test("a worktree workflow keeps coding tools and loses every escape built-in", async () => {
+  const options = buildOptions({ writeMode: "Isolated", briefing: { workflow: { servers: [], worktree: true } } });
+  for (const tool of ["Bash", "Read", "Write", "Edit", "Skill"]) assert.ok(options.tools.includes(tool), tool);
+  for (const tool of WORKFLOW_ESCAPE_TOOLS) assert.ok(!options.tools.includes(tool), tool);
+  const hooks = options.hooks.PreToolUse.flatMap((entry) => entry.hooks);
+  for (const tool_name of ["SendMessage", "RemoteTrigger", "PushNotification", "Workflow", "CronCreate", "EnterWorktree", "ListAgents"]) {
+    const results = await Promise.all(hooks.map((hook) => hook({ tool_name })));
+    assert.ok(results.some((result) => result.hookSpecificOutput?.permissionDecision === "deny"), tool_name);
+  }
 });
 
 test("worktree workflows retain user Bash allows and deny connectors and delegation before settings allows", async () => {
@@ -106,8 +217,9 @@ test("worktree workflows retain user Bash allows and deny connectors and delegat
     }
 
     // This negative control executes the connector without the worktree guards:
-    // user settings bypass the root canUseTool denial, as they do in the SDK.
-    const unguarded = { ...options, hooks: {}, disallowedTools: [] };
+    // with the account's connectors loaded (no strict config), user settings
+    // bypass the root canUseTool denial, as they do in the SDK.
+    const unguarded = { ...options, hooks: {}, disallowedTools: [], strictMcpConfig: false };
     assert.equal((await permissionDecision(unguarded, tool)).behavior, "allow");
     const projectOnly = { ...unguarded, settingSources: ["project"] };
     assert.equal((await permissionDecision(projectOnly, tool)).behavior, "allow");

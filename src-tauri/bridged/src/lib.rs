@@ -308,6 +308,9 @@ impl Daemon {
     pub fn shutdown(&self, drain_timeout: Duration) {
         self.state.ready.store(false, Ordering::SeqCst);
         self.state.shutting_down.store(true, Ordering::SeqCst);
+        // The next owner of the directory may start in this same process;
+        // this core's maintenance loops must not act on its rows after that.
+        self.core.retire();
         bridge_core::provider_usage::shutdown();
         let deadline = Instant::now() + drain_timeout;
         while self.state.connections.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {

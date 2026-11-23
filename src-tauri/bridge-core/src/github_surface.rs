@@ -1039,6 +1039,19 @@ impl GithubSurface {
     ) -> Result<PullRequestDetail, GithubSurfaceError> {
         self.require_binary()?;
         let repository = self.resolve_repository(workspace)?;
+        self.pr_detail_in(workspace, &repository, number)
+    }
+
+    /// [`Self::pr_detail`] of a named repository rather than the one the
+    /// workspace resolves to now. A review job reads the PR it was started for
+    /// even after the checkout switches to a fork.
+    pub fn pr_detail_in(
+        &self,
+        workspace: &Path,
+        repository: &GithubRepository,
+        number: u64,
+    ) -> Result<PullRequestDetail, GithubSurfaceError> {
+        self.require_binary()?;
         let key = CacheKey {
             repository: repository.selector(),
             resource: Resource::PullRequest(number),
@@ -1442,6 +1455,18 @@ impl GithubSurface {
     ) -> Result<Vec<ReviewThread>, GithubSurfaceError> {
         self.require_binary()?;
         let repository = self.resolve_repository(workspace)?;
+        self.pr_review_threads_in(workspace, &repository, number)
+    }
+
+    /// [`Self::pr_review_threads`] of a named repository. See
+    /// [`Self::pr_detail_in`].
+    pub fn pr_review_threads_in(
+        &self,
+        workspace: &Path,
+        repository: &GithubRepository,
+        number: u64,
+    ) -> Result<Vec<ReviewThread>, GithubSurfaceError> {
+        self.require_binary()?;
         let key = CacheKey {
             repository: repository.selector(),
             resource: Resource::ReviewThreads(number),
@@ -3316,7 +3341,7 @@ fn parse_repository_selector(value: &str) -> Option<GithubRepository> {
     })
 }
 
-fn parse_remote_url(value: &str) -> Option<GithubRepository> {
+pub(crate) fn parse_remote_url(value: &str) -> Option<GithubRepository> {
     let value = value.trim().trim_end_matches('/').trim_end_matches(".git");
     if let Some((_, rest)) = value.split_once("://") {
         let (authority, path) = rest.split_once('/')?;

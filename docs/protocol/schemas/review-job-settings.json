@@ -47,6 +47,13 @@
       "minimum": 0.0,
       "type": "integer"
     },
+    "maxReviewWorktrees": {
+      "default": 8,
+      "description": "Review checkouts that may exist at once, 1 to 32. A job waits in the queue while they are all in use.",
+      "format": "uint8",
+      "minimum": 0.0,
+      "type": "integer"
+    },
     "postMode": {
       "allOf": [
         {

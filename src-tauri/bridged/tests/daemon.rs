@@ -1152,7 +1152,10 @@ fn app_preferences_merge_announce_and_survive_daemon_restart() {
     let (merged, more) = client.call(3, "config/save_app_preferences", Some(json!({"values": {"showThinking": false}})));
     heard.extend(more);
     assert_eq!(merged["result"]["values"], json!({"theme": "light", "showThinking": false}), "a save merges");
-    let (bad, _) = client.call(4, "config/save_app_preferences", Some(json!({"values": {"theme": "purple"}})));
+    // Keep what arrived during this call too: both saves' hints can land
+    // while it waits for its reply, and each hint is sent only once.
+    let (bad, more) = client.call(4, "config/save_app_preferences", Some(json!({"values": {"theme": "purple"}})));
+    heard.extend(more);
     assert_eq!(bad["error"]["code"], -32602);
     // The hint is fanned out after the reply; poll reads for it until a
     // deadline. A fixed count of reads (about a second) raced the fan-out on

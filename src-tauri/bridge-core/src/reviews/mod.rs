@@ -6,7 +6,10 @@
 //! the durable guarantees, `runner` for slots, leases, retries and fallback,
 //! and `steps` for the work a job does.
 
+pub mod contract;
+pub mod prepare;
 pub mod runner;
+pub mod session;
 pub mod settings;
 pub mod state;
 pub mod steps;

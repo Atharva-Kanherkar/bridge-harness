@@ -18,6 +18,8 @@ const TOOLS: Record<string, { label: string; harness?: string }> = {
   opencode: { label: "OpenCode", harness: "opencode" },
   conductor: { label: "Conductor" },
   t3code: { label: "T3 Code" },
+  orca: { label: "Orca" },
+  superset: { label: "Superset" },
 };
 
 export function ImportTransfer({ tool, done = false }: { tool: string; done?: boolean }) {

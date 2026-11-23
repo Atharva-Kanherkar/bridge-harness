@@ -124,15 +124,22 @@ describe("harnessRefusal", () => {
   const options: WorkflowOptions = {
     harnesses: [
       { id: "claude", label: "Claude", available: true, connectorsAllowed: true, connectorsReason: null, worktreeAllowed: true, defaultModel: "haiku", models: [] },
-      { id: "codex", label: "Codex", available: true, connectorsAllowed: false, connectorsReason: "no per-tool authority", worktreeAllowed: true, defaultModel: null, models: [] },
+      { id: "codex", label: "Codex", available: true, connectorsAllowed: false, connectorsReason: "no per-tool authority", worktreeAllowed: false, defaultModel: null, models: [] },
     ],
     servers: [],
   };
 
   it("disables a harness that cannot enforce tool identities, with the gate's reason", () => {
     expect(harnessRefusal(options, "codex", { files: "none", grants: [] })).toBe("no per-tool authority");
-    expect(harnessRefusal(options, "codex", { files: "worktree", grants: [] })).toBeNull();
     expect(harnessRefusal(options, "claude", { files: "none", grants: [{ server: "s", read: true, write: "never" }] })).toBeNull();
+    expect(harnessRefusal(options, "claude", { files: "worktree", grants: [] })).toBeNull();
+  });
+
+  it("disables a worktree job on a harness core refuses, with the gate's reason rather than a guess", () => {
+    // Core refuses a Codex worktree workflow on save, so it is not offered.
+    expect(harnessRefusal(options, "codex", { files: "worktree", grants: [] })).toBe("no per-tool authority");
+    const unexplained = { ...options, harnesses: [{ ...options.harnesses[1], connectorsReason: null }] };
+    expect(harnessRefusal(unexplained, "codex", { files: "worktree", grants: [] })).toBe("cannot run worktree jobs");
   });
 });
 
@@ -160,6 +167,27 @@ describe("WorkflowRunView", () => {
     await settle();
     expect(fork).toHaveBeenCalledWith("session-1", "entry-2", "Release notes (continued)", null, null, "shared");
     expect(onContinue).toHaveBeenCalledWith({ sessionId: "chat-2" });
+  });
+
+  it("shows the pending card of a long run whose approval comes after the first page of events", async () => {
+    // A long run: hundreds of calls, then the write it is waiting on.
+    const slack = "mcp__claude_ai_Slack__slack_send_message";
+    const history = Array.from({ length: 1499 }, (_, index) => ({
+      sequence: index + 1, kind: asWireKind(index % 2 ? "tool.completed" : "tool.started"), itemId: `t${Math.floor(index / 2)}`,
+      data: { name: "mcp__claude_ai_Linear__list_issues" }, status: "completed", role: null, text: null, title: "mcp__claude_ai_Linear__list_issues", providerMeta: {},
+    })) as unknown as AgentEvent[];
+    history.push({ sequence: 1500, kind: asWireKind("permission.requested"), itemId: "write", data: { tool_name: slack }, status: "pending", role: null, text: null, title: slack, providerMeta: {} } as unknown as AgentEvent);
+    // The server's paging: events after the cursor, at most `limit` of them.
+    const replay = vi.spyOn(bridgeApi, "replaySessionEvents").mockImplementation(async (_session, after = 0, limit = 500) =>
+      history.filter(event => event.sequence > after).slice(0, limit));
+    const resolve = vi.spyOn(bridgeApi, "resolveApproval").mockResolvedValue({} as never);
+    await act(async () => root.render(<WorkflowRunView workflow={workflow} run={{ ...run, status: "waiting_approval", summary: null }} onBack={() => {}} onContinue={() => {}} />));
+    await settle();
+    expect(replay.mock.calls.length).toBeGreaterThan(1);
+    expect(container.textContent).toContain("Slack · slack_send_message");
+    await act(async () => button("Allow once")!.click());
+    await settle();
+    expect(resolve).toHaveBeenCalledWith("session-1", 1500, "accept");
   });
 
   it("offers the three answers only on a card Bridge has not decided", () => {

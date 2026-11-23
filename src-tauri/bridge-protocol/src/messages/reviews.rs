@@ -361,11 +361,17 @@ pub struct ReviewJobSettings {
     pub max_concurrent_reviews: u8,
     /// Draft first (the default) or post as soon as findings are drafted.
     pub post_mode: ReviewPostMode,
+    /// Review checkouts that may exist at once, 1 to 32. A job waits in the
+    /// queue while they are all in use.
+    pub max_review_worktrees: u8,
 }
 
 /// The default and the bounds of `ReviewJobSettings::max_concurrent_reviews`.
 pub const DEFAULT_MAX_CONCURRENT_REVIEWS: u8 = 2;
 pub const MAX_CONCURRENT_REVIEWS_RANGE: std::ops::RangeInclusive<u8> = 1..=4;
+/// The default and the bounds of `ReviewJobSettings::max_review_worktrees`.
+pub const DEFAULT_MAX_REVIEW_WORKTREES: u8 = 8;
+pub const MAX_REVIEW_WORKTREES_RANGE: std::ops::RangeInclusive<u8> = 1..=32;
 
 impl Default for ReviewJobSettings {
     fn default() -> Self {
@@ -374,6 +380,7 @@ impl Default for ReviewJobSettings {
             fallback_harnesses: Vec::new(),
             max_concurrent_reviews: DEFAULT_MAX_CONCURRENT_REVIEWS,
             post_mode: ReviewPostMode::Draft,
+            max_review_worktrees: DEFAULT_MAX_REVIEW_WORKTREES,
         }
     }
 }

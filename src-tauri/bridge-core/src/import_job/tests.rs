@@ -51,6 +51,15 @@ fn run_job(core: &Arc<BridgeCore>, roots: &[PathBuf]) -> wire::ImportJob {
     status(core).unwrap().unwrap()
 }
 
+/// Whether a `StateChanged` was published since `events` subscribed.
+fn changed(events: &mut crate::events::EventReceiver) -> bool {
+    let mut seen = false;
+    while let Ok(event) = events.try_next() {
+        seen |= matches!(event, CoreEvent::StateChanged);
+    }
+    seen
+}
+
 fn imported_sessions(core: &BridgeCore) -> i64 {
     let db = core.db.lock().unwrap();
     db.query_row("SELECT COUNT(*) FROM sessions WHERE kind = 'imported'", [], |row| row.get(0))
@@ -1305,6 +1314,536 @@ mod t3code {
     }
 }
 
+mod orca {
+    use super::*;
+    use crate::import_worktrees::tests::{repo, worktree};
+    use crate::orca_import::fixture::{message, worktree_id, ChatRow, Fixture, Handle};
+
+    const REPO: &str = "6e1ad727-cfd9-4417-b1dc-bdcb536e895f";
+    /// The Claude Code session a terminal worker ran, captured by Orca.
+    const WORKER: &str = "33333333-3333-4333-8333-333333333333";
+    /// A Claude Code chat Orca launched with its own account folder.
+    const ACCOUNT: &str = "66666666-6666-4666-8666-666666666666";
+
+    struct Home {
+        orca: PathBuf,
+        claude: Vec<PathBuf>,
+        opencode: Vec<PathBuf>,
+        login: PathBuf,
+        contrib: PathBuf,
+        main: PathBuf,
+        fixture: Fixture,
+        _opencode: crate::opencode_import::fixture::Fixture,
+    }
+
+    /// A home where Orca ran, for one repository with two worktrees:
+    /// - an OpenCode chat whose session is in OpenCode's store, renamed in Orca;
+    /// - a coordinator OpenCode chat whose session is gone (Orca's copy), that
+    ///   led a run with a Claude Code terminal worker whose transcript is there;
+    /// - a Claude Code chat that never started, one with Pi, and one on
+    ///   another machine;
+    /// - a Claude Code chat launched with its own account folder, whose
+    ///   transcript is only there.
+    fn home(root: &Path) -> Home {
+        let home = root.canonicalize().unwrap();
+        let main = repo(&home.join("code"), "shop");
+        let login = worktree(&main, &home.join("orca/workspaces/shop/feat-login"), "feat-login");
+        let contrib = worktree(&main, &home.join("orca/workspaces/shop/contrib"), "contrib");
+        let store = crate::opencode_import::fixture::Fixture::new(&home.join(".local/share"));
+        // Not the test's temp folder: OpenCode's import leaves chats run there out as background runs.
+        store.session("ses_a", None, "/work/shop", Some("Repo overview from README.md"), 1_000);
+        store.row("ses_a", 1, "user", &crate::opencode_import::fixture::said("what is this repo?"));
+        store.row("ses_a", 2, "assistant", &crate::opencode_import::fixture::replied("A shop."));
+        write(&home.join(format!(".claude/projects/-shop-contrib/{WORKER}.jsonl")), &session(WORKER, &contrib.to_string_lossy(), "write CONTRIBUTING.md"));
+        let account = home.join("orca-accounts/work/claude");
+        write(&account.join(format!("projects/-shop-contrib/{ACCOUNT}.jsonl")), &session(ACCOUNT, &contrib.to_string_lossy(), "fix the flaky test"));
+        let orca = home.join("Library/Application Support/orca");
+        let fixture = Fixture::at(&orca);
+        fixture.repos("local-default", &[(REPO, &main)]);
+        fixture.worktree_meta(
+            "local-default",
+            &[(worktree_id(REPO, &main), "", false), (worktree_id(REPO, &login), "Login page", false), (worktree_id(REPO, &contrib), "contrib", false)],
+        );
+        fixture.chat(&ChatRow {
+            id: "chat-a",
+            agent: "opencode",
+            workspace: worktree_id(REPO, &login),
+            title: Some("What is shop?"),
+            renamed: true,
+            handles: vec![Handle::Acp("opencode", "ses_a")],
+            ..ChatRow::default()
+        });
+        fixture.chat(&ChatRow {
+            id: "chat-lead",
+            agent: "opencode",
+            workspace: worktree_id(REPO, &main),
+            title: Some("Orca LICENSE Orchestration"),
+            handles: vec![Handle::Acp("opencode", "ses_gone")],
+            ..ChatRow::default()
+        });
+        fixture.items(
+            "chat-lead",
+            "e1",
+            &[message("u1", "user", "Add a LICENSE file", 1_795_419_348_138), message("a1", "assistant", "Started a worker.", 1_795_419_350_000)],
+        );
+        fixture.chat(&ChatRow { id: "chat-hi", agent: "claude", workspace: worktree_id(REPO, &contrib), title: Some("Say hi"), ..ChatRow::default() });
+        fixture.items("chat-hi", "e1", &[message("u1", "user", "Say hi", 1_795_419_429_819)]);
+        fixture.chat(&ChatRow { id: "chat-pi", agent: "pi", workspace: worktree_id(REPO, &main), title: Some("Pi"), ..ChatRow::default() });
+        fixture.chat(&ChatRow { id: "chat-ssh", agent: "claude", host: "ssh:box", workspace: worktree_id(REPO, &main), title: Some("Remote"), ..ChatRow::default() });
+        fixture.chat(&ChatRow {
+            id: "chat-account",
+            agent: "claude",
+            workspace: worktree_id(REPO, &contrib),
+            title: Some("Fix the flaky test"),
+            handles: vec![Handle::Claude(ACCOUNT)],
+            account_home: Some(("CLAUDE_CONFIG_DIR", &account)),
+            ..ChatRow::default()
+        });
+        fixture.run("run_1", Some("chat-lead"));
+        fixture.terminal_worker("run_1", "ctx_1", "claude", Some(WORKER));
+        fixture.terminal_worker("run_1", "ctx_2", "opencode", None);
+        Home {
+            claude: claude_import::config_roots(&home, None, &[]),
+            opencode: vec![store.home.clone()],
+            orca,
+            login,
+            contrib,
+            main,
+            fixture,
+            _opencode: store,
+        }
+    }
+
+    fn run_orca(core: &Arc<BridgeCore>, home: &Home) -> wire::ImportJob {
+        let mut job = new_job();
+        job.tool = orca_import::PROVIDER.into();
+        save(core, &job, None).unwrap();
+        core.import_job_running.store(true, Ordering::SeqCst);
+        let (claude, opencode) = (home.claude.clone(), home.opencode.clone());
+        run_with(core, job, std::slice::from_ref(&home.orca), None, &move |source| match source {
+            Source::Claude => claude.clone(),
+            Source::OpenCode => opencode.clone(),
+            _ => Vec::new(),
+        });
+        status(core).unwrap().unwrap()
+    }
+
+    /// Every imported chat: title, harness, workspace path, native key, parent's title.
+    fn chats(core: &BridgeCore) -> Vec<(String, String, Option<String>, Option<String>, Option<String>)> {
+        let db = core.db.lock().unwrap();
+        let mut statement = db
+            .prepare(
+                "SELECT s.title, s.harness, w.path,
+                    (SELECT native_key FROM import_native_sessions n WHERE n.session_id=s.id),
+                    (SELECT p.title FROM sessions p WHERE p.id=s.parent_session_id)
+                 FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.kind='imported' ORDER BY s.title",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get::<_, Option<String>>(0)?.unwrap_or_default(), row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    #[test]
+    fn chats_come_over_natively_or_as_orcas_copy_with_workers_under_their_lead() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+
+        let job = run_orca(&core, &home);
+
+        assert_eq!(job.status, "done", "{job:?}");
+        // Three read natively and two of Orca's copies: five, not six.
+        assert_eq!((job.total, job.imported, job.failed, job.workspaces), (5, 5, 0, 2), "{job:?}");
+        let path = |path: &Path| Some(path.to_string_lossy().into_owned());
+        let lead = "Orca LICENSE Orchestration".to_owned();
+        assert_eq!(
+            chats(&core),
+            vec![
+                // Read from the account folder Orca launched it with, given Orca's title.
+                ("Fix the flaky test".into(), "claude".into(), path(&home.contrib), Some(format!("claude:{ACCOUNT}")), None),
+                // Orca's copy, in the main checkout: filed under its project.
+                (lead.clone(), "opencode".into(), path(&home.main), Some("opencode:ses_gone".into()), None),
+                ("Say hi".into(), "claude".into(), path(&home.contrib), None, None),
+                // Read by OpenCode's own reader, with Orca's title.
+                ("What is shop?".into(), "opencode".into(), None, Some("opencode:ses_a".into()), None),
+                // The terminal worker's own transcript, under the chat that led it, in its worktree.
+                ("write CONTRIBUTING.md".into(), "claude".into(), path(&home.contrib), Some(format!("claude:{WORKER}")), Some(lead)),
+            ]
+        );
+        let texts: Vec<(&str, u64)> = job.not_carried.iter().map(|item| (item.text.as_str(), item.count)).collect();
+        assert!(texts.contains(&("chats with pi, which Bridge does not run", 1)), "{texts:?}");
+        assert!(texts.contains(&("chats on another machine (SSH or WSL)", 1)), "{texts:?}");
+        assert!(texts.iter().any(|(text, count)| text.starts_with("workers' place") && *count == 1), "{texts:?}");
+        assert!(home.login.join("README.md").is_file() && home.contrib.join("README.md").is_file(), "Orca's folders are untouched");
+
+        let mut events = core.events.subscribe();
+        let again = run_orca(&core, &home);
+        assert_eq!((again.imported, again.already_in_bridge, again.workspaces, again.failed), (0, 5, 0, 0), "{again:?}");
+        assert_eq!(chats(&core).len(), 5);
+        assert!(!changed(&mut events), "a run that changed nothing tells no one it did");
+    }
+
+    #[test]
+    fn importing_opencode_or_claude_code_after_orca_brings_nothing_twice() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        let job = run_orca(&core, &home);
+        assert_eq!(job.imported, 5, "{job:?}");
+        let opencode = super::opencode::run_opencode(&core, &home.opencode);
+        assert_eq!((opencode.imported, opencode.already_in_bridge), (0, 1), "{opencode:?}");
+        let claude = run_job(&core, &home.claude);
+        assert_eq!((claude.imported, claude.already_in_bridge), (0, 1), "{claude:?}");
+        assert_eq!(chats(&core).len(), 5);
+    }
+
+    #[test]
+    fn orca_after_its_agents_links_the_worker_and_titles_the_chat() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        run_job(&core, &home.claude);
+        super::opencode::run_opencode(&core, &home.opencode);
+        let job = run_orca(&core, &home);
+        assert_eq!((job.imported, job.already_in_bridge), (3, 2), "{job:?}");
+        let chats = chats(&core);
+        assert!(chats.iter().any(|chat| chat.0 == "What is shop?"), "{chats:?}");
+        let worker = chats.iter().find(|chat| chat.3.as_deref() == Some(&format!("claude:{WORKER}"))).unwrap();
+        assert_eq!(worker.4.as_deref(), Some("Orca LICENSE Orchestration"), "{chats:?}");
+        let depth: i64 = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT s.depth FROM sessions s JOIN import_native_sessions n ON n.session_id=s.id WHERE n.native_key=?1",
+                params![format!("claude:{WORKER}")],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(depth, 1);
+    }
+
+    #[test]
+    fn a_run_that_only_retitles_says_the_state_changed() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        run_orca(&core, &home);
+        home.fixture.chat(&ChatRow {
+            id: "chat-a",
+            agent: "opencode",
+            workspace: worktree_id(REPO, &home.login),
+            title: Some("What is this shop?"),
+            renamed: true,
+            handles: vec![Handle::Acp("opencode", "ses_a")],
+            ..ChatRow::default()
+        });
+        let mut events = core.events.subscribe();
+        let job = run_orca(&core, &home);
+        assert_eq!(job.imported, 0, "{job:?}");
+        assert!(changed(&mut events), "Orca's new title changed a chat");
+    }
+
+    #[test]
+    fn an_archived_worktree_is_left_out_and_its_chats_come_over_archived() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        home.fixture.worktree_meta(
+            "local-default",
+            &[(worktree_id(REPO, &home.login), "Login page", false), (worktree_id(REPO, &home.contrib), "contrib", true)],
+        );
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        let job = run_orca(&core, &home);
+        assert_eq!(job.workspaces, 1, "{job:?}");
+        let texts: Vec<(&str, u64)> = job.not_carried.iter().map(|item| (item.text.as_str(), item.count)).collect();
+        assert!(texts.contains(&("worktrees archived in Orca", 1)), "{texts:?}");
+        let archived: i64 = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM sessions WHERE kind='imported' AND title='Say hi' AND archived_at IS NOT NULL", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(archived, 1);
+    }
+
+    #[test]
+    fn a_newer_chat_database_fails_the_job_and_imports_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        home.fixture.chats.execute_batch("PRAGMA user_version = 9").unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        let job = run_orca(&core, &home);
+        assert_eq!(job.status, "failed", "{job:?}");
+        assert!(job.errors.iter().any(|error| error.contains("version 9")), "{:?}", job.errors);
+        assert_eq!(chats(&core).len(), 0);
+    }
+
+    #[test]
+    fn orca_is_a_source_with_its_label_and_no_listing_of_its_own() {
+        assert_eq!(Source::of("orca"), Some(Source::Orca));
+        assert_eq!(Source::Orca.label(), "Orca");
+        assert_eq!(native_id(Source::Orca, &super::artifact("/d/agent-session-domain.db#c", 1)), None);
+        assert_eq!(harness_of(Source::Orca), None);
+        let work = Source::Orca.work(&[PathBuf::from("/o")]).unwrap();
+        assert!(work.artifacts.is_empty());
+        let artifact = super::artifact("/d/agent-session-domain.db#c", 1);
+        assert_eq!(Source::Orca.key(&artifact), "/d/agent-session-domain.db#c");
+    }
+}
+
+mod superset {
+    use super::*;
+    use crate::import_worktrees::tests::{repo, worktree};
+    use crate::superset_import::fixture::{agent, user, ChatRow, Fixture, WorkspaceRow, CANARY};
+
+    /// A Claude Code session a terminal ran, whose transcript is there.
+    const KEPT: &str = "33333333-3333-4333-8333-333333333333";
+    /// One whose transcript Claude Code deleted.
+    const GONE: &str = "44444444-4444-4444-8444-444444444444";
+    /// A Claude Code terminal session whose transcript is in another Claude
+    /// Code folder, which only its `transcript_path` names.
+    const ELSEWHERE: &str = "77777777-7777-4777-8777-777777777777";
+
+    struct Home {
+        paradev: PathBuf,
+        claude: Vec<PathBuf>,
+        opencode: Vec<PathBuf>,
+        login: PathBuf,
+        fixture: Fixture,
+        _opencode: crate::opencode_import::fixture::Fixture,
+    }
+
+    /// A home where Superset ran, for one repository:
+    /// - a worktree workspace with an OpenCode chat whose session OpenCode
+    ///   still has, a Claude Code chat whose session is gone (Superset's
+    ///   copy), and a Claude Code terminal session whose transcript is there;
+    /// - an archived workspace with a chat;
+    /// - a terminal session whose transcript is gone, one that never
+    ///   reported its session, and one with an agent Bridge does not run;
+    /// - a chat with Pi, and a chat and a terminal in a deleted project;
+    /// - an agent configuration with an API key.
+    fn home(root: &Path) -> Home {
+        let home = root.canonicalize().unwrap();
+        let main = repo(&home.join("code"), "shop");
+        let paradev = home.join(".paradev");
+        let login = worktree(&main, &paradev.join("worktrees/shop/feat-login"), "feat-login");
+        let store = crate::opencode_import::fixture::Fixture::new(&home.join(".local/share"));
+        // Not the test's temp folder: OpenCode's import leaves chats run there out as background runs.
+        store.session("ses_a", None, "/work/shop", Some("Repo overview from README.md"), 1_000);
+        store.row("ses_a", 1, "user", &crate::opencode_import::fixture::said("what is this repo?"));
+        store.row("ses_a", 2, "assistant", &crate::opencode_import::fixture::replied("A shop."));
+        write(&home.join(format!(".claude/projects/-shop-login/{KEPT}.jsonl")), &session(KEPT, &login.to_string_lossy(), "write CONTRIBUTING.md"));
+        let elsewhere = home.join("claude-work").join(format!("projects/-shop-login/{ELSEWHERE}.jsonl"));
+        write(&elsewhere, &session(ELSEWHERE, &login.to_string_lossy(), "tidy the imports"));
+        let fixture = Fixture::newest(&paradev);
+        fixture.project("p1", &main, "shop");
+        fixture.workspace(&WorkspaceRow { id: "w-login", project: Some("p1"), path: &login, branch: "feat-login", name: "Login page", kind: "worktree", archived: false });
+        fixture.workspace(&WorkspaceRow { id: "w-old", project: Some("p1"), path: &paradev.join("worktrees/shop/old-spike"), branch: "old-spike", name: "Old spike", kind: "worktree", archived: true });
+        fixture.workspace(&WorkspaceRow { id: "w-local", project: Some("p1"), path: &main, branch: "main", name: "shop", kind: "local", archived: false });
+        fixture.chat(&ChatRow { id: "c-open", workspace: "w-login", native: Some("ses_a"), ..ChatRow::default() });
+        fixture.chat(&ChatRow { id: "c-claude", workspace: "w-login", harness: "claude-acp", native: Some(GONE), ..ChatRow::default() });
+        fixture.events("c-claude", "e1", &[user("u1", "Say hi"), agent("a1", "Hi! What are we working on?")]);
+        fixture.chat(&ChatRow { id: "c-old", workspace: "w-old", harness: "claude-acp", ..ChatRow::default() });
+        fixture.events("c-old", "e1", &[user("u1", "An old spike"), agent("a1", "Archived since.")]);
+        fixture.binding("t-kept", "w-login", "claude", Some(KEPT), None);
+        fixture.binding("t-gone", "w-login", "claude", Some("55555555-5555-4555-8555-555555555555"), None);
+        fixture.binding("t-silent", "w-login", "opencode", None, None);
+        fixture.binding("t-amp", "w-login", "amp", Some("amp-1"), None);
+        fixture.binding("t-elsewhere", "w-login", "claude", Some(ELSEWHERE), Some(&elsewhere));
+        fixture.chat(&ChatRow { id: "c-pi", workspace: "w-login", harness: "pi-acp", native: Some("pi-1"), ..ChatRow::default() });
+        fixture.project("p-gone", &home.join("code/gone"), "gone");
+        fixture.delete_project("p-gone");
+        fixture.workspace(&WorkspaceRow { id: "w-gone", project: Some("p-gone"), path: &paradev.join("worktrees/gone/x"), branch: "x", name: "Gone", kind: "worktree", archived: false });
+        fixture.chat(&ChatRow { id: "c-gone", workspace: "w-gone", harness: "claude-acp", ..ChatRow::default() });
+        fixture.events("c-gone", "e1", &[user("u1", "never comes over")]);
+        fixture.binding("t-gone-project", "w-gone", "claude", Some("88888888-8888-4888-8888-888888888888"), None);
+        fixture.tag("w-login", "auth");
+        fixture.config("cfg-key", Some("claude"), "Claude (work key)", &json!({ "ANTHROPIC_API_KEY": CANARY }));
+        Home {
+            claude: claude_import::config_roots(&home, None, &[]),
+            opencode: vec![store.home.clone()],
+            paradev,
+            login,
+            fixture,
+            _opencode: store,
+        }
+    }
+
+    fn run_superset(core: &Arc<BridgeCore>, home: &Home) -> wire::ImportJob {
+        let mut job = new_job();
+        job.tool = superset_import::PROVIDER.into();
+        save(core, &job, None).unwrap();
+        core.import_job_running.store(true, Ordering::SeqCst);
+        let (claude, opencode) = (home.claude.clone(), home.opencode.clone());
+        run_with(core, job, std::slice::from_ref(&home.paradev), None, &move |source| match source {
+            Source::Claude => claude.clone(),
+            Source::OpenCode => opencode.clone(),
+            _ => Vec::new(),
+        });
+        status(core).unwrap().unwrap()
+    }
+
+    /// Every imported chat: title, harness, archived, workspace path, native key.
+    fn chats(core: &BridgeCore) -> Vec<(String, String, bool, Option<String>, Option<String>)> {
+        let db = core.db.lock().unwrap();
+        let mut statement = db
+            .prepare(
+                "SELECT s.title, s.harness, s.archived_at IS NOT NULL, w.path,
+                    (SELECT native_key FROM import_native_sessions n WHERE n.session_id=s.id)
+                 FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.kind='imported' ORDER BY s.title",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get::<_, Option<String>>(0)?.unwrap_or_default(), row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    fn setup_candidates(core: &BridgeCore) -> Vec<(String, String, String)> {
+        let db = core.db.lock().unwrap();
+        let mut statement = db.prepare("SELECT candidate_kind, title, activation_state FROM import_setup_candidates ORDER BY title").unwrap();
+        statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap().map(Result::unwrap).collect()
+    }
+
+    #[test]
+    fn chats_and_terminal_sessions_come_over_natively_or_as_supersets_copy_under_the_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+
+        let job = run_superset(&core, &home);
+
+        assert_eq!(job.status, "done", "{job:?}");
+        // Three read natively, two of Superset's copies and the configuration.
+        assert_eq!((job.total, job.imported, job.failed, job.workspaces), (6, 6, 0, 1), "{job:?}");
+        let tree = Some(home.login.to_string_lossy().into_owned());
+        assert_eq!(
+            chats(&core),
+            vec![
+                ("An old spike".into(), "claude".into(), true, None, None),
+                ("Repo overview from README.md".into(), "opencode".into(), false, None, Some("opencode:ses_a".into())),
+                ("Say hi".into(), "claude".into(), false, tree.clone(), Some(format!("claude:{GONE}"))),
+                // Read from the folder its transcript path names.
+                ("tidy the imports".into(), "claude".into(), false, tree.clone(), Some(format!("claude:{ELSEWHERE}"))),
+                ("write CONTRIBUTING.md".into(), "claude".into(), false, tree, Some(format!("claude:{KEPT}"))),
+            ]
+        );
+        assert_eq!(setup_candidates(&core), vec![("provider_instance".into(), "Claude (work key)".into(), "disabled".into())]);
+        let payload: String = core.db.lock().unwrap().query_row("SELECT payload FROM import_setup_candidates", [], |row| row.get(0)).unwrap();
+        assert!(payload.contains("ANTHROPIC_API_KEY") && !payload.contains(CANARY), "{payload}");
+        let texts: Vec<(&str, u64)> = job.not_carried.iter().map(|item| (item.text.as_str(), item.count)).collect();
+        for want in [
+            ("workspaces archived in Superset", 1),
+            ("terminal sessions with amp, which Bridge does not run", 1),
+            ("terminal agents that never reported their session", 1),
+            ("terminal sessions whose transcript is gone (Superset keeps no copy of them)", 1),
+            ("workspace tags: Bridge has no tags yet", 1),
+            ("chats with pi-acp, which Bridge does not run", 1),
+            ("chats in projects deleted in Superset", 1),
+            ("terminal sessions in projects deleted in Superset", 1),
+        ] {
+            assert!(texts.contains(&want), "{want:?} in {texts:?}");
+        }
+        assert_eq!(texts.len(), 8, "nothing else, and never a zero: {texts:?}");
+        assert!(home.login.join("README.md").is_file(), "Superset's folder is untouched");
+
+        let mut events = core.events.subscribe();
+        let again = run_superset(&core, &home);
+        assert_eq!((again.imported, again.already_in_bridge, again.workspaces, again.failed), (0, 6, 0, 0), "{again:?}");
+        assert_eq!(chats(&core).len(), 5);
+        assert!(!changed(&mut events), "a run that changed nothing tells no one it did");
+        assert_eq!(setup_candidates(&core).len(), 1);
+    }
+
+    #[test]
+    fn importing_opencode_or_claude_code_after_superset_brings_nothing_twice() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        assert_eq!(run_superset(&core, &home).imported, 6);
+        let opencode = super::opencode::run_opencode(&core, &home.opencode);
+        assert_eq!((opencode.imported, opencode.already_in_bridge), (0, 1), "{opencode:?}");
+        let claude = run_job(&core, &home.claude);
+        assert_eq!((claude.imported, claude.already_in_bridge), (0, 1), "{claude:?}");
+        assert_eq!(chats(&core).len(), 5);
+    }
+
+    #[test]
+    fn supersets_title_goes_on_chats_its_agents_imported_unless_renamed_in_bridge() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        home.fixture.chat_conn().execute("UPDATE chat_sessions_local SET title = 'Explain the shop' WHERE session_id = 'c-open'", []).unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        super::opencode::run_opencode(&core, &home.opencode);
+        run_superset(&core, &home);
+        let titles: Vec<String> = chats(&core).into_iter().map(|chat| chat.0).collect();
+        assert!(titles.contains(&"Explain the shop".to_owned()), "{titles:?}");
+
+        let scratch = tempfile::tempdir().unwrap();
+        let core = super::core(scratch.path());
+        super::opencode::run_opencode(&core, &home.opencode);
+        core.db.lock().unwrap().execute("UPDATE sessions SET title='Mine', title_source=NULL WHERE kind='imported'", []).unwrap();
+        run_superset(&core, &home);
+        let titles: Vec<String> = chats(&core).into_iter().map(|chat| chat.0).collect();
+        assert!(titles.contains(&"Mine".to_owned()) && !titles.contains(&"Explain the shop".to_owned()), "{titles:?}");
+    }
+
+    #[test]
+    fn a_run_that_only_retitles_or_archives_says_the_state_changed() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        run_superset(&core, &home);
+        home.fixture.chat_conn().execute("UPDATE chat_sessions_local SET title = 'Explain the shop' WHERE session_id = 'c-open'", []).unwrap();
+        let mut events = core.events.subscribe();
+        let job = run_superset(&core, &home);
+        assert_eq!(job.imported, 0, "{job:?}");
+        assert!(changed(&mut events), "Superset's new title changed a chat");
+        home.fixture.host.execute("UPDATE workspaces SET archived_at = 5 WHERE id = 'w-login'", []).unwrap();
+        let mut events = core.events.subscribe();
+        run_superset(&core, &home);
+        assert!(changed(&mut events), "archiving in Superset archived its chats");
+    }
+
+    #[test]
+    fn a_newer_host_database_fails_the_job_and_imports_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        home.fixture.host.execute("INSERT INTO __drizzle_migrations(hash, created_at) VALUES('h', ?1)", [superset_import::store::HOST_NEWEST + 1]).unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        let job = run_superset(&core, &home);
+        assert_eq!(job.status, "failed", "{job:?}");
+        assert!(job.errors.iter().any(|error| error.contains("newer")), "{:?}", job.errors);
+        assert_eq!(chats(&core).len(), 0);
+    }
+
+    #[test]
+    fn superset_is_a_source_with_its_label_and_no_listing_of_its_own() {
+        assert_eq!(Source::of("superset"), Some(Source::Superset));
+        assert_eq!(Source::Superset.label(), "Superset");
+        assert_eq!(native_id(Source::Superset, &super::artifact("/h/host/o/chat.db#c", 1)), None);
+        assert_eq!(harness_of(Source::Superset), None);
+        assert!(Source::Superset.work(&[PathBuf::from("/h")]).unwrap().artifacts.is_empty());
+        let artifact = super::artifact("/h/host/o/chat.db#c", 1);
+        assert_eq!(Source::Superset.key(&artifact), "/h/host/o/chat.db#c");
+    }
+}
+
 /// The T3 Code job against this Mac's real T3 Code store (`$T3CODE_HOME`,
 /// else `~/.t3`) and its real Claude Code, Codex and OpenCode folders, into a
 /// scratch database. Prints aggregate numbers only.
@@ -1513,4 +2052,133 @@ fn measure_conductor_at_scale() {
         started.elapsed().as_secs_f64(), job.status, job.total, job.imported, job.left_out, job.not_carried.len()
     );
     assert_eq!((job.imported, job.left_out), (1800, 200));
+}
+
+/// The Orca job against an Orca data folder (`$ORCA_USER_DATA_PATH`, else
+/// this Mac's) and the agents' folders under `$HOME`, into a scratch
+/// database. Writes each Orca chat's Bridge chat for the fidelity eval.
+#[test]
+#[ignore = "reads a real Orca data folder; run by hand for scripts/e2e/import-orca-fidelity.mjs"]
+fn dump_the_orca_import_for_the_eval() {
+    let out = std::env::var("ORCA_EVAL_OUT").expect("set ORCA_EVAL_OUT");
+    let host = crate::provider_accounts::HostHomes::from_env();
+    let paths = crate::orca_import::Paths::from_env(&host.home);
+    let (store, _) = crate::orca_import::read(&paths).unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let core = core(scratch.path());
+    let mut job = new_job();
+    job.tool = crate::orca_import::PROVIDER.into();
+    save(&core, &job, None).unwrap();
+    core.import_job_running.store(true, Ordering::SeqCst);
+    run(&core, job, &[paths.base.clone()], None);
+    let job = status(&core).unwrap().unwrap();
+    println!("EVAL job status={} imported={} failed={} workspaces={} not_carried={:?}", job.status, job.imported, job.failed, job.workspaces, job.not_carried);
+    let db = core.db.lock().unwrap();
+    let mut chats = Vec::new();
+    for chat in crate::orca_import::chats(&store) {
+        let by_native = chat.native.as_ref().and_then(|native| {
+            db.query_row("SELECT session_id FROM import_native_sessions WHERE native_key=?1", params![native.key()], |row| row.get::<_, String>(0)).optional().unwrap()
+        });
+        let session = by_native.or_else(|| {
+            db.query_row("SELECT id FROM sessions WHERE kind='imported' AND title=?1", params![chat.title.clone().unwrap_or_default()], |row| row.get::<_, String>(0)).optional().unwrap()
+        });
+        let Some(session) = session else {
+            chats.push(json!({ "orcaId": chat.id, "missing": true }));
+            continue;
+        };
+        let (title, parent): (Option<String>, Option<String>) = db
+            .query_row("SELECT title, (SELECT p.title FROM sessions p WHERE p.id=s.parent_session_id) FROM sessions s WHERE id=?1", params![session], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap();
+        let mut entries = db.prepare("SELECT kind, payload FROM session_entries WHERE session_id=?1 ORDER BY sequence").unwrap();
+        let mut source = String::new();
+        let texts: Vec<serde_json::Value> = entries
+            .query_map([&session], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .filter_map(|(kind, payload)| {
+                let payload: serde_json::Value = serde_json::from_str(&payload).ok()?;
+                if source.is_empty() {
+                    source = payload["importSource"].as_str().unwrap_or_default().to_owned();
+                }
+                let role = match kind.as_str() {
+                    "user.message" => "user",
+                    "assistant.message" => "assistant",
+                    _ => return None,
+                };
+                Some(json!({ "role": role, "text": payload["text"].as_str().unwrap_or_default() }))
+            })
+            .collect();
+        chats.push(json!({ "orcaId": chat.id, "title": title, "parent": parent, "source": source, "nativeKey": chat.native.as_ref().map(|native| native.key()), "entries": texts }));
+    }
+    fs::write(&out, serde_json::to_string_pretty(&chats).unwrap()).unwrap();
+    println!("EVAL wrote {} chats to {out}", chats.len());
+}
+
+/// The Superset job against a Superset app home (`$SUPERSET_HOME_DIR`, else
+/// this Mac's) and the agents' folders under `$HOME`, into a scratch
+/// database. Writes each chat's and terminal session's Bridge chat for the
+/// fidelity eval.
+#[test]
+#[ignore = "reads a real Superset app home; run by hand for scripts/e2e/import-superset-fidelity.mjs"]
+fn dump_the_superset_import_for_the_eval() {
+    let out = std::env::var("SUPERSET_EVAL_OUT").expect("set SUPERSET_EVAL_OUT");
+    let host = crate::provider_accounts::HostHomes::from_env();
+    let paths = crate::superset_import::Paths::from_env(&host.home);
+    let store = crate::superset_import::read(&paths).unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let core = core(scratch.path());
+    let mut job = new_job();
+    job.tool = crate::superset_import::PROVIDER.into();
+    save(&core, &job, None).unwrap();
+    core.import_job_running.store(true, Ordering::SeqCst);
+    run(&core, job, &paths.homes, None);
+    let job = status(&core).unwrap().unwrap();
+    println!("EVAL job status={} imported={} failed={} workspaces={} not_carried={:?}", job.status, job.imported, job.failed, job.workspaces, job.not_carried);
+    let db = core.db.lock().unwrap();
+    let units: Vec<(Option<String>, Option<String>)> = crate::superset_import::chats(&store)
+        .map(|(_, chat)| (Some(chat.id.clone()), chat.native.as_ref().map(|native| native.key())))
+        .chain(crate::superset_import::bindings(&store).map(|(_, binding)| (None, binding.native.as_ref().map(|native| native.key()))))
+        .collect();
+    let mut chats = Vec::new();
+    for (superset_id, native_key) in units {
+        let by_native = native_key.as_ref().and_then(|key| {
+            db.query_row("SELECT session_id FROM import_native_sessions WHERE native_key=?1", params![key], |row| row.get::<_, String>(0)).optional().unwrap()
+        });
+        let by_source = superset_id.as_ref().and_then(|id| {
+            db.query_row(
+                "SELECT s.id FROM sessions s JOIN imported_record_provenance p ON p.bridge_id = s.id WHERE s.kind='imported' AND p.canonical_source_ref LIKE ?1 LIMIT 1",
+                params![format!("%#{id}")],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .unwrap_or(None)
+        });
+        let Some(session) = by_native.or(by_source) else {
+            chats.push(json!({ "supersetId": superset_id, "nativeKey": native_key, "missing": true }));
+            continue;
+        };
+        let title: Option<String> = db.query_row("SELECT title FROM sessions WHERE id=?1", params![session], |row| row.get(0)).unwrap();
+        let mut entries = db.prepare("SELECT kind, payload FROM session_entries WHERE session_id=?1 ORDER BY sequence").unwrap();
+        let mut source = String::new();
+        let texts: Vec<serde_json::Value> = entries
+            .query_map([&session], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .filter_map(|(kind, payload)| {
+                let payload: serde_json::Value = serde_json::from_str(&payload).ok()?;
+                if source.is_empty() {
+                    source = payload["importSource"].as_str().unwrap_or_default().to_owned();
+                }
+                let role = match kind.as_str() {
+                    "user.message" => "user",
+                    "assistant.message" => "assistant",
+                    _ => return None,
+                };
+                Some(json!({ "role": role, "text": payload["text"].as_str().unwrap_or_default() }))
+            })
+            .collect();
+        chats.push(json!({ "supersetId": superset_id, "nativeKey": native_key, "title": title, "source": source, "entries": texts }));
+    }
+    fs::write(&out, serde_json::to_string_pretty(&chats).unwrap()).unwrap();
+    println!("EVAL wrote {} chats to {out}", chats.len());
 }

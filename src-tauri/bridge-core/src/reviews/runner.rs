@@ -21,7 +21,7 @@ use bridge_protocol::messages::{ReviewJobStatus as Status, ReviewPassStatus, Rev
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use super::steps::{CancelToken, PassRequest, Prepared, ReviewSteps, StepError, UnavailableSteps};
+use super::steps::{CancelToken, PassRequest, PassUsage, Prepared, ReviewSteps, StepError, UnavailableSteps, UsageMeter};
 use super::store::{self, JobRow};
 use crate::runtime::BridgeCore;
 use crate::BridgeError;
@@ -32,6 +32,9 @@ pub struct ReviewRuntime {
     /// job id -> (claim, token) of the claim this process drives.
     tokens: Mutex<HashMap<String, (String, CancelToken)>>,
     wake: (Mutex<bool>, Condvar),
+    /// Held while a review checkout is reserved and cut, and while one is
+    /// removed or swept, so a sweep never mistakes one being cut for an orphan.
+    checkouts: Mutex<()>,
 }
 
 impl Default for ReviewRuntime {
@@ -40,6 +43,7 @@ impl Default for ReviewRuntime {
             steps: RwLock::new(Arc::new(UnavailableSteps)),
             tokens: Mutex::new(HashMap::new()),
             wake: (Mutex::new(false), Condvar::new()),
+            checkouts: Mutex::new(()),
         }
     }
 }
@@ -97,6 +101,12 @@ impl ReviewRuntime {
             }
             None => false,
         }
+    }
+
+    /// Hold while reserving and cutting, or removing and sweeping, review
+    /// checkouts. Take it before the store lock, never while holding it.
+    pub fn checkouts(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.checkouts.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Ask the loop to tick now: a job was queued or a slot freed.
@@ -181,6 +191,8 @@ impl Runner {
             steps.cleanup(id);
             super::publish(&self.core, id);
         }
+        // Whatever an earlier run left that no live job owns.
+        steps.reap();
         Ok(interrupted)
     }
 
@@ -213,9 +225,12 @@ impl Runner {
         }
         let mut handles = Vec::new();
         while self.active() < limit {
+            // A full checkout budget leaves queued jobs queued; posting needs
+            // no checkout, so a posting job is still claimed.
+            let take_queued = steps.has_capacity();
             let claimed = {
                 let db = super::lock_db(&self.core);
-                store::claim_next(&db, &self.owner, (self.clock)())?
+                store::claim(&db, &self.owner, (self.clock)(), take_queued)?
             };
             let Some(job) = claimed else { break };
             let Some(claim) = job.lease_owner.clone() else { continue };
@@ -238,16 +253,26 @@ impl Runner {
     }
 }
 
-/// Started once per host beside the other maintenance loops.
+/// How often the loop removes review checkouts no live job owns.
+const REAP_EVERY: Duration = Duration::from_secs(10 * 60);
+
+/// Started once per host beside the other maintenance loops. Installs the live
+/// steps first, so recovery and every job use them.
 pub fn start_review_maintenance(core: Arc<BridgeCore>) {
+    core.reviews.set_steps(Arc::new(super::prepare::LiveSteps::new(&core)));
     let spawned = std::thread::Builder::new().name("review-runner".into()).spawn(move || {
         let runner = Runner::new(core.clone());
         if let Err(error) = runner.recover() {
             eprintln!("[reviews] startup recovery failed: {error}");
         }
+        let mut last_reap = std::time::Instant::now();
         loop {
             if let Err(error) = runner.tick() {
                 eprintln!("[reviews] tick failed: {error}");
+            }
+            if last_reap.elapsed() >= REAP_EVERY {
+                core.reviews.steps().reap();
+                last_reap = std::time::Instant::now();
             }
             core.reviews.wait(runner.config.poll);
         }
@@ -450,10 +475,22 @@ impl Driver {
                 };
                 let Some(pass_id) = begun else { return Err(StepError::Cancelled) };
                 super::publish(&self.core, &job.id);
-                let request = PassRequest { job, prepared, pass_id: &pass_id, harness: &harness };
+                let meter = UsageMeter::default();
+                let request = PassRequest { job, prepared, pass_id: &pass_id, harness: &harness, usage: &meter };
                 let result = self.retrying(token, || steps.review(request, token));
                 let failure = match result {
-                    Ok(outcome) => {
+                    Ok(mut outcome) => {
+                        // Every attempt's spend, plus what the outcome itself reports.
+                        let spent = meter.total().plus(PassUsage {
+                            tokens_in: outcome.tokens_in,
+                            tokens_out: outcome.tokens_out,
+                            cost_microusd: outcome.cost_microusd,
+                            denied_requests: outcome.denied_requests,
+                        });
+                        outcome.tokens_in = spent.tokens_in;
+                        outcome.tokens_out = spent.tokens_out;
+                        outcome.cost_microusd = spent.cost_microusd;
+                        outcome.denied_requests = spent.denied_requests;
                         let stored = {
                             let db = super::lock_db(&self.core);
                             store::complete_pass(&db, &job.id, &self.claim, &pass_id, &outcome, self.now()).map_err(fatal)?
@@ -476,7 +513,7 @@ impl Driver {
                 };
                 let ended = {
                     let db = super::lock_db(&self.core);
-                    store::end_pass(&db, &job.id, &self.claim, &pass_id, status, error.as_deref(), self.now()).map_err(fatal)?
+                    store::end_pass(&db, &job.id, &self.claim, &pass_id, status, error.as_deref(), meter.total(), self.now()).map_err(fatal)?
                 };
                 super::publish(&self.core, &job.id);
                 if !ended {

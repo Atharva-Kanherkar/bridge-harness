@@ -52,10 +52,43 @@ export async function permissionDecision(options, name, input = {}, context = {}
   return options.canUseTool ? options.canUseTool(name, input, context) : { behavior: "deny" };
 }
 
+// The account connectors this fake account has. As in Claude Code, they load
+// natively and signed in when the config is not strict; a copy handed over in
+// `mcpServers` under `strictMcpConfig` has no sign-in and comes up
+// `needs-auth` with no tools (measured live against claude.ai connectors).
+const ACCOUNT_CONNECTORS = ["claude.ai Slack", "claude.ai Linear", "claude.ai Gmail"];
+
+export function connectorStatus(options = {}, switchedOff = new Set()) {
+  const denied = new Set((options.settings?.deniedMcpServers ?? []).map((entry) => entry?.serverName));
+  const statuses = [];
+  for (const name of Object.keys(options.mcpServers ?? {})) {
+    if (denied.has(name) || switchedOff.has(name)) continue;
+    statuses.push({ name, status: name.startsWith("claude.ai ") ? "needs-auth" : "connected" });
+  }
+  if (options.strictMcpConfig === false) {
+    for (const name of ACCOUNT_CONNECTORS) {
+      if (denied.has(name) || switchedOff.has(name) || statuses.some((entry) => entry.name === name)) continue;
+      statuses.push({ name, status: "connected" });
+    }
+  }
+  return statuses;
+}
+
+/** Can the run call `name` at all? A built-in outside `tools`, or a tool of a
+ * connector that is not connected, does not exist for the model. */
+function toolExists(options, name, switchedOff) {
+  if (name.startsWith("mcp__")) {
+    const wire = name.split("__")[1];
+    return connectorStatus(options, switchedOff).some((entry) => entry.status === "connected" && entry.name.replace(/[^A-Za-z0-9_-]/g, "_") === wire);
+  }
+  return !Array.isArray(options.tools) || options.tools.includes(name);
+}
+
 const resultBlock = (status, summary) => `\n\`\`\`workflow-result\n${JSON.stringify({ status, summary })}\n\`\`\``;
 
 export function query({ prompt, options = {} }) {
   let releaseHeldTurn = null;
+  const switchedOff = new Set();
   const sessionId = options.resume ?? options.sessionId ?? randomUUID();
   const cwd = options.cwd ?? process.cwd();
   const writes = join(cwd, "writes.log");
@@ -76,6 +109,15 @@ export function query({ prompt, options = {} }) {
   async function* tool(name, input, effect) {
     const id = `toolu_${randomUUID()}`;
     yield assistant([{ type: "tool_use", id, name, input }]);
+    if (!toolExists(options, name, switchedOff)) {
+      yield {
+        type: "user",
+        session_id: sessionId,
+        parent_tool_use_id: null,
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: `No such tool available: ${name}`, is_error: true }] },
+      };
+      return false;
+    }
     // As in the SDK, `canUseTool` is asked only when a call would prompt.
     // Under `acceptEdits` a file edit does not, so it runs without asking.
     const verdict = await permissionDecision(options, name, input, { toolUseID: id, signal: new AbortController().signal });
@@ -97,6 +139,24 @@ export function query({ prompt, options = {} }) {
       // A draft turn: the reply the real model gave this sentence, recorded.
       const known = drafts.find((draft) => draft.sentence === drafted[1].trim());
       yield* finish(known?.reply ?? "{}");
+      return;
+    }
+    if (brief.includes("You review a pull request for Bridge")) {
+      // The PR reviewer (src-tauri/bridged/tests/reviews.rs): read the
+      // context, try to reach GitHub through a shell, which the read-only
+      // boundary must refuse, then answer with the findings contract.
+      yield* tool("Read", { file_path: join(cwd, ".bridge-review-context/diff.patch") });
+      const shell = yield* tool("Bash", { command: "gh pr view 103" });
+      const review = {
+        summary: "The PR adds one line to the README.",
+        findings: [{
+          path: "README.md", line: 2, side: "RIGHT", severity: "minor",
+          title: "The new README line explains nothing",
+          body: `Say what changed and why. (Shell was ${shell ? "allowed" : "refused"}.)`,
+          confidence: 0.6,
+        }],
+      };
+      yield* finish(`I read the diff.\n\n\`\`\`json\n${JSON.stringify(review)}\n\`\`\``);
       return;
     }
     if (brief.includes("E2E:live-budget")) {
@@ -148,5 +208,7 @@ export function query({ prompt, options = {} }) {
     interrupt: async () => { releaseHeldTurn?.(); releaseHeldTurn = null; },
     close: () => {},
     supportedModels: async () => [],
+    mcpServerStatus: async () => connectorStatus(options, switchedOff),
+    toggleMcpServer: async (name, enabled) => { if (enabled) switchedOff.delete(name); else switchedOff.add(name); },
   });
 }

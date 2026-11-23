@@ -30,8 +30,8 @@ const RECORD = process.env.RECORD !== "0";
 // found (nothing is read then) and left out when imported.
 const CHATS = Number(process.env.IMPORT_FAKE_CHATS ?? 600) + 10;
 const PROBES = 1;
-// The fake home, to check on disk that Bridge left Conductor's and T3 Code's
-// folders alone.
+// The fake home, to check on disk that Bridge left Conductor's, T3 Code's,
+// Orca's and Superset's folders alone.
 const FAKE_HOME = process.env.FAKE_HOME;
 if (!LINK) throw new Error("Set LINK to a daemon link from scripts/web-link.mjs");
 
@@ -170,15 +170,13 @@ try {
     return saved.harnesses.find(item => item.id === "claude").advanced.accounts.length;
   })()`);
   check("A work Claude account with its own folder is in Settings", accountSaved === 1, String(accountSaved));
-  await caption("Open Settings, then Chat history, then Import");
+  await caption("Open Settings, then Import");
   await click("Open settings for");
-  await waitFor("Settings to open", `[...document.querySelectorAll("button, a, [role=button]")].some(el => el.offsetParent !== null && el.textContent.includes("Chat history"))`);
-  await click("Chat history");
-  await waitFor("the Chat history page", `!!document.querySelector("[data-settings-column]") && document.querySelector("[data-settings-column]").innerText.includes("Archived chats")`);
-  const history = await js(`document.querySelector("[data-settings-column]").innerText`);
-  check("Chat history has its own place in Settings, with Import and Archived chats", history.includes("Chat history") && history.includes("Import") && history.includes("Archived chats"));
-  await shot("00-chat-history-dark");
-  await click("Import", "main button, [data-settings-column] button");
+  await waitFor("Settings to open", `[...document.querySelectorAll("button, a, [role=button]")].some(el => el.offsetParent !== null && el.textContent.trim() === "Archived chats")`);
+  const sections = await js(`[...document.querySelectorAll("button, a, [role=button]")].filter(el => el.offsetParent !== null).map(el => el.textContent.trim())`);
+  check("Import has its own place in Settings, beside Archived chats", sections.includes("Import") && sections.includes("Archived chats"), JSON.stringify(sections).slice(0, 300));
+  await shot("00-settings-dark");
+  await click("Import");
   await waitFor("the tools list", `document.body.innerText.includes("Found on this Mac") && !document.body.innerText.includes("Looking for other tools")`);
   await caption("Bridge finds the tools already on this Mac, without reading any chat");
   const found = await text();
@@ -188,7 +186,8 @@ try {
   check("OpenCode is found with its own section, mark and Import button, its background run apart", found.includes("OpenCode keeps its own memory and setup")
     && /1 chat in 1 project · 1 background run left out/.test(await js(`document.querySelector('[data-import-tool="opencode"]').innerText`))
     && await js(`!!document.querySelector('[data-import-tool="opencode"] [data-tool-mark] svg') && !!document.querySelector('[data-import-tool="opencode"] button')`));
-  check("Tools that are not installed say so", found.includes("Not found on this Mac"));
+  check("Every tool Bridge imports from is found, each with its own Import button", !found.includes("Not found on this Mac")
+    && await js(`document.querySelectorAll('[data-import-tool] button').length`) === 7);
   await shot("01-found-dark");
 
   // The generated chats plus 5 hand-made ones, the Explore subagent and
@@ -197,7 +196,7 @@ try {
   // memory file stays where it is.
   const EXPECTED = CHATS + 2 - PROBES;
   await caption("One click: Import");
-  await click("Import", "button");
+  await click("Import", '[data-import-tool="claude_code"] button');
   await waitFor("the progress card", `!!document.querySelector('section[aria-label="Import progress"]')`, 10000);
   // Centre the card first so it stays put for the clip and the close-ups;
   // the clip starts with the frame on screen once it is there.
@@ -229,7 +228,7 @@ try {
   check("The card says the page can be left", card.includes("You can leave this page"));
 
   await caption("Leave the page while it works");
-  await click("Data & storage");
+  await click("Storage");
   await waitFor("Bridge to say the import is done", `document.body.innerText.includes("Import finished")`, 120000);
   const toast = await text();
   check("Bridge says when it is done, on whatever page you are on", toast.includes(`${EXPECTED.toLocaleString("en-US")} items came over from Claude Code`), toast.slice(toast.indexOf("Import finished"), toast.indexOf("Import finished") + 120).replace(/\n+/g, " | "));
@@ -286,6 +285,7 @@ try {
   await shot("05b-opencode-summary-dark");
 
   await caption("The OpenCode chat, with its commands, edit and subagent");
+  await click("Back to app");
   await click("Speed up the checkout page");
   await waitFor("the OpenCode chat", `document.body.innerText.includes("0.4 s")`);
   await sleep(1200);
@@ -323,9 +323,8 @@ try {
 
   await caption("Conductor's workspaces come over where they are");
   await click("Open settings for");
-  await waitFor("Settings to open", `[...document.querySelectorAll("button, a, [role=button]")].some(el => el.offsetParent !== null && el.textContent.includes("Chat history"))`);
-  await click("Chat history");
-  await click("Import", "main button, [data-settings-column] button");
+  await waitFor("Settings to open", `[...document.querySelectorAll("button, a, [role=button]")].some(el => el.offsetParent !== null && el.textContent.trim() === "Archived chats")`);
+  await click("Import");
   await waitFor("the tools list", `!!document.querySelector('[data-import-tool="conductor"]') && !document.body.innerText.includes("Looking for other tools")`);
   const conductorFound = await js(`document.querySelector('[data-import-tool="conductor"]').innerText`);
   check("Conductor is found with its workspaces and its own Import button", conductorFound.includes("2 workspaces in 1 repo") && conductorFound.includes("left where they are")
@@ -394,6 +393,7 @@ try {
     !!t3State.id && (t3State.path ?? "").endsWith("/.t3/worktrees/pricing/feat-discount-07db51fef00c511d") && t3State.branch === "feat/discount" && t3State.chatWorkspace === t3State.id, JSON.stringify(t3State));
   check("The thread deleted in T3 Code did not come over", t3State.copy && !t3State.deleted, JSON.stringify(t3State));
   await caption("The chat from T3 Code's own copy opens");
+  await click("Back to app");
   await click("Casual conversation");
   await waitFor("the T3 Code chat", `document.body.innerText.includes("What are we working on today?")`);
   await sleep(1000);
@@ -409,6 +409,118 @@ try {
   const t3Tree = FAKE_HOME ? join(FAKE_HOME, ".t3/worktrees/pricing/feat-discount-07db51fef00c511d/price.js") : null;
   const t3Kept = t3Tree ? existsSync(t3Tree) && read(t3Tree, "utf8").includes("uncommitted") : null;
   check("T3 Code's worktree and its uncommitted work are untouched", t3Kept !== false, `kept=${t3Kept}`);
+
+  await caption("Orca's chats, worktree and multi-agent run come over");
+  await click("Open settings for");
+  await waitFor("Settings to open", `[...document.querySelectorAll("button, a, [role=button]")].some(el => el.offsetParent !== null && el.textContent.trim() === "Archived chats")`);
+  await click("Import");
+  await waitFor("the tools list", `!!document.querySelector('[data-import-tool="orca"]') && !document.body.innerText.includes("Looking for other tools")`);
+  await js(`document.querySelector('[data-import-tool="orca"]').scrollIntoView({ block: "center" })`);
+  const orcaFound = await js(`document.querySelector('[data-import-tool="orca"]').innerText`);
+  check("Orca is found with its chats and worktree, and its own Import button", orcaFound.includes("2 chats · 1 workspace in 1 repo")
+    && await js(`!!document.querySelector('[data-import-tool="orca"] button')`), orcaFound.replace(/\n+/g, " | "));
+  await click("Import", '[data-import-tool="orca"] button');
+  await waitFor("the Orca import to finish", `!!document.querySelector('[data-import-tool="orca"] [data-import-result="imported"]')`, 60000);
+  const orcaResult = await js(`(() => {
+    const section = document.querySelector('[data-import-tool="orca"]');
+    const count = selector => Number(section.querySelector(selector)?.textContent ?? -1);
+    return { imported: count('[data-import-result="imported"]'), skipped: count('[data-import-result="skipped"]'), workspaces: count('[data-import-result="workspaces"]'), text: section.innerText };
+  })()`);
+  check("The worker came over from Orca's own copy; the lead chat OpenCode already brought was already in Bridge",
+    orcaResult.imported === 1 && orcaResult.skipped === 1, JSON.stringify(orcaResult).slice(0, 400));
+  check("Its worktree came over as a workspace, left where it is", orcaResult.workspaces === 1 && orcaResult.text.includes("so Orca keeps working with them"), orcaResult.text.replace(/\n+/g, " | "));
+  check("What did not come over says why: the Pi chat and the worker Orca kept no session for",
+    orcaResult.text.includes("chats with pi, which Bridge does not run") && orcaResult.text.includes("workers' place under their run's lead chat"), orcaResult.text.replace(/\n+/g, " | "));
+  check("Nothing shows Orca's secrets", !(await text()).includes("CANARY"));
+  await js(`document.querySelectorAll('button[aria-label="Dismiss notification"]').forEach(button => button.click())`);
+  await js(`document.querySelector('[data-import-tool="orca"]').scrollIntoView({ block: "start" })`);
+  await sleep(600);
+  await shot("05k-orca-summary-dark");
+  const orcaState = await js(`(async () => {
+    const { bridgeApi } = await import("/src/api.ts");
+    const state = await bridgeApi.state();
+    const workspace = state.workspaces.find(item => item.title === "Refund email copy");
+    const lead = state.sessions.find(item => item.title === "Speed up the checkout page");
+    const worker = state.sessions.find(item => item.title === "Write the refund email copy");
+    return {
+      id: workspace?.id, path: workspace?.path, branch: workspace?.branch,
+      workerWorkspace: worker?.workspaceId, workerParent: worker?.parentSessionId, lead: lead?.id,
+      leftOut: state.sessions.some(item => item.title === "Ask Pi about fonts" || item.title === "Thrown away in Orca"),
+    };
+  })()`);
+  check("The workspace keeps Orca's name, folder and branch, and the worker's chat is in it",
+    !!orcaState.id && (orcaState.path ?? "").endsWith("/orca/workspaces/storefront/refund-copy") && orcaState.branch === "refund-copy" && orcaState.workerWorkspace === orcaState.id, JSON.stringify(orcaState));
+  check("The worker is under the chat that led its run", !!orcaState.lead && orcaState.workerParent === orcaState.lead, JSON.stringify(orcaState));
+  check("The Pi chat and the chat deleted in Orca did not come over", !orcaState.leftOut, JSON.stringify(orcaState));
+  await caption("The worker's chat, from Orca's own copy, opens");
+  await click("Back to app");
+  await click("Write the refund email copy");
+  await waitFor("the Orca chat", `document.body.innerText.includes("Your refund is on its way")`);
+  await sleep(1000);
+  const orcaBadge = await js(`document.querySelector('[data-testid="import-source-badge"]')?.getAttribute("title")`);
+  check("It is badged as imported from Orca", (orcaBadge ?? "").startsWith("Imported · Orca"), String(orcaBadge));
+  await js(`document.querySelectorAll('button[aria-label="Dismiss notification"]').forEach(button => button.click())`);
+  await sleep(800);
+  const orcaChat = await text();
+  const orcaSaid = orcaChat.slice(0, orcaChat.indexOf("Your refund is on its way"));
+  check("Both sides of the conversation came over, the user's message first", orcaSaid.includes("Write the copy for the refund confirmation email."), orcaSaid.slice(-200).replace(/\n+/g, " | "));
+  await shot("05l-orca-chat-dark");
+  const orcaTree = FAKE_HOME ? join(FAKE_HOME, "orca/workspaces/storefront/refund-copy/cart.js") : null;
+  const orcaKept = orcaTree ? existsSync(orcaTree) && read(orcaTree, "utf8").includes("uncommitted") : null;
+  check("Orca's worktree and its uncommitted work are untouched", orcaKept !== false, `kept=${orcaKept}`);
+
+  await caption("Superset's workspaces, chats and agent configuration come over");
+  await click("Open settings for");
+  await waitFor("Settings to open", `[...document.querySelectorAll("button, a, [role=button]")].some(el => el.offsetParent !== null && el.textContent.trim() === "Archived chats")`);
+  await click("Import");
+  await waitFor("the tools list", `!!document.querySelector('[data-import-tool="superset"]') && !document.body.innerText.includes("Looking for other tools")`);
+  await js(`document.querySelector('[data-import-tool="superset"]').scrollIntoView({ block: "center" })`);
+  const supersetFound = await js(`document.querySelector('[data-import-tool="superset"]').innerText`);
+  check("Superset is found with its chats and workspace, and its own Import button", supersetFound.includes("2 chats · 1 workspace in 1 repo")
+    && await js(`!!document.querySelector('[data-import-tool="superset"] button')`), supersetFound.replace(/\n+/g, " | "));
+  await click("Import", '[data-import-tool="superset"] button');
+  await waitFor("the Superset import to finish", `!!document.querySelector('[data-import-tool="superset"] [data-import-result="imported"]')`, 60000);
+  const supersetResult = await js(`(() => {
+    const section = document.querySelector('[data-import-tool="superset"]');
+    const count = selector => Number(section.querySelector(selector)?.textContent ?? -1);
+    return { imported: count('[data-import-result="imported"]'), skipped: count('[data-import-result="skipped"]'), workspaces: count('[data-import-result="workspaces"]'), text: section.innerText };
+  })()`);
+  check("The chat whose session is gone came from Superset's copy and the agent configuration came over; the chat OpenCode brought was already in Bridge",
+    supersetResult.imported === 2 && supersetResult.skipped === 1, JSON.stringify(supersetResult).slice(0, 400));
+  check("Its workspace came over, left where it is, and the agent configuration arrived switched off", supersetResult.workspaces === 1
+    && supersetResult.text.includes("so Superset keeps working with them") && supersetResult.text.includes("came over switched off, without their secret values"), supersetResult.text.replace(/\n+/g, " | "));
+  check("What did not come over says why: the archived workspace and the Amp terminal",
+    supersetResult.text.includes("workspaces archived in Superset") && supersetResult.text.includes("terminal sessions with amp, which Bridge does not run"), supersetResult.text.replace(/\n+/g, " | "));
+  check("Nothing shows Superset's secrets", !(await text()).includes("CANARY"));
+  await js(`document.querySelectorAll('button[aria-label="Dismiss notification"]').forEach(button => button.click())`);
+  await js(`document.querySelector('[data-import-tool="superset"]').scrollIntoView({ block: "start" })`);
+  await sleep(600);
+  await shot("05m-superset-summary-dark");
+  const supersetState = await js(`(async () => {
+    const { bridgeApi } = await import("/src/api.ts");
+    const state = await bridgeApi.state();
+    const workspace = state.workspaces.find(item => item.title === "Badge copy");
+    const chat = state.sessions.find(item => (item.title ?? "").startsWith("Shorten the cart badge copy"));
+    return { id: workspace?.id, path: workspace?.path, branch: workspace?.branch, chatWorkspace: chat?.workspaceId, archivedWorkspace: state.workspaces.some(item => item.title === "Old badge") };
+  })()`);
+  check("The workspace keeps Superset's name, folder and branch, and the chat that ran there is under it",
+    !!supersetState.id && (supersetState.path ?? "").endsWith("/.paradev/worktrees/storefront/badge-copy") && supersetState.branch === "badge-copy" && supersetState.chatWorkspace === supersetState.id && !supersetState.archivedWorkspace, JSON.stringify(supersetState));
+  await caption("The chat from Superset's own copy opens");
+  await click("Back to app");
+  await click("Shorten the cart badge copy");
+  await waitFor("the Superset chat", `document.body.innerText.includes("the badge now says")`);
+  await sleep(1000);
+  const supersetBadge = await js(`document.querySelector('[data-testid="import-source-badge"]')?.getAttribute("title")`);
+  check("It is badged as imported from Superset", (supersetBadge ?? "").startsWith("Imported · Superset"), String(supersetBadge));
+  await js(`document.querySelectorAll('button[aria-label="Dismiss notification"]').forEach(button => button.click())`);
+  await sleep(800);
+  const supersetChat = await text();
+  const supersetSaid = supersetChat.slice(0, supersetChat.indexOf("the badge now says"));
+  check("Both sides of the conversation came over, the user's message first", supersetSaid.includes("Shorten the cart badge copy to one word."), supersetSaid.slice(-200).replace(/\n+/g, " | "));
+  await shot("05n-superset-chat-dark");
+  const supersetTree = FAKE_HOME ? join(FAKE_HOME, ".paradev/worktrees/storefront/badge-copy/cart.js") : null;
+  const supersetKept = supersetTree ? existsSync(supersetTree) && read(supersetTree, "utf8").includes("uncommitted") : null;
+  check("Superset's worktree and its uncommitted work are untouched", supersetKept !== false, `kept=${supersetKept}`);
 
   await caption("Find the imported chat in the sidebar and open it");
   await click("Invoice email header fix");
@@ -456,9 +568,8 @@ try {
 
   await caption("Import again: nothing lands twice");
   await click("Open settings for");
-  await waitFor("Settings to open", `[...document.querySelectorAll("button, a, [role=button]")].some(el => el.offsetParent !== null && el.textContent.includes("Chat history"))`);
-  await click("Chat history");
-  await click("Import", "main button, [data-settings-column] button");
+  await waitFor("Settings to open", `[...document.querySelectorAll("button, a, [role=button]")].some(el => el.offsetParent !== null && el.textContent.trim() === "Archived chats")`);
+  await click("Import");
   await waitFor("the tools list", `document.body.innerText.includes("Found on this Mac") && !document.body.innerText.includes("Looking for other tools")`);
   check("The finished import is still summarised on the page", (await text()).includes("Import finished"));
   await click("Import again", "button");
