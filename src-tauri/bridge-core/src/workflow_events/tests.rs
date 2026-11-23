@@ -168,6 +168,8 @@ fn github_lists_parse_into_stable_events_and_skip_what_they_cannot_identify() {
     let review = parse_github(wire::WorkflowEventKind::GithubReviewRequested, None, search).unwrap();
     assert_eq!(review[0].key, "github:review:other/repo#7", "keys ignore the repository's case");
     assert_eq!(review[0].payload["repo"], json!("Other/Repo"));
+    let issues = parse_github(wire::WorkflowEventKind::GithubIssueOpened, Some("acme/app"), PRS).unwrap();
+    assert_eq!(issues[0].key, "github:issue:acme/app#12", "an issue and a PR with one number are different events");
     assert!(parse_github(wire::WorkflowEventKind::GithubIssueOpened, Some("a/b"), "not json").is_err());
     assert!(parse_github(wire::WorkflowEventKind::GithubIssueOpened, Some("a/b"), "{}").is_err());
 }
