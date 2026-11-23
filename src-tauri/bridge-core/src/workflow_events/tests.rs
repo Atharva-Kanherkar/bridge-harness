@@ -423,6 +423,15 @@ fn a_github_preview_counts_the_last_week_and_says_why_it_cannot() {
     let capped = preview(&core, &trigger, &gh, now);
     assert_eq!(capped.matches, 30);
     assert!(capped.note.as_deref().is_some_and(|note| note.starts_with("At least 30")), "{:?}", capped.note);
+    // A full answer reaching past the week, or a short one, is the whole count.
+    let mut reaching = busy.clone();
+    reaching[29] = pr(129, "2026-11-01T00:00:00Z");
+    gh.set(Ok(&format!("[{}]", reaching.join(","))));
+    let whole = preview(&core, &trigger, &gh, now);
+    assert_eq!((whole.matches, whole.note.clone()), (29, None));
+    gh.set(Ok(&format!("[{}]", busy[..3].join(","))));
+    let few = preview(&core, &trigger, &gh, now);
+    assert_eq!((few.matches, few.note.clone()), (3, None));
     gh.set(Err("GitHub CLI (gh) is not installed"));
     let failed = preview(&core, &trigger, &gh, now);
     assert!(!failed.supported);
