@@ -706,3 +706,15 @@ fn a_repository_is_owner_slash_name_in_githubs_own_charset() {
         assert!(!valid_repo(bad), "{bad}");
     }
 }
+
+#[test]
+fn a_batch_finds_its_latest_slot_past_a_thousand_of_them() {
+    // Every 15 minutes for 30 days is 2,880 slots: more than one page.
+    let (dir, core) = test_support::core();
+    let db = core.db.lock().unwrap();
+    let batch = wire::WorkflowBatch { cron: "*/15 * * * *".into(), timezone: "UTC".into() };
+    let trigger = wire::WorkflowTrigger::Event { event: wire::WorkflowEventKind::SlackMention, repo: None, channel: None, from: None, batch: Some(batch.clone()) };
+    let workflow = listening_workflow(&db, dir.path(), trigger, "2026-10-25T00:00:00Z");
+    let now = at("2026-11-24T10:07:00Z");
+    assert_eq!(batch_slot(&db, &workflow, &batch, now).unwrap(), Some(at("2026-11-24T10:00:00Z")));
+}
