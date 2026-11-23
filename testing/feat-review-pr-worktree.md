@@ -112,10 +112,11 @@ authority; this file names what this branch must prove. It builds on the runner 
 
 ## Integration / Functional Tests
 
-- `reviews::prepare::tests::worktrees_are_gone_after_every_ending` drives real `LiveSteps` with
-  a scripted review step through: posted (auto mode), failed at prepare, failed at review,
-  cancelled mid-review, and a panic inside the review step. After each, no directory remains
-  under `reviews/`, no job folder remains, and `git worktree list` has only the main checkout.
+- Real `LiveSteps` with a scripted review step, through every ending, split into three tests to
+  keep each readable: `worktrees_are_gone_after_posting_drafting_and_failing_at_review` (posted
+  in auto mode, drafted, failed at review), `worktrees_are_gone_after_a_failed_prepare_and_a_panicking_review`
+  and `worktrees_are_gone_after_a_cancel_mid_review`. After each, no directory remains under
+  `reviews/`, no job folder remains, and `git worktree list` has only the main checkout.
 - `bridged/tests/reviews.rs` runs fully offline: the workspace's `origin` is a local bare
   repository holding `refs/pull/103/head`, and `gh` resolves the repository through its default.
   A retried job prepares a real worktree, fails at the review step with "This build cannot run
