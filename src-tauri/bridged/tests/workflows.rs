@@ -498,7 +498,8 @@ fn slack_mention(ts: &str, received_at: DateTime<Utc>) -> bridge_core::connector
 
 fn save_and_approve(rpc: &mut Rpc, definition: Value) -> String {
     let saved = rpc.call("workflows/save_workflow", json!({ "definition": definition }));
-    let workflow_id = saved["workflow"]["id"].as_str().unwrap().to_owned();
+    // A save without an id fails the approve call below, which says why.
+    let workflow_id = saved["workflow"]["id"].as_str().unwrap_or_default().to_owned();
     rpc.call("workflows/approve_workflow", json!({ "workflowId": workflow_id, "revisionId": saved["workflow"]["revisionId"] }));
     workflow_id
 }
@@ -557,14 +558,16 @@ fn e6_a_github_source_baselines_then_fires_once_per_new_pull_request() {
     std::env::set_var("BRIDGE_E2E_GH_ANSWER", &answer);
     // The run reads the new PR in full before it starts.
     let view = fixture.path().join("gh-view.json");
-    std::fs::write(&view, json!({ "body": "Adds retries to the uploader.", "labels": [{ "name": "infra" }], "additions": 12, "deletions": 3, "files": [{ "path": "src/upload.rs", "additions": 12, "deletions": 3 }] }).to_string()).unwrap();
+    let details = json!({ "body": "Adds retries to the uploader.", "labels": [{ "name": "infra" }], "additions": 12, "deletions": 3, "files": [{ "path": "src/upload.rs", "additions": 12, "deletions": 3 }] });
     std::env::set_var("BRIDGE_E2E_GH_VIEW", &view);
     let pr = |number: i64, created: DateTime<Utc>| json!({
         "number": number, "title": format!("PR {number}"), "url": format!("https://github.com/acme/app/pull/{number}"),
         "author": { "login": "sam" }, "createdAt": created.to_rfc3339(),
     });
     let start = Utc::now();
-    std::fs::write(&answer, json!([pr(1, start - ChronoDuration::days(2))]).to_string()).unwrap();
+    for (path, body) in [(&answer, json!([pr(1, start - ChronoDuration::days(2))])), (&view, details)] {
+        std::fs::write(path, body.to_string()).unwrap();
+    }
     let running = RunningDaemon::start(fixture.path());
     let mut rpc = running.rpc();
     let model = claude_model(&mut rpc);

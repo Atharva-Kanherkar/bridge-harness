@@ -183,7 +183,7 @@ fn server_for<'a>(app: App, servers: &'a [wire::WorkflowServerOption]) -> Option
         .or_else(|| candidates.first().copied())
 }
 
-fn build(spec: &Spec, context: &DraftContext) -> wire::WorkflowTemplate {
+fn build(spec: &Spec, context: &DraftContext, harness: &wire::HarnessId) -> wire::WorkflowTemplate {
     let mut missing = Vec::new();
     let mut grants = Vec::new();
     for app in spec.reads {
@@ -205,7 +205,7 @@ fn build(spec: &Spec, context: &DraftContext) -> wire::WorkflowTemplate {
         name: spec.name.to_owned(),
         project_id: None,
         steps: vec![wire::WorkflowStep {
-            harness: wire::HarnessId::parse(&context.harness).unwrap_or_else(|_| wire::HarnessId::parse("claude").expect("claude is a harness id")),
+            harness: harness.clone(),
             model: context.model.clone(),
             effort: None,
             instructions: spec.instructions.to_owned(),
@@ -232,7 +232,9 @@ fn build(spec: &Spec, context: &DraftContext) -> wire::WorkflowTemplate {
 
 /// Every template, ready ones first, in the order they are listed.
 pub fn templates(context: &DraftContext) -> Vec<wire::WorkflowTemplate> {
-    let mut built: Vec<wire::WorkflowTemplate> = SPECS.iter().map(|spec| build(spec, context)).collect();
+    // Bridge names the harness itself; one it cannot parse offers nothing.
+    let Ok(harness) = wire::HarnessId::parse(&context.harness) else { return Vec::new() };
+    let mut built: Vec<wire::WorkflowTemplate> = SPECS.iter().map(|spec| build(spec, context, &harness)).collect();
     built.sort_by_key(|template| !template.ready);
     built
 }

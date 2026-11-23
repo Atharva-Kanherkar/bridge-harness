@@ -463,8 +463,13 @@ proptest! {
     #[test]
     fn github_parsing_never_panics_on_any_answer(value in arbitrary_json(), raw in ".{0,64}") {
         for kind in [wire::WorkflowEventKind::GithubPullRequestOpened, wire::WorkflowEventKind::GithubReviewRequested] {
-            let _ = parse_github(kind, Some("acme/app"), &value.to_string());
-            let _ = parse_github(kind, None, &raw);
+            // Ok or Err, never a panic; and nothing parsed without what identifies it.
+            if let Ok(samples) = parse_github(kind, Some("acme/app"), &value.to_string()) {
+                prop_assert!(samples.iter().all(|sample| sample.key.starts_with("github:")));
+            }
+            if let Ok(samples) = parse_github(kind, None, &raw) {
+                prop_assert!(samples.iter().all(|sample| sample.url.is_some()));
+            }
         }
     }
 

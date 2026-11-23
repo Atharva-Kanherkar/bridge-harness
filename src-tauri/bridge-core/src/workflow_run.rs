@@ -446,6 +446,79 @@ fn execute_run(core: &Arc<BridgeCore>, claimed: ClaimedRun) {
     }
 }
 
+/// A granted connector Claude already says needs sign-in, or no longer has,
+/// fails the run before anything is spent. Unknown proceeds: the sidecar's own
+/// wait is the second check. True when the run was settled here.
+fn failed_for_connectors(
+    core: &Arc<BridgeCore>,
+    run: &wire::WorkflowRun,
+    lease_owner: &str,
+    definition: &wire::WorkflowDefinition,
+    quota_unknown: bool,
+) -> Result<bool, BridgeError> {
+    let Some(summary) = workflows::unavailable_summary(definition, crate::marketplace::connectors_peek().as_ref()) else {
+        return Ok(false);
+    };
+    if workflow_trigger::finish(
+        &core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        &run.id,
+        lease_owner,
+        wire::WorkflowRunStatus::Failed,
+        &Outcome { failure_code: Some(CONNECTOR_UNAVAILABLE.into()), summary: Some(summary), quota_unknown, ..Outcome::default() },
+        Utc::now(),
+    )? {
+        workflow_trigger::publish_runs(core, std::slice::from_ref(&run.id));
+    }
+    Ok(true)
+}
+
+/// How a turn's end settles its run, or None when the lease was lost and
+/// someone else settles it.
+fn turn_outcome(
+    core: &Arc<BridgeCore>,
+    end: TurnEnd,
+    session_id: &str,
+    baseline: i64,
+) -> Result<Option<(wire::WorkflowRunStatus, Outcome)>, BridgeError> {
+    Ok(Some(match end {
+        TurnEnd::ConnectorUnavailable(summary) => (
+            wire::WorkflowRunStatus::Failed,
+            Outcome { failure_code: Some(CONNECTOR_UNAVAILABLE.into()), summary: Some(summary), ..Outcome::default() },
+        ),
+        TurnEnd::LeaseLost => return Ok(None),
+        TurnEnd::Budget(code) => (
+            wire::WorkflowRunStatus::Failed,
+            Outcome { failure_code: Some(code.into()), summary: Some("The run reached its budget and was stopped.".into()), ..Outcome::default() },
+        ),
+        TurnEnd::ApprovalExpired => (
+            wire::WorkflowRunStatus::Failed,
+            Outcome { failure_code: Some("approval_expired".into()), summary: Some("Nobody answered its request to change something, so the run was stopped.".into()), ..Outcome::default() },
+        ),
+        TurnEnd::ProviderEnded => (
+            wire::WorkflowRunStatus::Failed,
+            Outcome { failure_code: Some("provider_ended".into()), summary: Some("The agent stopped before finishing its turn.".into()), ..Outcome::default() },
+        ),
+        TurnEnd::Completed { failed: true } => (
+            wire::WorkflowRunStatus::Failed,
+            Outcome { failure_code: Some("turn_failed".into()), summary: last_message(&core.db.lock().unwrap(), session_id, baseline)?, ..Outcome::default() },
+        ),
+        TurnEnd::Completed { failed: false } => {
+            let text = last_message(&core.db.lock().unwrap(), session_id, baseline)?.unwrap_or_default();
+            match parse_result_block(&text) {
+                Some(ResultReport::Done(summary)) => (wire::WorkflowRunStatus::Succeeded, Outcome { summary: Some(summary), ..Outcome::default() }),
+                Some(ResultReport::NotDone(summary)) => (
+                    wire::WorkflowRunStatus::Failed,
+                    Outcome { failure_code: Some("not_done".into()), summary: Some(summary), ..Outcome::default() },
+                ),
+                None => (
+                    wire::WorkflowRunStatus::Unverified,
+                    Outcome { summary: Some("The run ended without the result block it was asked for.".into()), ..Outcome::default() },
+                ),
+            }
+        }
+    }))
+}
+
 fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
     let ClaimedRun { run, lease_owner, quota_verdict: quota } = claimed;
     let definition = revision_definition(&core.db.lock().unwrap(), &run.revision_id)?;
@@ -473,20 +546,7 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
         QuotaVerdict::Proceed { unknown } => unknown,
     };
 
-    // A granted connector Claude already says needs sign-in, or no longer has,
-    // fails before anything is spent. Unknown proceeds: the sidecar's own wait
-    // is the second check.
-    if let Some(summary) = workflows::unavailable_summary(&definition, crate::marketplace::connectors_peek().as_ref()) {
-        if workflow_trigger::finish(
-            &core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
-            &run.id,
-            &lease_owner,
-            wire::WorkflowRunStatus::Failed,
-            &Outcome { failure_code: Some(CONNECTOR_UNAVAILABLE.into()), summary: Some(summary), quota_unknown, ..Outcome::default() },
-            Utc::now(),
-        )? {
-            workflow_trigger::publish_runs(core, std::slice::from_ref(&run.id));
-        }
+    if failed_for_connectors(core, &run, &lease_owner, &definition, quota_unknown)? {
         return Ok(());
     }
 
@@ -552,46 +612,10 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
 
     let approval_wait = if run.trigger_kind == wire::WorkflowTriggerKind::Event { EVENT_APPROVAL_WAIT } else { APPROVAL_WAIT };
     let end = wait_for_turn_within(core, &run, &lease_owner, &session_id, baseline, &definition.budget, approval_wait)?;
-    let (status, outcome) = match end {
-        TurnEnd::ConnectorUnavailable(summary) => (
-            wire::WorkflowRunStatus::Failed,
-            Outcome { failure_code: Some(CONNECTOR_UNAVAILABLE.into()), summary: Some(summary), ..Outcome::default() },
-        ),
-        TurnEnd::LeaseLost => {
-            // Cancelled or reclaimed: someone else settled the run.
-            stop(core, &session_id);
-            return Ok(());
-        }
-        TurnEnd::Budget(code) => (
-            wire::WorkflowRunStatus::Failed,
-            Outcome { failure_code: Some(code.into()), summary: Some("The run reached its budget and was stopped.".into()), ..Outcome::default() },
-        ),
-        TurnEnd::ApprovalExpired => (
-            wire::WorkflowRunStatus::Failed,
-            Outcome { failure_code: Some("approval_expired".into()), summary: Some("Nobody answered its request to change something, so the run was stopped.".into()), ..Outcome::default() },
-        ),
-        TurnEnd::ProviderEnded => (
-            wire::WorkflowRunStatus::Failed,
-            Outcome { failure_code: Some("provider_ended".into()), summary: Some("The agent stopped before finishing its turn.".into()), ..Outcome::default() },
-        ),
-        TurnEnd::Completed { failed: true } => (
-            wire::WorkflowRunStatus::Failed,
-            Outcome { failure_code: Some("turn_failed".into()), summary: last_message(&core.db.lock().unwrap(), &session_id, baseline)?, ..Outcome::default() },
-        ),
-        TurnEnd::Completed { failed: false } => {
-            let text = last_message(&core.db.lock().unwrap(), &session_id, baseline)?.unwrap_or_default();
-            match parse_result_block(&text) {
-                Some(ResultReport::Done(summary)) => (wire::WorkflowRunStatus::Succeeded, Outcome { summary: Some(summary), ..Outcome::default() }),
-                Some(ResultReport::NotDone(summary)) => (
-                    wire::WorkflowRunStatus::Failed,
-                    Outcome { failure_code: Some("not_done".into()), summary: Some(summary), ..Outcome::default() },
-                ),
-                None => (
-                    wire::WorkflowRunStatus::Unverified,
-                    Outcome { summary: Some("The run ended without the result block it was asked for.".into()), ..Outcome::default() },
-                ),
-            }
-        }
+    let Some((status, outcome)) = turn_outcome(core, end, &session_id, baseline)? else {
+        // Cancelled or reclaimed: someone else settled the run.
+        stop(core, &session_id);
+        return Ok(());
     };
     settle(core, &run, &lease_owner, &session_id, status, Outcome { quota_unknown, ..outcome })
 }

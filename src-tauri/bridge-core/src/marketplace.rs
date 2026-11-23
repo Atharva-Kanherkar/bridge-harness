@@ -385,9 +385,13 @@ pub fn refresh_connectors() -> ClaudeSdkConfiguration {
 /// Fill the cache in the background at boot, so the first workflow save or
 /// options read does not wait for `mcp list`.
 pub fn warm_connectors() {
-    let _ = std::thread::Builder::new().name("connector-warm".into()).spawn(|| {
+    // A thread that cannot start leaves the cache cold: the first reader
+    // probes inline instead.
+    if let Err(error) = std::thread::Builder::new().name("connector-warm".into()).spawn(|| {
         refresh_connectors();
-    });
+    }) {
+        eprintln!("bridge: connector warm-up did not start: {error}");
+    }
 }
 
 /// The newest cached answer that holds connectors, at any age, with its age.
