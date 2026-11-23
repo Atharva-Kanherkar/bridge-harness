@@ -36,6 +36,41 @@ findings parser and the session loop), and is committed before any of that code.
   Bridge never resumes them.
 - Posting stays unavailable until #1119.
 
+## Amendments after review 6023548164
+
+- **The context folder is never planted.** It is `.bridge-review-<12 random hex>`, made with a
+  create that fails if the path exists, and each file is created new (`create_new`), so a symlink
+  the PR committed is refused rather than followed. Its name appears only in the per-PR turn.
+- **An OpenCode reviewer loads nothing executable from the checkout.** Its server runs with
+  `OPENCODE_DISABLE_PROJECT_CONFIG`, `OPENCODE_CONFIG_PROJECT_DISABLE`,
+  `OPENCODE_DISABLE_CLAUDE_CODE`, `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` and
+  `OPENCODE_DISABLE_AUTOUPDATE`, and with `lsp` and `formatter` off, merged into the person's
+  own inline config. Claude's read-only mode already loads only the sanitized user settings (no
+  project hooks, MCP or plugins), and Codex runs with an isolated `CODEX_HOME`.
+- **Tool calls are distinct invocations** of `tool.started` and `command.started` (Codex), by
+  item id, shared across both turns.
+- **Questions are refused on their own channel:** Codex `item/tool/requestUserInput` with empty
+  answers, `mcpServer/elicitation/request` with `{"action":"decline","content":null}`, and
+  otherwise `reject_question`.
+- **Usage survives failure and retries.** Each attempt adds its usage to the pass's
+  `UsageMeter`; the runner writes the total whether the pass completes or fails.
+- **Normalizer state is released** (`forget_session`) when a reviewer session stops.
+- **The diff parser follows hunk line counts**, so `---` and `+++` content lines stay content, and
+  it decodes Git's octal-quoted names.
+- **Test git calls go through `git::git_command`**, so the spawn scanner passes.
+
+New regressions:
+- `reviews::session::tests::a_planted_path_in_the_checkout_is_never_followed`
+- `reviews::session::tests::each_invocation_counts_once_and_codex_commands_count_too`
+- `reviews::session::tests::a_failed_pass_still_records_what_it_spent`
+- `reviews::contract::tests::header_like_lines_inside_a_hunk_are_content`
+- `reviews::contract::tests::octal_quoted_names_decode_to_the_real_path`
+- `reviews::contract::tests::real_git_output_round_trips_through_the_parser`
+- `opencode_adapter::tests::a_reviewer_server_loads_nothing_executable_from_the_checkout`
+- `opencode_adapter::tests::live_reviewer_never_runs_a_planted_plugin` (ignored, run by hand
+  under `env -i`: a planted plugin calls a loopback canary from a chat session and never from a
+  reviewer session)
+
 ## Functional Behavior
 
 ### Session (`reviews/session.rs`)
