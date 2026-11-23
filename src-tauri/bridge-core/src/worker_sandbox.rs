@@ -34,13 +34,23 @@ impl ReadOnlySandbox {
         Self::create_with_runtime_network(_session_id, workspace, request, runtime_network_denied())
     }
 
+    /// A sandbox whose tools have no network, for a session that must read
+    /// and nothing else: the PR reviewer, which works from prefetched context.
+    pub fn offline(workspace: &Path) -> Result<Self, BridgeError> {
+        Self::create_for(workspace, false, runtime_network_denied())
+    }
+
     fn create_with_runtime_network(
         _session_id: &str,
         workspace: &Path,
         request: &DelegationRequest,
         runtime_network_denied: bool,
     ) -> Result<Self, BridgeError> {
-        if request.network_access && runtime_network_denied {
+        Self::create_for(workspace, request.network_access, runtime_network_denied)
+    }
+
+    fn create_for(workspace: &Path, network_access: bool, runtime_network_denied: bool) -> Result<Self, BridgeError> {
+        if network_access && runtime_network_denied {
             return Err(BridgeError::Invalid("BRIDGE_READ_ONLY_NETWORK=deny forbids read-only worker network egress, but this request asked for network access".into()));
         }
         let root = std::env::temp_dir()
@@ -63,7 +73,7 @@ impl ReadOnlySandbox {
                 root_dir: root.clone(),
                 profile_path,
                 output_dir,
-                network_allowed: request.network_access,
+                network_allowed: network_access,
                 runtime_network_denied,
             })
         })();
@@ -413,6 +423,18 @@ mod tests {
             harness: None,
             model: None,
         }
+    }
+
+    #[test]
+    fn an_offline_sandbox_denies_tool_network() {
+        let workspace = tempfile::tempdir().unwrap();
+        let sandbox = ReadOnlySandbox::offline(workspace.path()).unwrap();
+        assert!(!sandbox.network_allowed(), "the reviewer's tools never reach the network");
+        assert!(sandbox.output_dir().is_dir(), "it may still write its own output");
+        let output = sandbox.output_dir().to_path_buf();
+        sandbox.cleanup();
+        assert!(!output.exists());
+        assert!(ReadOnlySandbox::offline(&workspace.path().join("missing")).is_err(), "a missing checkout cannot be isolated");
     }
 
     #[test]

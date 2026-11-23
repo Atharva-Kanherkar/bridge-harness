@@ -207,11 +207,22 @@ pub fn start_courier_with_settings(
     launch(request, None, settings, SessionKind::Courier { permission, server }, None)
 }
 
+/// A hidden PR reviewer: it may read, search and list files, and nothing
+/// else. No shell (so no question nobody answers), no edits, no web, no
+/// directory outside the checkout. See `reviewer_permission_rules`.
+pub fn start_reviewer_with_settings(
+    request: StartRequest<'_>,
+    settings: &OpenCodeSettings,
+) -> Result<StartedOpenCode, BridgeError> {
+    launch(request, None, settings, SessionKind::Reviewer, None)
+}
+
 #[derive(Clone, Copy)]
 enum SessionKind<'a> {
     Chat,
     Completion,
     Courier { permission: &'a str, server: &'a str },
+    Reviewer,
 }
 
 pub fn resume_with_settings(
@@ -425,6 +436,7 @@ fn launch(
             let mut body = match kind {
                 SessionKind::Completion => completion_session_body(model.as_ref(), variant.as_deref()),
                 SessionKind::Courier { permission, .. } => courier_session_body(model.as_ref(), variant.as_deref(), permission),
+                SessionKind::Reviewer => reviewer_session_body(model.as_ref(), variant.as_deref()),
                 SessionKind::Chat => session_create_body(model.as_ref(), variant.as_deref(), request.write_mode),
             };
             if api == ServerApi::V2 {
@@ -919,6 +931,27 @@ fn courier_session_body(model: Option<&ModelRef>, variant: Option<&str>, permiss
         {"permission":"execute", "pattern":"*", "action":"allow"},
         {"permission": permission, "pattern":"*", "action":"ask"},
     ]);
+    body
+}
+
+/// The reviewer's rules: deny everything, then allow the four read tools.
+/// OpenCode takes the last matching rule, so the allows win for those tools
+/// and everything else, `bash`, `edit`, `webfetch` and `external_directory`
+/// included, is denied without a prompt that nobody would answer.
+pub(crate) fn reviewer_permission_rules() -> Value {
+    json!([
+        {"permission":"*", "pattern":"*", "action":"deny"},
+        {"permission":"read", "pattern":"*", "action":"allow"},
+        {"permission":"grep", "pattern":"*", "action":"allow"},
+        {"permission":"glob", "pattern":"*", "action":"allow"},
+        {"permission":"list", "pattern":"*", "action":"allow"},
+    ])
+}
+
+fn reviewer_session_body(model: Option<&ModelRef>, variant: Option<&str>) -> Value {
+    let mut body = session_create_body(model, variant, Some(WriteMode::ReadOnly));
+    body["title"] = json!("Bridge PR review");
+    body["permission"] = reviewer_permission_rules();
     body
 }
 
@@ -3506,6 +3539,35 @@ mod tests {
         assert!(body.get("permission").is_none());
         let completion = v2_session_body(completion_session_body(Some(&model), None));
         assert_eq!(completion["permissions"], json!([{"action":"*","resource":"*","effect":"deny"}]));
+    }
+
+    #[test]
+    fn the_reviewer_reads_and_nothing_asks_while_chat_rules_stay_as_they_were() {
+        // Chat sessions keep their behaviour: a read-only chat still asks
+        // before a shell command.
+        let chat = permission_rules(Some(WriteMode::ReadOnly));
+        assert!(chat.as_array().unwrap().contains(&json!({"permission":"bash", "pattern":"*", "action":"ask"})));
+        assert_eq!(chat[0], json!({"permission":"*", "pattern":"*", "action":"allow"}));
+
+        let model = ModelRef { provider_id: "opencode".into(), model_id: "big-pickle".into() };
+        let body = reviewer_session_body(Some(&model), None);
+        assert_eq!(body["title"], "Bridge PR review");
+        let rules = body["permission"].as_array().unwrap();
+        assert!(rules.iter().all(|rule| rule["action"] != "ask"), "nothing in a hidden session waits for a person: {rules:?}");
+        assert_eq!(rules[0], json!({"permission":"*", "pattern":"*", "action":"deny"}), "denied unless allowed below");
+        let allowed: Vec<&str> = rules.iter().filter(|rule| rule["action"] == "allow").map(|rule| rule["permission"].as_str().unwrap()).collect();
+        assert_eq!(allowed, ["read", "grep", "glob", "list"]);
+        let last_rule_for = |tool: &str| {
+            rules.iter().rev().find(|rule| rule["permission"] == tool || rule["permission"] == "*").map(|rule| rule["action"].clone())
+        };
+        for denied in ["bash", "edit", "webfetch", "external_directory", "task"] {
+            assert_eq!(last_rule_for(denied), Some(json!("deny")), "{denied}");
+        }
+        let v2 = v2_session_body(body);
+        let v2_rules = v2["permissions"].as_array().unwrap();
+        assert_eq!(v2_rules[0], json!({"action":"*","resource":"*","effect":"deny"}));
+        assert!(v2_rules.contains(&json!({"action":"read","resource":"*","effect":"allow"})));
+        assert!(v2_rules.iter().all(|rule| rule["effect"] != "ask"));
     }
 
     #[test]
