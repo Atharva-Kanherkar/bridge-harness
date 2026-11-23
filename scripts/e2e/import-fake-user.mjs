@@ -431,6 +431,8 @@ try {
   check("What did not come over says why: the Pi chat and the worker Orca kept no session for",
     orcaResult.text.includes("chats with pi, which Bridge does not run") && orcaResult.text.includes("workers' place under their run's lead chat"), orcaResult.text.replace(/\n+/g, " | "));
   check("Nothing shows Orca's secrets", !(await text()).includes("CANARY"));
+  await js(`document.querySelectorAll('button[aria-label="Dismiss notification"]').forEach(button => button.click())`);
+  await js(`document.querySelector('[data-import-tool="orca"]').scrollIntoView({ block: "start" })`);
   await sleep(600);
   await shot("05k-orca-summary-dark");
   const orcaState = await js(`(async () => {
