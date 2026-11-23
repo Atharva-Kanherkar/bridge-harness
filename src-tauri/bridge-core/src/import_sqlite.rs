@@ -1,5 +1,5 @@
 //! Reading another tool's SQLite database without changing it, and only the
-//! tables Bridge is allowed to read there (Conductor, T3 Code, Orca).
+//! tables Bridge is allowed to read there (Conductor, T3 Code, Orca, Superset).
 //!
 //! Every query names its table and columns. A table that is not on the
 //! caller's allowed list is a bug, not a runtime branch: it panics, and the
@@ -162,6 +162,47 @@ impl Allowed {
         let mut statement = conn.prepare(&sql)?;
         let mut rows = statement.query(params)?;
         let names: Vec<&str> = chosen.iter().copied().chain(fields.iter().map(|(name, _)| *name)).collect();
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            let mut cells = HashMap::new();
+            for (index, name) in names.iter().enumerate() {
+                cells.insert((*name).to_owned(), Cell::of(row.get_ref(index)?));
+            }
+            out.push(cells);
+        }
+        Ok(out)
+    }
+}
+
+impl Allowed {
+    /// The key names of a JSON object column, as a JSON array, for each row,
+    /// beside the wanted columns: SQLite lists the keys (`json_each`), so
+    /// the values (Superset keeps API keys there) never leave the database.
+    pub fn select_json_keys(
+        &self,
+        conn: &Connection,
+        table: &str,
+        wanted: &[&str],
+        json_column: &str,
+        alias: &str,
+    ) -> rusqlite::Result<Vec<Row>> {
+        let present = self.columns(conn, table)?;
+        let chosen: Vec<&str> = wanted.iter().copied().filter(|column| present.contains(*column)).collect();
+        if chosen.is_empty() {
+            return Ok(Vec::new());
+        }
+        assert!(!chosen.contains(&alias) && !chosen.contains(&json_column), "the JSON column itself is never selected");
+        let mut selected: Vec<String> = chosen.iter().map(|column| format!("\"{column}\"")).collect();
+        selected.push(if present.contains(json_column) {
+            format!("(SELECT json_group_array(key) FROM json_each(CASE WHEN json_valid(\"{json_column}\") AND json_type(\"{json_column}\") = 'object' THEN \"{json_column}\" ELSE '{{}}' END))")
+        } else {
+            "'[]'".to_owned()
+        });
+        let sql = format!("SELECT {} FROM {table}", selected.join(", "));
+        log(&sql);
+        let mut statement = conn.prepare(&sql)?;
+        let mut rows = statement.query([])?;
+        let names: Vec<&str> = chosen.iter().copied().chain(std::iter::once(alias)).collect();
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             let mut cells = HashMap::new();

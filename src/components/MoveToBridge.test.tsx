@@ -85,8 +85,11 @@ describe("MoveToBridge", () => {
     expect(section("orca").textContent).toContain("4 chats · 2 workspaces in 1 repo");
     expect(section("orca").textContent).toContain("workers under the chat that led them");
     expect(section("orca").querySelector("[data-tool-mark]")?.textContent).toBe("O");
-    expect(section("superset").textContent).toContain("Not found on this Mac");
-    expect(container.querySelectorAll("button").length).toBe(6);
+    expect(button(section("superset"), "Import").disabled).toBe(false);
+    expect(section("superset").textContent).toContain("5 chats · 2 workspaces in 1 repo");
+    expect(section("superset").textContent).toContain("arrive switched off, without their secret values");
+    expect(section("superset").querySelector("[data-tool-mark]")?.textContent).toBe("S");
+    expect(container.querySelectorAll("button").length).toBe(7);
   });
 
   it("each tool keeps its own last import", async () => {
@@ -206,6 +209,20 @@ describe("MoveToBridge", () => {
     expect(orca.textContent).toContain("so Orca keeps working with them");
     expect(orca.textContent).toContain("chats with pi, which Bridge does not run");
     expect(orca.querySelector("[data-tool-initial='orca']")?.textContent).toBe("O");
+  });
+
+  it("imports Superset's chats, workspaces and agent configurations and says what did not come over", async () => {
+    vi.spyOn(bridgeApi, "importStatus").mockResolvedValue({ jobs: [
+      job({ jobId: "s", tool: "superset", status: "done", total: 5, processed: 5, imported: 5, workspaces: 1, notCarried: [{ text: "terminal sessions with amp, which Bridge does not run", count: 1 }], finishedAt: "2026-11-23T10:00:00Z" }),
+    ] });
+    await render();
+    const superset = section("superset");
+    expect(superset.querySelector("[data-import-result='imported']")?.textContent).toBe("5");
+    expect(superset.querySelector("[data-import-result='workspaces']")?.textContent).toBe("1");
+    expect(superset.textContent).toContain("so Superset keeps working with them");
+    expect(superset.textContent).toContain("Your agent configurations came over switched off, without their secret values");
+    expect(superset.textContent).toContain("terminal sessions with amp, which Bridge does not run");
+    expect(superset.querySelector("[data-tool-initial='superset']")?.textContent).toBe("S");
   });
 
   it("lands the transfer with a check when the import ends", async () => {

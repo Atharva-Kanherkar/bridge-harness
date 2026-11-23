@@ -30,8 +30,8 @@ const RECORD = process.env.RECORD !== "0";
 // found (nothing is read then) and left out when imported.
 const CHATS = Number(process.env.IMPORT_FAKE_CHATS ?? 600) + 10;
 const PROBES = 1;
-// The fake home, to check on disk that Bridge left Conductor's, T3 Code's and
-// Orca's folders alone.
+// The fake home, to check on disk that Bridge left Conductor's, T3 Code's,
+// Orca's and Superset's folders alone.
 const FAKE_HOME = process.env.FAKE_HOME;
 if (!LINK) throw new Error("Set LINK to a daemon link from scripts/web-link.mjs");
 
@@ -186,7 +186,8 @@ try {
   check("OpenCode is found with its own section, mark and Import button, its background run apart", found.includes("OpenCode keeps its own memory and setup")
     && /1 chat in 1 project · 1 background run left out/.test(await js(`document.querySelector('[data-import-tool="opencode"]').innerText`))
     && await js(`!!document.querySelector('[data-import-tool="opencode"] [data-tool-mark] svg') && !!document.querySelector('[data-import-tool="opencode"] button')`));
-  check("Tools that are not installed say so", found.includes("Not found on this Mac"));
+  check("Every tool Bridge imports from is found, each with its own Import button", !found.includes("Not found on this Mac")
+    && await js(`document.querySelectorAll('[data-import-tool] button').length`) === 7);
   await shot("01-found-dark");
 
   // The generated chats plus 5 hand-made ones, the Explore subagent and
@@ -467,6 +468,59 @@ try {
   const orcaTree = FAKE_HOME ? join(FAKE_HOME, "orca/workspaces/storefront/refund-copy/cart.js") : null;
   const orcaKept = orcaTree ? existsSync(orcaTree) && read(orcaTree, "utf8").includes("uncommitted") : null;
   check("Orca's worktree and its uncommitted work are untouched", orcaKept !== false, `kept=${orcaKept}`);
+
+  await caption("Superset's workspaces, chats and agent configuration come over");
+  await click("Open settings for");
+  await waitFor("Settings to open", `[...document.querySelectorAll("button, a, [role=button]")].some(el => el.offsetParent !== null && el.textContent.trim() === "Archived chats")`);
+  await click("Import");
+  await waitFor("the tools list", `!!document.querySelector('[data-import-tool="superset"]') && !document.body.innerText.includes("Looking for other tools")`);
+  await js(`document.querySelector('[data-import-tool="superset"]').scrollIntoView({ block: "center" })`);
+  const supersetFound = await js(`document.querySelector('[data-import-tool="superset"]').innerText`);
+  check("Superset is found with its chats and workspace, and its own Import button", supersetFound.includes("2 chats · 1 workspace in 1 repo")
+    && await js(`!!document.querySelector('[data-import-tool="superset"] button')`), supersetFound.replace(/\n+/g, " | "));
+  await click("Import", '[data-import-tool="superset"] button');
+  await waitFor("the Superset import to finish", `!!document.querySelector('[data-import-tool="superset"] [data-import-result="imported"]')`, 60000);
+  const supersetResult = await js(`(() => {
+    const section = document.querySelector('[data-import-tool="superset"]');
+    const count = selector => Number(section.querySelector(selector)?.textContent ?? -1);
+    return { imported: count('[data-import-result="imported"]'), skipped: count('[data-import-result="skipped"]'), workspaces: count('[data-import-result="workspaces"]'), text: section.innerText };
+  })()`);
+  check("The chat whose session is gone came from Superset's copy and the agent configuration came over; the chat OpenCode brought was already in Bridge",
+    supersetResult.imported === 2 && supersetResult.skipped === 1, JSON.stringify(supersetResult).slice(0, 400));
+  check("Its workspace came over, left where it is, and the agent configuration arrived switched off", supersetResult.workspaces === 1
+    && supersetResult.text.includes("so Superset keeps working with them") && supersetResult.text.includes("came over switched off, without their secret values"), supersetResult.text.replace(/\n+/g, " | "));
+  check("What did not come over says why: the archived workspace and the Amp terminal",
+    supersetResult.text.includes("workspaces archived in Superset") && supersetResult.text.includes("terminal sessions with amp, which Bridge does not run"), supersetResult.text.replace(/\n+/g, " | "));
+  check("Nothing shows Superset's secrets", !(await text()).includes("CANARY"));
+  await js(`document.querySelectorAll('button[aria-label="Dismiss notification"]').forEach(button => button.click())`);
+  await js(`document.querySelector('[data-import-tool="superset"]').scrollIntoView({ block: "start" })`);
+  await sleep(600);
+  await shot("05m-superset-summary-dark");
+  const supersetState = await js(`(async () => {
+    const { bridgeApi } = await import("/src/api.ts");
+    const state = await bridgeApi.state();
+    const workspace = state.workspaces.find(item => item.title === "Badge copy");
+    const chat = state.sessions.find(item => (item.title ?? "").startsWith("Shorten the cart badge copy"));
+    return { id: workspace?.id, path: workspace?.path, branch: workspace?.branch, chatWorkspace: chat?.workspaceId, archivedWorkspace: state.workspaces.some(item => item.title === "Old badge") };
+  })()`);
+  check("The workspace keeps Superset's name, folder and branch, and the chat that ran there is under it",
+    !!supersetState.id && (supersetState.path ?? "").endsWith("/.paradev/worktrees/storefront/badge-copy") && supersetState.branch === "badge-copy" && supersetState.chatWorkspace === supersetState.id && !supersetState.archivedWorkspace, JSON.stringify(supersetState));
+  await caption("The chat from Superset's own copy opens");
+  await click("Back to app");
+  await click("Shorten the cart badge copy");
+  await waitFor("the Superset chat", `document.body.innerText.includes("the badge now says")`);
+  await sleep(1000);
+  const supersetBadge = await js(`document.querySelector('[data-testid="import-source-badge"]')?.getAttribute("title")`);
+  check("It is badged as imported from Superset", (supersetBadge ?? "").startsWith("Imported · Superset"), String(supersetBadge));
+  await js(`document.querySelectorAll('button[aria-label="Dismiss notification"]').forEach(button => button.click())`);
+  await sleep(800);
+  const supersetChat = await text();
+  const supersetSaid = supersetChat.slice(0, supersetChat.indexOf("the badge now says"));
+  check("Both sides of the conversation came over, the user's message first", supersetSaid.includes("Shorten the cart badge copy to one word."), supersetSaid.slice(-200).replace(/\n+/g, " | "));
+  await shot("05n-superset-chat-dark");
+  const supersetTree = FAKE_HOME ? join(FAKE_HOME, ".paradev/worktrees/storefront/badge-copy/cart.js") : null;
+  const supersetKept = supersetTree ? existsSync(supersetTree) && read(supersetTree, "utf8").includes("uncommitted") : null;
+  check("Superset's worktree and its uncommitted work are untouched", supersetKept !== false, `kept=${supersetKept}`);
 
   await caption("Find the imported chat in the sidebar and open it");
   await click("Invoice email header fix");

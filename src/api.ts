@@ -1881,9 +1881,8 @@ function startMockImport(tool: string): ImportJob {
   return job;
 }
 
-/** Mock-mode tools: Claude Code, Codex and OpenCode found with history, an ADE found, the rest absent. */
+/** Mock-mode tools: Claude Code, Codex and OpenCode found with history, and every ADE Bridge imports from found too. */
 function mockImportSources(): ImportSourcesDetection {
-  const absent = (tool: string, label: string, note: string) => ({ tool, label, installed: false, supported: false, roots: [], counts: { chats: 0, projects: 0, workspaces: 0, memories: 0, setup: 0, background: 0 }, note });
   return {
     detectedAt: new Date().toISOString(),
     sources: [
@@ -1893,7 +1892,7 @@ function mockImportSources(): ImportSourcesDetection {
       { tool: "conductor", label: "Conductor", installed: true, supported: true, roots: ["/mock/conductor"], counts: { chats: 0, projects: 2, workspaces: 5, memories: 0, setup: 0, background: 0 }, note: "Workspaces come over as Bridge workspaces, left where they are, so Conductor keeps working with them. Their chats come over with the Claude Code and Codex imports." },
       { tool: "t3code", label: "T3 Code", installed: true, supported: true, roots: ["/mock/.t3"], counts: { chats: 6, projects: 2, workspaces: 2, memories: 0, setup: 0, background: 0 }, note: "Threads come over as chats, with their full Claude Code, Codex or OpenCode history, or T3 Code's own copy when that is gone. Worktrees come over as Bridge workspaces, left where they are, so T3 Code keeps working with them." },
       { tool: "orca", label: "Orca", installed: true, supported: true, roots: ["/mock/Library/Application Support/orca"], counts: { chats: 4, projects: 1, workspaces: 2, memories: 0, setup: 0, background: 0 }, note: "Chats come over with their full Claude Code, Codex or OpenCode history, or Orca's own copy when that is gone. Multi-agent runs keep their workers under the chat that led them. Worktrees come over as Bridge workspaces, left where they are, so Orca keeps working with them." },
-      absent("superset", "Superset", "Superset's Claude Code chats come over with the Claude Code import. Its workspaces and agent settings are coming."),
+      { tool: "superset", label: "Superset", installed: true, supported: true, roots: ["/mock/.paradev"], counts: { chats: 5, projects: 1, workspaces: 2, memories: 0, setup: 0, background: 0 }, note: "Chats and terminal agent sessions come over with their full Claude Code, Codex or OpenCode history, or Superset's own copy when that is gone. Workspaces come over as Bridge workspaces, left where they are, so Superset keeps working with them. Agent configurations you made arrive switched off, without their secret values." },
     ],
   };
 }

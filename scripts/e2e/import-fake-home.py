@@ -9,8 +9,9 @@ a failing command, a compaction and a /rename title, three small docs chats,
 600 short chats in three more projects, one background run in the OS temp
 folder, one Claude memory and a CLAUDE.md, one Codex chat, an OpenCode store
 with a chat and its subagent, Conductor's workspaces, T3 Code's threads and
-worktree, and Orca's worktree and multi-agent run, so the "Found on this Mac"
-list shows every tool.
+worktree, Orca's worktree and multi-agent run, and Superset's workspaces,
+chats and agent configuration, so the "Found on this Mac" list shows every
+tool.
 """
 import base64, json, os, shutil, sqlite3, subprocess, sys, uuid
 
@@ -298,6 +299,59 @@ db.execute("INSERT INTO dispatch_contexts(id, run_id, task_id, assignee_orca_ses
 db.execute("INSERT INTO dispatch_contexts(id, run_id, task_id, assignee_handle, status) VALUES('ctx_2', 'run_1', 'task_2', 'term_w', 'completed')")
 db.execute("INSERT INTO worker_terminal_resources(id, origin_dispatch_id, owner_dispatch_id, terminal_handle, resume_session) VALUES('w2', 'ctx_2', 'ctx_2', 'term_w', ?)",
            (json.dumps({"agent": "opencode", "launchConfig": {"agentEnv": {"OPENAI_API_KEY": "CANARY-orca-secret"}}}),))
+db.commit()
+db.close()
+# Superset (Paradev), as its 2.0.11 host lays things out (schemas rebuilt
+# with its own migrations, rows shaped as that host wrote them): the
+# storefront project with a worktree workspace under ~/.paradev/worktrees/,
+# an archived one, a chat on OpenCode's "Speed up the checkout page" session
+# (which the OpenCode import brings), a chat whose Claude Code session is
+# gone (Superset's own copy), a terminal session with Amp (Bridge does not
+# run Amp), and an agent configuration with an API key. Its sign-in files,
+# host token and the key hold canaries nothing may ever show.
+superset_home = os.path.join(home, ".paradev")
+superset_org = "7f3c2b1a-4d5e-4f60-8a9b-0c1d2e3f4a5b"
+superset_dir = os.path.join(superset_home, "host", superset_org)
+os.makedirs(superset_dir)
+for name, body in [("auth-token.enc", "CANARY-superset-secret"), ("config.json", json.dumps({"apiKey": "CANARY-superset-secret"}))]:
+    with open(os.path.join(superset_home, name), "w") as out:
+        out.write(body)
+with open(os.path.join(superset_dir, "manifest.json"), "w") as out:
+    json.dump({"pid": 1, "endpoint": "http://127.0.0.1:1", "authToken": "CANARY-superset-secret", "organizationId": superset_org}, out)
+superset_tree = os.path.join(superset_home, "worktrees/storefront/badge-copy")
+git(store_repo, "worktree", "add", "-q", "-b", "badge-copy", superset_tree)
+with open(os.path.join(superset_tree, "cart.js"), "a") as out:
+    out.write("// uncommitted: badge copy\n")
+superset_tree = os.path.realpath(superset_tree)
+superset_fixtures = os.path.join(repo, "testing/fixtures/import/superset")
+def superset_db(name, head):
+    db = sqlite3.connect(os.path.join(superset_dir, f"{name}.db"))
+    db.executescript(open(os.path.join(superset_fixtures, f"{name}-{head}.sql")).read())
+    for when in open(os.path.join(superset_fixtures, f"{name}-{head}.txt")).read().split():
+        db.execute("INSERT INTO __drizzle_migrations(hash, created_at) VALUES('h', ?)", (int(when),))
+    return db
+db = superset_db("host", 38)
+db.execute("INSERT INTO projects(id, repo_path, name, created_at, updated_at) VALUES('p1', ?, 'storefront', 1, 1)", (os.path.realpath(store_repo),))
+db.execute("INSERT INTO workspaces(id, project_id, worktree_path, branch, name, type, created_at, updated_at) VALUES('w-badge', 'p1', ?, 'badge-copy', 'Badge copy', 'worktree', 1, 1)", (superset_tree,))
+db.execute("INSERT INTO workspaces(id, project_id, worktree_path, branch, name, type, archived_at, archive_reason, created_at, updated_at) VALUES('w-old', 'p1', ?, 'old-badge', 'Old badge', 'worktree', 1795427138800, 'deleted', 1, 1)", (os.path.join(superset_home, "worktrees/storefront/old-badge"),))
+db.execute("INSERT INTO terminal_sessions(id, origin_workspace_id, created_at) VALUES('t-amp', 'w-badge', 1)")
+db.execute("INSERT INTO terminal_agent_bindings(terminal_id, workspace_id, agent_id, agent_session_id, started_at, last_event_at, last_event_type) VALUES('t-amp', 'w-badge', 'amp', 'amp-1', 1, 1, 'Stop')")
+db.execute("INSERT INTO host_agent_configs(id, preset_id, label, command, args_json, prompt_transport, prompt_args_json, env_json, display_order, created_at, updated_at) VALUES('cfg-seeded', 'claude', 'Claude', 'claude', '[]', 'argv', '[]', '{}', 0, 1, 1)")
+db.execute("INSERT INTO host_agent_configs(id, preset_id, label, command, args_json, prompt_transport, prompt_args_json, env_json, display_order, created_at, updated_at) VALUES('cfg-key', 'claude', 'Claude (work key)', 'claude', '[]', 'argv', '[]', ?, 1, 1, 1)", (json.dumps({"ANTHROPIC_API_KEY": "CANARY-superset-secret"}),))
+db.commit()
+db.close()
+db = superset_db("chat", 5)
+db.execute("INSERT INTO chat_sessions_local(session_id, scope_id, harness, harness_session_id, epoch, status, updated_at) VALUES('c-open', 'w-badge', 'opencode-acp', 'ses_checkout', 'e1', 'idle', 1795426792536)")
+db.execute("INSERT INTO chat_sessions_local(session_id, scope_id, harness, harness_session_id, epoch, status, updated_at) VALUES('c-copy', 'w-badge', 'claude-acp', '6a7b8c9d-0e1f-4a2b-8c3d-4e5f6a7b8c9d', 'e1', 'idle', 1795426792536)")
+events = [
+    {"type": "session", "session": {"status": "running", "harness": "claude-acp"}},
+    {"type": "item", "turnId": "t1", "item": {"id": "u1", "startedAtMs": 1795427148315, "kind": "user_message", "content": [{"type": "text", "text": "Shorten the cart badge copy to one word."}]}},
+    {"type": "item", "turnId": "t1", "item": {"id": "a1", "startedAtMs": 1795427152979, "kind": "agent_message", "text": ""}},
+    {"type": "item", "turnId": "t1", "item": {"id": "a1", "startedAtMs": 1795427152979, "kind": "agent_message", "text": "Done: the badge now says \"Items\"."}},
+    {"type": "turn", "turn": {"id": "t1", "status": "completed", "startedAtMs": 1}},
+]
+for seq, event in enumerate(events, 1):
+    db.execute("INSERT INTO chat_journal(session_id, epoch, seq, ts, event_json) VALUES('c-copy', 'e1', ?, 1795427148315, ?)", (seq, json.dumps(event)))
 db.commit()
 db.close()
 # A real chat in a subfolder of the storefront repository: it lands under the

@@ -21,16 +21,9 @@ struct KnownTool {
     note: &'static str,
 }
 
-const OTHER_TOOLS: &[KnownTool] = &[
-    KnownTool {
-        tool: "superset",
-        label: "Superset",
-        supported: false,
-        markers: &[".paradev", ".superset"],
-        worktree_roots: &[".paradev/worktrees", ".superset/worktrees"],
-        note: "Superset's Claude Code chats come over with the Claude Code import. Its workspaces and agent settings are coming.",
-    },
-];
+/// Tools found by their folders, before Bridge imports them. Every tool it
+/// knows imports today.
+const OTHER_TOOLS: &[KnownTool] = &[];
 
 fn subdirs(path: &Path) -> Vec<PathBuf> {
     fs::read_dir(path)
@@ -203,6 +196,7 @@ pub fn detect_with(
         conductor(home),
         t3code(&crate::t3code_import::Paths::from_env(home)),
         orca(&crate::orca_import::Paths::from_env(home)),
+        superset(&crate::superset_import::Paths::from_env(home)),
     ]
     .into_iter()
         .chain(OTHER_TOOLS.iter().map(|known| other(home, known)))
@@ -362,6 +356,36 @@ fn orca(paths: &crate::orca_import::Paths) -> wire::DetectedImportSource {
     }
 }
 
+/// Superset: its chats, terminal agent sessions, projects and worktree
+/// workspaces, from its databases (opened read-only; never a message, a
+/// secret or an agent configuration's values). Chats with an agent Bridge
+/// does not run, archived workspaces and main checkouts are not counted.
+fn superset(paths: &crate::superset_import::Paths) -> wire::DetectedImportSource {
+    let installed = paths.installed();
+    let mut counts = wire::ImportSourceCounts::default();
+    let mut note = "Chats and terminal agent sessions come over with their full Claude Code, Codex or OpenCode history, or Superset's own copy when that is gone. Workspaces come over as Bridge workspaces, left where they are, so Superset keeps working with them. Agent configurations you made arrive switched off, without their secret values.".to_owned();
+    if installed {
+        match crate::superset_import::read(paths) {
+            Ok(store) => {
+                let found = crate::superset_import::counts(&store);
+                counts.chats = found.chats;
+                counts.projects = found.projects;
+                counts.workspaces = found.workspaces;
+            }
+            Err(reason) => note = reason,
+        }
+    }
+    wire::DetectedImportSource {
+        tool: crate::superset_import::PROVIDER.into(),
+        label: "Superset".into(),
+        installed,
+        supported: true,
+        roots: paths.homes.iter().map(|home| home.to_string_lossy().into_owned()).filter(|_| installed).collect(),
+        counts,
+        note: Some(note),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,8 +412,7 @@ mod tests {
             ]
         );
         assert!(sources.iter().all(|source| !source.installed));
-        assert!(sources.iter().take(6).all(|source| source.supported), "Claude Code, Codex, OpenCode, Conductor, T3 Code and Orca import today");
-        assert!(sources.iter().skip(6).all(|source| !source.supported));
+        assert!(sources.iter().all(|source| source.supported), "Claude Code, Codex, OpenCode, Conductor, T3 Code, Orca and Superset import today");
     }
 
     #[test]
@@ -524,6 +547,32 @@ mod tests {
         assert_eq!((codex.counts.chats, codex.counts.projects, codex.roots.len()), (2, 2, 2), "a missing account home is skipped");
         let opencode = by("opencode");
         assert_eq!((opencode.counts.chats, opencode.counts.projects, opencode.roots.len()), (3, 2, 2), "a folder in two stores is one project");
+    }
+
+    #[test]
+    fn superset_counts_come_from_its_databases_once_across_its_two_homes() {
+        use crate::superset_import::fixture::{ChatRow, Fixture, WorkspaceRow};
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        let fixture = Fixture::newest(&h.join(".paradev"));
+        fixture.project("p", &h.join("code/shop"), "shop");
+        let tree = |id, name: &str, archived| {
+            fixture.workspace(&WorkspaceRow { id, project: Some("p"), path: &h.join(".paradev/worktrees/shop").join(name), branch: name, name, kind: "worktree", archived });
+        };
+        tree("w1", "a", false);
+        tree("w2", "b", true);
+        fixture.chat(&ChatRow { id: "c1", workspace: "w1", native: Some("ses_1"), ..ChatRow::default() });
+        fixture.chat(&ChatRow { id: "c2", workspace: "w1", harness: "pi-acp", ..ChatRow::default() });
+        fixture.binding("t1", "w1", "claude", Some("11111111-1111-4111-8111-111111111111"), None);
+        drop(fixture);
+        std::os::unix::fs::symlink(".paradev", h.join(".superset")).unwrap();
+        let superset = detect(h, None, &[]).into_iter().find(|source| source.tool == "superset").unwrap();
+        assert!(superset.installed && superset.supported);
+        assert_eq!(superset.roots.len(), 1, "a ~/.superset symlink to ~/.paradev is one home");
+        assert_eq!((superset.counts.chats, superset.counts.projects, superset.counts.workspaces), (2, 1, 1), "Pi's chat and the archived workspace are not counted");
+        let empty = tempfile::tempdir().unwrap();
+        let absent = detect(empty.path(), None, &[]).into_iter().find(|source| source.tool == "superset").unwrap();
+        assert!(!absent.installed && absent.roots.is_empty());
     }
 
     #[test]
