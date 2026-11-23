@@ -1681,6 +1681,18 @@ mod tests {
     }
 
     #[test]
+    fn the_cap_lets_that_many_run_side_by_side() {
+        let (dir, core) = test_support::core();
+        let now = Utc::now();
+        let runs = ["a", "b", "c"].map(|name| manual_run(&core, dir.path(), name, now));
+        let db = core.db.lock().unwrap();
+        // No settings written: the default of two.
+        let slots: Vec<Slot> = runs.iter().map(|run| reserve_slot(&db, &run.run.id, &run.lease_owner, now).unwrap()).collect();
+        assert_eq!(slots, vec![Slot::Reserved, Slot::Reserved, Slot::Queued]);
+        assert_eq!(running_count(&db).unwrap(), 2);
+    }
+
+    #[test]
     fn a_newer_run_never_takes_a_slot_ahead_of_an_older_one_waiting() {
         let (dir, core) = test_support::core();
         let now = Utc::now();
