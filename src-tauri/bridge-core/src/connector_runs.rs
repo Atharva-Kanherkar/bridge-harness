@@ -488,6 +488,9 @@ mod tests {
         let prompt = super::ingress_prompt(crate::work_connectors::ConnectorFamily::Slack, false);
         assert!(prompt.contains("do not read channels one by one"), "{prompt}");
         assert!(prompt.contains("`to:me`"));
+        // Small answers, and a retry rather than an empty inbox when one is too large.
+        assert!(prompt.contains("`include_context` false") && prompt.contains("`limit` 10"), "{prompt}");
+        assert!(prompt.contains("search again with a smaller `limit`"), "{prompt}");
     }
 
     use super::*;
