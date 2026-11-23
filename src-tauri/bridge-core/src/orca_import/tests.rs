@@ -228,6 +228,8 @@ fn orca_yaml_gives_setup_and_archive_scripts() {
     assert!(store::yaml_scripts("scripts:\n  setup: \"\"\n").is_none());
     assert!(store::yaml_scripts("scripts:\nother: 1\n").is_none());
     assert!(store::yaml_scripts("\u{0}::::\n||\n").is_none());
+    let spaced = store::yaml_scripts("scripts:\n  setup: echo a\n\n  # the archive step\n  junk without a colon\n  archive: echo b\n").unwrap();
+    assert_eq!((spaced.setup.as_deref(), spaced.archive.as_deref()), (Some("echo a"), Some("echo b")), "blank, comment and odd lines inside the block are skipped");
 }
 
 #[test]
@@ -341,6 +343,20 @@ fn a_chat_led_run_links_its_chat_and_captured_terminal_workers() {
 }
 
 #[test]
+fn a_lead_dispatching_itself_is_no_worker_and_a_terminal_leds_chat_worker_is_unlinked() {
+    let sandbox = sandbox();
+    sandbox.fixture.run("run_self", Some("35dcaa0e"));
+    sandbox.fixture.chat_worker("run_self", "ctx_s", "35dcaa0e");
+    sandbox.fixture.run("run_term", None);
+    sandbox.fixture.chat_worker("run_term", "ctx_t", "16acf9ae");
+    let store = read_base(&sandbox.base);
+    let links = links(&store);
+    assert!(links.chats.is_empty() && links.sessions.is_empty(), "{links:?}");
+    assert!(links.coordinators.is_empty(), "a run whose only worker is its lead leads no one");
+    assert_eq!(links.unlinked, 1, "only the terminal-led run's chat worker");
+}
+
+#[test]
 fn a_rebound_coordinator_no_longer_leads_its_run() {
     let sandbox = sandbox();
     sandbox.fixture.run("run_1", Some("35dcaa0e"));
@@ -363,6 +379,8 @@ fn an_orchestration_database_bridge_cannot_read_is_reported_not_fatal() {
 #[test]
 fn the_version_gate_fails_closed_with_the_version_it_saw() {
     let sandbox = sandbox();
+    sandbox.fixture.chats.execute_batch("PRAGMA user_version = 1").unwrap();
+    assert_eq!(read(&Paths::at(&sandbox.base)).unwrap().0.chat_version, 1, "the oldest version Bridge reads is read");
     sandbox.fixture.chats.execute_batch("PRAGMA user_version = 3").unwrap();
     let error = read(&Paths::at(&sandbox.base)).unwrap_err();
     assert!(error.contains("newer") && error.contains("version 3"), "{error}");
@@ -536,6 +554,17 @@ fn account_folders_are_the_ones_each_agent_reads() {
     assert_eq!(account_root(&chat("codex", "CLAUDE_CONFIG_DIR")), None);
     assert_eq!(account_root(&chat("opencode", "HOME")), None);
     assert_eq!(account_root(&Chat { account_home: None, ..chat("claude", "HOME") }), None);
+}
+
+#[test]
+fn overlay_before_any_import_changes_nothing_and_other_failures_surface() {
+    let sandbox = sandbox();
+    let store = read_base(&sandbox.base);
+    let db = Connection::open_in_memory().unwrap();
+    db.execute_batch("CREATE TABLE sessions(id TEXT, title TEXT, title_source TEXT, kind TEXT, archived_at TEXT, parent_session_id TEXT, depth INTEGER)").unwrap();
+    assert_eq!(overlay(&db, &store).unwrap(), Overlay::default(), "no import has run: no table, nothing to do");
+    db.execute_batch("CREATE TABLE import_native_sessions(other TEXT)").unwrap();
+    assert!(overlay(&db, &store).is_err(), "any other failure is one");
 }
 
 #[test]

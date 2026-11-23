@@ -477,7 +477,8 @@ fn unsupported_candidate(artifact: &DiscoveredArtifact, discovery: &DiscoveryRes
         stability: Stability::Unavailable,
         confidence_bps: 0,
         selected_by_default: false,
-        redaction_summary: RedactionSummary { safely_representable: false, ..RedactionSummary::default() },
+        // Not safely representable: the default.
+        redaction_summary: RedactionSummary::default(),
         diagnostics: vec![ImportDiagnostic {
             code: "artifact_preview_failed".into(),
             severity: "warning".into(),

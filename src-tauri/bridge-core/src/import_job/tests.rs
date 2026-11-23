@@ -1529,6 +1529,47 @@ mod orca {
         assert_eq!(depth, 1);
     }
 
+    fn depth_and_parent(core: &BridgeCore, key: &str) -> (String, i64, Option<String>) {
+        core.db.lock().unwrap().query_row(
+            "SELECT s.id, COALESCE(s.depth,0), s.parent_session_id FROM sessions s JOIN import_native_sessions n ON n.session_id=s.id WHERE n.native_key=?1",
+            params![key],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap()
+    }
+
+    #[test]
+    fn a_linked_workers_own_subagents_move_down_with_it() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        write(
+            &home.claude[0].join(format!("projects/-shop-contrib/{WORKER}/subagents/agent-a1.jsonl")),
+            &session(WORKER, &home.contrib.to_string_lossy(), "check the file"),
+        );
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        run_orca(&core, &home);
+        let (worker, depth, parent) = depth_and_parent(&core, &format!("claude:{WORKER}"));
+        assert_eq!(depth, 1);
+        assert!(parent.is_some());
+        let child: i64 = core.db.lock().unwrap().query_row("SELECT COALESCE(depth,0) FROM sessions WHERE parent_session_id=?1", params![worker], |row| row.get(0)).unwrap();
+        assert_eq!(child, 2, "the worker's subagent sits under it");
+    }
+
+    #[test]
+    fn a_worker_already_under_another_chat_keeps_its_place() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        run_orca(&core, &home);
+        let (worker, _, _) = depth_and_parent(&core, &format!("claude:{WORKER}"));
+        let other: String = core.db.lock().unwrap().query_row("SELECT id FROM sessions WHERE title='Say hi'", [], |row| row.get(0)).unwrap();
+        core.db.lock().unwrap().execute("UPDATE sessions SET parent_session_id=?1, depth=7 WHERE id=?2", params![other, worker]).unwrap();
+        run_orca(&core, &home);
+        let (_, depth, parent) = depth_and_parent(&core, &format!("claude:{WORKER}"));
+        assert_eq!((depth, parent.as_deref()), (7, Some(other.as_str())), "a chat already placed is never moved");
+    }
+
     #[test]
     fn a_run_that_only_retitles_says_the_state_changed() {
         let root = tempfile::tempdir().unwrap();

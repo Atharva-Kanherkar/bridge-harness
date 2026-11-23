@@ -473,6 +473,28 @@ fn a_chat_without_a_chat_database_is_none_and_the_host_still_reads() {
 }
 
 #[test]
+fn overlay_before_any_import_changes_nothing_and_other_failures_surface() {
+    let sandbox = sandbox();
+    let store = read_home(&sandbox.home);
+    let db = Connection::open_in_memory().unwrap();
+    db.execute_batch("CREATE TABLE sessions(id TEXT, title TEXT, title_source TEXT, kind TEXT, archived_at TEXT)").unwrap();
+    assert_eq!(overlay(&db, &store).unwrap(), Overlay::default(), "no import has run: no table, nothing to do");
+    db.execute_batch("CREATE TABLE import_native_sessions(other TEXT)").unwrap();
+    assert!(overlay(&db, &store).is_err(), "any other failure is one");
+}
+
+#[test]
+fn a_supersets_title_is_the_copys() {
+    let sandbox = sandbox();
+    sandbox.fixture.chat(&ChatRow { id: "c-titled", workspace: "w-login", harness: "claude-acp", title: Some("  Fix the cart  "), ..ChatRow::default() });
+    let store = read_home(&sandbox.home);
+    let org = &store.orgs[0];
+    let chat = org.chats.iter().find(|chat| chat.id == "c-titled").unwrap();
+    assert_eq!(chat.title.as_deref(), Some("Fix the cart"));
+    assert_eq!(copy_chat(org, chat, &[], "ref").title.as_deref(), Some("Fix the cart"));
+}
+
+#[test]
 fn source_refs_round_trip() {
     let path = Path::new("/h/host/o/chat.db");
     assert_eq!(parse_source_ref(&source_ref(path, "c1")), Some((path.to_path_buf(), "c1".to_owned())));

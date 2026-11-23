@@ -408,7 +408,7 @@ pub fn copy_chat(org: &Organization, chat: &Chat, items: &[Item], reference: &st
         key: chat.id.clone(),
         workspace_key: None,
         cwd: folder(org, &chat.workspace).map(|path| path.to_string_lossy().into_owned()),
-        title: chat.title.clone().filter(|title| !title.is_empty()),
+        title: chat.title.clone(),
         title_source: TitleSource::Tool,
         created_at: items.first().and_then(|item| item.at.clone()).or_else(|| chat.updated_at.clone()),
         updated_at: chat.updated_at.clone(),
@@ -483,7 +483,8 @@ fn unsupported_candidate(artifact: &DiscoveredArtifact, discovery: &DiscoveryRes
         stability: Stability::Unavailable,
         confidence_bps: 0,
         selected_by_default: false,
-        redaction_summary: RedactionSummary { safely_representable: false, ..RedactionSummary::default() },
+        // Not safely representable: the default.
+        redaction_summary: RedactionSummary::default(),
         diagnostics: vec![ImportDiagnostic {
             code: "artifact_preview_failed".into(),
             severity: "warning".into(),
