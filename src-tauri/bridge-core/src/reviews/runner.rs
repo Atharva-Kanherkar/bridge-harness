@@ -196,10 +196,19 @@ impl Runner {
                 .unwrap_or(bridge_protocol::messages::DEFAULT_MAX_CONCURRENT_REVIEWS);
             (reclaimed, usize::from(limit.clamp(1, 4)))
         };
+        let steps = self.core.reviews.steps();
         for id in &reclaimed {
             // A driver here that held the expired lease is superseded: stop it
             // now rather than at its next renewal.
             self.core.reviews.trip(id);
+            // A job the final reclaim failed has no driver left to clean up.
+            let terminal = {
+                let db = super::lock_db(&self.core);
+                store::get_job(&db, id)?.is_some_and(|job| job.status.is_terminal())
+            };
+            if terminal {
+                steps.cleanup(id);
+            }
             super::publish(&self.core, id);
         }
         let mut handles = Vec::new();
@@ -337,9 +346,23 @@ impl Driver {
         if job.status == Status::Preparing {
             let prepared = self.retrying(token, || steps.prepare(&job, token))?;
             if !prepared.head_sha.is_empty() && prepared.head_sha != job.head_sha {
-                let db = super::lock_db(&self.core);
-                if store::set_head(&db, &job.id, &self.claim, &prepared.head_sha).map_err(fatal)? {
-                    job.head_sha = prepared.head_sha.clone();
+                let update = {
+                    let db = super::lock_db(&self.core);
+                    store::set_head(&db, &job.id, &self.claim, &prepared.head_sha).map_err(fatal)?
+                };
+                match update {
+                    store::HeadUpdate::Moved => job.head_sha = prepared.head_sha.clone(),
+                    store::HeadUpdate::Lost => return Err(StepError::Cancelled),
+                    store::HeadUpdate::Superseded { by } => {
+                        // Another live review already covers this head: retire
+                        // this one rather than review and post the same commit
+                        // twice. `settle` cleans up once it sees it terminal.
+                        let reason = format!("Superseded by review {by}, which covers this head");
+                        let db = super::lock_db(&self.core);
+                        store::finish(&db, &job.id, Some(&self.claim), Status::Cancelled, Some(&reason), self.now())
+                            .map_err(fatal)?;
+                        return Err(StepError::Cancelled);
+                    }
                 }
             }
             self.advance(&job, Status::Preparing, Status::Reviewing, false)?;

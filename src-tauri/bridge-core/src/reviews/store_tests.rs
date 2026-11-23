@@ -24,6 +24,7 @@ fn new_job(number: u64, sha: &str, harnesses: &[&str]) -> NewJob {
         post_mode: ReviewPostMode::Draft,
         harnesses: harnesses.iter().map(|harness| harness.to_string()).collect(),
         retry_of: None,
+        publication_key: None,
     }
 }
 

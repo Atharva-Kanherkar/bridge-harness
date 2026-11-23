@@ -107,7 +107,7 @@ impl ReviewSteps for Script {
 
     fn find_posted(&self, job: &JobRow) -> Result<Option<PostedReview>, StepError> {
         self.call(format!("find:{}", job.id));
-        let marker = post_marker(&job.id);
+        let marker = post_marker(&job.publication_key);
         let github = self.github.lock().unwrap();
         Ok(github.iter().position(|body| body.contains(&marker)).map(|index| PostedReview {
             review_id: format!("review-{index}"),
@@ -119,7 +119,7 @@ impl ReviewSteps for Script {
         self.call(format!("post:{}", job.id));
         let plan = self.post.lock().unwrap().pop_front().unwrap_or(PostPlan::Post);
         let publish = |github: &mut Vec<String>| {
-            github.push(format!("Review\n\n{}", post_marker(&job.id)));
+            github.push(format!("Review\n\n{}", post_marker(&job.publication_key)));
             github.len() - 1
         };
         match plan {
@@ -613,4 +613,83 @@ fn a_superseded_driver_cannot_store_its_pass_or_clean_up_the_replacement() {
         "only the claim that drafted the job cleans up; the stale driver removed nothing"
     );
     assert_eq!(first.active() + second.active(), 0);
+}
+
+#[test]
+fn a_retry_finds_the_review_its_interrupted_original_posted() {
+    let (_scratch, core, script) = fixture();
+    settings(&core, |settings| settings.post_mode = wire::ReviewPostMode::Auto);
+    let id = queue(&core, 1, &["claude"]);
+    // GitHub accepted the post, then Bridge stopped before recording it.
+    let original = {
+        let db = core.db.lock().unwrap();
+        db.execute("UPDATE review_jobs SET status='posting', lease_owner='gone/1', lease_expires_at='2999-01-01T00:00:00.000Z' WHERE id=?1", params![id]).unwrap();
+        store::require_job(&db, &id).unwrap()
+    };
+    script.github.lock().unwrap().push(format!("Earlier review\n\n{}", post_marker(&original.publication_key)));
+
+    let runner = Runner::with(core.clone(), fast(), Arc::new(Utc::now));
+    assert_eq!(runner.recover().unwrap(), [id.clone()]);
+    let retried = crate::reviews::retry(&core, &id).unwrap();
+    drain(&runner);
+
+    let posted = job(&core, &retried.id);
+    assert_eq!(posted.publication_key, original.publication_key, "a retry carries its original's publication key");
+    assert_eq!(posted.status, Status::Posted);
+    assert_eq!(posted.posted_review_id.as_deref(), Some("review-0"), "it recorded the review already on GitHub");
+    assert!(script.calls("post:").is_empty(), "nothing was posted again");
+    assert_eq!(script.github.lock().unwrap().len(), 1, "one review on the PR");
+}
+
+#[test]
+fn a_job_failed_by_the_final_reclaim_is_cleaned_up() {
+    let (_scratch, core, script) = fixture();
+    let id = queue(&core, 1, &["claude"]);
+    let start = Utc::now();
+    {
+        let db = core.db.lock().unwrap();
+        store::claim_next(&db, "dead-runner", start).unwrap().unwrap();
+        db.execute("UPDATE review_jobs SET attempts=?2 WHERE id=?1", params![id, store::MAX_ATTEMPTS]).unwrap();
+    }
+    let later = start + chrono::Duration::seconds(store::LEASE_SECONDS + 5);
+    let survivor = Runner::with(core.clone(), fast(), Arc::new(move || later));
+    assert!(survivor.tick().unwrap().is_empty());
+    let failed = job(&core, &id);
+    assert_eq!((failed.status, failed.error.as_deref()), (Status::Failed, Some(store::STOPPED_RESPONDING)));
+    assert_eq!(script.calls(&format!("cleanup:{id}")).len(), 1, "no driver is left, so the tick cleans up");
+}
+
+#[test]
+fn a_moved_head_updates_the_dedupe_key() {
+    let (_scratch, core, script) = fixture();
+    let id = queue(&core, 1, &["claude"]);
+    script.prepare.lock().unwrap().push_back(Ok(Prepared { head_sha: "sha-moved".into(), ..Prepared::default() }));
+    drain(&Runner::with(core.clone(), fast(), Arc::new(Utc::now)));
+    assert_eq!(job(&core, &id).head_sha, "sha-moved");
+    let params = wire::StartReviewParams { workspace_id: "w1".into(), number: 1, harnesses: Some(vec!["claude".into()]), trigger: None };
+    let head = PrHead { repo_owner: "octo".into(), repo_name: "repo".into(), head_sha: "sha-moved".into(), base_sha: None };
+    let again = crate::reviews::start_with(&core, &params, head).unwrap();
+    assert_eq!(again.id, id, "starting a review of the new head finds the job that already reviews it");
+}
+
+#[test]
+fn a_moved_head_already_under_review_supersedes_the_job() {
+    let (_scratch, core, script) = fixture();
+    settings(&core, |settings| settings.max_concurrent_reviews = 1);
+    let stale = queue(&core, 1, &["claude"]);
+    let current = {
+        let params = wire::StartReviewParams { workspace_id: "w1".into(), number: 1, harnesses: Some(vec!["claude".into()]), trigger: None };
+        let head = PrHead { repo_owner: "octo".into(), repo_name: "repo".into(), head_sha: "sha-2".into(), base_sha: None };
+        crate::reviews::start_with(&core, &params, head).unwrap().id
+    };
+    // The older job prepares and finds the PR at the head the newer one reviews.
+    script.prepare.lock().unwrap().push_back(Ok(Prepared { head_sha: "sha-2".into(), ..Prepared::default() }));
+    drain(&Runner::with(core.clone(), fast(), Arc::new(Utc::now)));
+    let retired = job(&core, &stale);
+    assert_eq!(retired.status, Status::Cancelled);
+    assert!(retired.error.as_deref().unwrap_or_default().contains(&current), "{:?}", retired.error);
+    assert_eq!(retired.head_sha, "sha-1", "the retired job keeps the head it was started for");
+    assert!(!script.calls(&format!("cleanup:{stale}")).is_empty());
+    assert!(script.calls(&format!("review:{stale}")).is_empty(), "the retired job spent no model run");
+    assert_eq!(job(&core, &current).status, Status::Drafted);
 }

@@ -64,6 +64,7 @@ fn seed(data_dir: &Path, repo: &Path) -> String {
             post_mode: Default::default(),
             harnesses: vec!["claude".into()],
             retry_of: None,
+            publication_key: None,
         },
         chrono::Utc::now(),
     )

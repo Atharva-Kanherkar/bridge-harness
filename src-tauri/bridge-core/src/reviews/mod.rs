@@ -125,6 +125,7 @@ pub fn start_with(core: &Arc<BridgeCore>, params: &wire::StartReviewParams, head
                 post_mode,
                 harnesses,
                 retry_of: None,
+                publication_key: None,
             },
             Utc::now(),
         )?;

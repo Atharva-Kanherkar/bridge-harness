@@ -132,9 +132,10 @@ pub struct PostedReview {
 }
 
 /// The marker every posted review body carries, so a retry can tell it
-/// already posted.
-pub fn post_marker(job_id: &str) -> String {
-    format!("<!-- bridge-review:{job_id} -->")
+/// already posted. It names the job's `publication_key`, which a retry
+/// inherits, so a retry also finds what its original posted.
+pub fn post_marker(publication_key: &str) -> String {
+    format!("<!-- bridge-review:{publication_key} -->")
 }
 
 pub trait ReviewSteps: Send + Sync {
@@ -142,7 +143,8 @@ pub trait ReviewSteps: Send + Sync {
     fn prepare(&self, job: &JobRow, cancel: &CancelToken) -> Result<Prepared, StepError>;
     /// Run one reviewer pass on one harness.
     fn review(&self, request: PassRequest<'_>, cancel: &CancelToken) -> Result<PassOutcome, StepError>;
-    /// The review this job already posted, found by [`post_marker`].
+    /// The review this job, or the job it retried, already posted: the one
+    /// whose body carries `post_marker(&job.publication_key)`.
     fn find_posted(&self, job: &JobRow) -> Result<Option<PostedReview>, StepError>;
     /// Post the job's review.
     fn post(&self, job: &JobRow, cancel: &CancelToken) -> Result<PostedReview, StepError>;

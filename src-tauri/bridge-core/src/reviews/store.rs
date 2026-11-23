@@ -52,6 +52,7 @@ pub fn install_store(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
             post_mode TEXT NOT NULL CHECK(post_mode IN ('draft','auto')),
             harnesses TEXT NOT NULL,
             dedupe_key TEXT NOT NULL,
+            publication_key TEXT NOT NULL,
             status TEXT NOT NULL CHECK(status IN
                 ('queued','preparing','reviewing','drafted','posting','posted','failed','cancelled','interrupted')),
             error TEXT,
@@ -152,6 +153,9 @@ pub struct JobRow {
     pub post_mode: ReviewPostMode,
     /// The harnesses asked for, in order: one per pass slot.
     pub harnesses: Vec<String>,
+    /// What the posted review's marker names: this job's id, or the key of
+    /// the job it retried, so a retry finds a review its original posted.
+    pub publication_key: String,
     pub status: Status,
     pub error: Option<String>,
     pub summary: Option<String>,
@@ -168,7 +172,8 @@ pub struct JobRow {
 
 const SELECT_JOB: &str = "SELECT id, workspace_id, repo_owner, repo_name, pr_number, head_sha, base_sha,
     incremental_from_sha, trigger_kind, post_mode, harnesses, status, error, summary, posted_review_id,
-    posted_review_url, retry_of, attempts, lease_owner, lease_expires_at, created_at, started_at, finished_at
+    posted_review_url, retry_of, attempts, lease_owner, lease_expires_at, created_at, started_at, finished_at,
+    publication_key
     FROM review_jobs";
 
 fn invalid_column(index: usize, text: &str) -> rusqlite::Error {
@@ -208,6 +213,7 @@ fn read_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
         created_at: row.get(20)?,
         started_at: row.get(21)?,
         finished_at: row.get(22)?,
+        publication_key: row.get(23)?,
     })
 }
 
@@ -239,6 +245,8 @@ pub struct NewJob {
     pub post_mode: ReviewPostMode,
     pub harnesses: Vec<String>,
     pub retry_of: Option<String>,
+    /// The publication key to carry; `None` makes the new job's id its key.
+    pub publication_key: Option<String>,
 }
 
 /// Insert a queued job, or return the non-terminal job that already reviews
@@ -258,8 +266,9 @@ pub fn insert(db: &Connection, job: &NewJob, now: DateTime<Utc>) -> Result<(JobR
     let harnesses = serde_json::to_string(&job.harnesses).map_err(|error| BridgeError::Invalid(error.to_string()))?;
     transaction.execute(
         "INSERT INTO review_jobs(id, workspace_id, repo_owner, repo_name, pr_number, head_sha, base_sha,
-            incremental_from_sha, trigger_kind, post_mode, harnesses, dedupe_key, status, retry_of, created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'queued',?13,?14)",
+            incremental_from_sha, trigger_kind, post_mode, harnesses, dedupe_key, status, retry_of, created_at,
+            publication_key)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'queued',?13,?14,COALESCE(?15,?1))",
         params![
             id,
             job.workspace_id,
@@ -275,6 +284,7 @@ pub fn insert(db: &Connection, job: &NewJob, now: DateTime<Utc>) -> Result<(JobR
             key,
             job.retry_of,
             stamp(now),
+            job.publication_key,
         ],
     )?;
     let created = require_job(&transaction, &id)?;
@@ -460,14 +470,39 @@ pub fn return_to_draft(db: &Connection, id: &str, owner: &str, error: &str) -> R
     Ok(changed == 1)
 }
 
-/// The PR moved while the job waited: review what is there now. The dedupe
-/// key keeps the head the job was started for.
-pub fn set_head(db: &Connection, id: &str, owner: &str, head_sha: &str) -> Result<bool, BridgeError> {
-    let changed = db.execute(
-        "UPDATE review_jobs SET head_sha=?3 WHERE id=?1 AND lease_owner=?2",
-        params![id, owner, head_sha],
+/// What [`set_head`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeadUpdate {
+    /// The job now reviews the new head, under the new dedupe key.
+    Moved,
+    /// Another live job already reviews the new head with the same harnesses.
+    Superseded { by: String },
+    /// The claim no longer holds the job.
+    Lost,
+}
+
+/// The PR moved while the job waited: review what is there now. The head and
+/// the dedupe key change together, so starting the same review of the new
+/// head finds this job. When another live job already covers the new head,
+/// nothing changes and the caller retires this one.
+pub fn set_head(db: &Connection, id: &str, claim: &str, head_sha: &str) -> Result<HeadUpdate, BridgeError> {
+    let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+    let Some(job) = get_job(&transaction, id)? else {
+        return Ok(HeadUpdate::Lost);
+    };
+    if job.lease_owner.as_deref() != Some(claim) {
+        return Ok(HeadUpdate::Lost);
+    }
+    let key = dedupe_key(&job.workspace_id, job.number, head_sha, &job.harnesses);
+    if let Some(other) = active_by_key(&transaction, &key)?.filter(|other| other.id != id) {
+        return Ok(HeadUpdate::Superseded { by: other.id });
+    }
+    transaction.execute(
+        "UPDATE review_jobs SET head_sha=?3, dedupe_key=?4 WHERE id=?1 AND lease_owner=?2",
+        params![id, claim, head_sha, key],
     )?;
-    Ok(changed == 1)
+    transaction.commit()?;
+    Ok(HeadUpdate::Moved)
 }
 
 fn set_summary(db: &Connection, id: &str, summary: &str) -> Result<(), BridgeError> {
@@ -508,12 +543,19 @@ pub fn reclaim_expired(db: &Connection, now: DateTime<Utc>) -> Result<Vec<String
     let mut changed = Vec::new();
     for (id, status, attempts, expiry, post_mode) in expired {
         let rows = if attempts >= MAX_ATTEMPTS {
-            db.execute(
+            let rows = db.execute(
                 "UPDATE review_jobs SET status='failed', error=?4, lease_owner=NULL, lease_expires_at=NULL,
                     finished_at=?5
                  WHERE id=?1 AND status=?2 AND lease_expires_at=?3",
                 params![id, status, expiry, STOPPED_RESPONDING, stamp(now)],
-            )?
+            )?;
+            if rows == 1 {
+                db.execute(
+                    "UPDATE review_passes SET status='cancelled', error=?2, finished_at=?3 WHERE job_id=?1 AND status='running'",
+                    params![id, STOPPED_RESPONDING, stamp(now)],
+                )?;
+            }
+            rows
         } else {
             let next = match status.as_str() {
                 "preparing" | "reviewing" => "queued",
@@ -575,6 +617,7 @@ pub fn retry(db: &Connection, id: &str, now: DateTime<Utc>) -> Result<(JobRow, b
             post_mode: job.post_mode,
             harnesses: job.harnesses,
             retry_of: Some(job.id),
+            publication_key: Some(job.publication_key),
         },
         now,
     )
