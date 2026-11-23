@@ -318,7 +318,7 @@ pub fn verify_history_snapshot(
 /// Constant-memory SHA-256 of a file, chunked through a buffered reader. The
 /// previous `fs::read` pulled the whole vacuumed database into one allocation
 /// on every snapshot, an allocation spike that grows with total history.
-fn hash_file_streaming(path: &Path) -> Result<String, BridgeError> {
+pub(crate) fn hash_file_streaming(path: &Path) -> Result<String, BridgeError> {
     use std::io::BufRead;
     let file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::with_capacity(64 * 1024, file);
