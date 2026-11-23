@@ -779,7 +779,7 @@ pub fn preview(core: &Arc<BridgeCore>, trigger: &wire::WorkflowTrigger, gh: &dyn
         // `gh` answers with its newest few. If every one of them is in the
         // window, there may be more than it returned.
         let returned = samples.len();
-        let all_recent = returned > 0 && samples.iter().all(|sample| instant(&sample.occurred_at).is_some_and(|at| at >= since));
+        let all_recent = samples.iter().all(|sample| instant(&sample.occurred_at).is_some_and(|at| at >= since));
         found = samples
             .into_iter()
             .filter(|sample| matches(&event, sample))
