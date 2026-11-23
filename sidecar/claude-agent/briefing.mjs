@@ -283,20 +283,66 @@ export function briefingOptions(briefing, mcpServers = {}, ask = null, projectTr
 }
 
 /**
- * A workflow run's options: the briefing posture (nothing inherited, built-ins
- * denied by name, strict MCP config) with the workflow gate in place of the
- * briefing gate, and only the granted servers reachable.
+ * A `claude.ai …` connector belongs to the account: Claude Code loads it
+ * itself, signed in. A copy handed over in `mcpServers` never shares that
+ * sign-in and comes up `needs-auth` with no tools.
+ */
+export function isAccountConnector(name) {
+  return typeof name === "string" && name.startsWith("claude.ai ");
+}
+
+/** A workflow run that reaches connectors (not a worktree job). */
+function connectorWorkflow(briefing) {
+  return Boolean(briefing?.workflow) && briefing.workflow.worktree !== true;
+}
+
+/** The granted servers of a connector workflow, by configuration key. */
+export function workflowGrantedServers(briefing) {
+  return connectorWorkflow(briefing) ? (briefing.workflow.servers ?? []).map((server) => server.key) : [];
+}
+
+/** The granted account connectors, which load natively and are waited for. */
+export function workflowAccountServers(briefing) {
+  return workflowGrantedServers(briefing).filter(isAccountConnector);
+}
+
+/**
+ * Every configured server a connector workflow was not granted. Loading
+ * account connectors natively means Claude Code would otherwise load all of
+ * them: the gate would still refuse their tools, but their schemas would fill
+ * the run's context. Denied servers never start.
+ */
+export function workflowDeniedServers(briefing, mcpServers = {}) {
+  if (!connectorWorkflow(briefing)) return [];
+  const granted = new Set(workflowGrantedServers(briefing));
+  return Object.keys(mcpServers ?? {}).filter((name) => !granted.has(name));
+}
+
+/**
+ * A workflow run's options: nothing inherited, the workflow gate deciding
+ * every call, and only the granted servers reachable.
+ *
+ * `tools: []` removes every built-in tool. A deny-list cannot keep up with
+ * Claude Code: tools such as `SendMessage`, `RemoteTrigger` and `CronCreate`
+ * run without asking `canUseTool`, so a run that has them can message other
+ * sessions or schedule work no matter what the gate says. A connector
+ * workflow needs none of them; its only tools are its connectors' tools.
+ *
+ * Granted account connectors load natively (`strictMcpConfig: false`, no
+ * copy); any other granted server is handed over as configured.
  */
 function workflowOptions(briefing, mcpServers, ask) {
   const servers = briefing.workflow.servers ?? [];
   const keys = new Set(servers.map((server) => server.key));
+  const native = servers.some((server) => isAccountConnector(server.key));
   return {
     permissionMode: "default",
+    tools: [],
     // No `allowedTools`: anything pre-approved would skip the gate.
     disallowedTools: briefing.deniedBuiltins ?? [],
     canUseTool: makeWorkflowGate({ servers, maxArgumentBytes: briefing.maxArgumentBytes, ask }),
-    strictMcpConfig: true,
-    mcpServers: Object.fromEntries(Object.entries(mcpServers).filter(([name]) => keys.has(name))),
+    strictMcpConfig: !native,
+    mcpServers: Object.fromEntries(Object.entries(mcpServers).filter(([name]) => keys.has(name) && !isAccountConnector(name))),
     settingSources: [],
     plugins: [],
   };
