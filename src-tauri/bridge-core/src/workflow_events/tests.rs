@@ -400,6 +400,11 @@ fn a_slack_preview_counts_the_weeks_matches_from_the_ledger() {
         crate::connector_inbox::record_poll_success(&db, crate::work_connectors::ConnectorFamily::Slack, &workflow_trigger::stamp(now)).unwrap();
     }
     assert_eq!(preview(&core, &trigger, &gh, now).note, None, "a healthy poll with history needs no caveat");
+    {
+        let db = core.db.lock().unwrap();
+        db.execute("UPDATE connector_poll_state SET degraded='  ' WHERE family='slack'", []).unwrap();
+    }
+    assert_eq!(preview(&core, &trigger, &gh, now).note, None, "a blank failure reason says nothing");
     if let wire::WorkflowTrigger::Event { channel, .. } = &mut trigger {
         *channel = Some("eng".into());
     }
