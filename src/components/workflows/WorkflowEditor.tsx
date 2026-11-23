@@ -199,7 +199,7 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
               : preview ? <>
                 <p className={preview.supported ? "text-foreground" : ""}>{previewSentence(preview)}</p>
                 {preview.note && <p className="mt-0.5">{preview.note}</p>}
-                {preview.samples.length > 0 && <ul aria-label="Recent events" className="mt-1.5 space-y-0.5">{preview.samples.slice(0, 3).map(sample => <li key={sample.key} className="truncate">{sample.title}</li>)}</ul>}
+                {preview.samples.length > 0 && <ul aria-label="Recent events" className="mt-1.5 space-y-0.5 contain-inline-size">{preview.samples.slice(0, 3).map(sample => <li key={sample.key} className="truncate">{sample.title}</li>)}</ul>}
               </> : null}
           </div>
         </div>}

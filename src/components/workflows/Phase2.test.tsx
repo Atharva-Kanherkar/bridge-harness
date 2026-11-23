@@ -38,8 +38,8 @@ function change(element: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElem
 describe("format", () => {
   it("says an event trigger as a person would", () => {
     expect(triggerSummary({ kind: "event", event: "slack_mention" })).toBe("When I'm mentioned in Slack");
-    expect(triggerSummary({ kind: "event", event: "slack_thread_reply", channel: "eng", from: "Priya" })).toBe("When Someone replies in my Slack thread in #eng from Priya");
-    expect(triggerSummary({ kind: "event", event: "github_pull_request_opened", repo: "acme/app" })).toBe("When A pull request is opened in acme/app");
+    expect(triggerSummary({ kind: "event", event: "slack_thread_reply", channel: "eng", from: "Priya" })).toBe("When someone replies in my Slack thread in #eng from Priya");
+    expect(triggerSummary({ kind: "event", event: "github_pull_request_opened", repo: "acme/app" })).toBe("When a pull request is opened in acme/app");
     expect(triggerSummary({ kind: "event", event: "slack_mention", batch: { cron: "0 9 * * 1-5", timezone: "UTC" } })).toBe("When I'm mentioned in Slack, collected and run on weekdays at 09:00");
     expect(presetFor({ kind: "event", event: "slack_mention", batch: { cron: "30 8 * * *", timezone: "UTC" } })).toMatchObject({ preset: "event", time: "08:30" });
   });

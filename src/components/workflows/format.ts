@@ -21,7 +21,11 @@ export const needsRepo = (event: WorkflowEventKind) => event === "github_pull_re
 /** Plain words for an event trigger: "When I'm mentioned in Slack in #eng". */
 export function eventSummary(trigger: Extract<WorkflowTrigger, { kind: "event" }>): string {
   const option = EVENT_OPTIONS.find(candidate => candidate.value === trigger.event);
-  let text = `When ${option?.label ?? trigger.event}`;
+  // The dropdown's labels start with a capital; mid-sentence they do not,
+  // except "I" ("When I'm mentioned").
+  const label = option?.label ?? trigger.event;
+  const phrase = /^I\b|^I'/.test(label) ? label : label.charAt(0).toLowerCase() + label.slice(1);
+  let text = `When ${phrase}`;
   if (trigger.repo) text += ` in ${trigger.repo}`;
   if (trigger.channel) text += ` in ${trigger.channel.startsWith("#") ? trigger.channel : `#${trigger.channel}`}`;
   if (trigger.from) text += ` from ${trigger.from}`;
