@@ -29,6 +29,8 @@ struct Script {
     /// that finishes its turn after Bridge stopped listening.
     stubborn: AtomicBool,
     panic_on_prepare: AtomicBool,
+    /// The review checkout budget is full.
+    full: AtomicBool,
     /// Review bodies on the simulated pull request.
     github: Mutex<Vec<String>>,
     calls: Mutex<Vec<String>>,
@@ -140,6 +142,14 @@ impl ReviewSteps for Script {
 
     fn cleanup(&self, job_id: &str) {
         self.call(format!("cleanup:{job_id}"));
+    }
+
+    fn has_capacity(&self) -> bool {
+        !self.full.load(Ordering::SeqCst)
+    }
+
+    fn reap(&self) {
+        self.call("reap".into());
     }
 }
 
@@ -692,4 +702,39 @@ fn a_moved_head_already_under_review_supersedes_the_job() {
     assert!(!script.calls(&format!("cleanup:{stale}")).is_empty());
     assert!(script.calls(&format!("review:{stale}")).is_empty(), "the retired job spent no model run");
     assert_eq!(job(&core, &current).status, Status::Drafted);
+}
+
+#[test]
+fn a_full_worktree_budget_holds_queued_jobs_until_a_slot_frees() {
+    let (_scratch, core, script) = fixture();
+    script.full.store(true, Ordering::SeqCst);
+    let id = queue(&core, 1, &["claude"]);
+    let runner = Runner::with(core.clone(), fast(), Arc::new(Utc::now));
+    assert!(runner.tick().unwrap().is_empty(), "no claim while every checkout is in use");
+    assert_eq!(job(&core, &id).status, Status::Queued);
+    assert_eq!(job(&core, &id).attempts, 0, "holding a job back does not spend an attempt");
+    script.full.store(false, Ordering::SeqCst);
+    drain(&runner);
+    assert_eq!(job(&core, &id).status, Status::Drafted);
+}
+
+#[test]
+fn posting_jobs_are_claimed_even_when_the_budget_is_full() {
+    let (_scratch, core, script) = fixture();
+    settings(&core, |settings| settings.post_mode = wire::ReviewPostMode::Auto);
+    let id = queue(&core, 1, &["claude"]);
+    let waiting = queue(&core, 2, &["claude"]);
+    // A post nobody holds, as `reviews/post` or a reclaim leaves it.
+    core.db.lock().unwrap().execute("UPDATE review_jobs SET status='posting' WHERE id=?1", params![id]).unwrap();
+    script.full.store(true, Ordering::SeqCst);
+    drain(&Runner::with(core.clone(), fast(), Arc::new(Utc::now)));
+    assert_eq!(job(&core, &id).status, Status::Posted, "posting needs no checkout");
+    assert_eq!(job(&core, &waiting).status, Status::Queued);
+}
+
+#[test]
+fn recovery_reaps_review_worktrees() {
+    let (_scratch, core, script) = fixture();
+    Runner::with(core.clone(), fast(), Arc::new(Utc::now)).recover().unwrap();
+    assert_eq!(script.calls("reap"), ["reap"]);
 }

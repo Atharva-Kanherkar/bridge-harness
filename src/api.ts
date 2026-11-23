@@ -139,7 +139,7 @@ const webDaemon = () => (isTauri() ? null : activeWebDaemon());
 const hasBackend = () => isTauri() || webDaemon() !== null;
 const REVIEWS_NEED_DESKTOP = "Reviewing pull requests requires the Bridge desktop app.";
 // Browser preview's review job settings: the host's defaults, kept in memory.
-let mockReviewJobSettings: ReviewJobSettings = { defaultHarnesses: [], fallbackHarnesses: [], maxConcurrentReviews: 2, postMode: "draft" };
+let mockReviewJobSettings: ReviewJobSettings = { defaultHarnesses: [], fallbackHarnesses: [], maxConcurrentReviews: 2, postMode: "draft", maxReviewWorktrees: 8 };
 export type BackendMode = "tauri" | "web" | "mock";
 /** Which transport this window is on, for the few surfaces outside api.ts
  *  that behave differently per host (folder pickers, polls, the demo shell). */

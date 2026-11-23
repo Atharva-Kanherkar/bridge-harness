@@ -3227,6 +3227,7 @@ export interface ReviewJobSettings {
   defaultHarnesses?: string[];
   fallbackHarnesses?: string[];
   maxConcurrentReviews?: number;
+  maxReviewWorktrees?: number;
   postMode?: ReviewPostMode;
 }
 

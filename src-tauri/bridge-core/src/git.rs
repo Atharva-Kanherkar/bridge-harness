@@ -188,6 +188,198 @@ pub fn create_worktree_on_branch(
     Ok(())
 }
 
+// --- review checkouts --------------------------------------------------------
+//
+// A review job reads a pull request's head in a detached checkout of its own:
+// fetched into Bridge's ref namespace, never onto a local branch, so the
+// person's checkout and branches are never touched.
+
+/// How long a fetch may take. A first fetch of a large pull request can move a
+/// lot of objects; every other git call keeps the 30 s default.
+const FETCH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Fetch `source` from `remote` into the local ref `destination` (forced), and
+/// return the commit it now names. Touches no branch and no working tree.
+pub fn fetch_ref(repo: &Path, remote: &str, source: &str, destination: &str) -> Result<String, BridgeError> {
+    let refspec = format!("+{source}:{destination}");
+    let output = command_output_deadline(
+        git_command(repo).args(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", remote, &refspec]),
+        FETCH_DEADLINE,
+    )?;
+    if !output.status.success() {
+        return Err(BridgeError::Git(String::from_utf8_lossy(&output.stderr).trim().into()));
+    }
+    resolve_commit(repo, destination)
+}
+
+/// How much history a deepening fetch adds to a shallow clone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deepen {
+    By(u32),
+    /// Fetch everything: the clone stops being shallow.
+    Unshallow,
+}
+
+/// Fetch several refspecs at once, deepening a shallow clone's history for
+/// them. Touches no branch and no working tree.
+pub fn fetch_deepening(repo: &Path, remote: &str, refspecs: &[String], deepen: Deepen) -> Result<(), BridgeError> {
+    let depth = match deepen {
+        Deepen::By(commits) => format!("--deepen={commits}"),
+        Deepen::Unshallow => "--unshallow".to_owned(),
+    };
+    let mut command = git_command(repo);
+    command.args(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", &depth, remote]).args(refspecs);
+    let output = command_output_deadline(&mut command, FETCH_DEADLINE)?;
+    if !output.status.success() {
+        return Err(BridgeError::Git(String::from_utf8_lossy(&output.stderr).trim().into()));
+    }
+    Ok(())
+}
+
+/// Whether the repository is a shallow clone.
+pub fn is_shallow(repo: &Path) -> bool {
+    run(repo, ["rev-parse", "--is-shallow-repository"]).is_ok_and(|answer| answer.trim() == "true")
+}
+
+/// Every ref under `prefix` (for example `refs/bridge/reviews/abc-`).
+pub fn refs_with_prefix(repo: &Path, prefix: &str) -> Result<Vec<String>, BridgeError> {
+    // for-each-ref matches whole path components, so list the parent and
+    // filter by the full prefix.
+    let parent = prefix.rsplit_once('/').map_or(prefix, |(parent, _)| parent);
+    Ok(run(repo, ["for-each-ref", "--format=%(refname)", parent])?
+        .lines()
+        .map(str::trim)
+        .filter(|name| name.starts_with(prefix))
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Delete a ref if it exists.
+pub fn delete_ref(repo: &Path, name: &str) -> Result<(), BridgeError> {
+    if resolve_commit(repo, name).is_err() {
+        return Ok(());
+    }
+    run(repo, ["update-ref", "-d", name])?;
+    Ok(())
+}
+
+/// Every remote and the URL it fetches from.
+pub fn remote_urls(repo: &Path) -> Result<Vec<(String, String)>, BridgeError> {
+    let mut remotes = Vec::new();
+    for name in run(repo, ["remote"])?.lines().map(str::trim).filter(|name| !name.is_empty()) {
+        if let Ok(url) = run(repo, ["remote", "get-url", name]) {
+            remotes.push((name.to_owned(), url.trim().to_owned()));
+        }
+    }
+    Ok(remotes)
+}
+
+/// The commit a revision names, or an error when it names none.
+pub fn resolve_commit(repo: &Path, revision: &str) -> Result<String, BridgeError> {
+    Ok(run(repo, ["rev-parse", "--verify", "--quiet", &format!("{revision}^{{commit}}")])?.trim().to_owned())
+}
+
+/// The best common ancestor of two commits.
+pub fn merge_base(repo: &Path, left: &str, right: &str) -> Result<String, BridgeError> {
+    Ok(run(repo, ["merge-base", left, right])?.trim().to_owned())
+}
+
+/// A checkout of `commit` with no branch: `git worktree add --detach`.
+pub fn add_detached_worktree(repo: &Path, path: &Path, commit: &str) -> Result<(), BridgeError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    run(repo, ["worktree", "add", "--detach", "--quiet", &path.to_string_lossy(), commit])?;
+    Ok(())
+}
+
+/// Remove a checkout Bridge owns even when it holds changes, and its
+/// registration with it.
+pub fn force_remove_worktree(repo: &Path, path: &Path) -> Result<(), BridgeError> {
+    run(repo, ["worktree", "remove", "--force", &path.to_string_lossy()])?;
+    Ok(())
+}
+
+/// One changed path between two commits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffFile {
+    pub path: String,
+    /// The path before a rename or copy.
+    pub previous_path: Option<String>,
+    /// `added`, `modified`, `deleted`, `renamed`, `copied` or `typechange`.
+    pub status: &'static str,
+    /// `None` for a binary file.
+    pub additions: Option<u64>,
+    pub deletions: Option<u64>,
+}
+
+fn diff_status(code: &str) -> &'static str {
+    match code.chars().next() {
+        Some('A') => "added",
+        Some('D') => "deleted",
+        Some('R') => "renamed",
+        Some('C') => "copied",
+        Some('T') => "typechange",
+        _ => "modified",
+    }
+}
+
+/// Every changed path from `from` to `to`, in the order `git diff` prints
+/// them, with rename detection on, as [`diff_patch`] uses.
+pub fn diff_files(repo: &Path, from: &str, to: &str) -> Result<Vec<DiffFile>, BridgeError> {
+    let names = run_bytes(repo, ["diff", "-M", "--no-ext-diff", "--name-status", "-z", from, to])?;
+    let stats = run_bytes(repo, ["diff", "-M", "--no-ext-diff", "--numstat", "-z", from, to])?;
+    let mut files = Vec::new();
+    let mut fields = names.split(|byte| *byte == 0).map(|field| String::from_utf8_lossy(field).into_owned());
+    while let Some(code) = fields.next() {
+        if code.is_empty() {
+            continue;
+        }
+        let status = diff_status(&code);
+        let (previous_path, path) = if matches!(status, "renamed" | "copied") {
+            (fields.next(), fields.next().unwrap_or_default())
+        } else {
+            (None, fields.next().unwrap_or_default())
+        };
+        files.push(DiffFile { path, previous_path, status, additions: None, deletions: None });
+    }
+    // numstat -z: "<add>\t<del>\t<path>\0", or for a rename
+    // "<add>\t<del>\t\0<old>\0<new>\0". Same order as name-status.
+    let mut records = stats.split(|byte| *byte == 0).map(|field| String::from_utf8_lossy(field).into_owned());
+    let mut index = 0;
+    while let Some(record) = records.next() {
+        if record.is_empty() {
+            continue;
+        }
+        let mut parts = record.splitn(3, '\t');
+        let additions = parts.next().and_then(|count| count.parse().ok());
+        let deletions = parts.next().and_then(|count| count.parse().ok());
+        if parts.next().is_some_and(str::is_empty) {
+            // A rename: the two paths follow as their own fields.
+            records.next();
+            records.next();
+        }
+        if let Some(file) = files.get_mut(index) {
+            file.additions = additions;
+            file.deletions = deletions;
+        }
+        index += 1;
+    }
+    Ok(files)
+}
+
+/// The patch from `from` to `to`, read up to `limit` bytes. The flag is true
+/// when there was more.
+pub fn diff_patch(repo: &Path, from: &str, to: &str, limit: usize) -> Result<(Vec<u8>, bool), BridgeError> {
+    let output = run_bounded_bytes(
+        repo,
+        ["diff", "-M", "--no-color", "--no-ext-diff", "--no-textconv", from, to],
+        limit,
+        &[0],
+    )?;
+    Ok((output.stdout, output.truncated))
+}
+
 /// One entry of `git worktree list --porcelain`. `prunable` is git's own
 /// verdict that the registration outlived its directory — the state a
 /// reconcile pass exists to clear.
@@ -1993,6 +2185,71 @@ mod tests {
         let empty = run_bounded_bytes(root.path(), ["--version"], 0, &[0]).unwrap();
         assert!(empty.truncated);
         assert!(empty.stdout.is_empty());
+    }
+
+    fn review_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(root.path()).unwrap();
+        let remote = base.join("github.git");
+        let local = base.join("local");
+        std::fs::create_dir(&local).unwrap();
+        git(&local, &["init", "-q", "-b", "main"]);
+        git(&local, &["config", "user.email", "t@example.invalid"]);
+        git(&local, &["config", "user.name", "T"]);
+        git(&local, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(local.join("a.txt"), "a\n").unwrap();
+        git(&local, &["add", "."]);
+        git(&local, &["commit", "-q", "-m", "base"]);
+        git(&base, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);
+        git(&local, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&local, &["push", "-q", "origin", "main"]);
+        // The PR: a commit pushed to refs/pull/7/head and to no branch.
+        git(&local, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(local.join("new.txt"), "only in the PR\n").unwrap();
+        git(&local, &["add", "."]);
+        git(&local, &["commit", "-q", "-m", "pr"]);
+        git(&local, &["push", "-q", "origin", "HEAD:refs/pull/7/head"]);
+        git(&local, &["checkout", "-q", "main"]);
+        git(&local, &["branch", "-q", "-D", "feature"]);
+        (root, local, base)
+    }
+
+    #[test]
+    fn fetching_a_pull_ref_returns_its_head_and_never_touches_the_checkout() {
+        let (_root, local, _base) = review_fixture();
+        let head_before = git(&local, &["rev-parse", "HEAD"]);
+        let fetched = fetch_ref(&local, "origin", "refs/pull/7/head", "refs/bridge/reviews/pr-7").unwrap();
+        assert_eq!(fetched.len(), 40);
+        assert_eq!(resolve_commit(&local, "refs/bridge/reviews/pr-7").unwrap(), fetched);
+        assert_eq!(git(&local, &["rev-parse", "HEAD"]), head_before, "HEAD is unchanged");
+        assert_eq!(git(&local, &["symbolic-ref", "--short", "HEAD"]), "main");
+        assert_eq!(git(&local, &["status", "--porcelain"]), "", "the checkout is clean");
+        assert!(!local.join("new.txt").exists());
+        assert!(fetch_ref(&local, "origin", "refs/pull/99/head", "refs/bridge/reviews/pr-99").is_err());
+        assert!(resolve_commit(&local, "refs/bridge/nothing").is_err());
+        assert_eq!(merge_base(&local, "main", &fetched).unwrap(), head_before);
+    }
+
+    #[test]
+    fn a_detached_worktree_has_no_branch_and_force_removal_unregisters_it() {
+        let (_root, local, base) = review_fixture();
+        let head = fetch_ref(&local, "origin", "refs/pull/7/head", "refs/bridge/reviews/pr-7").unwrap();
+        let path = base.join("worktrees/reviews/pr-7-0123456789ab-1");
+        add_detached_worktree(&local, &path, &head).unwrap();
+        assert_eq!(std::fs::read_to_string(path.join("new.txt")).unwrap(), "only in the PR\n");
+        let entry = list_worktrees(&local).unwrap().into_iter().find(|entry| entry.path == path).unwrap();
+        assert!(entry.detached && entry.branch.is_none());
+        assert_eq!(git(&local, &["branch", "--list"]), "* main", "no branch was created");
+        std::fs::write(path.join("scratch.txt"), "dirty\n").unwrap();
+        force_remove_worktree(&local, &path).unwrap();
+        assert!(!path.exists());
+        assert!(list_worktrees(&local).unwrap().iter().all(|entry| entry.path != path));
+        let files = diff_files(&local, "main", &head).unwrap();
+        assert_eq!(files, [DiffFile { path: "new.txt".into(), previous_path: None, status: "added", additions: Some(1), deletions: Some(0) }]);
+        let (patch, truncated) = diff_patch(&local, "main", &head, 1 << 20).unwrap();
+        assert!(!truncated && String::from_utf8_lossy(&patch).contains("+only in the PR"));
+        let (_, truncated) = diff_patch(&local, "main", &head, 10).unwrap();
+        assert!(truncated);
     }
 
     #[test]
