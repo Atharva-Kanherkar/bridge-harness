@@ -2557,6 +2557,16 @@
     }
   ],
   "rows": {
+    "agent_activity_minutes": [
+      {
+        "session_id": "claude-chat",
+        "minute": 0
+      },
+      {
+        "session_id": "codex-chat",
+        "minute": 0
+      }
+    ],
     "attention_events": [
       {
         "sequence": 1,
@@ -3440,6 +3450,29 @@
       {
         "version": 85,
         "applied_at": "<time>"
+      },
+      {
+        "version": 86,
+        "applied_at": "<time>"
+      },
+      {
+        "version": 87,
+        "applied_at": "<time>"
+      },
+      {
+        "version": 88,
+        "applied_at": "<time>"
+      },
+      {
+        "version": 89,
+        "applied_at": "<time>"
+      }
+    ],
+    "screen_time_backfill": [
+      {
+        "id": 1,
+        "cursor": 0,
+        "end_rowid": 0
       }
     ],
     "session_entries": [

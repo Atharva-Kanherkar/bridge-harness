@@ -611,12 +611,21 @@ fn cell(value: ValueRef<'_>) -> Value {
 }
 
 /// Zero the values that a host clock writes and that no text pattern finds:
-/// the latency marks of a send and the wall time of a tool result.
+/// the latency marks of a send, the wall time of a tool result, and the Unix
+/// minute that Screen Time records for each active chat.
 fn settle_clocks(trace: &mut Value) {
     if let Some(rows) = trace.pointer_mut("/rows/events").and_then(Value::as_array_mut) {
         for row in rows.iter_mut().filter(|row| row["kind"].as_str().is_some_and(|kind| kind.starts_with("latency."))) {
             zero_numbers(&mut row["body"]);
         }
+    }
+    if let Some(rows) = trace.pointer_mut("/rows/agent_activity_minutes").and_then(Value::as_array_mut) {
+        for row in rows.iter_mut() {
+            zero_numbers(&mut row["minute"]);
+        }
+        // A run that crosses a minute boundary writes a second minute for a
+        // chat. The rows come in key order, so the copies are next to each other.
+        rows.dedup();
     }
     zero_tool_result_durations(trace);
 }
