@@ -7454,8 +7454,10 @@ fn workflow_validation_context(core: &Arc<BridgeCore>, with_servers: bool) -> cr
                 id: descriptor.id,
             })
             .collect(),
+        // Every connector Claude is configured with, signed in or not: a
+        // workflow whose Slack needs signing in again can still be edited.
         servers: if with_servers {
-            crate::marketplace::claude_sdk_configuration().mcp_servers.into_keys().collect()
+            crate::marketplace::connectors_now().connector_health.into_keys().collect()
         } else {
             Default::default()
         },
@@ -7464,10 +7466,12 @@ fn workflow_validation_context(core: &Arc<BridgeCore>, with_servers: bool) -> cr
 
 /// Every workflow. Disables, and announces, any whose project is gone first.
 pub fn list_workflows(core: &Arc<BridgeCore>) -> Result<wire::WorkflowList, BridgeError> {
+    // Never waits for `mcp list`: a cold cache shows connectors as unknown.
+    let connectors = crate::marketplace::connectors_peek();
     let ((changed, cancelled), workflows) = {
         let db = core.db.lock().unwrap();
         let changed = crate::workflows::reconcile_projects(&db)?;
-        (changed, crate::workflows::list(&db)?)
+        (changed, crate::workflows::list(&db, connectors.as_ref())?)
     };
     publish_workflows_changed(core, changed);
     crate::workflow_trigger::publish_runs(core, &cancelled);
@@ -7533,27 +7537,52 @@ pub fn set_workflow_enabled(core: &Arc<BridgeCore>, params: &wire::SetWorkflowEn
 /// configuration holds. Discovery, not authority: a run's scope is still
 /// checked against the live configuration when it starts.
 pub fn workflow_options(core: &Arc<BridgeCore>) -> wire::WorkflowOptions {
+    workflow_options_from(core, crate::marketplace::connectors_now)
+}
+
+/// The same, after asking Claude afresh: the editor's Refresh.
+pub fn refresh_workflow_connectors(core: &Arc<BridgeCore>) -> wire::WorkflowOptions {
+    workflow_options_from(core, crate::marketplace::refresh_connectors)
+}
+
+fn workflow_options_from(
+    core: &Arc<BridgeCore>,
+    connectors: impl FnOnce() -> crate::marketplace::ClaudeSdkConfiguration,
+) -> wire::WorkflowOptions {
     let harnesses = workflow_harness_options(core);
     let claude_may_hold_connectors = harnesses
         .iter()
         .any(|harness| harness.id == "claude" && harness.connectors_allowed);
     let servers = if claude_may_hold_connectors {
-        let configuration = crate::marketplace::claude_sdk_configuration();
-        configuration
-            .mcp_servers
-            .keys()
-            .map(|server| wire::WorkflowServerOption {
-                id: server.clone(),
-                family: crate::work_briefing_live::family_for_server(server)
+        // Every configured connector, with whether it is signed in, so the
+        // editor can say "not connected" instead of hiding it.
+        connectors()
+            .connector_health
+            .into_iter()
+            .map(|(server, connected)| wire::WorkflowServerOption {
+                family: crate::work_briefing_live::family_for_server(&server)
                     .map(|family| family.as_str().to_owned())
                     .unwrap_or_else(|| "unknown".to_owned()),
-                connected: configuration.connector_health.get(server).copied().flatten(),
+                id: server,
+                connected,
             })
             .collect()
     } else {
         Vec::new()
     };
     wire::WorkflowOptions { harnesses, servers }
+}
+
+/// What an event trigger would have done in the last week.
+pub fn preview_workflow_trigger(core: &Arc<BridgeCore>, params: &wire::PreviewWorkflowTriggerParams) -> Result<wire::WorkflowTriggerPreview, BridgeError> {
+    Ok(crate::workflow_events::preview(core, &params.trigger, &crate::workflow_events::SystemGh, chrono::Utc::now()))
+}
+
+/// The curated templates, built with the person's own connectors.
+pub fn list_workflow_templates(core: &Arc<BridgeCore>) -> Result<wire::WorkflowTemplateList, BridgeError> {
+    let options = workflow_options(core);
+    let context = workflow_draft_context(core, options.servers);
+    Ok(wire::WorkflowTemplateList { templates: crate::workflow_templates::templates(&context) })
 }
 
 /// What each registered harness may run as a workflow, by the same gate
@@ -7598,7 +7627,13 @@ pub(crate) fn workflow_harness_options(core: &Arc<BridgeCore>) -> Vec<wire::Work
 /// Run now. The request id makes a double click one run.
 pub fn run_workflow(core: &Arc<BridgeCore>, params: &wire::RunWorkflowParams) -> Result<wire::RunWorkflowResult, BridgeError> {
     use crate::workflow_trigger::{self, ClaimOutcome, Occasion};
-    let occasion = Occasion::manual(&params.workflow_id, &params.request_id);
+    // A past event is for trying a workflow out: every write of a dry run is a
+    // preview. A real run only ever carries an event its trigger recorded.
+    if params.event.is_some() && !params.dry_run {
+        return Err(BridgeError::Invalid("Only a dry run can be tried on a past event".into()));
+    }
+    let mut occasion = Occasion::manual(&params.workflow_id, &params.request_id);
+    occasion.events = params.event.iter().cloned().collect();
     let outcome = workflow_trigger::claim(
         &core.db.lock().unwrap(),
         &params.workflow_id,
@@ -7723,7 +7758,7 @@ pub fn draft_workflow_from_text(core: &Arc<BridgeCore>, params: &wire::DraftWork
 
 /// Draft from a chat: no model call. Never saved.
 pub fn draft_workflow_from_session(core: &Arc<BridgeCore>, params: &wire::DraftWorkflowFromSessionParams) -> Result<wire::WorkflowDraftResult, BridgeError> {
-    let configured: Vec<String> = crate::marketplace::claude_sdk_configuration().mcp_servers.into_keys().collect();
+    let configured: Vec<String> = crate::marketplace::connectors_now().connector_health.into_keys().collect();
     let context = workflow_draft_context(core, Vec::new());
     let draft = crate::workflow_draft::draft_from_session(&core.db.lock().unwrap(), &params.session_id, &configured, &context)?;
     Ok(wire::WorkflowDraftResult { draft })

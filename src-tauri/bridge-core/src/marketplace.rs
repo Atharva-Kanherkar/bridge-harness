@@ -250,6 +250,117 @@ fn discovery_cache() -> &'static std::sync::Mutex<DiscoveryCache> {
     CACHE.get_or_init(|| std::sync::Mutex::new(DiscoveryCache::default()))
 }
 
+/// How long a connector answer counts as fresh for the surfaces a person acts
+/// on (a workflow's save, its options, a draft, a run's pre-check). An older
+/// answer is still returned at once and refreshed in the background.
+pub const CONNECTOR_FRESH: Duration = Duration::from_secs(60);
+
+/// The last connector answer and whether a refresh is under way.
+#[derive(Default)]
+pub struct ConnectorCache {
+    answer: Option<(Instant, ClaudeSdkConfiguration)>,
+    refreshing: bool,
+}
+
+/// Whether a probe's answer can stand in for what Claude is configured with.
+/// `mcp list` that failed or timed out reports no servers at all, and must not
+/// replace a real answer: a busy Mac would otherwise flip every connector to
+/// "not configured" until the next probe.
+fn connector_answer_usable(configuration: &ClaudeSdkConfiguration) -> bool {
+    !configuration
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.stage == "mcp" || diagnostic.stage == "runtime")
+}
+
+impl ConnectorCache {
+    /// The cached answer, and whether the caller should start a refresh.
+    /// Claims the refresh so only one caller starts it.
+    pub fn read(&mut self, now: Instant, fresh: Duration) -> (Option<ClaudeSdkConfiguration>, bool) {
+        match &self.answer {
+            Some((at, configuration)) => {
+                let stale = now.saturating_duration_since(*at) >= fresh;
+                let refresh = stale && !self.refreshing;
+                if refresh {
+                    self.refreshing = true;
+                }
+                (Some(configuration.clone()), refresh)
+            }
+            None => (None, false),
+        }
+    }
+
+    /// Store a probe's answer. An unusable one keeps the previous answer (its
+    /// age is left alone, so the next read retries) unless there is none yet.
+    pub fn store(&mut self, configuration: ClaudeSdkConfiguration, at: Instant) {
+        self.refreshing = false;
+        if connector_answer_usable(&configuration) || self.answer.is_none() {
+            self.answer = Some((at, configuration));
+        }
+    }
+
+    /// A refresh ended without an answer (it panicked or was abandoned).
+    pub fn release(&mut self) {
+        self.refreshing = false;
+    }
+}
+
+fn connector_cache() -> &'static std::sync::Mutex<ConnectorCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<ConnectorCache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(ConnectorCache::default()))
+}
+
+/// Serialises cold probes, so callers racing an empty cache start one `mcp list`.
+fn connector_probe_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+/// Claude's connectors as the person's own surfaces read them: the last answer
+/// at once, refreshed in the background once older than [`CONNECTOR_FRESH`].
+/// Only a cold cache probes inline. Saving a workflow used to wait 13 to 16 s
+/// for `claude mcp list` on every save.
+pub fn connectors_now() -> ClaudeSdkConfiguration {
+    connectors_peek().unwrap_or_else(refresh_connectors)
+}
+
+/// The cached answer at any age, without ever probing inline: for a list or a
+/// run's pre-check, which must not wait for `mcp list`. A stale or cold cache
+/// starts a background refresh.
+pub fn connectors_peek() -> Option<ClaudeSdkConfiguration> {
+    let (answer, refresh) = connector_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .read(Instant::now(), CONNECTOR_FRESH);
+    if refresh {
+        let spawned = std::thread::Builder::new().name("connector-refresh".into()).spawn(|| {
+            let configuration = claude_sdk_configuration_for(ClaudeDiscovery::ALL);
+            connector_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).store(configuration, Instant::now());
+        });
+        if spawned.is_err() {
+            connector_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).release();
+        }
+    }
+    answer
+}
+
+/// Probe now and store the answer: a person asked for it, or the cache is cold.
+pub fn refresh_connectors() -> ClaudeSdkConfiguration {
+    let _probe = connector_probe_lock().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let configuration = claude_sdk_configuration_for(ClaudeDiscovery::ALL);
+    let mut cache = connector_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    cache.store(configuration, Instant::now());
+    cache.read(Instant::now(), Duration::MAX).0.unwrap_or_default()
+}
+
+/// Fill the cache in the background at boot, so the first workflow save or
+/// options read does not wait for `mcp list`.
+pub fn warm_connectors() {
+    let _ = std::thread::Builder::new().name("connector-warm".into()).spawn(|| {
+        refresh_connectors();
+    });
+}
+
 /// The newest cached answer that holds connectors, at any age, with its age.
 /// It never probes. While a probe holds the cache it returns `None` and does
 /// not wait, so a read that must start no process stays fast.
@@ -2152,6 +2263,53 @@ mod tests {
 
     /// Several cold launches at once (a switch, a worker pool, two chats opened
     /// together) share one probe instead of starting one each.
+    fn answer(servers: &[&str], diagnostics: &[&str]) -> ClaudeSdkConfiguration {
+        ClaudeSdkConfiguration {
+            mcp_servers: servers.iter().map(|name| ((*name).to_owned(), serde_json::json!({}))).collect(),
+            diagnostics: diagnostics.iter().map(|stage| capability_diagnostic(stage, "timed-out", "x")).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_connector_cache_answers_at_once_and_refreshes_a_stale_answer_once() {
+        let mut cache = ConnectorCache::default();
+        let start = Instant::now();
+        let (cold, refresh) = cache.read(start, CONNECTOR_FRESH);
+        assert!(cold.is_none() && !refresh, "a cold cache has nothing; the caller probes inline");
+        cache.store(answer(&["claude.ai Slack"], &[]), start);
+        let (fresh, refresh) = cache.read(start + Duration::from_secs(10), CONNECTOR_FRESH);
+        assert!(fresh.unwrap().mcp_servers.contains_key("claude.ai Slack"));
+        assert!(!refresh, "a fresh answer starts no probe");
+        let later = start + CONNECTOR_FRESH + Duration::from_secs(1);
+        let (stale, refresh) = cache.read(later, CONNECTOR_FRESH);
+        assert!(stale.is_some() && refresh, "a stale answer is still returned, and one caller refreshes it");
+        assert!(!cache.read(later, CONNECTOR_FRESH).1, "the refresh is claimed: no second probe");
+        cache.store(answer(&["claude.ai Slack", "claude.ai Notion"], &[]), later);
+        let (updated, refresh) = cache.read(later, CONNECTOR_FRESH);
+        assert_eq!(updated.unwrap().mcp_servers.len(), 2);
+        assert!(!refresh);
+    }
+
+    #[test]
+    fn a_failed_probe_never_replaces_a_real_connector_answer() {
+        let mut cache = ConnectorCache::default();
+        let start = Instant::now();
+        cache.store(answer(&["claude.ai Slack"], &[]), start);
+        let later = start + CONNECTOR_FRESH * 2;
+        assert!(cache.read(later, CONNECTOR_FRESH).1);
+        // `mcp list` timed out under load: no servers, a timed-out diagnostic.
+        cache.store(answer(&[], &["mcp"]), later);
+        let (kept, refresh) = cache.read(later, CONNECTOR_FRESH);
+        assert!(kept.unwrap().mcp_servers.contains_key("claude.ai Slack"), "the real answer stands");
+        assert!(refresh, "and it is still stale, so the next read retries");
+        cache.release();
+        // With nothing better, a failed answer is still an answer.
+        let mut cold = ConnectorCache::default();
+        cold.store(answer(&[], &["runtime"]), start);
+        assert!(cold.read(start, CONNECTOR_FRESH).0.is_some());
+    }
+
     #[test]
     fn discovery_cache_single_flight() {
         let cache = std::sync::Arc::new(std::sync::Mutex::new(DiscoveryCache::default()));

@@ -656,7 +656,7 @@ mod tests {
             let draft = draft_from_text(&case.sentence, None, &context, &mut Scripted(Ok(reply))).unwrap();
             let cron = match &draft.definition.trigger {
                 wire::WorkflowTrigger::Schedule { cron, .. } => Some(cron.split_whitespace().collect::<Vec<_>>().join(" ")),
-                wire::WorkflowTrigger::Manual => None,
+                wire::WorkflowTrigger::Manual | wire::WorkflowTrigger::Event { .. } => None,
             };
             if cron == case.expected.cron {
                 exact += 1;

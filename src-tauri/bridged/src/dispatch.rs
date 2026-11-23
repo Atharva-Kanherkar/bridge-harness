@@ -1427,6 +1427,12 @@ pub fn dispatch(
             let p: wire::MarkWorkflowRunsReadParams = decode(method, params)?;
             reply(api::mark_workflow_runs_read(core, &p))
         }
+        MethodName::PreviewWorkflowTrigger => {
+            let p: wire::PreviewWorkflowTriggerParams = decode(method, params)?;
+            reply(api::preview_workflow_trigger(core, &p))
+        }
+        MethodName::ListWorkflowTemplates => reply(api::list_workflow_templates(core)),
+        MethodName::RefreshWorkflowConnectors => encode(api::refresh_workflow_connectors(core)),
         MethodName::StartReview => {
             let p: wire::StartReviewParams = decode(method, params)?;
             reply(api::start_review(core, &p))

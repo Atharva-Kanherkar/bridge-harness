@@ -20,6 +20,88 @@ pub enum WorkflowTrigger {
     Manual,
     /// A 5-field cron expression read in an IANA timezone.
     Schedule { cron: String, timezone: String },
+    /// Something happened in an app. Slack events come from the connector
+    /// Inbox's ledger; GitHub events from `gh`. Neither costs a model turn.
+    Event {
+        event: WorkflowEventKind,
+        /// `owner/name`. Needed by the GitHub pull-request and issue events,
+        /// optional for review requests.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repo: Option<String>,
+        /// Slack only: the channel's label must contain this, any case.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        channel: Option<String>,
+        /// Slack only: the author's name must contain this, any case.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
+        /// Collect events and run once at each slot of this schedule, instead
+        /// of once per event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        batch: Option<WorkflowBatch>,
+    },
+}
+
+/// The events a workflow can start on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowEventKind {
+    /// Someone @-mentioned the account owner in Slack.
+    SlackMention,
+    /// A Slack direct message to the account owner.
+    SlackDirectMessage,
+    /// A reply in a Slack thread the account owner is part of.
+    SlackThreadReply,
+    /// A pull request was opened in `repo`.
+    GithubPullRequestOpened,
+    /// An issue was opened in `repo`.
+    GithubIssueOpened,
+    /// The person's review was requested on a pull request (in `repo`, if set).
+    GithubReviewRequested,
+}
+
+/// Run collected events at each slot of a schedule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowBatch {
+    pub cron: String,
+    pub timezone: String,
+}
+
+/// One event, as a run, a preview or a dry run carries it. `payload` is the
+/// source's own record and is untrusted: other people wrote it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowEventSample {
+    /// Stable across re-reads: how an event is recognised again.
+    pub key: String,
+    pub kind: WorkflowEventKind,
+    /// A short line for a person: `#eng · Alex: can you look at…`.
+    pub title: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    pub occurred_at: String,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+}
+
+/// Whether a granted connector can be reached right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowConnectorState {
+    Connected,
+    /// Configured, but Claude reports it needs the person to sign in again.
+    NeedsSignIn,
+    /// Not in Claude's configuration any more.
+    Missing,
+    /// Bridge has not been able to ask yet.
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowConnectorStatus {
+    pub server: String,
+    pub state: WorkflowConnectorState,
 }
 
 /// Whether a granted server may be written to, and how.
@@ -133,6 +215,15 @@ pub struct WorkflowSummary {
     /// The next scheduled fire time, when the workflow could run on one.
     pub next_run_at: Option<String>,
     pub last_run: Option<WorkflowRun>,
+    /// Each granted connector, and whether it can be reached.
+    #[serde(default)]
+    pub connectors: Vec<WorkflowConnectorStatus>,
+    /// The mean cost of its last finished runs with a known cost.
+    #[serde(default)]
+    pub average_run_cost_microusd: Option<i64>,
+    /// That mean times its expected runs in 30 days.
+    #[serde(default)]
+    pub monthly_cost_estimate_microusd: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -200,6 +291,8 @@ pub enum WorkflowTriggerKind {
     Schedule,
     /// The latest of one or more slots missed while Bridge was not running.
     CatchUp,
+    /// One event, or a batch of them.
+    Event,
 }
 
 /// Where a run is. The first four are active: at most one per workflow.
@@ -248,6 +341,12 @@ pub struct WorkflowRun {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub created_at: String,
+    /// The event that started it (the first, for a batch).
+    #[serde(default)]
+    pub event: Option<WorkflowEventSample>,
+    /// How many events it carries: 1 for one event, more for a batch.
+    #[serde(default)]
+    pub event_count: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -279,6 +378,15 @@ pub struct WorkflowSettings {
     /// A run waits while its provider is above `100 - this` percent of any
     /// usage window. 0 to 90.
     pub quota_reserve_percent: i64,
+    /// At most this many runs work at once; the rest wait in line. 1 to 5.
+    #[serde(default = "default_max_concurrent_runs")]
+    pub max_concurrent_runs: i64,
+}
+
+pub const DEFAULT_MAX_CONCURRENT_RUNS: i64 = 2;
+
+fn default_max_concurrent_runs() -> i64 {
+    DEFAULT_MAX_CONCURRENT_RUNS
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -297,6 +405,57 @@ pub struct RunWorkflowParams {
     pub request_id: String,
     #[serde(default)]
     pub dry_run: bool,
+    /// A past event to try a dry run on, from `preview_workflow_trigger`.
+    /// Refused on a real run.
+    #[serde(default)]
+    pub event: Option<WorkflowEventSample>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreviewWorkflowTriggerParams {
+    pub trigger: WorkflowTrigger,
+}
+
+/// What a trigger would have done lately.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowTriggerPreview {
+    /// False when Bridge cannot read this source now; `reason` says why.
+    pub supported: bool,
+    pub reason: Option<String>,
+    pub window_days: i64,
+    /// Events in the window that would have started a run.
+    pub matches: i64,
+    /// The newest few, for a dry run.
+    pub samples: Vec<WorkflowEventSample>,
+    /// A caveat for the count, such as how far back Bridge has history.
+    pub note: Option<String>,
+}
+
+/// A ready-made workflow a person can try, customise and approve.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowTemplate {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// Connector families it reads or writes: `slack`, `gmail`, …
+    pub needs: Vec<String>,
+    /// The ones the person has not connected in Claude.
+    pub missing: Vec<String>,
+    /// It works on a project's code, so a project must be chosen.
+    pub needs_project: bool,
+    /// Every connector is connected and nothing is left to choose.
+    pub ready: bool,
+    /// A draft built with the person's own servers, model and timezone.
+    pub definition: WorkflowDefinition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowTemplateList {
+    pub templates: Vec<WorkflowTemplate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
