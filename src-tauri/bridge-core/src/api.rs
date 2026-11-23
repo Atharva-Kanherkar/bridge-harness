@@ -1476,6 +1476,42 @@ pub fn github_review(
     Ok(result)
 }
 
+// ── reviews ──────────────────────────────────────────────────────────────────
+// Pull-request reviews as stored background jobs on Bridge's own runner. See
+// `reviews`. `github_review` above keeps its worker path until the pipeline
+// steps land.
+
+pub fn start_review(core: &Arc<BridgeCore>, params: &wire::StartReviewParams) -> Result<wire::ReviewJobResult, BridgeError> {
+    Ok(wire::ReviewJobResult { job: crate::reviews::start(core, params)? })
+}
+
+pub fn list_reviews(core: &Arc<BridgeCore>, params: &wire::ListReviewsParams) -> Result<wire::ReviewJobList, BridgeError> {
+    crate::reviews::list(core, params)
+}
+
+pub fn get_review(core: &Arc<BridgeCore>, params: &wire::GetReviewParams) -> Result<wire::ReviewJobDetail, BridgeError> {
+    crate::reviews::get(core, &params.job_id)
+}
+
+pub fn cancel_review(core: &Arc<BridgeCore>, params: &wire::CancelReviewParams) -> Result<wire::ReviewJobResult, BridgeError> {
+    Ok(wire::ReviewJobResult { job: crate::reviews::cancel(core, &params.job_id)? })
+}
+
+pub fn retry_review(core: &Arc<BridgeCore>, params: &wire::RetryReviewParams) -> Result<wire::ReviewJobResult, BridgeError> {
+    Ok(wire::ReviewJobResult { job: crate::reviews::retry(core, &params.job_id)? })
+}
+
+pub fn get_review_job_settings(core: &Arc<BridgeCore>) -> Result<wire::ReviewJobSettings, BridgeError> {
+    crate::reviews::job_settings(core)
+}
+
+pub fn save_review_job_settings(
+    core: &Arc<BridgeCore>,
+    params: &wire::SaveReviewJobSettingsParams,
+) -> Result<wire::ReviewJobSettings, BridgeError> {
+    crate::reviews::save_job_settings(core, &params.settings)
+}
+
 /// How the pull-request reviewer launches on one harness, decided before a
 /// session is spent on it.
 #[derive(Debug, Clone, PartialEq, Eq)]

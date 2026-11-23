@@ -189,6 +189,9 @@ pub struct BridgeCore {
     /// keystroke pause would make the feature unusable.
     pub suggestion_engine: SuggestionEngine,
     pub usage_overview: crate::usage_overview::UsageOverviewService,
+    /// The review runner's live state in this process: the steps it runs,
+    /// the cancel token of each job it is driving, and its wake signal.
+    pub reviews: crate::reviews::ReviewRuntime,
 }
 
 /// An exclusive per-session lifecycle claim; released on drop.
@@ -422,6 +425,7 @@ impl BridgeCore {
             external_import_previews: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
             usage_overview: crate::usage_overview::UsageOverviewService::default(),
+            reviews: crate::reviews::ReviewRuntime::default(),
         }
     }
 
@@ -593,6 +597,7 @@ impl BridgeCore {
             external_import_previews: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
             usage_overview: crate::usage_overview::UsageOverviewService::default(),
+            reviews: crate::reviews::ReviewRuntime::default(),
         })
     }
 }

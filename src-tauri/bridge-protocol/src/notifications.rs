@@ -148,6 +148,10 @@ notifications![
     (WorkflowsChanged, "workflows/changed", Transient),
     // A workflow run changed status. Payload `{"run": WorkflowRun}`.
     (WorkflowRunChanged, "workflows/run_changed", Transient),
+    // A review job changed status or one of its passes moved. Payload
+    // `{"job": ReviewJob}`. Transient: a client that missed it rereads
+    // `reviews/list_reviews`, whose rows are the truth.
+    (ReviewJobUpdated, "reviews/job_updated", Transient),
     // Host-synthesized: the live channel dropped events for this connection.
     // Durable history is intact — replay every watched session from its last
     // cursor via `sessions/replay_session_events`; refetch hints are resent
@@ -209,6 +213,7 @@ mod tests {
             NotificationName::StreamLagged,
             NotificationName::AttentionChanged,
             NotificationName::AppsChanged,
+            NotificationName::ReviewJobUpdated,
         ] {
             assert_eq!(
                 transient.delivery(),

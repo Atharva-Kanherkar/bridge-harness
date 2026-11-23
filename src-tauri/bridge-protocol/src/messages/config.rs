@@ -950,4 +950,39 @@ mod tests {
             json!({"state": "deleted"})
         );
     }
+
+    /// `ReviewerSettings` and its result exactly as protocol 1.49 published
+    /// them, strict as they were. A 1.49 client still pairs with this host,
+    /// so it must decode what this host sends.
+    #[derive(Debug, Default, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+    #[allow(dead_code)]
+    struct ReviewerSettings149 {
+        harnesses: std::collections::BTreeMap<String, ReviewerHarnessSettings>,
+        system_prompt: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    #[allow(dead_code)]
+    struct ReviewerSettingsResult149 {
+        settings: ReviewerSettings149,
+        default_system_prompt: String,
+    }
+
+    #[test]
+    fn a_1_49_client_decodes_the_reviewer_settings_response() {
+        let mut custom = ReviewerSettings::default();
+        custom.harnesses.insert(
+            "codex".into(),
+            ReviewerHarnessSettings { model: Some("gpt-5-codex".into()), effort: Some(Effort::High) },
+        );
+        custom.system_prompt = "Review #{number}.".into();
+        for settings in [ReviewerSettings::default(), custom] {
+            let response = serde_json::to_value(ReviewerSettingsResult { settings, default_system_prompt: "d".into() }).unwrap();
+            if let Err(error) = serde_json::from_value::<ReviewerSettingsResult149>(response.clone()) {
+                panic!("a 1.49 client cannot decode {response}: {error}");
+            }
+        }
+    }
 }

@@ -1032,6 +1032,76 @@ async fn mark_workflow_runs_read(
 }
 
 #[tauri::command]
+async fn start_review(
+    workspace_id: String,
+    number: u64,
+    harnesses: Option<Vec<String>>,
+    trigger: Option<bridge_protocol::messages::ReviewTrigger>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewJobResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Review", move || {
+        api::start_review(&core, &bridge_protocol::messages::StartReviewParams { workspace_id, number, harnesses, trigger })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_reviews(
+    workspace_id: String,
+    number: Option<u64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewJobList, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Reviews", move || {
+        api::list_reviews(&core, &bridge_protocol::messages::ListReviewsParams { workspace_id, number })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_review(
+    job_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewJobDetail, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Review", move || api::get_review(&core, &bridge_protocol::messages::GetReviewParams { job_id })).await
+}
+
+#[tauri::command]
+async fn cancel_review(
+    job_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewJobResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Review", move || api::cancel_review(&core, &bridge_protocol::messages::CancelReviewParams { job_id })).await
+}
+
+#[tauri::command]
+async fn retry_review(
+    job_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewJobResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Review", move || api::retry_review(&core, &bridge_protocol::messages::RetryReviewParams { job_id })).await
+}
+
+#[tauri::command]
+async fn get_review_job_settings(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewJobSettings, BridgeError> {
+    api::get_review_job_settings(state.inner())
+}
+
+#[tauri::command]
+async fn save_review_job_settings(
+    settings: bridge_protocol::messages::ReviewJobSettings,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewJobSettings, BridgeError> {
+    api::save_review_job_settings(state.inner(), &bridge_protocol::messages::SaveReviewJobSettingsParams { settings })
+}
+
+#[tauri::command]
 async fn always_allow_tool(
     workflow_id: String,
     session_id: String,
@@ -3647,6 +3717,7 @@ fn setup_embedded(
     bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
     bridge_core::memory_consolidation_live::start_consolidation_maintenance(core.clone());
     bridge_core::title_jobs_live::start_title_maintenance(core.clone());
+    bridge_core::reviews::start_review_maintenance(core.clone());
     bridge_core::limit_recovery::start_limit_recovery_maintenance(core.clone());
     bridge_core::notes::live::start_note_maintenance(core.clone());
     live_turn::start_queued_input_maintenance(core.clone());
@@ -3810,6 +3881,13 @@ pub fn run() -> i32 {
             draft_workflow_from_text,
             draft_workflow_from_session,
             mark_workflow_runs_read,
+            start_review,
+            list_reviews,
+            get_review,
+            cancel_review,
+            retry_review,
+            get_review_job_settings,
+            save_review_job_settings,
             get_state,
             get_session_forest,
             get_session_forest_digest,

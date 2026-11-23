@@ -52,6 +52,7 @@ mod models;
 mod notes;
 mod outgoing;
 mod projects;
+mod reviews;
 mod routing;
 mod sessions;
 mod skills;
@@ -96,6 +97,7 @@ pub use models::*;
 pub use notes::*;
 pub use outgoing::*;
 pub use projects::*;
+pub use reviews::*;
 pub use routing::*;
 pub use sessions::*;
 pub use skills::*;
@@ -587,6 +589,14 @@ typed_methods![
     (DraftWorkflowFromText, DraftWorkflowFromTextParams, WorkflowDraftResult),
     (DraftWorkflowFromSession, DraftWorkflowFromSessionParams, WorkflowDraftResult),
     (MarkWorkflowRunsRead, MarkWorkflowRunsReadParams, UnitResult),
+    // reviews
+    (StartReview, StartReviewParams, ReviewJobResult),
+    (ListReviews, ListReviewsParams, ReviewJobList),
+    (GetReview, GetReviewParams, ReviewJobDetail),
+    (CancelReview, CancelReviewParams, ReviewJobResult),
+    (RetryReview, RetryReviewParams, ReviewJobResult),
+    (GetReviewJobSettings, _, ReviewJobSettings),
+    (SaveReviewJobSettings, SaveReviewJobSettingsParams, ReviewJobSettings),
 ];
 
 /// The documented exceptions to result typing: every method whose result is

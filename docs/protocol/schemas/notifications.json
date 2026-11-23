@@ -119,6 +119,10 @@
     },
     {
       "delivery": "transient",
+      "notification": "reviews/job_updated"
+    },
+    {
+      "delivery": "transient",
       "notification": "stream-lagged"
     }
   ]

@@ -1414,6 +1414,31 @@ pub fn dispatch(
             let p: wire::MarkWorkflowRunsReadParams = decode(method, params)?;
             reply(api::mark_workflow_runs_read(core, &p))
         }
+        MethodName::StartReview => {
+            let p: wire::StartReviewParams = decode(method, params)?;
+            reply(api::start_review(core, &p))
+        }
+        MethodName::ListReviews => {
+            let p: wire::ListReviewsParams = decode(method, params)?;
+            reply(api::list_reviews(core, &p))
+        }
+        MethodName::GetReview => {
+            let p: wire::GetReviewParams = decode(method, params)?;
+            reply(api::get_review(core, &p))
+        }
+        MethodName::CancelReview => {
+            let p: wire::CancelReviewParams = decode(method, params)?;
+            reply(api::cancel_review(core, &p))
+        }
+        MethodName::RetryReview => {
+            let p: wire::RetryReviewParams = decode(method, params)?;
+            reply(api::retry_review(core, &p))
+        }
+        MethodName::GetReviewJobSettings => reply(api::get_review_job_settings(core)),
+        MethodName::SaveReviewJobSettings => {
+            let p: wire::SaveReviewJobSettingsParams = decode(method, params)?;
+            reply(api::save_review_job_settings(core, &p))
+        }
         MethodName::AlwaysAllowTool => {
             let p: wire::AlwaysAllowToolParams = decode(method, params)?;
             reply(api::always_allow_tool(core, &p))

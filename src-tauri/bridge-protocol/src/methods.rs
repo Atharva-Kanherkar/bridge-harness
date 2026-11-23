@@ -448,6 +448,14 @@ methods![
     (DraftWorkflowFromText, "workflows", "draft_workflow_from_text"),
     (DraftWorkflowFromSession, "workflows", "draft_workflow_from_session"),
     (MarkWorkflowRunsRead, "workflows", "mark_workflow_runs_read"),
+    // reviews: pull-request reviews as stored background jobs Bridge runs
+    (StartReview, "reviews", "start_review"),
+    (ListReviews, "reviews", "list_reviews"),
+    (GetReview, "reviews", "get_review"),
+    (CancelReview, "reviews", "cancel_review"),
+    (RetryReview, "reviews", "retry_review"),
+    (GetReviewJobSettings, "reviews", "get_review_job_settings"),
+    (SaveReviewJobSettings, "reviews", "save_review_job_settings"),
 ];
 
 impl MethodName {
