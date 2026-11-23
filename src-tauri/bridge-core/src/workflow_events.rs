@@ -50,6 +50,12 @@ const GH_LIMIT: &str = "30";
 const GH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 /// The fence an event run's first turn carries its events in.
 pub const EVENT_FENCE: &str = "workflow-event";
+/// How many of a run's GitHub events get their details read before it starts.
+pub const MAX_ENRICHED: usize = 10;
+/// The longest description an event carries into a run.
+pub const MAX_BODY_CHARS: usize = 4000;
+/// The most changed files a pull request event lists.
+pub const MAX_FILES: usize = 60;
 
 // --- storage ---------------------------------------------------------------------
 
@@ -348,6 +354,90 @@ pub fn gh_args(event: wire::WorkflowEventKind, repo: Option<&str>) -> Vec<String
         args.extend([if event == K::GithubReviewRequested { "--repo" } else { "-R" }.into(), repo.into()]);
     }
     args
+}
+
+/// A list read keeps a poll cheap, so it carries only what identifies an
+/// event. A run needs the rest: read each GitHub event's description, branch,
+/// size and changed files just before it starts, one `gh` call per event and
+/// at most [`MAX_ENRICHED`] per run. A read that fails leaves its event as it
+/// was, with the reason, so the run still starts.
+pub fn enrich_github(events: &mut [wire::WorkflowEventSample], gh: &dyn GhRunner) {
+    for event in events.iter_mut().filter(|event| !is_slack(event.kind)).take(MAX_ENRICHED) {
+        let Some(args) = view_args(event) else { continue };
+        let read = gh.run(&args).and_then(|stdout| {
+            serde_json::from_str::<Value>(stdout.trim()).map_err(|_| "GitHub answered with something that is not JSON".to_owned())
+        });
+        let Some(details) = event.payload.as_object_mut() else { continue };
+        match read {
+            Ok(Value::Object(view)) => {
+                for (key, value) in view_details(&view) {
+                    details.insert(key.to_owned(), value);
+                }
+            }
+            Ok(_) => {
+                details.insert("detailsUnavailable".into(), json!("GitHub answered with something that is not an object"));
+            }
+            Err(error) => {
+                details.insert("detailsUnavailable".into(), json!(short(&error, 200)));
+            }
+        }
+    }
+}
+
+/// The `gh` arguments that read one GitHub event in full.
+fn view_args(event: &wire::WorkflowEventSample) -> Option<Vec<String>> {
+    let repo = event.payload.get("repo").and_then(Value::as_str).filter(|repo| valid_repo(repo))?;
+    let number = event.payload.get("number").and_then(Value::as_i64).filter(|number| *number > 0)?;
+    let (noun, fields) = if event.kind == wire::WorkflowEventKind::GithubIssueOpened {
+        ("issue", "body,labels")
+    } else {
+        ("pr", "body,labels,isDraft,baseRefName,headRefName,additions,deletions,changedFiles,files")
+    };
+    Some(vec![noun.into(), "view".into(), number.to_string(), "-R".into(), repo.into(), "--json".into(), fields.into()])
+}
+
+/// The parts of a `gh … view` answer a run reads, bounded.
+fn view_details(view: &serde_json::Map<String, Value>) -> Vec<(&'static str, Value)> {
+    let mut details = Vec::new();
+    if let Some(body) = view.get("body").and_then(Value::as_str) {
+        details.push(("description", json!(clip(body, MAX_BODY_CHARS))));
+    }
+    if let Some(labels) = view.get("labels").and_then(Value::as_array) {
+        let names: Vec<&str> = labels.iter().filter_map(|label| label.get("name").and_then(Value::as_str)).collect();
+        if !names.is_empty() {
+            details.push(("labels", json!(names)));
+        }
+    }
+    for (from, to) in [("isDraft", "draft"), ("baseRefName", "base"), ("headRefName", "head"), ("additions", "additions"), ("deletions", "deletions"), ("changedFiles", "changedFiles")] {
+        if let Some(value) = view.get(from).filter(|value| value.is_boolean() || value.is_number() || value.is_string()) {
+            details.push((to, value.clone()));
+        }
+    }
+    if let Some(files) = view.get("files").and_then(Value::as_array) {
+        let listed: Vec<Value> = files
+            .iter()
+            .filter_map(|file| {
+                let path = file.get("path").and_then(Value::as_str)?;
+                Some(json!({ "path": path, "additions": file.get("additions").and_then(Value::as_i64), "deletions": file.get("deletions").and_then(Value::as_i64) }))
+            })
+            .take(MAX_FILES)
+            .collect();
+        if files.len() > MAX_FILES {
+            details.push(("filesNotListed", json!(files.len() - MAX_FILES)));
+        }
+        details.push(("files", Value::Array(listed)));
+    }
+    details
+}
+
+/// Cut `text` to `limit` characters, keeping its lines.
+fn clip(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_owned();
+    }
+    let mut cut: String = text.chars().take(limit.saturating_sub(1)).collect();
+    cut.push('…');
+    cut
 }
 
 // --- the ledger ------------------------------------------------------------------
@@ -698,7 +788,7 @@ pub fn preview(core: &Arc<BridgeCore>, trigger: &wire::WorkflowTrigger, gh: &dyn
         note = if event.event == wire::WorkflowEventKind::GithubReviewRequested {
             Some("Counts the reviews waiting for you now; GitHub does not say when each was requested.".to_owned())
         } else if all_recent && returned >= GH_LIMIT.parse::<usize>().unwrap_or(30) {
-            Some(format!("At least {returned}: GitHub returned only its {returned} newest, all from this week. A workflow on this busy a repository runs often; collecting them and running once a day may suit it better."))
+            Some(format!("At least {returned}: GitHub returned only its {returned} newest, all from this week. On a repository this busy, collecting them and running once a day may suit you better."))
         } else {
             None
         };

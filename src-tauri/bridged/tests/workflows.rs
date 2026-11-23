@@ -552,6 +552,10 @@ fn e6_a_github_source_baselines_then_fires_once_per_new_pull_request() {
     seed_data_dir(fixture.path());
     let answer = fixture.path().join("gh-answer.json");
     std::env::set_var("BRIDGE_E2E_GH_ANSWER", &answer);
+    // The run reads the new PR in full before it starts.
+    let view = fixture.path().join("gh-view.json");
+    std::fs::write(&view, json!({ "body": "Adds retries to the uploader.", "labels": [{ "name": "infra" }], "additions": 12, "deletions": 3, "files": [{ "path": "src/upload.rs", "additions": 12, "deletions": 3 }] }).to_string()).unwrap();
+    std::env::set_var("BRIDGE_E2E_GH_VIEW", &view);
     let pr = |number: i64, created: DateTime<Utc>| json!({
         "number": number, "title": format!("PR {number}"), "url": format!("https://github.com/acme/app/pull/{number}"),
         "author": { "login": "sam" }, "createdAt": created.to_rfc3339(),
@@ -580,11 +584,13 @@ fn e6_a_github_source_baselines_then_fires_once_per_new_pull_request() {
     let run = rpc.wait_run(&workflow_id, &fired[0], "the PR run to finish", |run| run["status"] == json!("succeeded") || run["status"] == json!("failed"));
     assert_eq!(run["status"], json!("succeeded"), "{run}");
     assert_eq!(run["event"]["url"], json!("https://github.com/acme/app/pull/2"));
+    assert!(run["summary"].as_str().unwrap_or_default().contains("[Adds retries to the uploader.]"), "the run saw the PR's description: {run}");
     assert_eq!(bridge_core::workflow_events::poll_github(&running.daemon.core, &gh, later + ChronoDuration::minutes(2)).unwrap(), 0, "a re-read repeats nothing");
 
     let preview = rpc.call("workflows/preview_workflow_trigger", json!({ "trigger": { "kind": "event", "event": "github_pull_request_opened", "repo": "acme/app" } }));
     assert_eq!(preview["matches"], json!(2), "both PRs were opened this week: {preview}");
     std::env::remove_var("BRIDGE_E2E_GH_ANSWER");
+    std::env::remove_var("BRIDGE_E2E_GH_VIEW");
     running.stop();
 }
 

@@ -509,7 +509,9 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
 
     let session_id = Uuid::new_v4().to_string();
     let cwd = prepare_cwd(core, &run, &definition, &session_id)?;
-    let events = workflow_trigger::run_events(&core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner), &run.id)?;
+    let mut events = workflow_trigger::run_events(&core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner), &run.id)?;
+    // `gh` runs with the store unlocked.
+    crate::workflow_events::enrich_github(&mut events, &crate::workflow_events::SystemGh);
     {
         let db = core.db.lock().unwrap();
         db.execute(

@@ -519,3 +519,125 @@ proptest! {
         prop_assert!(distinct.is_subset(&observed));
     }
 }
+
+/// Answers each `gh … view` from a closure and records its arguments.
+struct ViewGh {
+    answer: Box<dyn Fn(&[String]) -> Result<String, String> + Send + Sync>,
+    calls: Mutex<Vec<Vec<String>>>,
+}
+
+impl ViewGh {
+    fn new(answer: impl Fn(&[String]) -> Result<String, String> + Send + Sync + 'static) -> Self {
+        Self { answer: Box::new(answer), calls: Mutex::new(Vec::new()) }
+    }
+}
+
+impl GhRunner for ViewGh {
+    fn run(&self, args: &[String]) -> Result<String, String> {
+        self.calls.lock().unwrap().push(args.to_vec());
+        (self.answer)(args)
+    }
+}
+
+fn github_event(kind: wire::WorkflowEventKind, number: i64) -> wire::WorkflowEventSample {
+    let stdout = format!("[{}]", pr(number, "2026-11-22T00:00:00Z"));
+    let mut sample = parse_github(kind, Some("acme/app"), &stdout).unwrap().remove(0);
+    sample.kind = kind;
+    sample
+}
+
+#[test]
+fn a_pull_request_event_carries_its_description_size_and_files_into_the_run() {
+    let files: Vec<Value> = (0..MAX_FILES + 5).map(|index| json!({ "path": format!("src/f{index}.rs"), "additions": index, "deletions": 1 })).collect();
+    let long = "line\n".repeat(MAX_BODY_CHARS);
+    let view = json!({
+        "body": long, "labels": [{ "name": "infra" }, { "name": "risky" }], "isDraft": false,
+        "baseRefName": "main", "headRefName": "fix/upload", "additions": 120, "deletions": 30, "changedFiles": MAX_FILES + 5, "files": files,
+    })
+    .to_string();
+    let gh = ViewGh::new(move |_| Ok(view.clone()));
+    let mut events = vec![github_event(wire::WorkflowEventKind::GithubPullRequestOpened, 7)];
+    enrich_github(&mut events, &gh);
+
+    let calls = gh.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0][..5], ["pr", "view", "7", "-R", "acme/app"].map(String::from));
+    assert!(calls[0][6].contains("files") && calls[0][6].contains("body"));
+    let details = &events[0].payload;
+    let description = details["description"].as_str().unwrap();
+    assert_eq!(description.chars().count(), MAX_BODY_CHARS, "a long description is cut");
+    assert!(description.ends_with('…') && description.contains("line\nline"), "and keeps its lines");
+    assert_eq!(details["labels"], json!(["infra", "risky"]));
+    assert_eq!(details["draft"], json!(false));
+    assert_eq!((details["base"].clone(), details["head"].clone()), (json!("main"), json!("fix/upload")));
+    assert_eq!((details["additions"].clone(), details["deletions"].clone()), (json!(120), json!(30)));
+    assert_eq!(details["files"].as_array().unwrap().len(), MAX_FILES);
+    assert_eq!(details["files"][0], json!({ "path": "src/f0.rs", "additions": 0, "deletions": 1 }));
+    assert_eq!(details["filesNotListed"], json!(5));
+    assert_eq!(details["number"], json!(7), "what identified it stays");
+    assert!(details.get("detailsUnavailable").is_none());
+    // The run's first turn carries it, fenced.
+    assert!(event_turn(&events).contains("fix/upload"));
+}
+
+#[test]
+fn an_issue_event_reads_the_issue_and_a_review_request_reads_the_pull_request() {
+    let gh = ViewGh::new(|_| Ok(r#"{"body": "Steps to reproduce", "labels": []}"#.into()));
+    let mut events = vec![github_event(wire::WorkflowEventKind::GithubIssueOpened, 3), github_event(wire::WorkflowEventKind::GithubReviewRequested, 4)];
+    enrich_github(&mut events, &gh);
+    let calls = gh.calls.lock().unwrap();
+    assert_eq!(calls[0][..3], ["issue", "view", "3"].map(String::from));
+    assert_eq!(calls[0][6], "body,labels");
+    assert_eq!(calls[1][..3], ["pr", "view", "4"].map(String::from));
+    assert_eq!(events[0].payload["description"], json!("Steps to reproduce"));
+    assert!(events[0].payload.get("labels").is_none(), "no labels, no empty list");
+}
+
+#[test]
+fn a_failed_read_leaves_the_event_and_says_why() {
+    let gh = ViewGh::new(|args| if args[2] == "1" { Err("gh: HTTP 404".into()) } else { Ok("[]".into()) });
+    let mut events = vec![github_event(wire::WorkflowEventKind::GithubPullRequestOpened, 1), github_event(wire::WorkflowEventKind::GithubPullRequestOpened, 2)];
+    let before = events.clone();
+    enrich_github(&mut events, &gh);
+    assert_eq!(events[0].payload["detailsUnavailable"], json!("gh: HTTP 404"));
+    assert_eq!(events[1].payload["detailsUnavailable"], json!("GitHub answered with something that is not an object"));
+    for (after, before) in events.iter().zip(&before) {
+        assert_eq!(after.payload["title"], before.payload["title"]);
+        assert_eq!(after.payload["url"], before.payload["url"]);
+        assert_eq!((after.key.clone(), after.title.clone()), (before.key.clone(), before.title.clone()));
+    }
+}
+
+#[test]
+fn only_github_events_with_a_valid_source_are_read_and_at_most_ten_per_run() {
+    let gh = ViewGh::new(|_| Ok("{}".into()));
+    let slack = sample_from_inbox(&slack(ItemKind::Mention, "#eng", "Priya", "1.0", "2026-11-24T00:00:00Z"));
+    let mut broken = github_event(wire::WorkflowEventKind::GithubPullRequestOpened, 9);
+    broken.payload["repo"] = json!("not a repo; rm -rf /");
+    let mut events = vec![slack.clone(), broken];
+    events.extend((10..30).map(|number| github_event(wire::WorkflowEventKind::GithubPullRequestOpened, number)));
+    enrich_github(&mut events, &gh);
+    let calls = gh.calls.lock().unwrap();
+    assert_eq!(calls.len(), MAX_ENRICHED - 1, "the broken source spends one of the ten without a call");
+    assert!(calls.iter().all(|args| args[4] == "acme/app"));
+    assert_eq!(events[0].payload, slack.payload, "a Slack event is untouched");
+}
+
+proptest! {
+    #[test]
+    fn enriching_never_panics_and_never_loses_what_identifies_an_event(answer in arbitrary_json(), fails in any::<bool>()) {
+        let text = answer.to_string();
+        let gh = ViewGh::new(move |_| if fails { Err("gh: boom".into()) } else { Ok(text.clone()) });
+        let mut events = vec![github_event(wire::WorkflowEventKind::GithubPullRequestOpened, 1), github_event(wire::WorkflowEventKind::GithubIssueOpened, 2)];
+        let before = events.clone();
+        enrich_github(&mut events, &gh);
+        for (after, before) in events.iter().zip(&before) {
+            prop_assert_eq!(&after.key, &before.key);
+            prop_assert_eq!(&after.payload["number"], &before.payload["number"]);
+            prop_assert_eq!(&after.payload["url"], &before.payload["url"]);
+            let description = after.payload.get("description").and_then(Value::as_str).unwrap_or_default();
+            prop_assert!(description.chars().count() <= MAX_BODY_CHARS);
+            prop_assert!(after.payload.get("files").and_then(Value::as_array).map_or(0, Vec::len) <= MAX_FILES);
+        }
+    }
+}

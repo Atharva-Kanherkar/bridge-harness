@@ -208,7 +208,7 @@ export function query({ prompt, options = {} }) {
     const event = text.match(/```workflow-event\n([\s\S]*?)\n```/);
     if (event) {
       const records = JSON.parse(event[1]);
-      const summary = `Handled ${records.length} event${records.length === 1 ? "" : "s"}: ${records.map((record) => record.title).join("; ")}`;
+      const summary = `Handled ${records.length} event${records.length === 1 ? "" : "s"}: ${records.map((record) => record.title + (record.details?.description ? ` [${record.details.description}]` : "")).join("; ")}`;
       yield* finish(summary + resultBlock("done", summary));
       return;
     }
