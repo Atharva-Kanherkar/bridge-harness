@@ -39,7 +39,7 @@ Anything that fails is fixed in this PR with a regression test, or reported as n
 
 ## Integration / Functional Tests
 - `bridged/tests/notes.rs`: history, read_version and restore_version over the daemon socket.
-- `src-tauri` `notes_commands_take_every_optional_field_as_option` and the bridge-deck signature gate cover the new commands.
+- `src-tauri` `every_command_takes_every_optional_field_as_option` and the bridge-deck signature gate cover the new commands.
 - `src/components/NotesScreen.test.tsx` (jsdom, mock): open an agent-written page, edit it, open History: "You" and "Claude in <chat>" entries; select Claude's version: the diff marks the line the person changed; Restore: the page shows the agent's words and History lists the restore as "You"; unsaved typing is stored before the restore.
 
 ## Smoke Tests

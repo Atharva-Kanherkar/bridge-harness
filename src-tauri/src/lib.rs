@@ -176,13 +176,15 @@ async fn import_status(
 }
 
 #[tauri::command]
-async fn github_status(workspace_id: String, refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubStatusResult, BridgeError> {
+async fn github_status(workspace_id: String, refresh: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubStatusResult, BridgeError> {
+    let refresh = refresh.unwrap_or_default();
     let core = state.inner().clone();
     blocking("GitHub status", move || api::github_status(&core, &workspace_id, refresh)).await
 }
 
 #[tauri::command]
-async fn connector_list(refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorListResult, BridgeError> {
+async fn connector_list(refresh: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorListResult, BridgeError> {
+    let refresh = refresh.unwrap_or_default();
     let core = state.inner().clone();
     blocking("Connector list", move || api::connector_list(&core, refresh)).await
 }
@@ -373,13 +375,15 @@ async fn set_app_enabled(id: String, enabled: bool, state: State<'_, Arc<BridgeC
 }
 
 #[tauri::command]
-async fn list_trails(include_archived: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ListTrailsResult, BridgeError> {
+async fn list_trails(include_archived: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ListTrailsResult, BridgeError> {
+    let include_archived = include_archived.unwrap_or_default();
     let core = state.inner().clone();
     blocking("list trails", move || api::list_trails(&core, include_archived)).await
 }
 
 #[tauri::command]
-async fn read_trail(trail_id: String, refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ReadTrailResult, BridgeError> {
+async fn read_trail(trail_id: String, refresh: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ReadTrailResult, BridgeError> {
+    let refresh = refresh.unwrap_or_default();
     let core = state.inner().clone();
     blocking("read trail", move || api::read_trail(&core, &trail_id, refresh)).await
 }
@@ -433,7 +437,8 @@ async fn list_outgoing(session_id: String, state: State<'_, Arc<BridgeCore>>) ->
 }
 
 #[tauri::command]
-async fn update_outgoing(id: String, revision: u32, body: Option<String>, apply_fixes: bool, attachments: Option<Vec<String>>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::UpdateOutgoingResult, BridgeError> {
+async fn update_outgoing(id: String, revision: u32, body: Option<String>, apply_fixes: Option<bool>, attachments: Option<Vec<String>>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::UpdateOutgoingResult, BridgeError> {
+    let apply_fixes = apply_fixes.unwrap_or_default();
     let core = state.inner().clone();
     blocking("edit drafted message", move || api::update_outgoing(&core, &id, revision, body.as_deref(), apply_fixes, attachments.as_deref())).await
 }
@@ -463,13 +468,15 @@ async fn discard_outgoing(id: String, state: State<'_, Arc<BridgeCore>>) -> Resu
 }
 
 #[tauri::command]
-async fn github_session_prs(session_id: String, refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubSessionPrsResult, BridgeError> {
+async fn github_session_prs(session_id: String, refresh: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubSessionPrsResult, BridgeError> {
+    let refresh = refresh.unwrap_or_default();
     let core = state.inner().clone();
     blocking("chat pull requests", move || api::github_session_prs(&core, &session_id, refresh)).await
 }
 
 #[tauri::command]
-async fn github_sidebar_prs(refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubSidebarPrsResult, BridgeError> {
+async fn github_sidebar_prs(refresh: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubSidebarPrsResult, BridgeError> {
+    let refresh = refresh.unwrap_or_default();
     let core = state.inner().clone();
     blocking("chat list pull requests", move || api::github_sidebar_prs(&core, refresh)).await
 }
@@ -961,9 +968,10 @@ async fn workflow_options(
 async fn run_workflow(
     workflow_id: String,
     request_id: String,
-    dry_run: bool,
+    dry_run: Option<bool>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::RunWorkflowResult, BridgeError> {
+    let dry_run = dry_run.unwrap_or_default();
     let core = state.inner().clone();
     blocking("Workflow run", move || {
         api::run_workflow(&core, &bridge_protocol::messages::RunWorkflowParams { workflow_id, request_id, dry_run })
@@ -986,10 +994,11 @@ async fn cancel_workflow_run(
 #[tauri::command]
 async fn list_workflow_runs(
     workflow_id: Option<String>,
-    unread_only: bool,
+    unread_only: Option<bool>,
     limit: i64,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::WorkflowRunList, BridgeError> {
+    let unread_only = unread_only.unwrap_or_default();
     let core = state.inner().clone();
     blocking("Workflow runs", move || {
         api::list_workflow_runs(&core, &bridge_protocol::messages::ListWorkflowRunsParams { workflow_id, unread_only, limit })
@@ -1270,11 +1279,13 @@ async fn archive_chat(
 
 #[tauri::command]
 async fn list_archived_chats(
-    query: String,
-    offset: u32,
+    query: Option<String>,
+    offset: Option<u32>,
     root_session_id: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::ArchivedChatsResult, BridgeError> {
+    let offset = offset.unwrap_or_default();
+    let query = query.unwrap_or_default();
     api::list_archived_chats(state.inner(), &bridge_protocol::messages::ListArchivedChatsParams { query, offset, root_session_id })
 }
 
@@ -1365,7 +1376,8 @@ async fn save_reviewer_settings(settings: bridge_protocol::messages::ReviewerSet
 }
 
 #[tauri::command]
-async fn list_attention(after_sequence: Option<i64>, limit: Option<u32>, unseen_only: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ListAttentionResult, BridgeError> {
+async fn list_attention(after_sequence: Option<i64>, limit: Option<u32>, unseen_only: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ListAttentionResult, BridgeError> {
+    let unseen_only = unseen_only.unwrap_or_default();
     api::list_attention(state.inner(), &bridge_protocol::messages::ListAttentionParams { after_sequence, limit, unseen_only })
 }
 
@@ -1388,7 +1400,8 @@ async fn post(session_id: String, title: String, body: Option<String>, severity:
 }
 
 #[tauri::command]
-async fn report_presence(client_id: String, client_kind: bridge_protocol::messages::PresenceClientKind, can_post_banners: Option<bool>, focused: bool, gone: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReportPresenceResult, BridgeError> {
+async fn report_presence(client_id: String, client_kind: bridge_protocol::messages::PresenceClientKind, can_post_banners: Option<bool>, focused: bool, gone: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReportPresenceResult, BridgeError> {
+    let gone = gone.unwrap_or_default();
     api::report_presence(state.inner(), &bridge_protocol::messages::ReportPresenceParams { client_id, client_kind, can_post_banners, focused, gone })
 }
 
@@ -1430,9 +1443,10 @@ async fn save_attribution_settings(settings: bridge_protocol::messages::Attribut
 #[tauri::command]
 async fn reclaim_worktree(
     worktree_id: String,
-    force: bool,
+    force: Option<bool>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_core::worktree_registry::WorktreeReclaimResult, BridgeError> {
+    let force = force.unwrap_or_default();
     api::reclaim_worktree(state.inner(), &worktree_id, force)
 }
 
@@ -1443,13 +1457,15 @@ async fn storage_overview(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_pr
 }
 
 #[tauri::command]
-async fn scan_directory(path: Option<String>, refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DiskListing, BridgeError> {
+async fn scan_directory(path: Option<String>, refresh: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DiskListing, BridgeError> {
+    let refresh = refresh.unwrap_or_default();
     let core = state.inner().clone();
     blocking("scan directory", move || api::scan_directory(&core, &bridge_protocol::messages::ScanDirectoryParams { path, refresh })).await
 }
 
 #[tauri::command]
-async fn delete_paths(paths: Vec<String>, permanent: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DiskDeleteResult, BridgeError> {
+async fn delete_paths(paths: Vec<String>, permanent: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DiskDeleteResult, BridgeError> {
+    let permanent = permanent.unwrap_or_default();
     let core = state.inner().clone();
     blocking("delete paths", move || api::delete_paths(&core, &bridge_protocol::messages::DeletePathsParams { paths, permanent })).await
 }
@@ -1656,9 +1672,10 @@ async fn summary(
 #[tauri::command]
 async fn insights(
     window_days: i64,
-    refresh: bool,
+    refresh: Option<bool>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::UsageInsightsResult, BridgeError> {
+    let refresh = refresh.unwrap_or_default();
     let core = state.inner().clone();
     let params = bridge_protocol::messages::InsightsParams {
         window_days,
@@ -2533,7 +2550,8 @@ async fn cancel_provider_login(
 }
 
 #[tauri::command]
-async fn create_terminal(workspace_id: String, terminal_id: String, agent_id: Option<String>, cwd: Option<String>, restart: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::TerminalRecord, BridgeError> {
+async fn create_terminal(workspace_id: String, terminal_id: String, agent_id: Option<String>, cwd: Option<String>, restart: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::TerminalRecord, BridgeError> {
+    let restart = restart.unwrap_or_default();
     let core = state.inner().clone();
     blocking("Create terminal", move || api::create_terminal(&core, &wire::CreateTerminalParams { workspace_id, terminal_id, agent_id, cwd, restart })).await
 }
@@ -2580,9 +2598,10 @@ async fn write_terminal(
     workspace_id: String,
     terminal_id: String,
     data: String,
-    binary: bool,
+    binary: Option<bool>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
+    let binary = binary.unwrap_or_default();
     // Enqueue only: the PTY write itself happens on the terminal's own thread.
     if binary {
         api::write_terminal_binary(state.inner(), &workspace_id, &terminal_id, &data)
@@ -2806,9 +2825,10 @@ async fn search_session_entries(
 async fn search_chats(
     query: String,
     limit: Option<u32>,
-    deep: bool,
+    deep: Option<bool>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::SearchChatsResult, BridgeError> {
+    let deep = deep.unwrap_or_default();
     let core = state.inner().clone();
     let params = bridge_protocol::messages::SearchChatsParams { query, limit, deep };
     // A deep search runs a provider turn, so it stays off the async runtime.
@@ -3009,9 +3029,10 @@ async fn get_activity_log(
 
 #[tauri::command]
 async fn get_insights(
-    refresh: bool,
+    refresh: Option<bool>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::MemoryInsightsResult, BridgeError> {
+    let refresh = refresh.unwrap_or_default();
     let core = state.inner().clone();
     let params = bridge_protocol::messages::GetInsightsParams { refresh };
     // Runs a harness turn: minutes of blocking work, so off the async runtime.
@@ -3143,9 +3164,10 @@ async fn resolve_question(
     session_id: String,
     event_id: i64,
     action: wire::QuestionAction,
-    answers: std::collections::BTreeMap<String, Vec<String>>,
+    answers: Option<std::collections::BTreeMap<String, Vec<String>>>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::InteractionResolutionResult, BridgeError> {
+    let answers = answers.unwrap_or_default();
     let action = match action {
         wire::QuestionAction::Answer => "answer",
         wire::QuestionAction::Decline => "decline",
@@ -4555,10 +4577,12 @@ mod tests {
 
     // Serde defaults make a non-nullable scalar omittable on the wire. Tauri
     // decodes each argument independently, so its native signature still needs
-    // Option<T>; the command then supplies the protocol's default.
+    // Option<T>; the command then supplies the protocol's default. `required`
+    // is the signal, not `default`: schemars drops the default from a field
+    // that also has `skip_serializing_if`, yet the field stays omittable.
     fn command_parameter_shape_matches(native: ParameterShape, schema: &serde_json::Value, required: bool) -> bool {
         let shape = schema_parameter_shape(schema);
-        native == shape || (!required && schema.get("default").is_some() && !matches!(shape, ParameterShape::Optional(_)) && native == ParameterShape::Optional(Box::new(shape)))
+        native == shape || (!required && !matches!(shape, ParameterShape::Optional(_)) && native == ParameterShape::Optional(Box::new(shape)))
     }
 
     #[test]
@@ -4568,7 +4592,8 @@ mod tests {
         assert!(command_parameter_shape_matches(optional_bool.clone(), &schema, false));
         assert!(command_parameter_shape_matches(ParameterShape::Boolean, &schema, false));
         assert!(!command_parameter_shape_matches(optional_bool.clone(), &schema, true));
-        assert!(!command_parameter_shape_matches(optional_bool, &serde_json::json!({"type": "boolean"}), false));
+        assert!(command_parameter_shape_matches(optional_bool.clone(), &serde_json::json!({"type": "boolean"}), false));
+        assert!(!command_parameter_shape_matches(optional_bool, &serde_json::json!({"type": "boolean"}), true));
         assert!(!command_parameter_shape_matches(ParameterShape::Optional(Box::new(ParameterShape::String)), &schema, false));
         let any_json = serde_json::json!({"default": null});
         assert!(command_parameter_shape_matches(ParameterShape::Optional(Box::new(ParameterShape::Json)), &any_json, false));
@@ -4581,27 +4606,28 @@ mod tests {
     }
 
     #[test]
-    fn notes_commands_take_every_optional_field_as_option() {
+    fn every_command_takes_every_optional_field_as_option() {
         // A field the wire lets a client omit must be an `Option` in the
         // Tauri command too: its argument decoder rejects a missing key for
         // any other type, and the params struct's serde defaults never run.
         let source = include_str!("lib.rs");
         let mut checked = 0;
-        for method in bridge_protocol::MethodName::ALL.iter().copied().filter(|method| method.domain() == "notes") {
+        let mut violations = Vec::new();
+        for method in bridge_protocol::MethodName::ALL.iter().copied() {
             let Some(arguments) = command_arguments(source, method.command_name()) else { continue };
             let required = bridge_protocol::TypedMethod::params_required_fields(method).unwrap_or_default();
             for argument in arguments.iter().filter(|argument| !required.contains(&argument.name)) {
                 checked += 1;
-                assert!(
-                    argument.kind.starts_with("Option<"),
-                    "{} {} may be omitted on the wire but the command requires it ({})",
-                    method.as_str(),
-                    argument.name,
-                    argument.kind
-                );
+                if !argument.kind.starts_with("Option<") {
+                    violations.push(format!("{} {} ({})", method.as_str(), argument.name, argument.kind));
+                }
             }
         }
-        assert!(checked > 10, "the notes commands have optional fields to check");
+        assert!(checked > 10, "the commands have optional fields to check");
+        assert!(
+            violations.is_empty(),
+            "these fields may be omitted on the wire but the command requires them: {violations:#?}"
+        );
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
