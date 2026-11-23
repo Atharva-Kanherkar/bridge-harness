@@ -42,14 +42,16 @@ pub const CONNECTOR_SESSION_KIND: &str = "connector";
 /// How often ingress runs.
 ///
 /// Slower than the GitHub poller's 15s on purpose: each cycle here is a model
-/// turn, not a `gh` call. A minute of latency on a DM is the price of a surface
-/// that costs almost nothing to leave on, and push ingress is the fix if it ever
-/// stops being an acceptable trade.
+/// turn, not a `gh` call, run whether or not anyone is looking. At 30 s that
+/// was 2,880 Sonnet turns a day per Slack account; two minutes on the fast
+/// model is the price of a surface (and of Slack workflow triggers) that is
+/// cheap to leave on. Push ingress is the fix if the latency stops being an
+/// acceptable trade.
 ///
 /// One cadence, not a focused/unfocused pair: `bridge-core` has no window-focus
 /// signal to switch on, and a constant naming a behaviour nothing implements is
 /// worse than no constant.
-pub const POLL_CADENCE: StdDuration = StdDuration::from_secs(30);
+pub const POLL_CADENCE: StdDuration = StdDuration::from_secs(120);
 
 /// How many cycles one claim will chain before handing the family back to the
 /// timer.
@@ -455,23 +457,47 @@ pub(crate) fn bounded_turn_output(
     // write tool on this one. An action gets the same policy plus exactly one
     // approved mutation, because the read-only rule bans every mutation word and
     // would otherwise deny the very send the user just approved.
-    let mut policy = match kind {
-        RunKind::Ingress | RunKind::Render => {
-            BriefingRuntimePolicy::compile_scoped(vec![server.to_owned()], limits.clone())
-        }
-        RunKind::Action => BriefingRuntimePolicy::compile_action(
-            server.to_owned(),
-            action_intent.ok_or("an action run reached the executor with no approved intent")?,
-            limits.clone(),
-        ),
-    }
-    .map_err(|unsupported| format!("policy: {}", unsupported.reason()))?;
+    let mut policy = connector_policy(kind, server, action_intent, limits.clone())?;
 
     let exact = exact_call.is_some();
     if let Some((tool, arguments)) = exact_call {
         policy = BriefingRuntimePolicy::compile_exact_action(server.to_owned(), tool, arguments, limits).map_err(|e| e.reason())?;
     }
     turn_with_policy(core, connection, &policy, kind, prompt, exact)
+}
+
+/// The policy a connector run starts under.
+///
+/// Scoped to this one server. Ingress and render get the read-only policy —
+/// its verb rule is what keeps them from reaching a different connector or a
+/// write tool on this one. An action gets the same policy plus exactly one
+/// approved mutation, because the read-only rule bans every mutation word and
+/// would otherwise deny the very send the user just approved.
+///
+/// Every connector run loads the harness's own signed-in connector: an
+/// explicit copy of a `claude.ai` connector has no sign-in, so for months
+/// ingress reached nothing and recorded an empty answer as "caught up". The
+/// gate still decides every call. Ingress and render are one-turn runs nobody
+/// resumes, so they leave no transcript.
+pub(crate) fn connector_policy(
+    kind: RunKind,
+    server: &str,
+    action_intent: Option<ActionIntent>,
+    limits: bridge_protocol::messages::WorkBriefLimits,
+) -> Result<BriefingRuntimePolicy, String> {
+    let policy = match kind {
+        RunKind::Ingress | RunKind::Render => {
+            BriefingRuntimePolicy::compile_scoped(vec![server.to_owned()], limits)
+                .map(BriefingRuntimePolicy::with_ephemeral)
+        }
+        RunKind::Action => BriefingRuntimePolicy::compile_action(
+            server.to_owned(),
+            action_intent.ok_or("an action run reached the executor with no approved intent")?,
+            limits,
+        ),
+    }
+    .map_err(|unsupported| format!("policy: {}", unsupported.reason()))?;
+    Ok(policy.with_native_connectors())
 }
 
 /// The read-only run that resolves an Outgoing destination before any approval
@@ -1004,12 +1030,15 @@ fn collect_text(message: &Value, text: &mut String) {
 /// to rank here — there is exactly one eligible candidate and the connector
 /// names it.
 ///
-/// The model is taken from the Research profile when that profile is already on
-/// that harness — a connector run is a read-and-summarise job, which is what
-/// that profile is for — and otherwise from the harness's own default. Reading a
-/// DM is not worth a premium model, and the ceilings in
-/// `connector_runs::run_limits` assume it is not getting one.
+/// The model is the harness's fast tier: reading a DM is not worth a premium
+/// model, and the ceilings in `connector_runs::run_limits` assume it is not
+/// getting one. (It used to follow the Research profile, which is usually a
+/// standard-tier model: ingress then ran Sonnet every 30 seconds.) Without a
+/// fast tier, the Research profile on that harness, then its default.
 fn run_profile(core: &Arc<BridgeCore>, harness: &str) -> Result<(String, String), String> {
+    if let Ok(fast) = core.adapter_registry.resolve_model(harness, crate::model::CapabilityTier::Fast, None) {
+        return Ok((harness.to_owned(), fast.actual_model));
+    }
     let descriptors = core.adapter_registry.descriptors();
     let default_model = descriptors
         .iter()

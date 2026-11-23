@@ -60,6 +60,9 @@ const ACCOUNT_CONNECTORS = ["claude.ai Slack", "claude.ai Linear", "claude.ai Gm
 
 export function connectorStatus(options = {}, switchedOff = new Set()) {
   const denied = new Set((options.settings?.deniedMcpServers ?? []).map((entry) => entry?.serverName));
+  // Connectors the fake account has signed out of, as `claude mcp list` would
+  // report them: they load, and stay `needs-auth`.
+  const signedOut = new Set((process.env.FAKE_SDK_SIGNED_OUT ?? "").split(",").map((name) => name.trim()).filter(Boolean));
   const statuses = [];
   for (const name of Object.keys(options.mcpServers ?? {})) {
     if (denied.has(name) || switchedOff.has(name)) continue;
@@ -68,7 +71,7 @@ export function connectorStatus(options = {}, switchedOff = new Set()) {
   if (options.strictMcpConfig === false) {
     for (const name of ACCOUNT_CONNECTORS) {
       if (denied.has(name) || switchedOff.has(name) || statuses.some((entry) => entry.name === name)) continue;
-      statuses.push({ name, status: "connected" });
+      statuses.push({ name, status: signedOut.has(name) ? "needs-auth" : "connected" });
     }
   }
   return statuses;

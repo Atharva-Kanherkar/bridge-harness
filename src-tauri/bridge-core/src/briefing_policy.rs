@@ -270,6 +270,8 @@ pub struct BriefingRuntimePolicy {
     /// own sign-in, instead of receiving explicit copies. Changes how a server
     /// is reached, never what the gate allows.
     native_connectors: bool,
+    /// A hidden one-turn run nobody resumes: Claude Code writes no transcript.
+    ephemeral: bool,
     /// A personal-app connection runtime: a turnless launch whose only
     /// authority is app control (inventory and reads) on this one server.
     /// Only [`Self::compile_app_runtime`] sets it.
@@ -466,6 +468,7 @@ impl BriefingRuntimePolicy {
             exact_action: None,
             direct_call: false,
             native_connectors: false,
+            ephemeral: false,
             app_runtime: None,
         })
     }
@@ -510,6 +513,7 @@ impl BriefingRuntimePolicy {
             exact_action: None,
             direct_call: false,
             native_connectors: false,
+            ephemeral: false,
             app_runtime: None,
         })
     }
@@ -682,6 +686,17 @@ impl BriefingRuntimePolicy {
 
     pub fn native_connectors(&self) -> bool {
         self.native_connectors
+    }
+
+    /// Mark a hidden one-turn run that is never resumed (connector ingress
+    /// and render), so its launch writes no Claude Code transcript.
+    pub fn with_ephemeral(mut self) -> Self {
+        self.ephemeral = true;
+        self
+    }
+
+    pub fn ephemeral(&self) -> bool {
+        self.ephemeral
     }
 
     pub fn exact_action_config(&self) -> Option<serde_json::Value> {

@@ -30,8 +30,8 @@ import { createAskRelay } from "./ask.mjs";
 import { isTrustedFolder } from "./trust.mjs";
 import { createDirectCall } from "./mcp-call.mjs";
 import { createAppControl } from "./app-control.mjs";
-import { isAppRuntime, isDirectCall, wireServerName, workflowAccountServers, workflowGrantedServers } from "./briefing.mjs";
-import { settleWorkflowConnectors } from "./workflow-connectors.mjs";
+import { connectorsToAwait, isAppRuntime, isDirectCall, wireServerName } from "./briefing.mjs";
+import { allConnected, connectorUnavailableFrame, settleWorkflowConnectors } from "./workflow-connectors.mjs";
 import { createTurnTiming } from "./timing.mjs";
 
 // Which copy of the Agent SDK to load.
@@ -168,11 +168,18 @@ const appControl = createAppControl({
   serverAllowed: appRuntimeServer !== null ? servesAppRuntime : () => true,
 });
 
-// A workflow run's turn waits for its account connectors to come up (see
-// workflow-connectors.mjs). Every other launch sends its turns at once.
-const accountConnectors = workflowAccountServers(config.briefing);
-let connectorsReady = accountConnectors.length
-  ? settleWorkflowConnectors(run, { granted: workflowGrantedServers(config.briefing), waitFor: accountConnectors })
+// A workflow run, or a briefing turn that loads account connectors natively,
+// waits for those connectors to come up (see workflow-connectors.mjs). If one
+// never connects, the run ends with an error frame instead of a turn that
+// could only answer "I have no tools". Every other launch sends at once.
+const awaited = connectorsToAwait(config.briefing);
+let connectorsUnavailable = false;
+let connectorsReady = awaited.waitFor.length
+  ? settleWorkflowConnectors(run, awaited).then(async ({ statuses }) => {
+    if (allConnected(awaited.waitFor, statuses)) return;
+    connectorsUnavailable = true;
+    await writeFrame(connectorUnavailableFrame(awaited.waitFor, statuses, sessionId));
+  })
   : null;
 
 // Catalogue discovery is a short-lived control-plane request. It uses the
@@ -205,7 +212,7 @@ rl.on("line", (line) => {
     if (blocks) {
       turnTiming?.userFrame();
       const message = userMessage(blocks);
-      if (connectorsReady) connectorsReady = connectorsReady.then(() => input.push(message));
+      if (connectorsReady) connectorsReady = connectorsReady.then(() => { if (!connectorsUnavailable) input.push(message); });
       else input.push(message);
     }
   } else if (frame.type === "control_response") {
