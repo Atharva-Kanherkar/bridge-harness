@@ -1,0 +1,380 @@
+use super::*;
+use std::sync::{Arc, Barrier};
+
+fn open() -> (tempfile::TempDir, Connection) {
+    let scratch = tempfile::tempdir().unwrap();
+    let db = crate::store::open(&scratch.path().join("bridge.db")).unwrap();
+    (scratch, db)
+}
+
+fn at(seconds: i64) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339("2026-11-23T10:00:00Z").unwrap().with_timezone(&Utc) + Duration::seconds(seconds)
+}
+
+fn new_job(number: u64, sha: &str, harnesses: &[&str]) -> NewJob {
+    NewJob {
+        workspace_id: "w1".into(),
+        repo_owner: "octo".into(),
+        repo_name: "repo".into(),
+        number,
+        head_sha: sha.into(),
+        base_sha: Some("base".into()),
+        incremental_from_sha: None,
+        trigger: ReviewTrigger::Manual,
+        post_mode: ReviewPostMode::Draft,
+        harnesses: harnesses.iter().map(|harness| harness.to_string()).collect(),
+        retry_of: None,
+    }
+}
+
+fn status(db: &Connection, id: &str) -> Status {
+    require_job(db, id).unwrap().status
+}
+
+#[test]
+fn migration_creates_the_review_tables_and_indexes() {
+    let (_scratch, db) = open();
+    for table in ["review_jobs", "review_passes", "review_findings"] {
+        let found: i64 = db
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1", params![table], |row| row.get(0))
+            .unwrap();
+        assert_eq!(found, 1, "{table}");
+    }
+    for index in ["idx_review_jobs_pr", "idx_review_jobs_status", "idx_review_jobs_active_dedupe"] {
+        let sql: String = db
+            .query_row("SELECT sql FROM sqlite_master WHERE type='index' AND name=?1", params![index], |row| row.get(0))
+            .unwrap();
+        if index == "idx_review_jobs_active_dedupe" {
+            assert!(sql.contains("UNIQUE") && sql.contains("WHERE status IN"), "{sql}");
+        }
+    }
+    let columns: Vec<String> = db
+        .prepare("SELECT name FROM pragma_table_info('review_jobs')")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for column in [
+        "workspace_id", "repo_owner", "repo_name", "pr_number", "head_sha", "base_sha", "incremental_from_sha",
+        "trigger_kind", "post_mode", "status", "error", "posted_review_id", "posted_review_url", "created_at",
+        "started_at", "finished_at", "lease_owner", "lease_expires_at", "attempts", "retry_of", "dedupe_key",
+    ] {
+        assert!(columns.iter().any(|name| name == column), "review_jobs.{column}");
+    }
+}
+
+#[test]
+fn start_is_idempotent_for_the_same_pr_sha_and_harness_set() {
+    let (_scratch, db) = open();
+    let (first, created) = insert(&db, &new_job(7, "sha1", &["claude", "codex"]), at(0)).unwrap();
+    assert!(created);
+    assert_eq!(first.status, Status::Queued);
+    let (again, created) = insert(&db, &new_job(7, "sha1", &["codex", "claude"]), at(5)).unwrap();
+    assert!(!created, "harness order does not make a new review");
+    assert_eq!(again.id, first.id);
+    // Still the same job while it is drafted: a draft is not terminal.
+    db.execute("UPDATE review_jobs SET status='drafted' WHERE id=?1", params![first.id]).unwrap();
+    assert_eq!(insert(&db, &new_job(7, "sha1", &["claude", "codex"]), at(6)).unwrap().0.id, first.id);
+    let count: i64 = db.query_row("SELECT COUNT(*) FROM review_jobs", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn a_new_job_is_created_once_the_previous_one_is_terminal() {
+    let (_scratch, db) = open();
+    let (first, _) = insert(&db, &new_job(7, "sha1", &["claude"]), at(0)).unwrap();
+    for terminal in [Status::Failed, Status::Cancelled, Status::Interrupted] {
+        db.execute("UPDATE review_jobs SET status=?2 WHERE id=?1", params![first.id, terminal.as_str()]).unwrap();
+        let (next, created) = insert(&db, &new_job(7, "sha1", &["claude"]), at(1)).unwrap();
+        assert!(created, "{}", terminal.as_str());
+        assert_ne!(next.id, first.id);
+        db.execute("DELETE FROM review_jobs WHERE id=?1", params![next.id]).unwrap();
+    }
+    db.execute("UPDATE review_jobs SET status='posted' WHERE id=?1", params![first.id]).unwrap();
+    assert!(insert(&db, &new_job(7, "sha1", &["claude"]), at(2)).unwrap().1);
+}
+
+#[test]
+fn a_different_harness_set_is_a_different_job() {
+    let (_scratch, db) = open();
+    let (claude, _) = insert(&db, &new_job(7, "sha1", &["claude"]), at(0)).unwrap();
+    let (pair, created) = insert(&db, &new_job(7, "sha1", &["claude", "codex"]), at(1)).unwrap();
+    assert!(created);
+    assert_ne!(pair.id, claude.id);
+    let (moved, created) = insert(&db, &new_job(7, "sha2", &["claude"]), at(2)).unwrap();
+    assert!(created, "a new head is a new review");
+    assert_ne!(moved.id, claude.id);
+    let (other_pr, created) = insert(&db, &new_job(8, "sha1", &["claude"]), at(3)).unwrap();
+    assert!(created);
+    assert_ne!(other_pr.id, claude.id);
+    assert!(insert(&db, &new_job(9, "sha1", &[]), at(4)).unwrap_err().to_string().contains("at least one harness"));
+}
+
+#[test]
+fn claims_are_fifo() {
+    let (_scratch, db) = open();
+    let ids: Vec<String> = (0..3).map(|n| insert(&db, &new_job(n, "sha", &["claude"]), at(n as i64)).unwrap().0.id).collect();
+    for expected in &ids {
+        let claimed = claim_next(&db, "runner-a", at(10)).unwrap().unwrap();
+        assert_eq!(&claimed.id, expected);
+        assert_eq!(claimed.status, Status::Preparing);
+        assert_eq!(claimed.attempts, 1);
+        assert_eq!(claimed.lease_owner.as_deref(), Some("runner-a"));
+        assert_eq!(claimed.lease_expires_at, Some(stamp(at(10 + LEASE_SECONDS))));
+        assert!(claimed.started_at.is_some());
+    }
+    assert!(claim_next(&db, "runner-a", at(11)).unwrap().is_none());
+}
+
+#[test]
+fn two_runners_racing_for_one_job_produce_one_claim() {
+    let scratch = tempfile::tempdir().unwrap();
+    let path = scratch.path().join("bridge.db");
+    let seed = crate::store::open(&path).unwrap();
+    for round in 0..20u64 {
+        insert(&seed, &new_job(round, "sha", &["claude"]), at(round as i64)).unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let racers: Vec<_> = ["runner-a", "runner-b"]
+            .into_iter()
+            .map(|owner| {
+                let barrier = barrier.clone();
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let db = crate::store::open(&path).unwrap();
+                    barrier.wait();
+                    claim_next(&db, owner, at(100)).unwrap().map(|job| job.id)
+                })
+            })
+            .collect();
+        let wins: Vec<String> = racers.into_iter().filter_map(|racer| racer.join().unwrap()).collect();
+        assert_eq!(wins.len(), 1, "round {round}: exactly one runner claims the job, got {wins:?}");
+    }
+}
+
+#[test]
+fn renewal_fails_once_the_job_is_cancelled_or_reclaimed() {
+    let (_scratch, db) = open();
+    let (job, _) = insert(&db, &new_job(1, "sha", &["claude"]), at(0)).unwrap();
+    claim_next(&db, "runner-a", at(0)).unwrap().unwrap();
+    assert!(renew(&db, &job.id, "runner-a", at(15)).unwrap());
+    assert!(!renew(&db, &job.id, "runner-b", at(16)).unwrap(), "only the holder renews");
+    cancel(&db, &job.id, at(20)).unwrap();
+    assert!(!renew(&db, &job.id, "runner-a", at(21)).unwrap(), "a cancelled job cannot be renewed");
+
+    let (second, _) = insert(&db, &new_job(2, "sha", &["claude"]), at(30)).unwrap();
+    claim_next(&db, "runner-a", at(30)).unwrap().unwrap();
+    assert!(!renew(&db, &second.id, "runner-a", at(30 + LEASE_SECONDS + 1)).unwrap(), "an expired lease is not renewed");
+    reclaim_expired(&db, at(30 + LEASE_SECONDS + 1)).unwrap();
+    assert!(!renew(&db, &second.id, "runner-a", at(30 + LEASE_SECONDS + 2)).unwrap());
+}
+
+#[test]
+fn an_expired_lease_returns_the_job_to_the_queue() {
+    let (_scratch, db) = open();
+    let (job, _) = insert(&db, &new_job(1, "sha", &["claude"]), at(0)).unwrap();
+    claim_next(&db, "runner-a", at(0)).unwrap().unwrap();
+    assert!(reclaim_expired(&db, at(LEASE_SECONDS - 1)).unwrap().is_empty(), "a live lease is left alone");
+    assert!(advance(&db, &job.id, "runner-a", Status::Preparing, Status::Reviewing, false).unwrap());
+    assert_eq!(reclaim_expired(&db, at(LEASE_SECONDS)).unwrap(), [job.id.clone()]);
+    let reclaimed = require_job(&db, &job.id).unwrap();
+    assert_eq!(reclaimed.status, Status::Queued);
+    assert_eq!(reclaimed.lease_owner, None);
+    let next = claim_next(&db, "runner-b", at(LEASE_SECONDS + 1)).unwrap().unwrap();
+    assert_eq!(next.id, job.id);
+    assert_eq!(next.attempts, 2);
+    assert!(
+        !advance(&db, &job.id, "runner-a", Status::Preparing, Status::Reviewing, false).unwrap(),
+        "the runner that lost the lease writes nothing"
+    );
+}
+
+#[test]
+fn an_expired_posting_lease_keeps_the_job_posting_without_a_lease() {
+    let (_scratch, db) = open();
+    let (job, _) = insert(&db, &new_job(1, "sha", &["claude"]), at(0)).unwrap();
+    claim_next(&db, "runner-a", at(0)).unwrap().unwrap();
+    assert!(advance(&db, &job.id, "runner-a", Status::Preparing, Status::Reviewing, false).unwrap());
+    assert!(advance(&db, &job.id, "runner-a", Status::Reviewing, Status::Drafted, false).unwrap());
+    assert!(advance(&db, &job.id, "runner-a", Status::Drafted, Status::Posting, false).unwrap());
+    reclaim_expired(&db, at(LEASE_SECONDS + 1)).unwrap();
+    let reclaimed = require_job(&db, &job.id).unwrap();
+    assert_eq!(reclaimed.status, Status::Posting);
+    assert_eq!(reclaimed.lease_owner, None);
+    let claimed = claim_next(&db, "runner-b", at(LEASE_SECONDS + 2)).unwrap().unwrap();
+    assert_eq!(claimed.status, Status::Posting, "a posting job is claimed as-is");
+    assert!(mark_posted(&db, &job.id, "runner-b", "r1", "https://example.test/r1", at(LEASE_SECONDS + 3)).unwrap());
+    let posted = require_job(&db, &job.id).unwrap();
+    assert_eq!(posted.status, Status::Posted);
+    assert_eq!(posted.posted_review_url.as_deref(), Some("https://example.test/r1"));
+    assert!(posted.finished_at.is_some());
+}
+
+#[test]
+fn the_third_reclaim_fails_the_job() {
+    let (_scratch, db) = open();
+    let (job, _) = insert(&db, &new_job(1, "sha", &["claude"]), at(0)).unwrap();
+    for claim in 0..MAX_ATTEMPTS as i64 {
+        let start = claim * 100;
+        claim_next(&db, "runner", at(start)).unwrap().unwrap();
+        reclaim_expired(&db, at(start + LEASE_SECONDS)).unwrap();
+    }
+    let failed = require_job(&db, &job.id).unwrap();
+    assert_eq!(failed.status, Status::Failed);
+    assert_eq!(failed.error.as_deref(), Some(STOPPED_RESPONDING));
+    assert_eq!(failed.attempts, MAX_ATTEMPTS);
+    assert!(claim_next(&db, "runner", at(1000)).unwrap().is_none());
+}
+
+#[test]
+fn startup_recovery_interrupts_in_flight_jobs_only() {
+    let (_scratch, db) = open();
+    let mut ids = std::collections::HashMap::new();
+    for (number, label) in ["queued", "preparing", "reviewing", "drafted", "posting", "posted", "failed"].into_iter().enumerate() {
+        let (job, _) = insert(&db, &new_job(number as u64, "sha", &["claude"]), at(number as i64)).unwrap();
+        db.execute(
+            "UPDATE review_jobs SET status=?2, lease_owner=CASE WHEN ?2 IN ('preparing','reviewing','posting') THEN 'old' END
+             WHERE id=?1",
+            params![job.id, label],
+        )
+        .unwrap();
+        ids.insert(label, job.id);
+    }
+    let mut interrupted = interrupt_in_flight(&db, at(100)).unwrap();
+    interrupted.sort();
+    let mut expected = vec![ids["preparing"].clone(), ids["reviewing"].clone(), ids["posting"].clone()];
+    expected.sort();
+    assert_eq!(interrupted, expected);
+    for label in ["preparing", "reviewing", "posting"] {
+        let job = require_job(&db, &ids[label]).unwrap();
+        assert_eq!(job.status, Status::Interrupted, "{label}");
+        assert_eq!(job.error.as_deref(), Some(RESTARTED));
+        assert_eq!(job.lease_owner, None);
+        assert!(job.finished_at.is_some());
+    }
+    for (label, expected) in [
+        ("queued", Status::Queued),
+        ("drafted", Status::Drafted),
+        ("posted", Status::Posted),
+        ("failed", Status::Failed),
+    ] {
+        assert_eq!(status(&db, &ids[label]), expected, "{label} is left alone");
+    }
+}
+
+#[test]
+fn list_is_newest_first_and_capped_at_fifty() {
+    let (_scratch, db) = open();
+    for n in 0..55u64 {
+        insert(&db, &new_job(n % 2, &format!("sha{n}"), &["claude"]), at(n as i64)).unwrap();
+    }
+    let all = list(&db, "w1", None).unwrap();
+    assert_eq!(all.len(), LIST_LIMIT as usize);
+    assert_eq!(all[0].head_sha, "sha54");
+    assert!(all.windows(2).all(|pair| pair[0].created_at >= pair[1].created_at));
+    let odd = list(&db, "w1", Some(1)).unwrap();
+    assert_eq!(odd.len(), 27);
+    assert!(odd.iter().all(|job| job.number == 1));
+    assert!(list(&db, "other", None).unwrap().is_empty());
+}
+
+#[test]
+fn retry_copies_the_inputs_and_links_retry_of() {
+    let (_scratch, db) = open();
+    let mut original = new_job(7, "sha1", &["claude", "codex"]);
+    original.trigger = ReviewTrigger::Push;
+    original.post_mode = ReviewPostMode::Auto;
+    let (job, _) = insert(&db, &original, at(0)).unwrap();
+    finish(&db, &job.id, None, Status::Interrupted, Some(RESTARTED), at(1)).unwrap();
+    let (retried, created) = retry(&db, &job.id, at(2)).unwrap();
+    assert!(created);
+    assert_ne!(retried.id, job.id);
+    assert_eq!(retried.retry_of.as_deref(), Some(job.id.as_str()));
+    assert_eq!(retried.status, Status::Queued);
+    assert_eq!(
+        (retried.workspace_id.as_str(), retried.number, retried.head_sha.as_str(), retried.trigger, retried.post_mode),
+        ("w1", 7, "sha1", ReviewTrigger::Push, ReviewPostMode::Auto)
+    );
+    assert_eq!(retried.harnesses, ["claude", "codex"]);
+    assert_eq!(retried.error, None);
+    let (again, created) = retry(&db, &job.id, at(3)).unwrap();
+    assert!(!created, "retrying twice returns the active retry");
+    assert_eq!(again.id, retried.id);
+}
+
+#[test]
+fn retry_refuses_an_active_job() {
+    let (_scratch, db) = open();
+    let (job, _) = insert(&db, &new_job(7, "sha1", &["claude"]), at(0)).unwrap();
+    for active in ["queued", "preparing", "reviewing", "drafted", "posting", "posted"] {
+        db.execute("UPDATE review_jobs SET status=?2 WHERE id=?1", params![job.id, active]).unwrap();
+        assert!(retry(&db, &job.id, at(1)).unwrap_err().to_string().contains("Only a failed"), "{active}");
+    }
+    assert!(retry(&db, "missing", at(1)).unwrap_err().to_string().contains("No review job"));
+}
+
+#[test]
+fn cancel_settles_a_queued_job_and_refuses_a_terminal_one() {
+    let (_scratch, db) = open();
+    let (job, _) = insert(&db, &new_job(7, "sha1", &["claude"]), at(0)).unwrap();
+    let cancelled = cancel(&db, &job.id, at(1)).unwrap();
+    assert_eq!(cancelled.status, Status::Cancelled);
+    assert_eq!(cancelled.finished_at, Some(stamp(at(1))));
+    assert!(cancel(&db, &job.id, at(2)).unwrap_err().to_string().contains("already cancelled"));
+    let (held, _) = insert(&db, &new_job(8, "sha1", &["claude"]), at(3)).unwrap();
+    claim_next(&db, "runner", at(3)).unwrap().unwrap();
+    assert_eq!(cancel(&db, &held.id, at(4)).unwrap().lease_owner, None, "cancel takes the lease away");
+}
+
+#[test]
+fn advance_and_finish_follow_the_state_table() {
+    let (_scratch, db) = open();
+    let (job, _) = insert(&db, &new_job(7, "sha1", &["claude"]), at(0)).unwrap();
+    claim_next(&db, "runner", at(0)).unwrap().unwrap();
+    assert!(advance(&db, &job.id, "runner", Status::Preparing, Status::Posting, false).is_err());
+    assert!(advance(&db, &job.id, "runner", Status::Preparing, Status::Failed, false).is_err(), "terminal goes through finish");
+    assert!(finish(&db, &job.id, None, Status::Posted, None, at(1)).is_err(), "posted goes through mark_posted");
+    assert!(!finish(&db, &job.id, Some("someone-else"), Status::Failed, Some("x"), at(1)).unwrap());
+    assert!(finish(&db, &job.id, Some("runner"), Status::Failed, Some("boom"), at(1)).unwrap());
+    let failed = require_job(&db, &job.id).unwrap();
+    assert_eq!((failed.status, failed.error.as_deref()), (Status::Failed, Some("boom")));
+    assert!(!finish(&db, &job.id, None, Status::Cancelled, None, at(2)).unwrap(), "nothing leaves a terminal status");
+}
+
+#[test]
+fn passes_and_findings_round_trip_into_the_wire_job() {
+    let (_scratch, db) = open();
+    let (job, _) = insert(&db, &new_job(7, "sha1", &["claude", "codex"]), at(0)).unwrap();
+    let failed = insert_pass(&db, &job.id, 1, "codex", at(1)).unwrap();
+    finish_pass(&db, &failed, ReviewPassStatus::Failed, Some("signed out"), None, at(2)).unwrap();
+    let fallback = insert_pass(&db, &job.id, 1, "opencode", at(3)).unwrap();
+    let outcome = PassOutcome { session_id: Some("hidden-1".into()), tokens_in: 10, tokens_out: 5, cost_microusd: 7, denied_requests: 2, ..Default::default() };
+    finish_pass(&db, &fallback, ReviewPassStatus::Done, None, Some(&outcome), at(4)).unwrap();
+    let finding = |severity, confidence| DraftFinding {
+        path: "src/a.rs".into(),
+        line: 4,
+        start_line: Some(2),
+        side: ReviewSide::Right,
+        severity,
+        title: "t".into(),
+        body: "b".into(),
+        confidence,
+        fingerprint: "f".into(),
+        outside_diff: false,
+    };
+    insert_findings(&db, &job.id, &fallback, &[finding(ReviewSeverity::Nit, 0.9), finding(ReviewSeverity::Critical, 1.7)], at(5)).unwrap();
+
+    let wire_job = to_wire(&db, &require_job(&db, &job.id).unwrap()).unwrap();
+    assert_eq!(wire_job.harnesses, ["claude", "opencode"], "slot 1 reports the harness that actually ran");
+    assert_eq!(wire_job.finding_counts, wire::ReviewFindingCounts { total: 2, critical: 1, major: 0, minor: 0, nit: 1 });
+    let stored = passes(&db, &job.id).unwrap();
+    assert_eq!(stored.len(), 2);
+    assert_eq!((stored[0].status, stored[0].error.as_deref()), (ReviewPassStatus::Failed, Some("signed out")));
+    assert_eq!((stored[1].tokens_in, stored[1].denied_requests), (10, 2));
+    assert_eq!(stored[1].session_id.as_deref(), Some("hidden-1"));
+    let stored = findings(&db, &job.id).unwrap();
+    assert_eq!(stored[0].severity, ReviewSeverity::Critical, "ranked by severity");
+    assert_eq!(stored[0].confidence, 1.0, "confidence is clamped");
+    assert_eq!(stored[0].decision, ReviewFindingDecision::Pending);
+    assert_eq!(stored[0].start_line, Some(2));
+}

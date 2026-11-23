@@ -3144,6 +3144,8 @@ export type ReviewDecision = "none" | "approved" | "changesRequested" | "reviewR
 
 export type ReviewEvent = "approve" | "requestChanges" | "comment";
 
+export type ReviewPostMode = "draft" | "auto";
+
 export interface ReviewThread {
   comments: ReviewComment[];
   diffHunk?: string | null;
@@ -3164,7 +3166,11 @@ export interface ReviewerHarnessSettings {
 }
 
 export interface ReviewerSettings {
+  defaultHarnesses?: string[];
+  fallbackHarnesses?: string[];
   harnesses?: Record<string, ReviewerHarnessSettings>;
+  maxConcurrentReviews?: number;
+  postMode?: ReviewPostMode;
   systemPrompt?: string;
 }
 

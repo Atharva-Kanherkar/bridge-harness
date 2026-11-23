@@ -42,7 +42,10 @@ pub struct ReviewerHarnessSettings {
 /// GitHub pane: per-harness model and effort, and the instructions it is
 /// given. One record, not per workspace — a reviewer's shape is a preference
 /// about the reviewer, not about the repository.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+///
+/// Every field has a default, so a record stored before a field existed
+/// loads with that field's default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct ReviewerSettings {
     /// Keyed by harness id (`claude` | `codex` | `opencode`).
@@ -50,6 +53,33 @@ pub struct ReviewerSettings {
     /// Empty means Bridge's default review instructions. `{number}` expands
     /// to the pull request number.
     pub system_prompt: String,
+    /// The harnesses a review runs on when the caller names none. Empty
+    /// means the first available of Claude, Codex and OpenCode.
+    pub default_harnesses: Vec<String>,
+    /// Tried in order when a pass's harness fails (sign-in, usage limit,
+    /// crash). Empty means a failed harness fails the review.
+    pub fallback_harnesses: Vec<String>,
+    /// Reviews running at once, 1 to 4.
+    pub max_concurrent_reviews: u8,
+    /// Draft first (the default) or post as soon as findings are drafted.
+    pub post_mode: super::ReviewPostMode,
+}
+
+/// The default and the bounds of `ReviewerSettings::max_concurrent_reviews`.
+pub const DEFAULT_MAX_CONCURRENT_REVIEWS: u8 = 2;
+pub const MAX_CONCURRENT_REVIEWS_RANGE: std::ops::RangeInclusive<u8> = 1..=4;
+
+impl Default for ReviewerSettings {
+    fn default() -> Self {
+        Self {
+            harnesses: std::collections::BTreeMap::new(),
+            system_prompt: String::new(),
+            default_harnesses: Vec::new(),
+            fallback_harnesses: Vec::new(),
+            max_concurrent_reviews: DEFAULT_MAX_CONCURRENT_REVIEWS,
+            post_mode: super::ReviewPostMode::Draft,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

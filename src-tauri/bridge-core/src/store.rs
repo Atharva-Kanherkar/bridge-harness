@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 88;
+const LATEST_SCHEMA_VERSION: i64 = 89;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -814,6 +814,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // worked, with a trigger for new entries and a resumable cursor
             // for the ones before it. See `screen_time`.
             88 => crate::screen_time::install_store(&transaction)?,
+            // PR reviews as background jobs: the job, one pass per harness that
+            // ran, and the findings a person keeps or drops. See `reviews`.
+            89 => crate::reviews::store::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"

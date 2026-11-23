@@ -82,10 +82,26 @@ pub fn save(db: &Connection, settings: &ReviewerSettings) -> Result<ReviewerSett
             "The reviewer prompt is longer than {MAX_PROMPT_CHARS} characters"
         )));
     }
+    if !wire::MAX_CONCURRENT_REVIEWS_RANGE.contains(&settings.max_concurrent_reviews) {
+        return Err(BridgeError::Invalid(format!(
+            "Reviews at once must be between {} and {}",
+            wire::MAX_CONCURRENT_REVIEWS_RANGE.start(),
+            wire::MAX_CONCURRENT_REVIEWS_RANGE.end()
+        )));
+    }
+    let default_harnesses = review_job_harnesses(&settings.default_harnesses, "default")?;
+    if default_harnesses.len() > MAX_REVIEW_HARNESSES {
+        return Err(BridgeError::Invalid(format!(
+            "A review runs on at most {MAX_REVIEW_HARNESSES} harnesses"
+        )));
+    }
+    let fallback_harnesses = review_job_harnesses(&settings.fallback_harnesses, "fallback")?;
     // Store what means something: a blank model or prompt is "unset", not "".
     let mut normalized = settings.clone();
     normalized.system_prompt = normalized.system_prompt.trim().to_owned();
     normalized.harnesses = canonical;
+    normalized.default_harnesses = default_harnesses;
+    normalized.fallback_harnesses = fallback_harnesses;
     for entry in normalized.harnesses.values_mut() {
         if entry.model.as_deref().is_some_and(|model| model.trim().is_empty()) {
             entry.model = None;
@@ -105,6 +121,33 @@ pub fn save(db: &Connection, settings: &ReviewerSettings) -> Result<ReviewerSett
         ],
     )?;
     load(db)
+}
+
+/// Reviewers one job may ask for: one, or two for a second opinion.
+pub const MAX_REVIEW_HARNESSES: usize = 2;
+
+/// A list of harnesses a review job may run on, canonicalized and without
+/// repeats. Cursor Bugbot is refused: it reviews on GitHub, not as a pass.
+pub fn review_job_harnesses(ids: &[String], list: &str) -> Result<Vec<String>, BridgeError> {
+    let mut harnesses: Vec<String> = Vec::new();
+    for id in ids {
+        if id.trim().is_empty() {
+            continue;
+        }
+        let canonical = match canonical_harness(id) {
+            Some(canonical) if canonical != "cursor-bugbot" => canonical,
+            Some(_) => {
+                return Err(BridgeError::Invalid(format!(
+                    "Cursor Bugbot cannot be a {list} reviewer harness: it reviews on GitHub"
+                )))
+            }
+            None => return Err(BridgeError::Invalid(format!("Unknown {list} reviewer harness `{id}`"))),
+        };
+        if !harnesses.contains(&canonical) {
+            harnesses.push(canonical);
+        }
+    }
+    Ok(harnesses)
 }
 
 pub fn view(settings: ReviewerSettings) -> wire::ReviewerSettingsResult {
@@ -213,6 +256,56 @@ mod tests {
         assert!(stored.harnesses.contains_key("cursor-bugbot"), "the bugbot github_review accepts is not rejected");
         assert!(!stored.harnesses.contains_key("claude-code"));
         assert!(!stored.harnesses.contains_key("bugbot"));
+    }
+
+    #[test]
+    fn runner_settings_default_and_validate() {
+        let (_scratch, db) = db();
+        let defaults = load(&db).unwrap();
+        assert_eq!(defaults.max_concurrent_reviews, 2);
+        assert_eq!(defaults.post_mode, wire::ReviewPostMode::Draft);
+        assert!(defaults.default_harnesses.is_empty() && defaults.fallback_harnesses.is_empty());
+
+        for refused in [0, 5] {
+            let settings = ReviewerSettings { max_concurrent_reviews: refused, ..Default::default() };
+            assert!(save(&db, &settings).unwrap_err().to_string().contains("between 1 and 4"), "{refused}");
+        }
+        let settings = ReviewerSettings {
+            default_harnesses: vec!["claude-code".into(), "codex".into(), "claude".into()],
+            fallback_harnesses: vec!["open-code".into(), " ".into(), "codex".into()],
+            max_concurrent_reviews: 4,
+            post_mode: wire::ReviewPostMode::Auto,
+            ..Default::default()
+        };
+        let stored = save(&db, &settings).unwrap();
+        assert_eq!(stored.default_harnesses, ["claude", "codex"], "aliases fold and repeats drop");
+        assert_eq!(stored.fallback_harnesses, ["opencode", "codex"]);
+        assert_eq!(stored.max_concurrent_reviews, 4);
+        assert_eq!(stored.post_mode, wire::ReviewPostMode::Auto);
+
+        let three = ReviewerSettings { default_harnesses: vec!["claude".into(), "codex".into(), "opencode".into()], ..Default::default() };
+        assert!(save(&db, &three).unwrap_err().to_string().contains("at most 2"));
+        let bugbot = ReviewerSettings { fallback_harnesses: vec!["bugbot".into()], ..Default::default() };
+        assert!(save(&db, &bugbot).unwrap_err().to_string().contains("Cursor Bugbot"));
+        let unknown = ReviewerSettings { default_harnesses: vec!["shell".into()], ..Default::default() };
+        assert!(save(&db, &unknown).unwrap_err().to_string().contains("Unknown default reviewer harness"));
+        assert_eq!(load(&db).unwrap(), stored, "a refused save stores nothing");
+    }
+
+    #[test]
+    fn a_payload_stored_before_runner_settings_loads_with_defaults() {
+        let (_scratch, db) = db();
+        db.execute(
+            "INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES(?1,?2,?3,'now','now')",
+            params![KIND, ID, r#"{"harnesses":{"codex":{"model":"gpt-5-codex"}},"systemPrompt":"Review #{number}."}"#],
+        )
+        .unwrap();
+        let loaded = load(&db).unwrap();
+        assert_eq!(loaded.harnesses["codex"].model.as_deref(), Some("gpt-5-codex"));
+        assert_eq!(loaded.system_prompt, "Review #{number}.");
+        assert_eq!(loaded.max_concurrent_reviews, 2);
+        assert_eq!(loaded.post_mode, wire::ReviewPostMode::Draft);
+        assert!(loaded.default_harnesses.is_empty() && loaded.fallback_harnesses.is_empty());
     }
 
     #[test]

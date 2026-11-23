@@ -529,6 +529,10 @@ pub struct GithubReviewParams {
     pub harness: String,
     /// The parent orchestrator session to attach the worker to. When absent (or
     /// unknown to this workspace) the backend creates a fresh orchestrator.
+    ///
+    /// Deprecated: reviews are becoming standalone jobs (`reviews/*`) with no
+    /// parent chat. Once `github_review` maps to `reviews/start_review` this
+    /// field is accepted and ignored.
     pub session_id: Option<String>,
 }
 
