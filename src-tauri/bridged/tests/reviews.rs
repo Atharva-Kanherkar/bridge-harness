@@ -68,7 +68,7 @@ fn seed(data_dir: &Path, repo: &Path) -> String {
         chrono::Utc::now(),
     )
     .unwrap();
-    let pass = store::insert_pass(&db, &job.id, 0, "claude", chrono::Utc::now()).unwrap();
+    let pass = store::insert_pass(&db, &job.id, 0, 1, "claude", chrono::Utc::now()).unwrap();
     store::insert_findings(
         &db,
         &job.id,

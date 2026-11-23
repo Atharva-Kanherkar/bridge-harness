@@ -27,6 +27,13 @@ fn new_job(number: u64, sha: &str, harnesses: &[&str]) -> NewJob {
     }
 }
 
+/// Claim the next job and hand back its lease token.
+fn claim(db: &Connection, runner: &str, now: DateTime<Utc>) -> (JobRow, String) {
+    let job = claim_next(db, runner, now).unwrap().expect("a claimable job");
+    let token = job.lease_owner.clone().unwrap();
+    (job, token)
+}
+
 fn status(db: &Connection, id: &str) -> Status {
     require_job(db, id).unwrap().status
 }
@@ -120,7 +127,7 @@ fn claims_are_fifo() {
         assert_eq!(&claimed.id, expected);
         assert_eq!(claimed.status, Status::Preparing);
         assert_eq!(claimed.attempts, 1);
-        assert_eq!(claimed.lease_owner.as_deref(), Some("runner-a"));
+        assert!(claimed.lease_owner.as_deref().is_some_and(|token| token.starts_with("runner-a/")), "{:?}", claimed.lease_owner);
         assert_eq!(claimed.lease_expires_at, Some(stamp(at(10 + LEASE_SECONDS))));
         assert!(claimed.started_at.is_some());
     }
@@ -156,26 +163,26 @@ fn two_runners_racing_for_one_job_produce_one_claim() {
 fn renewal_fails_once_the_job_is_cancelled_or_reclaimed() {
     let (_scratch, db) = open();
     let (job, _) = insert(&db, &new_job(1, "sha", &["claude"]), at(0)).unwrap();
-    claim_next(&db, "runner-a", at(0)).unwrap().unwrap();
-    assert!(renew(&db, &job.id, "runner-a", at(15)).unwrap());
-    assert!(!renew(&db, &job.id, "runner-b", at(16)).unwrap(), "only the holder renews");
+    let (_, token) = claim(&db, "runner-a", at(0));
+    assert!(renew(&db, &job.id, &token, at(15)).unwrap());
+    assert!(!renew(&db, &job.id, "runner-a", at(16)).unwrap(), "the runner id alone is not the claim");
     cancel(&db, &job.id, at(20)).unwrap();
-    assert!(!renew(&db, &job.id, "runner-a", at(21)).unwrap(), "a cancelled job cannot be renewed");
+    assert!(!renew(&db, &job.id, &token, at(21)).unwrap(), "a cancelled job cannot be renewed");
 
     let (second, _) = insert(&db, &new_job(2, "sha", &["claude"]), at(30)).unwrap();
-    claim_next(&db, "runner-a", at(30)).unwrap().unwrap();
-    assert!(!renew(&db, &second.id, "runner-a", at(30 + LEASE_SECONDS + 1)).unwrap(), "an expired lease is not renewed");
+    let (_, token) = claim(&db, "runner-a", at(30));
+    assert!(!renew(&db, &second.id, &token, at(30 + LEASE_SECONDS + 1)).unwrap(), "an expired lease is not renewed");
     reclaim_expired(&db, at(30 + LEASE_SECONDS + 1)).unwrap();
-    assert!(!renew(&db, &second.id, "runner-a", at(30 + LEASE_SECONDS + 2)).unwrap());
+    assert!(!renew(&db, &second.id, &token, at(30 + LEASE_SECONDS + 2)).unwrap());
 }
 
 #[test]
 fn an_expired_lease_returns_the_job_to_the_queue() {
     let (_scratch, db) = open();
     let (job, _) = insert(&db, &new_job(1, "sha", &["claude"]), at(0)).unwrap();
-    claim_next(&db, "runner-a", at(0)).unwrap().unwrap();
+    let (_, first) = claim(&db, "runner-a", at(0));
     assert!(reclaim_expired(&db, at(LEASE_SECONDS - 1)).unwrap().is_empty(), "a live lease is left alone");
-    assert!(advance(&db, &job.id, "runner-a", Status::Preparing, Status::Reviewing, false).unwrap());
+    assert!(advance(&db, &job.id, &first, Status::Preparing, Status::Reviewing, false).unwrap());
     assert_eq!(reclaim_expired(&db, at(LEASE_SECONDS)).unwrap(), [job.id.clone()]);
     let reclaimed = require_job(&db, &job.id).unwrap();
     assert_eq!(reclaimed.status, Status::Queued);
@@ -184,7 +191,7 @@ fn an_expired_lease_returns_the_job_to_the_queue() {
     assert_eq!(next.id, job.id);
     assert_eq!(next.attempts, 2);
     assert!(
-        !advance(&db, &job.id, "runner-a", Status::Preparing, Status::Reviewing, false).unwrap(),
+        !advance(&db, &job.id, &first, Status::Preparing, Status::Reviewing, false).unwrap(),
         "the runner that lost the lease writes nothing"
     );
 }
@@ -193,17 +200,17 @@ fn an_expired_lease_returns_the_job_to_the_queue() {
 fn an_expired_posting_lease_keeps_the_job_posting_without_a_lease() {
     let (_scratch, db) = open();
     let (job, _) = insert(&db, &new_job(1, "sha", &["claude"]), at(0)).unwrap();
-    claim_next(&db, "runner-a", at(0)).unwrap().unwrap();
-    assert!(advance(&db, &job.id, "runner-a", Status::Preparing, Status::Reviewing, false).unwrap());
-    assert!(advance(&db, &job.id, "runner-a", Status::Reviewing, Status::Drafted, false).unwrap());
-    assert!(advance(&db, &job.id, "runner-a", Status::Drafted, Status::Posting, false).unwrap());
+    let (_, token) = claim(&db, "runner-a", at(0));
+    assert!(advance(&db, &job.id, &token, Status::Preparing, Status::Reviewing, false).unwrap());
+    assert!(advance(&db, &job.id, &token, Status::Reviewing, Status::Drafted, false).unwrap());
+    assert!(advance(&db, &job.id, &token, Status::Drafted, Status::Posting, false).unwrap());
     reclaim_expired(&db, at(LEASE_SECONDS + 1)).unwrap();
     let reclaimed = require_job(&db, &job.id).unwrap();
     assert_eq!(reclaimed.status, Status::Posting);
     assert_eq!(reclaimed.lease_owner, None);
-    let claimed = claim_next(&db, "runner-b", at(LEASE_SECONDS + 2)).unwrap().unwrap();
+    let (claimed, token) = claim(&db, "runner-b", at(LEASE_SECONDS + 2));
     assert_eq!(claimed.status, Status::Posting, "a posting job is claimed as-is");
-    assert!(mark_posted(&db, &job.id, "runner-b", "r1", "https://example.test/r1", at(LEASE_SECONDS + 3)).unwrap());
+    assert!(mark_posted(&db, &job.id, &token, "r1", "https://example.test/r1", at(LEASE_SECONDS + 3)).unwrap());
     let posted = require_job(&db, &job.id).unwrap();
     assert_eq!(posted.status, Status::Posted);
     assert_eq!(posted.posted_review_url.as_deref(), Some("https://example.test/r1"));
@@ -330,12 +337,12 @@ fn cancel_settles_a_queued_job_and_refuses_a_terminal_one() {
 fn advance_and_finish_follow_the_state_table() {
     let (_scratch, db) = open();
     let (job, _) = insert(&db, &new_job(7, "sha1", &["claude"]), at(0)).unwrap();
-    claim_next(&db, "runner", at(0)).unwrap().unwrap();
-    assert!(advance(&db, &job.id, "runner", Status::Preparing, Status::Posting, false).is_err());
-    assert!(advance(&db, &job.id, "runner", Status::Preparing, Status::Failed, false).is_err(), "terminal goes through finish");
+    let (_, token) = claim(&db, "runner", at(0));
+    assert!(advance(&db, &job.id, &token, Status::Preparing, Status::Posting, false).is_err());
+    assert!(advance(&db, &job.id, &token, Status::Preparing, Status::Failed, false).is_err(), "terminal goes through finish");
     assert!(finish(&db, &job.id, None, Status::Posted, None, at(1)).is_err(), "posted goes through mark_posted");
     assert!(!finish(&db, &job.id, Some("someone-else"), Status::Failed, Some("x"), at(1)).unwrap());
-    assert!(finish(&db, &job.id, Some("runner"), Status::Failed, Some("boom"), at(1)).unwrap());
+    assert!(finish(&db, &job.id, Some(&token), Status::Failed, Some("boom"), at(1)).unwrap());
     let failed = require_job(&db, &job.id).unwrap();
     assert_eq!((failed.status, failed.error.as_deref()), (Status::Failed, Some("boom")));
     assert!(!finish(&db, &job.id, None, Status::Cancelled, None, at(2)).unwrap(), "nothing leaves a terminal status");
@@ -345,9 +352,9 @@ fn advance_and_finish_follow_the_state_table() {
 fn passes_and_findings_round_trip_into_the_wire_job() {
     let (_scratch, db) = open();
     let (job, _) = insert(&db, &new_job(7, "sha1", &["claude", "codex"]), at(0)).unwrap();
-    let failed = insert_pass(&db, &job.id, 1, "codex", at(1)).unwrap();
+    let failed = insert_pass(&db, &job.id, 1, 1, "codex", at(1)).unwrap();
     finish_pass(&db, &failed, ReviewPassStatus::Failed, Some("signed out"), None, at(2)).unwrap();
-    let fallback = insert_pass(&db, &job.id, 1, "opencode", at(3)).unwrap();
+    let fallback = insert_pass(&db, &job.id, 1, 1, "opencode", at(3)).unwrap();
     let outcome = PassOutcome { session_id: Some("hidden-1".into()), tokens_in: 10, tokens_out: 5, cost_microusd: 7, denied_requests: 2, ..Default::default() };
     finish_pass(&db, &fallback, ReviewPassStatus::Done, None, Some(&outcome), at(4)).unwrap();
     let finding = |severity, confidence| DraftFinding {
@@ -377,4 +384,104 @@ fn passes_and_findings_round_trip_into_the_wire_job() {
     assert_eq!(stored[0].confidence, 1.0, "confidence is clamped");
     assert_eq!(stored[0].decision, ReviewFindingDecision::Pending);
     assert_eq!(stored[0].start_line, Some(2));
+}
+
+fn draft(path: &str) -> DraftFinding {
+    DraftFinding {
+        path: path.into(),
+        line: 4,
+        start_line: None,
+        side: ReviewSide::Right,
+        severity: ReviewSeverity::Major,
+        title: "t".into(),
+        body: "b".into(),
+        confidence: 0.5,
+        fingerprint: format!("fp-{path}"),
+        outside_diff: false,
+    }
+}
+
+#[test]
+fn each_claim_gets_its_own_lease_token() {
+    let (_scratch, db) = open();
+    let (a, _) = insert(&db, &new_job(1, "sha", &["claude"]), at(0)).unwrap();
+    insert(&db, &new_job(2, "sha", &["claude"]), at(1)).unwrap();
+    let (_, first) = claim(&db, "runner", at(2));
+    let (_, second) = claim(&db, "runner", at(2));
+    assert_ne!(first, second, "one runner, two jobs, two tokens");
+    reclaim_expired(&db, at(2 + LEASE_SECONDS)).unwrap();
+    let (again, third) = claim(&db, "runner", at(100));
+    assert_eq!(again.id, a.id);
+    assert_ne!(third, first, "the same runner re-claiming the same job gets a new token");
+    assert!(third.starts_with("runner/"));
+}
+
+#[test]
+fn a_superseded_claim_cannot_advance_or_renew_the_replacement() {
+    let (_scratch, db) = open();
+    let (job, _) = insert(&db, &new_job(1, "sha", &["claude"]), at(0)).unwrap();
+    let (_, stale) = claim(&db, "runner", at(0));
+    assert!(advance(&db, &job.id, &stale, Status::Preparing, Status::Reviewing, false).unwrap());
+    reclaim_expired(&db, at(LEASE_SECONDS)).unwrap();
+    // The same runner claims the job again into another slot.
+    let (_, current) = claim(&db, "runner", at(LEASE_SECONDS + 1));
+    assert!(advance(&db, &job.id, &current, Status::Preparing, Status::Reviewing, false).unwrap());
+    let now = at(LEASE_SECONDS + 2);
+    assert!(!renew(&db, &job.id, &stale, now).unwrap());
+    assert!(!advance(&db, &job.id, &stale, Status::Reviewing, Status::Drafted, true).unwrap());
+    assert!(!finish_review(&db, &job.id, &stale, "stale summary", true).unwrap());
+    assert!(begin_pass(&db, &job.id, &stale, 0, "claude", now).unwrap().is_none());
+    assert!(!finish(&db, &job.id, Some(&stale), Status::Failed, Some("stale"), now).unwrap());
+    assert_eq!(status(&db, &job.id), Status::Reviewing, "the replacement still holds the job");
+    assert!(renew(&db, &job.id, &current, now).unwrap());
+    let pass = begin_pass(&db, &job.id, &current, 0, "claude", now).unwrap().unwrap();
+    let outcome = PassOutcome { findings: vec![draft("src/a.rs")], ..Default::default() };
+    assert!(!complete_pass(&db, &job.id, &stale, &pass, &outcome, now).unwrap(), "a stale claim stores no pass");
+    assert!(findings(&db, &job.id).unwrap().is_empty());
+    assert!(complete_pass(&db, &job.id, &current, &pass, &outcome, now).unwrap());
+    assert!(finish_review(&db, &job.id, &current, "summary", true).unwrap());
+    let drafted = require_job(&db, &job.id).unwrap();
+    assert_eq!((drafted.status, drafted.summary.as_deref(), drafted.lease_owner), (Status::Drafted, Some("summary"), None));
+    assert_eq!(passes(&db, &job.id).unwrap()[0].attempt, 2);
+}
+
+#[test]
+fn reclaiming_settles_abandoned_passes_and_drops_their_findings() {
+    let (_scratch, db) = open();
+    let (job, _) = insert(&db, &new_job(1, "sha", &["claude", "codex"]), at(0)).unwrap();
+    let (_, first) = claim(&db, "runner", at(0));
+    assert!(advance(&db, &job.id, &first, Status::Preparing, Status::Reviewing, false).unwrap());
+    let done = begin_pass(&db, &job.id, &first, 0, "claude", at(1)).unwrap().unwrap();
+    let outcome = PassOutcome { findings: vec![draft("src/a.rs")], ..Default::default() };
+    assert!(complete_pass(&db, &job.id, &first, &done, &outcome, at(2)).unwrap());
+    let running = begin_pass(&db, &job.id, &first, 1, "codex", at(3)).unwrap().unwrap();
+    assert_eq!(to_wire(&db, &require_job(&db, &job.id).unwrap()).unwrap().finding_counts.total, 1);
+
+    // The runner dies during slot 1; nothing of it is left to settle anything.
+    reclaim_expired(&db, at(LEASE_SECONDS + 1)).unwrap();
+    let (_, second) = claim(&db, "runner", at(LEASE_SECONDS + 2));
+    let stored = passes(&db, &job.id).unwrap();
+    let abandoned = stored.iter().find(|pass| pass.id == running).unwrap();
+    assert_eq!((abandoned.status, abandoned.error.as_deref()), (ReviewPassStatus::Cancelled, Some(ABANDONED)));
+    assert!(findings(&db, &job.id).unwrap().is_empty(), "the abandoned attempt's findings are gone");
+    assert_eq!(to_wire(&db, &require_job(&db, &job.id).unwrap()).unwrap().finding_counts.total, 0);
+
+    assert!(advance(&db, &job.id, &second, Status::Preparing, Status::Reviewing, false).unwrap());
+    let again = begin_pass(&db, &job.id, &second, 0, "claude", at(LEASE_SECONDS + 3)).unwrap().unwrap();
+    assert!(complete_pass(&db, &job.id, &second, &again, &outcome, at(LEASE_SECONDS + 4)).unwrap());
+    assert_eq!(findings(&db, &job.id).unwrap().len(), 1, "one finding, not the old one plus the new one");
+    let attempts: Vec<u32> = passes(&db, &job.id).unwrap().iter().map(|pass| pass.attempt).collect();
+    assert_eq!(attempts, [1, 1, 2]);
+}
+
+#[test]
+fn a_terminal_transition_settles_running_passes() {
+    let (_scratch, db) = open();
+    let (job, _) = insert(&db, &new_job(1, "sha", &["claude"]), at(0)).unwrap();
+    let (_, token) = claim(&db, "runner", at(0));
+    assert!(advance(&db, &job.id, &token, Status::Preparing, Status::Reviewing, false).unwrap());
+    begin_pass(&db, &job.id, &token, 0, "claude", at(1)).unwrap().unwrap();
+    interrupt_in_flight(&db, at(2)).unwrap();
+    let pass = &passes(&db, &job.id).unwrap()[0];
+    assert_eq!((pass.status, pass.error.as_deref()), (ReviewPassStatus::Cancelled, Some(RESTARTED)));
 }

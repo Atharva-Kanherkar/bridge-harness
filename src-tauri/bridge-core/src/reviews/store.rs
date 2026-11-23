@@ -34,6 +34,7 @@ pub const LIST_LIMIT: i64 = 50;
 pub const LEASE_SECONDS: i64 = 45;
 
 pub const RESTARTED: &str = "Bridge restarted during the review";
+pub const ABANDONED: &str = "Abandoned when the review was reclaimed";
 pub const STOPPED_RESPONDING: &str = "The review stopped responding three times";
 
 pub fn install_store(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
@@ -293,31 +294,63 @@ pub fn list(db: &Connection, workspace_id: &str, number: Option<u64>) -> Result<
     Ok(rows)
 }
 
-/// Claim the oldest claimable job for `owner`: a queued job (it moves to
+/// Claim the oldest claimable job for `runner`: a queued job (it moves to
 /// `preparing`) or a posting job nobody holds (it stays `posting`). One
 /// compare-and-swap per candidate, so a racing runner that wins first is
 /// simply skipped.
-pub fn claim_next(db: &Connection, owner: &str, now: DateTime<Utc>) -> Result<Option<JobRow>, BridgeError> {
-    let candidates: Vec<String> = db
+///
+/// Every claim gets its own lease token, `<runner>/<uuid>`, returned as the
+/// job's `lease_owner`. Every later write must present that token, so a
+/// driver whose job was reclaimed, even by its own runner, writes nothing.
+///
+/// Claiming a queued job also settles what an abandoned attempt left behind:
+/// passes still `running` are cancelled, and that attempt's findings and
+/// summary are dropped, so the new attempt starts clean.
+pub fn claim_next(db: &Connection, runner: &str, now: DateTime<Utc>) -> Result<Option<JobRow>, BridgeError> {
+    let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+    let candidates: Vec<(String, String)> = transaction
         .prepare(
-            "SELECT id FROM review_jobs WHERE status IN ('queued','posting') AND lease_owner IS NULL
+            "SELECT id, status FROM review_jobs WHERE status IN ('queued','posting') AND lease_owner IS NULL
              ORDER BY created_at, rowid LIMIT 16",
         )?
-        .query_map([], |row| row.get(0))?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<Result<_, _>>()?;
-    for id in candidates {
-        let changed = db.execute(
+    for (id, status) in candidates {
+        let claim = format!("{runner}/{}", Uuid::new_v4());
+        let changed = transaction.execute(
             "UPDATE review_jobs SET
                 status=CASE WHEN status='queued' THEN 'preparing' ELSE status END,
                 lease_owner=?2, lease_expires_at=?3, attempts=attempts+1, started_at=COALESCE(started_at, ?4)
              WHERE id=?1 AND lease_owner IS NULL AND status IN ('queued','posting')",
-            params![id, owner, lease_until(now), stamp(now)],
+            params![id, claim, lease_until(now), stamp(now)],
         )?;
-        if changed == 1 {
-            return get_job(db, &id);
+        if changed == 0 {
+            continue;
         }
+        if status == "queued" {
+            transaction.execute(
+                "UPDATE review_passes SET status='cancelled', error=?2, finished_at=?3 WHERE job_id=?1 AND status='running'",
+                params![id, ABANDONED, stamp(now)],
+            )?;
+            transaction.execute("DELETE FROM review_findings WHERE job_id=?1", params![id])?;
+            transaction.execute("UPDATE review_jobs SET summary=NULL WHERE id=?1", params![id])?;
+        }
+        let job = get_job(&transaction, &id)?;
+        transaction.commit()?;
+        return Ok(job);
     }
+    transaction.commit()?;
     Ok(None)
+}
+
+/// Whether `claim` still holds the job in `status`.
+fn holds(db: &Connection, id: &str, claim: &str, status: Status) -> Result<bool, BridgeError> {
+    let held: i64 = db.query_row(
+        "SELECT COUNT(*) FROM review_jobs WHERE id=?1 AND lease_owner=?2 AND status=?3",
+        params![id, claim, status.as_str()],
+        |row| row.get(0),
+    )?;
+    Ok(held == 1)
 }
 
 /// Extend the lease. False means the job was cancelled, finished or
@@ -378,11 +411,21 @@ pub fn finish(
     if !state::allowed(job.status, to) {
         return Ok(false);
     }
-    let changed = db.execute(
+    let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+    let changed = transaction.execute(
         "UPDATE review_jobs SET status=?4, error=?5, lease_owner=NULL, lease_expires_at=NULL, finished_at=?6
          WHERE id=?1 AND status=?2 AND (?3 IS NULL OR lease_owner=?3)",
         params![id, job.status.as_str(), owner, to.as_str(), error, stamp(now)],
     )?;
+    if changed == 1 {
+        // Nothing runs for a finished job: a pass still running ends with it.
+        transaction.execute(
+            "UPDATE review_passes SET status='cancelled', error=COALESCE(?2, error), finished_at=?3
+             WHERE job_id=?1 AND status='running'",
+            params![id, error, stamp(now)],
+        )?;
+    }
+    transaction.commit()?;
     Ok(changed == 1)
 }
 
@@ -427,7 +470,7 @@ pub fn set_head(db: &Connection, id: &str, owner: &str, head_sha: &str) -> Resul
     Ok(changed == 1)
 }
 
-pub fn set_summary(db: &Connection, id: &str, summary: &str) -> Result<(), BridgeError> {
+fn set_summary(db: &Connection, id: &str, summary: &str) -> Result<(), BridgeError> {
     db.execute("UPDATE review_jobs SET summary=?2 WHERE id=?1", params![id, summary])?;
     Ok(())
 }
@@ -538,17 +581,103 @@ pub fn retry(db: &Connection, id: &str, now: DateTime<Utc>) -> Result<(JobRow, b
 }
 
 // --- passes -------------------------------------------------------------------
+//
+// The runner only uses the claim-checked writes (`begin_pass`, `complete_pass`,
+// `end_pass`, `finish_review`): each runs in one transaction that first checks
+// the claim still holds the job. The unchecked primitives below them seed
+// fixtures.
 
-pub fn insert_pass(db: &Connection, job_id: &str, slot: u32, harness: &str, now: DateTime<Utc>) -> Result<String, BridgeError> {
+/// Start a pass under `claim`. `None` means the claim no longer holds the job.
+pub fn begin_pass(
+    db: &Connection,
+    job_id: &str,
+    claim: &str,
+    slot: u32,
+    harness: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<String>, BridgeError> {
+    let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+    if !holds(&transaction, job_id, claim, Status::Reviewing)? {
+        return Ok(None);
+    }
+    let attempt = require_job(&transaction, job_id)?.attempts.max(1);
+    let id = insert_pass(&transaction, job_id, slot, attempt, harness, now)?;
+    transaction.commit()?;
+    Ok(Some(id))
+}
+
+/// Store a finished pass and its findings, together, under `claim`. False
+/// means the claim no longer holds the job and nothing was written.
+pub fn complete_pass(
+    db: &Connection,
+    job_id: &str,
+    claim: &str,
+    pass_id: &str,
+    outcome: &PassOutcome,
+    now: DateTime<Utc>,
+) -> Result<bool, BridgeError> {
+    let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+    if !holds(&transaction, job_id, claim, Status::Reviewing)? {
+        return Ok(false);
+    }
+    finish_pass(&transaction, pass_id, ReviewPassStatus::Done, None, Some(outcome), now)?;
+    insert_findings(&transaction, job_id, pass_id, &outcome.findings, now)?;
+    transaction.commit()?;
+    Ok(true)
+}
+
+/// Settle a pass that did not finish (failed or cancelled) under `claim`.
+pub fn end_pass(
+    db: &Connection,
+    job_id: &str,
+    claim: &str,
+    pass_id: &str,
+    status: ReviewPassStatus,
+    error: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<bool, BridgeError> {
+    let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+    if !holds(&transaction, job_id, claim, Status::Reviewing)? {
+        return Ok(false);
+    }
+    finish_pass(&transaction, pass_id, status, error, None, now)?;
+    transaction.commit()?;
+    Ok(true)
+}
+
+/// `reviewing -> drafted` with the summary, in one transaction under
+/// `claim`. `release` gives the lease up (a draft waiting for a person holds
+/// none).
+pub fn finish_review(db: &Connection, job_id: &str, claim: &str, summary: &str, release: bool) -> Result<bool, BridgeError> {
+    let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+    if !holds(&transaction, job_id, claim, Status::Reviewing)? {
+        return Ok(false);
+    }
+    set_summary(&transaction, job_id, summary)?;
+    let moved = advance(&transaction, job_id, claim, Status::Reviewing, Status::Drafted, release)?;
+    transaction.commit()?;
+    Ok(moved)
+}
+
+/// Unchecked: fixtures only. The runner uses [`begin_pass`].
+pub fn insert_pass(
+    db: &Connection,
+    job_id: &str,
+    slot: u32,
+    attempt: u32,
+    harness: &str,
+    now: DateTime<Utc>,
+) -> Result<String, BridgeError> {
     let id = Uuid::new_v4().to_string();
     db.execute(
-        "INSERT INTO review_passes(id, job_id, slot, harness, status, created_at, started_at)
-         VALUES(?1,?2,?3,?4,'running',?5,?5)",
-        params![id, job_id, slot, harness, stamp(now)],
+        "INSERT INTO review_passes(id, job_id, slot, attempt, harness, status, created_at, started_at)
+         VALUES(?1,?2,?3,?4,?5,'running',?6,?6)",
+        params![id, job_id, slot, attempt, harness, stamp(now)],
     )?;
     Ok(id)
 }
 
+/// Unchecked: fixtures only. The runner uses [`complete_pass`] or [`end_pass`].
 pub fn finish_pass(
     db: &Connection,
     pass_id: &str,
@@ -615,6 +744,7 @@ pub fn passes(db: &Connection, job_id: &str) -> Result<Vec<wire::ReviewPass>, Br
 
 // --- findings -----------------------------------------------------------------
 
+/// Unchecked: fixtures only. The runner uses [`complete_pass`].
 pub fn insert_findings(
     db: &Connection,
     job_id: &str,

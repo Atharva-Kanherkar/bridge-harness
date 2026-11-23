@@ -29,7 +29,8 @@ use crate::BridgeError;
 /// The runner's live state in one process.
 pub struct ReviewRuntime {
     steps: RwLock<Arc<dyn ReviewSteps>>,
-    tokens: Mutex<HashMap<String, CancelToken>>,
+    /// job id -> (claim, token) of the claim this process drives.
+    tokens: Mutex<HashMap<String, (String, CancelToken)>>,
     wake: (Mutex<bool>, Condvar),
 }
 
@@ -61,17 +62,28 @@ impl ReviewRuntime {
         *self.steps.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = steps;
     }
 
-    fn register(&self, job_id: &str) -> CancelToken {
+    /// Register the cancel token of a claim this process now drives. A token
+    /// an earlier claim of the same job left (its driver lost the job) is
+    /// tripped, so that driver stops too.
+    fn register(&self, job_id: &str, claim: &str) -> CancelToken {
         let token = CancelToken::new();
-        self.tokens
+        let previous = self
+            .tokens
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(job_id.to_owned(), token.clone());
+            .insert(job_id.to_owned(), (claim.to_owned(), token.clone()));
+        if let Some((_, stale)) = previous {
+            stale.cancel();
+        }
         token
     }
 
-    fn unregister(&self, job_id: &str) {
-        self.tokens.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(job_id);
+    /// Remove a claim's token, unless a newer claim of the job replaced it.
+    fn unregister(&self, job_id: &str, claim: &str) {
+        let mut tokens = self.tokens.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if tokens.get(job_id).is_some_and(|(current, _)| current == claim) {
+            tokens.remove(job_id);
+        }
     }
 
     /// Trip the cancel token of a job this process is driving. False when no
@@ -79,7 +91,7 @@ impl ReviewRuntime {
     pub fn trip(&self, job_id: &str) -> bool {
         let tokens = self.tokens.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         match tokens.get(job_id) {
-            Some(token) => {
+            Some((_, token)) => {
                 token.cancel();
                 true
             }
@@ -185,6 +197,9 @@ impl Runner {
             (reclaimed, usize::from(limit.clamp(1, 4)))
         };
         for id in &reclaimed {
+            // A driver here that held the expired lease is superseded: stop it
+            // now rather than at its next renewal.
+            self.core.reviews.trip(id);
             super::publish(&self.core, id);
         }
         let mut handles = Vec::new();
@@ -194,11 +209,12 @@ impl Runner {
                 store::claim_next(&db, &self.owner, (self.clock)())?
             };
             let Some(job) = claimed else { break };
+            let Some(claim) = job.lease_owner.clone() else { continue };
             super::publish(&self.core, &job.id);
             self.active.fetch_add(1, Ordering::SeqCst);
             let driver = Driver {
                 core: self.core.clone(),
-                owner: self.owner.clone(),
+                claim,
                 config: self.config.clone(),
                 clock: self.clock.clone(),
                 slot: SlotGuard(self.active.clone()),
@@ -243,7 +259,8 @@ impl Drop for SlotGuard {
 
 struct Driver {
     core: Arc<BridgeCore>,
-    owner: String,
+    /// This claim's lease token. Every write presents it.
+    claim: String,
     config: RunnerConfig,
     clock: Clock,
     slot: SlotGuard,
@@ -256,7 +273,7 @@ impl Driver {
 
     fn drive(self, job: JobRow) {
         let job_id = job.id.clone();
-        let token = self.core.reviews.register(&job_id);
+        let token = self.core.reviews.register(&job_id, &self.claim);
         let finished = Arc::new(AtomicBool::new(false));
         let heartbeat = self.heartbeat(&job_id, &token, &finished);
         let outcome = catch_unwind(AssertUnwindSafe(|| self.run(job, &token))).unwrap_or_else(|panic| {
@@ -272,7 +289,7 @@ impl Driver {
             eprintln!("[reviews] the lease heartbeat of {job_id} panicked");
         }
         self.settle(&job_id, outcome);
-        self.core.reviews.unregister(&job_id);
+        self.core.reviews.unregister(&job_id, &self.claim);
         drop(self.slot);
         self.core.reviews.wake();
     }
@@ -281,7 +298,7 @@ impl Driver {
     /// someone else owns the job now, or nobody should.
     fn heartbeat(&self, job_id: &str, token: &CancelToken, finished: &Arc<AtomicBool>) -> Option<JoinHandle<()>> {
         let core = self.core.clone();
-        let owner = self.owner.clone();
+        let claim = self.claim.clone();
         let every = self.config.renew_every;
         let clock = self.clock.clone();
         let token = token.clone();
@@ -304,7 +321,7 @@ impl Driver {
                 }
                 let renewed = {
                     let db = super::lock_db(&core);
-                    store::renew(&db, &job_id, &owner, clock()).unwrap_or(false)
+                    store::renew(&db, &job_id, &claim, clock()).unwrap_or(false)
                 };
                 if !renewed {
                     token.cancel();
@@ -321,16 +338,27 @@ impl Driver {
             let prepared = self.retrying(token, || steps.prepare(&job, token))?;
             if !prepared.head_sha.is_empty() && prepared.head_sha != job.head_sha {
                 let db = super::lock_db(&self.core);
-                if store::set_head(&db, &job.id, &self.owner, &prepared.head_sha).map_err(fatal)? {
+                if store::set_head(&db, &job.id, &self.claim, &prepared.head_sha).map_err(fatal)? {
                     job.head_sha = prepared.head_sha.clone();
                 }
             }
             self.advance(&job, Status::Preparing, Status::Reviewing, false)?;
-            self.review(&job, &prepared, steps.as_ref(), token)?;
-            // Posting reads the stored findings, not the worktree.
-            steps.cleanup(&job.id);
+            let summary = self.review(&job, &prepared, steps.as_ref(), token)?;
             let auto = job.post_mode == ReviewPostMode::Auto;
-            self.advance(&job, Status::Reviewing, Status::Drafted, !auto)?;
+            let drafted = {
+                let db = super::lock_db(&self.core);
+                store::finish_review(&db, &job.id, &self.claim, &summary, !auto).map_err(fatal)?
+            };
+            if !drafted {
+                // Cancelled or reclaimed: the job, and its worktree, belong to
+                // someone else now.
+                return Err(StepError::Cancelled);
+            }
+            super::publish(&self.core, &job.id);
+            // Only the claim that drafted the job reaches this, so a superseded
+            // driver never removes a replacement's worktree. Posting reads the
+            // stored findings, not the worktree.
+            steps.cleanup(&job.id);
             if !auto {
                 return Ok(());
             }
@@ -342,7 +370,7 @@ impl Driver {
     fn advance(&self, job: &JobRow, from: Status, to: Status, release: bool) -> Result<(), StepError> {
         let moved = {
             let db = super::lock_db(&self.core);
-            store::advance(&db, &job.id, &self.owner, from, to, release).map_err(fatal)?
+            store::advance(&db, &job.id, &self.claim, from, to, release).map_err(fatal)?
         };
         if !moved {
             // Cancelled or reclaimed: the job is not ours to move any more.
@@ -375,8 +403,10 @@ impl Driver {
 
     /// One pass per requested harness. A harness that cannot run hands its
     /// pass to the next fallback harness not tried yet. The job goes on while
-    /// at least one pass finished.
-    fn review(&self, job: &JobRow, prepared: &Prepared, steps: &dyn ReviewSteps, token: &CancelToken) -> Result<(), StepError> {
+    /// at least one pass finished. Every write is checked against this claim,
+    /// so a driver that lost the job stores nothing, even a pass it finished.
+    /// Returns the summary.
+    fn review(&self, job: &JobRow, prepared: &Prepared, steps: &dyn ReviewSteps, token: &CancelToken) -> Result<String, StepError> {
         let fallbacks = {
             let db = super::lock_db(&self.core);
             super::settings::load(&db).map(|settings| settings.fallback_harnesses).unwrap_or_default()
@@ -391,19 +421,23 @@ impl Driver {
                 if token.is_cancelled() {
                     return Err(StepError::Cancelled);
                 }
-                let pass_id = {
+                let begun = {
                     let db = super::lock_db(&self.core);
-                    store::insert_pass(&db, &job.id, slot as u32, &harness, self.now()).map_err(fatal)?
+                    store::begin_pass(&db, &job.id, &self.claim, slot as u32, &harness, self.now()).map_err(fatal)?
                 };
+                let Some(pass_id) = begun else { return Err(StepError::Cancelled) };
                 super::publish(&self.core, &job.id);
                 let request = PassRequest { job, prepared, pass_id: &pass_id, harness: &harness };
                 let result = self.retrying(token, || steps.review(request, token));
-                let db = super::lock_db(&self.core);
-                match result {
+                let failure = match result {
                     Ok(outcome) => {
-                        store::finish_pass(&db, &pass_id, ReviewPassStatus::Done, None, Some(&outcome), self.now()).map_err(fatal)?;
-                        store::insert_findings(&db, &job.id, &pass_id, &outcome.findings, self.now()).map_err(fatal)?;
-                        drop(db);
+                        let stored = {
+                            let db = super::lock_db(&self.core);
+                            store::complete_pass(&db, &job.id, &self.claim, &pass_id, &outcome, self.now()).map_err(fatal)?
+                        };
+                        if !stored {
+                            return Err(StepError::Cancelled);
+                        }
                         super::publish(&self.core, &job.id);
                         finished += 1;
                         if !outcome.summary.trim().is_empty() {
@@ -411,33 +445,34 @@ impl Driver {
                         }
                         break;
                     }
-                    Err(StepError::Cancelled) => {
-                        store::finish_pass(&db, &pass_id, ReviewPassStatus::Cancelled, None, None, self.now()).map_err(fatal)?;
-                        drop(db);
-                        super::publish(&self.core, &job.id);
-                        return Err(StepError::Cancelled);
-                    }
-                    Err(StepError::Harness(message)) => {
-                        store::finish_pass(&db, &pass_id, ReviewPassStatus::Failed, Some(&message), None, self.now()).map_err(fatal)?;
-                        drop(db);
-                        super::publish(&self.core, &job.id);
-                        match fallbacks.iter().find(|candidate| !tried.contains(candidate)) {
-                            Some(next) => {
-                                tried.push(next.clone());
-                                harness = next.clone();
-                            }
-                            None => {
-                                last_error = Some(StepError::Fatal(format!("{harness} could not review: {message}")));
-                                break;
-                            }
+                    Err(failure) => failure,
+                };
+                let (status, error) = match &failure {
+                    StepError::Cancelled => (ReviewPassStatus::Cancelled, None),
+                    other => (ReviewPassStatus::Failed, Some(other.message())),
+                };
+                let ended = {
+                    let db = super::lock_db(&self.core);
+                    store::end_pass(&db, &job.id, &self.claim, &pass_id, status, error.as_deref(), self.now()).map_err(fatal)?
+                };
+                super::publish(&self.core, &job.id);
+                if !ended {
+                    return Err(StepError::Cancelled);
+                }
+                match failure {
+                    StepError::Cancelled => return Err(StepError::Cancelled),
+                    StepError::Harness(message) => match fallbacks.iter().find(|candidate| !tried.contains(candidate)) {
+                        Some(next) => {
+                            tried.push(next.clone());
+                            harness = next.clone();
                         }
-                    }
-                    Err(error) => {
-                        store::finish_pass(&db, &pass_id, ReviewPassStatus::Failed, Some(&error.message()), None, self.now())
-                            .map_err(fatal)?;
-                        drop(db);
-                        super::publish(&self.core, &job.id);
-                        last_error = Some(error);
+                        None => {
+                            last_error = Some(StepError::Fatal(format!("{harness} could not review: {message}")));
+                            break;
+                        }
+                    },
+                    other => {
+                        last_error = Some(other);
                         break;
                     }
                 }
@@ -446,9 +481,7 @@ impl Driver {
         if finished == 0 {
             return Err(last_error.unwrap_or_else(|| StepError::Fatal("No reviewer finished".into())));
         }
-        let db = super::lock_db(&self.core);
-        store::set_summary(&db, &job.id, &summaries.join("\n\n")).map_err(fatal)?;
-        Ok(())
+        Ok(summaries.join("\n\n"))
     }
 
     /// Post, after looking for a review this job already posted.
@@ -459,11 +492,12 @@ impl Driver {
         })?;
         let marked = {
             let db = super::lock_db(&self.core);
-            store::mark_posted(&db, &job.id, &self.owner, &posted.review_id, &posted.url, self.now()).map_err(fatal)?
+            store::mark_posted(&db, &job.id, &self.claim, &posted.review_id, &posted.url, self.now()).map_err(fatal)?
         };
         if !marked {
             return Err(StepError::Cancelled);
         }
+        super::publish(&self.core, &job.id);
         Ok(())
     }
 
@@ -475,15 +509,15 @@ impl Driver {
             let db = super::lock_db(&self.core);
             match &outcome {
                 // Cancelled by a person (already written) or the lease was
-                // lost (another runner owns the job): nothing to write.
+                // lost (another claim owns the job): nothing to write.
                 Ok(()) | Err(StepError::Cancelled) => Ok(()),
                 Err(error) => store::get_job(&db, job_id).and_then(|job| match job {
                     // A post a person asked for failed: back to the draft,
                     // where they can post again.
                     Some(job) if job.status == Status::Posting && job.post_mode == ReviewPostMode::Draft => {
-                        store::return_to_draft(&db, job_id, &self.owner, &error.message()).map(|_| ())
+                        store::return_to_draft(&db, job_id, &self.claim, &error.message()).map(|_| ())
                     }
-                    _ => store::finish(&db, job_id, Some(&self.owner), Status::Failed, Some(&error.message()), now).map(|_| ()),
+                    _ => store::finish(&db, job_id, Some(&self.claim), Status::Failed, Some(&error.message()), now).map(|_| ()),
                 }),
             }
         };

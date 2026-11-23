@@ -25,6 +25,9 @@ struct Script {
     review: Mutex<HashMap<String, VecDeque<Result<PassOutcome, StepError>>>>,
     post: Mutex<VecDeque<PostPlan>>,
     gate_closed: AtomicBool,
+    /// Reviews ignore cancellation while waiting at the gate, like a harness
+    /// that finishes its turn after Bridge stopped listening.
+    stubborn: AtomicBool,
     panic_on_prepare: AtomicBool,
     /// Review bodies on the simulated pull request.
     github: Mutex<Vec<String>>,
@@ -89,6 +92,10 @@ impl ReviewSteps for Script {
     fn review(&self, request: PassRequest<'_>, cancel: &CancelToken) -> Result<PassOutcome, StepError> {
         self.call(format!("review:{}:{}", request.job.id, request.harness));
         while self.gate_closed.load(Ordering::SeqCst) {
+            if self.stubborn.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
             if cancel.sleep(Duration::from_millis(5)) {
                 self.call(format!("review-stopped:{}", request.job.id));
                 return Err(StepError::Cancelled);
@@ -561,4 +568,49 @@ fn start_resolves_harnesses_from_the_request_then_the_settings() {
     }
     let unknown_workspace = wire::StartReviewParams { workspace_id: "nope".into(), ..params(None) };
     assert!(crate::reviews::start_with(&core, &unknown_workspace, head()).is_err());
+}
+
+#[test]
+fn a_superseded_driver_cannot_store_its_pass_or_clean_up_the_replacement() {
+    let (_scratch, core, script) = fixture();
+    script.close_gate();
+    script.stubborn.store(true, Ordering::SeqCst);
+    let id = queue(&core, 1, &["claude"]);
+    let start = Utc::now();
+
+    // The first driver claims the job and stalls in its review past the lease.
+    let first = Runner::with(core.clone(), fast(), Arc::new(Utc::now));
+    let stalled = first.tick().unwrap();
+    wait_for(&core, &id, Status::Reviewing);
+
+    // Another runner, 50 s later by its clock, reclaims and claims the job.
+    let later = start + chrono::Duration::seconds(store::LEASE_SECONDS + 5);
+    let second = Runner::with(core.clone(), fast(), Arc::new(move || later));
+    let replacement = second.tick().unwrap();
+    assert_eq!(replacement.len(), 1, "the expired job is claimed again");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while script.calls("review:").len() < 2 {
+        assert!(Instant::now() < deadline, "the replacement never started its review");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    // Both reviews finish. Only the replacement's may count.
+    script.open_gate();
+    for handle in stalled.into_iter().chain(replacement) {
+        handle.join().unwrap();
+    }
+    let detail = crate::reviews::get(&core, &id).unwrap();
+    assert_eq!(detail.job.status, Status::Drafted);
+    assert_eq!(detail.findings.len(), 1, "one requested pass, one finding: the stale result was not stored");
+    assert_eq!(detail.job.finding_counts.total, 1);
+    let done: Vec<_> = detail.passes.iter().filter(|pass| pass.status == ReviewPassStatus::Done).collect();
+    assert_eq!(done.len(), 1);
+    assert_eq!(done[0].attempt, 2, "the stored pass is the replacement's");
+    assert_eq!(detail.findings[0].pass_id, done[0].id);
+    assert_eq!(
+        script.calls(&format!("cleanup:{id}")).len(),
+        1,
+        "only the claim that drafted the job cleans up; the stale driver removed nothing"
+    );
+    assert_eq!(first.active() + second.active(), 0);
 }
