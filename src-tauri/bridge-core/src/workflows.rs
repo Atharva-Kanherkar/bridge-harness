@@ -1047,6 +1047,27 @@ mod tests {
     }
 
     #[test]
+    fn options_offer_worktree_jobs_only_where_validation_accepts_them() {
+        let (_scratch, core) = test_support::core();
+        let options = crate::api::workflow_harness_options(&core);
+        let claude = options.iter().find(|harness| harness.id == "claude").unwrap();
+        assert!(claude.connectors_allowed && claude.worktree_allowed);
+        let codex = options.iter().find(|harness| harness.id == "codex").unwrap();
+        assert!(!codex.worktree_allowed, "save refuses a Codex worktree workflow, so it is not offered");
+        assert!(codex.connectors_reason.as_deref().is_some_and(|reason| !reason.is_empty()), "with the gate's reason");
+        let mut job = definition();
+        job.project_id = Some("p".into());
+        job.files = wire::WorkflowFiles::Worktree;
+        job.grants.clear();
+        for harness in &options {
+            job.steps[0].harness = wire::HarnessId::parse(&harness.id).unwrap();
+            job.steps[0].model = harness.models.first().map(|model| model.id.clone()).unwrap_or_else(|| "m".into());
+            let context = ValidationContext { adapters: vec![AdapterFacts { id: harness.id.clone(), models: vec![] }], servers: BTreeSet::new() };
+            assert_eq!(validate(&job, &context).is_ok(), harness.worktree_allowed, "{}", harness.id);
+        }
+    }
+
+    #[test]
     fn every_mutation_publishes_workflows_changed() {
         let (_scratch, core) = test_support::core();
         let mut events = core.events.subscribe();

@@ -7487,37 +7487,7 @@ pub fn set_workflow_enabled(core: &Arc<BridgeCore>, params: &wire::SetWorkflowEn
 /// configuration holds. Discovery, not authority: a run's scope is still
 /// checked against the live configuration when it starts.
 pub fn workflow_options(core: &Arc<BridgeCore>) -> wire::WorkflowOptions {
-    let descriptors = core.adapter_registry.descriptors();
-    let harnesses: Vec<wire::WorkflowHarnessOption> = descriptors
-        .into_iter()
-        .map(|descriptor| {
-            let gate = crate::briefing_policy::adapter_may_brief(&descriptor.id);
-            let default_model = core
-                .adapter_registry
-                .resolve_model(&descriptor.id, CapabilityTier::Fast, None)
-                .ok()
-                .map(|resolution| resolution.actual_model);
-            wire::WorkflowHarnessOption {
-                connectors_allowed: gate.is_ok(),
-                connectors_reason: gate.err().map(|refusal| refusal.reason()),
-                worktree_allowed: true,
-                default_model,
-                models: descriptor
-                    .models
-                    .iter()
-                    .map(|model| wire::WorkBriefingModel {
-                        id: model.id.clone(),
-                        label: model.label.clone(),
-                        tier: model.tier.as_str().to_owned(),
-                        default_for_briefing: model.tier == CapabilityTier::Fast && model.default_for_tier,
-                    })
-                    .collect(),
-                id: descriptor.id,
-                label: descriptor.label,
-                available: descriptor.available,
-            }
-        })
-        .collect();
+    let harnesses = workflow_harness_options(core);
     let claude_may_hold_connectors = harnesses
         .iter()
         .any(|harness| harness.id == "claude" && harness.connectors_allowed);
@@ -7538,6 +7508,45 @@ pub fn workflow_options(core: &Arc<BridgeCore>) -> wire::WorkflowOptions {
         Vec::new()
     };
     wire::WorkflowOptions { harnesses, servers }
+}
+
+/// What each registered harness may run as a workflow, by the same gate
+/// validation applies.
+pub(crate) fn workflow_harness_options(core: &Arc<BridgeCore>) -> Vec<wire::WorkflowHarnessOption> {
+    core.adapter_registry.descriptors()
+        .into_iter()
+        .map(|descriptor| {
+            let gate = crate::briefing_policy::adapter_may_brief(&descriptor.id);
+            let default_model = core
+                .adapter_registry
+                .resolve_model(&descriptor.id, CapabilityTier::Fast, None)
+                .ok()
+                .map(|resolution| resolution.actual_model);
+            wire::WorkflowHarnessOption {
+                connectors_allowed: gate.is_ok(),
+                // Validation refuses every workflow, worktree jobs included,
+                // on an adapter that cannot hold its run to exact tools (a
+                // worktree run must still be kept from MCP). Offer what save
+                // accepts; `connectors_reason` says why not.
+                worktree_allowed: gate.is_ok(),
+                connectors_reason: gate.err().map(|refusal| refusal.reason()),
+                default_model,
+                models: descriptor
+                    .models
+                    .iter()
+                    .map(|model| wire::WorkBriefingModel {
+                        id: model.id.clone(),
+                        label: model.label.clone(),
+                        tier: model.tier.as_str().to_owned(),
+                        default_for_briefing: model.tier == CapabilityTier::Fast && model.default_for_tier,
+                    })
+                    .collect(),
+                id: descriptor.id,
+                label: descriptor.label,
+                available: descriptor.available,
+            }
+        })
+        .collect()
 }
 
 /// Run now. The request id makes a double click one run.
