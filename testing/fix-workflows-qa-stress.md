@@ -16,6 +16,7 @@ it. Phase 2 is out of scope.
 | D5 | SIGKILL of the daemon mid-run, restart: after 35 s the run still read `running`; Run now returned it with `created: false`. | At boot, before its first tick, the maintenance thread settles every run leased by a previous owner as `failed / interrupted` with its recorded usage. A parked quota run (no lease) stays parked; a quota run caught mid-recheck has its stale lease released. Run now works at once. This amends F11 and E3: a data directory has exactly one owner (`bridge_core::ownership`), so a lease present at boot cannot belong to a live worker. The 15-minute lease still covers a stuck worker inside one process. |
 | D6 | `workflows/workflow_options` reports `worktreeAllowed: true` for Codex, Cursor, Grok, OpenCode and Pi; saving such a definition is refused. | `worktreeAllowed` is the same gate validation applies. The editor shows that gate's reason for a disabled harness on a worktree job. |
 | D7 | The run view loads `replaySessionEvents(sessionId, 0, 500)`: a run past 500 durable events never shows its pending approval card or its last messages. | The run view pages through every event. |
+| D8 | Found in review, not live (no camelCase connector is signed in here): the sidecar splits `mcp__<server>__<tool>` only when the tool is all lowercase, so on a granted Atlassian server `createJiraIssue` and `getJiraIssue` are denied as "not a connector this workflow may use", and Always allow on such a card is refused as "not an exact tool identity". | A tool with any non-empty name identifies its server. Its words are never read as a verb unless it is all lowercase, so it is a write: it asks on a `write: "ask"` grant and is refused by name otherwise. Always allow records it. Briefing scoped reads and approved actions are unchanged. |
 
 ## Unit Tests
 
@@ -29,6 +30,7 @@ it. Phase 2 is out of scope.
 - `workflows`/`api` (Rust): deleting a workflow with an active run cancels that run before deletion and returns its session for stopping (D4).
 - `workflow_trigger` (Rust): boot settlement fails `queued`, `running` and `waiting_approval` runs that hold a lease with `interrupted`, sums their usage, releases a leased `waiting_quota` run back to parked, leaves an unleased parked run and terminal runs alone, and publishes each change once; a manual claim then succeeds (D5).
 - `api::workflow_options` (Rust): `worktreeAllowed` is false with the gate's reason for every adapter `adapter_may_brief` refuses (D6).
+- Sidecar and `workflows` (Rust): on a granted `write: "ask"` server a camelCase tool asks; on a read-only grant it is refused by name; Always allow validates it; `tool_class` calls it a write; a briefing still never reads it as a scoped read (D8).
 - Frontend: `harnessRefusal` uses the gate's reason for a worktree job (D6); `WorkflowRunView` shows the pending card of a run whose approval is event 600 (D7).
 
 ## Integration / Functional Tests
