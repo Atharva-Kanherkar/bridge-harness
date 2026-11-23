@@ -1313,6 +1313,8 @@ mod orca {
     const REPO: &str = "6e1ad727-cfd9-4417-b1dc-bdcb536e895f";
     /// The Claude Code session a terminal worker ran, captured by Orca.
     const WORKER: &str = "33333333-3333-4333-8333-333333333333";
+    /// A Claude Code chat Orca launched with its own account folder.
+    const ACCOUNT: &str = "66666666-6666-4666-8666-666666666666";
 
     struct Home {
         orca: PathBuf,
@@ -1329,7 +1331,10 @@ mod orca {
     /// - an OpenCode chat whose session is in OpenCode's store, renamed in Orca;
     /// - a coordinator OpenCode chat whose session is gone (Orca's copy), that
     ///   led a run with a Claude Code terminal worker whose transcript is there;
-    /// - a Claude Code chat that never started, and one with Pi.
+    /// - a Claude Code chat that never started, one with Pi, and one on
+    ///   another machine;
+    /// - a Claude Code chat launched with its own account folder, whose
+    ///   transcript is only there.
     fn home(root: &Path) -> Home {
         let home = root.canonicalize().unwrap();
         let main = repo(&home.join("code"), "shop");
@@ -1341,6 +1346,8 @@ mod orca {
         store.row("ses_a", 1, "user", &crate::opencode_import::fixture::said("what is this repo?"));
         store.row("ses_a", 2, "assistant", &crate::opencode_import::fixture::replied("A shop."));
         write(&home.join(format!(".claude/projects/-shop-contrib/{WORKER}.jsonl")), &session(WORKER, &contrib.to_string_lossy(), "write CONTRIBUTING.md"));
+        let account = home.join("orca-accounts/work/claude");
+        write(&account.join(format!("projects/-shop-contrib/{ACCOUNT}.jsonl")), &session(ACCOUNT, &contrib.to_string_lossy(), "fix the flaky test"));
         let orca = home.join("Library/Application Support/orca");
         let fixture = Fixture::at(&orca);
         fixture.repos("local-default", &[(REPO, &main)]);
@@ -1373,6 +1380,16 @@ mod orca {
         fixture.chat(&ChatRow { id: "chat-hi", agent: "claude", workspace: worktree_id(REPO, &contrib), title: Some("Say hi"), ..ChatRow::default() });
         fixture.items("chat-hi", "e1", &[message("u1", "user", "Say hi", 1_795_419_429_819)]);
         fixture.chat(&ChatRow { id: "chat-pi", agent: "pi", workspace: worktree_id(REPO, &main), title: Some("Pi"), ..ChatRow::default() });
+        fixture.chat(&ChatRow { id: "chat-ssh", agent: "claude", host: "ssh:box", workspace: worktree_id(REPO, &main), title: Some("Remote"), ..ChatRow::default() });
+        fixture.chat(&ChatRow {
+            id: "chat-account",
+            agent: "claude",
+            workspace: worktree_id(REPO, &contrib),
+            title: Some("Fix the flaky test"),
+            handles: vec![Handle::Claude(ACCOUNT)],
+            account_home: Some(("CLAUDE_CONFIG_DIR", &account)),
+            ..ChatRow::default()
+        });
         fixture.run("run_1", Some("chat-lead"));
         fixture.terminal_worker("run_1", "ctx_1", "claude", Some(WORKER));
         fixture.terminal_worker("run_1", "ctx_2", "opencode", None);
@@ -1430,12 +1447,15 @@ mod orca {
         let job = run_orca(&core, &home);
 
         assert_eq!(job.status, "done", "{job:?}");
-        assert_eq!((job.total, job.imported, job.failed, job.workspaces), (4, 4, 0, 2), "{job:?}");
+        // Three read natively and two of Orca's copies: five, not six.
+        assert_eq!((job.total, job.imported, job.failed, job.workspaces), (5, 5, 0, 2), "{job:?}");
         let path = |path: &Path| Some(path.to_string_lossy().into_owned());
         let lead = "Orca LICENSE Orchestration".to_owned();
         assert_eq!(
             chats(&core),
             vec![
+                // Read from the account folder Orca launched it with, given Orca's title.
+                ("Fix the flaky test".into(), "claude".into(), path(&home.contrib), Some(format!("claude:{ACCOUNT}")), None),
                 // Orca's copy, in the main checkout: filed under its project.
                 (lead.clone(), "opencode".into(), path(&home.main), Some("opencode:ses_gone".into()), None),
                 ("Say hi".into(), "claude".into(), path(&home.contrib), None, None),
@@ -1447,12 +1467,13 @@ mod orca {
         );
         let texts: Vec<(&str, u64)> = job.not_carried.iter().map(|item| (item.text.as_str(), item.count)).collect();
         assert!(texts.contains(&("chats with pi, which Bridge does not run", 1)), "{texts:?}");
+        assert!(texts.contains(&("chats on another machine (SSH or WSL)", 1)), "{texts:?}");
         assert!(texts.iter().any(|(text, count)| text.starts_with("workers' place") && *count == 1), "{texts:?}");
         assert!(home.login.join("README.md").is_file() && home.contrib.join("README.md").is_file(), "Orca's folders are untouched");
 
         let again = run_orca(&core, &home);
-        assert_eq!((again.imported, again.already_in_bridge, again.workspaces, again.failed), (0, 4, 0, 0), "{again:?}");
-        assert_eq!(chats(&core).len(), 4);
+        assert_eq!((again.imported, again.already_in_bridge, again.workspaces, again.failed), (0, 5, 0, 0), "{again:?}");
+        assert_eq!(chats(&core).len(), 5);
     }
 
     #[test]
@@ -1462,12 +1483,12 @@ mod orca {
         let scratch = tempfile::tempdir().unwrap();
         let core = core(scratch.path());
         let job = run_orca(&core, &home);
-        assert_eq!(job.imported, 4, "{job:?}");
+        assert_eq!(job.imported, 5, "{job:?}");
         let opencode = super::opencode::run_opencode(&core, &home.opencode);
         assert_eq!((opencode.imported, opencode.already_in_bridge), (0, 1), "{opencode:?}");
         let claude = run_job(&core, &home.claude);
         assert_eq!((claude.imported, claude.already_in_bridge), (0, 1), "{claude:?}");
-        assert_eq!(chats(&core).len(), 4);
+        assert_eq!(chats(&core).len(), 5);
     }
 
     #[test]
@@ -1479,7 +1500,7 @@ mod orca {
         run_job(&core, &home.claude);
         super::opencode::run_opencode(&core, &home.opencode);
         let job = run_orca(&core, &home);
-        assert_eq!((job.imported, job.already_in_bridge), (2, 2), "{job:?}");
+        assert_eq!((job.imported, job.already_in_bridge), (3, 2), "{job:?}");
         let chats = chats(&core);
         assert!(chats.iter().any(|chat| chat.0 == "What is shop?"), "{chats:?}");
         let worker = chats.iter().find(|chat| chat.3.as_deref() == Some(&format!("claude:{WORKER}"))).unwrap();
