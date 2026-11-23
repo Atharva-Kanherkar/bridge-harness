@@ -15,6 +15,7 @@ use crate::import_continue::{folders, SignInHomes};
 use crate::provider_accounts::HostHomes;
 use crate::opencode_import::{self, OpenCodeImporter};
 use crate::orca_import::{self, OrcaImporter};
+use crate::superset_import::{self, SupersetImporter};
 use crate::t3code_import::{self, T3CodeImporter};
 use crate::BridgeError;
 use crate::events::CoreEvent;
@@ -121,6 +122,10 @@ pub(crate) enum Source {
     /// Worktrees, chats and multi-agent runs: see [`run_orca`]. Its own
     /// work items are the chats read from Orca's copy.
     Orca,
+    /// Workspaces, chats, terminal agent sessions and agent configurations:
+    /// see [`run_superset`]. Its own work items are the chats read from
+    /// Superset's copy and its agent configurations.
+    Superset,
 }
 
 impl Source {
@@ -132,6 +137,7 @@ impl Source {
             crate::conductor_import::PROVIDER => Some(Self::Conductor),
             t3code_import::PROVIDER => Some(Self::T3Code),
             orca_import::PROVIDER => Some(Self::Orca),
+            superset_import::PROVIDER => Some(Self::Superset),
             _ => None,
         }
     }
@@ -143,6 +149,7 @@ impl Source {
             Self::Conductor => "Conductor",
             Self::T3Code => "T3 Code",
             Self::Orca => "Orca",
+            Self::Superset => "Superset",
         }
     }
     /// The folders this machine keeps the tool's data in, and each account
@@ -186,6 +193,12 @@ impl Source {
                 let paths = orca_import::Paths::from_env(&host.home);
                 if paths.installed() { vec![paths.base] } else { Vec::new() }
             }
+            // Superset's app homes (`$SUPERSET_HOME_DIR`, else `~/.paradev`
+            // and the older `~/.superset`).
+            Self::Superset => {
+                let paths = superset_import::Paths::from_env(&host.home);
+                if paths.installed() { paths.homes } else { Vec::new() }
+            }
         }
     }
     fn work(self, roots: &[PathBuf]) -> Result<claude_import::JobWork, BridgeError> {
@@ -193,7 +206,7 @@ impl Source {
             Self::Claude => claude_import::job_work(roots),
             Self::Codex => codex_import::job_work(roots),
             Self::OpenCode => opencode_import::job_work(roots),
-            Self::Conductor | Self::T3Code | Self::Orca => Ok(claude_import::JobWork { roots: roots.to_vec(), artifacts: Vec::new(), left_out: 0 }),
+            Self::Conductor | Self::T3Code | Self::Orca | Self::Superset => Ok(claude_import::JobWork { roots: roots.to_vec(), artifacts: Vec::new(), left_out: 0 }),
         }
     }
     fn key(self, artifact: &DiscoveredArtifact) -> String {
@@ -201,7 +214,7 @@ impl Source {
             Self::Claude => claude_import::job_key(artifact),
             Self::Codex => codex_import::job_key(artifact),
             Self::OpenCode => opencode_import::job_key(artifact),
-            Self::Conductor | Self::T3Code | Self::Orca => artifact.canonical_source_ref.clone(),
+            Self::Conductor | Self::T3Code | Self::Orca | Self::Superset => artifact.canonical_source_ref.clone(),
         }
     }
     /// The folder a chat ran in, for "now importing": the listing's when it
@@ -215,7 +228,7 @@ impl Source {
         match self {
             Self::Claude => claude_import::transcript_folder(path),
             Self::Codex => codex_import::transcript_folder(path),
-            Self::OpenCode | Self::Conductor | Self::T3Code | Self::Orca => None,
+            Self::OpenCode | Self::Conductor | Self::T3Code | Self::Orca | Self::Superset => None,
         }
     }
     fn preview(self, roots: &[PathBuf], artifacts: Vec<DiscoveredArtifact>) -> Result<Vec<ImportCandidate>, BridgeError> {
@@ -229,6 +242,7 @@ impl Source {
             Self::Conductor => Ok(Vec::new()),
             Self::T3Code => T3CodeImporter.preview(&t3code_import::job_discovery(roots, artifacts), &selection),
             Self::Orca => OrcaImporter.preview(&orca_import::job_discovery(roots, artifacts), &selection),
+            Self::Superset => SupersetImporter.preview(&superset_import::job_discovery(roots, artifacts), &selection),
         }
     }
     fn normalize(self, candidate: ImportCandidate) -> Result<crate::external_import::NormalizedImportCandidate, BridgeError> {
@@ -239,6 +253,7 @@ impl Source {
             Self::Conductor => Err(BridgeError::Invalid(format!("Conductor has no chats of its own to import: {}", candidate.candidate_id))),
             Self::T3Code => T3CodeImporter.normalize(candidate),
             Self::Orca => OrcaImporter.normalize(candidate),
+            Self::Superset => SupersetImporter.normalize(candidate),
         }
     }
 }
@@ -361,6 +376,8 @@ pub(crate) fn run_with(
         run_t3code(core, &mut job, roots, agent_roots)
     } else if source == Source::Orca {
         run_orca(core, &mut job, roots, agent_roots)
+    } else if source == Source::Superset {
+        run_superset(core, &mut job, roots, agent_roots)
     } else {
         Runner { core, source, job: &mut job, last_publish: None }.run(roots, cursor)
     };
@@ -421,7 +438,7 @@ fn native_id(source: Source, artifact: &DiscoveredArtifact) -> Option<String> {
         Source::Claude => path.file_stem().map(|stem| stem.to_string_lossy().into_owned()),
         Source::Codex => codex_import::rollout_thread_id(path),
         Source::OpenCode => opencode_import::parse_source_ref(&artifact.canonical_source_ref).map(|(_, session)| session),
-        Source::Conductor | Source::T3Code | Source::Orca => None,
+        Source::Conductor | Source::T3Code | Source::Orca | Source::Superset => None,
     }
 }
 
@@ -430,7 +447,7 @@ fn harness_of(source: Source) -> Option<&'static str> {
         Source::Claude => Some("claude"),
         Source::Codex => Some("codex"),
         Source::OpenCode => Some("opencode"),
-        Source::Conductor | Source::T3Code | Source::Orca => None,
+        Source::Conductor | Source::T3Code | Source::Orca | Source::Superset => None,
     }
 }
 
@@ -648,6 +665,110 @@ fn run_orca(
         not_carried(job, note, 1);
     }
     if report.imported_any() || overlay.titled + overlay.archived + overlay.linked > 0 {
+        core.events.publish(CoreEvent::StateChanged);
+    }
+    Ok(())
+}
+
+/// Superset's import. Its worktree workspaces are adopted first, so the
+/// chats land under them. Each chat and terminal agent session is read by its
+/// agent's importer when the session's file is in Bridge's folders for that
+/// agent (or the Claude Code folder or Codex home Superset used), else a chat
+/// comes from Superset's own copy. The agent configurations you made come
+/// over as inert setup. Then Superset's titles and archived state go on the
+/// chats.
+fn run_superset(
+    core: &Arc<BridgeCore>,
+    job: &mut wire::ImportJob,
+    roots: &[PathBuf],
+    agent_roots: &dyn Fn(Source) -> Vec<PathBuf>,
+) -> Result<(), BridgeError> {
+    if roots.is_empty() {
+        return Err(BridgeError::Invalid("Superset was not found on this Mac".into()));
+    }
+    let paths = superset_import::Paths { homes: roots.to_vec() };
+    let store = superset_import::read(&paths).map_err(BridgeError::Invalid)?;
+    let report = crate::import_worktrees::adopt(&core.db, superset_import::worktree_candidates(&store))?;
+    job.workspaces = report.adopted.len() as u64;
+    for (reason, count) in &report.left_out {
+        let text = match reason {
+            crate::import_worktrees::Reason::ArchivedInTool => "workspaces archived in Superset",
+            other => other.text(),
+        };
+        not_carried(job, text, *count as u64);
+    }
+    let natives = superset_import::wanted(&store);
+    let mut wanted: HashMap<&'static str, HashSet<&str>> = HashMap::new();
+    for native in &natives {
+        wanted.entry(native.harness).or_default().insert(native.id.as_str());
+    }
+    let extra: Vec<(&'static str, PathBuf)> = superset_import::extra_roots(&store).into_iter().filter(|(_, root)| root.is_dir()).collect();
+    let roots_with_extra = |source: Source| -> Vec<PathBuf> {
+        let mut out = agent_roots(source);
+        for (_, root) in extra.iter().filter(|(harness, _)| Some(*harness) == harness_of(source)) {
+            if !out.contains(root) {
+                out.push(root.clone());
+            }
+        }
+        out
+    };
+    let (found, native_work) = list_native_sessions(job, &wanted, &roots_with_extra);
+    let found: HashSet<superset_import::store::NativeSession> =
+        found.into_iter().map(|(harness, id)| superset_import::store::NativeSession { harness, id }).collect();
+    let plan = superset_import::plan_chats(&store, &found);
+    let copies: HashSet<(String, String)> = plan.copies.iter().cloned().collect();
+    let mut work: Vec<DiscoveredArtifact> = superset_import::chats(&store)
+        .filter(|(org, chat)| copies.contains(&(org.id.clone(), chat.id.clone())))
+        .filter_map(|(org, chat)| superset_import::copy_artifact(org, chat))
+        .collect();
+    work.extend(superset_import::own_configs(&store).map(|(org, config)| superset_import::config_artifact(org, config)));
+    job.total = native_work.iter().map(|(_, _, artifacts)| artifacts.len() as u64).sum::<u64>() + work.len() as u64;
+    job.updated_at = Utc::now().to_rfc3339();
+    save(core, job, None)?;
+    core.events.publish(CoreEvent::ImportProgress(job.clone()));
+    let mut runner = Runner { core, source: Source::Superset, job, last_publish: None };
+    for (source, source_roots, artifacts) in native_work {
+        runner.import_all(source, &source_roots, artifacts, false)?;
+    }
+    runner.import_all(Source::Superset, &paths.homes, work, false)?;
+    let overlay = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        superset_import::overlay(&db, &store)?
+    };
+    let mut skipped: BTreeMap<String, u64> = BTreeMap::new();
+    for org in &store.orgs {
+        for chat in &org.chats {
+            if superset_import::store::harness_of_chat(&chat.harness).is_none() {
+                *skipped.entry(format!("chats with {}, which Bridge does not run", chat.harness)).or_default() += 1;
+            } else if !superset_import::is_live(org, chat) {
+                *skipped.entry("chats in projects deleted in Superset".into()).or_default() += 1;
+            }
+        }
+        for binding in &org.host.bindings {
+            if superset_import::store::harness_of_agent(&binding.agent).is_none() {
+                *skipped.entry(format!("terminal sessions with {}, which Bridge does not run", binding.agent)).or_default() += 1;
+            } else if binding.native.is_none() {
+                *skipped.entry("terminal agents that never reported their session".into()).or_default() += 1;
+            } else if !superset_import::binding_is_live(org, binding) {
+                *skipped.entry("terminal sessions in projects deleted in Superset".into()).or_default() += 1;
+            }
+        }
+    }
+    if plan.gone > 0 {
+        *skipped.entry("terminal sessions whose transcript is gone (Superset keeps no copy of them)".into()).or_default() += plan.gone as u64;
+    }
+    let tags = store.orgs.iter().map(|org| org.host.tags as u64).sum::<u64>();
+    if tags > 0 {
+        *skipped.entry("workspace tags: Bridge has no tags yet".into()).or_default() += tags;
+    }
+    let pull_requests = store.orgs.iter().map(|org| org.host.pull_requests as u64).sum::<u64>();
+    if pull_requests > 0 {
+        *skipped.entry("pull request links on workspaces".into()).or_default() += pull_requests;
+    }
+    for (text, count) in skipped {
+        not_carried(job, &text, count);
+    }
+    if report.imported_any() || overlay.titled + overlay.archived > 0 {
         core.events.publish(CoreEvent::StateChanged);
     }
     Ok(())

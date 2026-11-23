@@ -74,6 +74,7 @@ pub mod codex_import;
 pub mod conductor_import;
 pub mod opencode_import;
 pub mod orca_import;
+pub mod superset_import;
 pub mod t3code_import;
 pub mod codex_adapter;
 mod codex_update;
