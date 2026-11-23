@@ -73,6 +73,9 @@ const MAX_CHAINED_CYCLES: usize = 3;
 #[derive(Default)]
 pub struct ConnectorPoller {
     claims: Mutex<PollClaims>,
+    /// When a person last looked at the Inbox (unix seconds), so background
+    /// ingress runs while someone is reading it and not otherwise.
+    viewed_at: std::sync::atomic::AtomicI64,
     /// Items with an action run in flight. Held for the duration of the send
     /// instead of resolving the item up front, so a concurrent click is refused
     /// while a failed send stays retryable.
@@ -409,9 +412,9 @@ pub fn discover_harness_connectors() -> Vec<HarnessConnectors> {
     // staleness costs nothing here, while a fresh probe is `mcp list`
     // connecting to every server before this pane can paint. An action that
     // turns out to need a fresh answer reports its own failure.
-    let claude = crate::marketplace::cached_claude_sdk_configuration(
-        crate::marketplace::ClaudeDiscovery::ALL,
-    );
+    // The same cache the Workflows surfaces read: one `mcp list` serves both,
+    // refreshed in the background rather than on this poll's thread.
+    let claude = crate::marketplace::connectors_now();
     vec![HarnessConnectors {
         harness: "claude".to_owned(),
         health: claude.connector_health,
@@ -1073,23 +1076,102 @@ fn settle_session(core: &Arc<BridgeCore>, session_id: &str, status: &str) {
 
 /// The ingress timer. Does nothing at all while no supported family is
 /// connected, so an install with no connectors pays nothing for this feature.
+/// How often ingress runs while only workflows listen for its events.
+pub const TRIGGER_POLL_CADENCE: StdDuration = StdDuration::from_secs(300);
+/// How long after the Inbox was last looked at its background polling goes on.
+pub const VIEWED_WINDOW: StdDuration = StdDuration::from_secs(30 * 60);
+
+impl ConnectorPoller {
+    /// A person read the Inbox: keep it fresh for a while.
+    pub fn viewed(&self, now: chrono::DateTime<Utc>) {
+        self.viewed_at.store(now.timestamp(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn viewed_since(&self, now: chrono::DateTime<Utc>) -> Option<StdDuration> {
+        let at = self.viewed_at.load(std::sync::atomic::Ordering::Relaxed);
+        (at > 0).then(|| StdDuration::from_secs(now.timestamp().saturating_sub(at).max(0) as u64))
+    }
+}
+
+/// How often a family's ingress should run now, or `None` when nothing reads
+/// it. Every cycle is a paid model turn, so it runs only for a reader: the
+/// Inbox viewed in the last half hour (every two minutes), or a workflow
+/// listening for this family's events (every five).
+pub fn poll_cadence(core: &Arc<BridgeCore>, family: ConnectorFamily, now: chrono::DateTime<Utc>) -> Option<StdDuration> {
+    if core.connector_poller.viewed_since(now).is_some_and(|since| since < VIEWED_WINDOW) {
+        return Some(POLL_CADENCE);
+    }
+    let listens = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::workflow_events::listens_for(&db, family).unwrap_or(false)
+    };
+    listens.then_some(TRIGGER_POLL_CADENCE)
+}
+
+/// Is a background cycle due for this family?
+fn poll_due(core: &Arc<BridgeCore>, family: ConnectorFamily, now: chrono::DateTime<Utc>) -> bool {
+    let Some(cadence) = poll_cadence(core, family, now) else { return false };
+    let last: Option<String> = core
+        .db
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .query_row("SELECT last_attempt_at FROM connector_poll_state WHERE family=?1", params![family.as_str()], |row| row.get(0))
+        .ok();
+    let last = last.and_then(|text| chrono::DateTime::parse_from_rfc3339(&text).ok()).map(|at| at.with_timezone(&Utc));
+    last.is_none_or(|at| (now - at).to_std().unwrap_or_default() >= cadence)
+}
+
 pub fn start_connector_poll_maintenance(core: Arc<BridgeCore>) {
     std::thread::spawn(move || loop {
         for family in ConnectorFamily::ALL {
-            if !family.has_inbox_support() {
+            if !family.has_inbox_support() || core.is_retired() {
                 continue;
             }
-            if available_connection(family).is_some() {
+            if poll_due(&core, family, Utc::now()) && available_connection(family).is_some() {
                 poll_once(&core, family);
             }
         }
-        std::thread::sleep(POLL_CADENCE);
+        std::thread::sleep(StdDuration::from_secs(30));
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ingress_runs_only_while_something_reads_it() {
+        let (dir, core) = crate::workflows::test_support::core();
+        let now = Utc::now();
+        assert_eq!(poll_cadence(&core, ConnectorFamily::Slack, now), None, "nobody reads it: no paid turn every two minutes");
+        core.connector_poller.viewed(now - chrono::Duration::minutes(10));
+        assert_eq!(poll_cadence(&core, ConnectorFamily::Slack, now), Some(POLL_CADENCE), "the Inbox was just read");
+        core.connector_poller.viewed(now - chrono::Duration::minutes(31));
+        assert_eq!(poll_cadence(&core, ConnectorFamily::Slack, now), None, "read too long ago");
+        {
+            let db = core.db.lock().unwrap();
+            let mut definition = crate::workflows::test_support::definition();
+            definition.trigger = bridge_protocol::messages::WorkflowTrigger::Event {
+                event: bridge_protocol::messages::WorkflowEventKind::SlackMention, repo: None, channel: None, from: None, batch: None,
+            };
+            crate::workflows::test_support::save_approved(&db, dir.path(), &definition);
+        }
+        assert_eq!(poll_cadence(&core, ConnectorFamily::Slack, now), Some(TRIGGER_POLL_CADENCE), "a workflow listens for Slack events");
+        assert_eq!(poll_cadence(&core, ConnectorFamily::Gmail, now), None, "but not for Gmail ones");
+    }
+
+    #[test]
+    fn connector_runs_load_the_signed_in_connector_and_ingress_leaves_no_transcript() {
+        let limits = |kind| connector_runs::run_limits(kind);
+        let ingress = connector_policy(RunKind::Ingress, "claude.ai Slack", None, limits(RunKind::Ingress)).unwrap();
+        assert!(ingress.native_connectors() && ingress.ephemeral());
+        let render = connector_policy(RunKind::Render, "claude.ai Slack", None, limits(RunKind::Render)).unwrap();
+        assert!(render.native_connectors() && render.ephemeral());
+        let action = connector_policy(RunKind::Action, "claude.ai Slack", Some(ActionIntent::Reply), limits(RunKind::Action)).unwrap();
+        assert!(action.native_connectors());
+        assert!(connector_policy(RunKind::Action, "claude.ai Slack", None, limits(RunKind::Action)).is_err(), "an action needs its approved intent");
+        assert!(ingress.limits().max_turns >= 4 && ingress.limits().cost_ceiling_microusd.is_some(), "ingress is capped, and the cap reaches the SDK");
+    }
 
     #[test]
     fn ingress_is_slower_than_the_github_poller_because_a_cycle_is_a_model_turn() {

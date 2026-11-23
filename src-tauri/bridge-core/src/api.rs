@@ -588,6 +588,8 @@ pub fn connector_inbox(
     limit: Option<u32>,
 ) -> Result<wire::ConnectorInboxResult, BridgeError> {
     let limit = limit.unwrap_or(50).clamp(1, CONNECTOR_INBOX_MAX);
+    // Someone is reading the Inbox: keep ingress running for a while.
+    core.connector_poller.viewed(chrono::Utc::now());
     let db = core.db.lock().unwrap();
     let items = crate::connector_inbox::list(&db, limit as usize)?
         .into_iter()
@@ -7444,6 +7446,7 @@ fn publish_workflows_changed(core: &Arc<BridgeCore>, ids: impl IntoIterator<Item
 /// connectors, from Claude's own configuration (a subprocess, so never asked
 /// for when nothing would read it).
 fn workflow_validation_context(core: &Arc<BridgeCore>, with_servers: bool) -> crate::workflows::ValidationContext {
+    let connectors = with_servers.then(crate::marketplace::connectors_now);
     crate::workflows::ValidationContext {
         adapters: core
             .adapter_registry
@@ -7456,11 +7459,8 @@ fn workflow_validation_context(core: &Arc<BridgeCore>, with_servers: bool) -> cr
             .collect(),
         // Every connector Claude is configured with, signed in or not: a
         // workflow whose Slack needs signing in again can still be edited.
-        servers: if with_servers {
-            crate::marketplace::connectors_now().connector_health.into_keys().collect()
-        } else {
-            Default::default()
-        },
+        servers: connectors.as_ref().map(|configuration| configuration.connector_health.keys().cloned().collect()).unwrap_or_default(),
+        servers_unknown: connectors.as_ref().and_then(crate::marketplace::connector_answer_problem),
     }
 }
 
@@ -7553,10 +7553,12 @@ fn workflow_options_from(
     let claude_may_hold_connectors = harnesses
         .iter()
         .any(|harness| harness.id == "claude" && harness.connectors_allowed);
-    let servers = if claude_may_hold_connectors {
+    let configuration = claude_may_hold_connectors.then(connectors);
+    let connectors_error = configuration.as_ref().and_then(crate::marketplace::connector_answer_problem);
+    let servers = if let Some(configuration) = configuration {
         // Every configured connector, with whether it is signed in, so the
         // editor can say "not connected" instead of hiding it.
-        connectors()
+        configuration
             .connector_health
             .into_iter()
             .map(|(server, connected)| wire::WorkflowServerOption {
@@ -7570,7 +7572,7 @@ fn workflow_options_from(
     } else {
         Vec::new()
     };
-    wire::WorkflowOptions { harnesses, servers }
+    wire::WorkflowOptions { harnesses, servers, connectors_error }
 }
 
 /// What an event trigger would have done in the last week.

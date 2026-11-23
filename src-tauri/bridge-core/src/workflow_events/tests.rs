@@ -383,7 +383,18 @@ fn a_slack_preview_counts_the_weeks_matches_from_the_ledger() {
     assert_eq!(all.matches, 7, "the eighth is older than a week");
     assert_eq!(all.samples.len(), 5);
     assert!(all.samples.windows(2).all(|pair| pair[0].occurred_at >= pair[1].occurred_at), "newest first");
-    assert!(all.note.is_some(), "with no poll state the note says Slack has not been read");
+    assert!(all.note.as_deref().is_some_and(|note| note.contains("has not read Slack yet")), "with no poll state the note says Slack has not been read");
+    {
+        let db = core.db.lock().unwrap();
+        crate::connector_inbox::record_poll_failure(&db, crate::work_connectors::ConnectorFamily::Slack, &workflow_trigger::stamp(now), "the inbox run exceeded its 90s budget").unwrap();
+    }
+    let degraded = preview(&core, &trigger, &gh, now);
+    assert_eq!(degraded.note.as_deref(), Some("Bridge's last Slack read failed: the inbox run exceeded its 90s budget"), "the real poll state is read");
+    {
+        let db = core.db.lock().unwrap();
+        crate::connector_inbox::record_poll_success(&db, crate::work_connectors::ConnectorFamily::Slack, &workflow_trigger::stamp(now)).unwrap();
+    }
+    assert_eq!(preview(&core, &trigger, &gh, now).note, None, "a healthy poll with history needs no caveat");
     if let wire::WorkflowTrigger::Event { channel, .. } = &mut trigger {
         *channel = Some("eng".into());
     }

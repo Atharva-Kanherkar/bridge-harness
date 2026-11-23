@@ -367,3 +367,13 @@ test("a native briefing whose connector connects runs its turn", async () => {
   assert.equal(result?.subtype, "success", JSON.stringify(frames));
   assert.ok(frames.some((frame) => frame.type === "assistant"));
 });
+
+test("any briefing's turn and cost ceilings reach the SDK; a chat gets none", () => {
+  const ingress = buildOptions({ briefing: { allowedTools: [], budget: { maxTurns: 6, costCeilingMicrousd: 20_000 } } });
+  assert.equal(ingress.maxTurns, 6);
+  assert.equal(ingress.maxBudgetUsd, 0.02);
+  const workflow = buildOptions({ briefing: { workflow: { servers: [], budget: { maxTurns: 3 } }, budget: { maxTurns: 99 } } });
+  assert.equal(workflow.maxTurns, 3, "a workflow's own budget wins");
+  const chat = buildOptions({ writeMode: "Isolated", budget: { maxTurns: 1 } });
+  assert.equal(chat.maxTurns, undefined);
+});

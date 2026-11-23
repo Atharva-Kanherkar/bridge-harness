@@ -281,6 +281,9 @@ pub struct WorkflowServerOption {
 pub struct WorkflowOptions {
     pub harnesses: Vec<WorkflowHarnessOption>,
     pub servers: Vec<WorkflowServerOption>,
+    /// Why `servers` may be incomplete: Bridge could not ask Claude just now.
+    #[serde(default)]
+    pub connectors_error: Option<String>,
 }
 
 /// Why a run started.

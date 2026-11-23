@@ -242,7 +242,9 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
         {definition.files === "none" && <div className={FIELD}><span className="flex items-center justify-between">Can use
           {onRefreshConnectors && <button type="button" onClick={onRefreshConnectors} disabled={refreshing} className="inline-flex items-center gap-1 font-normal text-muted-foreground hover:text-foreground disabled:opacity-60"><RefreshCw size={11} className={refreshing ? "animate-spin" : ""}/>Refresh</button>}</span>
           <div className="mt-1 divide-y divide-border rounded-lg border border-border">
-            {(options?.servers ?? []).length === 0 && <p className="px-2.5 py-2 text-caption text-muted-foreground">No connectors found in Claude's configuration.</p>}
+            {options?.connectorsError
+              ? <p className="px-2.5 py-2 text-caption text-muted-foreground">Bridge could not list Claude's connectors just now ({options.connectorsError}). Use Refresh to ask again.</p>
+              : (options?.servers ?? []).length === 0 && <p className="px-2.5 py-2 text-caption text-muted-foreground">No connectors found in Claude's configuration.</p>}
             {(options?.servers ?? []).map(server => {
               const grant = grantFor(server.id);
               return <div key={server.id} className="flex min-w-0 flex-wrap items-center gap-3 px-2.5 py-1.5 text-meta text-foreground">

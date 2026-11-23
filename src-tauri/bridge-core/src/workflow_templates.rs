@@ -291,6 +291,7 @@ mod tests {
         let validation = crate::workflows::ValidationContext {
             adapters: vec![crate::workflows::AdapterFacts { id: "claude".into(), models: vec![] }],
             servers: servers.iter().map(|id| (*id).to_owned()).collect(),
+            servers_unknown: None,
         };
         for template in templates(&context) {
             let mut definition = template.definition.clone();

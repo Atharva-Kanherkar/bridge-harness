@@ -46,16 +46,18 @@ pub const UNTRUSTED_FENCE: &str = "untrusted-message-content";
 pub fn run_limits(kind: RunKind) -> bridge_protocol::messages::WorkBriefLimits {
     use bridge_protocol::messages::WorkBriefLimits;
     match kind {
+        // Enforced by the SDK since ingress started reaching Slack: one real
+        // read took 27 tool calls and $0.04 before its turns were capped.
         RunKind::Ingress => WorkBriefLimits {
             max_wall_seconds: 90,
-            max_turns: 2,
-            max_tool_calls: 6,
+            max_turns: 6,
+            max_tool_calls: 8,
             max_output_tokens: Some(4_000),
             cost_ceiling_microusd: Some(20_000),
         },
         RunKind::Render => WorkBriefLimits {
             max_wall_seconds: 60,
-            max_turns: 2,
+            max_turns: 4,
             max_tool_calls: 4,
             max_output_tokens: Some(1_500),
             cost_ceiling_microusd: Some(10_000),
@@ -96,6 +98,7 @@ const FALLBACK_INBOX: InboxProfile = InboxProfile {
     container_noun: "channel",
     reply_verb: "send",
     reaction: None,
+    search_hint: "Use the fewest searches that find them.",
 };
 
 fn inbox_of(item: &InboxItem) -> InboxProfile {
@@ -133,6 +136,7 @@ pub fn ingress_prompt(family: ConnectorFamily, include_read_mentions: bool) -> S
     let direct = inbox.direct_label;
     let mention = inbox.mention_label;
     let thread = inbox.thread_label;
+    let search_hint = inbox.search_hint;
     // Off, these two are the wording ingress has always used, so the setting is
     // the only thing that can change a cycle's behaviour.
     let (read_clause, nothing_clause) = if include_read_mentions {
@@ -145,6 +149,7 @@ pub fn ingress_prompt(family: ConnectorFamily, include_read_mentions: bool) -> S
          \n\
          Find every one of the following, received in the last {INGRESS_LOOKBACK_MINUTES} minutes\n\
          {read_clause}: {attention_items}. Use read tools only.\n\
+         {search_hint}\n\
          \n\
          Reply with exactly one fenced block tagged `{INGRESS_FENCE}` containing JSON:\n\
          \n\
@@ -478,6 +483,13 @@ impl AuthorizedAction {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_slack_ingress_prompt_says_how_to_find_messages_cheaply() {
+        let prompt = super::ingress_prompt(crate::work_connectors::ConnectorFamily::Slack, false);
+        assert!(prompt.contains("do not read channels one by one"), "{prompt}");
+        assert!(prompt.contains("`to:me`"));
+    }
+
     use super::*;
     use crate::connector_surface::CardBlock;
 

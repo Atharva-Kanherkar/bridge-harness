@@ -156,6 +156,8 @@ pub struct ValidationContext {
     pub adapters: Vec<AdapterFacts>,
     /// Connector servers the harness's own configuration holds.
     pub servers: BTreeSet<String>,
+    /// Why `servers` cannot be trusted right now (the probe failed), if so.
+    pub servers_unknown: Option<String>,
 }
 
 /// Does this definition need an adapter that enforces exact tool identities?
@@ -234,6 +236,9 @@ pub fn validate(definition: &wire::WorkflowDefinition, context: &ValidationConte
         }
         if !grant.read && grant.write == wire::WorkflowWriteAccess::Never {
             return Err(format!("The grant for `{server}` allows nothing; remove it instead"));
+        }
+        if let Some(problem) = &context.servers_unknown {
+            return Err(format!("Bridge could not check Claude's connectors just now ({problem}). Try again in a moment."));
         }
         if !context.servers.contains(server) {
             return Err(format!("`{server}` is not a connector `{harness}` is configured with"));
@@ -871,7 +876,20 @@ mod tests {
                 AdapterFacts { id: "opencode".into(), models: vec![] },
             ],
             servers: BTreeSet::from(["claude_ai_Slack".to_owned(), "claude_ai_Linear".to_owned()]),
+            servers_unknown: None,
         }
+    }
+
+    #[test]
+    fn a_failed_connector_probe_asks_to_try_again_rather_than_refusing_the_connector() {
+        let mut context = context();
+        context.servers.clear();
+        context.servers_unknown = Some("Claude mcp discovery timed-out".into());
+        let error = validate(&definition(), &context).unwrap_err();
+        assert!(error.contains("could not check Claude's connectors just now") && error.contains("Try again"), "{error}");
+        let mut none = definition();
+        none.grants.clear();
+        assert_eq!(validate(&none, &context), Ok(()), "a workflow with no connectors does not need the answer");
     }
 
     fn add_project(db: &Connection, dir: &Path) -> String {
@@ -1164,7 +1182,7 @@ mod tests {
         for harness in &options {
             job.steps[0].harness = wire::HarnessId::parse(&harness.id).unwrap();
             job.steps[0].model = harness.models.first().map(|model| model.id.clone()).unwrap_or_else(|| "m".into());
-            let context = ValidationContext { adapters: vec![AdapterFacts { id: harness.id.clone(), models: vec![] }], servers: BTreeSet::new() };
+            let context = ValidationContext { adapters: vec![AdapterFacts { id: harness.id.clone(), models: vec![] }], servers: BTreeSet::new(), servers_unknown: None };
             assert_eq!(validate(&job, &context).is_ok(), harness.worktree_allowed, "{}", harness.id);
         }
     }

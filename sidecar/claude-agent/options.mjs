@@ -245,7 +245,8 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
   // is never resumed, so Claude Code writes no transcript for it. Without
   // this every poll left a session folder behind.
   const ephemeral = isBriefing({ briefing }) && briefing.ephemeral === true;
-  const budget = briefing?.workflow?.budget;
+  // A workflow's own budget, or any other briefing's ceilings.
+  const budget = briefing?.workflow?.budget ?? (isBriefing({ briefing }) ? briefing.budget : null);
   return {
     ...(resolvedEffort ? { effort: resolvedEffort } : {}),
     ...(model ? { model } : {}),

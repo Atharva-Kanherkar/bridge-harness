@@ -415,6 +415,22 @@ pub fn observe(db: &Connection, samples: &[wire::WorkflowEventSample], now: Date
     Ok(recorded)
 }
 
+/// The connector family an event comes from.
+pub fn event_family(kind: wire::WorkflowEventKind) -> crate::work_connectors::ConnectorFamily {
+    if is_slack(kind) {
+        crate::work_connectors::ConnectorFamily::Slack
+    } else {
+        crate::work_connectors::ConnectorFamily::GitHub
+    }
+}
+
+/// Does any workflow listen for this family's events? Its ingress runs for it.
+pub fn listens_for(db: &Connection, family: crate::work_connectors::ConnectorFamily) -> Result<bool, BridgeError> {
+    Ok(listening(db)?
+        .iter()
+        .any(|workflow| EventTrigger::of(&workflow.definition.trigger).is_some_and(|event| event_family(event.event) == family)))
+}
+
 /// The Slack Inbox's fresh arrivals, offered to every listening workflow.
 pub fn observe_inbox(db: &Connection, fresh: &[InboxItem], now: DateTime<Utc>) -> Result<usize, BridgeError> {
     if fresh.is_empty() {
@@ -655,7 +671,7 @@ pub fn preview(core: &Arc<BridgeCore>, trigger: &wire::WorkflowTrigger, gh: &dyn
             Err(error) => return unsupported(format!("Bridge could not read its Slack history: {error}")),
         };
         let polled: Option<(Option<String>, Option<String>)> = db
-            .query_row("SELECT last_success, last_error FROM connector_poll_state WHERE family='slack'", [], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_row("SELECT last_success_at, degraded FROM connector_poll_state WHERE family='slack'", [], |row| Ok((row.get(0)?, row.get(1)?)))
             .ok();
         found = items.iter().map(sample_from_inbox).filter(|sample| matches(&event, sample)).collect();
         note = match polled {

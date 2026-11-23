@@ -127,6 +127,9 @@ pub struct InboxProfile {
     /// How a lightweight acknowledgement works here, when one exists at all.
     /// `None` means the UI offers no react affordance for this family.
     pub reaction: Option<ReactionProfile>,
+    /// How to find them cheaply with this family's tools. Ingress is paid for
+    /// on every poll, so a run that reads channel by channel is a cost bug.
+    pub search_hint: &'static str,
 }
 
 /// A one-click acknowledgement, for products that have such a thing.
@@ -168,6 +171,10 @@ pub fn profile(family: ConnectorFamily) -> ConnectorProfile {
                 container_noun: "channel",
                 reply_verb: "send",
                 reaction: Some(ReactionProfile { noun: "reaction", default_token: "eyes" }),
+                search_hint: "Search, do not read channels one by one: one search for messages sent to the owner \
+                    (`to:me`), one for messages mentioning them, both newest first and limited to today and yesterday \
+                    (`after:`). Read a thread only when a search result is a reply whose thread you cannot tell \
+                    from the result. Three or four tool calls are enough.",
             }),
             no_inbox_reason: None,
         },

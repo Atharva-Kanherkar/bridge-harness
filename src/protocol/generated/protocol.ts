@@ -6981,6 +6981,7 @@ export interface SetWorkflowEnabledParams {
 }
 
 export interface WorkflowOptions {
+  connectorsError?: string | null;
   harnesses: WorkflowHarnessOption[];
   servers: WorkflowServerOption[];
 }
