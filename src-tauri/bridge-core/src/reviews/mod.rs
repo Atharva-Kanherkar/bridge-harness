@@ -1,9 +1,156 @@
 //! Pull-request reviews as stored background jobs.
 //!
 //! A review is a row in `review_jobs`, driven by Bridge's own runner with its
-//! own slots, never a worker of a chat. See `state` for the job's lifecycle,
-//! `store` for the durable guarantees, and `steps` for the work a job does.
+//! own slots, never a worker of a chat: starting one creates no session and
+//! touches no conversation. See `state` for the job's lifecycle, `store` for
+//! the durable guarantees, `runner` for slots, leases, retries and fallback,
+//! and `steps` for the work a job does.
 
+pub mod runner;
 pub mod state;
 pub mod steps;
 pub mod store;
+
+use std::sync::Arc;
+
+use bridge_protocol::messages as wire;
+use chrono::Utc;
+
+pub use runner::{start_review_maintenance, ReviewRuntime, Runner, RunnerConfig};
+
+use crate::events::CoreEvent;
+use crate::runtime::BridgeCore;
+use crate::BridgeError;
+
+/// Harnesses a review falls back to, in order, when the settings name none.
+pub const DEFAULT_HARNESS_ORDER: [&str; 3] = ["claude", "codex", "opencode"];
+
+/// What the PR looks like right now, read before a job is queued.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrHead {
+    pub repo_owner: String,
+    pub repo_name: String,
+    pub head_sha: String,
+    pub base_sha: Option<String>,
+}
+
+/// Tell clients where a job is now.
+pub fn publish(core: &Arc<BridgeCore>, job_id: &str) {
+    let job = {
+        let db = core.db.lock().unwrap();
+        store::get_job(&db, job_id).ok().flatten().and_then(|job| store::to_wire(&db, &job).ok())
+    };
+    if let Some(job) = job {
+        core.events.publish(CoreEvent::ReviewJobUpdated { job });
+    }
+}
+
+/// The harnesses a job runs on: the ones asked for, else the settings'
+/// default, else the first available of Claude, Codex and OpenCode.
+pub fn resolve_harnesses(core: &Arc<BridgeCore>, requested: Option<&[String]>) -> Result<Vec<String>, BridgeError> {
+    let settings = {
+        let db = core.db.lock().unwrap();
+        crate::reviewer_settings::load(&db)?
+    };
+    let asked = match requested {
+        Some([]) => return Err(BridgeError::Invalid("Pick a harness to review with".into())),
+        Some(list) => crate::reviewer_settings::review_job_harnesses(list, "reviewer")?,
+        None => crate::reviewer_settings::review_job_harnesses(&settings.default_harnesses, "default reviewer")?,
+    };
+    if asked.len() > crate::reviewer_settings::MAX_REVIEW_HARNESSES {
+        return Err(BridgeError::Invalid(format!(
+            "A review runs on at most {} harnesses",
+            crate::reviewer_settings::MAX_REVIEW_HARNESSES
+        )));
+    }
+    if !asked.is_empty() {
+        return Ok(asked);
+    }
+    DEFAULT_HARNESS_ORDER
+        .into_iter()
+        .find(|harness| core.adapter_registry.descriptor(harness).is_some_and(|descriptor| descriptor.available))
+        .map(|harness| vec![harness.to_owned()])
+        .ok_or_else(|| BridgeError::Invalid("No harness is available to review with".into()))
+}
+
+/// Queue a review of the PR at `head`, or return the live job that already
+/// reviews that head with those harnesses.
+pub fn start_with(core: &Arc<BridgeCore>, params: &wire::StartReviewParams, head: PrHead) -> Result<wire::ReviewJob, BridgeError> {
+    core.workspace_path(&params.workspace_id)?;
+    let harnesses = resolve_harnesses(core, params.harnesses.as_deref())?;
+    let (job, created) = {
+        let db = core.db.lock().unwrap();
+        let post_mode = crate::reviewer_settings::load(&db)?.post_mode;
+        let (job, created) = store::insert(
+            &db,
+            &store::NewJob {
+                workspace_id: params.workspace_id.clone(),
+                repo_owner: head.repo_owner,
+                repo_name: head.repo_name,
+                number: params.number,
+                head_sha: head.head_sha,
+                base_sha: head.base_sha,
+                incremental_from_sha: None,
+                trigger: params.trigger.unwrap_or_default(),
+                post_mode,
+                harnesses,
+                retry_of: None,
+            },
+            Utc::now(),
+        )?;
+        (store::to_wire(&db, &job)?, created)
+    };
+    if created {
+        core.events.publish(CoreEvent::ReviewJobUpdated { job: job.clone() });
+        core.reviews.wake();
+    }
+    Ok(job)
+}
+
+pub fn list(core: &Arc<BridgeCore>, params: &wire::ListReviewsParams) -> Result<wire::ReviewJobList, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let jobs = store::list(&db, &params.workspace_id, params.number)?
+        .iter()
+        .map(|job| store::to_wire(&db, job))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(wire::ReviewJobList { jobs })
+}
+
+pub fn get(core: &Arc<BridgeCore>, job_id: &str) -> Result<wire::ReviewJobDetail, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let job = store::require_job(&db, job_id)?;
+    Ok(wire::ReviewJobDetail {
+        job: store::to_wire(&db, &job)?,
+        passes: store::passes(&db, job_id)?,
+        findings: store::findings(&db, job_id)?,
+    })
+}
+
+/// Cancel a job. A job this process is driving stops through its cancel
+/// token, and its runner cleans up; one nobody is driving is cleaned up here.
+pub fn cancel(core: &Arc<BridgeCore>, job_id: &str) -> Result<wire::ReviewJob, BridgeError> {
+    {
+        let db = core.db.lock().unwrap();
+        store::cancel(&db, job_id, Utc::now())?;
+    }
+    if !core.reviews.trip(job_id) {
+        core.reviews.steps().cleanup(job_id);
+    }
+    publish(core, job_id);
+    let db = core.db.lock().unwrap();
+    store::to_wire(&db, &store::require_job(&db, job_id)?)
+}
+
+/// A new job with the same inputs as a failed, interrupted or cancelled one.
+pub fn retry(core: &Arc<BridgeCore>, job_id: &str) -> Result<wire::ReviewJob, BridgeError> {
+    let (job, created) = {
+        let db = core.db.lock().unwrap();
+        let (job, created) = store::retry(&db, job_id, Utc::now())?;
+        (store::to_wire(&db, &job)?, created)
+    };
+    if created {
+        core.events.publish(CoreEvent::ReviewJobUpdated { job: job.clone() });
+        core.reviews.wake();
+    }
+    Ok(job)
+}

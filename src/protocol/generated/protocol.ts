@@ -747,6 +747,7 @@ export type BridgeNotification =
   | "config/app_preferences_changed"
   | "workflows/changed"
   | "workflows/run_changed"
+  | "reviews/job_updated"
   | "stream-lagged";
 
 export const BRIDGE_NOTIFICATIONS = [
@@ -779,6 +780,7 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "config/app_preferences_changed", delivery: "transient" },
   { notification: "workflows/changed", delivery: "transient" },
   { notification: "workflows/run_changed", delivery: "transient" },
+  { notification: "reviews/job_updated", delivery: "transient" },
   { notification: "stream-lagged", delivery: "transient" },
 ] as const;
 

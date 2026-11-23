@@ -404,6 +404,18 @@ pub fn mark_posted(
     Ok(changed == 1)
 }
 
+/// `posting -> drafted`: a post a person asked for failed, so the draft is
+/// theirs again, with the reason, and they can post once more.
+pub fn return_to_draft(db: &Connection, id: &str, owner: &str, error: &str) -> Result<bool, BridgeError> {
+    state::check(Status::Posting, Status::Drafted)?;
+    let changed = db.execute(
+        "UPDATE review_jobs SET status='drafted', error=?3, lease_owner=NULL, lease_expires_at=NULL
+         WHERE id=?1 AND status='posting' AND lease_owner=?2",
+        params![id, owner, error],
+    )?;
+    Ok(changed == 1)
+}
+
 /// The PR moved while the job waited: review what is there now. The dedupe
 /// key keeps the head the job was started for.
 pub fn set_head(db: &Connection, id: &str, owner: &str, head_sha: &str) -> Result<bool, BridgeError> {

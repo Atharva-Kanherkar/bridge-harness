@@ -136,6 +136,8 @@ pub enum CoreEvent {
     /// A workflow run changed status. Carries the wire run, serialized by
     /// its own type so the payload cannot drift from the contract.
     WorkflowRunChanged { run: bridge_protocol::messages::WorkflowRun },
+    /// A review job changed status, or one of its passes moved.
+    ReviewJobUpdated { job: bridge_protocol::messages::ReviewJob },
 }
 
 impl CoreEvent {
@@ -173,6 +175,7 @@ impl CoreEvent {
             CoreEvent::AppPreferencesChanged => NotificationName::AppPreferencesChanged,
             CoreEvent::WorkflowsChanged { .. } => NotificationName::WorkflowsChanged,
             CoreEvent::WorkflowRunChanged { .. } => NotificationName::WorkflowRunChanged,
+            CoreEvent::ReviewJobUpdated { .. } => NotificationName::ReviewJobUpdated,
         }
     }
 
@@ -247,6 +250,7 @@ impl CoreEvent {
             CoreEvent::TrailsChanged(changed) => serde_json::to_value(changed).expect("trails change serializes"),
             CoreEvent::WorkflowsChanged { workflow_id } => serde_json::json!({ "workflowId": workflow_id }),
             CoreEvent::WorkflowRunChanged { run } => serde_json::json!({ "run": run }),
+            CoreEvent::ReviewJobUpdated { job } => serde_json::json!({ "job": job }),
         }
     }
 
@@ -281,6 +285,9 @@ struct ReconciliationState {
     workflows_changed: std::collections::BTreeSet<String>,
     /// The latest state of each run that changed while a subscriber lagged.
     workflow_runs_changed: std::collections::BTreeMap<String, bridge_protocol::messages::WorkflowRun>,
+    /// The latest state of each review job that changed while a subscriber
+    /// lagged, so a Reviews list catches up without a refetch.
+    review_jobs_changed: std::collections::BTreeMap<String, bridge_protocol::messages::ReviewJob>,
 }
 
 /// Receive failures exposed without coupling hosts to Tokio's channel types.
@@ -336,6 +343,9 @@ impl EventReceiver {
         }
         for run in state.workflow_runs_changed.values() {
             events.push(CoreEvent::WorkflowRunChanged { run: run.clone() });
+        }
+        for job in state.review_jobs_changed.values() {
+            events.push(CoreEvent::ReviewJobUpdated { job: job.clone() });
         }
         if state.attention_changed {
             events.push(CoreEvent::AttentionChanged);
@@ -480,6 +490,9 @@ impl EventBus {
                 CoreEvent::WorkflowRunChanged { run } => {
                     state.workflow_runs_changed.insert(run.id.clone(), run.clone());
                 }
+                CoreEvent::ReviewJobUpdated { job } => {
+                    state.review_jobs_changed.insert(job.id.clone(), job.clone());
+                }
                 CoreEvent::Agent(_)
                 | CoreEvent::SessionOutput { .. }
                 | CoreEvent::TerminalFrame(_)
@@ -543,6 +556,54 @@ mod tests {
             finished_at: None,
             created_at: "2026-10-29T09:00:01.000Z".into(),
         }
+    }
+
+    fn review_job_fixture() -> bridge_protocol::messages::ReviewJob {
+        use bridge_protocol::messages as wire;
+        wire::ReviewJob {
+            id: "job-1".into(),
+            workspace_id: "w1".into(),
+            number: 42,
+            head_sha: "abc123".into(),
+            status: wire::ReviewJobStatus::Reviewing,
+            trigger: wire::ReviewTrigger::Manual,
+            post_mode: wire::ReviewPostMode::Draft,
+            harnesses: vec!["claude".into()],
+            finding_counts: wire::ReviewFindingCounts::default(),
+            error: None,
+            posted_review_url: None,
+            retry_of: None,
+            created_at: "2026-11-23T10:00:00.000Z".into(),
+            started_at: Some("2026-11-23T10:00:01.000Z".into()),
+            finished_at: None,
+        }
+    }
+
+    #[test]
+    fn review_job_updated_carries_the_wire_job_and_is_reconciled_after_lag() {
+        let event = CoreEvent::ReviewJobUpdated { job: review_job_fixture() };
+        assert_eq!(event.kind(), NotificationName::ReviewJobUpdated);
+        let payload = event.payload();
+        assert_eq!(payload["job"]["workspaceId"], "w1");
+        assert_eq!(payload["job"]["status"], "reviewing");
+        let back: bridge_protocol::messages::ReviewJob = serde_json::from_value(payload["job"].clone()).unwrap();
+        assert_eq!(back, review_job_fixture());
+
+        let bus = EventBus::new();
+        let receiver = bus.subscribe();
+        bus.publish(CoreEvent::ReviewJobUpdated { job: review_job_fixture() });
+        let mut later = review_job_fixture();
+        later.status = bridge_protocol::messages::ReviewJobStatus::Drafted;
+        bus.publish(CoreEvent::ReviewJobUpdated { job: later.clone() });
+        let resent: Vec<_> = receiver
+            .reconciliation_events()
+            .into_iter()
+            .filter_map(|event| match event {
+                CoreEvent::ReviewJobUpdated { job } => Some(job),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(resent, [later], "a lagged client gets each job's latest state once");
     }
 
     #[test]
@@ -692,6 +753,7 @@ mod tests {
             CoreEvent::AppPreferencesChanged,
             CoreEvent::WorkflowsChanged { workflow_id: "w1".into() },
             CoreEvent::WorkflowRunChanged { run: run_fixture() },
+            CoreEvent::ReviewJobUpdated { job: review_job_fixture() },
         ];
         for event in &events {
             assert_eq!(

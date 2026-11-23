@@ -89,13 +89,13 @@ pub fn save(db: &Connection, settings: &ReviewerSettings) -> Result<ReviewerSett
             wire::MAX_CONCURRENT_REVIEWS_RANGE.end()
         )));
     }
-    let default_harnesses = review_job_harnesses(&settings.default_harnesses, "default")?;
+    let default_harnesses = review_job_harnesses(&settings.default_harnesses, "default reviewer")?;
     if default_harnesses.len() > MAX_REVIEW_HARNESSES {
         return Err(BridgeError::Invalid(format!(
             "A review runs on at most {MAX_REVIEW_HARNESSES} harnesses"
         )));
     }
-    let fallback_harnesses = review_job_harnesses(&settings.fallback_harnesses, "fallback")?;
+    let fallback_harnesses = review_job_harnesses(&settings.fallback_harnesses, "fallback reviewer")?;
     // Store what means something: a blank model or prompt is "unset", not "".
     let mut normalized = settings.clone();
     normalized.system_prompt = normalized.system_prompt.trim().to_owned();
@@ -128,7 +128,8 @@ pub const MAX_REVIEW_HARNESSES: usize = 2;
 
 /// A list of harnesses a review job may run on, canonicalized and without
 /// repeats. Cursor Bugbot is refused: it reviews on GitHub, not as a pass.
-pub fn review_job_harnesses(ids: &[String], list: &str) -> Result<Vec<String>, BridgeError> {
+/// `label` names the list in errors: "reviewer", "default reviewer", ...
+pub fn review_job_harnesses(ids: &[String], label: &str) -> Result<Vec<String>, BridgeError> {
     let mut harnesses: Vec<String> = Vec::new();
     for id in ids {
         if id.trim().is_empty() {
@@ -138,10 +139,10 @@ pub fn review_job_harnesses(ids: &[String], list: &str) -> Result<Vec<String>, B
             Some(canonical) if canonical != "cursor-bugbot" => canonical,
             Some(_) => {
                 return Err(BridgeError::Invalid(format!(
-                    "Cursor Bugbot cannot be a {list} reviewer harness: it reviews on GitHub"
+                    "Cursor Bugbot cannot be a {label} harness: it reviews on GitHub"
                 )))
             }
-            None => return Err(BridgeError::Invalid(format!("Unknown {list} reviewer harness `{id}`"))),
+            None => return Err(BridgeError::Invalid(format!("Unknown {label} harness `{id}`"))),
         };
         if !harnesses.contains(&canonical) {
             harnesses.push(canonical);
