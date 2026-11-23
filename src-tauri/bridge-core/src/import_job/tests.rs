@@ -51,6 +51,15 @@ fn run_job(core: &Arc<BridgeCore>, roots: &[PathBuf]) -> wire::ImportJob {
     status(core).unwrap().unwrap()
 }
 
+/// Whether a `StateChanged` was published since `events` subscribed.
+fn changed(events: &mut crate::events::EventReceiver) -> bool {
+    let mut seen = false;
+    while let Ok(event) = events.try_next() {
+        seen |= matches!(event, CoreEvent::StateChanged);
+    }
+    seen
+}
+
 fn imported_sessions(core: &BridgeCore) -> i64 {
     let db = core.db.lock().unwrap();
     db.query_row("SELECT COUNT(*) FROM sessions WHERE kind = 'imported'", [], |row| row.get(0))
@@ -1471,9 +1480,11 @@ mod orca {
         assert!(texts.iter().any(|(text, count)| text.starts_with("workers' place") && *count == 1), "{texts:?}");
         assert!(home.login.join("README.md").is_file() && home.contrib.join("README.md").is_file(), "Orca's folders are untouched");
 
+        let mut events = core.events.subscribe();
         let again = run_orca(&core, &home);
         assert_eq!((again.imported, again.already_in_bridge, again.workspaces, again.failed), (0, 5, 0, 0), "{again:?}");
         assert_eq!(chats(&core).len(), 5);
+        assert!(!changed(&mut events), "a run that changed nothing tells no one it did");
     }
 
     #[test]
@@ -1516,6 +1527,28 @@ mod orca {
             )
             .unwrap();
         assert_eq!(depth, 1);
+    }
+
+    #[test]
+    fn a_run_that_only_retitles_says_the_state_changed() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        run_orca(&core, &home);
+        home.fixture.chat(&ChatRow {
+            id: "chat-a",
+            agent: "opencode",
+            workspace: worktree_id(REPO, &home.login),
+            title: Some("What is this shop?"),
+            renamed: true,
+            handles: vec![Handle::Acp("opencode", "ses_a")],
+            ..ChatRow::default()
+        });
+        let mut events = core.events.subscribe();
+        let job = run_orca(&core, &home);
+        assert_eq!(job.imported, 0, "{job:?}");
+        assert!(changed(&mut events), "Orca's new title changed a chat");
     }
 
     #[test]
@@ -1576,6 +1609,9 @@ mod superset {
     const KEPT: &str = "33333333-3333-4333-8333-333333333333";
     /// One whose transcript Claude Code deleted.
     const GONE: &str = "44444444-4444-4444-8444-444444444444";
+    /// A Claude Code terminal session whose transcript is in another Claude
+    /// Code folder, which only its `transcript_path` names.
+    const ELSEWHERE: &str = "77777777-7777-4777-8777-777777777777";
 
     struct Home {
         paradev: PathBuf,
@@ -1593,6 +1629,7 @@ mod superset {
     /// - an archived workspace with a chat;
     /// - a terminal session whose transcript is gone, one that never
     ///   reported its session, and one with an agent Bridge does not run;
+    /// - a chat with Pi, and a chat and a terminal in a deleted project;
     /// - an agent configuration with an API key.
     fn home(root: &Path) -> Home {
         let home = root.canonicalize().unwrap();
@@ -1605,6 +1642,8 @@ mod superset {
         store.row("ses_a", 1, "user", &crate::opencode_import::fixture::said("what is this repo?"));
         store.row("ses_a", 2, "assistant", &crate::opencode_import::fixture::replied("A shop."));
         write(&home.join(format!(".claude/projects/-shop-login/{KEPT}.jsonl")), &session(KEPT, &login.to_string_lossy(), "write CONTRIBUTING.md"));
+        let elsewhere = home.join("claude-work").join(format!("projects/-shop-login/{ELSEWHERE}.jsonl"));
+        write(&elsewhere, &session(ELSEWHERE, &login.to_string_lossy(), "tidy the imports"));
         let fixture = Fixture::newest(&paradev);
         fixture.project("p1", &main, "shop");
         fixture.workspace(&WorkspaceRow { id: "w-login", project: Some("p1"), path: &login, branch: "feat-login", name: "Login page", kind: "worktree", archived: false });
@@ -1619,6 +1658,14 @@ mod superset {
         fixture.binding("t-gone", "w-login", "claude", Some("55555555-5555-4555-8555-555555555555"), None);
         fixture.binding("t-silent", "w-login", "opencode", None, None);
         fixture.binding("t-amp", "w-login", "amp", Some("amp-1"), None);
+        fixture.binding("t-elsewhere", "w-login", "claude", Some(ELSEWHERE), Some(&elsewhere));
+        fixture.chat(&ChatRow { id: "c-pi", workspace: "w-login", harness: "pi-acp", native: Some("pi-1"), ..ChatRow::default() });
+        fixture.project("p-gone", &home.join("code/gone"), "gone");
+        fixture.delete_project("p-gone");
+        fixture.workspace(&WorkspaceRow { id: "w-gone", project: Some("p-gone"), path: &paradev.join("worktrees/gone/x"), branch: "x", name: "Gone", kind: "worktree", archived: false });
+        fixture.chat(&ChatRow { id: "c-gone", workspace: "w-gone", harness: "claude-acp", ..ChatRow::default() });
+        fixture.events("c-gone", "e1", &[user("u1", "never comes over")]);
+        fixture.binding("t-gone-project", "w-gone", "claude", Some("88888888-8888-4888-8888-888888888888"), None);
         fixture.tag("w-login", "auth");
         fixture.config("cfg-key", Some("claude"), "Claude (work key)", &json!({ "ANTHROPIC_API_KEY": CANARY }));
         Home {
@@ -1678,7 +1725,8 @@ mod superset {
         let job = run_superset(&core, &home);
 
         assert_eq!(job.status, "done", "{job:?}");
-        assert_eq!((job.total, job.imported, job.failed, job.workspaces), (5, 5, 0, 1), "{job:?}");
+        // Three read natively, two of Superset's copies and the configuration.
+        assert_eq!((job.total, job.imported, job.failed, job.workspaces), (6, 6, 0, 1), "{job:?}");
         let tree = Some(home.login.to_string_lossy().into_owned());
         assert_eq!(
             chats(&core),
@@ -1686,6 +1734,8 @@ mod superset {
                 ("An old spike".into(), "claude".into(), true, None, None),
                 ("Repo overview from README.md".into(), "opencode".into(), false, None, Some("opencode:ses_a".into())),
                 ("Say hi".into(), "claude".into(), false, tree.clone(), Some(format!("claude:{GONE}"))),
+                // Read from the folder its transcript path names.
+                ("tidy the imports".into(), "claude".into(), false, tree.clone(), Some(format!("claude:{ELSEWHERE}"))),
                 ("write CONTRIBUTING.md".into(), "claude".into(), false, tree, Some(format!("claude:{KEPT}"))),
             ]
         );
@@ -1699,14 +1749,20 @@ mod superset {
             ("terminal agents that never reported their session", 1),
             ("terminal sessions whose transcript is gone (Superset keeps no copy of them)", 1),
             ("workspace tags: Bridge has no tags yet", 1),
+            ("chats with pi-acp, which Bridge does not run", 1),
+            ("chats in projects deleted in Superset", 1),
+            ("terminal sessions in projects deleted in Superset", 1),
         ] {
             assert!(texts.contains(&want), "{want:?} in {texts:?}");
         }
+        assert_eq!(texts.len(), 8, "nothing else, and never a zero: {texts:?}");
         assert!(home.login.join("README.md").is_file(), "Superset's folder is untouched");
 
+        let mut events = core.events.subscribe();
         let again = run_superset(&core, &home);
-        assert_eq!((again.imported, again.already_in_bridge, again.workspaces, again.failed), (0, 5, 0, 0), "{again:?}");
-        assert_eq!(chats(&core).len(), 4);
+        assert_eq!((again.imported, again.already_in_bridge, again.workspaces, again.failed), (0, 6, 0, 0), "{again:?}");
+        assert_eq!(chats(&core).len(), 5);
+        assert!(!changed(&mut events), "a run that changed nothing tells no one it did");
         assert_eq!(setup_candidates(&core).len(), 1);
     }
 
@@ -1716,12 +1772,12 @@ mod superset {
         let home = home(root.path());
         let scratch = tempfile::tempdir().unwrap();
         let core = core(scratch.path());
-        assert_eq!(run_superset(&core, &home).imported, 5);
+        assert_eq!(run_superset(&core, &home).imported, 6);
         let opencode = super::opencode::run_opencode(&core, &home.opencode);
         assert_eq!((opencode.imported, opencode.already_in_bridge), (0, 1), "{opencode:?}");
         let claude = run_job(&core, &home.claude);
         assert_eq!((claude.imported, claude.already_in_bridge), (0, 1), "{claude:?}");
-        assert_eq!(chats(&core).len(), 4);
+        assert_eq!(chats(&core).len(), 5);
     }
 
     #[test]
@@ -1743,6 +1799,24 @@ mod superset {
         run_superset(&core, &home);
         let titles: Vec<String> = chats(&core).into_iter().map(|chat| chat.0).collect();
         assert!(titles.contains(&"Mine".to_owned()) && !titles.contains(&"Explain the shop".to_owned()), "{titles:?}");
+    }
+
+    #[test]
+    fn a_run_that_only_retitles_or_archives_says_the_state_changed() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        run_superset(&core, &home);
+        home.fixture.chat_conn().execute("UPDATE chat_sessions_local SET title = 'Explain the shop' WHERE session_id = 'c-open'", []).unwrap();
+        let mut events = core.events.subscribe();
+        let job = run_superset(&core, &home);
+        assert_eq!(job.imported, 0, "{job:?}");
+        assert!(changed(&mut events), "Superset's new title changed a chat");
+        home.fixture.host.execute("UPDATE workspaces SET archived_at = 5 WHERE id = 'w-login'", []).unwrap();
+        let mut events = core.events.subscribe();
+        run_superset(&core, &home);
+        assert!(changed(&mut events), "archiving in Superset archived its chats");
     }
 
     #[test]

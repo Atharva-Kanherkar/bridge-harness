@@ -658,13 +658,11 @@ fn run_orca(
     for (text, count) in skipped {
         not_carried(job, &text, count);
     }
-    if links.unlinked > 0 {
-        not_carried(job, "workers' place under their run's lead chat: a terminal led the run, or Orca kept no session for the worker", links.unlinked as u64);
-    }
+    not_carried(job, "workers' place under their run's lead chat: a terminal led the run, or Orca kept no session for the worker", links.unlinked as u64);
     for note in &store.notes {
         not_carried(job, note, 1);
     }
-    if report.imported_any() || overlay.titled + overlay.archived + overlay.linked > 0 {
+    if report.imported_any() || overlay != orca_import::Overlay::default() {
         core.events.publish(CoreEvent::StateChanged);
     }
     Ok(())
@@ -754,21 +752,13 @@ fn run_superset(
             }
         }
     }
-    if plan.gone > 0 {
-        *skipped.entry("terminal sessions whose transcript is gone (Superset keeps no copy of them)".into()).or_default() += plan.gone as u64;
-    }
-    let tags = store.orgs.iter().map(|org| org.host.tags as u64).sum::<u64>();
-    if tags > 0 {
-        *skipped.entry("workspace tags: Bridge has no tags yet".into()).or_default() += tags;
-    }
-    let pull_requests = store.orgs.iter().map(|org| org.host.pull_requests as u64).sum::<u64>();
-    if pull_requests > 0 {
-        *skipped.entry("pull request links on workspaces".into()).or_default() += pull_requests;
-    }
+    not_carried(job, "terminal sessions whose transcript is gone (Superset keeps no copy of them)", plan.gone as u64);
+    not_carried(job, "workspace tags: Bridge has no tags yet", store.orgs.iter().map(|org| org.host.tags as u64).sum());
+    not_carried(job, "pull request links on workspaces", store.orgs.iter().map(|org| org.host.pull_requests as u64).sum());
     for (text, count) in skipped {
         not_carried(job, &text, count);
     }
-    if report.imported_any() || overlay.titled + overlay.archived > 0 {
+    if report.imported_any() || overlay != superset_import::Overlay::default() {
         core.events.publish(CoreEvent::StateChanged);
     }
     Ok(())
@@ -1032,7 +1022,12 @@ pub(crate) fn add_batch(job: &mut wire::ImportJob, candidates: &[ImportCandidate
     }
 }
 
+/// Count `count` of what did not come over under `text`. Nothing is never
+/// said ("0 × ...").
 fn not_carried(job: &mut wire::ImportJob, text: &str, count: u64) {
+    if count == 0 {
+        return;
+    }
     match job.not_carried.iter_mut().find(|item| item.text == text) {
         Some(item) => item.count += count,
         None => job.not_carried.push(wire::ImportNotCarried { text: text.into(), count }),
