@@ -93,7 +93,11 @@ authority; this file names what this branch must prove.
   runs within 5 s.
 - Every transition and every pass change publishes `reviews/job_updated`.
 - `cleanup(job)` is called on every terminal transition, whether the job posted, failed, was
-  cancelled or was interrupted.
+  cancelled or was interrupted. It is also called once the review step ends, because posting
+  reads the stored findings and never the worktree. `cleanup` is idempotent.
+- A post a person asked for (draft mode, `posting` with no lease) that fails goes back to
+  `drafted` with the error, so they can post again. In auto mode a failed post fails the job.
+- A step that panics fails the job with the panic message and frees its slot.
 
 ### Protocol
 
@@ -150,6 +154,9 @@ authority; this file names what this branch must prove.
 - `every_transition_publishes_job_updated`
 - `cleanup_runs_on_every_terminal_transition`
 - `starting_a_review_creates_no_session`
+- `a_failed_post_in_draft_mode_returns_to_the_draft`
+- `a_panicking_step_fails_the_job_and_frees_its_slot`
+- `start_resolves_harnesses_from_the_request_then_the_settings`
 
 `reviewer_settings::tests`:
 - `runner_settings_default_and_validate` (concurrency 1 to 4, harness lists canonicalized,
@@ -161,6 +168,8 @@ authority; this file names what this branch must prove.
 - The existing registry coverage tests (`TYPED_METHODS` total, wire names unique, domains
   sorted) pass with the new domain.
 - `review_job_wire_shape_is_camel_case_and_round_trips`
+- `events::tests::review_job_updated_carries_the_wire_job_and_is_reconciled_after_lag`: a
+  lagged client gets each job's latest state once, like workflow runs.
 - `reviews/job_updated` is pinned transient in `delivery_classes_are_pinned`.
 
 `github_surface::tests`:
