@@ -99,6 +99,24 @@ export function query({ prompt, options = {} }) {
       yield* finish(known?.reply ?? "{}");
       return;
     }
+    if (brief.includes("You review a pull request for Bridge")) {
+      // The PR reviewer (src-tauri/bridged/tests/reviews.rs): read the
+      // context, try to reach GitHub through a shell, which the read-only
+      // boundary must refuse, then answer with the findings contract.
+      yield* tool("Read", { file_path: join(cwd, ".bridge-review-context/diff.patch") });
+      const shell = yield* tool("Bash", { command: "gh pr view 103" });
+      const review = {
+        summary: "The PR adds one line to the README.",
+        findings: [{
+          path: "README.md", line: 2, side: "RIGHT", severity: "minor",
+          title: "The new README line explains nothing",
+          body: `Say what changed and why. (Shell was ${shell ? "allowed" : "refused"}.)`,
+          confidence: 0.6,
+        }],
+      };
+      yield* finish(`I read the diff.\n\n\`\`\`json\n${JSON.stringify(review)}\n\`\`\``);
+      return;
+    }
     if (brief.includes("E2E:live-budget")) {
       // A real sidecar emits pre-result usage, then stays active until Bridge
       // interrupts it. No result frame can supply usage for these runs.

@@ -110,8 +110,8 @@ impl Default for PrepareConfig {
     }
 }
 
-/// The steps a host runs: real preparation and cleanup; the reviewer and
-/// posting are not in this build yet.
+/// The steps a host runs: real preparation, the hidden reviewer session and
+/// cleanup; posting is not in this build yet.
 pub struct LiveSteps {
     core: Weak<BridgeCore>,
     config: PrepareConfig,
@@ -138,7 +138,8 @@ impl ReviewSteps for LiveSteps {
     }
 
     fn review(&self, request: PassRequest<'_>, cancel: &CancelToken) -> Result<PassOutcome, StepError> {
-        UnavailableSteps.review(request, cancel)
+        let core = self.core().ok_or_else(|| StepError::Fatal("Bridge is shutting down".into()))?;
+        super::session::review_pass(&core, request, cancel)
     }
 
     fn find_posted(&self, job: &JobRow) -> Result<Option<PostedReview>, StepError> {
