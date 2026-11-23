@@ -21,7 +21,7 @@ import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
 import { activeWebDaemon } from "./webDaemon";
 import { asWireKind, readWireKind } from "./transcript/wire";
-import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryConsolidationSettings, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, WorkspaceSessionKind } from "./types";
+import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryConsolidationSettings, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, Workspace, WorkspaceSessionKind } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath, BrowserCloneStatus } from "./types";
 import type { ApiKeysSnapshot, ChatApiKey, SaveApiKeyParams, SavedApiKey } from "./types";
@@ -2552,7 +2552,9 @@ export const bridgeApi = {
     const adapter = mockHealth.adapters.find(item => item.id === agentId);
     return adapter ? Promise.resolve(structuredClone(adapter)) : Promise.reject(new Error(`Unknown coding agent: ${agentId}`));
   },
-  state: (): Promise<BridgeState> => hasBackend() ? call("state/get_state") : Promise.resolve(snapshot()),
+  // The app's own read: no background runs (connector polls, suggestions,
+  // briefings). `state/get_state` still answers other clients with them.
+  state: (): Promise<BridgeState> => hasBackend() ? call("state/get_app_state") : Promise.resolve(snapshot()),
   modelSetup: (): Promise<ModelSetupState> => hasBackend() ? call("models/get_model_setup") as Promise<ModelSetupState> : Promise.resolve(structuredClone(mockModelSetup)),
   recommendedModelProfiles: (): Promise<ModelProfileDraft[]> => hasBackend() ? call("models/recommended_model_profiles") : Promise.resolve(recommendedProfileDrafts(mockHealth.adapters)),
   saveModelProfiles: (profiles: ModelProfileDraft[]): Promise<ModelSetupState> => hasBackend() ? call("models/save_model_profiles", { profiles }) as Promise<ModelSetupState> : Promise.resolve(saveMockProfiles(profiles)),
@@ -3991,7 +3993,13 @@ export const bridgeApi = {
     if (hasBackend()) return ((await call("terminal/list_terminals", { workspaceId })) as { terminalIds: string[] }).terminalIds;
     return [];
   },
-  refreshWorkspace: (workspaceId: string): Promise<BridgeState> => hasBackend() ? call("workspaces/refresh_workspace", { workspaceId }) : Promise.resolve(snapshot()),
+  /** One workspace's Git counts and branch, re-read. Returns the workspace, not
+   *  the whole state: the chat on screen polls this every few seconds. */
+  refreshWorkspaceStats: async (workspaceId: string): Promise<Workspace | undefined> => {
+    if (!hasBackend()) return structuredClone(mockState.workspaces.find(workspace => workspace.id === workspaceId));
+    const result = await call("workspaces/refresh_workspace_stats", { workspaceId });
+    return result.workspace ?? undefined;
+  },
   listWorkspaceBranches: (workspaceId: string): Promise<ListWorkspaceBranchesResult> => {
     if (hasBackend()) return call("workspaces/list_workspace_branches", { workspaceId });
     const current = mockState.workspaces.find(workspace => workspace.id === workspaceId)?.branch ?? null;

@@ -178,6 +178,7 @@ import { CodexUpdateDialog, type CodexUpdatePhase } from "./components/CodexUpda
 import { mergeForestSnapshot } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { createCoalescedRefresh, startSerialPoll } from "./polling";
+import { withWorkspace } from "./workspaceStats";
 import { reviewBadge, useChatChanges } from "./chatChanges";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { TRANSIENT_ALERT_TTL_MS, TransientAlert } from "./components/TransientAlert";
@@ -196,6 +197,10 @@ const UsageScreen = lazy(() => import("./components/UsageScreen").then(module =>
 const NotesScreen = lazy(() => import("./components/NotesScreen").then(module => ({ default: module.NotesScreen })));
 import { NotesScreenSkeleton } from "./components/notes/NotesSkeleton";
 import type { NoteChatRequest, NotesCopilotHost } from "./components/NotesScreen";
+/** Longest rest between two state reads triggered by `state-changed`. Ten
+ *  running chats send one on every turn start and usage update, and slow
+ *  reads used to run end to end for as long as the chats did. */
+const STATE_RELOAD_MAX_PAUSE_MS = 750;
 /** Views drawn by SettingsScreen, which replaces the sidebar while open. */
 const SETTINGS_VIEWS: ReadonlySet<AppView> = new Set<AppView>(["settings", "archives", "saved-setups", "briefing-settings"]);
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
@@ -723,7 +728,7 @@ function AppContent() {
     setConfiguredAgents(config.agents.filter(agent => enabledHarnesses.has(agent.harness)));
     setProviderAccounts(accountChoices(config.harnesses));
     setHarnessConfigs(config.harnesses);
-  }), []);
+  }, { maxPauseMs: STATE_RELOAD_MAX_PAUSE_MS }), []);
   // The first reload can fail because a browser tab's daemon was not up yet.
   // When it attaches, load again and drop an error that only said so.
   useEffect(() => bridgeApi.onBackendAttached(() => {
@@ -1991,8 +1996,8 @@ function AppContent() {
     if (!workspaceId || !hasRepo || backendMode() === "mock") return;
     let active = true;
     const stop = startSerialPoll(async () => {
-      const next = await bridgeApi.refreshWorkspace(workspaceId).catch(() => undefined);
-      if (active && next) setState(next);
+      const next = await bridgeApi.refreshWorkspaceStats(workspaceId).catch(() => undefined);
+      if (active && next) setState(current => withWorkspace(current, next));
     }, 5000);
     return () => { active = false; stop(); };
   }, [workspace?.id, hasRepo]);
@@ -2000,8 +2005,8 @@ function AppContent() {
   /** Pull the workspace's Git stats now, rather than waiting out the poll —
    *  a save should move the Changes badge immediately. */
   const refreshWorkspaceStats = useCallback(async (workspaceId: string) => {
-    const next = await bridgeApi.refreshWorkspace(workspaceId).catch(() => undefined);
-    if (next) setState(next);
+    const next = await bridgeApi.refreshWorkspaceStats(workspaceId).catch(() => undefined);
+    if (next) setState(current => withWorkspace(current, next));
   }, []);
 
   // Poll real subscription usage for every provider, independent of the chat on screen.

@@ -2,23 +2,41 @@ type TimerHandle = ReturnType<typeof setTimeout>;
 
 /** Merge refresh notifications while a read is pending, then fetch once more
  * for changes that arrived during that read. No overlapping snapshots or lost
- * final update, even when a worker emits a burst of state changes. */
-export function createCoalescedRefresh(task: () => Promise<void>): () => Promise<void> {
+ * final update, even when a worker emits a burst of state changes.
+ *
+ * `maxPauseMs` rests between reads: after a read, the next one waits as long
+ * as that read took, up to `maxPauseMs`, so reading never fills more than
+ * half the time. With many chats running, a notification lands while every
+ * read is in flight, and without a rest slow reads ran end to end for as long
+ * as the chats did. A quick read is followed almost at once. */
+export function createCoalescedRefresh(
+  task: () => Promise<void>,
+  { maxPauseMs = 0 }: { maxPauseMs?: number } = {},
+): () => Promise<void> {
   let running: Promise<void> | undefined;
   let requested = false;
+  let rest: { until: number } | undefined;
   return () => {
     requested = true;
     if (!running) {
       running = Promise.resolve().then(async () => {
         try {
           while (requested) {
+            // The rest comes before `requested` is cleared, so everything asked
+            // for meanwhile is answered by the one read that follows it.
+            const wait = rest ? rest.until - Date.now() : 0;
+            if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
             requested = false;
+            const started = Date.now();
             try {
               await task();
             } catch (error) {
               // A newer notification still needs its read, even if this one
               // failed. Without one, report the failure instead of retrying.
               if (!requested) throw error;
+            } finally {
+              const ended = Date.now();
+              rest = { until: ended + Math.min(maxPauseMs, ended - started) };
             }
           }
         } finally {

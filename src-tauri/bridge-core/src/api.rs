@@ -106,7 +106,14 @@ pub fn install_codex_update() -> Result<(), BridgeError> {
     crate::codex_update::install()
 }
 
+/// Every session, Bridge's background runs included, exactly as before
+/// `state/get_app_state` existed. The app reads [`get_app_state`].
 pub fn get_state(core: &Arc<BridgeCore>) -> Result<BridgeState, BridgeError> {
+    core.full_state_snapshot()
+}
+
+/// What the app shows: [`get_state`] without Bridge's background runs.
+pub fn get_app_state(core: &Arc<BridgeCore>) -> Result<BridgeState, BridgeError> {
     core.state_snapshot()
 }
 
@@ -1895,7 +1902,11 @@ pub fn write_workspace_file(
     core.workspace_path(workspace_id)?;
     with_workspace_lock(core, workspace_id, || {
         let root = core.workspace_path(workspace_id)?;
-        workspace_files::write_file(Path::new(&root), path, content, base_sha256)
+        let written = workspace_files::write_file(Path::new(&root), path, content, base_sha256)?;
+        // No tool event reports an editor save; the next message's
+        // repository stamp must not reuse one taken before it.
+        crate::repo_stamp::invalidate_containing(&Path::new(&root).join(path));
+        Ok(written)
     })
 }
 
@@ -1903,13 +1914,29 @@ pub fn refresh_workspace(
     core: &Arc<BridgeCore>,
     workspace_id: &str,
 ) -> Result<BridgeState, BridgeError> {
+    refresh_workspace_stats(core, workspace_id)?;
+    core.state_snapshot()
+}
+
+/// Re-read one workspace's Git counts and branch, and return that workspace.
+///
+/// The app polls this every few seconds for the chat on screen. It used to
+/// return the whole app state, rebuilt under the database lock each time
+/// (59 MB on a lived-in install), which the app then swapped in wholesale.
+/// The row is written only when a count or the branch moved.
+pub fn refresh_workspace_stats(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+) -> Result<crate::workspaces::RefreshedWorkspace, BridgeError> {
     // Resolve the path under the lock, then run Git outside it so a slow
     // status scan cannot delay checkout, message submission, or editor saves.
     core.workspace_path(workspace_id)?;
     let path = locked_workspace_path(core, workspace_id)?;
     let stats = git::stats(Path::new(&path))?;
     let branch = git::current_branch(Path::new(&path));
-    core.record_workspace_git_stats(workspace_id, stats, branch.as_deref())
+    Ok(crate::workspaces::RefreshedWorkspace {
+        workspace: core.record_workspace_git_stats(workspace_id, stats, branch.as_deref())?,
+    })
 }
 
 pub fn list_workspace_branches(

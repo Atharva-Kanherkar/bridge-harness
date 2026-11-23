@@ -138,6 +138,22 @@ pub struct RefreshWorkspaceParams {
     pub workspace_id: String,
 }
 
+/// Re-read one workspace's Git counts and branch: the app's poll for the
+/// chat on screen, without the whole app state `refresh_workspace` returns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RefreshWorkspaceStatsParams {
+    pub workspace_id: String,
+}
+
+/// The workspace as stored after the read; absent when it was archived while
+/// Git ran.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshWorkspaceStatsResult {
+    pub workspace: Option<super::state::Workspace>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListWorkspaceBranchesParams {

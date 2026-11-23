@@ -1186,7 +1186,16 @@ async fn marketplace_action(
 
 #[tauri::command]
 async fn get_state(state: State<'_, Arc<BridgeCore>>) -> Result<BridgeState, BridgeError> {
-    api::get_state(state.inner())
+    // Waits on the database lock: keep that wait off the async runtime's
+    // workers, which every other invoke shares.
+    let core = state.inner().clone();
+    blocking("State read", move || api::get_state(&core)).await
+}
+
+#[tauri::command]
+async fn get_app_state(state: State<'_, Arc<BridgeCore>>) -> Result<BridgeState, BridgeError> {
+    let core = state.inner().clone();
+    blocking("State read", move || api::get_app_state(&core)).await
 }
 
 #[tauri::command]
@@ -3257,6 +3266,18 @@ async fn refresh_workspace(
 }
 
 #[tauri::command]
+async fn refresh_workspace_stats(
+    workspace_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::workspaces::RefreshedWorkspace, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workspace refresh", move || {
+        api::refresh_workspace_stats(&core, &workspace_id)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn list_workspace_branches(
     workspace_id: String,
     state: State<'_, Arc<BridgeCore>>,
@@ -3889,6 +3910,7 @@ pub fn run() -> i32 {
             get_review_job_settings,
             save_review_job_settings,
             get_state,
+            get_app_state,
             get_session_forest,
             get_session_forest_digest,
             get_context_breakdown,
@@ -4111,6 +4133,7 @@ pub fn run() -> i32 {
             cancel_provider_login,
             stop_session,
             refresh_workspace,
+            refresh_workspace_stats,
             list_workspace_branches,
             checkout_workspace_branch,
             archive_workspace,
@@ -5295,6 +5318,20 @@ mod tests {
     }
 
     #[test]
+    fn history_snapshots_space_out_as_the_database_grows() {
+        use bridge_core::live_turn::{history_snapshot_interval, HISTORY_SNAPSHOT_MAX_INTERVAL};
+        const GIB: u64 = 1 << 30;
+        // Small databases keep the 15-minute cadence.
+        assert_eq!(history_snapshot_interval(0), HISTORY_SNAPSHOT_INTERVAL);
+        assert_eq!(history_snapshot_interval(200 << 20), HISTORY_SNAPSHOT_INTERVAL);
+        assert_eq!(history_snapshot_interval(GIB), HISTORY_SNAPSHOT_INTERVAL);
+        // The measured 7.9 GB database: every two hours, not every fifteen minutes.
+        assert_eq!(history_snapshot_interval(7_899_316_224), Duration::from_secs(2 * 60 * 60));
+        // Never longer than the ceiling.
+        assert_eq!(history_snapshot_interval(500 * GIB), HISTORY_SNAPSHOT_MAX_INTERVAL);
+    }
+
+    #[test]
     fn pressure_compaction_starts_only_at_seventy_five_percent_with_new_work() {
         let db = policy_fixture();
         session_forest::SessionForest::new(&db)
@@ -5434,7 +5471,17 @@ mod tests {
             "aligned"
         );
 
+        // A tool changes the folder and reports it. Entry stamps come from a
+        // cache that a tool completion invalidates (see `repo_stamp`), so the
+        // reply after it is measured again.
         std::fs::write(repository.join("tracked.txt"), "changed\n").unwrap();
+        session_forest::SessionForest::new(&db)
+            .append(
+                "s",
+                session_forest::EntryKind::ToolCompleted,
+                serde_json::json!({"toolId":"edit-1","title":"Edit","status":"completed"}),
+            )
+            .unwrap();
         let dirty = session_forest::SessionForest::new(&db)
             .append(
                 "s",

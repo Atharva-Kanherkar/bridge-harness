@@ -193,6 +193,8 @@ typed_methods![
     (InstallCodexUpdate, _, UnitResult),
     // state — the aggregate application snapshot
     (GetState, _, BridgeState),
+    // The same document without Bridge's own background runs: what the app shows.
+    (GetAppState, _, BridgeState),
     // projects
     (AddProject, AddProjectParams, BridgeState),
     // external harness import — explicit local discovery, preview, and commit
@@ -239,6 +241,7 @@ typed_methods![
     (ReadWorkspaceFile, ReadWorkspaceFileParams, ReadWorkspaceFileResult),
     (WriteWorkspaceFile, WriteWorkspaceFileParams, WriteWorkspaceFileResult),
     (RefreshWorkspace, RefreshWorkspaceParams, BridgeState),
+    (RefreshWorkspaceStats, RefreshWorkspaceStatsParams, RefreshWorkspaceStatsResult),
     (ListWorkspaceBranches, ListWorkspaceBranchesParams, ListWorkspaceBranchesResult),
     (CheckoutWorkspaceBranch, CheckoutWorkspaceBranchParams, BridgeState),
     (ArchiveWorkspace, ArchiveWorkspaceParams, BridgeState),
@@ -779,6 +782,7 @@ mod tests {
         for method in [
             MethodName::Health,
             MethodName::GetState,
+            MethodName::GetAppState,
             MethodName::RefreshAccountUsage,
             MethodName::GetMemoryCapabilities,
             MethodName::GetExtractionSettings,

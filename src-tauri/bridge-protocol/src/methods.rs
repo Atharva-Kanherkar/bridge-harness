@@ -44,6 +44,7 @@ methods![
     (InstallCodexUpdate, "health", "install_codex_update"),
     // state — the aggregate application snapshot
     (GetState, "state", "get_state"),
+    (GetAppState, "state", "get_app_state"),
     // projects
     (AddProject, "projects", "add_project"),
     // external harness import
@@ -90,6 +91,7 @@ methods![
     (ReadWorkspaceFile, "workspaces", "read_workspace_file"),
     (WriteWorkspaceFile, "workspaces", "write_workspace_file"),
     (RefreshWorkspace, "workspaces", "refresh_workspace"),
+    (RefreshWorkspaceStats, "workspaces", "refresh_workspace_stats"),
     (ListWorkspaceBranches, "workspaces", "list_workspace_branches"),
     (CheckoutWorkspaceBranch, "workspaces", "checkout_workspace_branch"),
     (ArchiveWorkspace, "workspaces", "archive_workspace"),
