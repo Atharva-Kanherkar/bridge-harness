@@ -292,7 +292,7 @@ The adapter command for each harness:
 
 `bridge_protocol`:
 
-- `handshake::tests::early_compaction_client_rejects_a_daemon_without_it` (an old daemon refuses a new client, a new daemon accepts an old client)
+- `handshake::tests::a_1_51_client_pairs_with_an_early_compaction_daemon` (protocol 1.52: an old daemon refuses a new client, a new daemon accepts an old client)
 - `messages::config::tests::early_compaction_settings_params_refuse_unknown_fields`
 - `tsgen::tests::checked_in_artifacts_match_the_contract` passes after the generator runs
 
