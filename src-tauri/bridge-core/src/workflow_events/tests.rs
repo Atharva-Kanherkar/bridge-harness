@@ -230,11 +230,13 @@ fn a_github_source_baselines_first_then_fires_each_new_pull_request_once() {
     assert!(pending(&core.db.lock().unwrap(), &workflow.id).is_empty());
     // Not due again within the poll interval: no second `gh` call.
     poll_github(&core, &gh, start + Duration::seconds(10)).unwrap();
+    poll_github(&core, &gh, start + Duration::seconds(GITHUB_POLL_SECONDS - 1)).unwrap();
     assert_eq!(*gh.calls.lock().unwrap(), 1);
 
     // PR 6 is opened; PR 4 appears late but was opened before the anchor.
+    // Due again exactly one interval after the last read.
     gh.set(Ok(&format!("[{}, {}, {}]", pr(6, "2026-11-24T00:00:30Z"), pr(5, "2026-11-22T00:00:00Z"), pr(4, "2026-11-19T00:00:00Z"))));
-    let later = start + Duration::seconds(GITHUB_POLL_SECONDS + 1);
+    let later = start + Duration::seconds(GITHUB_POLL_SECONDS);
     assert_eq!(poll_github(&core, &gh, later).unwrap(), 1);
     assert_eq!(pending(&core.db.lock().unwrap(), &workflow.id), vec!["github:pr:acme/app#6"]);
     // The same read again records nothing: exactly once.
