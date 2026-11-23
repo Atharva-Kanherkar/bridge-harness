@@ -830,18 +830,28 @@ pub fn start_workflow_maintenance(core: Arc<BridgeCore>) {
         .expect("spawn workflow maintenance thread");
 }
 
-fn maintenance_loop(core: Arc<BridgeCore>) -> ! {
-    loop {
-        match tick(&core, Utc::now()) {
-            Ok(claimed) => {
-                for run in claimed {
-                    dispatch(core.clone(), run);
-                }
-            }
-            Err(error) => eprintln!("[bridge] workflow maintenance failed: {error}"),
-        }
+fn maintenance_loop(core: Arc<BridgeCore>) {
+    while maintenance_pass(&core, Utc::now()) {
         std::thread::sleep(StdDuration::from_secs(TICK_SECONDS));
     }
+}
+
+/// One pass of the loop. False once the core is retired: the directory's
+/// next owner settles and claims these runs, and two owners must never
+/// lease the same occasion.
+fn maintenance_pass(core: &Arc<BridgeCore>, now: DateTime<Utc>) -> bool {
+    if core.is_retired() {
+        return false;
+    }
+    match tick(core, now) {
+        Ok(claimed) => {
+            for run in claimed {
+                dispatch(core.clone(), run);
+            }
+        }
+        Err(error) => eprintln!("[bridge] workflow maintenance failed: {error}"),
+    }
+    true
 }
 
 #[cfg(test)]
@@ -1421,6 +1431,21 @@ mod tests {
             }
         }
         assert_eq!(published, 3);
+    }
+
+    #[test]
+    fn a_retired_core_never_claims_a_due_slot() {
+        let (dir, core) = test_support::core();
+        let at_slot = at("2026-10-29T09:00:20Z");
+        let workflow = {
+            let db = core.db.lock().unwrap();
+            let workflow = approved(&db, dir.path(), "2026-10-26T00:00:00Z", "0 9 * * *");
+            assert_eq!(due_occasions(&db, at_slot).unwrap().len(), 1, "a slot is due, so a live pass would claim it");
+            workflow
+        };
+        core.retire();
+        assert!(!maintenance_pass(&core, at_slot), "a retired core's loop ends");
+        assert!(list_runs(&core.db.lock().unwrap(), Some(&workflow.id), false, 10).unwrap().is_empty(), "the next owner claims it, not this core");
     }
 
     #[test]
