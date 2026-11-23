@@ -3,10 +3,13 @@
 //! shapes, and `reviews/job_updated` reaches the connection as the daemon's own
 //! runner drives a job.
 //!
-//! Only GitHub is fake: the shared `fake-gh.sh` is first on `PATH`. The
-//! daemon's runner has no reviewer pipeline yet, so a job it claims fails with
-//! a plain reason; a drafted job (which the runner never claims) gives the
-//! idempotency checks a job that holds still.
+//! Fully offline. GitHub is a local bare repository holding `main` and
+//! `refs/pull/103/head`, and the shared `fake-gh.sh` (first on `PATH`) answers
+//! `gh`, resolving the repository through its default. The daemon's runner
+//! prepares a real review checkout; the reviewer itself is not in this build,
+//! so the job then fails with a plain reason, and its checkout is gone. A
+//! drafted job (which the runner never claims) gives the idempotency checks a
+//! job that holds still.
 
 // A test harness: a failed unwrap or expect in a helper is the test failing.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -19,9 +22,10 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-fn git(cwd: &Path, args: &[&str]) {
+fn git(cwd: &Path, args: &[&str]) -> String {
     let output = std::process::Command::new("git").args(args).current_dir(cwd).output().unwrap();
     assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 /// `gh` that answers from `testing/fixtures/github`, first on `PATH`.
@@ -30,7 +34,7 @@ fn fake_gh() -> tempfile::TempDir {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testing/fixtures/github").canonicalize().unwrap();
     std::fs::write(directory.path().join("fixture-root"), fixtures.to_str().unwrap()).unwrap();
     std::fs::write(directory.path().join("auth-exit"), "0").unwrap();
-    std::fs::write(directory.path().join("default-repository"), "").unwrap();
+    std::fs::write(directory.path().join("default-repository"), "fixture/project").unwrap();
     std::os::unix::fs::symlink(fixtures.join("fake-gh.sh"), directory.path().join("gh")).unwrap();
     let mut paths = vec![directory.path().to_path_buf()];
     paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
@@ -169,13 +173,57 @@ impl Client {
     }
 }
 
+/// Retry queues a linked job; the daemon's runner claims it, prepares a real
+/// checkout of the PR head, and, with no reviewer in this build, fails it with
+/// a plain reason, leaving no checkout behind.
+fn retry_prepares_then_fails_cleanly(client: &mut Client, data_dir: &Path, repo: &Path, seeded: &str) -> String {
+    let retried = client.call("reviews/retry_review", json!({"jobId": seeded}));
+    let retry = &retried["result"]["job"];
+    assert_eq!(retry["retryOf"], json!(seeded), "{retried}");
+    let retry_id = retry["id"].as_str().unwrap().to_owned();
+    assert_ne!(retry_id, seeded);
+    let failed = client.job_update(&retry_id, |job| job["status"] == json!("failed"));
+    assert_eq!(failed["error"], json!("This build cannot run PR reviews yet"));
+    client.job_update(&retry_id, |job| job["status"] == json!("preparing"));
+    let reviewing = client.job_update(&retry_id, |job| job["status"] == json!("reviewing"));
+    assert_ne!(reviewing["headSha"], json!("current-head-sha"), "the job moved to the head the fetch found");
+    let detail = client.call("reviews/get_review", json!({"jobId": retry_id}));
+    assert_eq!(detail["result"]["passes"][0]["error"], json!("This build cannot run PR reviews yet"), "{detail}");
+    let reviews = data_dir.join("worktrees").join("reviews");
+    let left: Vec<_> = std::fs::read_dir(&reviews).map(|entries| entries.filter_map(Result::ok).map(|entry| entry.path()).collect()).unwrap_or_default();
+    assert!(left.is_empty(), "review checkouts left: {left:?}");
+    let listed_worktrees = git(repo, &["worktree", "list", "--porcelain"]);
+    assert_eq!(listed_worktrees.matches("worktree ").count(), 1, "{listed_worktrees}");
+    retry_id
+}
+
+/// A repository whose `origin` is a local bare repository standing in for
+/// GitHub, with `main` and pull request #103.
+fn repository_with_a_pull_request(repo: &Path, github: &Path) {
+    git(repo, &["init", "-q", "-b", "main"]);
+    git(repo, &["config", "user.email", "t@example.invalid"]);
+    git(repo, &["config", "user.name", "T"]);
+    git(repo, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(repo.join("README.md"), "base\n").unwrap();
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-q", "-m", "base"]);
+    git(github, &["init", "-q", "--bare"]);
+    git(repo, &["remote", "add", "origin", github.to_str().unwrap()]);
+    git(repo, &["push", "-q", "origin", "main"]);
+    git(repo, &["checkout", "-q", "-b", "pr"]);
+    std::fs::write(repo.join("README.md"), "base\nchanged by the PR\n").unwrap();
+    git(repo, &["commit", "-q", "-am", "the PR"]);
+    git(repo, &["push", "-q", "origin", "HEAD:refs/pull/103/head"]);
+    git(repo, &["checkout", "-q", "main"]);
+}
+
 #[test]
 fn reviews_methods_round_trip_through_the_daemon() {
     let _gh = fake_gh();
     let fixture = tempfile::tempdir().unwrap();
     let repo = tempfile::tempdir().unwrap();
-    git(repo.path(), &["init", "-q", "-b", "main"]);
-    git(repo.path(), &["remote", "add", "origin", "https://github.com/fixture/project.git"]);
+    let github = tempfile::tempdir().unwrap();
+    repository_with_a_pull_request(repo.path(), github.path());
     let seeded = seed(fixture.path(), repo.path());
     let (daemon, listener) = Daemon::start(DaemonConfig {
         data_dir: fixture.path().to_path_buf(),
@@ -223,17 +271,7 @@ fn reviews_methods_round_trip_through_the_daemon() {
     let again = client.call("reviews/cancel_review", json!({"jobId": seeded}));
     assert!(again["error"]["message"].as_str().unwrap().contains("already cancelled"), "{again}");
 
-    // Retry queues a linked job; the daemon's runner claims it and, with no
-    // reviewer pipeline in this build, fails it with a plain reason.
-    let retried = client.call("reviews/retry_review", json!({"jobId": seeded}));
-    let retry = &retried["result"]["job"];
-    assert_eq!(retry["retryOf"], json!(seeded), "{retried}");
-    let retry_id = retry["id"].as_str().unwrap().to_owned();
-    assert_ne!(retry_id, seeded);
-    let failed = client.job_update(&retry_id, |job| job["status"] == json!("failed"));
-    assert_eq!(failed["error"], json!("This build cannot run PR reviews yet"));
-    client.job_update(&retry_id, |job| job["status"] == json!("preparing"));
-
+    let retry_id = retry_prepares_then_fails_cleanly(&mut client, fixture.path(), repo.path(), &seeded);
     let listed = client.call("reviews/list_reviews", json!({"workspaceId": "w"}));
     let ids: Vec<&str> = listed["result"]["jobs"].as_array().unwrap().iter().map(|job| job["id"].as_str().unwrap()).collect();
     assert_eq!(ids, [retry_id.as_str(), seeded.as_str()], "newest first");
