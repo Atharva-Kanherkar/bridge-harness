@@ -101,6 +101,33 @@ describe("the editor's event trigger", () => {
     expect(button("Approve and save")!.disabled).toBe(false);
     expect(field<HTMLInputElement>("Channel filter")).toBeNull();
   });
+
+  it("takes the default model when the options arrive after it opened", async () => {
+    const options = await bridgeApi.workflowOptions();
+    const claude = options.harnesses.find(harness => harness.id === "claude")!;
+    const render = (current: typeof options | null) => root.render(<WorkflowEditor open workflow={null} options={current} projects={[]} busy={false} error={null} onCancel={() => {}} onSubmit={() => {}}/>);
+    await act(async () => render(null));
+    change(field<HTMLInputElement>("Workflow name"), "Digest");
+    change(field<HTMLTextAreaElement>("Workflow instructions"), "Summarise it.");
+    expect(document.body.textContent).toContain("Loading agents and connectors");
+    expect(button("Approve and save")!.disabled).toBe(true);
+    await act(async () => render(options));
+    expect(field<HTMLSelectElement>("Workflow model").value).toBe(claude.defaultModel ?? claude.models[0].id);
+    expect(document.body.textContent).not.toContain("Loading agents and connectors");
+    expect(button("Approve and save")!.disabled).toBe(false);
+  });
+
+  it("never shows a model as chosen when none is", async () => {
+    const options = await bridgeApi.workflowOptions();
+    const bare = { ...options, harnesses: options.harnesses.map(harness => harness.id === "claude" ? { ...harness, defaultModel: null, models: harness.models.map(model => ({ ...model })) } : harness) };
+    const claude = bare.harnesses.find(harness => harness.id === "claude")!;
+    const workflow = { id: "wf", revisionId: "r1", approved: false, enabled: true, disabledReason: null, definition: { name: "Old", projectId: null, steps: [{ harness: "claude", model: "claude-retired-1", instructions: "Do it." }], trigger: { kind: "manual" as const }, grants: [], alwaysAllow: [], files: "none" as const, budget: { maxWallSeconds: 600, maxTurns: 24, maxToolCalls: 64, maxOutputTokens: null, costCeilingMicrousd: null }, expectedResult: "", notify: { onSuccess: false } } };
+    await act(async () => root.render(<WorkflowEditor open workflow={workflow as never} options={bare} projects={[]} busy={false} error={null} onCancel={() => {}} onSubmit={() => {}}/>));
+    const select = field<HTMLSelectElement>("Workflow model");
+    expect(select.value).toBe("claude-retired-1");
+    expect(select.selectedOptions[0].textContent).toBe("claude-retired-1");
+    expect(claude.models.some(model => model.id === "claude-retired-1")).toBe(false);
+  });
 });
 
 const summary = (overrides: Partial<WorkflowSummary>): WorkflowSummary => ({

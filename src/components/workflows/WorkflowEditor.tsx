@@ -130,6 +130,15 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, triggerKey]);
 
+  // Options can arrive after the editor opened (a cold start): take their
+  // default model instead of keeping an empty one the select would hide.
+  useEffect(() => {
+    if (!options || step.model.trim()) return;
+    const candidate = options.harnesses.find(entry => entry.id === step.harness);
+    const model = candidate?.defaultModel ?? candidate?.models[0]?.id;
+    if (model) setDefinition(current => ({ ...current, steps: [{ ...current.steps[0], model }] }));
+  }, [options, step.harness, step.model]);
+
   const grantFor = (server: string): WorkflowGrant | undefined => grants.find(grant => grant.server === server);
   const setGrant = (server: string, next: WorkflowGrant | null) => {
     const rest = grants.filter(grant => grant.server !== server);
@@ -228,7 +237,7 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
         </div>
         <label className={FIELD}>Model
           {harness && harness.models.length > 0
-            ? <select aria-label="Workflow model" className={SELECT} value={step.model} onChange={event => updateStep({ model: event.target.value })}>{harness.models.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}</select>
+            ? <select aria-label="Workflow model" className={SELECT} value={step.model} onChange={event => updateStep({ model: event.target.value })}>{!harness.models.some(model => model.id === step.model) && <option value={step.model} disabled>{step.model || "Choose a model"}</option>}{harness.models.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}</select>
             : <Input aria-label="Workflow model" className="mt-1" value={step.model} onChange={event => updateStep({ model: event.target.value })}/>}
         </label>
 
@@ -271,7 +280,9 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
           <label className="flex items-end gap-2 pb-1.5 text-caption text-muted-foreground"><input type="checkbox" aria-label="Notify on success" checked={definition.notify?.onSuccess ?? false} onChange={event => update({ notify: { onSuccess: event.target.checked } })} className="size-3.5 accent-foreground"/>Notify me on success too</label>
         </div>
         {refusal && <p className="text-caption text-muted-foreground">This agent cannot run this workflow: {refusal}.</p>}
+        {!options && <p className="inline-flex items-center gap-1.5 text-caption text-muted-foreground"><LoaderCircle className="animate-spin" size={11}/>Loading agents and connectors…</p>}
         {missingRepo && <p className="text-caption text-muted-foreground">Choose the repository to watch, as owner/name.</p>}
+        {options && !step.model.trim() && <p className="text-caption text-muted-foreground">Choose a model.</p>}
         <ErrorNote message={error}/>
       </DialogPanel>
       <DialogFooter>
