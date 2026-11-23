@@ -26,6 +26,31 @@ authority; this file names what this branch must prove. It builds on the runner 
 - **Git timeouts:** fetch gets 5 minutes; other git calls keep the 30 s default.
 - **`prior_findings.json`** belongs to sub-issue 7 and is not written here.
 
+## Amendments after review 6018851502
+
+- **Checkout ownership is reserved before the checkout exists.** `prepare` records
+  `worktree_path` under the claim first, then cuts the checkout, both inside a per-core checkout
+  lock. The reaper, `cleanup` and the guard take the same lock, so a sweep can never see a
+  checkout that is being created as an orphan. If the checkout cannot be cut, the reservation is
+  cleared.
+- **A re-claim retires the old attempt's checkout path.** Claiming a requeued job sets
+  `worktree_path` to null, so the replacement counts as a pending checkout against the budget
+  until its own is recorded.
+- **Everything an attempt writes is the attempt's own.** Context lives in
+  `<data>/review-jobs/<job id>/<attempt>/context/`, and fetched refs are
+  `refs/bridge/reviews/<job12>-<attempt>/head` and `.../base`. A guard removes only its attempt's
+  checkout, folder and refs; `cleanup(job)` removes every attempt's.
+- **Patch sections are grouped by file.** Consecutive `diff --git` sections for the same path
+  (a type change is a deletion plus an addition) stay together and are kept or omitted whole.
+- **Metadata and threads come from the job's repository.** `pr_detail` and `pr_review_threads`
+  are read with the job's saved owner and name (on the host the workspace resolves to), never
+  whatever the workspace resolves to now.
+- **Shallow clones are deepened before a PR is called unrelated.** When merge-base fails in a
+  shallow repository, the two refs are fetched again with `--deepen` 64, 512 and 4096, then
+  `--unshallow`. Only then is "shares no history" reported.
+- **Fixtures name their default branch** (`git init --bare -b main`, `clone --branch main`), and
+  the suite passes with `init.defaultBranch=master`.
+
 ## Functional Behavior
 
 ### Prepare
@@ -98,6 +123,16 @@ authority; this file names what this branch must prove. It builds on the runner 
 - `the_budget_refuses_when_full_after_a_sweep`
 - `a_killed_process_leaves_nothing_after_restart` (a child process creates a review worktree and
   is SIGKILLed; recovery in a fresh core removes it and `git worktree list` has no entry)
+
+Regressions for the review findings (`reviews::prepare::tests`):
+- `a_sweep_during_checkout_creation_keeps_the_new_checkout` (a hook pauses `git worktree add`
+  while a sweep runs)
+- `a_superseded_attempts_guard_leaves_the_replacement_context`
+- `a_type_change_keeps_both_halves_with_its_file`
+- `a_reclaimed_attempt_counts_against_the_budget_until_it_cuts_its_checkout`
+- `metadata_and_threads_come_from_the_jobs_repository`
+- `concurrent_jobs_on_the_same_pr_number_fetch_into_their_own_refs`
+- `a_shallow_clone_is_deepened_to_find_the_merge_base`
 
 `reviews::runner::tests`:
 - `a_full_worktree_budget_holds_queued_jobs_until_a_slot_frees`
