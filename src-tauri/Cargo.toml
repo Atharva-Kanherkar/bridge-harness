@@ -90,6 +90,24 @@ incremental = false
 debug = 0
 incremental = false
 
+# The Bridge people run day to day is often a dev build (`bun run tauri dev`),
+# and these dependencies sit on its hot paths: every database read and write,
+# every response encoded, every history snapshot hashed. Unoptimized, SQLite
+# alone made the app state read several times slower, and hashing an 8 GB
+# snapshot took 8.5 minutes. Only these crates are optimized; Bridge's own
+# crates keep fast incremental builds.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3
+
+[profile.dev.package.rusqlite]
+opt-level = 3
+
+[profile.dev.package.serde_json]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
+
 # Pins the GTK program name (the Wayland app id / WM class) to `bridge`.
 # Already in the tree through Tauri's GTK stack; this only names it.
 [target.'cfg(target_os = "linux")'.dependencies]
