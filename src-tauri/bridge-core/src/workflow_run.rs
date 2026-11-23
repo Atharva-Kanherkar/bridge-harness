@@ -475,6 +475,12 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
     }
     workflow_trigger::publish_runs(core, std::slice::from_ref(&run.id));
 
+    // Stop pressed (or the workflow deleted) while the run was being set up:
+    // its session has no provider yet, so nothing else can stop it. Do not
+    // start one.
+    if !workflow_trigger::holds(&core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner), &run.id, &lease_owner)? {
+        return Ok(());
+    }
     let baseline = max_sequence(&core.db.lock().unwrap(), &session_id)?;
     if let Err(error) = crate::live_turn::submit_workflow_turn(core, session_id.clone(), trigger_turn(&run)) {
         return settle(core, &run, &lease_owner, &session_id, wire::WorkflowRunStatus::Failed, Outcome {
@@ -629,6 +635,12 @@ fn wait_for_turn_within(
         }
         let (completed, status, exhausted) = {
             let db = core.db.lock().unwrap();
+            // Cancelled, deleted or reclaimed: Stop means now. The provider
+            // may have started after the canceller looked for it, so only
+            // this loop can stop it.
+            if !workflow_trigger::holds(&db, &run.id, lease_owner)? {
+                return Ok(TurnEnd::LeaseLost);
+            }
             if last_heartbeat.elapsed() >= HEARTBEAT {
                 if !workflow_trigger::heartbeat(&db, &run.id, lease_owner, Utc::now())? {
                     return Ok(TurnEnd::LeaseLost);
@@ -1171,6 +1183,42 @@ mod tests {
         assert!(!budget_reached(&db, "run-session", 0, &budget).unwrap(), "a tool-only message is one allowed turn");
         agent_event(&db, 10, "assistant.message", None, Some("second message"));
         assert!(budget_reached(&db, "run-session", 0, &budget).unwrap(), "the second message exceeds one turn");
+    }
+
+    #[test]
+    fn a_cancelled_or_deleted_run_is_noticed_on_the_first_poll_not_the_heartbeat() {
+        for how in ["cancel", "delete"] {
+            let (dir, core) = test_support::core();
+            let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+            // The provider came up after the canceller looked for it.
+            budget_runtime(&core);
+            {
+                let db = core.db.lock().unwrap();
+                match how {
+                    "cancel" => { workflow_trigger::cancel(&db, &run.run.id, Utc::now()).unwrap(); }
+                    _ => { db.execute("DELETE FROM workflow_runs WHERE id=?1", params![run.run.id]).unwrap(); }
+                }
+            }
+            let started = Instant::now();
+            let budget = test_support::definition().budget;
+            let end = wait_for_turn_within(&core, &run.run, &run.lease_owner, "run-session", 0, &budget, StdDuration::from_secs(60)).unwrap();
+            assert_eq!(end, TurnEnd::LeaseLost, "{how}");
+            assert!(started.elapsed() < StdDuration::from_secs(5), "{how}: took {:?}, the heartbeat is {HEARTBEAT:?}", started.elapsed());
+        }
+    }
+
+    #[test]
+    fn deleting_a_workflow_stops_its_running_session_first() {
+        let (dir, core) = test_support::core();
+        let mut definition = test_support::definition();
+        // No connector grants, so nothing asks Claude's configuration.
+        definition.grants.clear();
+        let run = bound_run(&core, dir.path(), &definition, false);
+        let stopped = budget_runtime(&core);
+        crate::api::delete_workflow(&core, &wire::DeleteWorkflowParams { workflow_id: run.run.workflow_id.clone() }).unwrap();
+        assert!(stopped.load(std::sync::atomic::Ordering::SeqCst), "the session is stopped, not left to its next heartbeat");
+        assert!(!core.adapters.lock().unwrap().contains_key("run-session"));
+        assert!(workflow_trigger::get_run(&core.db.lock().unwrap(), &run.run.id).unwrap().is_none());
     }
 
     #[test]

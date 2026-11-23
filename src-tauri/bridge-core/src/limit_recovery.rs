@@ -813,6 +813,22 @@ fn tick_interval() -> std::time::Duration {
         .unwrap_or(std::time::Duration::from_secs(20))
 }
 
+/// One pass of the loop. False once the core is retired: the directory has
+/// (or is about to have) another owner, whose own loop acts on these rows.
+fn maintenance_pass(core: &std::sync::Arc<crate::runtime::BridgeCore>, power: &mut PowerAssertion) -> bool {
+    if core.is_retired() {
+        power.hold(false);
+        return false;
+    }
+    match tick(&core.db, &LiveActions { core }, Utc::now()) {
+        Ok(report) if report.changed() => core.events.publish(crate::events::CoreEvent::StateChanged),
+        Ok(_) => {}
+        Err(error) => eprintln!("[limit-recovery] tick failed: {error}"),
+    }
+    power.hold(has_pending(&lock(&core.db)));
+    true
+}
+
 /// Start the loop. Part of data-directory ownership: the daemon and the
 /// embedded host both call it, exactly once.
 pub fn start_limit_recovery_maintenance(core: std::sync::Arc<crate::runtime::BridgeCore>) {
@@ -821,13 +837,7 @@ pub fn start_limit_recovery_maintenance(core: std::sync::Arc<crate::runtime::Bri
             eprintln!("[limit-recovery] could not recover interrupted rows: {error}");
         }
         let mut power = PowerAssertion::default();
-        loop {
-            match tick(&core.db, &LiveActions { core: &core }, Utc::now()) {
-                Ok(report) if report.changed() => core.events.publish(crate::events::CoreEvent::StateChanged),
-                Ok(_) => {}
-                Err(error) => eprintln!("[limit-recovery] tick failed: {error}"),
-            }
-            power.hold(has_pending(&lock(&core.db)));
+        while maintenance_pass(&core, &mut power) {
             std::thread::sleep(tick_interval());
         }
     });
@@ -1195,6 +1205,37 @@ mod tests {
     }
 
     // ------------------------------------------------------------ tick
+
+    #[test]
+    fn a_retired_core_leaves_a_due_recovery_to_the_next_owner() {
+        for retired in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(dir.path()));
+            {
+                let db = core.db.lock().unwrap();
+                db.execute(
+                    "INSERT INTO sessions(id,workspace_id,harness,label,status,model,effort) VALUES('chat',NULL,'claude','Chat','failed','opus','high')",
+                    [],
+                ).unwrap();
+                set(&db, &resume());
+                let earlier = Utc::now() - Duration::hours(2);
+                observe(&db, "chat", LimitKind::Usage, "usage limit", Some(earlier), earlier).unwrap();
+                assert!(make_due_now(&db, "chat", Utc::now()).unwrap());
+            }
+            if retired {
+                core.retire();
+            }
+            let mut power = PowerAssertion::default();
+            assert_eq!(maintenance_pass(&core, &mut power), !retired, "a retired core's loop ends");
+            let state = get(&core.db.lock().unwrap(), "chat").unwrap().unwrap().state;
+            if retired {
+                assert_eq!(state, LimitRecoveryState::Pending, "the next owner's loop acts on the row, not this one");
+                assert!(!power.holding());
+            } else {
+                assert_ne!(state, LimitRecoveryState::Pending, "a live core does act on a due row");
+            }
+        }
+    }
 
     #[test]
     fn tick_waits_for_due_then_continues_on_the_same_model() {

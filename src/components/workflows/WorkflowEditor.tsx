@@ -35,7 +35,9 @@ export function harnessRefusal(options: WorkflowOptions | null, harnessId: strin
   if (!harness) return "not registered";
   const needsConnectorAuthority = (definition.grants ?? []).length > 0 || definition.files === "none";
   if (needsConnectorAuthority && !harness.connectorsAllowed) return harness.connectorsReason ?? "cannot limit a run to single connector tools";
-  if (definition.files === "worktree" && !harness.worktreeAllowed) return "cannot run worktree jobs";
+  // Core refuses worktree jobs by the same gate as connectors: a worktree run
+  // must still be kept from every connector. Its reason says why.
+  if (definition.files === "worktree" && !harness.worktreeAllowed) return harness.connectorsReason ?? "cannot run worktree jobs";
   return null;
 }
 

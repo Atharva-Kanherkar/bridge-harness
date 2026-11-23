@@ -57,6 +57,8 @@ mod clone_browser_eval;
 #[cfg(test)]
 mod orchestrator_wait_eval;
 #[cfg(test)]
+mod perf_bench;
+#[cfg(test)]
 mod settings_tools_eval;
 /// Composes the clone process, guard, sign-in, and agent tool into the
 /// actual flow: approve, spawn, sign in, arm, drive, and destroy.
@@ -74,6 +76,7 @@ pub mod codex_import;
 pub mod conductor_import;
 pub mod opencode_import;
 pub mod orca_import;
+pub mod superset_import;
 pub mod t3code_import;
 pub mod codex_adapter;
 mod codex_update;
@@ -197,6 +200,7 @@ pub mod sessions;
 pub mod settings_tools;
 pub mod skill_marketplace;
 pub mod slash;
+pub mod repo_stamp;
 pub mod store;
 pub mod usage_import;
 pub mod suggestion_engine;

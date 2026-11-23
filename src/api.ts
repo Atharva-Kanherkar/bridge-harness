@@ -21,7 +21,7 @@ import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
 import { activeWebDaemon } from "./webDaemon";
 import { asWireKind, readWireKind } from "./transcript/wire";
-import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryConsolidationSettings, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, WorkspaceSessionKind } from "./types";
+import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryConsolidationSettings, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, Workspace, WorkspaceSessionKind } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath, BrowserCloneStatus } from "./types";
 import type { ApiKeysSnapshot, ChatApiKey, SaveApiKeyParams, SavedApiKey } from "./types";
@@ -1703,10 +1703,10 @@ const mockWorkflowOptions: WorkflowOptions = {
   harnesses: [
     { id: "claude", label: "Claude Code", available: true, connectorsAllowed: true, connectorsReason: null, worktreeAllowed: true, defaultModel: "haiku",
       models: [{ id: "haiku", label: "Claude Haiku", tier: "fast", defaultForBriefing: true }, { id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForBriefing: false }] },
-    { id: "codex", label: "Codex", available: true, connectorsAllowed: false, worktreeAllowed: true, defaultModel: "gpt-5.5",
+    { id: "codex", label: "Codex", available: true, connectorsAllowed: false, worktreeAllowed: false, defaultModel: "gpt-5.5",
       connectorsReason: "the app-server protocol has no per-tool authority, so an exact connector read cannot be isolated from a mutation",
       models: [{ id: "gpt-5.5", label: "GPT-5.5", tier: "standard", defaultForBriefing: false }] },
-    { id: "opencode", label: "OpenCode", available: true, connectorsAllowed: false, worktreeAllowed: true, defaultModel: null,
+    { id: "opencode", label: "OpenCode", available: true, connectorsAllowed: false, worktreeAllowed: false, defaultModel: null,
       connectorsReason: "its permission rules are coarse families, so one reviewed connector tool cannot be admitted without admitting its neighbours", models: [] },
   ],
   servers: [
@@ -1881,9 +1881,8 @@ function startMockImport(tool: string): ImportJob {
   return job;
 }
 
-/** Mock-mode tools: Claude Code, Codex and OpenCode found with history, an ADE found, the rest absent. */
+/** Mock-mode tools: Claude Code, Codex and OpenCode found with history, and every ADE Bridge imports from found too. */
 function mockImportSources(): ImportSourcesDetection {
-  const absent = (tool: string, label: string, note: string) => ({ tool, label, installed: false, supported: false, roots: [], counts: { chats: 0, projects: 0, workspaces: 0, memories: 0, setup: 0, background: 0 }, note });
   return {
     detectedAt: new Date().toISOString(),
     sources: [
@@ -1893,7 +1892,7 @@ function mockImportSources(): ImportSourcesDetection {
       { tool: "conductor", label: "Conductor", installed: true, supported: true, roots: ["/mock/conductor"], counts: { chats: 0, projects: 2, workspaces: 5, memories: 0, setup: 0, background: 0 }, note: "Workspaces come over as Bridge workspaces, left where they are, so Conductor keeps working with them. Their chats come over with the Claude Code and Codex imports." },
       { tool: "t3code", label: "T3 Code", installed: true, supported: true, roots: ["/mock/.t3"], counts: { chats: 6, projects: 2, workspaces: 2, memories: 0, setup: 0, background: 0 }, note: "Threads come over as chats, with their full Claude Code, Codex or OpenCode history, or T3 Code's own copy when that is gone. Worktrees come over as Bridge workspaces, left where they are, so T3 Code keeps working with them." },
       { tool: "orca", label: "Orca", installed: true, supported: true, roots: ["/mock/Library/Application Support/orca"], counts: { chats: 4, projects: 1, workspaces: 2, memories: 0, setup: 0, background: 0 }, note: "Chats come over with their full Claude Code, Codex or OpenCode history, or Orca's own copy when that is gone. Multi-agent runs keep their workers under the chat that led them. Worktrees come over as Bridge workspaces, left where they are, so Orca keeps working with them." },
-      absent("superset", "Superset", "Superset's Claude Code chats come over with the Claude Code import. Its workspaces and agent settings are coming."),
+      { tool: "superset", label: "Superset", installed: true, supported: true, roots: ["/mock/.paradev"], counts: { chats: 5, projects: 1, workspaces: 2, memories: 0, setup: 0, background: 0 }, note: "Chats and terminal agent sessions come over with their full Claude Code, Codex or OpenCode history, or Superset's own copy when that is gone. Workspaces come over as Bridge workspaces, left where they are, so Superset keeps working with them. Agent configurations you made arrive switched off, without their secret values." },
     ],
   };
 }
@@ -2552,7 +2551,9 @@ export const bridgeApi = {
     const adapter = mockHealth.adapters.find(item => item.id === agentId);
     return adapter ? Promise.resolve(structuredClone(adapter)) : Promise.reject(new Error(`Unknown coding agent: ${agentId}`));
   },
-  state: (): Promise<BridgeState> => hasBackend() ? call("state/get_state") : Promise.resolve(snapshot()),
+  // The app's own read: no background runs (connector polls, suggestions,
+  // briefings). `state/get_state` still answers other clients with them.
+  state: (): Promise<BridgeState> => hasBackend() ? call("state/get_app_state") : Promise.resolve(snapshot()),
   modelSetup: (): Promise<ModelSetupState> => hasBackend() ? call("models/get_model_setup") as Promise<ModelSetupState> : Promise.resolve(structuredClone(mockModelSetup)),
   recommendedModelProfiles: (): Promise<ModelProfileDraft[]> => hasBackend() ? call("models/recommended_model_profiles") : Promise.resolve(recommendedProfileDrafts(mockHealth.adapters)),
   saveModelProfiles: (profiles: ModelProfileDraft[]): Promise<ModelSetupState> => hasBackend() ? call("models/save_model_profiles", { profiles }) as Promise<ModelSetupState> : Promise.resolve(saveMockProfiles(profiles)),
@@ -3991,7 +3992,13 @@ export const bridgeApi = {
     if (hasBackend()) return ((await call("terminal/list_terminals", { workspaceId })) as { terminalIds: string[] }).terminalIds;
     return [];
   },
-  refreshWorkspace: (workspaceId: string): Promise<BridgeState> => hasBackend() ? call("workspaces/refresh_workspace", { workspaceId }) : Promise.resolve(snapshot()),
+  /** One workspace's Git counts and branch, re-read. Returns the workspace, not
+   *  the whole state: the chat on screen polls this every few seconds. */
+  refreshWorkspaceStats: async (workspaceId: string): Promise<Workspace | undefined> => {
+    if (!hasBackend()) return structuredClone(mockState.workspaces.find(workspace => workspace.id === workspaceId));
+    const result = await call("workspaces/refresh_workspace_stats", { workspaceId });
+    return result.workspace ?? undefined;
+  },
   listWorkspaceBranches: (workspaceId: string): Promise<ListWorkspaceBranchesResult> => {
     if (hasBackend()) return call("workspaces/list_workspace_branches", { workspaceId });
     const current = mockState.workspaces.find(workspace => workspace.id === workspaceId)?.branch ?? null;

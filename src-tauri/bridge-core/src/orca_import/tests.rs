@@ -82,6 +82,7 @@ fn the_real_schema_reads_repositories_worktrees_and_chats() {
     assert!(!never_started.renamed);
     assert_eq!(chats(&store).count(), 3);
     assert_eq!(counts(&store), Counts { chats: 3, projects: 1, workspaces: 2 });
+    assert!(store.notes.is_empty(), "every profile was read: {:?}", store.notes);
 }
 
 #[test]
@@ -205,6 +206,10 @@ fn worktrees_are_candidates_once_without_main_checkouts_and_archived_when_orca_a
     assert!(contrib.archived);
     let chat = store.chats.iter().find(|chat| chat.id == "f441372b").unwrap();
     assert!(is_archived(&store, chat), "a chat in an archived worktree is archived");
+    let elsewhere = store.chats.iter().find(|chat| chat.id == "16acf9ae").unwrap();
+    assert!(!is_archived(&store, elsewhere), "another worktree being archived archives nothing here");
+    let floating = store.chats.iter().find(|chat| chat.id == "16acf9ae").map(|chat| Chat { place: Place::None, ..chat.clone() }).unwrap();
+    assert!(!is_archived(&store, &floating));
 }
 
 #[test]
@@ -229,10 +234,27 @@ fn orca_yaml_gives_setup_and_archive_scripts() {
 fn a_repositorys_orca_yaml_scripts_go_with_its_worktrees() {
     let sandbox = sandbox();
     std::fs::create_dir_all(&sandbox.main).unwrap();
-    std::fs::write(sandbox.main.join("orca.yaml"), "scripts:\n  setup: |\n    echo setup\n").unwrap();
+    // A long file (Orca reads up to 256 KiB) is still read.
+    let padding = "# a comment line to make the file long\n".repeat(100);
+    std::fs::write(sandbox.main.join("orca.yaml"), format!("{padding}scripts:\n  setup: |\n    echo setup\n")).unwrap();
     let store = read_base(&sandbox.base);
     let candidates = worktree_candidates(&store);
+    assert!(!candidates.is_empty());
     assert!(candidates.iter().all(|candidate| candidate.scripts.as_ref().and_then(|scripts| scripts.setup.as_deref()) == Some("echo setup")));
+    // Past Orca's own limit, the file is not read.
+    let huge = "# padding\n".repeat(30_000);
+    std::fs::write(sandbox.main.join("orca.yaml"), format!("scripts:\n  setup: echo setup\n{huge}")).unwrap();
+    let store = read_base(&sandbox.base);
+    assert!(worktree_candidates(&store).iter().all(|candidate| candidate.scripts.is_none()));
+}
+
+#[test]
+fn orca_times_are_epoch_milliseconds_and_zero_is_none() {
+    assert_eq!(store::time_of(Some(1_795_419_158_665)).as_deref(), Some("2026-11-23T07:32:38.665+00:00"));
+    assert_eq!(store::time_of(Some(1)).as_deref(), Some("1970-01-01T00:00:00.001+00:00"));
+    assert_eq!(store::time_of(Some(0)), None);
+    assert_eq!(store::time_of(Some(-5)), None);
+    assert_eq!(store::time_of(None), None);
 }
 
 #[test]
@@ -390,6 +412,17 @@ fn only_a_profile_index_still_finds_worktrees_and_no_chats() {
     let empty = tempfile::tempdir().unwrap();
     assert!(!Paths::at(empty.path()).installed());
     assert_eq!(read(&Paths::at(empty.path())).unwrap_err(), "Orca was not found on this Mac");
+}
+
+#[test]
+fn no_profiles_folder_is_nothing_to_note() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::at(dir.path());
+    drop(fixture);
+    std::fs::remove_dir_all(dir.path().join("profiles")).unwrap();
+    let store = read_base(dir.path());
+    assert!(store.profiles.is_empty());
+    assert!(store.notes.is_empty(), "{:?}", store.notes);
 }
 
 #[test]

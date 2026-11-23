@@ -16,6 +16,7 @@ workspace = true
 bridge-protocol = { path = "../bridge-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = "0.9"
 rusqlite = { workspace = true }
 portable-pty = { workspace = true }
 uuid = { workspace = true, features = ["v7"] }

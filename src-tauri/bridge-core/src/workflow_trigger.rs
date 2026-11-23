@@ -377,6 +377,18 @@ pub fn heartbeat(db: &Connection, run_id: &str, lease_owner: &str, now: DateTime
     Ok(changed == 1)
 }
 
+/// Does `lease_owner` still hold this active run? False once it was
+/// cancelled, deleted or reclaimed. One primary-key read, so a runner can ask
+/// on every poll and stop its session at once instead of at its next
+/// heartbeat.
+pub fn holds(db: &Connection, run_id: &str, lease_owner: &str) -> Result<bool, BridgeError> {
+    Ok(db.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM workflow_runs WHERE id=?1 AND lease_owner=?2 AND status IN {ACTIVE})"),
+        params![run_id, lease_owner],
+        |row| row.get(0),
+    )?)
+}
+
 /// Move a held run to another active status. False means the lease was lost.
 pub fn transition(
     db: &Connection,
@@ -473,6 +485,54 @@ pub fn reclaim_expired(db: &Connection, now: DateTime<Utc>) -> Result<Vec<String
     Ok(reclaimed)
 }
 
+/// Why a run that was going when Bridge stopped is now failed.
+pub const INTERRUPTED: &str = "interrupted";
+
+/// Settle every run a previous owner of this data directory left leased.
+///
+/// A data directory has exactly one owner (`crate::ownership`), and this runs
+/// before the new owner claims anything, so every lease it finds belongs to a
+/// process that is gone. Waiting out the 15-minute lease would leave a dead
+/// run reading `running` and holding the workflow's one active slot: Run now
+/// would return it and every schedule slot would be skipped as overlap. A run
+/// that was working or waiting for a person fails as `interrupted` with the
+/// usage it recorded; a quota recheck that was in flight goes back to parked.
+/// Returns the ids of the runs it failed.
+pub fn settle_interrupted(db: &Connection, now: DateTime<Utc>) -> Result<Vec<String>, BridgeError> {
+    db.execute(
+        "UPDATE workflow_runs SET lease_owner=NULL, lease_expires_at=NULL
+         WHERE status='waiting_quota' AND lease_owner IS NOT NULL",
+        [],
+    )?;
+    let leased = db
+        .prepare(&format!("SELECT id, session_id FROM workflow_runs WHERE status IN {ACTIVE} AND lease_owner IS NOT NULL"))?
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut settled = Vec::new();
+    for (id, session_id) in leased {
+        let usage = session_id.as_deref().map(|id| crate::workflow_run::usage_used(db, id)).transpose()?.unwrap_or_default();
+        let changed = db.execute(
+            &format!(
+                "UPDATE workflow_runs SET status='failed', failure_code=?2, summary=?3, lease_owner=NULL,
+                    lease_expires_at=NULL, finished_at=?4, unread=1, tokens=?5, cost_microusd=?6
+                 WHERE id=?1 AND status IN {ACTIVE} AND lease_owner IS NOT NULL"
+            ),
+            params![
+                id,
+                INTERRUPTED,
+                "Bridge stopped while this run was going, so it was ended. Nothing it had not already done was sent.",
+                stamp(now),
+                usage.tokens,
+                usage.cost_microusd,
+            ],
+        )?;
+        if changed == 1 {
+            settled.push(id);
+        }
+    }
+    Ok(settled)
+}
+
 /// Mark runs read. Returns the ids that changed; unknown or already-read ids
 /// are not an error and change nothing.
 pub fn mark_read(db: &Connection, run_ids: &[String]) -> Result<Vec<String>, BridgeError> {
@@ -542,6 +602,16 @@ pub fn cancel(db: &Connection, run_id: &str, now: DateTime<Utc>) -> Result<wire:
         return Err(BridgeError::Invalid(format!("workflow run {run_id} already finished")));
     }
     Ok(run)
+}
+
+/// Cancel every active run of a workflow, returning them as they now read.
+/// Their runners notice on their next poll; the caller stops any session.
+pub fn cancel_active(db: &Connection, workflow_id: &str, now: DateTime<Utc>) -> Result<Vec<wire::WorkflowRun>, BridgeError> {
+    let ids: Vec<String> = db
+        .prepare(&format!("SELECT id FROM workflow_runs WHERE workflow_id=?1 AND status IN {ACTIVE}"))?
+        .query_map(params![workflow_id], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    ids.iter().map(|id| cancel(db, id, now)).collect()
 }
 
 /// A quota occasion belongs to an enabled workflow. Once it is disabled,
@@ -739,22 +809,49 @@ fn run_claimed(core: &Arc<BridgeCore>, claimed: ClaimedRun) {
     crate::workflow_run::execute(core, claimed);
 }
 
+/// Settle what a previous owner left running ([`settle_interrupted`]) and
+/// announce it. Called once, before the first tick.
+pub fn settle_after_boot(core: &Arc<BridgeCore>, now: DateTime<Utc>) -> Result<Vec<String>, BridgeError> {
+    let settled = settle_interrupted(&core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner), now)?;
+    publish_runs(core, &settled);
+    Ok(settled)
+}
+
 /// Start the loop on its own thread. Both hosts call this at boot.
 pub fn start_workflow_maintenance(core: Arc<BridgeCore>) {
     std::thread::Builder::new()
         .name("workflow-maintenance".into())
-        .spawn(move || loop {
-            match tick(&core, Utc::now()) {
-                Ok(claimed) => {
-                    for run in claimed {
-                        dispatch(core.clone(), run);
-                    }
-                }
-                Err(error) => eprintln!("[bridge] workflow maintenance failed: {error}"),
+        .spawn(move || {
+            if let Err(error) = settle_after_boot(&core, Utc::now()) {
+                eprintln!("[bridge] workflow boot settlement failed: {error}");
             }
-            std::thread::sleep(StdDuration::from_secs(TICK_SECONDS));
+            maintenance_loop(core)
         })
         .expect("spawn workflow maintenance thread");
+}
+
+fn maintenance_loop(core: Arc<BridgeCore>) {
+    while maintenance_pass(&core, Utc::now()) {
+        std::thread::sleep(StdDuration::from_secs(TICK_SECONDS));
+    }
+}
+
+/// One pass of the loop. False once the core is retired: the directory's
+/// next owner settles and claims these runs, and two owners must never
+/// lease the same occasion.
+fn maintenance_pass(core: &Arc<BridgeCore>, now: DateTime<Utc>) -> bool {
+    if core.is_retired() {
+        return false;
+    }
+    match tick(core, now) {
+        Ok(claimed) => {
+            for run in claimed {
+                dispatch(core.clone(), run);
+            }
+        }
+        Err(error) => eprintln!("[bridge] workflow maintenance failed: {error}"),
+    }
+    true
 }
 
 #[cfg(test)]
@@ -1275,6 +1372,80 @@ mod tests {
                 assert_eq!(all.iter().filter(|run| run.status == wire::WorkflowRunStatus::WaitingQuota).count(), 1, "the healthy run still parks normally");
             }
         }
+    }
+
+    #[test]
+    fn a_restarted_owner_settles_what_the_last_one_left_leased() {
+        use wire::WorkflowRunStatus as S;
+        let (dir, core) = test_support::core();
+        let now = Utc::now();
+        let [queued, running, asking, parked, rechecking, finished] =
+            ["queued", "running", "asking", "parked", "rechecking", "finished"].map(|name| manual_run(&core, dir.path(), name, now));
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth) VALUES('s-run',NULL,'claude','Workflow','working','reported','workflow',0)", []).unwrap();
+            assert!(transition(&db, &running.run.id, &running.lease_owner, S::Running, Some("s-run"), now).unwrap());
+            db.execute("INSERT INTO usage_ledger(workspace_id,session_id,input_tokens,output_tokens,cost_microusd,source,created_at) VALUES('s-run','s-run',100,20,30,'reported','now')", []).unwrap();
+            assert!(transition(&db, &asking.run.id, &asking.lease_owner, S::WaitingApproval, None, now).unwrap());
+            assert!(park(&db, &parked.run.id, &parked.lease_owner).unwrap());
+            assert!(park(&db, &rechecking.run.id, &rechecking.lease_owner).unwrap());
+            // The old owner was mid-recheck: a waiting run holding a lease.
+            db.execute("UPDATE workflow_runs SET lease_owner='old-owner', lease_expires_at=?2 WHERE id=?1",
+                params![rechecking.run.id, stamp(now + Duration::minutes(10))]).unwrap();
+            assert!(finish(&db, &finished.run.id, &finished.lease_owner, S::Succeeded, &Outcome::default(), now).unwrap());
+        }
+        let mut events = core.events.subscribe();
+        let mut settled = settle_after_boot(&core, now + Duration::seconds(5)).unwrap();
+        settled.sort();
+        let mut expected = vec![queued.run.id.clone(), running.run.id.clone(), asking.run.id.clone()];
+        expected.sort();
+        assert_eq!(settled, expected, "every leased working run, without waiting out its lease");
+
+        let db = core.db.lock().unwrap();
+        for id in &expected {
+            let run = require_run(&db, id).unwrap();
+            assert_eq!(run.status, S::Failed);
+            assert_eq!(run.failure_code.as_deref(), Some(INTERRUPTED));
+            assert!(run.finished_at.is_some() && run.unread);
+        }
+        let ran = require_run(&db, &running.run.id).unwrap();
+        assert_eq!((ran.tokens, ran.cost_microusd), (Some(120), Some(30)), "recorded usage is kept");
+        for waiting in [&parked, &rechecking] {
+            let run = require_run(&db, &waiting.run.id).unwrap();
+            assert_eq!(run.status, S::WaitingQuota, "a quota wait is not a failure");
+            let lease: Option<String> = db.query_row("SELECT lease_owner FROM workflow_runs WHERE id=?1", params![waiting.run.id], |row| row.get(0)).unwrap();
+            assert!(lease.is_none(), "a stale recheck lease is released so the next tick can recheck");
+        }
+        assert_eq!(require_run(&db, &finished.run.id).unwrap().status, S::Succeeded);
+        assert!(settle_interrupted(&db, now + Duration::seconds(6)).unwrap().is_empty(), "settling twice changes nothing");
+        assert!(matches!(
+            claim(&db, &running.run.workflow_id, &Occasion::manual(&running.run.workflow_id, "after-restart"), false, now).unwrap(),
+            ClaimOutcome::Claimed(_)
+        ), "Run now works at once");
+        drop(db);
+        let mut published = 0;
+        while let Ok(event) = events.try_recv() {
+            if let CoreEvent::WorkflowRunChanged { run } = event {
+                assert_eq!(run.status, S::Failed);
+                published += 1;
+            }
+        }
+        assert_eq!(published, 3);
+    }
+
+    #[test]
+    fn a_retired_core_never_claims_a_due_slot() {
+        let (dir, core) = test_support::core();
+        let at_slot = at("2026-10-29T09:00:20Z");
+        let workflow = {
+            let db = core.db.lock().unwrap();
+            let workflow = approved(&db, dir.path(), "2026-10-26T00:00:00Z", "0 9 * * *");
+            assert_eq!(due_occasions(&db, at_slot).unwrap().len(), 1, "a slot is due, so a live pass would claim it");
+            workflow
+        };
+        core.retire();
+        assert!(!maintenance_pass(&core, at_slot), "a retired core's loop ends");
+        assert!(list_runs(&core.db.lock().unwrap(), Some(&workflow.id), false, 10).unwrap().is_empty(), "the next owner claims it, not this core");
     }
 
     #[test]

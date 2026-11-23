@@ -2,6 +2,55 @@ import { describe, expect, it, vi } from "vitest";
 import { createCoalescedRefresh, startSerialPoll } from "./polling";
 
 describe("createCoalescedRefresh", () => {
+  it("rests after a slow read as long as it took, up to maxPauseMs, and answers everything asked meanwhile with one read", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      const started: number[] = [];
+      let duration = 1000;
+      const task = vi.fn(async () => {
+        started.push(Date.now());
+        await new Promise(resolve => setTimeout(resolve, duration));
+      });
+      const refresh = createCoalescedRefresh(task, { maxPauseMs: 750 });
+
+      const first = refresh();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(started).toEqual([0]);
+
+      // Ten chats' notifications during the read: one more read, after the rest.
+      const burst = Array.from({ length: 10 }, () => refresh());
+      await vi.advanceTimersByTimeAsync(1000 + 749);
+      expect(task).toHaveBeenCalledTimes(1);
+      duration = 100;
+      await vi.advanceTimersByTimeAsync(1);
+      expect(started).toEqual([0, 1750]);
+      await vi.advanceTimersByTimeAsync(100);
+      await Promise.all([first, ...burst]);
+
+      // A quick read rests only as long as it took.
+      const next = refresh();
+      await vi.advanceTimersByTimeAsync(99);
+      expect(task).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(started).toEqual([0, 1750, 1950]);
+      await vi.advanceTimersByTimeAsync(100);
+      await next;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never rests after an instant read", async () => {
+    const task = vi.fn(async () => {});
+    const refresh = createCoalescedRefresh(task, { maxPauseMs: 750 });
+    await refresh();
+    const started = Date.now();
+    await refresh();
+    expect(Date.now() - started).toBeLessThan(50);
+    expect(task).toHaveBeenCalledTimes(2);
+  });
+
   it("merges a notification burst and still reads changes arriving mid-flight", async () => {
     const finish: Array<() => void> = [];
     let source = 0;

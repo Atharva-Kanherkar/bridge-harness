@@ -106,7 +106,14 @@ pub fn install_codex_update() -> Result<(), BridgeError> {
     crate::codex_update::install()
 }
 
+/// Every session, Bridge's background runs included, exactly as before
+/// `state/get_app_state` existed. The app reads [`get_app_state`].
 pub fn get_state(core: &Arc<BridgeCore>) -> Result<BridgeState, BridgeError> {
+    core.full_state_snapshot()
+}
+
+/// What the app shows: [`get_state`] without Bridge's background runs.
+pub fn get_app_state(core: &Arc<BridgeCore>) -> Result<BridgeState, BridgeError> {
     core.state_snapshot()
 }
 
@@ -1895,7 +1902,11 @@ pub fn write_workspace_file(
     core.workspace_path(workspace_id)?;
     with_workspace_lock(core, workspace_id, || {
         let root = core.workspace_path(workspace_id)?;
-        workspace_files::write_file(Path::new(&root), path, content, base_sha256)
+        let written = workspace_files::write_file(Path::new(&root), path, content, base_sha256)?;
+        // No tool event reports an editor save; the next message's
+        // repository stamp must not reuse one taken before it.
+        crate::repo_stamp::invalidate_containing(&Path::new(&root).join(path));
+        Ok(written)
     })
 }
 
@@ -1903,13 +1914,29 @@ pub fn refresh_workspace(
     core: &Arc<BridgeCore>,
     workspace_id: &str,
 ) -> Result<BridgeState, BridgeError> {
+    refresh_workspace_stats(core, workspace_id)?;
+    core.state_snapshot()
+}
+
+/// Re-read one workspace's Git counts and branch, and return that workspace.
+///
+/// The app polls this every few seconds for the chat on screen. It used to
+/// return the whole app state, rebuilt under the database lock each time
+/// (59 MB on a lived-in install), which the app then swapped in wholesale.
+/// The row is written only when a count or the branch moved.
+pub fn refresh_workspace_stats(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+) -> Result<crate::workspaces::RefreshedWorkspace, BridgeError> {
     // Resolve the path under the lock, then run Git outside it so a slow
     // status scan cannot delay checkout, message submission, or editor saves.
     core.workspace_path(workspace_id)?;
     let path = locked_workspace_path(core, workspace_id)?;
     let stats = git::stats(Path::new(&path))?;
     let branch = git::current_branch(Path::new(&path));
-    core.record_workspace_git_stats(workspace_id, stats, branch.as_deref())
+    Ok(crate::workspaces::RefreshedWorkspace {
+        workspace: core.record_workspace_git_stats(workspace_id, stats, branch.as_deref())?,
+    })
 }
 
 pub fn list_workspace_branches(
@@ -7461,6 +7488,16 @@ pub fn approve_workflow(core: &Arc<BridgeCore>, params: &wire::ApproveWorkflowPa
 }
 
 pub fn delete_workflow(core: &Arc<BridgeCore>, params: &wire::DeleteWorkflowParams) -> Result<wire::UnitResult, BridgeError> {
+    // A run still going would otherwise keep working, unrecorded, in a folder
+    // this removes. Stop it first.
+    let cancelled = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::workflows::require(&db, &params.workflow_id)?;
+        crate::workflow_trigger::cancel_active(&db, &params.workflow_id, chrono::Utc::now())?
+    };
+    for session_id in cancelled.iter().filter_map(|run| run.session_id.as_deref()) {
+        crate::workflow_run::stop(core, session_id);
+    }
     crate::workflows::delete(&core.db.lock().unwrap(), &workflow_data_dir(core), &params.workflow_id)?;
     publish_workflows_changed(core, [params.workflow_id.clone()]);
     Ok(wire::UnitResult(()))
@@ -7477,37 +7514,7 @@ pub fn set_workflow_enabled(core: &Arc<BridgeCore>, params: &wire::SetWorkflowEn
 /// configuration holds. Discovery, not authority: a run's scope is still
 /// checked against the live configuration when it starts.
 pub fn workflow_options(core: &Arc<BridgeCore>) -> wire::WorkflowOptions {
-    let descriptors = core.adapter_registry.descriptors();
-    let harnesses: Vec<wire::WorkflowHarnessOption> = descriptors
-        .into_iter()
-        .map(|descriptor| {
-            let gate = crate::briefing_policy::adapter_may_brief(&descriptor.id);
-            let default_model = core
-                .adapter_registry
-                .resolve_model(&descriptor.id, CapabilityTier::Fast, None)
-                .ok()
-                .map(|resolution| resolution.actual_model);
-            wire::WorkflowHarnessOption {
-                connectors_allowed: gate.is_ok(),
-                connectors_reason: gate.err().map(|refusal| refusal.reason()),
-                worktree_allowed: true,
-                default_model,
-                models: descriptor
-                    .models
-                    .iter()
-                    .map(|model| wire::WorkBriefingModel {
-                        id: model.id.clone(),
-                        label: model.label.clone(),
-                        tier: model.tier.as_str().to_owned(),
-                        default_for_briefing: model.tier == CapabilityTier::Fast && model.default_for_tier,
-                    })
-                    .collect(),
-                id: descriptor.id,
-                label: descriptor.label,
-                available: descriptor.available,
-            }
-        })
-        .collect();
+    let harnesses = workflow_harness_options(core);
     let claude_may_hold_connectors = harnesses
         .iter()
         .any(|harness| harness.id == "claude" && harness.connectors_allowed);
@@ -7528,6 +7535,45 @@ pub fn workflow_options(core: &Arc<BridgeCore>) -> wire::WorkflowOptions {
         Vec::new()
     };
     wire::WorkflowOptions { harnesses, servers }
+}
+
+/// What each registered harness may run as a workflow, by the same gate
+/// validation applies.
+pub(crate) fn workflow_harness_options(core: &Arc<BridgeCore>) -> Vec<wire::WorkflowHarnessOption> {
+    core.adapter_registry.descriptors()
+        .into_iter()
+        .map(|descriptor| {
+            let gate = crate::briefing_policy::adapter_may_brief(&descriptor.id);
+            let default_model = core
+                .adapter_registry
+                .resolve_model(&descriptor.id, CapabilityTier::Fast, None)
+                .ok()
+                .map(|resolution| resolution.actual_model);
+            wire::WorkflowHarnessOption {
+                connectors_allowed: gate.is_ok(),
+                // Validation refuses every workflow, worktree jobs included,
+                // on an adapter that cannot hold its run to exact tools (a
+                // worktree run must still be kept from MCP). Offer what save
+                // accepts; `connectors_reason` says why not.
+                worktree_allowed: gate.is_ok(),
+                connectors_reason: gate.err().map(|refusal| refusal.reason()),
+                default_model,
+                models: descriptor
+                    .models
+                    .iter()
+                    .map(|model| wire::WorkBriefingModel {
+                        id: model.id.clone(),
+                        label: model.label.clone(),
+                        tier: model.tier.as_str().to_owned(),
+                        default_for_briefing: model.tier == CapabilityTier::Fast && model.default_for_tier,
+                    })
+                    .collect(),
+                id: descriptor.id,
+                label: descriptor.label,
+                available: descriptor.available,
+            }
+        })
+        .collect()
 }
 
 /// Run now. The request id makes a double click one run.

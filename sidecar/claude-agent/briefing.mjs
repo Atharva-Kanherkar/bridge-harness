@@ -56,7 +56,12 @@ export function wireServerName(server) {
   return String(server).replace(/[^A-Za-z0-9_-]/g, "_");
 }
 
-/** Split `mcp__<server>__<tool>` into its parts, or null. */
+/**
+ * Split `mcp__<server>__<tool>` into its parts, or null. A tool name that is
+ * not all lowercase (`getJiraIssue`) still names its server; `lowercase` says
+ * whether its words can be read as a verb at all, and nothing that reads
+ * words trusts a name that is not.
+ */
 function splitWireName(toolName) {
   if (!toolName.startsWith("mcp__")) return null;
   const rest = toolName.slice("mcp__".length);
@@ -64,15 +69,15 @@ function splitWireName(toolName) {
   if (split <= 0) return null;
   const server = rest.slice(0, split);
   const original = rest.slice(split + 2);
-  if (!original || original !== original.toLowerCase()) return null;
-  return { server, bare: original, words: original.split(/[_-]/) };
+  if (!original) return null;
+  return { server, bare: original, words: original.split(/[_-]/), lowercase: original === original.toLowerCase() };
 }
 
 /** Is `mcp__<server>__<tool>` a read-verb tool on a scoped server? */
 function isScopedRead(toolName, readScopeServers) {
   if (!readScopeServers.size) return false;
   const parts = splitWireName(toolName);
-  if (!parts || !readScopeServers.has(parts.server)) return false;
+  if (!parts?.lowercase || !readScopeServers.has(parts.server)) return false;
   if (parts.words.some((word) => MUTATION_WORDS.has(word))) return false;
   return parts.words.some((word) => READ_TOOL_VERBS.has(word));
 }
@@ -88,7 +93,7 @@ function isScopedRead(toolName, readScopeServers) {
 function isApprovedAction(toolName, actionScope) {
   if (!actionScope) return false;
   const parts = splitWireName(toolName);
-  if (!parts || parts.server !== actionScope.server) return false;
+  if (!parts?.lowercase || parts.server !== actionScope.server) return false;
   if (parts.words.some((word) => actionScope.forbiddenWords.has(word))) return false;
   return parts.words.some((word) => actionScope.permittedWords.has(word));
 }
@@ -184,7 +189,10 @@ export function makeWorkflowGate({ servers = [], maxArgumentBytes = 8192, ask = 
     if (bytes > maxArgumentBytes) {
       return deny(`the arguments for \`${toolName}\` are ${bytes} bytes, over the ${maxArgumentBytes}-byte limit`, toolUseID);
     }
-    const isRead = !parts.words.some((word) => MUTATION_WORDS.has(word))
+    // A name whose words cannot be read (`createJiraIssue`) is not a read:
+    // it asks like any write, rather than being refused outright.
+    const isRead = parts.lowercase
+      && !parts.words.some((word) => MUTATION_WORDS.has(word))
       && parts.words.some((word) => READ_TOOL_VERBS.has(word));
     if (isRead && server.read) return allow(toolUseID);
     if (server.write === "ask" && typeof ask === "function") {
@@ -283,20 +291,66 @@ export function briefingOptions(briefing, mcpServers = {}, ask = null, projectTr
 }
 
 /**
- * A workflow run's options: the briefing posture (nothing inherited, built-ins
- * denied by name, strict MCP config) with the workflow gate in place of the
- * briefing gate, and only the granted servers reachable.
+ * A `claude.ai …` connector belongs to the account: Claude Code loads it
+ * itself, signed in. A copy handed over in `mcpServers` never shares that
+ * sign-in and comes up `needs-auth` with no tools.
+ */
+export function isAccountConnector(name) {
+  return typeof name === "string" && name.startsWith("claude.ai ");
+}
+
+/** A workflow run that reaches connectors (not a worktree job). */
+function connectorWorkflow(briefing) {
+  return Boolean(briefing?.workflow) && briefing.workflow.worktree !== true;
+}
+
+/** The granted servers of a connector workflow, by configuration key. */
+export function workflowGrantedServers(briefing) {
+  return connectorWorkflow(briefing) ? (briefing.workflow.servers ?? []).map((server) => server.key) : [];
+}
+
+/** The granted account connectors, which load natively and are waited for. */
+export function workflowAccountServers(briefing) {
+  return workflowGrantedServers(briefing).filter(isAccountConnector);
+}
+
+/**
+ * Every configured server a connector workflow was not granted. Loading
+ * account connectors natively means Claude Code would otherwise load all of
+ * them: the gate would still refuse their tools, but their schemas would fill
+ * the run's context. Denied servers never start.
+ */
+export function workflowDeniedServers(briefing, mcpServers = {}) {
+  if (!connectorWorkflow(briefing)) return [];
+  const granted = new Set(workflowGrantedServers(briefing));
+  return Object.keys(mcpServers ?? {}).filter((name) => !granted.has(name));
+}
+
+/**
+ * A workflow run's options: nothing inherited, the workflow gate deciding
+ * every call, and only the granted servers reachable.
+ *
+ * `tools: []` removes every built-in tool. A deny-list cannot keep up with
+ * Claude Code: tools such as `SendMessage`, `RemoteTrigger` and `CronCreate`
+ * run without asking `canUseTool`, so a run that has them can message other
+ * sessions or schedule work no matter what the gate says. A connector
+ * workflow needs none of them; its only tools are its connectors' tools.
+ *
+ * Granted account connectors load natively (`strictMcpConfig: false`, no
+ * copy); any other granted server is handed over as configured.
  */
 function workflowOptions(briefing, mcpServers, ask) {
   const servers = briefing.workflow.servers ?? [];
   const keys = new Set(servers.map((server) => server.key));
+  const native = servers.some((server) => isAccountConnector(server.key));
   return {
     permissionMode: "default",
+    tools: [],
     // No `allowedTools`: anything pre-approved would skip the gate.
     disallowedTools: briefing.deniedBuiltins ?? [],
     canUseTool: makeWorkflowGate({ servers, maxArgumentBytes: briefing.maxArgumentBytes, ask }),
-    strictMcpConfig: true,
-    mcpServers: Object.fromEntries(Object.entries(mcpServers).filter(([name]) => keys.has(name))),
+    strictMcpConfig: !native,
+    mcpServers: Object.fromEntries(Object.entries(mcpServers).filter(([name]) => keys.has(name) && !isAccountConnector(name))),
     settingSources: [],
     plugins: [],
   };

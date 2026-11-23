@@ -215,7 +215,9 @@ function ImportSummary({ job }: { job: ImportJob }) {
         ? "The chats are in the sidebar under their workspace or project. T3 Code's worktrees are Bridge workspaces now, in the same folders, so T3 Code keeps working with them."
         : job.tool === "orca"
           ? "The chats are in the sidebar under their workspace or project, with each multi-agent run's workers under the chat that led it. Orca's worktrees are Bridge workspaces now, in the same folders, so Orca keeps working with them."
-          : "Imported chats are in the sidebar, under their project when Bridge knows the folder."}</p>}
+          : job.tool === "superset"
+            ? "The chats are in the sidebar under their workspace or project. Superset's workspaces are Bridge workspaces now, in the same folders, so Superset keeps working with them. Your agent configurations came over switched off, without their secret values."
+            : "Imported chats are in the sidebar, under their project when Bridge knows the folder."}</p>}
     {notCarried.length > 0 && <div className="mt-3">
       <p className="text-meta font-medium text-foreground">What did not come over</p>
       <ul className="mt-1 space-y-0.5 text-caption text-muted-foreground">{notCarried.map(item => <li key={item.text}>{item.count.toLocaleString()} × {item.text}</li>)}</ul>

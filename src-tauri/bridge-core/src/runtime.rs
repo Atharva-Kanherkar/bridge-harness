@@ -179,6 +179,11 @@ pub struct BridgeCore {
         Mutex<HashMap<String, crate::external_import::DiscoveryResult>>,
     /// A background import is running in this process. One at a time.
     pub import_job_running: std::sync::atomic::AtomicBool,
+    /// This core gave up its data directory (its host shut down). Background
+    /// loops that act on durable rows stop at their next pass, so a stopped
+    /// core that outlives its host in one process (a test, a host restart)
+    /// cannot race the directory's next owner over the same rows.
+    pub retired: std::sync::atomic::AtomicBool,
     /// The artifacts the last preview of each discovery read. Commit re-derives
     /// exactly these, so a copy the person did not select cannot merge in and
     /// change the candidates they approved.
@@ -297,6 +302,15 @@ pub struct BootConfig {
 }
 
 impl BridgeCore {
+    /// Give up the data directory: see [`BridgeCore::retired`].
+    pub fn retire(&self) {
+        self.retired.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn is_retired(&self) -> bool {
+        self.retired.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// The database, or an error instead of a panic when an earlier panic
     /// poisoned its lock. Callers that answer a person report it; nothing
     /// half-written is read back.
@@ -307,8 +321,14 @@ impl BridgeCore {
     }
 
     /// The aggregate application snapshot the frontend renders.
+    /// The app's state, without Bridge's background runs. See [`store::state`].
     pub fn state_snapshot(&self) -> Result<crate::model::BridgeState, BridgeError> {
         store::state(&self.db.lock().unwrap())
+    }
+
+    /// Every session, background runs included: `state/get_state`'s document.
+    pub fn full_state_snapshot(&self) -> Result<crate::model::BridgeState, BridgeError> {
+        store::state_with_background_runs(&self.db.lock().unwrap())
     }
 
     /// Flip the reader-launch gate for `session_id` so its reader thread stops
@@ -422,6 +442,7 @@ impl BridgeCore {
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
             import_job_running: std::sync::atomic::AtomicBool::new(false),
+            retired: std::sync::atomic::AtomicBool::new(false),
             external_import_previews: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
             usage_overview: crate::usage_overview::UsageOverviewService::default(),
@@ -594,6 +615,7 @@ impl BridgeCore {
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
             import_job_running: std::sync::atomic::AtomicBool::new(false),
+            retired: std::sync::atomic::AtomicBool::new(false),
             external_import_previews: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
             usage_overview: crate::usage_overview::UsageOverviewService::default(),

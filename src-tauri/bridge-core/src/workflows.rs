@@ -297,10 +297,14 @@ pub fn wire_server_name(server: &str) -> String {
 }
 
 /// Split `mcp__<server>__<tool>`, the form the harness names connector tools.
+///
+/// Any non-empty tool name, including `getJiraIssue`: an identity is matched
+/// exactly, so its case changes nothing about what it admits. Whether a name
+/// is a read is [`tool_class`]'s question, and that fails closed.
 pub fn split_identity(identity: &str) -> Option<(&str, &str)> {
     let rest = identity.strip_prefix("mcp__")?;
     let (server, tool) = rest.split_once("__")?;
-    (!server.is_empty() && !tool.is_empty() && tool == tool.to_lowercase()).then_some((server, tool))
+    (!server.is_empty() && !tool.is_empty()).then_some((server, tool))
 }
 
 /// Whether a tool call reads or may change something.
@@ -1047,6 +1051,27 @@ mod tests {
     }
 
     #[test]
+    fn options_offer_worktree_jobs_only_where_validation_accepts_them() {
+        let (_scratch, core) = test_support::core();
+        let options = crate::api::workflow_harness_options(&core);
+        let claude = options.iter().find(|harness| harness.id == "claude").unwrap();
+        assert!(claude.connectors_allowed && claude.worktree_allowed);
+        let codex = options.iter().find(|harness| harness.id == "codex").unwrap();
+        assert!(!codex.worktree_allowed, "save refuses a Codex worktree workflow, so it is not offered");
+        assert!(codex.connectors_reason.as_deref().is_some_and(|reason| !reason.is_empty()), "with the gate's reason");
+        let mut job = definition();
+        job.project_id = Some("p".into());
+        job.files = wire::WorkflowFiles::Worktree;
+        job.grants.clear();
+        for harness in &options {
+            job.steps[0].harness = wire::HarnessId::parse(&harness.id).unwrap();
+            job.steps[0].model = harness.models.first().map(|model| model.id.clone()).unwrap_or_else(|| "m".into());
+            let context = ValidationContext { adapters: vec![AdapterFacts { id: harness.id.clone(), models: vec![] }], servers: BTreeSet::new() };
+            assert_eq!(validate(&job, &context).is_ok(), harness.worktree_allowed, "{}", harness.id);
+        }
+    }
+
+    #[test]
     fn every_mutation_publishes_workflows_changed() {
         let (_scratch, core) = test_support::core();
         let mut events = core.events.subscribe();
@@ -1088,6 +1113,21 @@ mod tests {
         assert_eq!(validate(&spaced, &context), Ok(()));
         assert_eq!(wire_server_name("claude.ai Slack"), "claude_ai_Slack");
         assert_eq!(wire_server_name("linear-prod_2"), "linear-prod_2");
+    }
+
+    #[test]
+    fn a_camel_case_connector_tool_is_an_exact_identity_and_a_write() {
+        let mut atlassian = definition();
+        atlassian.grants = vec![wire::WorkflowGrant { server: "claude.ai Atlassian".into(), read: true, write: wire::WorkflowWriteAccess::Ask }];
+        atlassian.always_allow = vec!["mcp__claude_ai_Atlassian__createJiraIssue".into()];
+        let mut context = context();
+        context.servers.insert("claude.ai Atlassian".into());
+        assert_eq!(validate(&atlassian, &context), Ok(()), "Always allow can record a camelCase tool");
+        assert_eq!(split_identity("mcp__claude_ai_Atlassian__getJiraIssue"), Some(("claude_ai_Atlassian", "getJiraIssue")));
+        // Its words are never read as a verb: it asks like any write.
+        assert_eq!(tool_class("mcp__claude_ai_Atlassian__getJiraIssue"), ToolClass::Write);
+        assert_eq!(split_identity("mcp__claude_ai_Atlassian__"), None);
+        assert_eq!(split_identity("getJiraIssue"), None);
     }
 
     #[test]

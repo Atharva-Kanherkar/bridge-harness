@@ -37,6 +37,13 @@
       "resultSchema": "bridge-state.json"
     },
     {
+      "command": "get_app_state",
+      "domain": "state",
+      "method": "state/get_app_state",
+      "paramsSchema": null,
+      "resultSchema": "bridge-state.json"
+    },
+    {
       "command": "add_project",
       "domain": "projects",
       "method": "projects/add_project",
@@ -322,6 +329,13 @@
       "method": "workspaces/refresh_workspace",
       "paramsSchema": "refresh-workspace-params.json",
       "resultSchema": "bridge-state.json"
+    },
+    {
+      "command": "refresh_workspace_stats",
+      "domain": "workspaces",
+      "method": "workspaces/refresh_workspace_stats",
+      "paramsSchema": "refresh-workspace-stats-params.json",
+      "resultSchema": "refresh-workspace-stats-result.json"
     },
     {
       "command": "list_workspace_branches",
@@ -2524,7 +2538,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 50
+    "minor": 51
   },
   "reserved": {
     "cancel": "$/cancel",
