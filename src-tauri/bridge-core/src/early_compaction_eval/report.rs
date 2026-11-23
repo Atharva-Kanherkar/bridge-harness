@@ -15,11 +15,15 @@ use crate::usage_pricing::{cost_microusd, ModelRate};
 
 use super::workload::TurnScore;
 
-/// The column label of the Codex figure that the eval adds for each
-/// compaction. The harness does not report the tokens of that request.
-pub(super) const BOUND_LABEL: &str = "compaction bound (not observed)";
+/// The column label of the Codex figure that the eval adds for each sent
+/// compaction request. The harness does not report the tokens of that request,
+/// and it can send a request again, so the figure is not a bound.
+pub(super) const ESTIMATE_LABEL: &str = "compaction estimate (not observed)";
 /// The failure of a harness that does not show the cost of a compaction.
 pub(super) const UNOBSERVED: &str = "compaction_usage_unobserved";
+/// The verdict of a harness that passes each other part of the bar, but that
+/// does not report the usage of its compaction requests.
+pub(super) const INCONCLUSIVE: &str = "INCONCLUSIVE";
 /// The statement about noise that each report carries.
 pub(super) const NOISE: &str = "Each arm runs one time, so each figure is one sample and is noise-prone. \
 A small change in the path of the model changes the number of requests, and so the sums. \
@@ -124,6 +128,12 @@ impl AttemptRow {
     fn compacted(&self) -> bool {
         self.outcome.as_deref() == Some(COMPACTED)
     }
+
+    /// The host sent a compaction request: the attempt has a dispatch time, or
+    /// a boundary settled it.
+    fn sent(&self) -> bool {
+        self.dispatched_at.is_some() || self.compacted()
+    }
 }
 
 /// The raw result of one arm.
@@ -192,20 +202,26 @@ pub(super) fn sum_rows(rows: &[LedgerRow]) -> Sums {
     })
 }
 
-/// The Codex figure for the compactions of one arm.
+/// The Codex estimate for the compaction requests of one arm. It is not a
+/// bound: a request that the harness sends again is not in it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct Bound {
-    /// `trigger_used_tokens` of each compacted attempt, one time each.
+pub(super) struct Estimate {
+    /// `trigger_used_tokens` of each sent attempt, one time each, with any
+    /// outcome.
     pub tokens: i64,
-    /// The compacted attempts with no trigger reading.
+    /// The sent attempts in `tokens`.
+    pub requests: usize,
+    /// The sent attempts with no trigger reading.
     pub unobserved: usize,
 }
 
-pub(super) fn codex_bound(attempts: &[AttemptRow]) -> Bound {
-    attempts.iter().filter(|attempt| attempt.compacted()).fold(Bound::default(), |bound, attempt| {
+pub(super) fn codex_estimate(attempts: &[AttemptRow]) -> Estimate {
+    attempts.iter().filter(|attempt| attempt.sent()).fold(Estimate::default(), |estimate, attempt| {
         match (attempt.trigger_reading_id, attempt.trigger_used_tokens) {
-            (Some(_), Some(tokens)) => Bound { tokens: bound.tokens + tokens, ..bound },
-            _ => Bound { unobserved: bound.unobserved + 1, ..bound },
+            (Some(_), Some(tokens)) => {
+                Estimate { tokens: estimate.tokens + tokens, requests: estimate.requests + 1, ..estimate }
+            }
+            _ => Estimate { unobserved: estimate.unobserved + 1, ..estimate },
         }
     })
 }
@@ -218,7 +234,7 @@ pub(super) fn codex_bound(attempts: &[AttemptRow]) -> Bound {
 pub(super) fn claude_unobserved(attempts: &[AttemptRow], submissions: &[DateTime<Utc>], rows: &[LedgerRow]) -> usize {
     attempts
         .iter()
-        .filter(|attempt| attempt.dispatched_at.is_some() || attempt.compacted())
+        .filter(|attempt| attempt.sent())
         .filter(|attempt| {
             let Some(start) = attempt.dispatched_at.or(attempt.created_at) else {
                 return true;
@@ -233,12 +249,12 @@ pub(super) fn claude_unobserved(attempts: &[AttemptRow], submissions: &[DateTime
 }
 
 /// A labelled side figure. It is not part of the bar.
-pub(super) fn price_text(rate: Option<&ModelRate>, sums: &Sums, bound: i64) -> String {
+pub(super) fn price_text(rate: Option<&ModelRate>, sums: &Sums, estimate: i64) -> String {
     let Some(rate) = rate else {
         return "no rate".into();
     };
     let usage = TokenUsage {
-        uncached_input_tokens: Some(sums.uncached_input + bound),
+        uncached_input_tokens: Some(sums.uncached_input + estimate),
         cache_write_tokens: Some(sums.cache_write),
         cache_read_tokens: Some(sums.cache_read),
         output_tokens: Some(sums.output),
@@ -253,29 +269,32 @@ pub(super) fn price_text(rate: Option<&ModelRate>, sums: &Sums, bound: i64) -> S
 #[serde(rename_all = "camelCase")]
 pub(super) struct ArmFigures {
     pub sums: Sums,
-    /// The Codex bound. `None` on Claude, which reports the real share.
-    pub bound: Option<i64>,
-    /// `sums.input()`, plus the bound on Codex.
+    /// The Codex estimate. `None` on Claude, which reports the real share.
+    pub estimate: Option<i64>,
+    /// The sent compaction requests in the estimate. 0 on Claude.
+    pub estimated: usize,
+    /// `sums.input()`, plus the estimate on Codex.
     pub input_total: i64,
     pub score: u32,
     pub compacted: usize,
-    /// The compaction requests with no observed cost.
+    /// The compaction requests with no observed cost and no estimate.
     pub unobserved: usize,
     pub price: String,
 }
 
 pub(super) fn figures(harness: &str, run: &ArmRun) -> ArmFigures {
     let sums = sum_rows(&run.rows);
-    let (bound, unobserved) = if is_codex(harness) {
-        let bound = codex_bound(&run.attempts);
-        (Some(bound.tokens), bound.unobserved)
+    let (estimate, estimated, unobserved) = if is_codex(harness) {
+        let estimate = codex_estimate(&run.attempts);
+        (Some(estimate.tokens), estimate.requests, estimate.unobserved)
     } else {
-        (None, claude_unobserved(&run.attempts, &run.submissions, &run.rows))
+        (None, 0, claude_unobserved(&run.attempts, &run.submissions, &run.rows))
     };
-    let extra = bound.unwrap_or(0);
+    let extra = estimate.unwrap_or(0);
     ArmFigures {
         sums,
-        bound,
+        estimate,
+        estimated,
         input_total: sums.input() + extra,
         score: run.score(),
         compacted: run.attempts.iter().filter(|attempt| attempt.compacted()).count(),
@@ -290,18 +309,22 @@ pub(super) struct Verdict {
     /// False when one arm did not run, so the bar cannot compare.
     pub judged: bool,
     pub failures: Vec<String>,
+    /// Why the bar cannot compare the input totals, when the harness does not
+    /// report the usage of a compaction request.
+    pub inconclusive: Option<String>,
 }
 
 impl Verdict {
     pub fn passed(&self) -> bool {
-        self.judged && self.failures.is_empty()
+        self.judged && self.failures.is_empty() && self.inconclusive.is_none()
     }
 
     fn label(&self) -> &'static str {
-        match (self.judged, self.failures.is_empty()) {
-            (true, true) => "PASS",
-            (_, false) => "FAIL",
-            (false, true) => "NOT JUDGED",
+        match (self.judged, self.failures.is_empty(), self.inconclusive.is_some()) {
+            (_, false, _) => "FAIL",
+            (false, true, _) => "NOT JUDGED",
+            (true, true, true) => INCONCLUSIVE,
+            (true, true, false) => "PASS",
         }
     }
 }
@@ -320,12 +343,13 @@ pub(super) fn verdict(harness: &str, runs: &[ArmRun]) -> Verdict {
     let on = runs.iter().find(|run| run.arm == Arm::On);
     let off = runs.iter().find(|run| run.arm == Arm::Off);
     let (Some(on), Some(off)) = (on, off) else {
-        return Verdict { judged: false, failures };
+        return Verdict { judged: false, failures, inconclusive: None };
     };
     let (on_figures, off_figures) = (figures(harness, on), figures(harness, off));
     failures.extend(compaction_failures(harness, on, &on_figures));
     failures.extend(comparison_failures(&on_figures, &off_figures));
-    Verdict { judged: true, failures }
+    let inconclusive = inconclusive_comparison(&on_figures, &off_figures);
+    Verdict { judged: true, failures, inconclusive }
 }
 
 fn compaction_failures(harness: &str, on: &ArmRun, figures: &ArmFigures) -> Vec<String> {
@@ -338,7 +362,7 @@ fn compaction_failures(harness: &str, on: &ArmRun, figures: &ArmFigures) -> Vec<
     }
     if figures.unobserved > 0 {
         let what = if is_codex(harness) {
-            "compacted attempts of arm on have no trigger reading for the bound"
+            "sent compaction requests of arm on have no trigger reading for the estimate"
         } else {
             "dispatched compaction requests of arm on, with any outcome, have no ledger row with tokens above zero before the next send"
         };
@@ -355,13 +379,29 @@ fn comparison_failures(on: &ArmFigures, off: &ArmFigures) -> Vec<String> {
     if off.score < OFF_FLOOR {
         failures.push(format!("arm off scored {}, below {OFF_FLOOR}", off.score));
     }
-    if on.input_total >= off.input_total {
+    // The estimate is not a bound, so only the observed input of arm on can
+    // fail the comparison. On Claude, the observed input is the input total.
+    let observed = on.sums.input();
+    if observed >= off.input_total {
         failures.push(format!(
-            "the input total of arm on ({}) is not below the input total of arm off ({})",
-            on.input_total, off.input_total
+            "the observed input of arm on ({observed}) is not below the input total of arm off ({})",
+            off.input_total
         ));
     }
     failures
+}
+
+/// The reason that the comparison of the input totals is inconclusive. Arm on
+/// sent compaction requests that the harness does not report, and its observed
+/// input is below arm off.
+fn inconclusive_comparison(on: &ArmFigures, off: &ArmFigures) -> Option<String> {
+    (on.estimated > 0 && on.sums.input() < off.input_total).then(|| {
+        format!(
+            "the harness does not report the usage of {} compaction requests of arm on, so the token comparison \
+is inconclusive. With the {ESTIMATE_LABEL}, the input total of arm on is {}. The input total of arm off is {}.",
+            on.estimated, on.input_total, off.input_total
+        )
+    })
 }
 
 /// The runs and the verdict of one harness.
@@ -396,7 +436,10 @@ pub(super) fn markdown(started: DateTime<Utc>, reports: &[HarnessReport]) -> Str
     text.push_str(&format!("Noise: {NOISE}\n\n"));
     text.push_str(
         "The input total is uncached input plus cache write plus cache read. On Codex, the input total \
-includes the compaction bound. The price estimate comes from usage_pricing. It is a side figure and not part of the pass bar.\n",
+includes the compaction estimate: the trigger reading of each sent compaction request, one time. The harness does not \
+report the usage of these requests, and it can send a request again, so the estimate is not a bound. If arm on has an \
+estimate, the token comparison is INCONCLUSIVE. It is a failure only when the observed input of arm on is not below arm off. \
+The price estimate comes from usage_pricing. It is a side figure and not part of the pass bar.\n",
     );
     for report in reports {
         text.push_str(&harness_markdown(report));
@@ -409,7 +452,10 @@ fn harness_markdown(report: &HarnessReport) -> String {
     for failure in &report.verdict.failures {
         text.push_str(&format!("- {failure}\n"));
     }
-    if !report.verdict.failures.is_empty() {
+    if let Some(why) = &report.verdict.inconclusive {
+        text.push_str(&format!("- {why}\n"));
+    }
+    if !report.verdict.failures.is_empty() || report.verdict.inconclusive.is_some() {
         text.push('\n');
     }
     text.push_str(&figures_table(report));
@@ -421,7 +467,7 @@ fn harness_markdown(report: &HarnessReport) -> String {
 
 fn figures_table(report: &HarnessReport) -> String {
     let mut text = format!(
-        "| arm | turns | score | uncached input | cache write | cache read | output | {BOUND_LABEL} | input total | price estimate |\n\
+        "| arm | turns | score | uncached input | cache write | cache read | output | {ESTIMATE_LABEL} | input total | price estimate |\n\
          | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
     );
     for run in &report.runs {
@@ -437,7 +483,7 @@ fn figures_table(report: &HarnessReport) -> String {
             figures.sums.cache_write,
             figures.sums.cache_read,
             figures.sums.output,
-            figures.bound.map_or_else(|| "n/a".to_owned(), |bound| bound.to_string()),
+            figures.estimate.map_or_else(|| "n/a".to_owned(), |estimate| estimate.to_string()),
             figures.input_total,
             figures.price,
         ));
@@ -533,7 +579,12 @@ pub(super) fn json_report(started: DateTime<Utc>, reports: &[HarnessReport]) -> 
             json!({
                 "harness": report.harness,
                 "model": report.model,
-                "verdict": {"label": report.verdict.label(), "judged": report.verdict.judged, "failures": report.verdict.failures},
+                "verdict": {
+                    "label": report.verdict.label(),
+                    "judged": report.verdict.judged,
+                    "failures": report.verdict.failures,
+                    "inconclusive": report.verdict.inconclusive,
+                },
                 "arms": arms,
             })
         })
@@ -547,7 +598,7 @@ pub(super) fn json_report(started: DateTime<Utc>, reports: &[HarnessReport]) -> 
             "settleLimitSeconds": SETTLE_LIMIT.as_secs(),
         },
         "noise": NOISE,
-        "boundLabel": BOUND_LABEL,
+        "estimateLabel": ESTIMATE_LABEL,
         "harnesses": harnesses,
     })
 }
@@ -632,13 +683,17 @@ mod tests {
     }
 
     #[test]
-    fn the_codex_bound_adds_each_compacted_trigger_one_time() {
+    fn the_codex_estimate_adds_each_sent_trigger_one_time() {
         let mut ended = compacted(500, Some(90_000), None);
         ended.outcome = Some("ended_without_boundary".into());
-        let bound = codex_bound(&[compacted(100, Some(110_000), None), ended, compacted(900, Some(105_000), None)]);
-        assert_eq!(bound, Bound { tokens: 215_000, unobserved: 0 });
-        let blind = codex_bound(&[compacted(100, None, None)]);
-        assert_eq!(blind, Bound { tokens: 0, unobserved: 1 });
+        // An attempt that the host never dispatched sent no request.
+        let mut skipped = compacted(700, Some(80_000), None);
+        skipped.outcome = Some("unsupported".into());
+        skipped.dispatched_at = None;
+        let attempts = [compacted(100, Some(110_000), None), ended, skipped, compacted(900, Some(105_000), None)];
+        assert_eq!(codex_estimate(&attempts), Estimate { tokens: 305_000, requests: 3, unobserved: 0 });
+        let blind = codex_estimate(&[compacted(100, None, None)]);
+        assert_eq!(blind, Estimate { tokens: 0, requests: 0, unobserved: 1 });
     }
 
     #[test]
@@ -713,21 +768,45 @@ mod tests {
     }
 
     #[test]
-    fn the_codex_bar_counts_the_bound_and_needs_a_trigger_reading() {
+    fn the_codex_bar_counts_the_estimate_and_needs_a_trigger_reading() {
         let on = arm(Arm::On, 8, vec![row(810, 100_000, 0, 300_000, 900)], vec![compacted(820, Some(150_000), None)]);
         let off = arm(Arm::Off, 8, vec![row(810, 100_000, 0, 500_000, 900)], Vec::new());
         let figures_on = figures("codex", &on);
-        assert_eq!(figures_on.bound, Some(150_000));
+        assert_eq!((figures_on.estimate, figures_on.estimated), (Some(150_000), 1));
         assert_eq!(figures_on.input_total, 550_000);
-        assert!(verdict("codex", &[on.clone(), off.clone()]).passed());
-        // The bound can tip the comparison.
+        // Below arm off, an estimate gives no PASS.
+        let saved = verdict("codex", &[on.clone(), off.clone()]);
+        assert!(saved.failures.is_empty() && !saved.passed(), "{saved:?}");
+        assert_eq!(saved.label(), INCONCLUSIVE);
+        // The observed input alone can fail the comparison.
         let mut heavy = on.clone();
-        heavy.attempts = vec![compacted(820, Some(250_000), None)];
-        assert!(!verdict("codex", &[heavy, off.clone()]).passed());
+        heavy.rows = vec![row(810, 100_000, 0, 500_000, 900)];
+        let failed = verdict("codex", &[heavy, off.clone()]);
+        assert_eq!(failed.label(), "FAIL", "{failed:?}");
+        assert!(failed.failures.join("\n").contains("is not below the input total of arm off"), "{failed:?}");
         let mut blind = on;
         blind.attempts = vec![compacted(820, None, None)];
         let failures = verdict("codex", &[blind, off]).failures.join("\n");
         assert!(failures.contains(UNOBSERVED), "{failures}");
+    }
+
+    #[test]
+    fn a_codex_comparison_with_unobserved_compaction_requests_does_not_pass() {
+        // 500,000 observed input in arm on, one dispatched request with no
+        // boundary (trigger 120,000), one compaction (trigger 110,000), and
+        // 700,000 input in arm off.
+        let mut ended = compacted(500, Some(120_000), None);
+        ended.outcome = Some("ended_without_boundary".into());
+        let on = arm(Arm::On, 8, vec![row(810, 100_000, 0, 400_000, 900)], vec![ended, compacted(820, Some(110_000), None)]);
+        let off = arm(Arm::Off, 8, vec![row(810, 100_000, 0, 600_000, 900)], Vec::new());
+        let verdict = verdict("codex", &[on.clone(), off]);
+        assert!(!verdict.passed(), "{verdict:?}");
+        assert_eq!(verdict.label(), "INCONCLUSIVE", "{verdict:?}");
+        // The estimate has the trigger of each sent request, with any outcome.
+        let figures_on = figures("codex", &on);
+        assert_eq!((figures_on.estimate, figures_on.estimated, figures_on.input_total), (Some(230_000), 2, 730_000));
+        let why = verdict.inconclusive.unwrap_or_default();
+        assert!(why.contains("2 compaction requests") && why.contains("730000"), "{why}");
     }
 
     #[test]
@@ -751,21 +830,35 @@ mod tests {
     }
 
     #[test]
-    fn the_report_carries_the_figures_the_noise_and_the_bound_column() -> Result<(), String> {
+    fn the_report_carries_the_figures_the_noise_and_the_estimate_column() -> Result<(), String> {
+        let codex_runs = vec![
+            arm(Arm::On, 8, vec![row(810, 100_000, 0, 300_000, 900)], vec![compacted(820, Some(150_000), None)]),
+            arm(Arm::Off, 8, vec![row(810, 100_000, 0, 500_000, 900)], Vec::new()),
+        ];
+        let codex_verdict = verdict("codex", &codex_runs);
         let runs = claude_pair();
         let verdict = verdict("claude", &runs);
-        let reports = [HarnessReport { harness: "claude".into(), model: "claude-haiku-5-5".into(), runs, verdict }];
+        let reports = [
+            HarnessReport { harness: "claude".into(), model: "claude-haiku-5-5".into(), runs, verdict },
+            HarnessReport { harness: "codex".into(), model: "gpt-6.2-sol".into(), runs: codex_runs, verdict: codex_verdict },
+        ];
         let started = at(0).ok_or("no time")?;
         let text = markdown(started, &reports);
-        for part in [NOISE, BOUND_LABEL, "about 10,000 tokens", "## claude, model claude-haiku-5-5: PASS", "| on | 14 of 14 | 8 of 8 |", "| on | compacted | #7: 112000 | 111500 | 11150 | #9: 45000 |", "no rate", "| 11 |"] {
+        for part in [NOISE, ESTIMATE_LABEL, "about 10,000 tokens", "## claude, model claude-haiku-5-5: PASS", "| on | 14 of 14 | 8 of 8 |", "| on | compacted | #7: 112000 | 111500 | 11150 | #9: 45000 |", "no rate", "| 11 |", "## codex, model gpt-6.2-sol: INCONCLUSIVE", "- the harness does not report the usage of 1 compaction requests", "| 150000 | 550000 |"] {
             if !text.contains(part) {
                 return Err(format!("{part:?} is not in the report:\n{text}"));
             }
         }
+        if text.contains("compaction bound") {
+            return Err(format!("the report still calls a figure a bound:\n{text}"));
+        }
         let json = json_report(started, &reports);
         let arm = &json["harnesses"][0]["arms"][0];
-        if json["boundLabel"] != BOUND_LABEL || json["noise"] != NOISE || json["harnesses"][0]["verdict"]["label"] != "PASS" {
+        if json["estimateLabel"] != ESTIMATE_LABEL || json["noise"] != NOISE || json["harnesses"][0]["verdict"]["label"] != "PASS" {
             return Err(format!("the JSON report lacks a field: {json}"));
+        }
+        if json["harnesses"][1]["verdict"]["label"] != INCONCLUSIVE || !json["harnesses"][1]["verdict"]["inconclusive"].is_string() {
+            return Err(format!("the JSON report lacks the inconclusive verdict: {json}"));
         }
         if arm["figures"]["sums"]["cacheRead"] != 195_000 || arm["run"]["attempts"][0]["boundaryPreTokens"] != 111_500 || arm["run"]["scores"][0]["checkPassed"] != true {
             return Err(format!("the JSON report lacks a raw figure: {arm}"));

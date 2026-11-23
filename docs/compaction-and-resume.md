@@ -97,9 +97,11 @@ A harness passes when all of these are true:
 - The two arms finish each turn.
 - Arm `on` has at least one `compacted` attempt. On Claude, that attempt has `boundary_pre_tokens`.
 - On Claude, each dispatched compaction request, with any outcome, has a ledger row with tokens above zero before the next send. If one request has no such row, the harness fails with `compaction_usage_unobserved`.
-- On Codex, the harness does not report the tokens of the compaction request. The eval adds the trigger reading of each compacted attempt one time as uncached input, in the column `compaction bound (not observed)`. A compacted attempt with no trigger reading fails with `compaction_usage_unobserved`.
+- On Codex, each sent compaction request, with any outcome, has a trigger reading. If one request has no trigger reading, the harness fails with `compaction_usage_unobserved`.
 - The score of arm `on` is at least the score of arm `off` minus 1, and arm `off` scores at least 6.
-- The input total of arm `on` (uncached, cache write and cache read, with the bound on Codex) is less than the total of arm `off`.
+- The input total of arm `on` (uncached, cache write and cache read) is less than the total of arm `off`.
+
+On Codex, the harness does not report the tokens of a compaction request. The eval adds the trigger reading of each sent attempt one time as uncached input, in the column `compaction estimate (not observed)`. A sent attempt has a dispatch time or the outcome `compacted`. The figure is an estimate and not a bound: Codex can send one compaction request again, and a dispatched attempt can end with no boundary. So the eval cannot find whether arm `on` used fewer tokens. If the observed input of arm `on` is not below arm `off`, the harness fails. If it is below, and each other part of the bar holds, the verdict is `INCONCLUSIVE`, not a pass. An `INCONCLUSIVE` verdict does not fail the test. The rubric score does not change.
 
 The report is a Markdown file and a JSON file. It holds the raw sums, the points of each turn, the attempt rows and the verdict. The price from `usage_pricing` is a side figure, and it is not part of the bar. A model with no rate shows `no rate`. Each arm runs one time, so the figures are noise-prone. On Codex, the resend of the skills list (about 10,000 tokens) adds noise to the sums.
 

@@ -335,16 +335,18 @@ Frontend:
 - The eval reads `usage_ledger` for the whole chat, with the compaction turn. It prints uncached input, cache write, cache read and output for each arm.
 - The eval reads the ledger sums after the last scripted turn and before the session stops. A stop runs one Bridge checkpoint turn with its own ledger rows.
 - Claude: the ledger row of a compaction request holds the real share of that request. The eval sums the rows as they are.
-- Codex: the harness does not report the tokens of a compaction request. For each `compacted` attempt, the eval adds `trigger_used_tokens` one time as uncached input to arm `on`.
-- The report prints that Codex figure in its own column with the label `compaction bound (not observed)`.
+- Codex: the harness does not report the tokens of a compaction request. For each sent attempt (a dispatch time, or the outcome `compacted`), the eval adds `trigger_used_tokens` one time as uncached input to arm `on`.
+- The report prints that Codex figure in its own column with the label `compaction estimate (not observed)`. It is not a bound: Codex can send one compaction request again.
 - It also prints each attempt row: outcome, trigger reading, `boundary_pre_tokens`, `boundary_post_tokens` and the next reading.
 - Pass bar for each harness, all required:
   - Both arms finish every turn.
   - Arm `on` has at least one attempt with outcome `compacted`. On Claude, that attempt has `boundary_pre_tokens`.
   - Claude: the ledger has a row with tokens above zero for each dispatched compaction request, with any outcome. If not, the harness fails with `compaction_usage_unobserved`.
-  - Codex: each `compacted` attempt has a trigger reading for the bound. If not, the harness fails with `compaction_usage_unobserved`.
+  - Codex: each sent attempt has a trigger reading for the estimate. If not, the harness fails with `compaction_usage_unobserved`.
   - The score of arm `on` is at least the score of arm `off` minus 1. The score of arm `off` is at least 6.
-  - The sum of uncached input, cache write and cache read of arm `on` is below the same sum of arm `off`. On Codex, the sum of arm `on` includes the bound.
+  - The observed sum of uncached input, cache write and cache read of arm `on` is below the same sum of arm `off`.
+- Codex: when arm `on` has a compaction estimate and each part of the bar holds, the verdict is `INCONCLUSIVE`, not `PASS`. The eval cannot observe the usage of a compaction request. An `INCONCLUSIVE` verdict does not fail the test.
+- Unit tests in `early_compaction_eval::report::tests`: `the_codex_estimate_adds_each_sent_trigger_one_time`, `the_codex_bar_counts_the_estimate_and_needs_a_trigger_reading`, `a_codex_comparison_with_unobserved_compaction_requests_does_not_pass`.
 - The eval prints a price estimate from `usage_pricing` as a labeled side figure. A model with no rate prints `no rate`. The price is not part of the pass bar.
 - The switch stays off by default until both harnesses pass. The PR shows the output.
 
