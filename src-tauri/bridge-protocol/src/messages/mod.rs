@@ -589,6 +589,12 @@ typed_methods![
     (DraftWorkflowFromText, DraftWorkflowFromTextParams, WorkflowDraftResult),
     (DraftWorkflowFromSession, DraftWorkflowFromSessionParams, WorkflowDraftResult),
     (MarkWorkflowRunsRead, MarkWorkflowRunsReadParams, UnitResult),
+    // reviews
+    (StartReview, StartReviewParams, ReviewJobResult),
+    (ListReviews, ListReviewsParams, ReviewJobList),
+    (GetReview, GetReviewParams, ReviewJobDetail),
+    (CancelReview, CancelReviewParams, ReviewJobResult),
+    (RetryReview, RetryReviewParams, ReviewJobResult),
 ];
 
 /// The documented exceptions to result typing: every method whose result is

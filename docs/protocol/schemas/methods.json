@@ -2471,11 +2471,46 @@
       "method": "workflows/mark_workflow_runs_read",
       "paramsSchema": "mark-workflow-runs-read-params.json",
       "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "start_review",
+      "domain": "reviews",
+      "method": "reviews/start_review",
+      "paramsSchema": "start-review-params.json",
+      "resultSchema": "review-job-result.json"
+    },
+    {
+      "command": "list_reviews",
+      "domain": "reviews",
+      "method": "reviews/list_reviews",
+      "paramsSchema": "list-reviews-params.json",
+      "resultSchema": "review-job-list.json"
+    },
+    {
+      "command": "get_review",
+      "domain": "reviews",
+      "method": "reviews/get_review",
+      "paramsSchema": "get-review-params.json",
+      "resultSchema": "review-job-detail.json"
+    },
+    {
+      "command": "cancel_review",
+      "domain": "reviews",
+      "method": "reviews/cancel_review",
+      "paramsSchema": "cancel-review-params.json",
+      "resultSchema": "review-job-result.json"
+    },
+    {
+      "command": "retry_review",
+      "domain": "reviews",
+      "method": "reviews/retry_review",
+      "paramsSchema": "retry-review-params.json",
+      "resultSchema": "review-job-result.json"
     }
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 49
+    "minor": 50
   },
   "reserved": {
     "cancel": "$/cancel",

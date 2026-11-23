@@ -3,6 +3,7 @@ import { mockChatTools, mockSaveFirstToolChoice, mockUpdateChatTools } from "./c
 import type { GetChatToolsParams, GetChatToolsResult, UpdateChatToolsParams, UpdateChatToolsResult } from "./protocol/generated/protocol";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
 import type { AppPreferences, AppPreferenceValues } from "./protocol/generated/protocol";
+import type { ReviewJob, ReviewJobDetail, ReviewJobList, ReviewJobResult, ReviewTrigger } from "./protocol/generated/protocol";
 import type { LimitRecoverySettings, LimitRecoveryStatus } from "./protocol/generated/protocol";
 import type { AlwaysAllowToolResult, RunWorkflowResult, WorkflowDraftResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary } from "./protocol/generated/protocol";
 import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, MarkAttentionUnreadResult, ReportPresenceResult, UnreadSummary } from "./protocol/generated/protocol";
@@ -136,6 +137,7 @@ const webDaemon = () => (isTauri() ? null : activeWebDaemon());
 /** A real backend answers: the desktop shell, or a daemon over WebSocket.
  *  Without one, everything below serves mock data. */
 const hasBackend = () => isTauri() || webDaemon() !== null;
+const REVIEWS_NEED_DESKTOP = "Reviewing pull requests requires the Bridge desktop app.";
 export type BackendMode = "tauri" | "web" | "mock";
 /** Which transport this window is on, for the few surfaces outside api.ts
  *  that behave differently per host (folder pickers, polls, the demo shell). */
@@ -2099,6 +2101,23 @@ export const bridgeApi = {
     hasBackend() ? call("github/github_act", { workspaceId, action, confirmed }) : Promise.resolve(mockGithubAct(action, confirmed)),
   githubReview: (workspaceId: string, number: number, harness: string, sessionId?: string): Promise<GithubReviewResult> =>
     hasBackend() ? call("github/github_review", { workspaceId, number, harness, sessionId }) : Promise.resolve(mockGithubReview(number, harness)),
+  // Reviews: PR reviews as background jobs on Bridge's own runner. The browser
+  // preview has no runner and no GitHub, so it lists nothing and starts nothing
+  // rather than inventing a job.
+  startReview: (params: { workspaceId: string; number: number; harnesses?: string[]; trigger?: ReviewTrigger }): Promise<ReviewJobResult> =>
+    hasBackend()
+      ? call("reviews/start_review", { workspaceId: params.workspaceId, number: params.number, harnesses: params.harnesses ?? null, trigger: params.trigger ?? null })
+      : Promise.reject(new Error(REVIEWS_NEED_DESKTOP)),
+  listReviews: (workspaceId: string, number?: number): Promise<ReviewJobList> =>
+    hasBackend() ? call("reviews/list_reviews", { workspaceId, number: number ?? null }) : Promise.resolve({ jobs: [] }),
+  getReview: (jobId: string): Promise<ReviewJobDetail> =>
+    hasBackend() ? call("reviews/get_review", { jobId }) : Promise.reject(new Error(`No review job ${jobId}`)),
+  cancelReview: (jobId: string): Promise<ReviewJobResult> =>
+    hasBackend() ? call("reviews/cancel_review", { jobId }) : Promise.reject(new Error(`No review job ${jobId}`)),
+  retryReview: (jobId: string): Promise<ReviewJobResult> =>
+    hasBackend() ? call("reviews/retry_review", { jobId }) : Promise.reject(new Error(`No review job ${jobId}`)),
+  onReviewJobUpdated: (handler: (payload: { job: ReviewJob }) => void): Promise<UnlistenFn> =>
+    hasBackend() ? subscribe<{ job: ReviewJob }>("reviews/job_updated", handler) : Promise.resolve(() => {}),
   githubCheckout: (workspaceId: string, number: number): Promise<GithubCheckoutResult> =>
     hasBackend() ? call("github/github_checkout", { workspaceId, number }) : Promise.resolve(mockGithubCheckout(workspaceId, number)),
   githubConnect: (workspaceId: string, remoteUrl: string): Promise<GithubConnectResult> =>

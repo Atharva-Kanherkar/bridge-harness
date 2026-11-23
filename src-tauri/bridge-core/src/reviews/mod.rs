@@ -73,6 +73,29 @@ pub fn resolve_harnesses(core: &Arc<BridgeCore>, requested: Option<&[String]>) -
         .ok_or_else(|| BridgeError::Invalid("No harness is available to review with".into()))
 }
 
+/// Queue a review of the PR as it is on GitHub now, or return the live job
+/// that already reviews that head with those harnesses. The head is read
+/// fresh, so the job reviews the PR's real head commit.
+pub fn start(core: &Arc<BridgeCore>, params: &wire::StartReviewParams) -> Result<wire::ReviewJob, BridgeError> {
+    let path = core.workspace_path(&params.workspace_id)?;
+    // Refuse a bad harness list before spending a `gh` call on it.
+    resolve_harnesses(core, params.harnesses.as_deref())?;
+    let head = core
+        .github_surface
+        .pr_head(std::path::Path::new(&path), params.number)
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    start_with(
+        core,
+        params,
+        PrHead {
+            repo_owner: head.repository.owner,
+            repo_name: head.repository.name,
+            head_sha: head.head_sha,
+            base_sha: head.base_sha,
+        },
+    )
+}
+
 /// Queue a review of the PR at `head`, or return the live job that already
 /// reviews that head with those harnesses.
 pub fn start_with(core: &Arc<BridgeCore>, params: &wire::StartReviewParams, head: PrHead) -> Result<wire::ReviewJob, BridgeError> {

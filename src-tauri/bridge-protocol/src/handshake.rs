@@ -184,9 +184,14 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 ///
 /// **1.49 adds chat-scoped changes**: `workspaces/session_changes`. A 1.48
 /// client still pairs: it never calls it.
+///
+/// **1.50 adds the reviews domain**: `reviews/*` methods, the
+/// `reviews/job_updated` notification, and runner fields on
+/// `ReviewerSettings` that default when absent. A 1.49 client still pairs: it
+/// never calls `reviews/*`, and the settings it saves load with defaults.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 49,
+    minor: 50,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -536,9 +541,17 @@ mod tests {
     fn a_1_48_client_pairs_with_a_chat_changes_daemon() {
         let before = ProtocolVersion { major: 1, minor: 48 };
         let chat_changes = ProtocolVersion { major: 1, minor: 49 };
-        assert_eq!(PROTOCOL_VERSION, chat_changes);
         assert!(chat_changes.accepts(before), "a 1.48 client never calls session_changes");
         assert!(!before.accepts(chat_changes), "a 1.49 client needs session_changes");
+    }
+
+    #[test]
+    fn a_1_49_client_pairs_with_a_reviews_daemon() {
+        let before = ProtocolVersion { major: 1, minor: 49 };
+        let reviews = ProtocolVersion { major: 1, minor: 50 };
+        assert_eq!(PROTOCOL_VERSION, reviews);
+        assert!(reviews.accepts(before), "a 1.49 client never calls reviews/*");
+        assert!(!before.accepts(reviews), "a 1.50 client needs the reviews domain");
     }
 
     #[test]
