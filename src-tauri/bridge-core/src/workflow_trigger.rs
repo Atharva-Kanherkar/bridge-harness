@@ -1693,6 +1693,23 @@ mod tests {
     }
 
     #[test]
+    fn only_the_free_slots_are_filled_from_the_line() {
+        let (dir, core) = test_support::core();
+        let now = Utc::now();
+        let [running, older, newer] = ["running", "older", "newer"].map(|name| manual_run(&core, dir.path(), name, now));
+        let db = core.db.lock().unwrap();
+        cap(&db, 1);
+        assert_eq!(reserve_slot(&db, &running.run.id, &running.lease_owner, now).unwrap(), Slot::Reserved);
+        for waiting in [&older, &newer] {
+            assert_eq!(reserve_slot(&db, &waiting.run.id, &waiting.lease_owner, now).unwrap(), Slot::Queued);
+        }
+        // One run still holds a slot: raising the cap to two frees exactly one.
+        cap(&db, 2);
+        let out: Vec<String> = unpark_queued(&db, now).unwrap().into_iter().map(|run| run.run.id).collect();
+        assert_eq!(out, vec![older.run.id.clone()]);
+    }
+
+    #[test]
     fn a_newer_run_never_takes_a_slot_ahead_of_an_older_one_waiting() {
         let (dir, core) = test_support::core();
         let now = Utc::now();
