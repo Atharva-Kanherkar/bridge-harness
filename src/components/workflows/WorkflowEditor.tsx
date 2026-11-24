@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { LoaderCircle, RefreshCw, ShieldCheck } from "lucide-react";
+import { LoaderCircle, Plus, RefreshCw, ShieldCheck, X } from "lucide-react";
 import { bridgeApi } from "../../api";
-import type { Project, Workflow, WorkflowDefinition, WorkflowEventKind, WorkflowEventSample, WorkflowGrant, WorkflowOptions, WorkflowTrigger, WorkflowTriggerPreview } from "../../protocol/generated/protocol";
+import type { Project, Workflow, WorkflowDefinition, WorkflowEventKind, WorkflowEventSample, WorkflowFiles, WorkflowGrant, WorkflowOptions, WorkflowStep, WorkflowTrigger, WorkflowTriggerPreview } from "../../protocol/generated/protocol";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -85,6 +85,99 @@ export function harnessRefusal(options: WorkflowOptions | null, harnessId: strin
   return null;
 }
 
+/** The most steps one workflow runs; the daemon holds the same limit. */
+export const MAX_STEPS = 5;
+
+/** The granted servers step `index` uses: its own list, or every grant. */
+export function stepServers(definition: WorkflowDefinition, index: number): string[] {
+  return definition.steps[index]?.servers ?? (definition.grants ?? []).map(grant => grant.server);
+}
+
+/** Which files step `index` works on: its own choice, or the workflow's. */
+export function stepFiles(definition: WorkflowDefinition, index: number): WorkflowFiles {
+  return definition.steps[index]?.files ?? definition.files;
+}
+
+/** Why `harnessId` cannot run step `index` as it is set up, or null. */
+export function stepRefusal(options: WorkflowOptions | null, definition: WorkflowDefinition, index: number, harnessId = definition.steps[index]?.harness ?? ""): string | null {
+  const servers = stepServers(definition, index);
+  return harnessRefusal(options, harnessId, { files: stepFiles(definition, index), grants: (definition.grants ?? []).filter(grant => servers.includes(grant.server)) });
+}
+
+/** What the steps' shares of connectors and files leave wrong, or null. */
+export function stepsProblem(definition: WorkflowDefinition): string | null {
+  const count = definition.steps.length;
+  if (count < 2) return null;
+  const indexes = definition.steps.map((_, index) => index);
+  const used = new Set(indexes.flatMap(index => stepServers(definition, index)));
+  const unused = (definition.grants ?? []).find(grant => !used.has(grant.server));
+  if (unused) return `No step uses ${unused.server}. Give it to a step, or remove it.`;
+  const both = indexes.find(index => stepFiles(definition, index) === "worktree" && stepServers(definition, index).length > 0);
+  if (both !== undefined) return `Step ${both + 1} works in the worktree, so it cannot use connectors.`;
+  if (definition.files === "worktree" && !indexes.some(index => stepFiles(definition, index) === "worktree")) return "No step works in the worktree. Choose one, or turn the worktree off.";
+  return null;
+}
+
+/** A new step: Claude when it may run one, with nothing granted yet. */
+function newStep(options: WorkflowOptions | null): WorkflowStep {
+  const agent = options?.harnesses.find(harness => harness.id === "claude" && harness.connectorsAllowed) ?? options?.harnesses.find(harness => harness.connectorsAllowed);
+  return { harness: agent?.id ?? "claude", model: agent?.defaultModel ?? agent?.models[0]?.id ?? "", instructions: "", servers: [], files: "none" };
+}
+
+/** Which of the granted connectors a step uses, and whether it works in the worktree. */
+function StepShare({ definition, index, onChange }: { definition: WorkflowDefinition; index: number; onChange: (change: Partial<WorkflowStep>) => void }) {
+  const label = `Step ${index + 1}`;
+  const servers = stepServers(definition, index);
+  const worktree = stepFiles(definition, index) === "worktree";
+  const grants = definition.grants ?? [];
+  if (grants.length === 0 && definition.files !== "worktree") return null;
+  return <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-caption text-muted-foreground">
+    {grants.length > 0 && <span>Uses</span>}
+    {grants.map(grant => <label key={grant.server} className="flex min-w-0 items-center gap-1.5">
+      <input type="checkbox" aria-label={`${label} uses ${grant.server}`} disabled={worktree} checked={!worktree && servers.includes(grant.server)} onChange={event => {
+        const next = event.target.checked ? [...servers.filter(server => server !== grant.server), grant.server] : servers.filter(server => server !== grant.server);
+        onChange({ servers: next });
+      }} className="size-3.5 accent-foreground"/><span className="break-all font-mono">{grant.server}</span>
+    </label>)}
+    {definition.files === "worktree" && <label className="flex items-center gap-1.5">
+      <input type="checkbox" aria-label={`${label} works in the worktree`} checked={worktree} onChange={event => onChange(event.target.checked ? { files: "worktree", servers: [] } : { files: "none" })} className="size-3.5 accent-foreground"/>Works in the worktree
+    </label>}
+  </div>;
+}
+
+/** Step 2 and later: its own agent, model, instructions and share. */
+function StepCard({ definition, index, options, onChange, onRemove }: { definition: WorkflowDefinition; index: number; options: WorkflowOptions | null; onChange: (change: Partial<WorkflowStep>) => void; onRemove: () => void }) {
+  const step = definition.steps[index];
+  const label = `Step ${index + 1}`;
+  const agent = options?.harnesses.find(candidate => candidate.id === step.harness);
+  const refusal = stepRefusal(options, definition, index);
+  return <section aria-label={label} className="min-w-0 space-y-2.5 rounded-xl border border-border px-3 py-2.5">
+    <div className="flex items-center justify-between"><span className="text-caption font-medium text-foreground">{label}</span>
+      <button type="button" aria-label={`Remove step ${index + 1}`} onClick={onRemove} className="inline-flex items-center gap-1 text-caption text-muted-foreground hover:text-foreground"><X size={11}/>Remove</button></div>
+    <div className="grid gap-3 sm:grid-cols-2">
+      <label className={FIELD}>Agent
+        <select aria-label={`${label} agent`} className={SELECT} value={step.harness} onChange={event => {
+          const next = options?.harnesses.find(candidate => candidate.id === event.target.value);
+          onChange({ harness: event.target.value, model: next?.defaultModel ?? next?.models[0]?.id ?? "" });
+        }}>
+          {(options?.harnesses ?? []).map(candidate => {
+            const reason = stepRefusal(options, definition, index, candidate.id) ?? (candidate.available ? null : "not installed");
+            return <option key={candidate.id} value={candidate.id} disabled={Boolean(reason) && candidate.id !== step.harness} title={reason ?? undefined}>{candidate.label}{reason ? ` (${reason})` : ""}</option>;
+          })}
+        </select>
+      </label>
+      <label className={FIELD}>Model
+        {agent && agent.models.length > 0
+          ? <select aria-label={`${label} model`} className={SELECT} value={step.model} onChange={event => onChange({ model: event.target.value })}>{!agent.models.some(model => model.id === step.model) && <option value={step.model} disabled>{step.model || "Choose a model"}</option>}{agent.models.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}</select>
+          : <Input aria-label={`${label} model`} className="mt-1" value={step.model} onChange={event => onChange({ model: event.target.value })}/>}
+      </label>
+    </div>
+    <label className={FIELD}>Instructions<Textarea aria-label={`${label} instructions`} className="mt-1" value={step.instructions} onChange={event => onChange({ instructions: event.target.value })}/></label>
+    <StepShare definition={definition} index={index} onChange={onChange}/>
+    {refusal && <p className="text-caption text-muted-foreground">{agent?.label ?? step.harness} cannot run this step: {refusal}.</p>}
+  </section>;
+}
+
 export function WorkflowEditor({ open, workflow, initial, notes = [], options, projects, busy, error, onCancel, onSubmit, onRefreshConnectors, refreshing = false }: {
   open: boolean;
   /** The workflow being edited, or null to create one. */
@@ -124,9 +217,13 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
   const [previewing, setPreviewing] = useState(false);
   const step = definition.steps[0];
   const grants = definition.grants ?? [];
+  const multi = definition.steps.length > 1;
   const harness = options?.harnesses.find(candidate => candidate.id === step.harness);
   const update = (change: Partial<WorkflowDefinition>) => setDefinition(current => ({ ...current, ...change }));
-  const updateStep = (change: Partial<typeof step>) => setDefinition(current => ({ ...current, steps: [{ ...current.steps[0], ...change }] }));
+  const updateStepAt = (index: number, change: Partial<WorkflowStep>) => setDefinition(current => ({ ...current, steps: current.steps.map((existing, at) => at === index ? { ...existing, ...change } : existing) }));
+  const updateStep = (change: Partial<WorkflowStep>) => updateStepAt(0, change);
+  const addStep = () => setDefinition(current => current.steps.length >= MAX_STEPS ? current : { ...current, steps: [...current.steps, newStep(options)] });
+  const removeStep = (index: number) => setDefinition(current => ({ ...current, steps: current.steps.filter((_, at) => at !== index) }));
 
   const composed = useMemo<WorkflowDefinition>(() => {
     if (preset === "event") {
@@ -160,20 +257,28 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
     if (!options || step.model.trim()) return;
     const candidate = options.harnesses.find(entry => entry.id === step.harness);
     const model = candidate?.defaultModel ?? candidate?.models[0]?.id;
-    if (model) setDefinition(current => ({ ...current, steps: [{ ...current.steps[0], model }] }));
+    if (model) updateStepAt(0, { model });
   }, [options, step.harness, step.model]);
 
   const grantFor = (server: string): WorkflowGrant | undefined => grants.find(grant => grant.server === server);
   const setGrant = (server: string, next: WorkflowGrant | null) => {
     const rest = grants.filter(grant => grant.server !== server);
-    update({ grants: next ? [...rest, next] : rest });
+    // A connector that is no longer granted leaves every step that used it.
+    setDefinition(current => ({
+      ...current,
+      grants: next ? [...rest, next] : rest,
+      steps: next ? current.steps : current.steps.map(existing => existing.servers ? { ...existing, servers: existing.servers.filter(name => name !== server) } : existing),
+    }));
   };
-  const refusal = harnessRefusal(options, step.harness, composed);
+  const refusal = stepRefusal(options, composed, 0);
+  const anyRefused = composed.steps.some((_, index) => stepRefusal(options, composed, index) !== null);
+  const problem = stepsProblem(composed);
   // A filter the event cannot run without: a GitHub repository, a Notion database.
   const filters = eventFilters(eventKind);
   const missingRepo = composed.trigger.kind === "event" && Boolean(filters.repo?.required) && !composed.trigger.repo;
   const missingChannel = composed.trigger.kind === "event" && Boolean(filters.channel?.required) && !composed.trigger.channel;
-  const ready = composed.name.length > 0 && step.instructions.trim().length > 0 && step.model.trim().length > 0 && !refusal && !missingRepo && !missingChannel;
+  const stepsFilled = composed.steps.every(entry => entry.instructions.trim().length > 0 && entry.model.trim().length > 0);
+  const ready = composed.name.length > 0 && stepsFilled && !anyRefused && !problem && !missingRepo && !missingChannel;
   // Only the preview of the trigger as it is now: an older one's sample may be
   // another event entirely.
   const shown = preview?.key === triggerKey ? preview.result : null;
@@ -258,7 +363,7 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
         <div className={FIELD}>Agent
           <div className="mt-1 divide-y divide-border overflow-hidden rounded-lg border border-border">
             {(options?.harnesses ?? []).map(candidate => {
-              const reason = harnessRefusal(options, candidate.id, composed);
+              const reason = stepRefusal(options, composed, 0, candidate.id);
               const selected = candidate.id === step.harness;
               return <label key={candidate.id} title={reason ?? undefined} className={`flex min-w-0 items-center gap-2 px-2.5 py-1.5 text-ui ${selected ? "bg-accent text-foreground" : reason ? "text-muted-foreground opacity-70" : "text-foreground"}`}>
                 <input type="radio" name="workflow-harness" aria-label={candidate.label} disabled={!!reason || !candidate.available} checked={selected} onChange={() => updateStep({ harness: candidate.id, model: candidate.defaultModel ?? candidate.models[0]?.id ?? "" })} className="accent-foreground"/>
@@ -274,15 +379,24 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
             : <Input aria-label="Workflow model" className="mt-1" value={step.model} onChange={event => updateStep({ model: event.target.value })}/>}
         </label>
 
-        <label className={FIELD}>Instructions<Textarea aria-label="Workflow instructions" className="mt-1" value={step.instructions} onChange={event => updateStep({ instructions: event.target.value })}/></label>
+        <label className={FIELD}>{multi ? "Step 1 instructions" : "Instructions"}<Textarea aria-label="Workflow instructions" className="mt-1" value={step.instructions} onChange={event => updateStep({ instructions: event.target.value })}/></label>
+        {multi && <StepShare definition={definition} index={0} onChange={updateStep}/>}
+        {definition.steps.map((_, index) => index === 0 ? null : <StepCard key={index} definition={definition} index={index} options={options} onChange={change => updateStepAt(index, change)} onRemove={() => removeStep(index)}/>)}
+        {definition.steps.length < MAX_STEPS && <button type="button" aria-label="Add a step" onClick={addStep} className="inline-flex items-center gap-1 text-caption text-muted-foreground hover:text-foreground"><Plus size={11}/>Add a step, with its own agent</button>}
         <label className={FIELD}>What a finished run looks like<Input aria-label="Expected result" className="mt-1" value={definition.expectedResult ?? ""} onChange={event => update({ expectedResult: event.target.value })}/></label>
 
         {definition.projectId && <label className="flex items-center gap-2 text-caption text-muted-foreground">
-          <input type="checkbox" aria-label="Work in a worktree" checked={definition.files === "worktree"} onChange={event => update({ files: event.target.checked ? "worktree" : "none", grants: event.target.checked ? [] : grants })} className="size-3.5 accent-foreground"/>
-          Work in its own copy of the project (a worktree). Connectors are off for worktree jobs for now.
+          <input type="checkbox" aria-label="Work in a worktree" checked={definition.files === "worktree"} onChange={event => {
+            const on = event.target.checked;
+            // One step: the worktree replaces connectors. Several: each step
+            // chooses, and the ones in the worktree use no connectors.
+            if (!multi) update({ files: on ? "worktree" : "none", grants: on ? [] : grants });
+            else setDefinition(current => ({ ...current, files: on ? "worktree" : "none", steps: on ? current.steps : current.steps.map(existing => ({ ...existing, files: null })) }));
+          }} className="size-3.5 accent-foreground"/>
+          {multi ? "Work in its own copy of the project (a worktree). Steps that work there use no connectors." : "Work in its own copy of the project (a worktree). Connectors are off for worktree jobs for now."}
         </label>}
 
-        {definition.files === "none" && <div className={FIELD}><span className="flex items-center justify-between">Can use
+        {(definition.files === "none" || multi) && <div className={FIELD}><span className="flex items-center justify-between">Can use
           {onRefreshConnectors && <button type="button" onClick={onRefreshConnectors} disabled={refreshing} className="inline-flex items-center gap-1 font-normal text-muted-foreground hover:text-foreground disabled:opacity-60"><RefreshCw size={11} className={refreshing ? "animate-spin" : ""}/>Refresh</button>}</span>
           <div className="mt-1 divide-y divide-border rounded-lg border border-border">
             {options?.connectorsError
@@ -312,7 +426,8 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
           <label className={FIELD}>Tool calls<Input aria-label="Tool call limit" type="number" min={1} max={256} className="mt-1" value={definition.budget.maxToolCalls} onChange={event => update({ budget: { ...definition.budget, maxToolCalls: Number(event.target.value) || 1 } })}/></label>
           <label className="flex items-end gap-2 pb-1.5 text-caption text-muted-foreground"><input type="checkbox" aria-label="Notify on success" checked={definition.notify?.onSuccess ?? false} onChange={event => update({ notify: { onSuccess: event.target.checked } })} className="size-3.5 accent-foreground"/>Notify me on success too</label>
         </div>
-        {refusal && <p className="text-caption text-muted-foreground">This agent cannot run this workflow: {refusal}.</p>}
+        {refusal && <p className="text-caption text-muted-foreground">{multi ? "Step 1's agent cannot run this step" : "This agent cannot run this workflow"}: {refusal}.</p>}
+        {problem && <p className="text-caption text-muted-foreground">{problem}</p>}
         {!options && <p className="inline-flex items-center gap-1.5 text-caption text-muted-foreground"><LoaderCircle className="animate-spin" size={11}/>Loading agents and connectors…</p>}
         {missingRepo && <p className="text-caption text-muted-foreground">Choose the repository to watch, as owner/name.</p>}
         {missingChannel && <p className="text-caption text-muted-foreground">Choose the Notion database to watch, by name or link.</p>}

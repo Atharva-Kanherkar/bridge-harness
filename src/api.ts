@@ -1718,7 +1718,7 @@ const mockWorkflowOptions: WorkflowOptions = {
   harnesses: [
     { id: "claude", label: "Claude Code", available: true, connectorsAllowed: true, connectorsReason: null, worktreeAllowed: true, defaultModel: "haiku",
       models: [{ id: "haiku", label: "Claude Haiku", tier: "fast", defaultForBriefing: true }, { id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForBriefing: false }] },
-    { id: "codex", label: "Codex", available: true, connectorsAllowed: false, worktreeAllowed: false, defaultModel: "gpt-5.5",
+    { id: "codex", label: "Codex", available: true, connectorsAllowed: false, worktreeAllowed: true, defaultModel: "gpt-5.5",
       connectorsReason: "the app-server protocol has no per-tool authority, so an exact connector read cannot be isolated from a mutation",
       models: [{ id: "gpt-5.5", label: "GPT-5.5", tier: "standard", defaultForBriefing: false }] },
     { id: "opencode", label: "OpenCode", available: true, connectorsAllowed: false, worktreeAllowed: false, defaultModel: null,
@@ -1787,8 +1787,13 @@ let mockWorkflowSettings: WorkflowSettingsSnapshot = { configured: false, settin
 /** The mock's mirror of `workflows::widens`. */
 function mockWorkflowWidens(previous: WorkflowDefinition, next: WorkflowDefinition): boolean {
   if (previous.projectId !== next.projectId) return true;
-  if (previous.steps[0]?.harness !== next.steps[0]?.harness) return true;
+  if (previous.steps.map(step => step.harness).join("\n") !== next.steps.map(step => step.harness).join("\n")) return true;
   if (previous.files === "none" && next.files === "worktree") return true;
+  const servers = (definition: WorkflowDefinition, index: number) => definition.steps[index]?.servers ?? (definition.grants ?? []).map(grant => grant.server);
+  const files = (definition: WorkflowDefinition, index: number) => definition.steps[index]?.files ?? definition.files;
+  const stepWidens = next.steps.some((_, index) => servers(next, index).some(server => !servers(previous, index).includes(server))
+    || (files(previous, index) === "none" && files(next, index) === "worktree"));
+  if (stepWidens) return true;
   const grantWidens = (next.grants ?? []).some(grant => {
     const old = (previous.grants ?? []).find(candidate => candidate.server === grant.server);
     return !old || (grant.read && !old.read) || (grant.write === "ask" && old.write === "never");
