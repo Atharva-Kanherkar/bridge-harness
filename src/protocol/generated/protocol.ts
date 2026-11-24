@@ -4650,6 +4650,7 @@ export interface GithubReviewParams {
 }
 
 export interface GithubReviewResult {
+  jobId?: string | null;
   message: string;
   sessionId?: string | null;
   status: string;

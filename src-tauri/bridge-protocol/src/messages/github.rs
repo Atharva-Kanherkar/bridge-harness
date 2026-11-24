@@ -535,11 +535,17 @@ pub struct GithubReviewParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubReviewResult {
-    /// `queued` for a local harness (a review job), `launched` or `failed` for
-    /// Cursor Bugbot. Older daemons also answered `awaitingApproval`.
+    /// For a local harness, the review job's status: `queued`, `preparing`,
+    /// `reviewing`, `drafted` or `posting`. A live job that already reviews
+    /// this head with this harness is returned rather than a second one, so
+    /// `drafted` means a draft is waiting for triage. `launched` or `failed`
+    /// for Cursor Bugbot. Older daemons also answered `awaitingApproval`.
     pub status: String,
     /// Always absent now: a review job has no session. Kept for older clients.
     pub session_id: Option<String>,
+    /// The review job, for `reviews/get_review`. Absent for Cursor Bugbot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
     /// A short human statement of the outcome.
     pub message: String,
 }

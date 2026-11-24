@@ -1369,13 +1369,22 @@ pub fn github_review(
             trigger: None,
         },
     )?;
+    let with = job.harnesses.join(" and ");
+    let message = match job.status {
+        wire::ReviewJobStatus::Drafted => {
+            format!("A review of PR #{number} by {with} is already drafted. Triage it in the pull request's Reviews section.")
+        }
+        wire::ReviewJobStatus::Posting => format!("A review of PR #{number} by {with} is being posted."),
+        wire::ReviewJobStatus::Preparing | wire::ReviewJobStatus::Reviewing => {
+            format!("PR #{number} is already being reviewed by {with}. Follow it in the pull request's Reviews section.")
+        }
+        _ => format!("Review of PR #{number} queued with {with}. Follow it in the pull request's Reviews section."),
+    };
     Ok(wire::GithubReviewResult {
-        status: "queued".into(),
+        status: job.status.as_str().into(),
         session_id: None,
-        message: format!(
-            "Review of PR #{number} queued with {}. Follow it in the pull request's Reviews section.",
-            job.harnesses.join(" and ")
-        ),
+        job_id: Some(job.id),
+        message,
     })
 }
 
@@ -1441,6 +1450,7 @@ fn request_cursor_bugbot_review(
     Ok(wire::GithubReviewResult {
         status: "launched".into(),
         session_id: None,
+        job_id: None,
         message: format!(
             "Asked Cursor Bugbot to review PR #{number}. It will comment on the pull request."
         ),
@@ -8220,12 +8230,16 @@ mod tests {
         assert!(result.message.contains("queued with claude") && result.message.contains("Reviews section"), "{}", result.message);
         let jobs = crate::reviews::list(&core, &wire::ListReviewsParams { workspace_id: "w".into(), number: Some(103) }).unwrap().jobs;
         assert_eq!(jobs.len(), 1);
+        assert_eq!(result.job_id.as_deref(), Some(jobs[0].id.as_str()), "the job, for clients that follow it");
         assert_eq!((jobs[0].head_sha.as_str(), jobs[0].harnesses.as_slice()), ("current-head-sha", ["claude".to_owned()].as_slice()));
         let sessions_after: i64 = core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0)).unwrap();
         assert_eq!(sessions_after, sessions_before, "no orchestrator or worker session");
-        // Again: the same job, not a second one.
-        super::github_review(&core, "w", 103, "claude", None).unwrap();
+        // Again, once it has drafted: the same job, and it says so.
+        core.db.lock().unwrap().execute("UPDATE review_jobs SET status='drafted' WHERE id=?1", params![jobs[0].id]).unwrap();
+        let again = super::github_review(&core, "w", 103, "claude", None).unwrap();
         assert_eq!(crate::reviews::list(&core, &wire::ListReviewsParams { workspace_id: "w".into(), number: Some(103) }).unwrap().jobs.len(), 1);
+        assert_eq!((again.status.as_str(), again.job_id.as_deref()), ("drafted", Some(jobs[0].id.as_str())));
+        assert!(again.message.contains("already drafted"), "{}", again.message);
     }
 
     #[test]

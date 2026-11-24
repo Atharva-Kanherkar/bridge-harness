@@ -22,9 +22,16 @@ pub fn load(db: &Connection) -> Result<ReviewJobSettings, BridgeError> {
             |row| row.get(0),
         )
         .optional()?;
-    payload
+    let mut settings: ReviewJobSettings = payload
         .map(|payload| serde_json::from_str(&payload).map_err(|error| BridgeError::Invalid(error.to_string())))
-        .unwrap_or_else(|| Ok(ReviewJobSettings::default()))
+        .unwrap_or_else(|| Ok(ReviewJobSettings::default()))?;
+    // A pair of defaults stored before `second_opinion` existed was valid
+    // then and meant two reviewers. `save` refuses a new pair with it off, so
+    // only such a record has both: it loads as it ran.
+    if settings.default_harnesses.len() > 1 && !settings.second_opinion {
+        settings.second_opinion = true;
+    }
+    Ok(settings)
 }
 
 pub fn save(db: &Connection, settings: &ReviewJobSettings) -> Result<ReviewJobSettings, BridgeError> {
@@ -155,6 +162,25 @@ mod tests {
         assert_eq!(on.default_harnesses, ["claude", "codex"]);
         let one = ReviewJobSettings { default_harnesses: vec!["codex".into()], ..Default::default() };
         assert_eq!(save(&db, &one).unwrap().default_harnesses, ["codex"], "one default needs nothing");
+    }
+
+    #[test]
+    fn a_stored_pair_from_before_second_opinion_still_loads_and_saves() {
+        let (_scratch, db) = db();
+        save(&db, &ReviewJobSettings::default()).unwrap();
+        // Valid when it was stored: the field did not exist yet.
+        db.execute(
+            "UPDATE configuration_entries SET payload=?1 WHERE kind=?2",
+            params![r#"{"defaultHarnesses":["claude","codex"],"maxConcurrentReviews":2}"#, KIND],
+        )
+        .unwrap();
+        let loaded = load(&db).unwrap();
+        assert!(loaded.second_opinion, "the pair meant two reviewers");
+        assert_eq!(loaded.default_harnesses, ["claude", "codex"]);
+        // What the form sends when the person changes something unrelated.
+        let saved = save(&db, &ReviewJobSettings { max_concurrent_reviews: 3, ..loaded }).unwrap();
+        assert_eq!(saved.max_concurrent_reviews, 3);
+        assert!(saved.second_opinion);
     }
 
     #[test]

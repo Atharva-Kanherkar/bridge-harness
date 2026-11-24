@@ -63,7 +63,7 @@ pub fn resolve_harnesses(core: &Arc<BridgeCore>, requested: Option<&[String]>) -
         let db = lock_db(core);
         settings::load(&db)?
     };
-    let mut asked = match requested {
+    let asked = match requested {
         Some([]) => return Err(BridgeError::Invalid("Pick a harness to review with".into())),
         Some(list) => settings::harnesses(list, "reviewer")?,
         None => settings::harnesses(&settings.default_harnesses, "default reviewer")?,
@@ -74,14 +74,12 @@ pub fn resolve_harnesses(core: &Arc<BridgeCore>, requested: Option<&[String]>) -
             settings::MAX_REVIEW_HARNESSES
         )));
     }
+    // Stored defaults never trip this: `settings::load` turns Second opinion
+    // on for a stored pair.
     if asked.len() > 1 && !settings.second_opinion {
-        if requested.is_some() {
-            return Err(BridgeError::Invalid(
-                "Turn on Second opinion in Settings to review with two harnesses".into(),
-            ));
-        }
-        // Defaults saved while it was on: the first one reviews.
-        asked.truncate(1);
+        return Err(BridgeError::Invalid(
+            "Turn on Second opinion in Settings to review with two harnesses".into(),
+        ));
     }
     if !asked.is_empty() {
         return Ok(asked);
@@ -284,18 +282,14 @@ mod tests {
         let both = start_with(&core, &params(&["claude", "codex"]), head()).unwrap();
         assert_eq!(both.harnesses, ["claude", "codex"]);
 
-        // Turned off again: the saved pair falls back to its first.
-        {
-            let db = lock_db(&core);
-            let mut stored = settings::load(&db).unwrap();
-            stored.second_opinion = false;
-            db.execute(
+        // A pair stored before the setting existed runs as it did: both review.
+        lock_db(&core)
+            .execute(
                 "UPDATE configuration_entries SET payload=?1 WHERE kind='review_job_settings'",
-                params![serde_json::to_string(&stored).unwrap()],
+                params![r#"{"defaultHarnesses":["claude","codex"]}"#],
             )
             .unwrap();
-        }
-        assert_eq!(resolve_harnesses(&core, None).unwrap(), ["claude"]);
+        assert_eq!(resolve_harnesses(&core, None).unwrap(), ["claude", "codex"]);
     }
 }
 
