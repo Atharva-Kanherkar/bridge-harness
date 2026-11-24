@@ -408,7 +408,7 @@ pub fn discover_harness_connectors() -> Vec<HarnessConnectors> {
     // connecting to every server before this pane can paint. An action that
     // turns out to need a fresh answer reports its own failure.
     let claude = crate::marketplace::cached_claude_sdk_configuration(
-        crate::marketplace::ClaudeDiscovery::ALL,
+        crate::marketplace::ClaudeDiscovery::CONNECTORS,
     );
     vec![HarnessConnectors {
         harness: "claude".to_owned(),
@@ -1045,6 +1045,7 @@ fn settle_session(core: &Arc<BridgeCore>, session_id: &str, status: &str) {
 /// The ingress timer. Does nothing at all while no supported family is
 /// connected, so an install with no connectors pays nothing for this feature.
 pub fn start_connector_poll_maintenance(core: Arc<BridgeCore>) {
+    crate::marketplace::warm_claude_discovery();
     std::thread::spawn(move || loop {
         for family in ConnectorFamily::ALL {
             if !family.has_inbox_support() {
