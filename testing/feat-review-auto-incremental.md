@@ -136,10 +136,12 @@ TypeScript (vitest):
   workspace pointed at another repository never inherits the old one's history.
 - **Nothing omitted silently.** Files left out of `incremental.patch` for size are listed in
   `pr.json.incremental.omittedFiles`, named in the turn, and noted in the summary.
-- **History only runs forward.** Prior findings are only those of reviews whose head is an
-  ancestor of (or equal to) the reviewed head, checked with git (a missing commit is fetched,
-  else left out). `fixed` can only name such a finding from an earlier head, and the store
-  refuses a mark on a finding of the same head or another PR.
+- **History only runs forward.** Each earlier review's head is placed with git against the
+  reviewed head: `same`, `earlier` (an ancestor) or `rewritten` (unrelated, after a rebase or
+  force-push, whose decisions still hold). A newer head (a descendant) is left out, and so is
+  one that cannot be found even after a fetch. `prior_findings.json` says the relation.
+  `fixed` can only name a finding it was shown, from another head; the store refuses a mark on
+  a finding of the same head, another PR, or a review queued after this one.
 - **"My PRs" re-reads the login** once its hour is up (a cache hit does not refresh it), per
   GitHub host.
 - **Drafts are checked fresh.** At start, the head lookup's draft state and author are checked
@@ -162,7 +164,7 @@ Tests added for this review:
 - `store_tests`: posted head from the found review's commit; history by repository across
   workspaces and not across repositories; fixed marks refuse same-head and other-PR findings.
 - `prepare_tests`: an omitted incremental file is listed; prior findings of a descendant head
-  are left out.
+  are left out; after a force-push they are kept as `rewritten`.
 - `post_tests`: a reconciled post carries the found review's commit.
 
 ## Manual
