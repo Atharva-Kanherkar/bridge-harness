@@ -379,14 +379,23 @@ fn due(db: &Connection, group: &Listeners, now: DateTime<Utc>) -> Result<bool, B
         .is_none_or(|at| now - at.with_timezone(&Utc) >= POLL_EVERY))
 }
 
-/// Whether the quota reserve allows a read now: a poll spends the person's
-/// plan, so it waits like a run does.
-fn quota_allows(core: &Arc<BridgeCore>) -> bool {
+/// The quota verdict for a read now: a poll spends the person's plan, so it
+/// waits like a run does.
+fn quota(core: &Arc<BridgeCore>) -> crate::workflow_run::QuotaVerdict {
     let reserve = workflow_trigger::read_settings(&core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
         .map(|snapshot| snapshot.settings.quota_reserve_percent)
         .unwrap_or(25);
     let overviews = crate::usage_overview::provider_snapshots(core).ok();
-    !matches!(crate::workflow_run::quota_for_provider(overviews.as_ref(), "claude", reserve), crate::workflow_run::QuotaVerdict::Wait)
+    crate::workflow_run::quota_for_provider(overviews.as_ref(), "claude", reserve)
+}
+
+/// The reads to start now: the due ones, or none at all once the quota reserve
+/// is reached.
+pub fn reads_to_start(db: &Connection, now: DateTime<Utc>, quota: &crate::workflow_run::QuotaVerdict) -> Result<Vec<(ConnectorFamily, String)>, BridgeError> {
+    if matches!(quota, crate::workflow_run::QuotaVerdict::Wait) {
+        return Ok(Vec::new());
+    }
+    due_reads(db, now)
 }
 
 /// Read one app and scope now and record what it found for each listener.
@@ -433,16 +442,18 @@ pub fn due_reads(db: &Connection, now: DateTime<Utc>) -> Result<Vec<(ConnectorFa
 /// scope is under way or the quota reserve is reached. Called by the workflow
 /// maintenance pass; returns at once.
 pub fn poll_due(core: &Arc<BridgeCore>, now: DateTime<Utc>) {
-    let due_now = match due_reads(&core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner), now) {
+    // Nothing listens: no quota read, no turn.
+    if !due_reads(&core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner), now).is_ok_and(|due_now| !due_now.is_empty()) {
+        return;
+    }
+    let verdict = quota(core);
+    let due_now = match reads_to_start(&core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner), now, &verdict) {
         Ok(due_now) => due_now,
         Err(error) => {
             eprintln!("bridge: app trigger reads could not be planned: {error}");
             return;
         }
     };
-    if due_now.is_empty() || !quota_allows(core) {
-        return;
-    }
     for (family, scope) in due_now {
         if !in_flight().lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert((family.as_str(), scope.clone())) {
             continue;

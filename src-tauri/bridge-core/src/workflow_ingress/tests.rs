@@ -218,6 +218,11 @@ fn an_app_is_read_only_for_a_listener_and_at_most_every_five_minutes() {
     poll_scope(&core, ConnectorFamily::Gmail, "", &turn, at("2026-11-24T09:00:00Z")).unwrap();
     assert!(due_reads(&core.db.lock().unwrap(), at("2026-11-24T09:04:59Z")).unwrap().is_empty());
     assert_eq!(due_reads(&core.db.lock().unwrap(), at("2026-11-24T09:05:00Z")).unwrap().len(), 1);
+    // Once the quota reserve is reached, nothing is read, due or not.
+    let reserve = crate::workflow_run::QuotaVerdict::Wait;
+    assert!(reads_to_start(&core.db.lock().unwrap(), at("2026-11-24T09:05:00Z"), &reserve).unwrap().is_empty());
+    let room = crate::workflow_run::QuotaVerdict::Proceed { unknown: false };
+    assert_eq!(reads_to_start(&core.db.lock().unwrap(), at("2026-11-24T09:05:00Z"), &room).unwrap().len(), 1);
     // A paused, disabled or unapproved workflow does not listen.
     crate::api::set_workflow_enabled(&core, &wire::SetWorkflowEnabledParams { workflow_id: workflow.id.clone(), enabled: false }).unwrap();
     assert!(due_reads(&core.db.lock().unwrap(), at("2026-11-24T10:00:00Z")).unwrap().is_empty());
