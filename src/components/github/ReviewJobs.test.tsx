@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../../api";
 import type { ReviewJob, ReviewJobDetail } from "../../protocol/generated/protocol";
-import { formatElapsed, ReviewJobs } from "./ReviewJobs";
+import { formatElapsed, ReviewJobs, ReviewStatusLine, type PullRequestReviews } from "./ReviewJobs";
 
 let root: Root | undefined;
 let host: HTMLDivElement | undefined;
@@ -177,5 +177,43 @@ describe("ReviewJobs", () => {
     expect(formatElapsed(42_000)).toBe("42s");
     expect(formatElapsed(65_000)).toBe("1m 05s");
     expect(formatElapsed(3_780_000)).toBe("1h 03m");
+  });
+});
+
+describe("ReviewStatusLine", () => {
+  const reviews = (jobs: ReviewJob[], update = vi.fn()): PullRequestReviews => ({ jobs, loaded: true, error: undefined, now: Date.parse("2026-11-24T10:05:00.000Z"), update });
+  const line = () => host!.querySelector<HTMLElement>("[data-review-status]");
+
+  it("names a running review with its clock, and a ready draft with Triage", async () => {
+    const onShow = vi.fn();
+    await mount(<ReviewStatusLine onShow={onShow} reviews={reviews([
+      reviewJob({ id: "run", status: "reviewing", harnesses: ["claude", "codex"] }),
+      reviewJob({ id: "draft", status: "drafted", harnesses: ["opencode"], findingCounts: { total: 2, critical: 0, major: 1, minor: 1, nit: 0 } }),
+    ])} />);
+    expect(line()!.textContent).toContain("Claude and Codex are reviewing");
+    expect(line()!.textContent).toContain("5m 00s");
+    expect(line()!.textContent).toContain("Draft ready from OpenCode: 2 findings to triage");
+    act(() => button(line()!, "Triage").click());
+    expect(onShow).toHaveBeenCalled();
+  });
+
+  it("offers Retry on a fresh failure, and forgets one a day old", async () => {
+    const update = vi.fn();
+    const retried = reviewJob({ id: "again", status: "queued" });
+    const retry = vi.spyOn(bridgeApi, "retryReview").mockResolvedValue({ job: retried });
+    await mount(<ReviewStatusLine onShow={vi.fn()} reviews={reviews([reviewJob({ id: "bad", status: "failed", error: "Codex is signed out", harnesses: ["codex"], finishedAt: "2026-11-24T10:04:00.000Z" })], update)} />);
+    expect(line()!.textContent).toContain("Review with Codex failed: Codex is signed out");
+    await act(async () => { button(line()!, "Retry").click(); await flush(); });
+    expect(retry).toHaveBeenCalledWith("bad");
+    expect(update).toHaveBeenCalledWith(retried);
+    act(() => root?.unmount());
+    host!.remove();
+    await mount(<ReviewStatusLine onShow={vi.fn()} reviews={reviews([reviewJob({ id: "old", status: "failed", finishedAt: "2026-11-22T10:00:00.000Z" })])} />);
+    expect(line(), "an old failure is not news").toBeNull();
+  });
+
+  it("says nothing when no review is running, waiting or newly failed", async () => {
+    await mount(<ReviewStatusLine onShow={vi.fn()} reviews={reviews([reviewJob({ status: "posted" })])} />);
+    expect(line()).toBeNull();
   });
 });

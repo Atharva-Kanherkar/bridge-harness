@@ -50,7 +50,7 @@ import { Avatar, AvatarScope, Monogram } from "./github/Avatar";
 import { Composer } from "./github/Composer";
 import { GithubMarkdown } from "./github/GithubMarkdown";
 import { GithubMediaScope } from "./github/Media";
-import { ReviewJobs } from "./github/ReviewJobs";
+import { activeJobFor, ReviewJobsView, ReviewStatusLine, runningCount, usePullRequestReviews } from "./github/ReviewJobs";
 import { ReviewThreads } from "./github/ReviewThreads";
 import { commentAnchor, parsePatch } from "./github/patch";
 import { ProviderLoginPane } from "./ProviderLoginPane";
@@ -1374,10 +1374,13 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   const [pending, setPending] = useState<PendingAction>();
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewBusy, setReviewBusy] = useState(false);
-  const [reviewNotice, setReviewNotice] = useState<{ tone: "success" | "error"; text: string }>();
+  const [reviewNotice, setReviewNotice] = useState<{ tone: "success" | "error" | "info"; text: string }>();
   // The job a start returned, so the Reviews section shows it at once (an
   // idempotent start sends no `reviews/job_updated`).
   const [startedJob, setStartedJob] = useState<ReviewJob>();
+  const reviews = usePullRequestReviews(workspaceId, number, startedJob);
+  // Bumped to bring the Reviews section into view from the status line.
+  const [revealReviews, setRevealReviews] = useState(0);
   const [secondOpinion, setSecondOpinion] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
   // Picks belong to one opening of the picker on one PR.
@@ -1432,8 +1435,15 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
         setReviewNotice({ tone: result.status === "failed" ? "error" : "success", text: result.message });
         if (result.status !== "failed") onActed();
       } else {
+        const existing = activeJobFor(reviews.jobs, harnesses);
         const result = await bridgeApi.startReview({ workspaceId, number, harnesses });
         setStartedJob(result.job);
+        // A start that found a review already under way, or a draft waiting,
+        // gets that job back: say so rather than look like nothing happened.
+        if (existing?.id === result.job.id || reviews.jobs.some(job => job.id === result.job.id)) {
+          const who = result.job.harnesses.map(id => REVIEW_HARNESSES.find(choice => choice.id === id)?.label ?? id).join(" and ");
+          setReviewNotice({ tone: "info", text: result.job.status === "drafted" ? `${who} already has a draft waiting for you on this pull request.` : `${who} ${result.job.harnesses.length > 1 ? "are" : "is"} already reviewing this pull request.` });
+        }
       }
       setReviewOpen(false);
     } catch (value) {
@@ -1705,6 +1715,8 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
             dispatch={dispatchMerge}
             busy={busy}
             reviewBusy={reviewBusy}
+            reviewOpen={reviewOpen}
+            reviewing={runningCount(reviews.jobs)}
             onToggleReview={() => { setReviewNotice(undefined); setReviewOpen(value => !value); }}
             onApprove={() => setPending({
               title: `Approve pull request #${number}`,
@@ -1739,21 +1751,32 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
                     <span aria-hidden="true" className={cn("grid size-3 place-items-center rounded-sm border border-border", checked && "border-primary bg-primary text-primary-foreground")}>{checked && <Check size={9} />}</span>
                     <span className="min-w-0 flex-1 truncate">{choice.label}</span>
                   </button>
-                : <button key={choice.id} type="button" disabled={reviewBusy} onClick={() => void startReview([choice.id])} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
-                    <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />
-                    <span className="min-w-0 flex-1 truncate">{choice.label}</span>
-                  </button>;
+                : (() => {
+                    const inUse = activeJobFor(reviews.jobs, [choice.id]);
+                    return <button key={choice.id} type="button" disabled={reviewBusy || !!inUse} onClick={() => void startReview([choice.id])} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
+                      {inUse && inUse.status !== "drafted"
+                        ? <LoaderCircle size={11} className="animate-spin text-muted-foreground motion-reduce:animate-none" aria-hidden="true" />
+                        : <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />}
+                      <span className="min-w-0 flex-1 truncate">{choice.label}</span>
+                      {inUse && <span className="shrink-0 text-micro text-muted-foreground">{inUse.status === "drafted" ? "Draft waiting" : "Reviewing"}</span>}
+                    </button>;
+                  })();
             })}
-            {secondOpinion && <button type="button" disabled={reviewBusy || picked.length === 0} onClick={() => void startReview(picked)} className={cn(PRIMARY_ACTION, "mx-1 my-0.5 justify-center")}>
-              {picked.length === 0 ? "Pick a harness" : `Review with ${picked.map(id => REVIEW_HARNESSES.find(choice => choice.id === id)?.label ?? id).join(" and ")}`}
-            </button>}
+            {secondOpinion && (() => {
+              const inUse = picked.length > 0 ? activeJobFor(reviews.jobs, picked) : undefined;
+              const names = picked.map(id => REVIEW_HARNESSES.find(choice => choice.id === id)?.label ?? id).join(" and ");
+              return <button type="button" disabled={reviewBusy || picked.length === 0 || !!inUse} onClick={() => void startReview(picked)} className={cn(PRIMARY_ACTION, "mx-1 my-0.5 justify-center")}>
+                {reviewBusy ? "Starting review…" : picked.length === 0 ? "Pick a harness" : inUse ? (inUse.status === "drafted" ? `A draft from ${names} is waiting` : `${names} already reviewing`) : `Review with ${names}`}
+              </button>;
+            })()}
             <button type="button" disabled={reviewBusy} onClick={() => void startReview([BUGBOT.id])} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
               <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />
               <span className="min-w-0 flex-1 truncate">{BUGBOT.label}</span>
               <span className="shrink-0 text-micro text-muted-foreground">{BUGBOT.note}</span>
             </button>
           </div>}
-          {summary.state === "open" && reviewNotice && <p role="status" className={cn("animate-page-mount mt-2 rounded-md border px-2.5 py-1.5 text-meta", reviewNotice.tone === "success" ? "border-success/25 bg-success/10 text-success" : "border-destructive/25 bg-destructive/10 text-destructive")}>{reviewNotice.text}</p>}
+          {summary.state === "open" && reviewNotice && <p role="status" className={cn("animate-page-mount mt-2 rounded-md border px-2.5 py-1.5 text-meta", reviewNotice.tone === "success" ? "border-success/25 bg-success/10 text-success" : reviewNotice.tone === "info" ? "border-border bg-muted/40 text-foreground" : "border-destructive/25 bg-destructive/10 text-destructive")}>{reviewNotice.text}</p>}
+          <ReviewStatusLine reviews={reviews} onShow={() => { selectTab("conversation"); setRevealReviews(value => value + 1); }} />
         </>}
         {summary.state === "closed" && <div className="mt-3 flex flex-wrap items-center gap-1.5">
           <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({
@@ -1816,7 +1839,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
           {pullRequest.body ? <GithubMarkdown text={pullRequest.body} repositoryUrl={repositoryUrl} /> : <p className="text-meta italic text-muted-foreground">No description provided.</p>}
         </section>
 
-        <ReviewJobs workspaceId={workspaceId} number={number} repositoryUrl={repositoryUrl} started={startedJob} />
+        <ReviewJobsView reviews={reviews} repositoryUrl={repositoryUrl} reveal={revealReviews} />
 
         <section aria-label="Conversation comments">
           <SectionLabel count={pullRequest.comments.length}>Conversation</SectionLabel>
