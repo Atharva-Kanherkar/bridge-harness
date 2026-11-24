@@ -756,3 +756,19 @@ fn only_slack_arrivals_reach_slack_triggers() {
     assert_eq!(observe_inbox(&db, &[other], at("2026-11-24T00:00:01Z")).unwrap(), 0);
     assert!(pending(&db, &workflow.id).is_empty());
 }
+
+#[test]
+fn a_dry_run_on_a_past_event_leaves_the_real_event_waiting() {
+    let (dir, core) = test_support::core();
+    let db = core.db.lock().unwrap();
+    let batch = wire::WorkflowBatch { cron: "0 9 * * *".into(), timezone: "UTC".into() };
+    let trigger = wire::WorkflowTrigger::Event { event: wire::WorkflowEventKind::SlackMention, repo: None, channel: None, from: None, batch: Some(batch) };
+    let workflow = listening_workflow(&db, dir.path(), trigger, "2026-11-20T00:00:00Z");
+    let fresh = [slack(ItemKind::Mention, "#eng", "Priya", "1.0", "2026-11-24T00:00:00Z")];
+    assert_eq!(observe_inbox(&db, &fresh, at("2026-11-24T00:00:01Z")).unwrap(), 1);
+    // "Dry run on the latest event", as `run_workflow` builds it.
+    let mut occasion = Occasion::manual(&workflow.id, "try-1");
+    occasion.events = vec![sample_from_inbox(&fresh[0])];
+    assert!(matches!(claim(&db, &workflow.id, &occasion, true, at("2026-11-24T00:00:02Z")).unwrap(), ClaimOutcome::Claimed(_)));
+    assert_eq!(pending(&db, &workflow.id).len(), 1, "the batch still gets it");
+}

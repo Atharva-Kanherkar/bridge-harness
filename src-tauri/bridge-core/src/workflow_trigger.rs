@@ -427,7 +427,11 @@ fn claim_in(
             events,
         ],
     )?;
-    crate::workflow_events::mark_claimed(db, workflow_id, &occasion.events, &id)?;
+    // Only an event occasion delivers its events. A dry run tried on a past
+    // event carries a copy: the real event stays waiting for its own run (R6).
+    if occasion.kind == wire::WorkflowTriggerKind::Event {
+        crate::workflow_events::mark_claimed(db, workflow_id, &occasion.events, &id)?;
+    }
     Ok(ClaimOutcome::Claimed(ClaimedRun { run: require_run(db, &id)?, lease_owner, quota_verdict: None }))
 }
 
