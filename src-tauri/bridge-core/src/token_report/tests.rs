@@ -147,8 +147,7 @@ impl World {
         ids
     }
 
-    /// A fork as `sessions::fork_session` writes it: the source branch up to
-    /// `point` as sequences 1..K, with new ids and no provider event ids.
+    /// Copy a linear source prefix up to `point` for a test fixture.
     fn fork(&self, id: &str, source: &str, point: &str) {
         self.db
             .execute(
@@ -1044,25 +1043,63 @@ fn a_fork_excludes_its_copied_prefix_from_tokens_and_activity() {
     let entries = w.put(
         "src",
         vec![
-            msg("user.message", 10),
-            msg("assistant.message", 20),
-            row("tool.started", claude_start("toolu_1", "Read", json!({"file_path": "a.rs"}), "running")).est(5).event("toolu_1"),
-            row("tool.completed", claude_result("toolu_1", "x")).est(100).event("toolu_1"),
+            row("user.message", json!({"text": "root"})).est(10).event("root"),
+            row("assistant.message", json!({"text": "sibling"})).est(20),
+            row("assistant.message", json!({"text": "point"})).est(5).event("point"),
         ],
     );
-    w.fork("fork-a", "src", &entries[3]);
-    w.put("fork-a", vec![msg("user.message", 3), msg("assistant.message", 4)]);
-    // A fork with no own message: its copied messages are not activity.
-    w.fork("fork-quiet", "src", &entries[3]);
-    let report = w.run();
-    assert_eq!(ids(&report), ["src", "fork-a"]);
-    assert_eq!(report.sessions[0].total, 135);
-    let fork = &report.sessions[1];
-    assert_eq!((fork.total, class(fork, Conversation), class(fork, Read)), (7, 7, 0));
-    assert_eq!((fork.fork_prefix_entries, fork.fork_prefix_unknown), (4, false));
-    let quiet = w.one("fork-quiet");
-    assert_eq!((quiet.total, quiet.fork_prefix_entries), (0, 4));
+    w.db.execute(
+        "UPDATE session_entries SET parent_entry_id=?1 WHERE id=?2",
+        params![entries[0], entries[2]],
+    )
+    .unwrap();
+    let id = crate::sessions::fork_session_records(
+        &w.db, "src", &entries[2], None, None, None, "shared", None,
+    )
+    .unwrap();
+    let mut statement = w.db.prepare(
+        "SELECT id, parent_entry_id, sequence, provider_event_id, json_extract(payload, '$.text')
+         FROM session_entries WHERE session_id=?1 ORDER BY sequence",
+    )
+    .unwrap();
+    let copies = statement
+        .query_map([&id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(copies.len(), 2);
+    assert_eq!((copies[0].2, copies[0].4.as_str()), (1, "root"));
+    assert_eq!((copies[1].2, copies[1].4.as_str()), (2, "point"));
+    assert!(copies.iter().all(|copy| !entries.contains(&copy.0) && copy.3.is_none()));
+    assert_eq!(copies[0].1, None);
+    assert_eq!(copies[1].1.as_deref(), Some(copies[0].0.as_str()));
+
+    let quiet = w.one(&id);
+    assert_eq!((quiet.fork_prefix_entries, quiet.fork_prefix_unknown), (2, false));
+    assert_eq!(quiet.total, 0);
     assert_eq!(quiet.last_activity_at, None);
+    assert_eq!(ids(&w.run()), ["src"]);
+
+    let own_time = "2026-06-11T12:00:00Z";
+    let own = w.put(&id, vec![msg("user.message", 7).at(own_time)]);
+    let sequence: i64 = w.db.query_row(
+        "SELECT sequence FROM session_entries WHERE id=?1", [&own[0]], |row| row.get(0),
+    )
+    .unwrap();
+    assert_eq!(sequence, 3);
+    let report = w.run();
+    assert_eq!(ids(&report), ["src", id.as_str()]);
+    let fork = &report.sessions[1];
+    assert_eq!((fork.total, class(fork, Conversation)), (7, 7));
+    assert_eq!(fork.last_activity_at.as_deref(), Some(own_time));
 }
 
 #[test]
