@@ -37,7 +37,7 @@ Branch `feat/review-second-opinion`. Locked before implementation.
      body (and title and location) is the longer body's, unless confidences
      differ by more than 0.2, then the more confident one's. `agreed_by = 2`,
      and it lists both pass ids.
-6. **Store.** Migration 94 adds `review_findings.pass_ids` (JSON). The merge is
+6. **Store.** Migration 95 (main took 94) adds `review_findings.pass_ids` (JSON). The merge is
    written in one transaction under the job's claim after both passes end: the
    kept row is updated, the other deleted. A driver that lost the claim writes
    nothing. Wire: `ReviewFinding.passIds` (empty unless merged).
@@ -113,3 +113,28 @@ Tests added: `quoted_code_in_the_bodies_merges` and `four_lines_apart_merge_when
 and `naming_and_the_bug_stay_separate` (the real negatives), `seven_lines_apart_stay_separate`
 (replaces `four_lines_apart_stay_separate`). The live eval is then rerun on fresh runs the
 thresholds were not chosen on.
+
+## Amendment for the review on f0a0bf1b (before the fixes)
+
+- **Same side only.** Two findings are candidates only when they are on the same diff side
+  (`LEFT` or `RIGHT`); `LEFT:10` and `RIGHT:10` are different code after a large insertion.
+  Test: `other_sides_stay_separate` (the reviewer's case: a 100-line insertion's missing check
+  at `RIGHT:10`, a deleted guard at `LEFT:10`, both quoting the guard).
+- **A merged finding keeps the identities it absorbed.** Migration 95 adds
+  `review_findings.merged_identities` (JSON `[{title, fingerprint}]`); the merge writes the
+  dropped finding's title and fingerprint there. `prior_findings.json` carries them as
+  `alsoKnownAs`, and a re-review's repeat filter matches a new finding against the settled
+  finding's own identity or any of these. Tests: `merge_findings_keeps_the_dropped_identity`
+  (store), `a_merged_findings_other_title_is_a_repeat` (session, the live fixture's two
+  bounds-check titles), and the prepare writer test.
+- **Every runner slot goes through one bounded reservation.** `tick` reserves a slot with the
+  same compare-and-swap as a second pass before it claims a job, and gives it back when nothing
+  is claimed or the claim fails. Test: `a_second_pass_and_a_queued_job_never_exceed_the_limit`
+  (a second pass reserving between tick's check and its claim; `active()` never passes
+  `maxConcurrentReviews`).
+- **Attribution hiding covers the summary.** The runner stores two summaries: `summary`, with
+  no reviewer named ("Reviewer 1", "Reviewer 2", and a failure note that names neither the
+  harness nor its error), and `named_summary` (migration 95), with names and the reason.
+  Posting uses `named_summary` only when attribution is shown, read at post time. Tests:
+  `a_hidden_attribution_post_names_no_reviewer` (post, success and partial failure) and the
+  runner's summary tests on both columns.
