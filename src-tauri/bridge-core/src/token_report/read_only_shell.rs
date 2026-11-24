@@ -1,4 +1,4 @@
-use super::{basename, is_assignment, is_number, is_sed_print, wrapped_script, SHELL_OPERATORS};
+use super::{is_assignment, is_number, is_sed_print, program_name, wrapped_script, SHELL_OPERATORS};
 use serde_json::Value;
 
 const FORBIDDEN: [char; 10] = ['<', '>', '$', '`', '(', ')', '\\', '\r', '\n', '\0'];
@@ -94,7 +94,11 @@ fn read_text(text: &str, unwrap: bool) -> bool {
             }
         }
         if let ["cd", directory] = words.as_slice() {
-            if index == 0 && separator == Separator::And && literal(directory) {
+            if index == 0
+                && separator == Separator::And
+                && literal(directory)
+                && !directory.strip_prefix('+').is_some_and(is_number)
+            {
                 continue;
             }
         }
@@ -172,7 +176,10 @@ fn source(words: &[&str]) -> bool {
     let Some((program, args)) = words.split_first() else {
         return false;
     };
-    match basename(program) {
+    let Some(program) = program_name(program) else {
+        return false;
+    };
+    match program {
         "cat" => arguments(args, "AbEnsTtuv", &[], &[]).is_some(),
         "head" | "tail" => line_source(args),
         "nl" => arguments(
@@ -184,10 +191,7 @@ fn source(words: &[&str]) -> bool {
         .is_some(),
         "wc" => arguments(args, "clmwL", WC_FLAGS, &[]).is_some(),
         "sed" => is_sed_print(args),
-        "rg" => {
-            !args.iter().any(|arg| arg.starts_with("--pre"))
-                && search(args, "nFiIlcwvsSHo", &["--hidden", "--no-ignore"])
-        }
+        "rg" => rg(args),
         "grep" => search(args, "nFiIlcwrRvsHoh", &["--recursive", "--line-number"]),
         "ls" => arguments(args, "aAlhRrdt1FS", &["--all", "--almost-all"], &[]).is_some(),
         "fd" => arguments(
@@ -224,7 +228,54 @@ fn line_source(args: &[&str]) -> bool {
             ("--bytes", is_number),
         ],
     )
-    .is_some()
+    .is_some_and(|args| args.operands.iter().all(|word| !word.starts_with('+')))
+}
+
+fn rg(args: &[&str]) -> bool {
+    let nonempty = |value: &str| !value.is_empty();
+    arguments(
+        args,
+        "iSsFwxnNlcovH",
+        &[
+            "--files",
+            "--no-filename",
+            "--hidden",
+            "--no-ignore",
+            "-u",
+            "-uu",
+            "--no-heading",
+            "--heading",
+            "--json",
+            "--column",
+            "--trim",
+        ],
+        &[
+            ("-g", nonempty),
+            ("--glob", nonempty),
+            ("--iglob", nonempty),
+            ("-t", nonempty),
+            ("--type", nonempty),
+            ("-T", nonempty),
+            ("--type-not", nonempty),
+            ("-A", is_number),
+            ("-B", is_number),
+            ("-C", is_number),
+            ("-m", is_number),
+            ("--max-count", is_number),
+            ("--max-depth", is_number),
+            ("-e", |_| true),
+            ("--color", |value| value == "never"),
+            ("--sort", |value| value == "path"),
+        ],
+    )
+    .is_some_and(|args| {
+        let has_pattern_option = args.options.contains(&"-e");
+        if args.options.contains(&"--files") {
+            !has_pattern_option
+        } else {
+            has_pattern_option || !args.operands.is_empty()
+        }
+    })
 }
 
 fn search(args: &[&str], short: &str, flags: &[&str]) -> bool {
@@ -248,7 +299,7 @@ fn search(args: &[&str], short: &str, flags: &[&str]) -> bool {
 
 fn find(args: &[&str]) -> bool {
     let mut args = args.iter().copied().peekable();
-    while args.next_if(|word| literal(word)).is_some() {}
+    while args.next_if(|word| *word != "!" && literal(word)).is_some() {}
     while let Some(flag) = args.next() {
         let valid = match flag {
             "-name" | "-iname" | "-path" => args.next().is_some_and(literal),
@@ -301,7 +352,10 @@ fn filter(words: &[&str]) -> bool {
     let Some((program, args)) = words.split_first() else {
         return false;
     };
-    match basename(program) {
+    let Some(program) = program_name(program) else {
+        return false;
+    };
+    match program {
         "head" | "tail" => match args {
             [] => true,
             [count] => ["-n", "--lines=", "-"]

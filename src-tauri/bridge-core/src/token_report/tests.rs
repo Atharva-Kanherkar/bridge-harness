@@ -748,7 +748,10 @@ fn a_completion_with_no_start_and_no_tool_fields_is_other_tool() {
 fn simple_reads_are_read() {
     for command in [
         "cat src/main.rs",
+        "/bin/cat a.rs",
         "/usr/bin/cat a.rs",
+        "/usr/local/bin/cat a.rs",
+        "/opt/homebrew/bin/cat a.rs",
         "head -n 20 a.rs",
         "tail -5 log.txt",
         "nl a.rs",
@@ -757,6 +760,7 @@ fn simple_reads_are_read() {
         "sed -n '1,40p' src/a.rs",
         "git show HEAD:src/a.rs",
         "git diff main",
+        "git diff --no-ext-diff --no-textconv main",
         "git log -5 --oneline",
         "git blame a.rs",
     ] {
@@ -775,6 +779,7 @@ fn simple_searches_are_search() {
         "fd -e rs token",
         "find . -name '*.rs'",
         "git grep foo",
+        "git grep -eFOO -- -O",
         "git ls-files",
     ] {
         assert_eq!(shell(command), Search, "{command}");
@@ -794,6 +799,7 @@ fn known_wrappers_are_unwrapped_once() {
     assert_eq!(shell("bash -x 'cat a.rs'"), Shell);
     assert_eq!(shell("bash -lc 'cat a.rs' extra"), Shell);
     assert_eq!(shell("fish -c 'cat a.rs'"), Shell);
+    assert_eq!(shell("./tools/bash -c 'cat a.rs'"), Shell);
     // The script of a wrapper goes through the operator check.
     assert_eq!(shell("bash -lc 'cat a.rs | head'"), Shell);
 }
@@ -808,6 +814,9 @@ fn argv_commands_follow_the_same_rule() {
     assert_eq!(classify_shell(&json!(["rg", "--pre", "x", "foo"])), Shell);
     assert_eq!(classify_shell(&json!(["find", ".", "-delete"])), Shell);
     assert_eq!(classify_shell(&json!(["A=1", "cat", "a.rs"])), Shell);
+    assert_eq!(classify_shell(&json!(["A+=/bin/cat", "/bin/echo", "hi"])), Shell);
+    assert_eq!(classify_shell(&json!(["./tools/cat", "a.rs"])), Shell);
+    assert_eq!(classify_shell(&json!(["./tools/zsh", "-c", "cat a.rs"])), Shell);
     assert_eq!(classify_shell(&json!(["cargo", "test"])), Shell);
     assert_eq!(classify_shell(&json!([])), Shell);
     assert_eq!(classify_shell(&json!(["cat", 1])), Shell);
@@ -854,6 +863,17 @@ fn writes_and_exec_flags_are_shell() {
         "sed 1,5p a.rs",
         "git diff --output=patch.diff",
         "git log --output out.txt",
+        "git grep -O term",
+        "git grep -Oless term",
+        "git grep -nOless term",
+        "git grep --open-files-in-pager term",
+        "git grep --open-files-in-pager=less term",
+        "git diff --ext-diff main",
+        "git diff --textconv main",
+        "git show --ext-diff HEAD",
+        "git show --textconv HEAD:a.rs",
+        "git log --ext-diff -p",
+        "git log --textconv -p",
         "git push",
         "git checkout main",
         "git",
@@ -879,6 +899,8 @@ fn writes_and_exec_flags_are_shell() {
 
 #[test]
 fn unknown_programs_and_unsplittable_commands_are_shell() {
+    assert!(is_assignment("NAME+=value"));
+    assert!(!is_assignment("NAME++=value"));
     for command in [
         "cargo test",
         "npm run build",
@@ -887,6 +909,11 @@ fn unknown_programs_and_unsplittable_commands_are_shell() {
         "",
         "   ",
         "FOO=1 cat a.rs",
+        "FOO+=/bin/cat /bin/echo hi",
+        "./tools/cat a.rs",
+        "tools/rg foo src",
+        "/tmp/bin/cat a.rs",
+        "/bin/../bin/cat a.rs",
         "python3 script.py",
     ] {
         assert_eq!(shell(command), Shell, "{command:?}");
@@ -897,16 +924,28 @@ fn unknown_programs_and_unsplittable_commands_are_shell() {
 fn shell_read_recognizes_read_only_compounds() {
     for command in [
         "cd x && sed -n 1,9p a",
+        "cd ./+1 && head ./+2",
         "cd 'dir name' && grep -rn term .",
         "cat a && head -2 b; tail -n 5 log",
+        "/opt/homebrew/bin/bash -c '/usr/local/bin/cat a | /usr/bin/head'",
         "cat a | head -n 9 | tail -2 | wc -l | sort -nru | uniq -c",
         "cat a | cut -f1,3-4 -d ':' | nl -ba | tr '[:lower:]' '[:upper:]'",
         "cat a | tr -d ' ;&|'",
         "rg -e 'foo|bar' | head --lines=2",
+        "cd src && rg --files",
+        "rg --files --hidden src tests | head",
+        "rg -g '*.rs' --iglob '*.TS' -t rust -T markdown term | head",
+        "rg --glob '*.rs' --type rust --type-not markdown term | head",
+        "rg --glob='*.rs' --iglob='*.TS' --type=rust --type-not=markdown term | head",
+        "rg -i -S -s -F -w -x -n -N -l -c -o -v -H --no-filename term | head",
+        "rg -A 1 -B 2 -C 3 -m 4 --max-count 5 --max-depth 6 -e term | head",
+        "rg --max-count=5 --max-depth=6 --color=never --sort=path term | head",
+        "rg --hidden --no-ignore -u -uu --heading --no-heading --json --column --trim --color never --sort path term | head",
         "grep -n \"a|b && c;d\" 'name;with&operators'",
         "cd 'dir&&name' && ls -la | head",
         "bash -lc 'cd x && cat a | head'",
         "find . -maxdepth 3 -type f -name '*.rs' -print | head",
+        "find './!' -name a | head",
         "fd -e rs file src | wc -l",
         "git grep -n -e pattern -- src | head",
         "git ls-files src | head",
@@ -965,6 +1004,8 @@ fn shell_read_rejects_unsafe_or_unknown_segments() {
         "cat a | sort --compress-program=helper",
         "cat a | uniq a b",
         "cat a | head b",
+        "head +1 a | wc",
+        "tail +1f a | head",
         "cat a | wc -l b",
         "cat a | cut -d ':'",
         "cat a | tr -d",
@@ -978,12 +1019,25 @@ fn shell_read_rejects_unsafe_or_unknown_segments() {
         "find . -fprintf out fmt | head",
         "find . -fls out | head",
         "find . -maxdepth many | head",
+        "find . '!' -name a | head",
         "fd --exec helper | head",
         "fd -x helper | head",
         "fd -X helper | head",
         "fd --exec-batch helper | head",
         "rg --pre helper . | head",
         "rg --pre-glob helper . | head",
+        "rg --pre=helper term | head",
+        "rg -z term | head",
+        "rg --search-zip term | head",
+        "rg --search-zip=true term | head",
+        "rg -iz term | head",
+        "rg -uuu term | head",
+        "rg --files -e term | head",
+        "rg --hidden | head",
+        "rg -A many term | head",
+        "rg --color=always term | head",
+        "rg --sort=modified term | head",
+        "rg --unknown term | head",
         "grep --unknown pattern . | head",
         "git -c core.pager=helper log | head",
         "git grep -O pattern | head",
@@ -1013,11 +1067,18 @@ fn shell_read_rejects_invalid_command_forms() {
         "NAME=bin/cat a | head",
         "cat a | NAME=bin/head",
         "NAME=bin/sh -c 'cat a | head'",
+        "bash -c 'NAME+=/bin/cat /bin/echo hello | head'",
+        "./tools/cat a | head",
+        "cat a | ./tools/head",
+        "cat a | /tmp/bin/head",
+        "./tools/bash -c 'cat a | head'",
         "cd x && sed -n 1,9p a && rm b",
         "cd x; cat a",
         "cd x | head",
         "cd -- x && cat a",
         "cd - && cat a",
+        "cd +1 && cat a",
+        "cd -1 && cat a",
         "cd '' && cat a",
         "cat a && cd x && cat b",
         "cat a &&",
@@ -1041,6 +1102,8 @@ fn shell_read_rejects_invalid_command_forms() {
         json!(["bash", "-c", "cd x && cat a && rm b"]),
         json!(["bash", "-c", 42]),
         json!(["NAME=bin/bash", "-c", "cat a | head"]),
+        json!(["NAME+=/bin/bash", "-c", "cat a | head"]),
+        json!(["./tools/sh", "-c", "cat a | head"]),
     ] {
         assert!(!read_only_shell::matches(&command), "{command}");
         assert!(!shell_class(&command).shell_read, "{command}");

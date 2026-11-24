@@ -943,7 +943,7 @@ fn wrapped_script<'a>(words: &[&'a str]) -> Option<&'a str> {
     let [shell, flag, script] = words else {
         return None;
     };
-    let known = matches!(basename(shell), "sh" | "bash" | "zsh")
+    let known = matches!(program_name(shell), Some("sh" | "bash" | "zsh"))
         && matches!(*flag, "-c" | "-lc" | "-cl");
     known.then_some(*script)
 }
@@ -955,7 +955,10 @@ fn classify_words(words: &[&str]) -> TokenClass {
     if is_assignment(first) {
         return TokenClass::Shell;
     }
-    match basename(first) {
+    let Some(program) = program_name(first) else {
+        return TokenClass::Shell;
+    };
+    match program {
         "cat" | "head" | "tail" | "nl" | "wc" => TokenClass::Read,
         "sed" if is_sed_print(args) => TokenClass::Read,
         "git" => git_class(args),
@@ -967,16 +970,21 @@ fn classify_words(words: &[&str]) -> TokenClass {
     }
 }
 
-fn basename(word: &str) -> &str {
-    word.rsplit('/').next().unwrap_or(word)
+fn program_name(word: &str) -> Option<&str> {
+    match word.rsplit_once('/') {
+        None if !word.is_empty() => Some(word),
+        Some(("/bin" | "/usr/bin" | "/usr/local/bin" | "/opt/homebrew/bin", name))
+            if !name.is_empty() => Some(name),
+        _ => None,
+    }
 }
 
-/// A first word of the form `NAME=value`.
+/// A first word of the form `NAME=value` or `NAME+=value`.
 fn is_assignment(word: &str) -> bool {
     let Some((name, _)) = word.split_once('=') else {
         return false;
     };
-    let mut chars = name.chars();
+    let mut chars = name.strip_suffix('+').unwrap_or(name).chars();
     chars.next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
         && chars.all(|next| next.is_ascii_alphanumeric() || next == '_')
 }
@@ -1001,13 +1009,28 @@ fn git_class(args: &[&str]) -> TokenClass {
     let Some((command, rest)) = args.split_first() else {
         return TokenClass::Shell;
     };
+    let options = || rest.iter().copied().take_while(|arg| *arg != "--");
     match *command {
+        "show" | "diff" | "log" if options().any(|arg| {
+            matches!(arg.split('=').next(), Some("--ext-diff" | "--textconv"))
+        }) => TokenClass::Shell,
         "show" | "diff" | "log" | "blame" if !rest.iter().any(|arg| arg.starts_with("--output")) => {
             TokenClass::Read
         }
+        "grep" if options().any(git_grep_uses_pager) => TokenClass::Shell,
         "grep" | "ls-files" => TokenClass::Search,
         _ => TokenClass::Shell,
     }
+}
+
+fn git_grep_uses_pager(arg: &str) -> bool {
+    if arg.starts_with("--") {
+        return arg.split('=').next() == Some("--open-files-in-pager");
+    }
+    arg.strip_prefix('-').is_some_and(|short| {
+        // The first option that takes a value ends the group of flags.
+        short.split(['e', 'f', 'm', 'A', 'B', 'C']).next().is_some_and(|flags| flags.contains('O'))
+    })
 }
 
 /// `-x`, `-X`, `--exec`, `--exec-batch`, or a group of short flags with `x`
