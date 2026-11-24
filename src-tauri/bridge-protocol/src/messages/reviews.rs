@@ -554,6 +554,7 @@ mod tests {
             post_mode: ReviewPostMode::Auto,
             harnesses: vec!["claude".into(), "codex".into()],
             finding_counts: ReviewFindingCounts { total: 3, critical: 1, major: 1, minor: 0, nit: 1 },
+            incremental_from_sha: Some("prev".into()),
             error: None,
             posted_review_url: Some("https://github.com/o/r/pull/42#pullrequestreview-1".into()),
             retry_of: Some("j0".into()),
@@ -569,6 +570,7 @@ mod tests {
         assert_eq!(value["status"], "drafted");
         assert_eq!(value["findingCounts"]["critical"], 1);
         assert_eq!(value["retryOf"], "j0");
+        assert_eq!(value["incrementalFromSha"], "prev");
         assert!(value.get("error").is_none(), "absent options are omitted");
         assert_eq!(serde_json::from_value::<ReviewJob>(value).unwrap(), job);
         assert_eq!(serde_json::to_value(ReviewSide::Left).unwrap(), json!("LEFT"));
