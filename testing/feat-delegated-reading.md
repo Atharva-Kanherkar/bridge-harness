@@ -21,6 +21,7 @@ This PR measures how much of the main window comes from file reads and searches.
 ### Items and the key of an item
 
 - The key of a row is `Call(payload.itemId)`. Without that field, the key is `Event(provider_event_id)`. Without both, the key is `Entry(id)`.
+- An own `session.context` row with `itemId` equal to `orchestrator-briefing` uses `Entry(id)`. Each such row contributes one recorded launch estimate.
 - Keys of two sources never merge. Keys of two sessions never merge.
 - Rows group by kind and key. A group counts one time, with the largest estimate of its rows.
 - A group has no estimate when no row gives one and one row or more is not a Claude start with `phase` equal to `preparing`. Each such group adds 1 to `unestimated`.
@@ -38,6 +39,8 @@ This PR measures how much of the main window comes from file reads and searches.
 - The fields, in order: Codex `data.type`, OpenCode `data.tool`, Claude and import `data.name`, Claude `data.command` on a Bash completion. The report never reads `title`.
 - `web` is its own class. It is not part of `readingShare`.
 - `readingShare` is `read` plus `search`, divided by `total`. `shellShare` is `shell` divided by `total`. Both are 0 when `total` is 0.
+- `shellRead` counts the estimated tokens of `shell` groups that pass the read-only shell rule. It is a subset of `shell`.
+- `combinedShare` is `read` plus `search` plus `shellRead`, divided by `total`. It is 0 when `total` is 0.
 
 ### The shell rule
 
@@ -56,6 +59,27 @@ This PR measures how much of the main window comes from file reads and searches.
   - `git grep`, `git ls-files`
 - Any other program is `shell`.
 
+### The read-only shell rule
+
+```text
+command = ["cd" directory "&&"] pipeline {("&&" | ";") pipeline}
+pipeline = source {"|" filter}
+```
+
+- Apply this rule only to a group in `shell`. Use the command from the same row that supplies the class.
+- Split at `&&`, `;` and `|` only outside quotes. Each segment must pass `shell_words::split`. A `cd` directory must be literal, nonempty and free of a first hyphen.
+- Unwrap one `sh`, `bash` or `zsh` command with exactly three words and `-c`, `-lc` or `-cl`. The rule accepts text or argv. Other argv uses the strict operator check and stays one literal command.
+- Reject empty stages, final separators, assignments, nested wrappers, `||` and a background `&`. Reject redirects, dollar signs, backticks, parentheses, backslashes, carriage returns, newlines and NUL.
+- Reject unquoted glob, brace, tilde, comment and history syntax. Reject unknown programs and options.
+- Sources are `cat`, `head`, `tail`, `nl`, `wc`, numeric-print `sed`, `rg`, `grep`, `ls`, `fd`, `find` and the Git forms below. The rule checks flags and literal arguments for each program.
+- The first five sources accept file paths and display or count flags. Search sources accept ordinary search flags, such as `grep -rn` or `fd -e EXT`.
+- `find` accepts paths and only `-name`, `-iname`, `-path`, `-type`, `-mindepth`, `-maxdepth` and `-print`.
+- Git forms are `grep`, `ls-files`, `show REV:path`, `diff --no-ext-diff --no-textconv`, `log` and `blame --no-textconv`. The rule accepts literal operands and a fixed set of options for each form.
+- Reject `tee`, `xargs`, `awk`, `sed -i` and any other `sed` script. Reject `rg --pre*`, the strict rule's `fd` and `find` actions, Git configuration overrides, `git grep -O`, `--open-files-in-pager` and `--output*`.
+- The pipe filters are `head`, `tail`, `wc`, `sort`, `uniq`, `cut`, `nl` and `tr`. They accept specific display, comparison, count or selection flags and no file operands.
+- Reject `sort -o`, `sort --compress-program` and any positional `uniq` output file. If any stage fails, the group stays in `shell` and adds 0 to `shellRead`.
+- The rule checks command text. It cannot check executable behavior, local configuration or shell startup files.
+
 ### Cohort, recency and forks
 
 - Cohort `orchestrator`: `kind = 'orchestrator'`, a workspace, no parent, depth 0, and no `worker_runtime` row.
@@ -67,7 +91,7 @@ This PR measures how much of the main window comes from file reads and searches.
 - Activity is an own `user.message` or `assistant.message`. A session is recent when its last activity, by sequence, is at or after `since` at 00:00 UTC.
 - The report parses the timestamp as RFC 3339. A value that does not parse is not recent, and it adds 1 to `unreadableTimestamps`.
 - `since` is 30 days before the current UTC date. `--since` changes it.
-- `--session` reports one session and skips recency. A session outside both cohorts gives a plain error.
+- `--session` reports one session, infers its cohort and skips recency. It conflicts with an explicit `--cohort`. A session outside both cohorts gives a plain error.
 
 ### Rank and output
 
@@ -75,14 +99,16 @@ This PR measures how much of the main window comes from file reads and searches.
 - A recent session with a total of 0 stays in the list.
 - `lastContextUsed` and `maxContextUsed` come from ledger rows with `id` above `context_usage_after_id`, in the order of `id`.
 - The markdown output has a header line, one line for each fallback, and one table. The JSON output is the `Report` object.
+- The Markdown table and JSON include `shellRead` and show `combinedShare` next to `readingShare`.
 - The output contains ids, harness names, kinds, numbers and timestamps. It never contains a label, a title, chat text, tool input or tool output.
 
 ### The command (`bridge tokens`)
 
 - Flags: `--database <path>`, `--data-dir <dir>`, `--cohort orchestrator|direct`, `--since YYYY-MM-DD`, `--top <n>`, `--session <id>`, `--json`.
-- Without a database flag, the path is `default_data_dir()` plus `bridge.db`.
+- Without a database flag, the path is `default_data_dir()` plus `bridge.db`. The command prints the backup note with that path on stderr.
 - Defaults: cohort `orchestrator`, top 10, since 30 days before today.
-- Exit 2 with the usage text: an unknown flag, an unknown cohort, a bad date, `--top 0`, or both database flags.
+- Each flag can appear one time. The two database flags conflict. `--cohort` and `--session` conflict.
+- An unknown flag, an unknown cohort, a bad date, `--top 0`, a repeat or a conflict causes exit 2 with the usage text.
 - Exit 1 with the error text: a report error.
 
 ### Worker start guards
@@ -90,16 +116,16 @@ This PR measures how much of the main window comes from file reads and searches.
 - `start_chat_claimed` refuses a session that is not a top-level chat (`chat_defaults::is_top_level_chat`). The check runs before any lock of the workspace, any process stop and any UPDATE.
 - The refusal uses the text of `deliver_queued_now`, from one shared constant.
 - After a refusal, the `depth`, `parent_session_id` and `kind` of the worker do not change. A live process of the worker stays in place.
-- `start_session` reuses only a session with no parent and no `worker_runtime` row. Without such a session, it makes a new one, as it does now.
+- `start_session` can reuse a `direct` or `orchestrator` session of the requested workspace and harness. The session must have a reusable status, no parent, no `worker_runtime` row and no pending native fork. If no session qualifies, it makes a new orchestrator session.
 - The Claude read-only hook denies `Agent` and `Task`, with network access and without it. The `tools` list never contains `Agent`. This PR adds a test and no code.
 
 ### Decision rule (locked before anyone runs the report on the owner database)
 
-- Step 2 can start only when 6 or more of the 10 largest eligible orchestrator chats have a `readingShare` of 0.30 or more.
+- Step 2 can start only when 6 or more of the 10 largest eligible orchestrator chats have a `combinedShare` of 0.30 or more.
 - If fewer than 10 orchestrator chats are eligible, the result is inconclusive, and step 2 does not start.
 - Step 2 also needs evidence for each prerequisite (a) to (e) in the plan note.
-- The written decision gives the table, the count of chats at 0.30 or more, and the `shellShare` of each row. The shell share has no threshold.
-- Nobody changes these values after the owner runs the report. A change needs a new contract and a new run.
+- The written decision gives `readingShare`, `combinedShare` and `shellShare` for each row. It gives the count of chats with an unrounded `combinedShare` of 0.30 or more.
+- The owner runs the report again under this contract. A later change to the rule needs a new contract and a new owner run.
 
 ## Unit Tests
 
@@ -121,6 +147,7 @@ Keys and groups:
 - `an_imported_completion_pairs_by_payload_item_id_not_source_id`
 - `fallback_keys_are_scoped_by_session_and_source`
 - `each_item_counts_once_per_kind_with_its_largest_estimate`
+- `each_recorded_orchestrator_briefing_counts_once_per_entry`
 - `a_null_estimate_falls_back_to_entry_tokens`
 - `a_preparing_start_with_a_full_start_is_estimated`
 - `an_item_with_no_estimate_counts_once_as_unestimated`
@@ -142,6 +169,9 @@ Shell rule:
 - `any_shell_operator_is_shell_even_in_quotes`
 - `writes_and_exec_flags_are_shell`
 - `unknown_programs_and_unsplittable_commands_are_shell`
+- `shell_read_recognizes_read_only_compounds`
+- `shell_read_rejects_unsafe_or_unknown_segments`
+- `shell_read_is_counted_once_with_the_selected_group_class`
 
 Cohort and recency:
 
@@ -155,7 +185,7 @@ Cohort and recency:
 
 Forks:
 
-- `a_fork_excludes_its_copied_prefix_from_tokens_and_activity`
+- `a_fork_excludes_its_copied_prefix_from_tokens_and_activity` uses `fork_session_records` on a branched source. It checks contiguous copy sequences, token exclusion and recency.
 - `a_fork_of_a_fork_excludes_only_its_own_prefix`
 - `a_fork_with_an_absent_source_entry_counts_every_entry_and_says_so`
 
@@ -183,8 +213,8 @@ Window columns:
 
 Output:
 
-- `markdown_output_matches_a_fixed_table`
-- `json_output_has_the_documented_fields`
+- `markdown_output_matches_a_fixed_table` checks the `shellRead` and `combinedShare` columns.
+- `json_output_has_the_documented_fields` checks the `shellRead` and `combinedShare` fields.
 - `no_output_contains_payload_text`
 
 ### `entry_tokens::tests`
@@ -195,12 +225,16 @@ Output:
 ### `bridge` binary (`bridge-client/src/bin/bridge.rs`)
 
 - `tests::tokens_flags_have_defaults`
-- `tests::tokens_flags_accept_every_option`
+- `tests::tokens_flags_accept_cohort_options`
+- `tests::tokens_flags_accept_session_options`
 - `tests::tokens_rejects_an_unknown_cohort`
 - `tests::tokens_rejects_a_bad_since_date`
 - `tests::tokens_rejects_two_database_flags`
+- `tests::tokens_rejects_repeated_flags`
+- `tests::tokens_rejects_cohort_with_session`
 - `tests::tokens_prints_markdown_for_a_seeded_database`
 - `tests::tokens_prints_json_for_a_seeded_database`
+- `bridge-client/tests/client.rs`: `tokens_warns_on_stderr_only_for_the_default_database`
 
 ### Closures that ship
 
@@ -208,13 +242,14 @@ Output:
 - `live_turn::tests::start_chat_refuses_a_live_worker_without_replacing_its_process`
 - `live_turn::tests::start_chat_still_reaches_the_launcher_for_a_top_level_chat`
 - `live_turn::tests::start_session_reuse_skips_workers_and_harness_subagents`
+- `live_turn::tests::start_session_reuses_only_direct_and_orchestrator_chats`
 - `policy_coordinator::tests::a_depth_one_session_cannot_delegate_reading`
 - `sidecar/claude-agent/test/read-only.mjs`: `a read-only worker cannot start a Claude subagent`
 - Current tests that stay green: `live_turn::tests::deliver_now_refuses_a_worker_and_launches_nothing`, `live_turn::tests::deliver_now_resumes_an_adapterless_chat`, `live_turn::tests::harness_child_stop_and_parent_stop_keep_siblings_and_the_shared_runtime`, and the sidecar test `the Bridge hook allows local reads and explicitly denies mutation`.
 
 ## Integration / Functional Tests
 
-- The seeded tests use a `NamedTempFile` database that `store::open` makes. It holds one chat of each harness shape, one worker, one harness subagent, one import, one workflow session, one hidden session and one fork.
+- Seeded report and CLI tests open separate migrated databases with `store::open` in temporary directories. Each case seeds the rows it needs. The cases cover harness shapes, workers, harness subagents, imports, workflow and hidden sessions, and forks.
 - `cargo test --manifest-path src-tauri/Cargo.toml -p bridge-core token_report::` is green.
 - `cargo test --manifest-path src-tauri/Cargo.toml -p bridge-core live_turn::tests::start_` is green.
 - `cargo test --manifest-path src-tauri/Cargo.toml -p bridge-core policy_coordinator::` is green.
@@ -233,15 +268,15 @@ Output:
 
 ## Manual Tests
 
-- Take a backup with `sqlite3 <live> ".backup '<copy>'"`. Run `bridge tokens --database <copy> --json` on it. Put the table, the count of chats at 0.30 or more, and the decision in the PR.
-- Run the same command with `--cohort direct`. Put that table in the PR as information only.
-- In the app, open a stopped worker and click the compaction retry if the card shows. The app shows the refusal, and the worker stays stopped.
+- Run `bridge tokens --database <copy> --json` on a backup available to the author. Record the commit, command, schema, eligible and shown counts, exit status and database checksums before and after the run in the PR. The checksums must match.
+- If the author has no access to the decision database, record the decision as pending. The database owner runs the locked report on their backup. The owner records the top ten rows, the count at the threshold and the decision in the decision note. Step 2 waits for this evidence and the other locked prerequisites.
+- Run the same command on the available backup with `--cohort direct`. Record the same smoke evidence in the PR for information only.
+- Use the automated stopped worker and live worker start tests above as guard evidence. If a stopped worker has a retryable compaction card, click Retry compaction. Check that Bridge shows the refusal and the worker stays stopped. Record whether the optional app check took place.
 
 ## Out of Scope
 
 - The prompt rule for read-only workers, its eval and its policy tests (step 2).
 - The Codex `features.multi_agent` override and the OpenCode `task` deny (prerequisite d).
 - A change to the result notice of a worker (prerequisite a) or to the evidence load (prerequisite b).
-- A backfill of `token_estimate`, and a weight for the number of times a harness reads an entry again.
+- A backfill of `token_estimate` and a weight for per-turn reads, cache reuse or provider replay.
 - Codex `commandActions` as a source of a class.
-- The reuse of `imported`, `workflow` and hidden sessions by `start_session`.
