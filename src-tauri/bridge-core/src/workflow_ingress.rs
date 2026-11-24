@@ -216,7 +216,13 @@ pub struct LiveTurn;
 
 impl IngressTurn for LiveTurn {
     fn read(&self, core: &Arc<BridgeCore>, family: ConnectorFamily, prompt: &str) -> Result<String, String> {
-        let connection = connection(&crate::connector_runs_live::discover_harness_connectors(), family)?;
+        // The workflow surfaces' own answer, probed from a neutral folder like
+        // the one this read runs in. Claude Code keeps "disabled for this
+        // project" per folder: probed from wherever Bridge runs, a connected
+        // Gmail read as signed out (live, from a daemon started in /tmp).
+        let configuration = crate::marketplace::connectors_now();
+        let harnesses = [HarnessConnectors { harness: "claude".into(), health: configuration.connector_health }];
+        let connection = connection(&harnesses, family)?;
         crate::connector_runs_live::bounded_turn_output(core, &connection, RunKind::Ingress, prompt, None, None).map(|output| output.text)
     }
 }
