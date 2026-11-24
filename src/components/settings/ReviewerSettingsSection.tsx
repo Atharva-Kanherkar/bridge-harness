@@ -22,7 +22,7 @@ type FormSettings = ReviewerSettings & { harnesses: NonNullable<ReviewerSettings
 const normalize = (settings: ReviewerSettings): FormSettings => ({ ...settings, harnesses: settings.harnesses ?? {}, systemPrompt: settings.systemPrompt ?? "" });
 
 /** The job settings with every field the form edits filled in. */
-type JobForm = Required<Pick<ReviewJobSettings, "defaultHarnesses" | "fallbackHarnesses" | "maxConcurrentReviews" | "maxReviewWorktrees" | "postMode" | "secondOpinion">> & ReviewJobSettings;
+type JobForm = Required<Pick<ReviewJobSettings, "defaultHarnesses" | "fallbackHarnesses" | "maxConcurrentReviews" | "maxReviewWorktrees" | "postMode" | "secondOpinion" | "autoReview" | "skipDraftPrs" | "incremental">> & ReviewJobSettings;
 const normalizeJobs = (settings: ReviewJobSettings): JobForm => ({
   ...settings,
   defaultHarnesses: settings.defaultHarnesses ?? [],
@@ -31,7 +31,16 @@ const normalizeJobs = (settings: ReviewJobSettings): JobForm => ({
   maxReviewWorktrees: settings.maxReviewWorktrees ?? 8,
   postMode: settings.postMode ?? "draft",
   secondOpinion: settings.secondOpinion ?? false,
+  autoReview: settings.autoReview ?? "off",
+  skipDraftPrs: settings.skipDraftPrs ?? true,
+  incremental: settings.incremental ?? false,
 });
+
+const AUTO_REVIEW_TEXT: Record<JobForm["autoReview"], string> = {
+  off: "Reviews start only when you ask from the GitHub pane.",
+  mine: "Pull requests you opened are reviewed when they open or get new commits, two quiet minutes after the last push. Bridge watches the repositories you have opened in the GitHub pane or reviewed before.",
+  all: "Every open pull request is reviewed when it opens or gets new commits, two quiet minutes after the last push. Bridge watches the repositories you have opened in the GitHub pane or reviewed before.",
+};
 
 const harnessOptions = (exclude: string[], none: string) => [
   { value: "", label: none },
@@ -71,6 +80,15 @@ function ReviewJobSettingsGroup() {
     <SettingsRow label="When a review finishes" saved={isFlashed("postMode")}
       description={stored.postMode === "auto" ? "Bridge posts every finding as one comment review as soon as the reviewer is done." : "Findings wait in the pane: keep, drop or edit them, then post."}
       control={<Segmented label="When a review finishes" disabled={busy} value={stored.postMode} onChange={postMode => void save({ postMode }, "postMode")} options={[{ value: "draft", label: "Draft first" }, { value: "auto", label: "Post automatically" }]} />} />
+    <SettingsRow label="Auto-review" saved={isFlashed("autoReview")}
+      description={AUTO_REVIEW_TEXT[stored.autoReview]}
+      control={<Segmented label="Auto-review" disabled={busy} value={stored.autoReview} onChange={autoReview => void save({ autoReview }, "autoReview")} options={[{ value: "off", label: "Off" }, { value: "mine", label: "My PRs" }, { value: "all", label: "All PRs" }]} />} />
+    <SettingsRow label="Skip draft PRs" saved={isFlashed("skipDraftPrs")}
+      description={stored.autoReview === "off" ? "Applies once auto-review is on." : stored.skipDraftPrs ? "A draft is reviewed once it is marked ready for review." : "Drafts are reviewed like any other pull request."}
+      control={<Switch label="Skip draft PRs" disabled={busy || stored.autoReview === "off"} checked={stored.skipDraftPrs} onChange={skipDraftPrs => void save({ skipDraftPrs }, "skipDraftPrs")} />} />
+    <SettingsRow label="Incremental re-review" saved={isFlashed("incremental")}
+      description={stored.incremental ? "A later review looks at the commits since the last posted review, remembers what was kept, dropped or resolved, and does not repeat it." : "Every review looks at the whole pull request."}
+      control={<Switch label="Incremental re-review" disabled={busy} checked={stored.incremental} onChange={incremental => void save({ incremental }, "incremental")} />} />
     <SettingsRow label="Second opinion" saved={isFlashed("secondOpinion")}
       description="Lets one review run on two harnesses at once. Findings both of them report are marked Both reviewers."
       control={<Switch label="Second opinion" disabled={busy} checked={stored.secondOpinion} onChange={secondOpinion => void save(secondOpinion ? { secondOpinion } : { secondOpinion, defaultHarnesses: defaults([first]) }, "secondOpinion")} />} />
