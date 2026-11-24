@@ -1,0 +1,84 @@
+# Test contract: second opinion across two harnesses
+
+Branch `feat/review-second-opinion`. Locked before implementation.
+
+## What already exists (from earlier slices)
+
+- `ReviewJobSettings.second_opinion: bool` and the rule that a job with two
+  harnesses needs it on and the two must differ (`reviews::resolve_harnesses`).
+  The issue's `secondOpinion: { enabled, harnesses }` shape is not adopted: the
+  pair is `defaultHarnesses`, which already ships and is already validated.
+- `review_findings.agreed_by` and the draft order `agreed_by DESC, severity,
+  confidence`. The pane's "Both reviewers" badge and per-finding harness label.
+- Prepare runs once per job; cleanup runs once after the review step.
+
+## What this branch adds
+
+1. **Parallel passes.** A job with two harnesses runs its two passes at the same
+   time when the runner has a second free slot (`maxConcurrentReviews`). The
+   second pass holds that slot until it ends. With no free slot, the passes run
+   one after the other. Both passes read the one prepared checkout.
+2. **A pass's fallback never takes the other slot's harness,** so two passes of
+   one job are always two different harnesses.
+3. **The job leaves `reviewing` only when both passes have ended.** Cleanup runs
+   after both. If one pass fails after its fallbacks, the job drafts with the
+   other's findings and the summary starts by naming the reviewer that failed
+   and why. Both failing fails the job as today.
+4. **Summary.** With two finished passes, each reviewer's summary is labelled
+   with its harness name.
+5. **Merge** (`reviews/merge.rs`, pure):
+   - Candidates: one finding from each pass, same `path`, line ranges
+     (`start_line..=line`) no more than 3 lines apart.
+   - Match when fingerprints are equal, or title-word Jaccard >= 0.5 (lowercase
+     words, a short stopword list removed).
+   - Pairs are matched one to one, best first: equal fingerprint, then higher
+     Jaccard, then nearer lines.
+   - The merged finding keeps the higher severity and higher confidence; its
+     body (and title and location) is the longer body's, unless confidences
+     differ by more than 0.2, then the more confident one's. `agreed_by = 2`,
+     and it lists both pass ids.
+6. **Store.** Migration 94 adds `review_findings.pass_ids` (JSON). The merge is
+   written in one transaction under the job's claim after both passes end: the
+   kept row is updated, the other deleted. A driver that lost the claim writes
+   nothing. Wire: `ReviewFinding.passIds` (empty unless merged).
+7. **Posting.** A merged finding's comment footer names both harnesses.
+8. **Pane.** A merged finding's meta line names both harnesses.
+
+## Tests
+
+`merge.rs` (unit):
+- `equal_fingerprints_merge` across passes.
+- `near_lines_and_similar_titles_merge` (ranges 3 apart, Jaccard >= 0.5).
+- `four_lines_apart_stay_separate`.
+- `low_title_overlap_stays_separate`.
+- `other_paths_stay_separate`.
+- `findings_of_one_pass_never_merge`.
+- `higher_severity_and_confidence_are_kept`.
+- `longer_body_wins_unless_confidence_differs`.
+- `each_finding_merges_once` (one to one, best pair first).
+
+`runner_tests`:
+- `two_passes_run_at_once_when_a_slot_is_free` (both reviews in flight together).
+- `two_passes_run_in_turn_with_one_slot`.
+- `the_second_pass_holds_a_runner_slot` (another job waits meanwhile).
+- `prepare_runs_once_and_cleanup_after_both_passes`.
+- `one_failed_reviewer_still_drafts_and_says_so`.
+- `a_fallback_never_takes_the_other_slots_harness`.
+- `agreed_findings_merge_and_rank_first`.
+- `a_lost_claim_merges_nothing`.
+
+`store_tests`:
+- `merge_findings_updates_and_deletes_under_the_claim`.
+- `pass_ids_round_trip_on_the_wire` (and empty for unmerged findings).
+
+`post_tests`:
+- `a_merged_comment_names_both_harnesses`.
+
+Frontend (`ReviewDraft.test.tsx`):
+- a merged finding shows both harness names; an unmerged one its own.
+
+Live (ignored, by hand): `live_second_opinion_on_a_fixture_pr`. Two real
+harnesses review one fixture with one obvious bug and one style issue, in
+parallel, through the real session and the real merge. Passes only if the bug
+appears exactly once, with `agreed_by = 2`, ranked first. Saves both raw answers
+and the score. Run on several harness pairs, more than once each.
