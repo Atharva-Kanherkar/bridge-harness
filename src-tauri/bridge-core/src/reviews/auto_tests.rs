@@ -372,6 +372,12 @@ fn a_pr_that_turned_draft_is_not_started_from_a_stale_listing() {
     std::fs::write(fixture.fixtures().join("heads.json"), "not json").unwrap();
     tick(&fixture.core, start + LIST_EVERY + DEBOUNCE);
     assert_eq!(fixture.all_jobs(), 0);
+    // Marked ready again: that is a change, reviewed after its quiet period.
+    std::fs::remove_file(fixture.gh.join("pr-view-fixture")).unwrap();
+    fixture.heads(&[(103, "current-head-sha", false, "review-author")]);
+    tick(&fixture.core, start + LIST_EVERY * 4);
+    tick(&fixture.core, start + LIST_EVERY * 4 + DEBOUNCE);
+    assert_eq!(fixture.all_jobs(), 1, "reviewed once it is ready");
 }
 
 #[test]

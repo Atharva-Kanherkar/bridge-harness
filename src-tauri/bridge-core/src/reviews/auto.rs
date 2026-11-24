@@ -274,8 +274,11 @@ pub fn tick(core: &Arc<BridgeCore>, now: Instant) {
         match started {
             // The job reviews the head GitHub has now, which may be newer
             // than the listing's: that one is not a change to review again.
-            Ok(Some(head)) => seen.head_sha = head,
-            Ok(None) => {}
+            Ok(Started::Reviewing(head)) => seen.head_sha = head,
+            // A draft now, or someone else's: when a listing shows it
+            // reviewable again, that is a change.
+            Ok(Started::NotNow) => seen.eligible = false,
+            Ok(Started::Refused) => {}
             Err(error) => {
                 eprintln!("[reviews] auto-review could not start a review of {key}#{number}: {error}");
                 // Try again after another quiet period.
@@ -300,12 +303,23 @@ fn viewer(core: &BridgeCore, viewers: &mut HashMap<String, (Option<String>, Inst
     login
 }
 
+/// What a start came to.
+enum Started {
+    /// A job reviews this head.
+    Reviewing(String),
+    /// GitHub says the PR is not one to review now (a draft, or not theirs).
+    NotNow,
+    /// The store said no: auto-review was turned off or changed, or that
+    /// head is already reviewed.
+    Refused,
+}
+
 /// Start the push review of one PR, judged on what GitHub says now: a PR that
 /// became a draft, or is someone else's, is not started. The last word is the
 /// store's: under its lock, with the settings as they are then, auto-review
 /// must still be on with the same filters, and no workspace may have
-/// reviewed that head already. Returns the head the job reviews.
-fn start_one(core: &Arc<BridgeCore>, target: &Target, number: u64, filters: &Filters) -> Result<Option<String>, crate::BridgeError> {
+/// reviewed that head already.
+fn start_one(core: &Arc<BridgeCore>, target: &Target, number: u64, filters: &Filters) -> Result<Started, crate::BridgeError> {
     let fresh = core
         .github_surface
         .pr_head(&target.path, number)
@@ -317,7 +331,7 @@ fn start_one(core: &Arc<BridgeCore>, target: &Target, number: u64, filters: &Fil
         author: fresh.author.clone(),
     };
     if !filters.takes(&now_open) {
-        return Ok(None);
+        return Ok(Started::NotNow);
     }
     let params = wire::StartReviewParams {
         workspace_id: target.workspace_id.clone(),
@@ -337,7 +351,10 @@ fn start_one(core: &Arc<BridgeCore>, target: &Target, number: u64, filters: &Fil
         head_sha: fresh.head_sha,
         base_sha: fresh.base_sha,
     };
-    Ok(super::start_gated(core, &params, head, &gate)?.map(|job| job.head_sha))
+    Ok(match super::start_gated(core, &params, head, &gate)? {
+        Some(job) => Started::Reviewing(job.head_sha),
+        None => Started::Refused,
+    })
 }
 
 #[cfg(test)]
