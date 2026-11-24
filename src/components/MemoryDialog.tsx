@@ -3,7 +3,7 @@ import { SkeletonRows } from "@/components/ui/skeleton";
 import { useEffect, useRef, useState } from "react";
 import { Check, Pencil, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { bridgeApi } from "../api";
+import { bridgeApi, MEMORY_PAGE_SIZE } from "../api";
 import { searchRecords } from "../memoryStats";
 import { harnessLabel } from "../utils";
 import { relative } from "./UsageInsights";
@@ -30,6 +30,8 @@ const MODES = [
 ] as const;
 /** Mirrors the contract cap in bridge-protocol's memory messages. */
 export const MAX_MEMORY_BODY_CHARS = 4000;
+/** Mirrors `MAX_MEMORY_REVIEW_BATCH`: the most ids one review call may decide. */
+const MEMORY_REVIEW_BATCH = 200;
 
 /**
  * How long a body is *to the ledger*: trimmed, counted in code points. A
@@ -39,6 +41,28 @@ export const MAX_MEMORY_BODY_CHARS = 4000;
  */
 export function bodyLength(text: string): number {
   return [...text.trim()].length;
+}
+
+type MemoryStatus = "active" | "proposed";
+/** What one memory list holds: the pages read so far, where the next starts, and the true total. */
+type MemoryList = { records: MemoryRecord[]; total: number; cursor?: string };
+
+/**
+ * Read a list's pages until at least `want` records are loaded or the list
+ * ends. A reload after a change asks for as many as were showing, so a bulk
+ * decision does not throw the reader back to the first page.
+ */
+async function readMemoryPages(status: MemoryStatus, want: number): Promise<MemoryList> {
+  const records: MemoryRecord[] = [];
+  let cursor: string | undefined;
+  let total = 0;
+  do {
+    const page = await bridgeApi.listMemoryRecords("account:local", status === "active" ? undefined : status, cursor ? { cursor } : {});
+    records.push(...page.records);
+    total = page.total ?? records.length;
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor && records.length < want);
+  return { records, total, cursor };
 }
 
 /**
@@ -64,8 +88,11 @@ export function MemoryDialog({
   onError: (message: string) => void;
 }) {
   const [tab, setTab] = useState<"pins" | "queue" | "activity" | "insights">("pins");
-  const [records, setRecords] = useState<MemoryRecord[]>();
-  const [proposed, setProposed] = useState<MemoryRecord[]>();
+  const [activeList, setActiveList] = useState<MemoryList>();
+  const [proposedList, setProposedList] = useState<MemoryList>();
+  // Proposals ticked for one bulk decision. Pruned whenever the queue reloads.
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [loadingMore, setLoadingMore] = useState<MemoryStatus | null>(null);
   const [settings, setSettings] = useState<MemoryExtractionSettings>();
   const [budget, setBudget] = useState<{ held: number; max: number }>();
   const [capabilities, setCapabilities] = useState<MemoryCapabilities>();
@@ -87,14 +114,60 @@ export function MemoryDialog({
   // as RouterSettingsDialog's learningReadGeneration.
   const readGeneration = useRef(0);
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  // How many records each list shows, read by the change-driven reload.
+  const loadedCount = useRef<Record<MemoryStatus, number>>({ active: 0, proposed: 0 });
+  // A page that failed to load is not retried by the automatic read below.
+  const failedCursor = useRef<string | undefined>(undefined);
+  const records = activeList?.records;
+  const proposed = proposedList?.records;
+
+  useEffect(() => {
+    loadedCount.current = { active: activeList?.records.length ?? 0, proposed: proposedList?.records.length ?? 0 };
+  }, [activeList, proposedList]);
+
+  /** Append the next page of one list. A reload that lands meanwhile wins. */
+  const showMore = async (status: MemoryStatus) => {
+    const list = status === "active" ? activeList : proposedList;
+    const cursor = list?.cursor;
+    if (!cursor) return;
+    const generation = readGeneration.current;
+    setLoadingMore(status);
+    try {
+      const page = await bridgeApi.listMemoryRecords("account:local", status === "active" ? undefined : status, { cursor });
+      if (generation !== readGeneration.current) return;
+      (status === "active" ? setActiveList : setProposedList)(current => current?.cursor !== cursor ? current : {
+        records: [...current.records, ...page.records],
+        total: page.total ?? current.total,
+        cursor: page.nextCursor ?? undefined,
+      });
+    } catch (error) {
+      failedCursor.current = cursor;
+      if (generation === readGeneration.current) onError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoadingMore(current => current === status ? null : current);
+    }
+  };
+
+  const searching = query.trim() !== "" || filter !== null;
+  const activeCursor = activeList?.cursor;
+  useEffect(() => {
+    // Search and the kind filter run over loaded records, so a narrowed view
+    // reads the rest of the list first rather than miss what is unloaded.
+    if (open && searching && activeCursor && activeCursor !== failedCursor.current && loadingMore === null) void showMore("active");
+    // showMore is a fresh closure each render; the cursor is what drives this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, searching, activeCursor, loadingMore]);
 
   useEffect(() => {
     if (open) return;
     // A closed dialog keeps no state, and an in-flight read must not land on it.
     readGeneration.current += 1;
     setTab("pins");
-    setRecords(undefined);
-    setProposed(undefined);
+    setActiveList(undefined);
+    setProposedList(undefined);
+    setSelected(new Set());
+    setLoadingMore(null);
+    loadedCount.current = { active: 0, proposed: 0 };
     setSettings(undefined);
     setBudget(undefined);
     setCapabilities(undefined);
@@ -121,18 +194,22 @@ export function MemoryDialog({
     const load = () => {
       const generation = ++readGeneration.current;
       Promise.all([
-        bridgeApi.listMemoryRecords("account:local"),
-        bridgeApi.listMemoryRecords("account:local", "proposed"),
+        readMemoryPages("active", loadedCount.current.active),
+        readMemoryPages("proposed", loadedCount.current.proposed),
         bridgeApi.getExtractionSettings(),
         bridgeApi.getMemoryInjection(),
         bridgeApi.memoryRecallStats("account:local"),
         bridgeApi.memoryActivityLog("account:local"),
         bridgeApi.getConsolidationSettings(),
-      ]).then(([activeList, proposedList, extraction, injectionSettings, recallStats, activity, consolidation]) => {
+      ]).then(([activeRead, proposedRead, extraction, injectionSettings, recallStats, activity, consolidation]) => {
         if (!active || generation !== readGeneration.current) return;
-        setRecords(activeList.records);
+        setActiveList(activeRead);
         setBudget({ held: consolidation.heldRecords, max: consolidation.maxRecords });
-        setProposed(proposedList.records);
+        setProposedList(proposedRead);
+        setSelected(current => {
+          const waiting = new Set(proposedRead.records.map(record => record.id));
+          return new Set([...current].filter(id => waiting.has(id)));
+        });
         setSettings(extraction);
         setInjection(injectionSettings.enabled);
         setStats(recallStats);
@@ -170,7 +247,7 @@ export function MemoryDialog({
   const bodyChars = bodyLength(body);
   const overLimit = bodyChars > MAX_MEMORY_BODY_CHARS;
   const visible = searchRecords(records ?? [], query).filter(record => !filter || record.kind === filter);
-  const queueCount = proposed?.length ?? 0;
+  const queueCount = proposedList?.total ?? 0;
   const full = budget !== undefined && budget.held >= budget.max;
   const fromReply = Boolean(initialBody) && editingId === null && body.length > 0;
   const statById = new Map((stats?.perRecord ?? []).map(stat => [stat.id, stat]));
@@ -185,6 +262,23 @@ export function MemoryDialog({
     catch (error) { onError(error instanceof Error ? error.message : String(error)); }
     finally { setBusy(false); }
   };
+  /** One decision for every ticked proposal, in batches core accepts. */
+  const review = (approving: boolean) => act(async () => {
+    const ids = [...selected];
+    const refused: string[] = [];
+    for (let start = 0; start < ids.length; start += MEMORY_REVIEW_BATCH) {
+      const batch = ids.slice(start, start + MEMORY_REVIEW_BATCH);
+      const result = await bridgeApi.reviewMemoryRecords(approving ? batch : [], approving ? [] : batch);
+      refused.push(...result.refused.map(refusal => refusal.reason));
+    }
+    setSelected(new Set());
+    if (refused.length) onError(`${refused.length} of ${ids.length} could not be ${approving ? "approved" : "rejected"}: ${refused[0]}`);
+  });
+  const toggleSelected = (id: string) => setSelected(current => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
   const save = () => act(async () => {
     if (editingId) {
       await bridgeApi.supersedeMemoryRecord(editingId, body, kind);
@@ -218,7 +312,8 @@ export function MemoryDialog({
   const iconButton = "grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45";
   const models = adapters.find(adapter => adapter.id === profileHarness)?.models ?? [];
   const composing = editingId !== null || body.length > 0;
-  const memoryCount = records?.length ?? 0;
+  const memoryCount = activeList?.total ?? 0;
+  const allShownSelected = (proposed?.length ?? 0) > 0 && (proposed ?? []).every(record => selected.has(record.id));
   const totalInjections = injections.reduce((sum, value) => sum + value, 0);
 
   return <div className="h-full overflow-y-auto" aria-labelledby="memory-title">
@@ -368,6 +463,12 @@ export function MemoryDialog({
               </li>;
             })}
           </ul>}
+        {records !== undefined && !searching && activeList?.cursor && <ShowMore
+          remaining={memoryCount - records.length}
+          loading={loadingMore === "active"}
+          disabled={loadingMore !== null}
+          onClick={() => void showMore("active")}
+        />}
 
         {capabilities && capabilities.providerNative.length > 0 && (
           <section className="mt-10">
@@ -438,9 +539,46 @@ export function MemoryDialog({
             </p>
             : <>
               {proposed !== undefined && <p className="mb-2 px-0.5 text-caption text-faint">Proposals you don't review within 30 days expire, which frees their space.</p>}
+              {proposed !== undefined && <div className="mb-2 flex min-h-7 flex-wrap items-center gap-2 px-0.5" role="toolbar" aria-label="Review selected proposals">
+                <label className="flex cursor-pointer items-center gap-2 text-caption text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    className="size-3.5 rounded border-border accent-foreground"
+                    checked={allShownSelected}
+                    disabled={busy || proposed.length === 0}
+                    onChange={() => setSelected(allShownSelected ? new Set() : new Set(proposed.map(record => record.id)))}
+                    aria-label="Select all shown proposals"
+                  />
+                  {selected.size > 0
+                    ? <span className="tabular-nums">{selected.size} selected</span>
+                    : <span>Select all shown <span className="tabular-nums text-faint">{proposed.length} of {queueCount}</span></span>}
+                </label>
+                {selected.size > 0 && <div className="ml-auto flex items-center gap-1">
+                  <button
+                    type="button"
+                    className="h-7 rounded-lg px-2.5 text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45"
+                    disabled={busy}
+                    onClick={() => void review(false)}
+                  >Reject selected</button>
+                  <button
+                    type="button"
+                    className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-primary px-2.5 text-caption font-medium text-primary-foreground transition-opacity disabled:opacity-40"
+                    disabled={busy}
+                    onClick={() => void review(true)}
+                  ><Check size={12} aria-hidden="true" />Approve selected</button>
+                </div>}
+              </div>}
               <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border-card bg-card">
                 {(proposed ?? []).map(record => (
-                  <li key={record.id} className="flex flex-wrap items-start gap-3 px-4 py-3">
+                  <li key={record.id} className={cn("flex flex-wrap items-start gap-3 px-4 py-3 transition-colors", selected.has(record.id) && "bg-accent/50")}>
+                    <input
+                      type="checkbox"
+                      className="mt-1 size-3.5 shrink-0 rounded border-border accent-foreground"
+                      checked={selected.has(record.id)}
+                      disabled={busy}
+                      onChange={() => toggleSelected(record.id)}
+                      aria-label={`Select proposal: ${record.body.slice(0, 80)}`}
+                    />
                     <div className="min-w-0 flex-1 basis-64">
                       <p className="whitespace-pre-wrap break-words text-ui leading-relaxed text-foreground">{record.body}</p>
                       <p className="mt-1 text-caption text-faint">
@@ -467,6 +605,12 @@ export function MemoryDialog({
                   </li>
                 ))}
               </ul>
+              {proposedList?.cursor && <ShowMore
+                remaining={queueCount - (proposed?.length ?? 0)}
+                loading={loadingMore === "proposed"}
+                disabled={loadingMore !== null}
+                onClick={() => void showMore("proposed")}
+              />}
             </>}
         </section>
       </div>}
@@ -550,6 +694,16 @@ const EXCLUSION_LABEL: Record<string, string> = {
   conflict_group: "Conflicting with another memory",
   candidate_window_truncated: "Beyond the candidate window",
 };
+
+/** The next page of a memory list, sized to what is left. */
+function ShowMore({ remaining, loading, disabled, onClick }: { remaining: number; loading: boolean; disabled: boolean; onClick: () => void }) {
+  return <button
+    type="button"
+    className="mt-2 h-8 w-full rounded-lg text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45"
+    disabled={disabled}
+    onClick={onClick}
+  >{loading ? "Loading…" : <>Show <span className="tabular-nums">{Math.min(MEMORY_PAGE_SIZE, Math.max(remaining, 1))}</span> more</>}</button>;
+}
 
 /** One line for a settled run: what it did, or why it did not. */
 function runDetail(entry: MemoryActivityEntry): string {
