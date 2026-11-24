@@ -515,33 +515,30 @@ pub struct GithubActResult {
 
 // --- subagent PR review (slice 6) -------------------------------------------
 
-/// Ask a Bridge subagent to review a pull request and post its findings as a
-/// comment via `gh`. The worker is research-role, read-only, network-on; the
-/// user picks the harness at click time and the model comes from the Reviewer
-/// model profile in settings.
+/// Review a pull request. A local harness queues a review job, the same as
+/// `reviews/start_review`: Bridge prepares the PR, the reviewer drafts
+/// findings, and the person triages and posts them. `bugbot` asks Cursor
+/// Bugbot to review on GitHub instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GithubReviewParams {
     pub workspace_id: String,
     pub number: u64,
-    /// The harness that runs the review worker (`claude` | `codex` | `opencode`),
-    /// or `bugbot` to post `cursor review` and summon Cursor Bugbot on GitHub.
+    /// The harness that reviews (`claude` | `codex` | `opencode`), or `bugbot`
+    /// to post `cursor review` and summon Cursor Bugbot on GitHub.
     pub harness: String,
-    /// The parent orchestrator session to attach the worker to. When absent (or
-    /// unknown to this workspace) the backend creates a fresh orchestrator.
-    ///
-    /// Deprecated: reviews are becoming standalone jobs (`reviews/*`) with no
-    /// parent chat. Once `github_review` maps to `reviews/start_review` this
-    /// field is accepted and ignored.
+    /// Deprecated and ignored: a review is a standalone job with no parent
+    /// chat. Still accepted so older clients keep working.
     pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubReviewResult {
-    /// One of `launched` | `queued` | `awaitingApproval` | `failed`.
+    /// `queued` for a local harness (a review job), `launched` or `failed` for
+    /// Cursor Bugbot. Older daemons also answered `awaitingApproval`.
     pub status: String,
-    /// The child worker session id when the review actually launched.
+    /// Always absent now: a review job has no session. Kept for older clients.
     pub session_id: Option<String>,
     /// A short human statement of the outcome.
     pub message: String,

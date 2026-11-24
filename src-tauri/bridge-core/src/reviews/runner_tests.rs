@@ -558,6 +558,7 @@ fn starting_a_review_creates_no_session() {
     let sessions = |core: &Arc<BridgeCore>| -> i64 {
         core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0)).unwrap()
     };
+    settings(&core, |settings| settings.second_opinion = true);
     let before = sessions(&core);
     let id = queue(&core, 1, &["claude", "codex"]);
     drain(&Runner::with(core.clone(), fast(), Arc::new(Utc::now)));

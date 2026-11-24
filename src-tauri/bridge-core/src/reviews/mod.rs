@@ -63,7 +63,7 @@ pub fn resolve_harnesses(core: &Arc<BridgeCore>, requested: Option<&[String]>) -
         let db = lock_db(core);
         settings::load(&db)?
     };
-    let asked = match requested {
+    let mut asked = match requested {
         Some([]) => return Err(BridgeError::Invalid("Pick a harness to review with".into())),
         Some(list) => settings::harnesses(list, "reviewer")?,
         None => settings::harnesses(&settings.default_harnesses, "default reviewer")?,
@@ -73,6 +73,15 @@ pub fn resolve_harnesses(core: &Arc<BridgeCore>, requested: Option<&[String]>) -
             "A review runs on at most {} harnesses",
             settings::MAX_REVIEW_HARNESSES
         )));
+    }
+    if asked.len() > 1 && !settings.second_opinion {
+        if requested.is_some() {
+            return Err(BridgeError::Invalid(
+                "Turn on Second opinion in Settings to review with two harnesses".into(),
+            ));
+        }
+        // Defaults saved while it was on: the first one reviews.
+        asked.truncate(1);
     }
     if !asked.is_empty() {
         return Ok(asked);
@@ -225,3 +234,68 @@ pub fn save_job_settings(core: &Arc<BridgeCore>, next: &wire::ReviewJobSettings)
     core.reviews.wake();
     Ok(saved)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::params;
+
+    fn core() -> (tempfile::TempDir, Arc<BridgeCore>) {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::for_tests(scratch.path()));
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','p',?1,'now')", params![scratch.path().to_string_lossy()])
+                .unwrap();
+            db.execute(
+                "INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at)
+                 VALUES('w','p','Kyoto','w','main',?1,'idle','now')",
+                params![scratch.path().to_string_lossy()],
+            )
+            .unwrap();
+        }
+        (scratch, core)
+    }
+
+    fn change(core: &Arc<BridgeCore>, edit: impl FnOnce(&mut wire::ReviewJobSettings)) {
+        let mut next = job_settings(core).unwrap();
+        edit(&mut next);
+        save_job_settings(core, &next).unwrap();
+    }
+
+    #[test]
+    fn two_harnesses_need_second_opinion() {
+        let (_scratch, core) = core();
+        let head = || PrHead { repo_owner: "o".into(), repo_name: "r".into(), head_sha: "abc".into(), base_sha: None };
+        let params = |harnesses: &[&str]| wire::StartReviewParams {
+            workspace_id: "w".into(),
+            number: 3,
+            harnesses: Some(harnesses.iter().map(|harness| harness.to_string()).collect()),
+            trigger: None,
+        };
+        let refused = start_with(&core, &params(&["claude", "codex"]), head()).unwrap_err().to_string();
+        assert!(refused.contains("Turn on Second opinion"), "{refused}");
+        assert!(list(&core, &wire::ListReviewsParams { workspace_id: "w".into(), number: None }).unwrap().jobs.is_empty());
+
+        change(&core, |settings| {
+            settings.second_opinion = true;
+            settings.default_harnesses = vec!["claude".into(), "codex".into()];
+        });
+        let both = start_with(&core, &params(&["claude", "codex"]), head()).unwrap();
+        assert_eq!(both.harnesses, ["claude", "codex"]);
+
+        // Turned off again: the saved pair falls back to its first.
+        {
+            let db = lock_db(&core);
+            let mut stored = settings::load(&db).unwrap();
+            stored.second_opinion = false;
+            db.execute(
+                "UPDATE configuration_entries SET payload=?1 WHERE kind='review_job_settings'",
+                params![serde_json::to_string(&stored).unwrap()],
+            )
+            .unwrap();
+        }
+        assert_eq!(resolve_harnesses(&core, None).unwrap(), ["claude"]);
+    }
+}
+

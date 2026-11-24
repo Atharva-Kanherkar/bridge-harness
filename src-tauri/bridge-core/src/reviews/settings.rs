@@ -46,6 +46,11 @@ pub fn save(db: &Connection, settings: &ReviewJobSettings) -> Result<ReviewJobSe
     if default_harnesses.len() > MAX_REVIEW_HARNESSES {
         return Err(BridgeError::Invalid(format!("A review runs on at most {MAX_REVIEW_HARNESSES} harnesses")));
     }
+    if default_harnesses.len() > 1 && !settings.second_opinion {
+        return Err(BridgeError::Invalid(
+            "Turn on Second opinion to review with two harnesses by default".into(),
+        ));
+    }
     let normalized = ReviewJobSettings {
         default_harnesses,
         fallback_harnesses: harnesses(&settings.fallback_harnesses, "fallback reviewer")?,
@@ -118,6 +123,7 @@ mod tests {
             max_concurrent_reviews: 4,
             post_mode: wire::ReviewPostMode::Auto,
             max_review_worktrees: 8,
+            second_opinion: true,
         };
         let stored = save(&db, &settings).unwrap();
         assert_eq!(stored.default_harnesses, ["claude", "codex"], "aliases fold and repeats drop");
@@ -125,13 +131,30 @@ mod tests {
         assert_eq!(stored.max_concurrent_reviews, 4);
         assert_eq!(stored.post_mode, wire::ReviewPostMode::Auto);
 
-        let three = ReviewJobSettings { default_harnesses: vec!["claude".into(), "codex".into(), "opencode".into()], ..Default::default() };
+        let three = ReviewJobSettings {
+            default_harnesses: vec!["claude".into(), "codex".into(), "opencode".into()],
+            second_opinion: true,
+            ..Default::default()
+        };
         assert!(save(&db, &three).unwrap_err().to_string().contains("at most 2"));
         let bugbot = ReviewJobSettings { fallback_harnesses: vec!["bugbot".into()], ..Default::default() };
         assert!(save(&db, &bugbot).unwrap_err().to_string().contains("Cursor Bugbot"));
         let unknown = ReviewJobSettings { default_harnesses: vec!["shell".into()], ..Default::default() };
         assert!(save(&db, &unknown).unwrap_err().to_string().contains("Unknown default reviewer harness"));
         assert_eq!(load(&db).unwrap(), stored, "a refused save stores nothing");
+    }
+
+    #[test]
+    fn two_default_harnesses_need_second_opinion() {
+        let (_scratch, db) = db();
+        let two = ReviewJobSettings { default_harnesses: vec!["claude".into(), "codex".into()], ..Default::default() };
+        assert!(save(&db, &two).unwrap_err().to_string().contains("Turn on Second opinion"));
+        assert_eq!(load(&db).unwrap(), ReviewJobSettings::default(), "nothing stored");
+        let on = save(&db, &ReviewJobSettings { second_opinion: true, ..two }).unwrap();
+        assert!(on.second_opinion);
+        assert_eq!(on.default_harnesses, ["claude", "codex"]);
+        let one = ReviewJobSettings { default_harnesses: vec!["codex".into()], ..Default::default() };
+        assert_eq!(save(&db, &one).unwrap().default_harnesses, ["codex"], "one default needs nothing");
     }
 
     #[test]
@@ -163,6 +186,7 @@ mod tests {
                 max_concurrent_reviews: 1,
                 post_mode: wire::ReviewPostMode::Auto,
                 max_review_worktrees: 3,
+                second_opinion: false,
             },
         )
         .unwrap();

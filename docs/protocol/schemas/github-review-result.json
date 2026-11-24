@@ -7,14 +7,14 @@
       "type": "string"
     },
     "sessionId": {
-      "description": "The child worker session id when the review actually launched.",
+      "description": "Always absent now: a review job has no session. Kept for older clients.",
       "type": [
         "string",
         "null"
       ]
     },
     "status": {
-      "description": "One of `launched` | `queued` | `awaitingApproval` | `failed`.",
+      "description": "`queued` for a local harness (a review job), `launched` or `failed` for Cursor Bugbot. Older daemons also answered `awaitingApproval`.",
       "type": "string"
     }
   },

@@ -3260,6 +3260,7 @@ export interface ReviewJobSettings {
   maxConcurrentReviews?: number;
   maxReviewWorktrees?: number;
   postMode?: ReviewPostMode;
+  secondOpinion?: boolean;
 }
 
 export type ReviewJobStatus = "queued" | "preparing" | "reviewing" | "drafted" | "posting" | "posted" | "failed" | "cancelled" | "interrupted";
