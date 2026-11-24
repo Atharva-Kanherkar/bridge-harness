@@ -216,9 +216,14 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// clients: they cannot read an event trigger, and would fail on the first
 /// workflow list that holds one. A 1.54 client cannot pair with a 1.53 daemon,
 /// which lacks the new methods.
+///
+/// **1.55 adds Gmail, Linear and Notion event triggers**: three
+/// `WorkflowEventKind` values. A 1.55 daemon refuses older clients, which
+/// cannot read a workflow that uses one; a 1.55 client cannot pair with a 1.54
+/// daemon, which would refuse those triggers.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 54,
+    minor: 55,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -238,6 +243,7 @@ impl ProtocolVersion {
         const TRAILS_MINOR: u32 = 33;
         const TRAIL_ISSUES_MINOR: u32 = 35;
         const WORKFLOW_EVENTS_MINOR: u32 = 54;
+        const MORE_TRIGGERS_MINOR: u32 = 55;
         self.major == client.major
             && client.minor <= self.minor
             && !(self.major == 1
@@ -258,6 +264,9 @@ impl ProtocolVersion {
             && !(self.major == 1
                 && self.minor >= WORKFLOW_EVENTS_MINOR
                 && client.minor < WORKFLOW_EVENTS_MINOR)
+            && !(self.major == 1
+                && self.minor >= MORE_TRIGGERS_MINOR
+                && client.minor < MORE_TRIGGERS_MINOR)
     }
 }
 
@@ -605,11 +614,20 @@ mod tests {
     fn event_workflows_pair_only_with_a_matching_daemon_and_client() {
         let before = ProtocolVersion { major: 1, minor: 53 };
         let events = ProtocolVersion { major: 1, minor: 54 };
-        assert_eq!(PROTOCOL_VERSION, events);
         assert!(!events.accepts(before), "a 1.53 client cannot read an event trigger in a workflow list");
         assert!(!before.accepts(events), "a 1.54 client needs the preview, template and refresh methods");
         assert!(events.accepts(events));
         assert!(!PROTOCOL_VERSION.accepts(ProtocolVersion { major: 1, minor: 17 }), "older clients stay refused");
+    }
+
+    #[test]
+    fn more_triggers_pair_only_with_a_matching_daemon_and_client() {
+        let before = ProtocolVersion { major: 1, minor: 54 };
+        let more = ProtocolVersion { major: 1, minor: 55 };
+        assert_eq!(PROTOCOL_VERSION, more);
+        assert!(!more.accepts(before), "a 1.54 client cannot read a Gmail, Linear or Notion trigger");
+        assert!(!before.accepts(more), "a 1.55 client's new triggers would be refused by a 1.54 daemon");
+        assert!(more.accepts(more));
     }
 
     #[test]

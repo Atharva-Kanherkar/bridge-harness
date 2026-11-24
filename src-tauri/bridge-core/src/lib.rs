@@ -246,6 +246,7 @@ pub mod workflow_schedule;
 pub mod workflow_templates;
 pub mod workflow_draft;
 pub mod workflow_events;
+pub mod workflow_ingress;
 pub mod workflow_run;
 pub mod workflow_trigger;
 pub mod workflows;

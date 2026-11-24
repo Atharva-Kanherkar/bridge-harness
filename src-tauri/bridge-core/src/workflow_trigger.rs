@@ -1055,6 +1055,8 @@ fn maintenance_pass(core: &Arc<BridgeCore>, now: DateTime<Utc>) -> bool {
         return false;
     }
     // `gh` runs with the store unlocked; what it finds is claimed by the tick.
+    // Gmail, Linear and Notion reads run on their own threads.
+    crate::workflow_ingress::poll_due(core, now);
     if let Err(error) = crate::workflow_events::poll_github(core, &crate::workflow_events::SystemGh, now) {
         eprintln!("[bridge] workflow GitHub events failed: {error}");
     }
