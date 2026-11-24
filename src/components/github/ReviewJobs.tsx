@@ -89,6 +89,7 @@ function JobRow({ job, now, onChanged }: { job: ReviewJob; now: number; onChange
       {job.findingCounts.total === 0 ? "No findings" : counts.map(severity => <span key={severity} className={cn("mr-1.5", SEVERITY_TEXT[severity])}>{job.findingCounts[severity]} {severity}</span>)}
     </span>}
     {job.trigger === "push" && <span className="text-caption text-muted-foreground">On push</span>}
+    {job.incrementalFromSha && <span className="text-caption text-muted-foreground" title={`Reviews the commits since ${job.incrementalFromSha}`}>Re-review since <span className="font-mono">{job.incrementalFromSha.slice(0, 7)}</span></span>}
     <span className="ml-auto flex items-center gap-1">
       {job.status === "posted" && job.postedReviewUrl && <a href={job.postedReviewUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-meta text-foreground hover:bg-accent">
         View on GitHub <SquareArrowOutUpRight size={11} aria-hidden="true" />

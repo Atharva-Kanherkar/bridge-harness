@@ -62,6 +62,10 @@ pub const MAX_PROBE: Duration = Duration::hours(2);
 /// surprise rather than a help.
 pub const CATCH_UP: Duration = Duration::hours(12);
 
+/// How long after a row came due a busy store is still retried. A lock that
+/// lasts longer than this is not transient, and the row fails with it.
+pub const TRANSIENT_RETRY_WINDOW: Duration = Duration::minutes(2);
+
 /// What the chat is told when Bridge continues it. Plain, so it reads right
 /// in the transcript, and explicit about not redoing work: the provider may
 /// or may not have recorded the interrupted turn, and either way the model
@@ -679,12 +683,24 @@ pub struct TickReport {
     pub acted: Vec<String>,
     pub cancelled: Vec<(String, &'static str)>,
     pub failed: Vec<(String, String)>,
+    /// Back to pending because the store was busy: the next pass tries again.
+    pub retrying: Vec<String>,
 }
 
 impl TickReport {
     pub fn changed(&self) -> bool {
-        !(self.acted.is_empty() && self.cancelled.is_empty() && self.failed.is_empty())
+        !(self.acted.is_empty() && self.cancelled.is_empty() && self.failed.is_empty() && self.retrying.is_empty())
     }
+}
+
+/// SQLite was busy or locked: another connection held the store, which says
+/// nothing about the chat itself.
+fn store_busy(error: &BridgeError) -> bool {
+    matches!(
+        error,
+        BridgeError::Db(rusqlite::Error::SqliteFailure(failure, _))
+            if matches!(failure.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
 }
 
 fn chat_facts(db: &Connection, session_id: &str) -> Result<ChatFacts, BridgeError> {
@@ -772,6 +788,15 @@ pub fn tick(
                 transition(&db, &row.session_id, &[LimitRecoveryState::Acting], LimitRecoveryState::Done, Some(outcome), now)?;
                 ledger(&db, "limit_recovery", "limit_recovery.acted", &row.session_id, outcome);
                 report.acted.push(row.session_id.clone());
+            }
+            Err(error) if store_busy(&error) && now - row.due_at < TRANSIENT_RETRY_WINDOW => {
+                // A busy store says nothing about the chat: try again on the
+                // next pass. The guard runs first then, so a continue that did
+                // start finds the chat running and is never sent twice.
+                let outcome = format!("Retrying after: {error}");
+                transition(&db, &row.session_id, &[LimitRecoveryState::Acting], LimitRecoveryState::Pending, Some(&outcome), now)?;
+                ledger(&db, "limit_recovery", "limit_recovery.retrying", &row.session_id, &outcome);
+                report.retrying.push(row.session_id.clone());
             }
             Err(error) => {
                 let message = error.to_string();
@@ -945,21 +970,39 @@ mod tests {
         save_settings(db, settings, |_| true).unwrap();
     }
 
-    /// Records what the tick asked for, and can be told to fail.
+    /// Records what the tick asked for, and can be told to fail: for good, or
+    /// with SQLite busy a set number of times first.
     #[derive(Default)]
     struct Recorder {
         calls: Mutex<Vec<String>>,
         fail_send: bool,
+        busy_sends: std::sync::atomic::AtomicU32,
+        busy_switches: std::sync::atomic::AtomicU32,
+    }
+
+    /// What a write returns while another connection holds the store.
+    fn busy() -> BridgeError {
+        BridgeError::Db(rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY), Some("database is locked".into())))
+    }
+
+    fn take_one(counter: &std::sync::atomic::AtomicU32) -> bool {
+        counter.fetch_update(std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst, |left| left.checked_sub(1)).is_ok()
     }
 
     impl Actions for Recorder {
         fn switch_model(&self, session_id: &str, target: &Selection) -> Result<(), BridgeError> {
+            if take_one(&self.busy_switches) {
+                return Err(busy());
+            }
             self.calls.lock().unwrap().push(format!("switch {session_id} {}:{}", target.harness, target.model.clone().unwrap_or_default()));
             Ok(())
         }
         fn send_continue(&self, session_id: &str, text: &str) -> Result<(), BridgeError> {
             if self.fail_send {
                 return Err(BridgeError::Invalid("provider is not running".into()));
+            }
+            if take_one(&self.busy_sends) {
+                return Err(busy());
             }
             self.calls.lock().unwrap().push(format!("send {session_id} {}", if text == CONTINUE_PROMPT { "continue" } else { "continue-on-backup" }));
             Ok(())
@@ -1274,6 +1317,77 @@ mod tests {
     }
 
     #[test]
+    fn a_busy_store_is_retried_on_the_next_tick_and_the_chat_continues_once() {
+        let db = db();
+        set(&db, &resume());
+        let reset = now() + Duration::hours(1);
+        observe(&db, "chat", LimitKind::Usage, "usage limit", Some(reset), now()).unwrap();
+        let db = Mutex::new(db);
+        let actions = Recorder { busy_sends: 1.into(), ..Recorder::default() };
+        let due = reset + RESET_GRACE;
+        let first = tick(&db, &actions, due).unwrap();
+        assert!(first.acted.is_empty() && first.failed.is_empty());
+        let row = get(&db.lock().unwrap(), "chat").unwrap().unwrap();
+        assert_eq!(row.state, LimitRecoveryState::Pending, "a busy store says nothing about the chat");
+        assert_eq!(row.outcome.as_deref(), Some("Retrying after: Database: database is locked"));
+        let second = tick(&db, &actions, due + Duration::seconds(20)).unwrap();
+        assert_eq!(second.acted, vec!["chat".to_owned()]);
+        assert_eq!(*actions.calls.lock().unwrap(), vec!["send chat continue".to_owned()], "continued exactly once");
+        assert_eq!(get(&db.lock().unwrap(), "chat").unwrap().unwrap().state, LimitRecoveryState::Done);
+    }
+
+    #[test]
+    fn a_busy_backup_switch_is_retried_too() {
+        let db = db();
+        set(&db, &backup("codex", "gpt-5.5"));
+        observe(&db, "chat", LimitKind::Usage, "usage limit", None, now()).unwrap();
+        let db = Mutex::new(db);
+        let actions = Recorder { busy_switches: 1.into(), ..Recorder::default() };
+        tick(&db, &actions, now()).unwrap();
+        assert_eq!(get(&db.lock().unwrap(), "chat").unwrap().unwrap().state, LimitRecoveryState::Pending);
+        assert_eq!(tick(&db, &actions, now() + Duration::seconds(20)).unwrap().acted, vec!["chat".to_owned()]);
+        assert_eq!(
+            *actions.calls.lock().unwrap(),
+            vec!["switch chat codex:gpt-5.5".to_owned(), "send chat continue-on-backup".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_store_busy_for_minutes_fails_the_row() {
+        let db = db();
+        set(&db, &resume());
+        let reset = now() + Duration::hours(1);
+        observe(&db, "chat", LimitKind::Usage, "usage limit", Some(reset), now()).unwrap();
+        let db = Mutex::new(db);
+        let actions = Recorder { busy_sends: 100.into(), ..Recorder::default() };
+        let due = reset + RESET_GRACE;
+        tick(&db, &actions, due).unwrap();
+        let late = tick(&db, &actions, due + TRANSIENT_RETRY_WINDOW).unwrap();
+        assert_eq!(late.failed, vec![("chat".to_owned(), "Database: database is locked".to_owned())]);
+        let row = get(&db.lock().unwrap(), "chat").unwrap().unwrap();
+        assert_eq!((row.state, row.outcome.as_deref()), (LimitRecoveryState::Failed, Some("Database: database is locked")));
+        assert!(actions.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_retry_after_the_turn_started_sends_nothing_more() {
+        // A busy error that came after the turn had started: the next pass
+        // finds the chat running and must not continue it a second time.
+        let db = db();
+        set(&db, &resume());
+        let reset = now() + Duration::hours(1);
+        observe(&db, "chat", LimitKind::Usage, "usage limit", Some(reset), now()).unwrap();
+        let db = Mutex::new(db);
+        let actions = Recorder { busy_sends: 1.into(), ..Recorder::default() };
+        let due = reset + RESET_GRACE;
+        tick(&db, &actions, due).unwrap();
+        db.lock().unwrap().execute("UPDATE sessions SET active_turn_id='turn-1' WHERE id='chat'", []).unwrap();
+        let retry = tick(&db, &actions, due + Duration::seconds(20)).unwrap();
+        assert_eq!(retry.cancelled, vec![("chat".to_owned(), "the chat is already running")]);
+        assert!(actions.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn a_backup_switch_already_made_is_not_made_twice() {
         let db = db();
         set(&db, &backup("codex", "gpt-5.5"));
@@ -1540,14 +1654,14 @@ mod tests {
             // one is cheaper per case to keep at a lower count.
             #![proptest_config(ProptestConfig { cases: fuzz_cases(256), ..ProptestConfig::default() })]
 
-            /// Any interleaving of limits, user messages, cancels, resume-now
-            /// and ticks against the real store: the chat is sent at most one
+            /// Any interleaving of limits, user messages, cancels, resume-now,
+            /// a busy store and ticks against the real store: the chat is sent at most one
             /// continue per scheduled row, never while a person's message
             /// cancelled it, and never anything at all when the setting is off.
             #[test]
             fn store_and_tick_interleavings(
                 mode in prop::sample::select(vec![LimitRecoveryMode::Off, LimitRecoveryMode::Resume, LimitRecoveryMode::Backup]),
-                steps in prop::collection::vec((0u8..6, 0i64..240), 1..30),
+                steps in prop::collection::vec((0u8..8, 0i64..240), 1..30),
             ) {
                 let db = db();
                 set(&db, &LimitRecoverySettings { mode, backup: Some(LimitRecoveryTarget { harness: "codex".into(), model: Some("gpt".into()), effort: None }) });
@@ -1567,6 +1681,9 @@ mod tests {
                         }
                         2 => { cancel_for_user_input(&db.lock().unwrap(), "chat", clock).unwrap(); }
                         3 => { make_due_now(&db.lock().unwrap(), "chat", clock).unwrap(); }
+                        // The store is busy for the next send, or the next switch.
+                        6 => { actions.busy_sends.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
+                        7 => { actions.busy_switches.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
                         _ => {
                             let report = tick(&db, &actions, clock).unwrap();
                             sends += report.acted.len();

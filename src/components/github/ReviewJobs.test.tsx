@@ -160,6 +160,19 @@ describe("ReviewJobs", () => {
     expect(host!.querySelectorAll("[data-review-job]")).toHaveLength(13);
   });
 
+  it("says when a job was started by a push and what a re-review covers", async () => {
+    listen();
+    vi.spyOn(bridgeApi, "listReviews").mockResolvedValue({ jobs: [
+      reviewJob({ id: "again", status: "reviewing", trigger: "push", incrementalFromSha: "abcdef1234567890" }),
+      reviewJob({ id: "whole", status: "reviewing", createdAt: "2026-11-24T09:00:00.000Z" }),
+    ] });
+    await mount(<ReviewJobs workspaceId="w" number={7} />);
+    expect(row("again")!.textContent).toContain("On push");
+    expect(row("again")!.textContent).toContain("Re-review since abcdef1");
+    expect(row("whole")!.textContent).not.toContain("Re-review");
+    expect(row("whole")!.textContent).not.toContain("On push");
+  });
+
   it("formats elapsed time", () => {
     expect(formatElapsed(42_000)).toBe("42s");
     expect(formatElapsed(65_000)).toBe("1m 05s");

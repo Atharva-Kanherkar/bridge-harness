@@ -1257,7 +1257,7 @@ pub fn integrate_worker_changes(
     Ok(IntegrationResult::Integrated)
 }
 
-fn is_ancestor(worktree: &Path, ancestor: &str, descendant: &str) -> Result<bool, BridgeError> {
+pub(crate) fn is_ancestor(worktree: &Path, ancestor: &str, descendant: &str) -> Result<bool, BridgeError> {
     let output = git_command(worktree)
         .args(["merge-base", "--is-ancestor", ancestor, descendant])
         .output()?;

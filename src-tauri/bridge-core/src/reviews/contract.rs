@@ -39,13 +39,17 @@ pub const OUTPUT_CONTRACT: &str = r#"End your final message with exactly one fen
 
 - `side` is "RIGHT" for a line in the new version of the file and "LEFT" for a line only in the old version (a deleted line). Line numbers are those of that side.
 - Comment only on lines inside the diff's hunks; anything else goes in the summary.
-- Use `"findings":[]` when you found nothing worth raising. Never invent a problem to fill the list."#;
+- Use `"findings":[]` when you found nothing worth raising. Never invent a problem to fill the list.
+- On a re-review only, add `"fixed":["<id>"]` with the `id` of each earlier finding in prior_findings.json that the new commits fixed. Leave it out otherwise."#;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RawReview {
     pub summary: String,
     pub findings: Vec<RawFinding>,
+    /// On a re-review, the earlier findings the new commits fixed.
+    #[serde(default)]
+    pub fixed: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -283,7 +287,7 @@ fn hunk_header(header: &str) -> Option<(u32, u32, u32, u32)> {
 }
 
 /// A title for comparison: lowercase words, punctuation dropped.
-fn normalized(title: &str) -> String {
+pub fn normalized(title: &str) -> String {
     title
         .to_lowercase()
         .split(|character: char| !character.is_alphanumeric())
@@ -303,7 +307,7 @@ pub fn fingerprint(path: &str, title: &str, hunk_text: &str) -> String {
     format!("{:x}", digest.finalize())
 }
 
-fn severity_rank(severity: ReviewSeverity) -> u8 {
+pub(crate) fn severity_rank(severity: ReviewSeverity) -> u8 {
     match severity {
         ReviewSeverity::Critical => 0,
         ReviewSeverity::Major => 1,
@@ -330,6 +334,8 @@ pub struct Validated {
     pub duplicates: usize,
     /// Findings beyond [`MAX_FINDINGS`].
     pub over_limit: usize,
+    /// Earlier findings the reviewer says the new commits fixed, as given.
+    pub fixed: Vec<String>,
 }
 
 /// Check a parsed review against the files that changed and the diff's
@@ -382,7 +388,7 @@ pub fn validate(review: RawReview, changed: &HashSet<String>, hunks: &BTreeMap<S
     kept.truncate(MAX_FINDINGS);
     // Inline first, so the review's comments lead and the rest follows.
     kept.sort_by_key(|finding| finding.outside_diff);
-    Validated { summary: review.summary.trim().to_owned(), findings: kept, duplicates, over_limit }
+    Validated { summary: review.summary.trim().to_owned(), findings: kept, duplicates, over_limit, fixed: review.fixed }
 }
 
 #[cfg(test)]

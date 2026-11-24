@@ -249,3 +249,13 @@ fn real_git_output_round_trips_through_the_parser() {
     assert_eq!(files["日.txt"][0].new, [1]);
     assert_eq!(files["q.sql"][0].old, [1, 2, 3]);
 }
+
+#[test]
+fn fixed_is_optional_and_read_on_a_re_review() {
+    let full = parse(&fenced(json!({"summary": "s", "findings": []}))).unwrap();
+    assert!(full.fixed.is_empty(), "a full review has no `fixed`");
+    let again = parse(&fenced(json!({"summary": "s", "findings": [], "fixed": ["f-1", "f-2"]}))).unwrap();
+    assert_eq!(again.fixed, ["f-1", "f-2"]);
+    let validated = validate(again, &HashSet::new(), &BTreeMap::new());
+    assert_eq!(validated.fixed, ["f-1", "f-2"], "validation passes them on; the pass checks them against prior findings");
+}

@@ -229,6 +229,8 @@ pub struct FoundReview {
     pub id: String,
     pub url: String,
     pub body: String,
+    /// The commit the review is on, as GitHub reports it.
+    pub commit_id: Option<String>,
 }
 
 /// An inline comment of a posted review, as GitHub returns it.
@@ -390,7 +392,7 @@ pub fn find_posted(core: &Arc<BridgeCore>, job: &JobRow) -> Result<Option<Posted
     // Best effort: without its comments, the review still counts as posted.
     let comments = core.github_surface.pr_review_comments(&workspace, &repository, job.number, &found.id).unwrap_or_default();
     let findings = held_by(&plan(core, job, None)?, &found, &comments);
-    Ok(Some(PostedReview { review_id: found.id, url: found.url, findings }))
+    Ok(Some(PostedReview { review_id: found.id, url: found.url, commit_id: found.commit_id, findings }))
 }
 
 /// Post the job's review at the reviewed commit.
@@ -404,7 +406,8 @@ pub fn post(core: &Arc<BridgeCore>, job: &JobRow, cancel: &CancelToken) -> Resul
     }
     let created = core.github_surface.create_pr_review(&workspace, &repository, job.number, &plan.payload).map_err(gh_error)?;
     let comments = core.github_surface.pr_review_comments(&workspace, &repository, job.number, &created.id).unwrap_or_default();
-    Ok(PostedReview { review_id: created.id, url: created.url, findings: posted_now(&plan, &comments) })
+    let commit_id = created.commit_id.or_else(|| Some(plan.payload.commit_id.clone()));
+    Ok(PostedReview { review_id: created.id, url: created.url, commit_id, findings: posted_now(&plan, &comments) })
 }
 
 #[cfg(test)]

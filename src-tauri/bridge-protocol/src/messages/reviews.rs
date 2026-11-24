@@ -121,6 +121,30 @@ impl ReviewPostMode {
     }
 }
 
+/// Which pull requests Bridge reviews on its own when they open or get new
+/// commits.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewAutoMode {
+    /// Reviews start only when a person asks.
+    #[default]
+    Off,
+    /// Pull requests opened by the signed-in GitHub account.
+    Mine,
+    /// Every open pull request of a watched repository.
+    All,
+}
+
+impl ReviewAutoMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ReviewAutoMode::Off => "off",
+            ReviewAutoMode::Mine => "mine",
+            ReviewAutoMode::All => "all",
+        }
+    }
+}
+
 /// Findings on a job, by severity.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -147,6 +171,10 @@ pub struct ReviewJob {
     /// second opinion.
     pub harnesses: Vec<String>,
     pub finding_counts: ReviewFindingCounts,
+    /// A re-review: the head of the PR's last posted review. The reviewer
+    /// looks at the commits since it, remembering earlier findings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incremental_from_sha: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -342,6 +370,9 @@ pub struct ReviewFinding {
     pub github_comment_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub posted_at: Option<String>,
+    /// The head of a later re-review that found this fixed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_in_sha: Option<String>,
 }
 
 /// How review jobs run. One record for the account, separate from
@@ -370,6 +401,14 @@ pub struct ReviewJobSettings {
     /// Whether a review may run on two harnesses at once. Off (the default),
     /// a review runs on one.
     pub second_opinion: bool,
+    /// Review pull requests on their own when they open or get new commits.
+    /// Off by default.
+    pub auto_review: ReviewAutoMode,
+    /// With auto-review on, leave draft pull requests until they are ready.
+    pub skip_draft_prs: bool,
+    /// A later review of a PR looks at the commits since its last posted
+    /// review and remembers what was said and decided. Off by default.
+    pub incremental: bool,
 }
 
 /// The default and the bounds of `ReviewJobSettings::max_concurrent_reviews`.
@@ -388,6 +427,9 @@ impl Default for ReviewJobSettings {
             post_mode: ReviewPostMode::Draft,
             max_review_worktrees: DEFAULT_MAX_REVIEW_WORKTREES,
             second_opinion: false,
+            auto_review: ReviewAutoMode::Off,
+            skip_draft_prs: true,
+            incremental: false,
         }
     }
 }
@@ -512,6 +554,7 @@ mod tests {
             post_mode: ReviewPostMode::Auto,
             harnesses: vec!["claude".into(), "codex".into()],
             finding_counts: ReviewFindingCounts { total: 3, critical: 1, major: 1, minor: 0, nit: 1 },
+            incremental_from_sha: Some("prev".into()),
             error: None,
             posted_review_url: Some("https://github.com/o/r/pull/42#pullrequestreview-1".into()),
             retry_of: Some("j0".into()),
@@ -527,6 +570,7 @@ mod tests {
         assert_eq!(value["status"], "drafted");
         assert_eq!(value["findingCounts"]["critical"], 1);
         assert_eq!(value["retryOf"], "j0");
+        assert_eq!(value["incrementalFromSha"], "prev");
         assert!(value.get("error").is_none(), "absent options are omitted");
         assert_eq!(serde_json::from_value::<ReviewJob>(value).unwrap(), job);
         assert_eq!(serde_json::to_value(ReviewSide::Left).unwrap(), json!("LEFT"));

@@ -40,7 +40,7 @@ const MAX_TEXT: usize = 600;
 /// The apps this module reads.
 pub const FAMILIES: [ConnectorFamily; 3] = [ConnectorFamily::Gmail, ConnectorFamily::Linear, ConnectorFamily::Notion];
 
-/// Migration 93.
+/// Migration 94.
 pub fn install_store(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS workflow_ingress_items (

@@ -23,14 +23,14 @@
 //! 4. the budget itself ([`has_capacity`]): a job stays queued rather than cut
 //!    a checkout past `maxReviewWorktrees`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
 use serde_json::json;
 
 use super::steps::{
-    CancelToken, Guard, PassOutcome, PassRequest, PostedReview, Prepared, ReviewSteps, StepError,
+    CancelToken, Guard, Incremental, PassOutcome, PassRequest, PostedReview, Prepared, ReviewSteps, StepError,
 };
 use super::store::{self, JobRow};
 use crate::github_surface::{GithubRepository, GithubSurfaceError};
@@ -280,11 +280,12 @@ pub fn prepare(
     let checkout = layout.checkout(job);
     let attempt_dir = layout.attempt_dir(job);
     let (head_ref, base_ref) = attempt_refs(job);
+    let from_ref = head_ref.replace("/head", "/from");
     // From here on, however this ends, what this attempt made goes with it.
     let guard = {
         let core = Arc::downgrade(core);
         let (layout, workspace, checkout, attempt_dir) = (layout.clone(), workspace.clone(), checkout.clone(), attempt_dir.clone());
-        let refs = vec![head_ref.clone(), base_ref.clone()];
+        let refs = vec![head_ref.clone(), base_ref.clone(), from_ref.clone()];
         Arc::new(Guard::new(move || {
             if let Some(core) = core.upgrade() {
                 remove_attempt(&core, &layout, &workspace, &checkout, &attempt_dir, &refs);
@@ -303,7 +304,22 @@ pub fn prepare(
     let base_tip = git::fetch_ref(&workspace, &remote, &format!("refs/heads/{}", detail.base_branch), &base_ref)
         .map_err(|error| fetch_error(&format!("the base branch {}", detail.base_branch), error))?;
     let merge_base = find_merge_base(&workspace, &remote, &[head_spec, base_spec], &base_ref, &head_ref)?;
+    let incremental = match job.incremental_from_sha.as_deref() {
+        Some(from) => settle_incremental(&workspace, &remote, from, &head, &from_ref),
+        None => Incremental::Full,
+    };
     let threads = core.github_surface.pr_review_threads_in(&workspace, &repository, number).map_err(surface_error)?;
+    let prior = if job.incremental_from_sha.is_some() {
+        let prior = store::prior_findings(&super::lock_db(core), store::PrKey::of(job), &job.id).map_err(fatal)?;
+        before_head(&workspace, &remote, &head, &from_ref, prior)
+    } else {
+        Vec::new()
+    };
+    let fixable = prior
+        .iter()
+        .filter(|(_, relation)| *relation == Relation::Earlier)
+        .map(|(finding, _)| finding.id.clone())
+        .collect();
     if cancel.is_cancelled() {
         return Err(StepError::Cancelled);
     }
@@ -333,9 +349,93 @@ pub fn prepare(
     }
 
     let context = attempt_dir.join("context");
-    let facts = ContextFacts { job, detail: &detail, threads: &threads, head: &head, base_tip: &base_tip, merge_base: &merge_base };
+    let facts = ContextFacts {
+        job,
+        detail: &detail,
+        threads: &threads,
+        head: &head,
+        base_tip: &base_tip,
+        merge_base: &merge_base,
+        incremental: &incremental,
+        prior: &prior,
+    };
     write_context(&workspace, &context, config, &facts)?;
-    Ok(Prepared { worktree: Some(checkout), context: Some(context), head_sha: head, guard: Some(guard) })
+    Ok(Prepared { worktree: Some(checkout), context: Some(context), head_sha: head, incremental, fixable, guard: Some(guard) })
+}
+
+/// How an earlier review's head stands to the head under review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relation {
+    /// The same commit.
+    Same,
+    /// An ancestor: the commits since may have fixed what it found.
+    Earlier,
+    /// Neither ancestor nor descendant: the history was rewritten (a rebase or
+    /// force-push). What a person decided still holds, but git cannot say it
+    /// came first, so nothing of it is marked fixed.
+    Rewritten,
+}
+
+impl Relation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Relation::Same => "same",
+            Relation::Earlier => "earlier",
+            Relation::Rewritten => "rewritten",
+        }
+    }
+}
+
+/// The earlier findings a review of `head` may learn from, each with how its
+/// head stands to `head`. History never runs backward: a finding of a newer
+/// head (one `head` is an ancestor of) is left out, so a review of an older
+/// head never learns of, or marks fixed, what a newer one found. A head
+/// missing here is fetched once; one that still cannot be found is left out,
+/// since it cannot be placed.
+fn before_head(
+    workspace: &Path,
+    remote: &str,
+    head: &str,
+    scratch_ref: &str,
+    prior: Vec<store::PriorFinding>,
+) -> Vec<(store::PriorFinding, Relation)> {
+    let mut placed: HashMap<String, Option<Relation>> = HashMap::new();
+    prior
+        .into_iter()
+        .filter_map(|finding| {
+            let relation = *placed.entry(finding.head_sha.clone()).or_insert_with(|| {
+                let theirs = finding.head_sha.as_str();
+                if theirs == head {
+                    return Some(Relation::Same);
+                }
+                let present = git::resolve_commit(workspace, &format!("{theirs}^{{commit}}")).is_ok()
+                    || git::fetch_ref(workspace, remote, theirs, scratch_ref).is_ok();
+                if !present {
+                    return None;
+                }
+                match (git::is_ancestor(workspace, theirs, head), git::is_ancestor(workspace, head, theirs)) {
+                    (Ok(true), _) => Some(Relation::Earlier),
+                    (Ok(false), Ok(false)) => Some(Relation::Rewritten),
+                    _ => None,
+                }
+            });
+            relation.map(|relation| (finding, relation))
+        })
+        .collect()
+}
+
+/// Whether `from` can be the start of a re-review of `head`: it is fetched
+/// (it may only be in the repository's object store from an earlier review,
+/// or still on GitHub) and an ancestor of `head`. A force-push that dropped
+/// it from the PR's history falls back to a full review.
+fn settle_incremental(workspace: &Path, remote: &str, from: &str, head: &str, from_ref: &str) -> Incremental {
+    let present = git::resolve_commit(workspace, &format!("{from}^{{commit}}")).is_ok()
+        || git::fetch_ref(workspace, remote, from, from_ref).is_ok();
+    if present && git::is_ancestor(workspace, from, head).unwrap_or(false) {
+        Incremental::Since(from.to_owned())
+    } else {
+        Incremental::FellBack(from.to_owned())
+    }
 }
 
 /// Reserve the checkout for the claim, then cut it. Runs under the checkout
@@ -363,6 +463,8 @@ struct ContextFacts<'a> {
     head: &'a str,
     base_tip: &'a str,
     merge_base: &'a str,
+    incremental: &'a Incremental,
+    prior: &'a [(store::PriorFinding, Relation)],
 }
 
 fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), StepError> {
@@ -371,10 +473,19 @@ fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), StepError> {
 }
 
 fn write_context(workspace: &Path, context: &Path, config: &PrepareConfig, facts: &ContextFacts<'_>) -> Result<(), StepError> {
-    let ContextFacts { job, detail, threads, head, base_tip, merge_base } = facts;
+    let ContextFacts { job, detail, threads, head, base_tip, merge_base, incremental, prior } = facts;
     std::fs::create_dir_all(context).map_err(|error| StepError::Fatal(error.to_string()))?;
     let files = git::diff_files(workspace, merge_base, head).map_err(fatal)?;
     let (patch, omitted) = capped_patch(workspace, merge_base, head, &files, config.max_diff_bytes)?;
+    // The new commits of a re-review, under the same cap. What does not fit
+    // is named, never dropped in silence.
+    let new_commits = match incremental {
+        Incremental::Since(from) => {
+            let new_files = git::diff_files(workspace, from, head).map_err(fatal)?;
+            Some(capped_patch(workspace, from, head, &new_files, config.max_diff_bytes)?)
+        }
+        _ => None,
+    };
     std::fs::write(context.join("diff.patch"), &patch).map_err(|error| StepError::Fatal(error.to_string()))?;
     write_json(
         &context.join("files.json"),
@@ -410,10 +521,76 @@ fn write_context(workspace: &Path, context: &Path, config: &PrepareConfig, facts
             "diffBytes": patch.len(),
             "diffTruncated": !omitted.is_empty(),
             "omittedFiles": omitted,
+            "incremental": incremental_json(incremental, head, new_commits.as_ref().map(|(_, omitted)| omitted.as_slice())),
         }),
     )?;
     write_json(&context.join("threads.json"), &serde_json::to_value(threads).map_err(|error| StepError::Fatal(error.to_string()))?)?;
+    if let Some((new_patch, _)) = &new_commits {
+        std::fs::write(context.join(INCREMENTAL_PATCH), new_patch).map_err(|error| StepError::Fatal(error.to_string()))?;
+    }
+    if job.incremental_from_sha.is_some() {
+        write_json(&context.join(PRIOR_FINDINGS), &prior_findings_json(prior, threads))?;
+    }
     write_conventions(workspace, &context.join(super::session::CONVENTIONS_DIR), base_tip)
+}
+
+/// The commits since the earlier review, when the job is a re-review.
+pub const INCREMENTAL_PATCH: &str = "incremental.patch";
+/// What earlier reviews of the PR said and what became of it.
+pub const PRIOR_FINDINGS: &str = "prior_findings.json";
+/// Longest reply text kept per thread reply in `prior_findings.json`.
+const MAX_REPLY_CHARS: usize = 600;
+
+fn incremental_json(incremental: &Incremental, head: &str, omitted: Option<&[String]>) -> serde_json::Value {
+    let omitted = omitted.unwrap_or_default();
+    match incremental {
+        Incremental::Full => serde_json::Value::Null,
+        Incremental::Since(from) => json!({
+            "from": from, "to": head, "fellBack": false,
+            "diffTruncated": !omitted.is_empty(), "omittedFiles": omitted,
+        }),
+        Incremental::FellBack(from) => json!({ "from": from, "to": head, "fellBack": true }),
+    }
+}
+
+/// Each earlier finding with its decision, whether it was posted, how its
+/// head stands to the one under review, and the state of its thread on
+/// GitHub (found by the posted comment's id).
+pub fn prior_findings_json(prior: &[(store::PriorFinding, Relation)], threads: &[crate::github_surface::ReviewThread]) -> serde_json::Value {
+    json!(prior
+        .iter()
+        .map(|(finding, relation)| {
+            let thread = finding.github_comment_id.as_deref().and_then(|comment| {
+                threads.iter().find(|thread| {
+                    thread.comments.iter().any(|item| item.database_id.is_some_and(|id| id.to_string() == comment))
+                })
+            });
+            json!({
+                "id": finding.id,
+                "reviewedHead": finding.head_sha,
+                "relation": relation.as_str(),
+                "path": finding.path,
+                "line": finding.line,
+                "startLine": finding.start_line,
+                "side": finding.side.as_str(),
+                "severity": finding.severity.as_str(),
+                "title": finding.title,
+                "body": finding.body,
+                "fingerprint": finding.fingerprint,
+                "decision": finding.decision.as_str(),
+                "posted": finding.posted,
+                "fixedInSha": finding.fixed_in_sha,
+                "thread": thread.map(|thread| json!({
+                    "resolved": thread.is_resolved,
+                    "outdated": thread.is_outdated,
+                    "replies": thread.comments.iter().skip(1).map(|reply| json!({
+                        "author": reply.author.as_ref().map(|author| author.login.clone()),
+                        "body": reply.body.chars().take(MAX_REPLY_CHARS).collect::<String>(),
+                    })).collect::<Vec<_>>(),
+                })),
+            })
+        })
+        .collect::<Vec<_>>())
 }
 
 /// A convention file past this size is left out rather than read whole.

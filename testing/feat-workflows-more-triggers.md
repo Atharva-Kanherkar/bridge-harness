@@ -17,7 +17,7 @@ Locked before implementation. This is the rest of #964: Gmail, Linear and Notion
 
 ## Storage
 
-Migration 93 adds `workflow_ingress_items(family, scope, item_key, kind, title, url, payload, occurred_at, observed_at, PRIMARY KEY(family, scope, item_key))` (rows older than 30 days are pruned on insert) and `workflow_ingress_polls(family, scope, last_attempt_at, last_success_at, last_error, PRIMARY KEY(family, scope))`. `scope` is empty for Gmail and Linear, and the database for Notion.
+Migration 94 adds `workflow_ingress_items(family, scope, item_key, kind, title, url, payload, occurred_at, observed_at, PRIMARY KEY(family, scope, item_key))` (rows older than 30 days are pruned on insert) and `workflow_ingress_polls(family, scope, last_attempt_at, last_success_at, last_error, PRIMARY KEY(family, scope))`. `scope` is empty for Gmail and Linear, and the database for Notion.
 
 ## Functional behavior
 

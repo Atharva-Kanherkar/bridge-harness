@@ -572,6 +572,7 @@ mod tests {
             post_mode: wire::ReviewPostMode::Draft,
             harnesses: vec!["claude".into()],
             finding_counts: wire::ReviewFindingCounts::default(),
+            incremental_from_sha: None,
             error: None,
             posted_review_url: None,
             retry_of: None,

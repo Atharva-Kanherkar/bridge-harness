@@ -143,6 +143,33 @@ it("round-trips every review job setting", async () => {
   expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ maxConcurrentReviews: 3 }));
 });
 
+it("round-trips auto-review, draft skipping and incremental re-review, each saying what it does", async () => {
+  const save = mockJobSettings();
+  await act(async () => { root.render(<ReviewerSettingsSection adapters={[codex]} />); });
+  expect(host.textContent).toContain("Reviews start only when you ask from the GitHub pane.");
+  const skip = () => host.querySelector<HTMLButtonElement>('[aria-label="Skip draft PRs"]')!;
+  expect(skip().disabled, "nothing to skip while auto-review is off").toBe(true);
+  expect(skip().getAttribute("aria-checked")).toBe("true");
+
+  await pressButton("My PRs");
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ autoReview: "mine" }));
+  expect(host.textContent).toContain("Pull requests you opened are reviewed");
+  await pressButton("All PRs");
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ autoReview: "all" }));
+  expect(skip().disabled).toBe(false);
+  await act(async () => skip().click());
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ skipDraftPrs: false }));
+  expect(host.textContent).toContain("Drafts are reviewed like any other pull request.");
+
+  expect(host.textContent).toContain("Every review looks at the whole pull request.");
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Incremental re-review"]')!.click());
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ incremental: true }));
+  expect(host.textContent).toContain("remembers what was kept, dropped or resolved");
+
+  await pressButton("Off");
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ autoReview: "off", skipDraftPrs: false, incremental: true }));
+});
+
 it("turning Second opinion off keeps only the first default reviewer", async () => {
   const save = mockJobSettings({ ...JOB_DEFAULTS, secondOpinion: true, defaultHarnesses: ["codex", "claude"] });
   await act(async () => { root.render(<ReviewerSettingsSection adapters={[codex]} />); });

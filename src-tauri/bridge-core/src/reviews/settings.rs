@@ -131,6 +131,7 @@ mod tests {
             post_mode: wire::ReviewPostMode::Auto,
             max_review_worktrees: 8,
             second_opinion: true,
+            ..Default::default()
         };
         let stored = save(&db, &settings).unwrap();
         assert_eq!(stored.default_harnesses, ["claude", "codex"], "aliases fold and repeats drop");
@@ -184,6 +185,23 @@ mod tests {
     }
 
     #[test]
+    fn auto_review_and_incremental_are_off_by_default_and_round_trip() {
+        let (_scratch, db) = db();
+        let defaults = load(&db).unwrap();
+        assert_eq!(defaults.auto_review, wire::ReviewAutoMode::Off);
+        assert!(defaults.skip_draft_prs, "drafts are skipped unless asked");
+        assert!(!defaults.incremental);
+        let on = ReviewJobSettings { auto_review: wire::ReviewAutoMode::Mine, skip_draft_prs: false, incremental: true, ..Default::default() };
+        assert_eq!(save(&db, &on).unwrap(), on);
+        assert_eq!(load(&db).unwrap(), on);
+        // A record from before these fields loads them off.
+        db.execute("UPDATE configuration_entries SET payload=?1 WHERE kind=?2", params![r#"{"postMode":"auto"}"#, KIND]).unwrap();
+        let old = load(&db).unwrap();
+        assert_eq!((old.auto_review, old.skip_draft_prs, old.incremental), (wire::ReviewAutoMode::Off, true, false));
+        assert_eq!(old.post_mode, wire::ReviewPostMode::Auto);
+    }
+
+    #[test]
     fn max_review_worktrees_defaults_to_eight_and_is_bounded() {
         let (_scratch, db) = db();
         assert_eq!(load(&db).unwrap().max_review_worktrees, 8);
@@ -213,6 +231,9 @@ mod tests {
                 post_mode: wire::ReviewPostMode::Auto,
                 max_review_worktrees: 3,
                 second_opinion: false,
+                auto_review: wire::ReviewAutoMode::Mine,
+                skip_draft_prs: false,
+                incremental: true,
             },
         )
         .unwrap();

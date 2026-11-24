@@ -6,6 +6,7 @@
 //! the durable guarantees, `runner` for slots, leases, retries and fallback,
 //! and `steps` for the work a job does.
 
+pub mod auto;
 pub mod contract;
 pub mod post;
 pub mod prepare;
@@ -33,6 +34,7 @@ pub const DEFAULT_HARNESS_ORDER: [&str; 3] = ["claude", "codex", "opencode"];
 /// What the PR looks like right now, read before a job is queued.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrHead {
+    pub repo_host: String,
     pub repo_owner: String,
     pub repo_name: String,
     pub head_sha: String,
@@ -106,6 +108,7 @@ pub fn start(core: &Arc<BridgeCore>, params: &wire::StartReviewParams) -> Result
         core,
         params,
         PrHead {
+            repo_host: head.repository.host,
             repo_owner: head.repository.owner,
             repo_name: head.repository.name,
             head_sha: head.head_sha,
@@ -117,36 +120,78 @@ pub fn start(core: &Arc<BridgeCore>, params: &wire::StartReviewParams) -> Result
 /// Queue a review of the PR at `head`, or return the live job that already
 /// reviews that head with those harnesses.
 pub fn start_with(core: &Arc<BridgeCore>, params: &wire::StartReviewParams, head: PrHead) -> Result<wire::ReviewJob, BridgeError> {
+    start_gated(core, params, head, &|_, _, _| true)?
+        .ok_or_else(|| BridgeError::Invalid("The review was not started".into()))
+}
+
+/// A last check before a job is inserted, made under the store lock with the
+/// settings as they are at that moment: nothing can change between it and
+/// the insert. False means no job.
+pub type StartGate<'a> = &'a dyn Fn(&rusqlite::Connection, &wire::ReviewJobSettings, store::PrKey<'_>) -> bool;
+
+/// [`start_with`], with `gate` deciding at insertion time. `None` means the
+/// gate refused.
+pub fn start_gated(
+    core: &Arc<BridgeCore>,
+    params: &wire::StartReviewParams,
+    head: PrHead,
+    gate: StartGate<'_>,
+) -> Result<Option<wire::ReviewJob>, BridgeError> {
     core.workspace_path(&params.workspace_id)?;
     let harnesses = resolve_harnesses(core, params.harnesses.as_deref())?;
-    let (job, created) = {
+    let trigger = params.trigger.unwrap_or_default();
+    let (host, owner, name) = (head.repo_host.clone(), head.repo_owner.clone(), head.repo_name.clone());
+    let pr = store::PrKey { host: &host, owner: &owner, name: &name, number: params.number };
+    let (job, created, superseded) = {
         let db = lock_db(core);
-        let post_mode = settings::load(&db)?.post_mode;
+        let settings = settings::load(&db)?;
+        if !gate(&db, &settings, pr) {
+            return Ok(None);
+        }
+        // A re-review starts at the commit the PR's last posted review is
+        // on, when there is one and the PR has moved since.
+        let incremental_from_sha = if settings.incremental {
+            store::latest_posted_head(&db, pr)?.filter(|from| *from != head.head_sha)
+        } else {
+            None
+        };
+        let head_sha = head.head_sha.clone();
         let (job, created) = store::insert(
             &db,
             &store::NewJob {
                 workspace_id: params.workspace_id.clone(),
+                repo_host: Some(head.repo_host),
                 repo_owner: head.repo_owner,
                 repo_name: head.repo_name,
                 number: params.number,
                 head_sha: head.head_sha,
                 base_sha: head.base_sha,
-                incremental_from_sha: None,
-                trigger: params.trigger.unwrap_or_default(),
-                post_mode,
+                incremental_from_sha,
+                trigger,
+                post_mode: settings.post_mode,
                 harnesses,
                 retry_of: None,
                 publication_key: None,
             },
             Utc::now(),
         )?;
-        (store::to_wire(&db, &job)?, created)
+        // A push review replaces the queued push reviews of older heads.
+        let superseded = if trigger == wire::ReviewTrigger::Push {
+            store::supersede_queued_pushes(&db, pr, &head_sha, Utc::now())?
+        } else {
+            Vec::new()
+        };
+        (store::to_wire(&db, &job)?, created, superseded)
     };
+    for id in &superseded {
+        core.reviews.steps().cleanup(id);
+        publish(core, id);
+    }
     if created {
         core.events.publish(CoreEvent::ReviewJobUpdated { job: job.clone() });
         core.reviews.wake();
     }
-    Ok(job)
+    Ok(Some(job))
 }
 
 pub fn list(core: &Arc<BridgeCore>, params: &wire::ListReviewsParams) -> Result<wire::ReviewJobList, BridgeError> {
@@ -228,7 +273,17 @@ pub fn job_settings(core: &Arc<BridgeCore>) -> Result<wire::ReviewJobSettings, B
 
 /// Save how review jobs run, and let the runner pick up a wider pool now.
 pub fn save_job_settings(core: &Arc<BridgeCore>, next: &wire::ReviewJobSettings) -> Result<wire::ReviewJobSettings, BridgeError> {
-    let saved = settings::save(&lock_db(core), next)?;
+    let saved = {
+        let db = lock_db(core);
+        let before = settings::load(&db)?;
+        let saved = settings::save(&db, next)?;
+        // Under the same lock as the save: an auto-review start checks it
+        // under that lock too, so none starts from the settings before.
+        if (before.auto_review, before.skip_draft_prs) != (saved.auto_review, saved.skip_draft_prs) {
+            core.reviews.auto.settings_changed();
+        }
+        saved
+    };
     core.reviews.wake();
     Ok(saved)
 }
@@ -262,9 +317,40 @@ mod tests {
     }
 
     #[test]
+    fn a_re_review_starts_at_the_last_posted_head_only_when_incremental_is_on() {
+        let (_scratch, core) = core();
+        let at = |sha: &str| PrHead { repo_host: "github.com".into(), repo_owner: "o".into(), repo_name: "r".into(), head_sha: sha.into(), base_sha: None };
+        let request = wire::StartReviewParams { workspace_id: "w".into(), number: 3, harnesses: Some(vec!["claude".into()]), trigger: None };
+        let first = start_with(&core, &request, at("aaa")).unwrap();
+        assert_eq!(first.incremental_from_sha, None, "nothing posted yet");
+        lock_db(&core)
+            .execute(
+                "UPDATE review_jobs SET status='posted', posted_head_sha=head_sha, finished_at='2026-11-24T10:00:00.000Z' WHERE id=?1",
+                params![first.id],
+            )
+            .unwrap();
+
+        let off = start_with(&core, &request, at("bbb")).unwrap();
+        assert_eq!(off.incremental_from_sha, None, "off: a full review");
+        cancel(&core, &off.id).unwrap();
+
+        change(&core, |settings| settings.incremental = true);
+        let on = start_with(&core, &request, at("ccc")).unwrap();
+        assert_eq!(on.incremental_from_sha.as_deref(), Some("aaa"), "since the last posted head");
+        let retried = {
+            cancel(&core, &on.id).unwrap();
+            retry(&core, &on.id).unwrap()
+        };
+        assert_eq!(retried.incremental_from_sha.as_deref(), Some("aaa"), "a retry keeps it");
+        cancel(&core, &retried.id).unwrap();
+        let same = start_with(&core, &request, at("aaa")).unwrap();
+        assert_eq!(same.incremental_from_sha, None, "the posted head itself has nothing new");
+    }
+
+    #[test]
     fn two_harnesses_need_second_opinion() {
         let (_scratch, core) = core();
-        let head = || PrHead { repo_owner: "o".into(), repo_name: "r".into(), head_sha: "abc".into(), base_sha: None };
+        let head = || PrHead { repo_host: "github.com".into(), repo_owner: "o".into(), repo_name: "r".into(), head_sha: "abc".into(), base_sha: None };
         let params = |harnesses: &[&str]| wire::StartReviewParams {
             workspace_id: "w".into(),
             number: 3,
