@@ -7437,6 +7437,23 @@ pub fn list_workflow_templates(core: &Arc<BridgeCore>) -> Result<wire::WorkflowT
     Ok(wire::WorkflowTemplateList { templates: crate::workflow_templates::templates(&context) })
 }
 
+/// The model a workflow on `harness` starts on: the fast tier's resolution,
+/// when the harness lists it. Right after launch the resolution can still be a
+/// static alias (`haiku`) that the loaded catalog does not list, and saving
+/// then refuses it; the catalog's own fast default stands in.
+pub(crate) fn workflow_default_model(resolved: Option<String>, models: &[crate::model::ModelOption]) -> Option<String> {
+    let listed = |id: &str| models.iter().any(|model| model.id == id);
+    match resolved {
+        Some(model) if models.is_empty() || listed(&model) => Some(model),
+        _ => models
+            .iter()
+            .find(|model| model.tier == CapabilityTier::Fast && model.default_for_tier && model.available && model.compatible)
+            .or_else(|| models.iter().find(|model| model.tier == CapabilityTier::Fast && model.available && model.compatible))
+            .or_else(|| models.iter().find(|model| model.available && model.compatible))
+            .map(|model| model.id.clone()),
+    }
+}
+
 /// What each registered harness may run as a workflow, by the same gate
 /// validation applies.
 pub(crate) fn workflow_harness_options(core: &Arc<BridgeCore>) -> Vec<wire::WorkflowHarnessOption> {
@@ -7444,11 +7461,8 @@ pub(crate) fn workflow_harness_options(core: &Arc<BridgeCore>) -> Vec<wire::Work
         .into_iter()
         .map(|descriptor| {
             let gate = crate::briefing_policy::adapter_may_brief(&descriptor.id);
-            let default_model = core
-                .adapter_registry
-                .resolve_model(&descriptor.id, CapabilityTier::Fast, None)
-                .ok()
-                .map(|resolution| resolution.actual_model);
+            let resolved = core.adapter_registry.resolve_model(&descriptor.id, CapabilityTier::Fast, None).ok().map(|resolution| resolution.actual_model);
+            let default_model = workflow_default_model(resolved, &descriptor.models);
             wire::WorkflowHarnessOption {
                 connectors_allowed: gate.is_ok(),
                 // Validation refuses every workflow, worktree jobs included,
@@ -7592,11 +7606,11 @@ fn workflow_draft_context(core: &Arc<BridgeCore>, servers: Vec<wire::WorkflowSer
         servers,
         timezone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()),
         harness: "claude".into(),
-        model: core
-            .adapter_registry
-            .resolve_model("claude", CapabilityTier::Fast, None)
-            .map(|resolution| resolution.actual_model)
-            .unwrap_or_else(|_| "haiku".into()),
+        model: {
+            let resolved = core.adapter_registry.resolve_model("claude", CapabilityTier::Fast, None).ok().map(|resolution| resolution.actual_model);
+            let models = core.adapter_registry.descriptors().into_iter().find(|descriptor| descriptor.id == "claude").map(|descriptor| descriptor.models).unwrap_or_default();
+            workflow_default_model(resolved, &models).unwrap_or_else(|| "haiku".into())
+        },
     }
 }
 
@@ -9376,5 +9390,36 @@ mod apps_tests {
         assert_eq!(trails_badge(&core), Some(0), "a memory hint does not derive trail summaries");
         core.events.publish(CoreEvent::TrailsChanged(wire::TrailsChanged { trail_id: None, added: Vec::new() }));
         assert_eq!(trails_badge(&core), Some(1), "trails/changed recomputes it");
+    }
+}
+
+#[cfg(test)]
+mod workflow_default_model_tests {
+    use super::*;
+
+    fn model(id: &str, tier: CapabilityTier, default_for_tier: bool) -> crate::model::ModelOption {
+        crate::model::ModelOption {
+            id: id.into(),
+            label: id.into(),
+            tier,
+            available: true,
+            compatible: true,
+            lifecycle: crate::model::ModelLifecycle::Stable,
+            source: crate::model::ModelCatalogSource::CuratedFallback,
+            supported_effort_levels: Vec::new(),
+            speed_tiers: Vec::new(),
+            default_for_tier,
+        }
+    }
+
+    #[test]
+    fn a_workflow_starts_on_a_model_its_harness_lists() {
+        let catalog = [model("claude-sonnet-5-5", CapabilityTier::Standard, true), model("claude-haiku-4-5", CapabilityTier::Fast, false), model("claude-haiku-5-5", CapabilityTier::Fast, true)];
+        assert_eq!(workflow_default_model(Some("claude-haiku-5-5".into()), &catalog).as_deref(), Some("claude-haiku-5-5"));
+        // Right after launch: a static alias the loaded catalog does not list.
+        assert_eq!(workflow_default_model(Some("haiku".into()), &catalog).as_deref(), Some("claude-haiku-5-5"), "the catalog's fast default");
+        assert_eq!(workflow_default_model(None, &catalog[..2]).as_deref(), Some("claude-haiku-4-5"), "else any fast model");
+        assert_eq!(workflow_default_model(None, &catalog[..1]).as_deref(), Some("claude-sonnet-5-5"), "else any model");
+        assert_eq!(workflow_default_model(Some("haiku".into()), &[]).as_deref(), Some("haiku"), "no catalog to check against");
     }
 }
