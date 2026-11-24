@@ -28,12 +28,19 @@ export function composeEventTrigger(fields: { event: WorkflowEventKind; repo: st
   };
 }
 
-/** "Would have run 4 times in the last 7 days." */
-export function previewSentence(preview: WorkflowTriggerPreview): string {
+/** "Would have run 4 times in the last 7 days." In batch mode the count is of
+ * events, which are collected into one run per slot, not of runs. */
+export function previewSentence(preview: WorkflowTriggerPreview, collected = false): string {
   if (!preview.supported) return preview.reason ?? "Bridge cannot read this yet.";
   const atLeast = preview.note?.startsWith("At least") ? "at least " : "";
+  const days = `in the last ${preview.windowDays} days`;
+  if (collected) {
+    if (preview.matches === 0) return `No matching events ${days}.`;
+    const count = `${atLeast ? "At least " : ""}${preview.matches} matching event${preview.matches === 1 ? "" : "s"}`;
+    return `${count} ${days}, collected into one run per scheduled time.`;
+  }
   const times = preview.matches === 1 ? "once" : `${atLeast}${preview.matches} times`;
-  return preview.matches === 0 ? `Would not have run in the last ${preview.windowDays} days.` : `Would have run ${times} in the last ${preview.windowDays} days.`;
+  return preview.matches === 0 ? `Would not have run ${days}.` : `Would have run ${times} ${days}.`;
 }
 
 /** The batch schedules the editor offers; a saved one keeps its own. */
@@ -230,7 +237,7 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
           <div aria-live="polite" className="rounded-lg bg-muted px-2.5 py-2 text-caption text-muted-foreground">
             {!shown ? (previewing ? <span className="inline-flex items-center gap-1.5"><LoaderCircle className="animate-spin" size={11}/>Checking the last week…</span> : null)
               : <>
-                <p className={shown.supported ? "text-foreground" : ""}>{previewSentence(shown)}</p>
+                <p className={shown.supported ? "text-foreground" : ""}>{previewSentence(shown, collect)}</p>
                 {shown.note && <p className="mt-0.5">{shown.note}</p>}
                 {shown.samples.length > 0 && <ul aria-label="Recent events" className="mt-1.5 space-y-0.5 contain-inline-size">{shown.samples.slice(0, 3).map(sample => <li key={sample.key} className="truncate">{sample.title}</li>)}</ul>}
               </>}

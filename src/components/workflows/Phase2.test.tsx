@@ -35,6 +35,17 @@ function change(element: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElem
   element.dispatchEvent(new Event(element instanceof HTMLSelectElement ? "change" : "input", { bubbles: true }));
 }
 
+describe("the preview sentence", () => {
+  it("counts events, not runs, when they are collected", () => {
+    const preview = { supported: true, reason: null, windowDays: 7, matches: 30, samples: [], note: null };
+    expect(previewSentence(preview)).toBe("Would have run 30 times in the last 7 days.");
+    expect(previewSentence(preview, true)).toBe("30 matching events in the last 7 days, collected into one run per scheduled time.");
+    expect(previewSentence({ ...preview, note: "At least 30: …" }, true)).toBe("At least 30 matching events in the last 7 days, collected into one run per scheduled time.");
+    expect(previewSentence({ ...preview, matches: 1 }, true)).toBe("1 matching event in the last 7 days, collected into one run per scheduled time.");
+    expect(previewSentence({ ...preview, matches: 0 }, true)).toBe("No matching events in the last 7 days.");
+  });
+});
+
 describe("format", () => {
   it("says an event trigger as a person would", () => {
     expect(triggerSummary({ kind: "event", event: "slack_mention" })).toBe("When I'm mentioned in Slack");
@@ -112,6 +123,17 @@ describe("the editor's event trigger", () => {
     const submitted = onSubmit.mock.calls[0][0];
     expect(submitted.definition.trigger).toMatchObject({ event: "slack_direct_message" });
     expect(submitted.event.key).toBe("sample:slack_direct_message");
+  });
+
+  it("counts collected events in the editor's preview", async () => {
+    const options = await bridgeApi.workflowOptions();
+    await act(async () => root.render(<WorkflowEditor open workflow={null} options={options} projects={[]} busy={false} error={null} onCancel={() => {}} onSubmit={() => {}}/>));
+    change(field<HTMLSelectElement>("Workflow schedule"), "event");
+    await settle(500);
+    expect(document.body.textContent).toContain("Would have run 4 times in the last 7 days.");
+    await act(async () => field<HTMLInputElement>("Collect them and run at a set time").click());
+    await settle(500);
+    expect(document.body.textContent).toContain("4 matching events in the last 7 days, collected into one run per scheduled time.");
   });
 
   it("keeps a saved batch schedule it offers no preset for", async () => {
