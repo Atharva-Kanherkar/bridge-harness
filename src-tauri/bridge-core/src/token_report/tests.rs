@@ -574,6 +574,32 @@ fn each_item_counts_once_per_kind_with_its_largest_estimate() {
 }
 
 #[test]
+fn each_recorded_orchestrator_briefing_counts_once_per_entry() {
+    let w = world();
+    w.chat("chat-a");
+    for bytes in [40, 60] {
+        crate::store::session_event(
+            &w.db,
+            "chat-a",
+            &crate::agent::NormalizedEvent {
+                kind: "session.context".into(),
+                item_id: Some("orchestrator-briefing".into()),
+                role: Some("system".into()),
+                status: Some("ready".into()),
+                title: None,
+                text: Some("x".repeat(bytes)),
+                data: json!({}),
+            },
+            &json!({}),
+        )
+        .unwrap();
+    }
+    let tokens = w.one("chat-a");
+    assert_eq!(class(&tokens, Bridge), 25);
+    assert_eq!(tokens.total, 25);
+}
+
+#[test]
 fn a_null_estimate_falls_back_to_entry_tokens() {
     let w = world();
     w.chat("chat-a");

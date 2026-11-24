@@ -666,10 +666,11 @@ fn count_session(db: &Connection, session: &str, prefix: i64) -> Result<Counted,
         let payload = text_at(row, 5)?
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
             .unwrap_or(Value::Null);
-        let key = match (item, event) {
-            (Some(item), _) => ItemKey::Call(item),
-            (None, Some(event)) => ItemKey::Event(event),
-            (None, None) => ItemKey::Entry(id),
+        let key = match (kind.as_str(), item, event) {
+            ("session.context", Some(item), _) if item == "orchestrator-briefing" => ItemKey::Entry(id),
+            (_, Some(item), _) => ItemKey::Call(item),
+            (_, None, Some(event)) => ItemKey::Event(event),
+            (_, None, None) => ItemKey::Entry(id),
         };
         let tokens = stored.or_else(|| entry_tokens::estimate(&kind, &payload));
         let start = kind.ends_with(".started");
