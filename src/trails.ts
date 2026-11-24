@@ -137,3 +137,36 @@ export function memberNoun(ref: TrailMemberRef): string {
     case "issue": return "issue";
   }
 }
+
+/** What a brief item is, from its id's prefix (`pr:https://…`, `chat:session-1`). */
+export type BriefKind = "issue" | "note" | "pullRequest" | "chat" | "message" | "other";
+
+export function briefKind(id: string): BriefKind {
+  const prefix = id.slice(0, id.indexOf(":"));
+  switch (prefix) {
+    case "issue": return "issue";
+    case "note": return "note";
+    case "pr": return "pullRequest";
+    case "chat": return "chat";
+    case "message": return "message";
+    default: return "other";
+  }
+}
+
+/** The newest `count` events, newest first; a removal record is not news. */
+export function latestEvents(events: readonly TrailEvent[], count: number): TrailEvent[] {
+  const latest: TrailEvent[] = [];
+  for (let index = events.length - 1; index >= 0 && latest.length < count; index--) {
+    if (events[index].kind !== "removed") latest.push(events[index]);
+  }
+  return latest;
+}
+
+/** Each chat's trail, the first in list order winning, as `trailForSession` picks. */
+export function trailsBySession(trails: readonly TrailSummary[]): Map<string, TrailSummary> {
+  const bySession = new Map<string, TrailSummary>();
+  for (const trail of trails) {
+    for (const sessionId of trail.sessionIds) if (!bySession.has(sessionId)) bySession.set(sessionId, trail);
+  }
+  return bySession;
+}
