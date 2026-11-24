@@ -127,7 +127,7 @@ await waitFor(async () => { try { return (await fetch(origin)).ok; } catch { ret
 
 const openReviews = async page => {
   await page.getByText("Apps", { exact: true }).first().click({ timeout: 30_000 });
-  await page.getByRole("button", { name: /^Reviews/ }).first().click({ timeout: 15_000 });
+  await page.getByText("Reviews", { exact: true }).first().click({ timeout: 15_000 });
   await page.getByRole("heading", { name: "Reviews", exact: true }).waitFor({ timeout: 30_000 });
 };
 const tileText = async (page, label) => (await page.locator(`[data-tile="${label}"]`).innerText()).replace(/\s+/g, " ");
@@ -145,10 +145,15 @@ try {
     await page.locator('[data-tile="Reviews"]').waitFor();
     await page.waitForFunction(() => document.querySelector('[data-tile="Reviews"]')?.textContent?.includes("4"));
 
-    // The numbers the store holds.
-    assert.match(await tileText(page, "Reviews"), /Reviews 4 .*2 posted · 1 waiting · 1 failed/);
+    // The numbers the store holds (the dark pass runs after the light pass posted).
+    if (scheme === "light") {
+      assert.match(await tileText(page, "Reviews"), /Reviews 4 .*2 posted · 1 waiting · 1 failed/);
+      assert.match(await tileText(page, "Kept"), /Kept 67% 2 of 3 decided/);
+    } else {
+      assert.match(await tileText(page, "Reviews"), /Reviews 4 .*3 posted · 1 failed/);
+      assert.match(await tileText(page, "Kept"), /Kept 75% 3 of 4 decided/, "the finding kept in the light pass counts");
+    }
     assert.match(await tileText(page, "Findings"), /Findings 5 .*1 both reviewers flagged/);
-    assert.match(await tileText(page, "Kept"), /Kept 67% 2 of 3 decided/);
     assert.match(await tileText(page, "Fixed later"), /Fixed later 1/);
     assert.match(await tileText(page, "Spend"), /\$2\.69/);
     const repositories = await page.locator('select[aria-label="Repository"] option').allInnerTexts();
@@ -176,8 +181,8 @@ try {
       await page.locator('[aria-label="Needs you"] [data-open-job="draft"]').click();
       const sheet = page.locator('[data-review-detail="draft"]');
       await sheet.waitFor();
+      await sheet.getByText(/Looks mostly fine/).waitFor({ timeout: 15_000 });
       assert.match(await sheet.innerText(), /Changes requested/);
-      assert.match(await sheet.innerText(), /Looks mostly fine/);
       const agreed = sheet.locator('[data-finding="draft-f0"]');
       await agreed.waitFor();
       assert.match(await agreed.innerText(), /Both reviewers/);
