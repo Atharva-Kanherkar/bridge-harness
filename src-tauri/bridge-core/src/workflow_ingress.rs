@@ -114,9 +114,10 @@ pub fn prompt(family: ConnectorFamily, scope: &str) -> String {
         ),
         ConnectorFamily::Notion => (
             "Find the Notion database named below and list its 30 newest pages by creation time. Search for the \
-             database by name; fetch it once to read its data source, the `collection://…` URL in its \
-             `<data-source>` tag (the database's own id is not that URL); then query that data source for its \
-             newest pages. Do not open each page. Three or four tool calls are enough.",
+             database by name and fetch it once. Then list its pages with the data source query tool, by the \
+             data source URL the fetch shows (`collection://…`) or, when it shows none, by its view URL \
+             (`view://…`). The database's own id is not a data source URL. Do not open each page. Four tool calls \
+             are enough.",
             "the page id",
             "the page title",
             "who created the page",
