@@ -82,3 +82,34 @@ harnesses review one fixture with one obvious bug and one style issue, in
 parallel, through the real session and the real merge. Passes only if the bug
 appears exactly once, with `agreed_by = 2`, ranked first. Saves both raw answers
 and the score. Run on several harness pairs, more than once each.
+
+## Amendment after the first live runs (before changing the matcher)
+
+Five live pairs (Claude+Codex twice, Codex+OpenCode GPT-5.5, Claude+OpenCode GLM,
+Claude+OpenCode GPT-5.5): every reviewer found the bug, and the issue's rule merged
+none of them.
+- Titles almost never share words: "Reject indices equal to the slice length" and
+  "Fix off-by-one bounds check in get" are one finding at one line (title overlap 0).
+  Title overlap reached 0.5 for no true pair.
+- Claude gives the last line of the block (`line` 12 for an `if` on line 8) without a
+  `start_line`, so its findings sit 4 lines from the others'.
+- The bodies agree: they quote the same code (`index == items.len()`, `items[index]`).
+
+Measured over every cross-reviewer pair: true pairs (the bug, and both naming
+findings) have quoted-code overlap 0.29 to 0.86 and title+body word overlap 0.21 to
+0.42; different findings (bug against naming, "No tests" 3 lines from the bug) have at
+most 0.08 and 0.14.
+
+So the rule becomes:
+- Candidates: same `path`, ranges no more than **6** lines apart.
+- Match when fingerprints are equal, or title-word overlap >= 0.5, or **quoted-code
+  overlap** (backticked spans in title and body, whitespace removed) >= 0.25, or
+  **title+body word overlap** >= 0.3.
+- Best pair first: equal fingerprint, then the highest of the three overlaps, then
+  nearer lines.
+
+Tests added: `quoted_code_in_the_bodies_merges` and `four_lines_apart_merge_when_the_bodies_agree`
+(the real Codex/GPT-5.5 and Claude/Codex pairs, word for word), `a_test_gap_finding_near_the_bug_stays_separate`
+and `naming_and_the_bug_stay_separate` (the real negatives), `seven_lines_apart_stay_separate`
+(replaces `four_lines_apart_stay_separate`). The live eval is then rerun on fresh runs the
+thresholds were not chosen on.
