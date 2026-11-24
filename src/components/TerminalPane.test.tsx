@@ -301,6 +301,15 @@ describe("TerminalPane runs from the chat", () => {
     expect(focused).toHaveLength(1);
   });
 
+  it("still opens a shell and takes runs when the shell list fails", async () => {
+    api.listTerminals.mockRejectedValue(new Error("list failed"));
+    await mount();
+    expect(opened()).toEqual(["t1"]);
+    const result = await settled(requestTerminalRun(ws, "claude mcp add demo"));
+    expect(writesTo("t1")).toEqual(["claude mcp add demo\r"]);
+    expect(result).toEqual({ shell: "shell 1" });
+  });
+
   it("runs in the active shell, not the first one", async () => {
     api.listTerminals.mockResolvedValue(["t1", "t2"]);
     await mount();
