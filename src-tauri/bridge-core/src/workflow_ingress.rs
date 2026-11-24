@@ -153,8 +153,12 @@ pub fn prompt(family: ConnectorFamily, scope: &str) -> String {
 /// provider's id or a readable time is dropped, never guessed.
 pub fn parse(family: ConnectorFamily, scope: &str, output: &str) -> Result<Vec<wire::WorkflowEventSample>, String> {
     let kind = event_kind(family).ok_or_else(|| format!("{} has no event ingress", family.display_name()))?;
-    let payload = crate::connector_runs::extract_fenced(output, FENCE)
-        .ok_or_else(|| short(&format!("the read did not return a fenced item list: {}", output.trim()), 200))?;
+    // Without the block the turn says why in its own words (a database it
+    // could not find), and that is what the person needs to read.
+    let payload = crate::connector_runs::extract_fenced(output, FENCE).ok_or_else(|| match short(output.trim(), 200) {
+        reason if reason.is_empty() => "the read returned nothing".to_owned(),
+        reason => reason,
+    })?;
     let value: Value = serde_json::from_str(payload.trim()).map_err(|_| "the read returned malformed JSON".to_owned())?;
     let items = value.get("items").and_then(Value::as_array).ok_or_else(|| "the read returned no item list".to_owned())?;
     let text = |item: &Value, key: &str| item.get(key).and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned);

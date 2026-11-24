@@ -117,7 +117,8 @@ fn a_read_keeps_only_items_with_an_id_and_a_time() {
     assert_eq!(notion[0].key, "notion:1f2a3b");
     assert_eq!(notion[0].payload["database"], json!("Roadmap"), "the scope it was read for");
 
-    assert!(parse(ConnectorFamily::Gmail, "", "I could not find any emails.").unwrap_err().contains("fenced"));
+    assert_eq!(parse(ConnectorFamily::Notion, "tasks", "I couldn't find a database named Tasks.").unwrap_err(), "I couldn't find a database named Tasks.");
+    assert_eq!(parse(ConnectorFamily::Gmail, "", "   ").unwrap_err(), "the read returned nothing");
     assert_eq!(parse(ConnectorFamily::Gmail, "", &format!("```{FENCE}\nnot json\n```")).unwrap_err(), "the read returned malformed JSON");
     assert!(parse(ConnectorFamily::Slack, "", &output).is_err(), "Slack has its own Inbox ingress");
 }
