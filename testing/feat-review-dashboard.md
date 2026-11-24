@@ -63,3 +63,10 @@ two repositories; the dashboard lists both, its numbers match, a draft is kept a
 from the dashboard through the fake `gh`; light and dark screenshots.
 
 Live: the dashboard over the real reviews of PR #1133 from the live QA run, screenshotted.
+
+## Amendment from the live QA run (before the fix)
+
+A drafted job has no `finished_at` (it waits for a person), so "finished minus started"
+gave no median for drafts. `medianSeconds` is the time from the job's start to its last
+finished pass; a posted job's later post time does not count. The overview tests now seed
+jobs the way the store leaves them (no finish time on a draft).
