@@ -86,3 +86,23 @@ GitHub baseline.
 ## Manual / cURL
 
 N/A: no HTTP endpoint changes.
+
+## Review fixes (PR #1134 review)
+
+Each finding gets its own commit and a regression test that fails without the fix.
+
+| # | Finding | Decision | Test |
+| --- | --- | --- | --- |
+| R1 | Slack ingress never fed the workflow ledger: `observe_inbox` had no production caller, so Slack triggers never fired. | `poll_claimed` offers every fresh arrival to the ledger inside the same store lock that records it. `observe_inbox` takes Slack items only, so the poller stays family-agnostic. | E5 goes through `connectors/connector_refresh`: the fake SDK answers the ingress prompt with a mention, and the workflow runs it. |
+| R2 | A run resumed from `waiting_approval` went back to `running` without a slot, so two runs could run under a cap of 1. | A run waiting for an approval keeps its slot: `running_count` counts `running` and `waiting_approval`. The answer resumes the agent at once, so the slot cannot be lent out meanwhile. (Amends P3.) | cap 1: A waits for approval, B reserves and is queued, A resumes, and one run is running. |
+| R3 | Background badge reads counted as viewing the Inbox and kept paid polling alive. | `connectors/connector_inbox` gains `viewing` (default false). Only the Inbox pane sends `true`; the app's badge read does not. | Rust: a read without `viewing` leaves the poller unviewed. Vitest: the pane sends `viewing: true` and the badge does not. |
+| R4 | A failed probe's refresh claim was taken and dropped, so the cache never retried. | Settling a probe's answer reads it without claiming a refresh. | After a failed probe, the next read claims a refresh. |
+| R5 | A failed probe made every granted connector `missing`, and runs failed fast for no known reason. | An unusable answer is unknown: every state is `unknown` and nothing fails fast. | `connector_states` and `unavailable_summary` on a failed answer. |
+| R6 | "Dry run on the latest event" claimed the pending ledger row, so a batch lost that event. | Only event occasions claim ledger rows. A dry run carrying a sample leaves them pending. | A pending event stays pending after a preview dry run on it. |
+| R7 | Pending rows from an earlier listener (another repository, channel or event) ran under the new one. | Before choosing an occasion, a pending row observed before the current anchor, or no longer matching the trigger, is retired as seen (`baseline`). | An `acme/app` issue left pending, then a trigger on `acme/web`: no occasion, and the row is retired. |
+| R8 | A paused, then resumed review-request source fired requests that arrived while paused. | The source digest includes the listener's anchor, so any new anchor re-baselines the source. | Baseline, pause, a new request, resume, poll: nothing is recorded. |
+| R9 | More than 30 new PRs or issues between polls lost the oldest for good. | When a full page is all newer than the newest event already seen, the read is repeated with a larger limit (100, 300, then 1,000) until it reaches that watermark. Review requests read 100. | 31 new PRs after a baseline: all 31 are recorded. |
+| R10 | Saving a weekly, hourly or custom batch schedule rewrote it to daily. | The batch schedule offers every preset (every day, weekdays, a weekday, every hour, custom cron) and starts from the saved cron. | Weekly and `*/15` batches saved unchanged keep their cron. |
+| R11 | A preview sample from the previous trigger could be sent with a changed trigger. | A preview is kept with the trigger it answered. Only that trigger's sample is offered, and dry run waits while the preview loads. | Mention to DM, then dry run: never sent with the mention. |
+| R12 | Batch mode said "would have run N times" when N counted events, not runs. | In batch mode the preview counts matching events and says they are collected into one run per slot. | `previewSentence` in batch mode. |
+| R13 | Protocol 1.52 on both sides let old clients pair and crash on event results, while new clients got `method_not_found`. | Protocol 1.53. A 1.53 daemon refuses older clients, since they cannot read event triggers; a 1.52 daemon already refuses a 1.53 client. | `handshake` tests in both directions. |
