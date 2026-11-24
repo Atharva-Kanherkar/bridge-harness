@@ -44,19 +44,22 @@ This PR measures how much of the main window comes from file reads and searches.
 
 ### The shell rule
 
-- The rule unwraps `sh`, `bash` or `zsh` (with a path or without one) with `-c`, `-lc` or `-cl` one time. It accepts a string or an argv array.
+- Both shell rules accept a bare program name or an absolute program path directly in `/bin`, `/usr/bin`, `/usr/local/bin` or `/opt/homebrew/bin`. This applies to sources, filters and wrappers. A relative program path or any other absolute program path gives `shell` with no `shellRead` credit.
+- The strict rule unwraps `sh`, `bash` or `zsh` with `-c`, `-lc` or `-cl` one time. It accepts a string or an argv array.
 - A command text with any of these characters is `shell`: `|`, `&`, `;`, `<`, `>`, `(`, `)`, `$`, a backtick, a newline. Quotes do not change this.
-- A text that `shell_words::split` cannot split is `shell`. An empty command is `shell`. A first word of the form `NAME=value` is `shell`.
+- In argv without a wrapper, the same character check applies to each word.
+- A text that `shell_words::split` cannot split is `shell`. An empty command is `shell`. A first word of the form `NAME=value` or `NAME+=value` is `shell`.
 - Read programs:
   - `cat`, `head`, `tail`, `nl`, `wc`
   - `sed -n` with one script of the form `<N>p` or `<N>,<M>p`, plus paths
   - `git show`, `git diff`, `git log`, `git blame`, with no argument that starts with `--output`
+  - `git show`, `git diff` and `git log` also reject `--ext-diff` and `--textconv`.
 - Search programs:
   - `rg` with no argument that starts with `--pre`
   - `grep`, `ls`
   - `fd` with no `-x`, `-X`, `--exec` or `--exec-batch`
   - `find` with no `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fprintf` or `-fls`
-  - `git grep`, `git ls-files`
+  - `git grep`, `git ls-files`. `git grep` rejects a short option with `O` and `--open-files-in-pager`, with or without a value.
 - Any other program is `shell`.
 
 ### The read-only shell rule
@@ -67,18 +70,28 @@ pipeline = source {"|" filter}
 ```
 
 - Apply this rule only to a group in `shell`. Use the command from the same row that supplies the class.
-- Split at `&&`, `;` and `|` only outside quotes. Each segment must pass `shell_words::split`. A `cd` directory must be literal, nonempty and free of a first hyphen.
+- Split at `&&`, `;` and `|` only outside quotes. Each segment must pass `shell_words::split`. A `cd` directory must be literal and nonempty. It cannot start with a hyphen or have the form `+N`, where `N` contains only digits.
 - Unwrap one `sh`, `bash` or `zsh` command with exactly three words and `-c`, `-lc` or `-cl`. The rule accepts text or argv. Other argv uses the strict operator check and stays one literal command.
-- Reject empty stages, final separators, assignments, nested wrappers, `||` and a background `&`. Reject redirects, dollar signs, backticks, parentheses, backslashes, carriage returns, newlines and NUL.
+- Reject empty stages, final separators, assignments (`NAME=value` and `NAME+=value`), nested wrappers, `||` and a background `&`. Reject redirects, dollar signs, backticks, parentheses, backslashes, carriage returns, newlines and NUL.
 - Reject unquoted glob, brace, tilde, comment and history syntax. Reject unknown programs and options.
 - Sources are `cat`, `head`, `tail`, `nl`, `wc`, numeric-print `sed`, `rg`, `grep`, `ls`, `fd`, `find` and the Git forms below. The rule checks flags and literal arguments for each program.
 - The first five sources accept file paths and display or count flags. Search sources accept ordinary search flags, such as `grep -rn` or `fd -e EXT`.
-- `find` accepts paths and only `-name`, `-iname`, `-path`, `-type`, `-mindepth`, `-maxdepth` and `-print`.
+- A `head` or `tail` operand cannot start with `+`.
+- `rg` needs a pattern unless it has `--files`. With `--files`, it accepts optional paths and no pattern.
+- `rg` accepts these options:
+  - `-g` or `--glob`, `--iglob`, `-t` or `--type`, and `-T` or `--type-not`, each with a value
+  - `-i`, `-S`, `-s`, `-F`, `-w`, `-x`, `-n`, `-N`, `-l`, `-c`, `-o`, `-v`, `-H`, `--no-filename`
+  - `-A`, `-B`, `-C`, `-m` or `--max-count`, and `--max-depth`, each with a number
+  - `-e` with a pattern
+  - `--hidden`, `--no-ignore`, `-u`, `-uu`, `--no-heading`, `--heading`, `--json`, `--column`, `--trim`
+  - `--color never` and `--sort path`
+- An `rg` long option that takes a value also accepts `--flag=value`. Reject any `rg` option outside the list, such as `-z`, `--search-zip` and `--pre*`.
+- `find` accepts paths and only `-name`, `-iname`, `-path`, `-type`, `-mindepth`, `-maxdepth` and `-print`. Reject `!` in the path list.
 - Git forms are `grep`, `ls-files`, `show REV:path`, `diff --no-ext-diff --no-textconv`, `log` and `blame --no-textconv`. The rule accepts literal operands and a fixed set of options for each form.
-- Reject `tee`, `xargs`, `awk`, `sed -i` and any other `sed` script. Reject `rg --pre*`, the strict rule's `fd` and `find` actions, Git configuration overrides, `git grep -O`, `--open-files-in-pager` and `--output*`.
+- Reject `tee`, `xargs`, `awk`, `sed -i` and any other `sed` script. Reject the strict rule's `fd` and `find` actions, Git configuration overrides, `git grep -O`, `--open-files-in-pager` and `--output*`.
 - The pipe filters are `head`, `tail`, `wc`, `sort`, `uniq`, `cut`, `nl` and `tr`. They accept specific display, comparison, count or selection flags and no file operands.
 - Reject `sort -o`, `sort --compress-program` and any positional `uniq` output file. If any stage fails, the group stays in `shell` and adds 0 to `shellRead`.
-- The rule checks command text. It cannot check executable behavior, local configuration or shell startup files.
+- The rule checks command text only. Executable behavior and local configuration can add effects that the report does not see. Examples include `RIPGREP_CONFIG_PATH`, shell hooks, Git configuration, a pager and a Git index stat refresh.
 
 ### Cohort, recency and forks
 
@@ -109,6 +122,7 @@ pipeline = source {"|" filter}
 - Defaults: cohort `orchestrator`, top 10, since 30 days before today.
 - Each flag can appear one time. The two database flags conflict. `--cohort` and `--session` conflict.
 - An unknown flag, an unknown cohort, a bad date, `--top 0`, a repeat or a conflict causes exit 2 with the usage text.
+- An empty value for `--database`, `--data-dir`, `--session`, `--cohort`, `--since` or `--top` also causes exit 2 with the usage text.
 - Exit 1 with the error text: a report error.
 
 ### Worker start guards
@@ -167,10 +181,12 @@ Shell rule:
 - `known_wrappers_are_unwrapped_once`
 - `argv_commands_follow_the_same_rule`
 - `any_shell_operator_is_shell_even_in_quotes`
+- `an_argv_with_an_operator_character_is_shell`
 - `writes_and_exec_flags_are_shell`
 - `unknown_programs_and_unsplittable_commands_are_shell`
 - `shell_read_recognizes_read_only_compounds`
 - `shell_read_rejects_unsafe_or_unknown_segments`
+- `shell_read_rejects_invalid_command_forms`
 - `shell_read_is_counted_once_with_the_selected_group_class`
 
 Cohort and recency:
@@ -181,6 +197,7 @@ Cohort and recency:
 - `recency_uses_the_last_own_message_not_the_last_entry`
 - `since_changes_the_window`
 - `an_unreadable_timestamp_is_not_recent_and_is_counted`
+- `a_single_session_report_still_counts_an_unreadable_timestamp`
 - `the_session_option_rejects_a_worker`
 
 Forks:
@@ -245,7 +262,10 @@ Output:
 - `live_turn::tests::start_session_reuses_only_direct_and_orchestrator_chats`
 - `policy_coordinator::tests::a_depth_one_session_cannot_delegate_reading`
 - `sidecar/claude-agent/test/read-only.mjs`: `a read-only worker cannot start a Claude subagent`
-- Current tests that stay green: `live_turn::tests::deliver_now_refuses_a_worker_and_launches_nothing`, `live_turn::tests::deliver_now_resumes_an_adapterless_chat`, `live_turn::tests::harness_child_stop_and_parent_stop_keep_siblings_and_the_shared_runtime`, and the sidecar test `the Bridge hook allows local reads and explicitly denies mutation`.
+- `live_turn::submit_input_tests::deliver_now_refuses_a_worker_and_launches_nothing`
+- `live_turn::submit_input_tests::deliver_now_resumes_an_adapterless_chat`
+- `live_turn::permission_policy_tests::harness_child_stop_and_parent_stop_keep_siblings_and_the_shared_runtime`
+- `sidecar/claude-agent/test/read-only.mjs`, `the Bridge hook allows local reads and explicitly denies mutation`
 
 ## Integration / Functional Tests
 
