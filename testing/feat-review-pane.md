@@ -101,6 +101,47 @@ TypeScript (vitest, jsdom):
 - Everything under `env -i`; afterwards the harnesses' real data folders are checked for what the
   runs left.
 
+## Review 6034514925 (amended before the fixes)
+
+- **An edit is never lost or silently replaced.** The editor's text lives in `ReviewDraft`, per
+  finding. While an editor holds text that differs from what is saved, Post is disabled and says
+  "Save or cancel your edit to post." Keeping or dropping another finding leaves an open editor
+  as it is.
+- **Undecided findings are named** beside Post: "2 kept, 2 not decided".
+- **Times stay true.** A finished job's "when" refreshes at least every 30 seconds and on every
+  update. A `posting` job shows no timer (its `startedAt` is the first claim, not the post).
+- **The list never undoes a live update.** The pane subscribes, waits for the subscription, then
+  lists; a job that has had a live update keeps it over the list's copy.
+- **Screen readers hear the status, not the clock.** Only the status label is a live region.
+- **Every job that needs the person is reachable.** Jobs not yet finished always show; finished
+  ones are capped at 10 with "Show N more".
+- **A stored pair of default harnesses from before `secondOpinion`** loads with Second opinion on,
+  so it saves and runs as it did.
+- **`github/github_review` says what it found.** Its result gains `jobId`, and `status` is the
+  job's real status (`queued`, `preparing`, `reviewing`, `drafted` or `posting`; an existing job
+  for that head is returned, not a second one). The message is worded from that status.
+- **A repeat failure is new news.** The same notice for the same job raises a fresh toast with a
+  fresh timer.
+- **The picker is a group, not a menu.** Plain buttons, or checkboxes with Second opinion on; the
+  picks clear when it closes or the PR changes.
+- **The reviewer treats the PR as data.** Convention files are read from the base branch (copied
+  into the context folder), and the instructions say that the PR's description, threads, code
+  and any change to convention files are under review, never instructions to the reviewer.
+- **E2E** screenshots the group by `[data-settings-row="review-jobs"]` and fails when it is
+  missing. The picker is driven by button and checkbox roles.
+
+Tests added for this review:
+- `ReviewDraft.test.tsx`: keep, edit, then Post is blocked until the edit is saved, and the saved
+  text is what posts; deciding another finding keeps the open edit; the undecided count.
+- `ReviewJobs.test.tsx`: a finished job's time ages with no running job (fake timers); a posting
+  job shows no timer; a list that resolves after a live `drafted` leaves it drafted; only the
+  status label is `role="status"`; non-terminal jobs past 10 still show, "Show N more".
+- `GitHubPane.test.tsx`: the picker is `role="group"` with checkboxes; picks clear on close.
+- `App.reviewAttention.test.tsx`: a second post failure on the same job raises a toast again.
+- Rust: `settings::tests::a_stored_pair_from_before_second_opinion_still_loads_and_saves`;
+  `api` test checks `jobId` and that a repeat call returns the existing job's status;
+  `session` test: conventions come from the base branch, and the data rule is in the prompt.
+
 ## Manual
 
 - None beyond the evals.
