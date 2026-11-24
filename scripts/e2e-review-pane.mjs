@@ -112,7 +112,11 @@ try {
     await page.getByRole("button", { name: "GitHub", exact: true }).first().click({ timeout: 30_000 });
     const pane = page.locator("[data-gh-pane-root]");
     await pane.getByText("Changes requested", { exact: true }).first().click({ timeout: 30_000 });
-    const shot = async name => pane.screenshot({ path: path.join(out, `${scheme}-${name}.png`) });
+    const shot = async name => {
+      const section = pane.getByRole("region", { name: "Reviews" });
+      if (await section.count()) await section.scrollIntoViewIfNeeded();
+      await pane.screenshot({ path: path.join(out, `${scheme}-${name}.png`) });
+    };
 
     // Review with Claude: a job appears in Reviews and runs on its own. Jobs
     // an earlier pass left load first, so the new one can be told apart.
