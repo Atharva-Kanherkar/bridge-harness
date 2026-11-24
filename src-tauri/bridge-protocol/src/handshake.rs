@@ -207,9 +207,18 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.53 adds review triage and posting**: `reviews/decide_review`,
 /// `reviews/post_review`, and `ReviewFinding.decidedAt`. A 1.52 client still
 /// pairs: it never calls them, and the new field is optional.
+///
+/// **1.54 adds event workflows**: the `event` workflow trigger (in summaries,
+/// definitions and runs), queue and connector fields on workflow summaries and
+/// settings, `viewing` on `connectors/connector_inbox`, and
+/// `workflows/preview_workflow_trigger`, `workflows/list_workflow_templates`
+/// and `workflows/refresh_workflow_connectors`. A 1.54 daemon refuses older
+/// clients: they cannot read an event trigger, and would fail on the first
+/// workflow list that holds one. A 1.54 client cannot pair with a 1.53 daemon,
+/// which lacks the new methods.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 53,
+    minor: 54,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -228,6 +237,7 @@ impl ProtocolVersion {
         const OUTGOING_SEND_MINOR: u32 = 32;
         const TRAILS_MINOR: u32 = 33;
         const TRAIL_ISSUES_MINOR: u32 = 35;
+        const WORKFLOW_EVENTS_MINOR: u32 = 54;
         self.major == client.major
             && client.minor <= self.minor
             && !(self.major == 1
@@ -245,6 +255,9 @@ impl ProtocolVersion {
             && !(self.major == 1
                 && self.minor >= TRAIL_ISSUES_MINOR
                 && (TRAILS_MINOR..TRAIL_ISSUES_MINOR).contains(&client.minor))
+            && !(self.major == 1
+                && self.minor >= WORKFLOW_EVENTS_MINOR
+                && client.minor < WORKFLOW_EVENTS_MINOR)
     }
 }
 
@@ -535,7 +548,8 @@ mod tests {
         let before = ProtocolVersion { major: 1, minor: 45 };
         let tools = ProtocolVersion { major: 1, minor: 46 };
         assert!(tools.accepts(before), "a 1.45 client still pairs with a 1.46 daemon");
-        assert!(PROTOCOL_VERSION.accepts(before));
+        // ...and with every daemon up to 1.52; 1.53 refuses it (event workflows).
+        assert!(ProtocolVersion { major: 1, minor: 52 }.accepts(before));
         assert!(!before.accepts(tools), "a 1.46 client needs the tool methods");
     }
 
@@ -585,14 +599,23 @@ mod tests {
         let early = ProtocolVersion { major: 1, minor: 52 };
         assert!(!before.accepts(early), "a 1.52 client needs the switch methods");
         assert!(early.accepts(before), "a 1.51 client still pairs with a 1.52 daemon");
-        assert!(PROTOCOL_VERSION.accepts(before));
+    }
+
+    #[test]
+    fn event_workflows_pair_only_with_a_matching_daemon_and_client() {
+        let before = ProtocolVersion { major: 1, minor: 53 };
+        let events = ProtocolVersion { major: 1, minor: 54 };
+        assert_eq!(PROTOCOL_VERSION, events);
+        assert!(!events.accepts(before), "a 1.53 client cannot read an event trigger in a workflow list");
+        assert!(!before.accepts(events), "a 1.54 client needs the preview, template and refresh methods");
+        assert!(events.accepts(events));
+        assert!(!PROTOCOL_VERSION.accepts(ProtocolVersion { major: 1, minor: 17 }), "older clients stay refused");
     }
 
     #[test]
     fn a_1_52_client_pairs_with_a_daemon_that_posts_reviews() {
         let before = ProtocolVersion { major: 1, minor: 52 };
         let posting = ProtocolVersion { major: 1, minor: 53 };
-        assert_eq!(PROTOCOL_VERSION, posting);
         assert!(posting.accepts(before), "a 1.52 client never decides or posts a review");
         assert!(!before.accepts(posting));
     }
@@ -683,7 +706,9 @@ mod tests {
     #[test]
     fn a_trails_daemon_still_serves_a_client_without_trails() {
         let without_trails = ProtocolVersion { major: 1, minor: 32 };
-        assert!(PROTOCOL_VERSION.accepts(without_trails), "a 1.32 client pairs and never shows trails");
+        // The last daemon that served it; 1.53 refuses it (event workflows).
+        let last = ProtocolVersion { major: 1, minor: 52 };
+        assert!(last.accepts(without_trails), "a 1.32 client pairs and never shows trails");
         assert!(!without_trails.accepts(PROTOCOL_VERSION), "a trails client needs a daemon that serves trails");
     }
 
