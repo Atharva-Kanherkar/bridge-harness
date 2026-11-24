@@ -1819,6 +1819,8 @@ function mockTriggerPreview(trigger: WorkflowTrigger): WorkflowTriggerPreview {
   if (trigger.kind !== "event") return { supported: false, reason: "Only an event trigger has a preview", windowDays: 7, matches: 0, samples: [], note: null };
   const github = trigger.event.startsWith("github_");
   if (github && trigger.event !== "github_review_requested" && !trigger.repo) return { supported: false, reason: "Choose the repository to watch, as owner/name", windowDays: 7, matches: 0, samples: [], note: null };
+  const app = trigger.event.startsWith("gmail_") ? "Gmail" : trigger.event.startsWith("linear_") ? "Linear" : trigger.event.startsWith("notion_") ? "Notion" : null;
+  if (app) return { supported: true, reason: null, windowDays: 7, matches: 0, samples: [], note: `Bridge has not read ${app} yet. Once a workflow listens for it, Bridge reads ${app} every five minutes and counts what it finds here.` };
   const now = Date.now();
   const sample = (index: number): WorkflowEventSample => github
     ? { key: `github:pr:${trigger.repo ?? "acme/app"}#${40 + index}`, kind: trigger.event, title: `${trigger.repo ?? "acme/app"}#${40 + index} · Tidy the retry logic`, url: `https://github.com/${trigger.repo ?? "acme/app"}/pull/${40 + index}`, occurredAt: new Date(now - index * 86_400_000).toISOString(), payload: { number: 40 + index } }
