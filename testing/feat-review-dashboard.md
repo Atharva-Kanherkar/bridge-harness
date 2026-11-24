@@ -70,3 +70,12 @@ A drafted job has no `finished_at` (it waits for a person), so "finished minus s
 gave no median for drafts. `medianSeconds` is the time from the job's start to its last
 finished pass; a posted job's later post time does not count. The overview tests now seed
 jobs the way the store leaves them (no finish time on a draft).
+
+## Amendment before the UI: filter by repository
+
+Several worktrees (workspaces) share one repository, so a per-workspace filter would split
+one repository's reviews. `ReviewOverviewParams.workspaceId` becomes `repository`
+(`owner/name`, matched case-insensitively); `workspace_filter_limits_everything` becomes
+`repository_filter_limits_everything`, with two workspaces of one repository counted
+together. The overview also lists `repositories`: every `owner/name` with reviews, for the
+filter's options.

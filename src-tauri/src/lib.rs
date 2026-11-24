@@ -1087,11 +1087,11 @@ async fn start_review(
 #[tauri::command]
 async fn review_overview(
     days: Option<u32>,
-    workspace_id: Option<String>,
+    repository: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::ReviewOverview, BridgeError> {
     let core = state.inner().clone();
-    blocking("Reviews", move || api::review_overview(&core, &bridge_protocol::messages::ReviewOverviewParams { days, workspace_id })).await
+    blocking("Reviews", move || api::review_overview(&core, &bridge_protocol::messages::ReviewOverviewParams { days, repository })).await
 }
 
 #[tauri::command]

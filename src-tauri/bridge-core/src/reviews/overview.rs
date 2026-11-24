@@ -25,7 +25,7 @@ pub fn overview(core: &Arc<BridgeCore>, params: &wire::ReviewOverviewParams) -> 
         Some(days) => return Err(BridgeError::Invalid(format!("days must be 1 to 365, not {days}"))),
     };
     let db = super::lock_db(core);
-    overview_at(&db, since.as_deref(), params.workspace_id.as_deref())
+    overview_at(&db, since.as_deref(), params.repository.as_deref())
 }
 
 /// One job with what it ran and found.
@@ -35,11 +35,19 @@ pub struct Loaded {
     pub findings: Vec<wire::ReviewFinding>,
 }
 
-/// The overview of jobs created at or after `since` (all when absent), in
-/// `workspace` when given. Live jobs are listed whatever their age.
-pub fn overview_at(db: &Connection, since: Option<&str>, workspace: Option<&str>) -> Result<wire::ReviewOverview, BridgeError> {
-    let period = load(db, since, workspace, false)?;
-    let live = load(db, None, workspace, true)?;
+/// The overview of jobs created at or after `since` (all when absent), of
+/// `repository` (`owner/name`) when given. Live jobs are listed whatever
+/// their age.
+pub fn overview_at(db: &Connection, since: Option<&str>, repository: Option<&str>) -> Result<wire::ReviewOverview, BridgeError> {
+    let repository = match repository {
+        None => None,
+        Some(text) => match text.split_once('/') {
+            Some((owner, name)) if !owner.is_empty() && !name.is_empty() => Some((owner, name)),
+            _ => return Err(BridgeError::Invalid(format!("a repository is owner/name, not `{text}`"))),
+        },
+    };
+    let period = load(db, since, repository, false)?;
+    let live = load(db, None, repository, true)?;
     let mut jobs = Vec::new();
     let mut listed = std::collections::HashSet::new();
     // Live first (they need attention), then the period's newest.
@@ -49,18 +57,25 @@ pub fn overview_at(db: &Connection, since: Option<&str>, workspace: Option<&str>
         }
     }
     let (stats, harnesses) = summarize(&period);
-    Ok(wire::ReviewOverview { jobs, stats, harnesses, findings: recent_findings(&period) })
+    let mut statement = db.prepare(
+        "SELECT repo_owner || '/' || repo_name FROM review_jobs GROUP BY lower(repo_owner), lower(repo_name) ORDER BY lower(repo_owner), lower(repo_name)",
+    )?;
+    let repositories = statement.query_map([], |row| row.get(0))?.collect::<Result<Vec<String>, _>>()?;
+    Ok(wire::ReviewOverview { jobs, stats, harnesses, findings: recent_findings(&period), repositories })
 }
 
 const LIVE: &str = "('queued','preparing','reviewing','drafted','posting')";
 
-fn load(db: &Connection, since: Option<&str>, workspace: Option<&str>, live_only: bool) -> Result<Vec<Loaded>, BridgeError> {
+fn load(db: &Connection, since: Option<&str>, repository: Option<(&str, &str)>, live_only: bool) -> Result<Vec<Loaded>, BridgeError> {
     let live = if live_only { format!(" AND status IN {LIVE}") } else { String::new() };
     let mut statement = db.prepare(&format!(
-        "{} WHERE (?1 IS NULL OR created_at>=?1) AND (?2 IS NULL OR workspace_id=?2){live} ORDER BY created_at DESC, rowid DESC",
+        "{} WHERE (?1 IS NULL OR created_at>=?1)
+            AND (?2 IS NULL OR (repo_owner=?2 COLLATE NOCASE AND repo_name=?3 COLLATE NOCASE)){live}
+         ORDER BY created_at DESC, rowid DESC",
         store::SELECT_JOB
     ))?;
-    let rows = statement.query_map(params![since, workspace], store::read_job)?.collect::<Result<Vec<_>, _>>()?;
+    let (owner, name) = repository.unzip();
+    let rows = statement.query_map(params![since, owner, name], store::read_job)?.collect::<Result<Vec<_>, _>>()?;
     rows.into_iter()
         .map(|job| {
             Ok(Loaded { passes: store::passes(db, &job.id)?, findings: store::findings(db, &job.id)?, job })

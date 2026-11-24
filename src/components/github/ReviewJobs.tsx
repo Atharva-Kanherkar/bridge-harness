@@ -3,29 +3,18 @@ import { CircleAlert, CircleCheck, LoaderCircle, RotateCcw, SquareArrowOutUpRigh
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../../api";
 import { relativeTime } from "../workDashboard";
-import type { ReviewJob, ReviewJobStatus, ReviewSeverity } from "../../protocol/generated/protocol";
+import type { ReviewJob, ReviewJobStatus } from "../../protocol/generated/protocol";
 import { ReviewDraft } from "./ReviewDraft";
-import { harnessLabel, SEVERITY_TEXT } from "./reviewLabels";
+import { harnessLabel, REVIEW_STATUS, SEVERITIES, SEVERITY_TEXT } from "./reviewLabels";
 
 // The PR's review jobs, newest first, kept current by `reviews/job_updated`:
 // a review started here, from another window, or while another chat was open
 // shows where it is without a refresh. A draft opens its triage underneath.
 
-const STATUS: Record<ReviewJobStatus, { label: string; tone: "running" | "waiting" | "done" | "failed" | "quiet" }> = {
-  queued: { label: "Queued", tone: "running" },
-  preparing: { label: "Preparing the checkout", tone: "running" },
-  reviewing: { label: "Reviewing", tone: "running" },
-  drafted: { label: "Draft ready", tone: "waiting" },
-  posting: { label: "Posting", tone: "running" },
-  posted: { label: "Posted", tone: "done" },
-  failed: { label: "Failed", tone: "failed" },
-  cancelled: { label: "Cancelled", tone: "quiet" },
-  interrupted: { label: "Interrupted", tone: "failed" },
-};
+const STATUS = REVIEW_STATUS;
 
 const TERMINAL: ReadonlySet<ReviewJobStatus> = new Set(["posted", "failed", "cancelled", "interrupted"]);
 const RETRYABLE: ReadonlySet<ReviewJobStatus> = new Set(["failed", "interrupted", "cancelled"]);
-const SEVERITIES: ReadonlyArray<ReviewSeverity> = ["critical", "major", "minor", "nit"];
 
 /** Is the job still doing something on its own (not waiting for a person)? */
 const running = (job: ReviewJob) => !TERMINAL.has(job.status) && job.status !== "drafted";

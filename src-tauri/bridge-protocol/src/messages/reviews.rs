@@ -476,15 +476,16 @@ pub struct ListReviewsParams {
 }
 
 /// Everything the Reviews dashboard shows, for a period and optionally one
-/// workspace.
+/// repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReviewOverviewParams {
     /// The last this many days, 1 to 365. Absent: all time.
     #[serde(default)]
     pub days: Option<u32>,
+    /// `owner/name`, any case. Every workspace of that repository counts.
     #[serde(default)]
-    pub workspace_id: Option<String>,
+    pub repository: Option<String>,
 }
 
 /// The Reviews dashboard: jobs, stats, one row per reviewer, recent findings.
@@ -498,6 +499,8 @@ pub struct ReviewOverview {
     pub harnesses: Vec<ReviewHarnessStats>,
     /// Findings of the period's jobs, newest first, capped.
     pub findings: Vec<ReviewOverviewFinding>,
+    /// Every `owner/name` with a review, any period, for the filter.
+    pub repositories: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -7154,13 +7154,14 @@ export interface ReviewJobList {
 
 export interface ReviewOverviewParams {
   days?: number | null;
-  workspaceId?: string | null;
+  repository?: string | null;
 }
 
 export interface ReviewOverview {
   findings: ReviewOverviewFinding[];
   harnesses: ReviewHarnessStats[];
   jobs: ReviewJob[];
+  repositories: string[];
   stats: ReviewOverviewStats;
 }
 

@@ -161,16 +161,20 @@ fn a_merged_finding_counts_for_both_harnesses() {
 }
 
 #[test]
-fn workspace_filter_limits_everything() {
+fn repository_filter_limits_everything() {
     let (_scratch, db) = open();
     job(&db, "w1", 1, 20, &["claude"], 60, "drafted", &[finding("a", ReviewSeverity::Major)]);
     let (other, _) = job(&db, "w2", 2, 20, &["codex"], 60, "posted", &[finding("b", ReviewSeverity::Minor)]);
-    let overview = overview_at(&db, None, Some("w2")).unwrap();
-    assert_eq!(overview.jobs.iter().map(|job| job.id.as_str()).collect::<Vec<_>>(), [other.as_str()]);
-    assert_eq!(overview.jobs[0].repo_name.as_deref(), Some("repo-w2"));
-    assert_eq!((overview.stats.reviews, overview.stats.findings.total), (1, 1));
+    // A second worktree of the same repository.
+    let (sibling, _) = job(&db, "w2", 3, 20, &["codex"], 60, "posted", &[]);
+    db.execute("UPDATE review_jobs SET workspace_id='w2-worktree' WHERE id=?1", params![sibling]).unwrap();
+    let overview = overview_at(&db, None, Some("OCTO/Repo-W2")).unwrap();
+    assert_eq!(overview.jobs.iter().map(|job| job.id.as_str()).collect::<Vec<_>>(), [sibling.as_str(), other.as_str()], "any case, every workspace");
+    assert_eq!((overview.stats.reviews, overview.stats.findings.total), (2, 1));
     assert_eq!(overview.findings.len(), 1);
     assert_eq!(overview.harnesses.len(), 1);
+    assert_eq!(overview.repositories, ["octo/repo-w1", "octo/repo-w2"], "the filter's options do not depend on the filter");
+    assert!(overview_at(&db, None, Some("no-slash")).is_err());
 }
 
 #[test]
