@@ -172,3 +172,19 @@ fn each_finding_merges_once() {
     assert_eq!(merges.len(), 1);
     assert!(pairs(&merges)[0] == ("a".into(), "exact".into()) || pairs(&merges)[0] == ("exact".into(), "a".into()));
 }
+
+/// The reviewer's case: a 100-line insertion puts a new endpoint's missing
+/// authorization check at RIGHT:10, and deleting the old account guard sits at
+/// LEFT:10. Both quote the guard; they are different bugs.
+#[test]
+fn other_sides_stay_separate() {
+    let missing = with(entry("missing", "p1", 10, "New team endpoint skips the authorization check"), |f| {
+        f.body = "`update_team` never calls `require_owner(user, team)`, so any member can rename the team.".into();
+    });
+    let deleted = with(entry("deleted", "p2", 10, "Account guard removed"), |f| {
+        f.side = ReviewSide::Left;
+        f.body = "Deleting `require_owner(user, account)` lets anyone close an account; `require_owner(user, team)` does not cover it.".into();
+    });
+    assert!(Similarity::of(&missing.finding, &deleted.finding).matches(), "the text alone would merge them");
+    assert!(merges(&[missing, deleted]).is_empty(), "LEFT and RIGHT lines are not comparable");
+}

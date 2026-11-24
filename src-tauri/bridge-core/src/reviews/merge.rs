@@ -59,7 +59,9 @@ pub fn merges(entries: &[Entry]) -> Vec<Merge> {
     let mut candidates = Vec::new();
     for (left_index, left) in entries.iter().enumerate() {
         for (right_index, right) in entries.iter().enumerate().skip(left_index + 1) {
-            if left.pass_id == right.pass_id || left.finding.path != right.finding.path {
+            // Lines on different diff sides are in different files' worth of
+            // numbering: LEFT:10 and RIGHT:10 can be unrelated code.
+            if left.pass_id == right.pass_id || left.finding.path != right.finding.path || left.finding.side != right.finding.side {
                 continue;
             }
             let gap = line_gap(&left.finding, &right.finding);
