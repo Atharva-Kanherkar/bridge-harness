@@ -577,6 +577,9 @@ pub fn prior_findings_json(prior: &[(store::PriorFinding, Relation)], threads: &
                 "title": finding.title,
                 "body": finding.body,
                 "fingerprint": finding.fingerprint,
+                // What a second opinion merged into it: other wordings of the
+                // same finding, settled along with it.
+                "alsoKnownAs": finding.also_known_as,
                 "decision": finding.decision.as_str(),
                 "posted": finding.posted,
                 "fixedInSha": finding.fixed_in_sha,

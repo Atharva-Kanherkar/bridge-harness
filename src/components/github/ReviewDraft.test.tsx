@@ -23,7 +23,7 @@ const finding = (id: string, over: Partial<ReviewFinding> = {}): ReviewFinding =
 const FINDINGS = [
   finding("b-minor"),
   finding("b-critical", { severity: "critical", confidence: 0.9 }),
-  finding("a-nit", { path: "src/a.rs", severity: "nit", startLine: 3, line: 6, passId: "pass-codex", agreedBy: 2 }),
+  finding("a-nit", { path: "src/a.rs", severity: "nit", startLine: 3, line: 6, passId: "pass-codex", passIds: ["pass-codex", "pass-claude"], agreedBy: 2 }),
   finding("outside", { path: "src/z.rs", severity: "major", line: 400, outsideDiff: true }),
 ];
 
@@ -82,10 +82,11 @@ describe("ReviewDraft", () => {
     const nit = item("a-nit");
     expect(nit.textContent).toContain("src/a.rs:3–6");
     expect(nit.textContent).toContain("50% sure");
-    expect(nit.textContent).toContain("Codex");
+    expect(nit.textContent, "a merged finding names both reviewers").toContain("Codex and Claude");
     expect(nit.textContent).toContain("Both reviewers");
     expect(item("b-minor").textContent).not.toContain("Both reviewers");
     expect(item("b-minor").textContent).toContain("Claude");
+    expect(item("b-minor").textContent).not.toContain("Codex");
   });
 
   it("keeps, drops and edits, and posts with the count", async () => {

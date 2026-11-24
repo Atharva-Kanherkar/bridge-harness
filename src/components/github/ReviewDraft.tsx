@@ -43,9 +43,10 @@ const chosen = (finding: ReviewFinding) => finding.decision === "kept" || findin
 /** What a finding says now: the person's saved edit, else the reviewer's body. */
 const savedBody = (finding: ReviewFinding) => finding.editedBody ?? finding.body;
 
-function FindingItem({ finding, harness, repositoryUrl, draft, busy, onDraft, onFocusMove, onDecide, onEdit, onCancelEdit, register }: {
+function FindingItem({ finding, harnesses, repositoryUrl, draft, busy, onDraft, onFocusMove, onDecide, onEdit, onCancelEdit, register }: {
   finding: ReviewFinding;
-  harness?: string;
+  /** The reviewers that flagged it: one, or both for a merged second opinion. */
+  harnesses: string[];
   repositoryUrl?: string;
   /** The open editor's text; absent when the finding is not being edited. */
   draft?: string;
@@ -87,7 +88,7 @@ function FindingItem({ finding, harness, repositoryUrl, draft, busy, onDraft, on
     <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-caption text-muted-foreground">
       <span className="font-mono">{where(finding)}</span>
       <span>{Math.round(finding.confidence * 100)}% sure</span>
-      {harness && <span>{harnessLabel(harness)}</span>}
+      {harnesses.length > 0 && <span>{harnesses.map(harnessLabel).join(" and ")}</span>}
       {finding.decision !== "pending" && <span className="font-medium text-foreground">{finding.decision === "kept" ? "Kept" : finding.decision === "edited" ? "Edited" : "Dropped"}</span>}
     </div>
     {editing
@@ -202,7 +203,7 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
         {group.findings.map(finding => <FindingItem
           key={finding.id}
           finding={finding}
-          harness={harnessOf.get(finding.passId)}
+          harnesses={(finding.passIds?.length ? finding.passIds : [finding.passId]).flatMap(id => harnessOf.get(id) ?? [])}
           repositoryUrl={repositoryUrl}
           draft={drafts.get(finding.id)}
           busy={busy}

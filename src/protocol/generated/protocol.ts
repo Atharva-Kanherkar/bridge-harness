@@ -3227,6 +3227,7 @@ export interface ReviewFinding {
   line: number;
   outsideDiff: boolean;
   passId: string;
+  passIds?: string[];
   path: string;
   postedAt?: string | null;
   severity: ReviewSeverity;
