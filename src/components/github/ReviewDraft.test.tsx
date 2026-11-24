@@ -121,6 +121,43 @@ describe("ReviewDraft", () => {
     expect(onPosting).toHaveBeenCalledWith(expect.objectContaining({ status: "posting" }));
   });
 
+  it("never posts past an unsaved edit, and deciding another finding keeps it", async () => {
+    const { decide, post } = mockStore(FINDINGS);
+    await mount();
+    await act(async () => { button(host!, "Keep all").click(); await flush(); });
+    await act(async () => { button(item("b-minor"), "Edit").click(); await flush(); });
+    const editor = () => item("b-minor").querySelector("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(editor(), "Better words.");
+      editor().dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    expect(postButton().disabled, "the screen and GitHub would disagree").toBe(true);
+    expect(host!.textContent).toContain("Save or cancel your edit to post.");
+
+    await act(async () => { button(item("b-critical"), "Drop").click(); await flush(); });
+    expect(editor().value, "another decision leaves the open edit").toBe("Better words.");
+    await act(async () => { button(host!, "Keep all").click(); await flush(); });
+    expect(decide.mock.lastCall![1].map(entry => entry.findingId), "Keep all passes over the finding being edited").not.toContain("b-minor");
+    await press(item("b-minor"), "d");
+    expect(editor().value, "K and D wait while the finding is being edited").toBe("Better words.");
+    expect(postButton().disabled).toBe(true);
+
+    await act(async () => { button(item("b-minor"), "Save edit").click(); await flush(); });
+    expect(decide).toHaveBeenLastCalledWith("job-1", [{ findingId: "b-minor", decision: "edited", editedBody: "Better words." }]);
+    expect(postButton().disabled).toBe(false);
+    await act(async () => { postButton().click(); await flush(); });
+    expect(post).toHaveBeenCalledWith("job-1");
+  });
+
+  it("names the findings still undecided beside Post", async () => {
+    mockStore(FINDINGS);
+    await mount();
+    await act(async () => { button(item("b-critical"), "Keep").click(); await flush(); });
+    await act(async () => { button(item("outside"), "Drop").click(); await flush(); });
+    expect(host!.textContent).toContain("1 kept, 2 not decided");
+  });
+
   it("keeps all and drops all in one decision", async () => {
     const { decide } = mockStore(FINDINGS);
     await mount();

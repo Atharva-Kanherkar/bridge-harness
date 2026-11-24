@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { CircleAlert, CircleCheck, LoaderCircle, RotateCcw, SquareArrowOutUpRight, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../../api";
@@ -39,10 +39,15 @@ export function formatElapsed(milliseconds: number): string {
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
 
+/** Finished jobs past this many fold under "Show N more". */
+const FINISHED_SHOWN = 10;
+
 /** How long a running job has been at it, or when a finished one ended. A
  *  finished job's duration would include however long the draft waited for
- *  the person, so it says when instead. */
+ *  the person, so it says when instead. A posting job has no clock: its
+ *  `startedAt` is when the review began, not the post. */
 function elapsed(job: ReviewJob, now: number): string | undefined {
+  if (job.status === "posting") return undefined;
   if (running(job)) {
     const from = Date.parse(job.startedAt ?? job.createdAt);
     return Number.isNaN(from) ? undefined : formatElapsed(now - from);
@@ -72,11 +77,12 @@ function JobRow({ job, now, onChanged }: { job: ReviewJob; now: number; onChange
     <span className="flex items-center gap-1">
       {job.harnesses.map(harness => <span key={harness} className="rounded-sm border border-border bg-background px-1.5 py-px text-caption font-medium text-foreground">{harnessLabel(harness)}</span>)}
     </span>
-    <span role="status" className={cn("flex items-center gap-1 text-meta",
+    <span className={cn("flex items-center gap-1 text-meta",
       status.tone === "failed" && "text-destructive", status.tone === "done" && "text-success", status.tone === "waiting" && "font-medium text-foreground",
       (status.tone === "running" || status.tone === "quiet") && "text-muted-foreground")}>
       {Icon && <Icon size={12} aria-hidden="true" className={cn(status.tone === "running" && "animate-spin motion-reduce:animate-none")} />}
-      {status.label}
+      {/* Only the label is announced; the clock beside it changes every second. */}
+      <span role="status">{status.label}</span>
       {time && <span className="font-mono tabular-nums text-caption text-muted-foreground">{time}</span>}
     </span>
     {(job.status === "drafted" || job.status === "posting" || job.status === "posted") && <span className="text-caption text-muted-foreground">
@@ -109,33 +115,61 @@ export function ReviewJobs({ workspaceId, number, repositoryUrl, started }: {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string>();
   const [now, setNow] = useState(() => Date.now());
+  const [showAll, setShowAll] = useState(false);
+  // Every change re-reads the clock, so no time on screen is older than it.
+  const update = useCallback((job: ReviewJob) => { setNow(Date.now()); setJobs(current => upsert(current, job)); }, []);
 
+  // Subscribe, wait until the subscription is live, then list. Every change
+  // after that arrives as an event, so a job's latest event is never older
+  // than the list's copy of it: the list fills in only jobs no event has
+  // touched.
   useEffect(() => {
     let active = true;
-    setJobs([]); setLoaded(false); setError(undefined);
+    setJobs([]); setLoaded(false); setError(undefined); setShowAll(false);
     let unlisten: (() => void) | undefined;
-    void bridgeApi.onReviewJobUpdated(({ job }) => {
-      if (job.workspaceId === workspaceId && job.number === number) setJobs(current => upsert(current, job));
-    }).then(stop => { if (active) unlisten = stop; else stop(); });
-    void bridgeApi.listReviews(workspaceId, number)
-      .then(result => { if (active) setJobs(current => result.jobs.reduce(upsert, current)); })
-      .catch(cause => { if (active) setError(cause instanceof Error ? cause.message : String(cause)); })
-      .finally(() => { if (active) setLoaded(true); });
+    const live = new Set<string>();
+    void (async () => {
+      try {
+        const stop = await bridgeApi.onReviewJobUpdated(({ job }) => {
+          if (!active || job.workspaceId !== workspaceId || job.number !== number) return;
+          live.add(job.id);
+          update(job);
+        });
+        if (!active) { stop(); return; }
+        unlisten = stop;
+        const result = await bridgeApi.listReviews(workspaceId, number);
+        if (active) { setNow(Date.now()); setJobs(current => result.jobs.filter(job => !live.has(job.id)).reduce(upsert, current)); }
+      } catch (cause) {
+        if (active) setError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        if (active) setLoaded(true);
+      }
+    })();
     return () => { active = false; unlisten?.(); };
-  }, [workspaceId, number]);
+  }, [workspaceId, number, update]);
 
   useEffect(() => {
-    if (started && started.workspaceId === workspaceId && started.number === number) setJobs(current => upsert(current, started));
-  }, [started, workspaceId, number]);
+    if (started && started.workspaceId === workspaceId && started.number === number) update(started);
+  }, [started, workspaceId, number, update]);
 
+  // Every second while a job runs (its timer), else every 30 seconds so a
+  // finished job's "when" keeps ageing.
   const ticking = jobs.some(running);
+  const hasJobs = jobs.length > 0;
   useEffect(() => {
-    if (!ticking) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    if (!hasJobs) return;
+    const timer = window.setInterval(() => setNow(Date.now()), ticking ? 1000 : 30_000);
     return () => window.clearInterval(timer);
-  }, [ticking]);
+  }, [ticking, hasJobs]);
 
-  const shown = useMemo(() => jobs.slice(0, 10), [jobs]);
+  // A job that still needs the person, or is still working, always shows;
+  // finished ones past the first few fold away.
+  const shown = useMemo(() => {
+    if (showAll) return jobs;
+    let finished = 0;
+    return jobs.filter(job => !TERMINAL.has(job.status) || ++finished <= FINISHED_SHOWN);
+  }, [jobs, showAll]);
+  const hidden = jobs.length - shown.length;
   if (!loaded && !jobs.length) return null;
   if (!jobs.length && !error) return null;
   return <section aria-label="Reviews" className="mb-5">
@@ -145,9 +179,12 @@ export function ReviewJobs({ workspaceId, number, repositoryUrl, started }: {
     {error && <p role="alert" className="mb-2 text-meta text-destructive">{error}</p>}
     <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
       {shown.map(job => <div key={job.id}>
-        <JobRow job={job} now={now} onChanged={changed => setJobs(current => upsert(current, changed))} />
-        {job.status === "drafted" && <ReviewDraft job={job} repositoryUrl={repositoryUrl} onPosting={changed => setJobs(current => upsert(current, changed))} />}
+        <JobRow job={job} now={now} onChanged={update} />
+        {job.status === "drafted" && <ReviewDraft job={job} repositoryUrl={repositoryUrl} onPosting={update} />}
       </div>)}
     </div>
+    {hidden > 0 && <button type="button" onClick={() => setShowAll(true)} className="mt-1.5 rounded-md px-2 py-0.5 text-meta text-muted-foreground hover:bg-accent hover:text-foreground">
+      Show {hidden} more
+    </button>}
   </section>;
 }

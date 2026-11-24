@@ -106,6 +106,60 @@ describe("ReviewJobs", () => {
     expect(row("mine")!.textContent).toContain("8s");
   });
 
+  it("keeps a finished job's time ageing with nothing running, and gives a posting job no clock", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    vi.setSystemTime(new Date("2026-11-24T09:01:10.000Z"));
+    const emit = listen();
+    vi.spyOn(bridgeApi, "listReviews").mockResolvedValue({ jobs: [
+      reviewJob({ id: "done", status: "posted", startedAt: "2026-11-24T09:00:00.000Z", finishedAt: "2026-11-24T09:01:10.000Z" }),
+    ] });
+    await mount(<ReviewJobs workspaceId="w" number={7} />);
+    expect(row("done")!.textContent).toContain("just now");
+    await act(async () => { vi.advanceTimersByTime(3 * 60 * 60 * 1000); await flush(); });
+    expect(row("done")!.textContent).toContain("3h ago");
+    // The review began two hours ago; the post did not.
+    emit(reviewJob({ id: "posting", status: "posting", startedAt: "2026-11-24T10:01:10.000Z", createdAt: "2026-11-24T10:01:10.000Z" }));
+    expect(row("posting")!.textContent).toContain("Posting");
+    expect(row("posting")!.textContent).not.toMatch(/\d+[hms]/);
+  });
+
+  it("never lets the list undo a live update that arrived first", async () => {
+    const emit = listen();
+    let resolve!: (value: { jobs: ReviewJob[] }) => void;
+    vi.spyOn(bridgeApi, "listReviews").mockReturnValue(new Promise(done => { resolve = done; }));
+    vi.spyOn(bridgeApi, "getReview").mockImplementation(async id => emptyDetail(reviewJob({ id, status: "drafted" })));
+    await mount(<ReviewJobs workspaceId="w" number={7} />);
+    await act(async () => { emit(reviewJob({ id: "j", status: "drafted" })); await flush(); });
+    // The list read the job a moment before it drafted.
+    await act(async () => { resolve({ jobs: [reviewJob({ id: "j", status: "reviewing" }), reviewJob({ id: "older", status: "posted", createdAt: "2026-11-24T08:00:00.000Z" })] }); await flush(); });
+    expect(row("j")!.textContent).toContain("Draft ready");
+    expect(row("older"), "the list still fills in what no event touched").not.toBeNull();
+  });
+
+  it("announces the status, not the clock", async () => {
+    listen();
+    vi.spyOn(bridgeApi, "listReviews").mockResolvedValue({ jobs: [reviewJob({ id: "running", status: "reviewing" })] });
+    await mount(<ReviewJobs workspaceId="w" number={7} />);
+    const live = row("running")!.querySelectorAll('[role="status"]');
+    expect(live).toHaveLength(1);
+    expect(live[0].textContent).toBe("Reviewing");
+  });
+
+  it("always shows jobs that need the person, and folds older finished ones", async () => {
+    listen();
+    const finished = Array.from({ length: 12 }, (_, index) => reviewJob({
+      id: `posted-${index}`, status: "posted", createdAt: `2026-11-24T10:${String(10 + index).padStart(2, "0")}:00.000Z`,
+    }));
+    const draft = reviewJob({ id: "draft", status: "drafted", createdAt: "2026-11-24T09:00:00.000Z" });
+    vi.spyOn(bridgeApi, "listReviews").mockResolvedValue({ jobs: [...finished, draft] });
+    vi.spyOn(bridgeApi, "getReview").mockImplementation(async id => emptyDetail(reviewJob({ id, status: "drafted" })));
+    await mount(<ReviewJobs workspaceId="w" number={7} />);
+    expect(row("draft"), "the oldest job still waits for triage").not.toBeNull();
+    expect(host!.querySelectorAll("[data-review-job]")).toHaveLength(11);
+    await act(async () => { button(host!, "Show 2 more").click(); await flush(); });
+    expect(host!.querySelectorAll("[data-review-job]")).toHaveLength(13);
+  });
+
   it("formats elapsed time", () => {
     expect(formatElapsed(42_000)).toBe("42s");
     expect(formatElapsed(65_000)).toBe("1m 05s");

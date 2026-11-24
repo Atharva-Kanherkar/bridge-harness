@@ -40,27 +40,33 @@ const where = (finding: ReviewFinding) => {
 
 const chosen = (finding: ReviewFinding) => finding.decision === "kept" || finding.decision === "edited";
 
-function FindingItem({ finding, harness, repositoryUrl, editing, busy, onFocusMove, onDecide, onEdit, onCancelEdit, register }: {
+/** What a finding says now: the person's saved edit, else the reviewer's body. */
+const savedBody = (finding: ReviewFinding) => finding.editedBody ?? finding.body;
+
+function FindingItem({ finding, harness, repositoryUrl, draft, busy, onDraft, onFocusMove, onDecide, onEdit, onCancelEdit, register }: {
   finding: ReviewFinding;
   harness?: string;
   repositoryUrl?: string;
-  editing: boolean;
+  /** The open editor's text; absent when the finding is not being edited. */
+  draft?: string;
   busy: boolean;
+  onDraft: (text: string) => void;
   onFocusMove: (step: number) => void;
   onDecide: (decision: ReviewFindingDecisionInput["decision"], editedBody?: string) => void;
   onEdit: () => void;
   onCancelEdit: () => void;
   register: (element: HTMLElement | null) => void;
 }) {
-  const [text, setText] = useState(finding.editedBody ?? finding.body);
-  useEffect(() => { if (editing) setText(finding.editedBody ?? finding.body); }, [editing, finding.editedBody, finding.body]);
+  const editing = draft !== undefined;
+  const text = draft ?? "";
   const dropped = finding.decision === "dropped";
   const onKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     if (event.target !== event.currentTarget || event.metaKey || event.ctrlKey || event.altKey) return;
     const key = event.key.toLowerCase();
     if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); onFocusMove(event.key === "ArrowDown" ? 1 : -1); }
-    else if (key === "k" && !busy) { event.preventDefault(); onDecide("kept"); }
-    else if (key === "d" && !busy) { event.preventDefault(); onDecide("dropped"); }
+    // Mid-edit, a decision would close the editor and lose the text.
+    else if (key === "k" && !busy && !editing) { event.preventDefault(); onDecide("kept"); }
+    else if (key === "d" && !busy && !editing) { event.preventDefault(); onDecide("dropped"); }
     else if (key === "e") { event.preventDefault(); onEdit(); }
   };
   return <li
@@ -91,7 +97,7 @@ function FindingItem({ finding, harness, repositoryUrl, editing, busy, onFocusMo
             autoFocus
             value={text}
             rows={5}
-            onChange={event => setText(event.target.value)}
+            onChange={event => onDraft(event.target.value)}
             onKeyDown={event => {
               if (event.key === "Escape") { event.preventDefault(); onCancelEdit(); }
               if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && text.trim()) { event.preventDefault(); onDecide("edited", text); }
@@ -103,7 +109,7 @@ function FindingItem({ finding, harness, repositoryUrl, editing, busy, onFocusMo
             <button type="button" disabled={busy || !text.trim()} onClick={() => onDecide("edited", text)} className="rounded-md bg-primary px-2 py-0.5 text-meta font-medium text-primary-foreground disabled:opacity-50">Save edit</button>
           </div>
         </div>
-      : <div className="mt-1.5 text-meta text-foreground/90"><GithubMarkdown text={finding.editedBody ?? finding.body} repositoryUrl={repositoryUrl} /></div>}
+      : <div className="mt-1.5 text-meta text-foreground/90"><GithubMarkdown text={savedBody(finding)} repositoryUrl={repositoryUrl} /></div>}
     {!editing && <div className="mt-1.5 flex gap-1">
       <button type="button" disabled={busy} aria-pressed={finding.decision === "kept"} onClick={() => onDecide("kept")} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-meta text-foreground hover:bg-accent disabled:opacity-50"><Check size={11} aria-hidden="true" /> Keep</button>
       <button type="button" disabled={busy} aria-pressed={dropped} onClick={() => onDecide("dropped")} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-meta text-foreground hover:bg-accent disabled:opacity-50"><X size={11} aria-hidden="true" /> Drop</button>
@@ -122,12 +128,20 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
   const [passes, setPasses] = useState<ReviewPass[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const [editing, setEditing] = useState<string>();
+  // Open editors by finding id. The text lives here, not in the item, so
+  // Post can see an edit that is not saved yet, and deciding another
+  // finding leaves it alone.
+  const [drafts, setDrafts] = useState<ReadonlyMap<string, string>>(new Map());
+  const setDraft = (id: string, text: string | undefined) => setDrafts(current => {
+    const next = new Map(current);
+    if (text === undefined) next.delete(id); else next.set(id, text);
+    return next;
+  });
   const items = useRef(new Map<string, HTMLElement>());
 
   useEffect(() => {
     let active = true;
-    setFindings(undefined); setError(undefined);
+    setFindings(undefined); setError(undefined); setDrafts(new Map());
     void bridgeApi.getReview(job.id)
       .then(detail => { if (active) { setFindings(detail.findings); setPasses(detail.passes); } })
       .catch(cause => { if (active) setError(cause instanceof Error ? cause.message : String(cause)); });
@@ -144,7 +158,12 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
     try {
       const result = await bridgeApi.decideReview(job.id, decisions);
       setFindings(result.findings);
-      setEditing(undefined);
+      // A decided finding's editor closes; any other stays open.
+      setDrafts(current => {
+        const next = new Map(current);
+        for (const decision of decisions) next.delete(decision.findingId);
+        return next;
+      });
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
   };
@@ -162,13 +181,18 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
   if (!findings) return <div className="border-t border-border/70 px-3 py-2">
     {error ? <p role="alert" className="text-meta text-destructive">{error}</p> : <p className="text-meta text-muted-foreground">Loading the draft…</p>}
   </div>;
+  // Keep all and Drop all pass over a finding being edited.
+  const settled = findings.filter(finding => !drafts.has(finding.id));
   const count = findings.filter(chosen).length;
-  const blocked = findings.length > 0 && count === 0;
+  const undecided = findings.filter(finding => finding.decision === "pending").length;
+  const unsaved = findings.some(finding => drafts.has(finding.id) && drafts.get(finding.id) !== savedBody(finding));
+  const blocked = unsaved || (findings.length > 0 && count === 0);
+  const reason = unsaved ? "Save or cancel your edit to post." : blocked ? "Keep or edit at least one finding to post." : undefined;
   const label = findings.length === 0 ? "Post summary" : count === 0 ? "Post" : `Post ${count} ${count === 1 ? "finding" : "findings"}`;
   return <div data-review-draft={job.id} className="border-t border-border/70 bg-muted/20 px-3 py-2.5">
     {findings.length > 0 && <div className="mb-2 flex flex-wrap items-center gap-1.5">
-      <button type="button" disabled={busy} onClick={() => void decide(findings.map(finding => ({ findingId: finding.id, decision: "kept" })))} className="rounded-md border border-border bg-card px-2 py-0.5 text-meta text-foreground hover:bg-accent disabled:opacity-50">Keep all</button>
-      <button type="button" disabled={busy} onClick={() => void decide(findings.map(finding => ({ findingId: finding.id, decision: "dropped" })))} className="rounded-md border border-border bg-card px-2 py-0.5 text-meta text-foreground hover:bg-accent disabled:opacity-50">Drop all</button>
+      <button type="button" disabled={busy} onClick={() => void decide(settled.map(finding => ({ findingId: finding.id, decision: "kept" })))} className="rounded-md border border-border bg-card px-2 py-0.5 text-meta text-foreground hover:bg-accent disabled:opacity-50">Keep all</button>
+      <button type="button" disabled={busy} onClick={() => void decide(settled.map(finding => ({ findingId: finding.id, decision: "dropped" })))} className="rounded-md border border-border bg-card px-2 py-0.5 text-meta text-foreground hover:bg-accent disabled:opacity-50">Drop all</button>
       <span className="ml-auto text-caption text-muted-foreground"><kbd>K</kbd> keep · <kbd>D</kbd> drop · <kbd>E</kbd> edit · arrows move</span>
     </div>}
     {findings.length === 0 && <p className="mb-2 text-meta text-muted-foreground">The reviewer found nothing to flag. Posting leaves its summary as a comment review.</p>}
@@ -180,19 +204,21 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
           finding={finding}
           harness={harnessOf.get(finding.passId)}
           repositoryUrl={repositoryUrl}
-          editing={editing === finding.id}
+          draft={drafts.get(finding.id)}
           busy={busy}
+          onDraft={text => setDraft(finding.id, text)}
           register={element => { if (element) items.current.set(finding.id, element); else items.current.delete(finding.id); }}
           onFocusMove={step => move(finding.id, step)}
           onDecide={(decision, editedBody) => void decide([{ findingId: finding.id, decision, editedBody: decision === "edited" ? editedBody : null }])}
-          onEdit={() => setEditing(finding.id)}
-          onCancelEdit={() => { setEditing(undefined); items.current.get(finding.id)?.focus(); }}
+          onEdit={() => { if (!drafts.has(finding.id)) setDraft(finding.id, savedBody(finding)); }}
+          onCancelEdit={() => { setDraft(finding.id, undefined); items.current.get(finding.id)?.focus(); }}
         />)}
       </ul>
     </div>)}
     {error && <p role="alert" className="mb-2 text-meta text-destructive">{error}</p>}
     <div className="flex items-center justify-end gap-2">
-      {blocked && <span className="text-caption text-muted-foreground">Keep or edit at least one finding to post.</span>}
+      {reason && <span className="text-caption text-muted-foreground">{reason}</span>}
+      {!reason && undecided > 0 && <span className="text-caption text-muted-foreground">{count} kept, {undecided} not decided</span>}
       <button type="button" disabled={busy || blocked} onClick={() => void post()} className="inline-flex min-h-7 items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-meta font-medium text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50">
         <Send size={11} aria-hidden="true" /> {label}
       </button>
