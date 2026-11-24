@@ -520,6 +520,13 @@ proptest! {
         let _ = valid_repo(&text);
     }
 
+}
+
+proptest! {
+    // Each case builds a store and runs up to 40 steps: 64 cases cover the
+    // interleavings without a minute of CI per run.
+    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+
     /// Whatever order observe, replay and claims interleave in, every event
     /// becomes at most one run, and every run is for an observed event.
     #[test]
