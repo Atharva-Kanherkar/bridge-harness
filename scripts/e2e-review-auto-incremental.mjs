@@ -172,9 +172,10 @@ try {
   await pane.locator(`[data-review-job="${first}"]`).getByRole("link", { name: /View on GitHub/ }).waitFor({ timeout: 60_000 });
   const firstHead = sql(`SELECT head_sha FROM review_jobs WHERE id='${first}'`);
 
-  // 3. A new commit lands on the PR.
+  // 3. A new commit lands on the PR. It rewrites the second line the posted
+  // finding was about, and adds a third.
   git(repo, "checkout", "-q", firstHead);
-  fs.writeFileSync(path.join(repo, "README.md"), "base\nchanged by the PR\nthe PR again\n");
+  fs.writeFileSync(path.join(repo, "README.md"), "base\nchanged by the PR, so reviews have something to read\nthe PR again\n");
   git(repo, "commit", "-q", "-am", "a later push");
   git(repo, "push", "-q", "-f", "origin", "HEAD:refs/pull/103/head");
   const newHead = git(repo, "rev-parse", "HEAD");
