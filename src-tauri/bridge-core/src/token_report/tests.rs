@@ -999,6 +999,16 @@ fn shell_read_rejects_unsafe_or_unknown_segments() {
         "git blame src/a.rs | head",
         "git status | head",
         "unknown a | head",
+    ] {
+        let command = json!(command);
+        assert!(!read_only_shell::matches(&command), "{command}");
+        assert!(!shell_class(&command).shell_read, "{command}");
+    }
+}
+
+#[test]
+fn shell_read_rejects_invalid_command_forms() {
+    for command in [
         "NAME=value cat a | head",
         "NAME=bin/cat a | head",
         "cat a | NAME=bin/head",
