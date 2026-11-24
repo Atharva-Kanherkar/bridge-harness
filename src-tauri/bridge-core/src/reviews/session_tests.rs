@@ -469,7 +469,59 @@ fn live_incremental_review_on_a_fixture_pr() {
     if harness == "opencode" && std::env::var_os("BRIDGE_REVIEW_LIVE_OPENCODE_SIGNED_IN").is_none() {
         std::env::set_var("XDG_DATA_HOME", scratch.path().join("xdg-data"));
     }
-    let repo = std::fs::canonicalize(scratch.path()).unwrap().join("repo");
+    let fixture = incremental_fixture(scratch.path());
+    let (repo, context, patch, head) = (&fixture.repo, &fixture.context, &fixture.patch, &fixture.head);
+    let (placed, context_name) = place_context(context, repo).unwrap();
+
+    let registry = Arc::new(AdapterRegistry::built_in().unwrap());
+    let wait = std::env::var("BRIDGE_REVIEW_LIVE_WAIT_SECS").ok().and_then(|secs| secs.parse().ok()).unwrap_or(8);
+    std::thread::sleep(Duration::from_secs(wait));
+    let transport = RegistryTransport { registry };
+    let instructions = instructions(&conventions_in(&placed), REVIEW_INSTRUCTIONS, false);
+    let start = SessionStart { cwd: repo, model: model.as_deref(), effort: Some("medium"), instructions: &instructions };
+    let pr = read_json(&placed.join("pr.json")).unwrap();
+    let started = Instant::now();
+    let (result, usage) = run_answered(&transport, &harness, &start, &prompt(&pr, &context_name), &CancelToken::new(), Limits::default());
+    let elapsed = started.elapsed();
+    let (review, answer) = result.expect("a valid findings set");
+    let changed = ["src/lib.rs".to_owned()].into_iter().collect();
+    let validated = contract::validate(review.clone(), &changed, &contract::hunks(patch));
+    let prior = read_prior(&placed).unwrap();
+    let findings = without_repeats(validated.findings.clone(), &prior);
+    let fixed = known_fixed(&validated.fixed, &prior, head);
+    let (checks, pass) = score_incremental(&validated.findings, &findings, &fixed, fixture.first_line);
+    let record = json!({
+        "eval": "live_incremental_review_on_a_fixture_pr",
+        "harness": harness,
+        "model": model,
+        "seconds": elapsed.as_secs_f64(),
+        "usage": {"tokensIn": usage.tokens_in, "tokensOut": usage.tokens_out, "costMicrousd": usage.cost_microusd,
+            "deniedRequests": usage.denied_requests, "tools": usage.tools},
+        "answer": answer,
+        "fixedAsGiven": review.fixed,
+        "draftedFindings": findings.iter().map(|finding| json!({"path": finding.path, "line": finding.line, "severity": finding.severity.as_str(), "title": finding.title, "body": finding.body})).collect::<Vec<_>>(),
+        "draftedFixed": fixed,
+        "checks": checks,
+        "pass": pass,
+    });
+    save_live_record(&format!("incremental-{harness}{}", model.as_deref().map(|model| format!("-{}", model.replace('/', "_"))).unwrap_or_default()), &record);
+    eprintln!("{}", serde_json::to_string_pretty(&record).unwrap());
+    assert!(pass, "the re-review missed the acceptance: {checks}");
+}
+
+/// The repository and context of the incremental eval.
+struct IncrementalFixture {
+    repo: std::path::PathBuf,
+    context: std::path::PathBuf,
+    /// The whole change, base to head.
+    patch: String,
+    head: String,
+    /// Where `first` starts in the new file.
+    first_line: u32,
+}
+
+fn incremental_fixture(scratch: &Path) -> IncrementalFixture {
+    let repo = std::fs::canonicalize(scratch).unwrap().join("repo");
     std::fs::create_dir_all(repo.join("src")).unwrap();
     let git = |args: &[&str]| {
         let output = crate::git::git_command(&repo).args(args).output().unwrap();
@@ -496,7 +548,7 @@ fn live_incremental_review_on_a_fixture_pr() {
     git(&["commit", "-q", "-am", "Handle no items, add first"]);
     let head = git(&["rev-parse", "HEAD"]);
 
-    let context = scratch.path().join("context");
+    let context = scratch.join("context");
     std::fs::create_dir_all(&context).unwrap();
     let patch = git(&["diff", "-M", &base, &head]) + "\n";
     std::fs::write(context.join("diff.patch"), &patch).unwrap();
@@ -526,28 +578,16 @@ fn live_incremental_review_on_a_fixture_pr() {
         .to_string(),
     )
     .unwrap();
-    let (placed, context_name) = place_context(&context, &repo).unwrap();
-
-    let registry = Arc::new(AdapterRegistry::built_in().unwrap());
-    let wait = std::env::var("BRIDGE_REVIEW_LIVE_WAIT_SECS").ok().and_then(|secs| secs.parse().ok()).unwrap_or(8);
-    std::thread::sleep(Duration::from_secs(wait));
-    let transport = RegistryTransport { registry };
-    let instructions = instructions(&conventions_in(&placed), REVIEW_INSTRUCTIONS, false);
-    let start = SessionStart { cwd: &repo, model: model.as_deref(), effort: Some("medium"), instructions: &instructions };
-    let pr = read_json(&placed.join("pr.json")).unwrap();
-    let started = Instant::now();
-    let (result, usage) = run_answered(&transport, &harness, &start, &prompt(&pr, &context_name), &CancelToken::new(), Limits::default());
-    let elapsed = started.elapsed();
-    let (review, answer) = result.expect("a valid findings set");
-    let changed = ["src/lib.rs".to_owned()].into_iter().collect();
-    let validated = contract::validate(review.clone(), &changed, &contract::hunks(&patch));
-    let prior = read_prior(&placed).unwrap();
-    let findings = without_repeats(validated.findings.clone(), &prior);
-    let fixed = known_fixed(&validated.fixed, &prior, &head);
-
-    // Scored strictly: the acceptance of #1122, on what Bridge would draft.
-    let new_text = format!("{last}{fixed_text}", fixed_text = fixed_src);
+    let new_text = format!("{last}{fixed_src}");
     let first_line = new_text.lines().position(|line| line.starts_with("pub fn first")).unwrap() as u32 + 1;
+    IncrementalFixture { repo, context, patch, head, first_line }
+}
+
+/// #1122's acceptance, scored strictly on what Bridge would draft: exactly
+/// one finding, on `first`, about its panic; the dropped finding not raised;
+/// `fixed` exactly the posted one. `raised` is what the model said before
+/// Bridge's repeat filter, kept to show whether the model repeated itself.
+fn score_incremental(raised: &[DraftFinding], findings: &[DraftFinding], fixed: &[String], first_line: u32) -> (Value, bool) {
     let about = |finding: &DraftFinding, words: &[&str]| {
         let text = format!("{} {}", finding.title, finding.body).to_lowercase();
         words.iter().any(|word| text.contains(word))
@@ -558,27 +598,11 @@ fn live_incremental_review_on_a_fixture_pr() {
         "onFirst": findings.iter().all(|finding| finding.path == "src/lib.rs" && (first_line..=first_line + 2).contains(&finding.line)),
         "aboutThePanic": findings.iter().all(|finding| about(finding, &["panic", "out of bounds", "bounds", "exceed", "larger than", "len()"])),
         "droppedNotRaised": !findings.iter().any(|finding| about(finding, &dropped_words)),
-        "modelRepeatedDropped": validated.findings.iter().any(|finding| about(finding, &dropped_words)),
+        "modelRepeatedDropped": raised.iter().any(|finding| about(finding, &dropped_words)),
         "fixedExactly": fixed == ["f-divide-by-zero"],
     });
     let pass = ["exactlyOneFinding", "onFirst", "aboutThePanic", "droppedNotRaised", "fixedExactly"].iter().all(|key| checks[key] == true);
-    let record = json!({
-        "eval": "live_incremental_review_on_a_fixture_pr",
-        "harness": harness,
-        "model": model,
-        "seconds": elapsed.as_secs_f64(),
-        "usage": {"tokensIn": usage.tokens_in, "tokensOut": usage.tokens_out, "costMicrousd": usage.cost_microusd,
-            "deniedRequests": usage.denied_requests, "tools": usage.tools},
-        "answer": answer,
-        "fixedAsGiven": review.fixed,
-        "draftedFindings": findings.iter().map(|finding| json!({"path": finding.path, "line": finding.line, "severity": finding.severity.as_str(), "title": finding.title, "body": finding.body})).collect::<Vec<_>>(),
-        "draftedFixed": fixed,
-        "checks": checks,
-        "pass": pass,
-    });
-    save_live_record(&format!("incremental-{harness}{}", model.as_deref().map(|model| format!("-{}", model.replace('/', "_"))).unwrap_or_default()), &record);
-    eprintln!("{}", serde_json::to_string_pretty(&record).unwrap());
-    assert!(pass, "the re-review missed the acceptance: {checks}");
+    (checks, pass)
 }
 
 /// Keep a live eval's evidence: the reviewer's answer word for word and how
