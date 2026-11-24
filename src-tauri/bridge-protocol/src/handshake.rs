@@ -223,7 +223,7 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// daemon, which would refuse those triggers.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 55,
+    minor: 56,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -244,6 +244,7 @@ impl ProtocolVersion {
         const TRAIL_ISSUES_MINOR: u32 = 35;
         const WORKFLOW_EVENTS_MINOR: u32 = 54;
         const MORE_TRIGGERS_MINOR: u32 = 55;
+        const MULTI_STEP_MINOR: u32 = 56;
         self.major == client.major
             && client.minor <= self.minor
             && !(self.major == 1
@@ -267,6 +268,11 @@ impl ProtocolVersion {
             && !(self.major == 1
                 && self.minor >= MORE_TRIGGERS_MINOR
                 && client.minor < MORE_TRIGGERS_MINOR)
+            // A workflow step's own servers and files, and a run's steps: an
+            // older client would drop them and save every step as the first.
+            && !(self.major == 1
+                && self.minor >= MULTI_STEP_MINOR
+                && client.minor < MULTI_STEP_MINOR)
     }
 }
 
@@ -624,10 +630,19 @@ mod tests {
     fn more_triggers_pair_only_with_a_matching_daemon_and_client() {
         let before = ProtocolVersion { major: 1, minor: 54 };
         let more = ProtocolVersion { major: 1, minor: 55 };
-        assert_eq!(PROTOCOL_VERSION, more);
         assert!(!more.accepts(before), "a 1.54 client cannot read a Gmail, Linear or Notion trigger");
         assert!(!before.accepts(more), "a 1.55 client's new triggers would be refused by a 1.54 daemon");
         assert!(more.accepts(more));
+    }
+
+    #[test]
+    fn multi_step_workflows_pair_only_with_a_matching_daemon_and_client() {
+        let before = ProtocolVersion { major: 1, minor: 55 };
+        let steps = ProtocolVersion { major: 1, minor: 56 };
+        assert_eq!(PROTOCOL_VERSION, steps);
+        assert!(!steps.accepts(before), "a 1.55 client would save every step's servers and files away");
+        assert!(!before.accepts(steps), "a 1.56 client's steps would be refused by a 1.55 daemon");
+        assert!(steps.accepts(steps));
     }
 
     #[test]

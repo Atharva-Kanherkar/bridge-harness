@@ -261,6 +261,8 @@ fn definition(
             model,
             effort: None,
             instructions: instructions.trim().to_owned(),
+            servers: None,
+            files: None,
         }],
         trigger,
         grants,

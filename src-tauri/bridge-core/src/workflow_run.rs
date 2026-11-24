@@ -169,6 +169,35 @@ pub fn quota_verdict(windows: &[wire::UsageQuotaWindow], reserve: i64) -> QuotaV
     }
 }
 
+/// The verdict for a run whose steps use several agents: it waits while any
+/// of their plans is above the reserve, and is unknown when any is unknown.
+pub(crate) fn quota_for_providers(overviews: Option<&wire::ProviderUsageOverviews>, harnesses: &[String], reserve: i64) -> QuotaVerdict {
+    combined_verdict(harnesses.iter().map(|harness| quota_for_provider(overviews, harness, reserve)))
+}
+
+/// Wait if any waits; otherwise proceed, unknown if any is unknown.
+fn combined_verdict(verdicts: impl IntoIterator<Item = QuotaVerdict>) -> QuotaVerdict {
+    let mut unknown = false;
+    for verdict in verdicts {
+        match verdict {
+            QuotaVerdict::Wait => return QuotaVerdict::Wait,
+            QuotaVerdict::Proceed { unknown: this } => unknown |= this,
+        }
+    }
+    QuotaVerdict::Proceed { unknown }
+}
+
+/// Each agent a definition's steps use, once.
+pub(crate) fn step_harnesses(definition: &wire::WorkflowDefinition) -> Vec<String> {
+    let mut harnesses: Vec<String> = Vec::new();
+    for step in &definition.steps {
+        if !harnesses.iter().any(|known| known == step.harness.as_str()) {
+            harnesses.push(step.harness.as_str().to_owned());
+        }
+    }
+    harnesses
+}
+
 pub(crate) fn quota_for_provider(overviews: Option<&wire::ProviderUsageOverviews>, harness: &str, reserve: i64) -> QuotaVerdict {
     let windows = overviews.into_iter()
         .flat_map(|overviews| &overviews.providers)
@@ -180,11 +209,21 @@ pub(crate) fn quota_for_provider(overviews: Option<&wire::ProviderUsageOverviews
 
 // --- the run's session ---------------------------------------------------------------
 
-/// The run bound to a session, with the definition of the revision it runs.
+/// The run bound to a session, with the definition that session runs under:
+/// the single-step view of its step (`workflow_steps::step_view`).
 pub fn run_for_session(
     db: &Connection,
     session_id: &str,
 ) -> Result<Option<(wire::WorkflowRun, wire::WorkflowDefinition)>, BridgeError> {
+    if let Some((run_id, index, budget)) = crate::workflow_steps::for_session(db, session_id)? {
+        let run = workflow_trigger::require_run(db, &run_id)?;
+        let definition = revision_definition(db, &run.revision_id)?;
+        if index >= definition.steps.len() {
+            return Err(BridgeError::Invalid(format!("run {run_id} has no step {}", index + 1)));
+        }
+        return Ok(Some((run, crate::workflow_steps::step_view(&definition, index, budget))));
+    }
+    // A run from before steps were recorded: its own session, one step.
     let run_id: Option<String> = db
         .query_row(
             "SELECT id FROM workflow_runs WHERE session_id=?1 ORDER BY created_at DESC LIMIT 1",
@@ -214,17 +253,23 @@ fn revision_definition(db: &Connection, revision_id: &str) -> Result<wire::Workf
     serde_json::from_str(&json).map_err(|error| BridgeError::Invalid(format!("stored revision {revision_id} is unreadable: {error}")))
 }
 
-/// Connector authority for a run. Claude worktree runs also carry a policy:
-/// Isolated file access must not inherit MCP authority from user settings.
+/// Connector authority for one step's view of a run (a single-step
+/// definition is its own view). Claude worktree steps also carry a policy:
+/// Isolated file access must not inherit MCP authority from user settings. A
+/// Codex worktree step carries none: Codex cannot hold one, so it launches
+/// with every connector turned off instead (`ToolLaunch::connectors_off`).
 pub fn policy_for_definition(definition: &wire::WorkflowDefinition) -> Result<Option<BriefingRuntimePolicy>, BridgeError> {
+    let harness = definition.steps.first().map(|step| step.harness.as_str()).unwrap_or("");
     if definition.files == wire::WorkflowFiles::Worktree {
-        let harness = definition.steps.first().map(|step| step.harness.as_str()).unwrap_or("");
-        crate::briefing_policy::adapter_may_brief(harness)
-            .map_err(|refusal| BridgeError::Invalid(refusal.reason()))?;
+        workflows::worktree_step_allowed(harness).map_err(BridgeError::Invalid)?;
+        if harness == "codex" {
+            return Ok(None);
+        }
         return BriefingRuntimePolicy::compile_worktree_workflow(definition.budget)
             .map(Some)
             .map_err(|refusal| BridgeError::Invalid(refusal.reason()));
     }
+    workflows::connector_step_allowed(harness).map_err(BridgeError::Invalid)?;
     let servers = definition
         .grants
         .iter()
@@ -522,17 +567,22 @@ fn turn_outcome(
 fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
     let ClaimedRun { run, lease_owner, quota_verdict: quota } = claimed;
     let definition = revision_definition(&core.db.lock().unwrap(), &run.revision_id)?;
-    // Fail closed for definitions saved before every workflow required MCP isolation.
-    policy_for_definition(&definition)?;
-    let step = definition.steps.first().cloned().ok_or_else(|| BridgeError::Invalid("the revision has no step".into()))?;
+    if definition.steps.is_empty() {
+        return Err(BridgeError::Invalid("the revision has no step".into()));
+    }
+    // Fail closed for definitions saved before every workflow required MCP
+    // isolation: every step's view must hold before the first one starts.
+    for index in 0..definition.steps.len() {
+        policy_for_definition(&crate::workflow_steps::step_view(&definition, index, definition.budget))?;
+    }
 
-    // C11: your plan comes first.
+    // C11: your plan comes first, for every agent the run will use.
     let verdict = match quota {
         Some(verdict) => verdict,
         None => {
             let reserve = workflow_trigger::read_settings(&core.db.lock().unwrap())?.settings.quota_reserve_percent;
             let overviews = crate::usage_overview::provider_snapshots(core).ok();
-            quota_for_provider(overviews.as_ref(), step.harness.as_str(), reserve)
+            quota_for_providers(overviews.as_ref(), &step_harnesses(&definition), reserve)
         }
     };
     let quota_unknown = match verdict {
@@ -567,11 +617,75 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
         workflow_trigger::Slot::Queued | workflow_trigger::Slot::Lost => return Ok(()),
     }
 
-    let session_id = Uuid::new_v4().to_string();
-    let cwd = prepare_cwd(core, &run, &definition, &session_id)?;
     let mut events = workflow_trigger::run_events(&core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner), &run.id)?;
     // `gh` runs with the store unlocked.
     crate::workflow_events::enrich_github(&mut events, &crate::workflow_events::SystemGh);
+    let mut steps = Steps { definition: &definition, worktree: None, earlier: Vec::new(), spent: crate::workflow_steps::Spent::default() };
+    for index in 0..definition.steps.len() {
+        match run_step(core, &run, &lease_owner, &events, &mut steps, index, quota_unknown)? {
+            StepFlow::Next => {}
+            StepFlow::Done => return Ok(()),
+        }
+    }
+    Ok(())
+}
+
+/// What the steps of one run share as they go.
+struct Steps<'a> {
+    definition: &'a wire::WorkflowDefinition,
+    /// The run's worktree, once a step made it.
+    worktree: Option<PathBuf>,
+    earlier: Vec<crate::workflow_steps::Handoff>,
+    spent: crate::workflow_steps::Spent,
+}
+
+enum StepFlow {
+    /// The step finished its part; start the next.
+    Next,
+    /// The run is settled, or no longer this runner's.
+    Done,
+}
+
+/// "Step 2 of 3: " before a failed step's summary, in a multi-step run.
+fn step_summary(index: usize, count: usize, summary: Option<String>) -> Option<String> {
+    if count <= 1 {
+        return summary;
+    }
+    let text = summary.filter(|text| !text.trim().is_empty()).unwrap_or_else(|| "it did not finish.".into());
+    Some(format!("Step {} of {count}: {text}", index + 1))
+}
+
+/// Run step `index` to its end. The run settles here when the step does not
+/// finish its part, or when it is the last.
+fn run_step(
+    core: &Arc<BridgeCore>,
+    run: &wire::WorkflowRun,
+    lease_owner: &str,
+    events: &[wire::WorkflowEventSample],
+    steps: &mut Steps<'_>,
+    index: usize,
+    quota_unknown: bool,
+) -> Result<StepFlow, BridgeError> {
+    let definition = steps.definition;
+    let count = definition.steps.len();
+    let step = definition.steps[index].clone();
+    let Some(budget) = crate::workflow_steps::remaining(definition.budget, steps.spent) else {
+        let current = run.session_id.clone().unwrap_or_default();
+        settle(core, run, lease_owner, &current, wire::WorkflowRunStatus::Failed, Outcome {
+            failure_code: Some("budget_exhausted".into()),
+            summary: step_summary(index, count, Some("the run's budget was spent before this step could start.".into())),
+            quota_unknown,
+            ..Outcome::default()
+        })?;
+        return Ok(StepFlow::Done);
+    };
+    // Stopped between steps: start nothing more.
+    if !workflow_trigger::holds(&core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner), &run.id, lease_owner)? {
+        return Ok(StepFlow::Done);
+    }
+    let view = crate::workflow_steps::step_view(definition, index, budget);
+    let session_id = Uuid::new_v4().to_string();
+    let cwd = step_cwd(core, run, &view, &session_id, &mut steps.worktree)?;
     {
         let db = core.db.lock().unwrap();
         db.execute(
@@ -585,39 +699,102 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
                 WORKFLOW_SESSION_KIND,
                 definition.name.trim(),
                 cwd.to_string_lossy(),
-                run_brief(&definition),
+                crate::workflow_steps::step_brief(definition, index, &view),
             ],
         )?;
-        if !workflow_trigger::transition(&db, &run.id, &lease_owner, wire::WorkflowRunStatus::Running, Some(&session_id), Utc::now())? {
-            return Ok(());
+        crate::workflow_steps::start(&db, &run.id, index, &session_id, &step, &budget, Utc::now())?;
+        if !workflow_trigger::transition(&db, &run.id, lease_owner, wire::WorkflowRunStatus::Running, Some(&session_id), Utc::now())? {
+            return Ok(StepFlow::Done);
         }
     }
     workflow_trigger::publish_runs(core, std::slice::from_ref(&run.id));
 
-    // Stop pressed (or the workflow deleted) while the run was being set up:
+    // Stop pressed (or the workflow deleted) while the step was being set up:
     // its session has no provider yet, so nothing else can stop it. Do not
     // start one.
-    if !workflow_trigger::holds(&core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner), &run.id, &lease_owner)? {
-        return Ok(());
+    if !workflow_trigger::holds(&core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner), &run.id, lease_owner)? {
+        return Ok(StepFlow::Done);
     }
     let baseline = max_sequence(&core.db.lock().unwrap(), &session_id)?;
-    if let Err(error) = crate::live_turn::submit_workflow_turn(core, session_id.clone(), trigger_turn(&run, &events)) {
-        return settle(core, &run, &lease_owner, &session_id, wire::WorkflowRunStatus::Failed, Outcome {
+    let mut turn = trigger_turn(run, events);
+    let handoff = crate::workflow_steps::handoff_text(&steps.earlier);
+    if !handoff.is_empty() {
+        turn = format!("{turn}\n\n{handoff}");
+    }
+    if let Err(error) = crate::live_turn::submit_workflow_turn(core, session_id.clone(), turn) {
+        settle(core, run, lease_owner, &session_id, wire::WorkflowRunStatus::Failed, Outcome {
             failure_code: Some("provider_failed".into()),
-            summary: Some(error.to_string()),
+            summary: step_summary(index, count, Some(error.to_string())),
             quota_unknown,
             ..Outcome::default()
-        });
+        })?;
+        return Ok(StepFlow::Done);
     }
 
     let approval_wait = if run.trigger_kind == wire::WorkflowTriggerKind::Event { EVENT_APPROVAL_WAIT } else { APPROVAL_WAIT };
-    let end = wait_for_turn_within(core, &run, &lease_owner, &session_id, baseline, &definition.budget, approval_wait)?;
+    let mut worked = StdDuration::ZERO;
+    let end = wait_for_step(core, run, lease_owner, &session_id, baseline, &budget, approval_wait, &mut worked)?;
     let Some((status, outcome)) = turn_outcome(core, end, &session_id, baseline)? else {
         // Cancelled or reclaimed: someone else settled the run.
         stop(core, &session_id);
-        return Ok(());
+        return Ok(StepFlow::Done);
     };
-    settle(core, &run, &lease_owner, &session_id, status, Outcome { quota_unknown, ..outcome })
+    stop(core, &session_id);
+
+    // The step's own record, and what it spent of the run's budget.
+    {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let usage = usage_used(&db, &session_id)?;
+        let (turns, tool_calls) = step_counts(&db, &session_id, baseline)?;
+        crate::workflow_steps::finish(&db, &session_id, status, &crate::workflow_steps::StepEnd {
+            failure_code: outcome.failure_code.clone(),
+            summary: outcome.summary.clone(),
+            tokens: usage.tokens,
+            cost_microusd: usage.cost_microusd,
+        }, Utc::now())?;
+        let spent = &mut steps.spent;
+        spent.wall_seconds += worked.as_millis().div_ceil(1000) as i64;
+        spent.turns += turns;
+        spent.tool_calls += tool_calls;
+        spent.output_tokens += usage.output_tokens;
+        spent.cost_microusd += usage.known_cost_microusd;
+    }
+
+    let last = index + 1 == count;
+    if status != wire::WorkflowRunStatus::Succeeded || last {
+        let summary = if status == wire::WorkflowRunStatus::Succeeded { outcome.summary.clone() } else { step_summary(index, count, outcome.summary.clone()) };
+        settle(core, run, lease_owner, &session_id, status, Outcome { summary, quota_unknown, ..outcome })?;
+        return Ok(StepFlow::Done);
+    }
+    workflow_trigger::publish_runs(core, std::slice::from_ref(&run.id));
+    steps.earlier.push(crate::workflow_steps::Handoff {
+        index,
+        harness: step.harness.as_str().to_owned(),
+        summary: outcome.summary.unwrap_or_default(),
+    });
+    Ok(StepFlow::Next)
+}
+
+/// Where a step works: the run's worktree for a worktree step (made by the
+/// first such step, reused by the rest), otherwise the workflow home, or a
+/// scratch folder for a project workflow.
+fn step_cwd(
+    core: &Arc<BridgeCore>,
+    run: &wire::WorkflowRun,
+    view: &wire::WorkflowDefinition,
+    session_id: &str,
+    worktree: &mut Option<PathBuf>,
+) -> Result<PathBuf, BridgeError> {
+    if view.files == wire::WorkflowFiles::Worktree {
+        if let Some(path) = worktree.as_ref() {
+            return Ok(path.clone());
+        }
+    }
+    let cwd = prepare_cwd(core, run, view, session_id)?;
+    if view.files == wire::WorkflowFiles::Worktree {
+        *worktree = Some(cwd.clone());
+    }
+    Ok(cwd)
 }
 
 /// Where the run works: the workflow home, a scratch folder for a
@@ -679,6 +856,21 @@ fn max_sequence(db: &Connection, session_id: &str) -> Result<i64, BridgeError> {
     )?)
 }
 
+/// [`wait_for_step`] without the working time, for tests.
+#[cfg(test)]
+fn wait_for_turn_within(
+    core: &Arc<BridgeCore>,
+    run: &wire::WorkflowRun,
+    lease_owner: &str,
+    session_id: &str,
+    baseline: i64,
+    budget: &wire::WorkBriefLimits,
+    approval_wait: StdDuration,
+) -> Result<TurnEnd, BridgeError> {
+    let mut worked = StdDuration::ZERO;
+    wait_for_step(core, run, lease_owner, session_id, baseline, budget, approval_wait, &mut worked)
+}
+
 #[cfg(test)]
 fn wait_for_turn(
     core: &Arc<BridgeCore>,
@@ -691,12 +883,14 @@ fn wait_for_turn(
     wait_for_turn_within(core, run, lease_owner, session_id, baseline, budget, APPROVAL_WAIT)
 }
 
-/// [`wait_for_turn`] with the approval ceiling as a parameter, for tests.
+/// Wait for a step's turn to end.
 ///
 /// The time limit is the agent's working time. While the run waits for a
 /// person the clock is paused, so a write asked at 9:00 and answered at 9:40
 /// does not fail a ten-minute run; `approval_wait` bounds that wait instead.
-fn wait_for_turn_within(
+/// `worked` follows the working time so far, for the run's budget.
+#[allow(clippy::too_many_arguments)]
+fn wait_for_step(
     core: &Arc<BridgeCore>,
     run: &wire::WorkflowRun,
     lease_owner: &str,
@@ -704,12 +898,16 @@ fn wait_for_turn_within(
     baseline: i64,
     budget: &wire::WorkBriefLimits,
     approval_wait: StdDuration,
+    worked: &mut StdDuration,
 ) -> Result<TurnEnd, BridgeError> {
-    let mut deadline = Instant::now() + StdDuration::from_secs(budget.max_wall_seconds.max(1) as u64);
+    let started = Instant::now();
+    let mut deadline = started + StdDuration::from_secs(budget.max_wall_seconds.max(1) as u64);
     let mut last_heartbeat = Instant::now();
     let mut waiting = false;
     let mut waiting_since: Option<Instant> = None;
+    let mut waited = StdDuration::ZERO;
     loop {
+        *worked = started.elapsed().saturating_sub(waited + waiting_since.map(|since| since.elapsed()).unwrap_or_default());
         match waiting_since {
             Some(since) if since.elapsed() >= approval_wait => {
                 stop(core, session_id);
@@ -776,14 +974,21 @@ fn wait_for_turn_within(
         let now_waiting = status.as_deref() == Some("waiting");
         if now_waiting != waiting {
             let next = if now_waiting { wire::WorkflowRunStatus::WaitingApproval } else { wire::WorkflowRunStatus::Running };
-            if !workflow_trigger::transition(&core.db.lock().unwrap(), &run.id, lease_owner, next, None, Utc::now())? {
-                return Ok(TurnEnd::LeaseLost);
+            {
+                let db = core.db.lock().unwrap();
+                if !workflow_trigger::transition(&db, &run.id, lease_owner, next, None, Utc::now())? {
+                    return Ok(TurnEnd::LeaseLost);
+                }
+                crate::workflow_steps::set_waiting(&db, session_id, now_waiting)?;
             }
             workflow_trigger::publish_runs(core, std::slice::from_ref(&run.id));
             waiting = now_waiting;
             match waiting_since.take() {
                 // Answered: give back the time spent waiting.
-                Some(since) => deadline += since.elapsed(),
+                Some(since) => {
+                    deadline += since.elapsed();
+                    waited += since.elapsed();
+                }
                 None => waiting_since = Some(Instant::now()),
             }
         }
@@ -820,9 +1025,9 @@ fn last_message(db: &Connection, session_id: &str, baseline: i64) -> Result<Opti
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct RunUsage {
     pub tokens: Option<i64>,
-    output_tokens: i64,
+    pub output_tokens: i64,
     pub cost_microusd: Option<i64>,
-    known_cost_microusd: i64,
+    pub known_cost_microusd: i64,
 }
 
 // Workflow sessions have no workspace, so their ledger scope is the session
@@ -840,6 +1045,57 @@ pub(crate) fn usage_used(db: &Connection, session_id: &str) -> Result<RunUsage, 
         USAGE_SQL,
         params![session_id],
         |row| Ok(RunUsage { tokens: row.get(0)?, output_tokens: row.get(1)?, cost_microusd: row.get(2)?, known_cost_microusd: row.get(3)? }),
+    )?)
+}
+
+/// A run's usage: the sum over its steps' sessions, and `session_id` (the
+/// run's own session, for runs from before steps were recorded). Unknown
+/// cost anywhere keeps the total unknown, as for one session.
+pub(crate) fn run_usage(db: &Connection, run_id: &str, session_id: Option<&str>) -> Result<RunUsage, BridgeError> {
+    let mut sessions = crate::workflow_steps::sessions(db, run_id)?;
+    if let Some(session_id) = session_id {
+        if !sessions.iter().any(|known| known == session_id) {
+            sessions.push(session_id.to_owned());
+        }
+    }
+    let mut rows = 0_i64;
+    let mut priced = 0_i64;
+    let mut total = RunUsage::default();
+    for session in &sessions {
+        let (count, count_priced, tokens, output, known): (i64, i64, Option<i64>, i64, i64) = db.query_row(
+            "SELECT COUNT(*), COUNT(cost_microusd), SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)),
+                COALESCE(SUM(output_tokens),0), COALESCE(SUM(cost_microusd),0)
+             FROM usage_ledger WHERE workspace_id=?1 AND session_id=?1",
+            params![session],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )?;
+        rows += count;
+        priced += count_priced;
+        if let Some(tokens) = tokens {
+            total.tokens = Some(total.tokens.unwrap_or(0) + tokens);
+        }
+        total.output_tokens += output;
+        total.known_cost_microusd += known;
+    }
+    total.cost_microusd = (rows > 0 && rows == priced).then_some(total.known_cost_microusd);
+    Ok(total)
+}
+
+/// The assistant messages and tool calls of a session after `baseline`, as
+/// the budget counts them.
+fn step_counts(db: &Connection, session_id: &str, baseline: i64) -> Result<(i64, i64), BridgeError> {
+    Ok(db.query_row(
+        "SELECT COUNT(DISTINCT CASE
+            WHEN (kind IN ('assistant.message','message.completed')
+                  AND COALESCE(json_extract(payload,'$.role'),'assistant')='assistant')
+              OR (kind IN ('tool.started','command.started','file_change.started','reasoning.completed')
+                  AND json_extract(payload,'$.data.assistantMessageId') IS NOT NULL)
+            THEN COALESCE(json_extract(payload,'$.data.assistantMessageId'),json_extract(payload,'$.itemId'),id) END),
+          COUNT(DISTINCT CASE WHEN kind IN ('tool.started','command.started','file_change.started')
+            THEN COALESCE(json_extract(payload,'$.itemId'),id) END)
+         FROM session_entries WHERE session_id=?1 AND sequence>?2",
+        params![session_id, baseline],
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?)
 }
 
@@ -899,19 +1155,7 @@ pub(crate) fn record_claude_usage(
 }
 
 fn budget_reached(db: &Connection, session_id: &str, baseline: i64, budget: &wire::WorkBriefLimits) -> Result<bool, BridgeError> {
-    let (turns, tools): (i64, i64) = db.query_row(
-        "SELECT COUNT(DISTINCT CASE
-            WHEN (kind IN ('assistant.message','message.completed')
-                  AND COALESCE(json_extract(payload,'$.role'),'assistant')='assistant')
-              OR (kind IN ('tool.started','command.started','file_change.started','reasoning.completed')
-                  AND json_extract(payload,'$.data.assistantMessageId') IS NOT NULL)
-            THEN COALESCE(json_extract(payload,'$.data.assistantMessageId'),json_extract(payload,'$.itemId'),id) END),
-          COUNT(DISTINCT CASE WHEN kind IN ('tool.started','command.started','file_change.started')
-            THEN COALESCE(json_extract(payload,'$.itemId'),id) END)
-         FROM session_entries WHERE session_id=?1 AND sequence>?2",
-        params![session_id, baseline],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
+    let (turns, tools) = step_counts(db, session_id, baseline)?;
     let usage = usage_used(db, session_id)?;
     Ok(turns > budget.max_turns || tools > budget.max_tool_calls
         || budget.max_output_tokens.is_some_and(|limit| usage.output_tokens >= limit)
@@ -935,7 +1179,7 @@ fn settle(
     mut outcome: Outcome,
 ) -> Result<(), BridgeError> {
     stop(core, session_id);
-    let usage = usage_used(&core.db.lock().unwrap(), session_id)?;
+    let usage = run_usage(&core.db.lock().unwrap(), &run.id, Some(session_id).filter(|id| !id.is_empty()))?;
     outcome.tokens = usage.tokens;
     outcome.cost_microusd = usage.cost_microusd;
     if workflow_trigger::finish(&core.db.lock().unwrap(), &run.id, lease_owner, status, &outcome, Utc::now())? {
@@ -1599,9 +1843,165 @@ mod tests {
         for mode in [None, Some(WriteMode::ReadOnly), Some(WriteMode::Shared), Some(WriteMode::Full)] {
             assert!(policy.check_launch_write_mode(mode).is_err());
         }
-        for harness in ["codex", "opencode"] {
-            definition.steps[0].harness = wire::HarnessId::parse(harness).unwrap();
-            assert!(policy_for_definition(&definition).is_err());
+        definition.steps[0].harness = wire::HarnessId::parse("opencode").unwrap();
+        assert!(policy_for_definition(&definition).is_err());
+        definition.steps[0].harness = wire::HarnessId::parse("codex").unwrap();
+        assert_eq!(policy_for_definition(&definition).unwrap(), None, "Codex launches with every connector off instead");
+    }
+
+    // --- several steps ------------------------------------------------------------------
+
+    /// Two Claude steps, no project: step 1 reads Slack, step 2 writes Gmail.
+    fn two_steps() -> wire::WorkflowDefinition {
+        let mut definition = test_support::definition();
+        let mut second = definition.steps[0].clone();
+        definition.steps[0].servers = Some(vec!["claude_ai_Slack".into()]);
+        second.instructions = "Email the summary.".into();
+        second.model = "sonnet".into();
+        second.servers = Some(vec!["claude_ai_Gmail".into()]);
+        definition.steps.push(second);
+        definition.grants.push(wire::WorkflowGrant { server: "claude_ai_Gmail".into(), read: false, write: wire::WorkflowWriteAccess::Ask });
+        definition.always_allow = vec!["mcp__claude_ai_Gmail__send_email".into()];
+        definition
+    }
+
+    fn step_session(core: &Arc<BridgeCore>, run: &ClaimedRun, definition: &wire::WorkflowDefinition, index: usize, session: &str) {
+        let db = core.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth) VALUES(?1,NULL,'claude','Workflow','working','reported','workflow',0)",
+            params![session],
+        )
+        .unwrap();
+        crate::workflow_steps::start(&db, &run.run.id, index, session, &definition.steps[index], &definition.budget, Utc::now()).unwrap();
+        assert!(workflow_trigger::transition(&db, &run.run.id, &run.lease_owner, wire::WorkflowRunStatus::Running, Some(session), Utc::now()).unwrap());
+    }
+
+    #[test]
+    fn each_step_session_runs_under_its_own_grants() {
+        let (dir, core) = test_support::core();
+        let definition = two_steps();
+        let run = bound_run(&core, dir.path(), &definition, false);
+        step_session(&core, &run, &definition, 0, "step-1");
+        step_session(&core, &run, &definition, 1, "step-2");
+        let db = core.db.lock().unwrap();
+        let servers = |session: &str| {
+            policy_for_session(&db, session).unwrap().unwrap().workflow_servers().unwrap().iter().map(|scope| scope.key.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(servers("step-1"), ["claude_ai_Slack"]);
+        assert_eq!(servers("step-2"), ["claude_ai_Gmail"], "Slack, granted to step 1, is not in step 2's policy");
+        let (bound, view) = run_for_session(&db, "step-2").unwrap().unwrap();
+        assert_eq!(bound.id, run.run.id);
+        assert_eq!(view.steps[0].instructions, "Email the summary.");
+        // Gmail's send is always allowed in the step that has Gmail, and
+        // nowhere else.
+        let send = ask("mcp__claude_ai_Gmail__send_email", "done");
+        assert!(matches!(permission_decision(&db, "step-2", &send).unwrap(), Some(PermissionDecision::Accept(_))));
+        assert_eq!(permission_decision(&db, "step-1", &ask("mcp__claude_ai_Gmail__send_email", "other")).unwrap(), None, "step 1 is never always-allowed Gmail");
+        assert_eq!(write_mode_for_session(&db, "step-2").unwrap(), None);
+    }
+
+    #[test]
+    fn a_write_repeated_in_a_later_step_is_one_effect() {
+        let (dir, core) = test_support::core();
+        let mut definition = two_steps();
+        definition.steps[0].servers = Some(vec!["claude_ai_Slack".into(), "claude_ai_Gmail".into()]);
+        let run = bound_run(&core, dir.path(), &definition, false);
+        step_session(&core, &run, &definition, 0, "step-1");
+        step_session(&core, &run, &definition, 1, "step-2");
+        let db = core.db.lock().unwrap();
+        let send = ask("mcp__claude_ai_Gmail__send_email", "hello");
+        assert!(matches!(permission_decision(&db, "step-1", &send).unwrap(), Some(PermissionDecision::Accept(_))));
+        let again = permission_decision(&db, "step-2", &send).unwrap();
+        assert!(matches!(again, Some(PermissionDecision::Decline(reason)) if reason.contains("already ran")));
+        assert_eq!(effects(&db, &run.run.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_runs_usage_is_the_sum_of_its_steps() {
+        let (dir, core) = test_support::core();
+        let definition = two_steps();
+        let run = bound_run(&core, dir.path(), &definition, false);
+        step_session(&core, &run, &definition, 0, "step-1");
+        step_session(&core, &run, &definition, 1, "step-2");
+        let db = core.db.lock().unwrap();
+        ledger(&db, "step-1", 10, 5, Some(100));
+        ledger(&db, "step-2", 20, 7, Some(300));
+        let usage = run_usage(&db, &run.run.id, Some("step-2")).unwrap();
+        assert_eq!((usage.tokens, usage.output_tokens, usage.cost_microusd), (Some(42), 12, Some(400)));
+        ledger(&db, "step-2", 1, 1, None);
+        let usage = run_usage(&db, &run.run.id, None).unwrap();
+        assert_eq!((usage.cost_microusd, usage.known_cost_microusd), (None, 400), "unknown anywhere is unknown, and known spend stays a lower bound");
+        assert_eq!(run_usage(&db, "no-run", None).unwrap(), RunUsage::default());
+    }
+
+    #[test]
+    fn settling_a_run_without_its_runner_closes_its_open_step() {
+        let (dir, core) = test_support::core();
+        let definition = two_steps();
+        let now = Utc::now();
+        for (label, settle) in [
+            ("interrupted", Box::new(|db: &Connection, _: &str| { workflow_trigger::settle_interrupted(db, Utc::now()).unwrap(); }) as Box<dyn Fn(&Connection, &str)>),
+            ("cancelled", Box::new(|db: &Connection, run: &str| { workflow_trigger::cancel(db, run, Utc::now()).unwrap(); })),
+            ("lease_expired", Box::new(|db: &Connection, _: &str| { workflow_trigger::reclaim_expired(db, Utc::now() + chrono::Duration::hours(1)).unwrap(); })),
+        ] {
+            let run = bound_run(&core, dir.path(), &definition, false);
+            let first = format!("{label}-1");
+            step_session(&core, &run, &definition, 0, &first);
+            let db = core.db.lock().unwrap();
+            crate::workflow_steps::finish(&db, &first, wire::WorkflowRunStatus::Succeeded, &crate::workflow_steps::StepEnd::default(), now).unwrap();
+            drop(db);
+            step_session(&core, &run, &definition, 1, &format!("{label}-2"));
+            let db = core.db.lock().unwrap();
+            settle(&db, &run.run.id);
+            let settled = workflow_trigger::require_run(&db, &run.run.id).unwrap();
+            assert!(!settled.status.is_active(), "{label}");
+            assert_eq!(settled.steps.len(), 2, "{label}: no third step");
+            assert_eq!(settled.steps[0].status, wire::WorkflowRunStatus::Succeeded, "{label}: a finished step keeps its end");
+            assert!(settled.steps[1].finished_at.is_some(), "{label}: the open step is closed");
+            assert_eq!(settled.steps[1].status, settled.status, "{label}");
+            db.execute_batch("DELETE FROM workflows; DELETE FROM sessions WHERE id='run-session';").unwrap();
         }
     }
+
+    #[test]
+    fn a_step_left_with_no_budget_fails_the_run_without_starting() {
+        let (dir, core) = test_support::core();
+        let definition = two_steps();
+        let run = bound_run(&core, dir.path(), &definition, false);
+        let mut steps = Steps {
+            definition: &definition,
+            worktree: None,
+            earlier: Vec::new(),
+            spent: crate::workflow_steps::Spent { turns: definition.budget.max_turns, ..Default::default() },
+        };
+        let sessions_before: i64 = core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0)).unwrap();
+        assert!(matches!(run_step(&core, &run.run, &run.lease_owner, &[], &mut steps, 1, false).unwrap(), StepFlow::Done));
+        let db = core.db.lock().unwrap();
+        let settled = workflow_trigger::require_run(&db, &run.run.id).unwrap();
+        assert_eq!(settled.status, wire::WorkflowRunStatus::Failed);
+        assert_eq!(settled.failure_code.as_deref(), Some("budget_exhausted"));
+        assert!(settled.summary.as_deref().unwrap().starts_with("Step 2 of 2: "), "{:?}", settled.summary);
+        let sessions_after: i64 = db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0)).unwrap();
+        assert_eq!(sessions_after, sessions_before, "no session for a step that never started");
+        assert!(settled.steps.is_empty());
+    }
+
+    #[test]
+    fn a_failed_steps_summary_names_the_step_only_when_there_are_several() {
+        assert_eq!(step_summary(1, 3, Some("No bugs found.".into())).as_deref(), Some("Step 2 of 3: No bugs found."));
+        assert_eq!(step_summary(0, 2, None).as_deref(), Some("Step 1 of 2: it did not finish."));
+        assert_eq!(step_summary(0, 1, Some("x".into())).as_deref(), Some("x"));
+        assert_eq!(step_summary(0, 1, None), None);
+    }
+
+    #[test]
+    fn a_run_waits_while_any_of_its_agents_is_above_the_reserve() {
+        let room = |unknown| QuotaVerdict::Proceed { unknown };
+        assert_eq!(combined_verdict([room(false), QuotaVerdict::Wait, room(true)]), QuotaVerdict::Wait);
+        assert_eq!(combined_verdict([room(false), room(false)]), room(false));
+        assert_eq!(combined_verdict([room(false), room(true)]), room(true));
+        assert_eq!(quota_for_providers(None, &["claude".to_owned(), "codex".to_owned()], 20), room(true), "no snapshot is unknown, never a wait");
+        assert_eq!(step_harnesses(&test_support::three_steps()), ["claude", "codex"]);
+    }
+
 }

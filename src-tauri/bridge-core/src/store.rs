@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 94;
+const LATEST_SCHEMA_VERSION: i64 = 95;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -836,6 +836,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // App trigger reads: what each Gmail, Linear or Notion read found,
             // and when it last ran. See `workflow_ingress`.
             94 => crate::workflow_ingress::install_store(&transaction)?,
+            // Multi-step workflows: each started step of a run, with its own
+            // session. See `workflow_steps`.
+            95 => crate::workflow_steps::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"

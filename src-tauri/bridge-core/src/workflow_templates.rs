@@ -222,6 +222,8 @@ fn build(spec: &Spec, context: &DraftContext, harness: &wire::HarnessId) -> wire
             model: context.model.clone(),
             effort: None,
             instructions: spec.instructions.to_owned(),
+            servers: None,
+            files: None,
         }],
         trigger,
         grants,

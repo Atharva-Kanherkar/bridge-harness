@@ -276,6 +276,14 @@
         "status": {
           "$ref": "#/definitions/WorkflowRunStatus"
         },
+        "steps": {
+          "default": [],
+          "description": "The steps that started, in order. Steps not listed have not started.",
+          "items": {
+            "$ref": "#/definitions/WorkflowRunStep"
+          },
+          "type": "array"
+        },
         "summary": {
           "type": [
             "string",
@@ -343,6 +351,77 @@
           "type": "string"
         }
       ]
+    },
+    "WorkflowRunStep": {
+      "description": "One started step of a run.",
+      "properties": {
+        "costMicrousd": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "failureCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "finishedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "harness": {
+          "$ref": "#/definitions/HarnessId"
+        },
+        "index": {
+          "description": "0 for the first step.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "model": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "startedAt": {
+          "type": "string"
+        },
+        "status": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WorkflowRunStatus"
+            }
+          ],
+          "description": "`running` or `waiting_approval` while it works, then how it ended."
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "harness",
+        "index",
+        "model",
+        "sessionId",
+        "startedAt",
+        "status"
+      ],
+      "type": "object"
     },
     "WorkflowSummary": {
       "description": "One row of the workflow list.",

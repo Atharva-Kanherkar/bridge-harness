@@ -7467,11 +7467,11 @@ pub(crate) fn workflow_harness_options(core: &Arc<BridgeCore>) -> Vec<wire::Work
             let default_model = workflow_default_model(resolved, &descriptor.models);
             wire::WorkflowHarnessOption {
                 connectors_allowed: gate.is_ok(),
-                // Validation refuses every workflow, worktree jobs included,
-                // on an adapter that cannot hold its run to exact tools (a
-                // worktree run must still be kept from MCP). Offer what save
-                // accepts; `connectors_reason` says why not.
-                worktree_allowed: gate.is_ok(),
+                // A worktree step must still be kept from every connector:
+                // Claude by exact tools, Codex by launching with every
+                // connector off. Offer what save accepts; `connectors_reason`
+                // says why not.
+                worktree_allowed: crate::workflows::worktree_step_allowed(&descriptor.id).is_ok(),
                 connectors_reason: gate.err().map(|refusal| refusal.reason()),
                 default_model,
                 models: descriptor

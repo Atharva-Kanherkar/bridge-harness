@@ -144,7 +144,7 @@ pub struct WorkflowGrant {
     pub write: WorkflowWriteAccess,
 }
 
-/// One step of a workflow. Phase 1 accepts exactly one.
+/// One step of a workflow. Steps run in order, each in its own session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkflowStep {
@@ -153,6 +153,14 @@ pub struct WorkflowStep {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
     pub instructions: String,
+    /// The workflow's granted servers this step may use. Unset means every
+    /// grant, as in a single-step workflow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub servers: Option<Vec<String>>,
+    /// Whether this step works in the run's worktree. Unset means the
+    /// workflow's own `files`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<WorkflowFiles>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
@@ -357,6 +365,28 @@ pub struct WorkflowRun {
     /// How many events it carries: 1 for one event, more for a batch.
     #[serde(default)]
     pub event_count: i64,
+    /// The steps that started, in order. Steps not listed have not started.
+    #[serde(default)]
+    pub steps: Vec<WorkflowRunStep>,
+}
+
+/// One started step of a run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRunStep {
+    /// 0 for the first step.
+    pub index: i64,
+    pub harness: HarnessId,
+    pub model: String,
+    /// `running` or `waiting_approval` while it works, then how it ended.
+    pub status: WorkflowRunStatus,
+    pub session_id: String,
+    pub failure_code: Option<String>,
+    pub summary: Option<String>,
+    pub tokens: Option<i64>,
+    pub cost_microusd: Option<i64>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -643,6 +673,38 @@ mod tests {
         assert!(serde_json::from_value::<WriteWorkflowSettingsParams>(json!({ "settings": { "paused": false, "quotaReservePercent": 25, "x": 1 } })).is_err());
         assert_eq!(serde_json::to_value(WorkflowRunStatus::WaitingApproval).unwrap(), json!("waiting_approval"));
         assert_eq!(serde_json::to_value(WorkflowTriggerKind::CatchUp).unwrap(), json!("catch_up"));
+    }
+
+    #[test]
+    fn a_step_names_its_own_servers_and_files_only_when_set() {
+        let mut value = definition();
+        value["steps"][0]["servers"] = json!(["claude_ai_Slack"]);
+        value["steps"].as_array_mut().unwrap().push(json!({
+            "harness": "codex", "model": "gpt-5.5", "instructions": "Fix it.", "servers": [], "files": "worktree"
+        }));
+        let parsed: WorkflowDefinition = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(parsed.steps[0].servers.as_deref(), Some(&["claude_ai_Slack".to_owned()][..]));
+        assert_eq!(parsed.steps[0].files, None);
+        assert_eq!(parsed.steps[1].files, Some(WorkflowFiles::Worktree));
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), value);
+        // Unset is absent, so a Phase 1 step reads back as it was written.
+        let plain: WorkflowDefinition = serde_json::from_value(definition()).unwrap();
+        assert_eq!(serde_json::to_value(&plain).unwrap(), definition());
+        let mut unknown = definition();
+        unknown["steps"][0]["grants"] = json!([]);
+        assert!(serde_json::from_value::<WorkflowDefinition>(unknown).is_err(), "a step still refuses unknown fields");
+    }
+
+    #[test]
+    fn a_run_from_before_steps_reads_with_none() {
+        let run = json!({
+            "id": "r", "workflowId": "w", "revisionId": "v", "triggerKind": "manual", "missedSlots": 0, "dryRun": false,
+            "status": "succeeded", "failureCode": null, "summary": null, "sessionId": "s", "quotaUnknown": false,
+            "costMicrousd": null, "tokens": null, "unread": false, "scheduledFor": null, "startedAt": null,
+            "finishedAt": null, "createdAt": "now"
+        });
+        let parsed: WorkflowRun = serde_json::from_value(run).unwrap();
+        assert!(parsed.steps.is_empty());
     }
 
     #[test]
