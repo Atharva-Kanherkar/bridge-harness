@@ -1029,6 +1029,53 @@ html[data-native-fullscreen] .u-traffic-inset {
   animation-delay: var(--github-row-delay, 0ms);
 }
 
+/* ── Trails · scroll motion ─────────────────────────────────────────────────
+   Rows rise in one after another on first paint (the per-row delay is an
+   inline custom property because it is an index, capped in `riseDelay`), the
+   timeline's spine draws downward with them, and below the fold each event
+   fades up as it scrolls into view. The reveal is scroll-driven, so it only
+   exists where `animation-timeline: view()` does; elsewhere rows just sit
+   there. Reduced motion: the global freeze settles the rise and the draw at
+   their last frame, and the reveal is removed outright because a
+   scroll-driven animation ignores durations. */
+@keyframes trail-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.trail-rise {
+  animation: trail-rise 0.42s var(--ease-out-bridge) both;
+  animation-delay: var(--trail-rise-delay, 0ms);
+}
+
+@keyframes trail-draw {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+
+.trail-draw {
+  transform-origin: top;
+  animation: trail-draw 0.56s var(--ease-out-bridge) both;
+  animation-delay: calc(var(--trail-rise-delay, 0ms) + 120ms);
+}
+
+@keyframes trail-reveal {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@supports (animation-timeline: view()) {
+  .trail-reveal {
+    animation: trail-reveal linear both;
+    animation-timeline: view();
+    animation-range: entry 0% entry 70%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trail-reveal { animation: none; }
+}
+
 /* ── GitHub pane · merge flow (issue #1028) ─────────────────────────────────
    One motion system with the merge animation as its hero. Everything animates
    transform, opacity, grid-template-rows or SVG stroke-dashoffset /

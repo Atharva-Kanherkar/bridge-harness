@@ -2,6 +2,7 @@ import { Route } from "lucide-react";
 import { ScreenHeading } from "@/components/ui/screen";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 import { clsx as cn } from "clsx";
+import { TrailScroll } from "./TrailParts";
 
 // Placeholders shaped like the Trails screens, from the skeleton kit. They
 // load with App (not with the lazy Trails chunk) so the Suspense fallback can
@@ -109,20 +110,24 @@ export function TrailHeaderSkeleton() {
 export function TrailsScreenSkeleton({ trailOpen }: { trailOpen: boolean }) {
   if (!trailOpen) {
     return (
-      <div className="mx-auto w-full max-w-page px-5 pb-12 pt-6 sm:px-8">
-        <ScreenHeading title="Trails" />
-        <TrailListSkeleton />
-      </div>
+      <TrailScroll title="Trails">
+        <div className="mx-auto w-full max-w-page px-5 pb-12 pt-6 sm:px-8">
+          <ScreenHeading title="Trails" />
+          <TrailListSkeleton />
+        </div>
+      </TrailScroll>
     );
   }
   return (
-    <div className="mx-auto w-full max-w-page-wide px-5 pb-12 pt-6 sm:px-8">
-      <p className="mb-2 flex items-center gap-1 text-caption text-muted-foreground"><Route className="size-3.5" aria-hidden="true" />Trails</p>
-      <div className="mb-6"><TrailHeaderSkeleton /></div>
-      <div className="flex flex-col gap-8 lg:flex-row">
-        <div className="min-w-0 flex-1"><TrailTimelineSkeleton /></div>
-        <div className="w-full shrink-0 lg:w-72"><TrailRailSkeleton /></div>
+    <TrailScroll wide title="Trails">
+      <div className="mx-auto w-full max-w-page-wide px-5 pb-12 pt-6 sm:px-8">
+        <p className="mb-2 flex items-center gap-1 text-caption text-muted-foreground"><Route className="size-3.5" aria-hidden="true" />Trails</p>
+        <div className="mb-6"><TrailHeaderSkeleton /></div>
+        <div className="flex flex-col gap-8 lg:flex-row">
+          <div className="min-w-0 flex-1"><TrailTimelineSkeleton /></div>
+          <div className="w-full shrink-0 lg:w-72"><TrailRailSkeleton /></div>
+        </div>
       </div>
-    </div>
+    </TrailScroll>
   );
 }
