@@ -5,6 +5,8 @@ import { HarnessMark } from "./harnessMarks";
 import { chatName } from "./sidebarChats";
 import { formatElapsed, runningDetail, type RunningChat } from "../sidebarRunning";
 import { harnessLabel } from "../utils";
+import type { TrailSummary } from "../protocol/generated/protocol";
+import { SidebarTrailButton } from "./trails/SidebarTrailButton";
 
 /**
  * One clock for the whole group, ticking once a second: every row's timer
@@ -27,33 +29,47 @@ function useSecondClock(): number {
   return now;
 }
 
-function RunningRow({ row, now, active, onOpen }: { row: RunningChat; now: number; active: boolean; onOpen: () => void }) {
+function RunningRow({ row, now, active, onOpen, trail, onOpenTrail }: {
+  row: RunningChat;
+  now: number;
+  active: boolean;
+  onOpen: () => void;
+  trail?: TrailSummary;
+  onOpenTrail?: (trailId: string) => void;
+}) {
   const name = chatName(row.chat);
   const detail = runningDetail(row);
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      data-running-row={row.chat.id}
+    <div
+      data-running-row-frame={row.chat.id}
       data-active={active || undefined}
       className={clsx(
-        "flex h-11 w-full min-w-0 shrink-0 items-center gap-2 rounded-md pl-2 text-left font-sans transition-colors active:scale-[0.99]",
+        "group/row flex shrink-0 items-center rounded-md transition-colors",
         active ? "bg-selection text-selection-foreground" : "hover:bg-accent",
       )}
     >
-      <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
-        {/* The hover names the chat in full on the name itself: the row's own
-            title stays with the chat's row in its project folder. */}
-        <span title={`${row.chat.titleLadder?.at(-1) ?? name} · ${harnessLabel(row.chat.harness)}`} className={clsx("min-w-0 truncate text-ui leading-4 tracking-[-0.008em] text-foreground", active && "font-medium")}>{name}</span>
-        <span className="flex min-w-0 items-center gap-1.5 text-caption leading-3.5 tracking-[-0.004em] text-muted-foreground">
-          <span data-active-dot aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-info motion-safe:animate-pulse" />
-          <span data-running-elapsed className="shrink-0 tabular-nums text-info">{formatElapsed(now - row.since)}</span>
-          <span aria-hidden="true">·</span>
-          <span data-running-detail={detail.tone} className={clsx("min-w-0 truncate", detail.tone === "needsYou" && "text-warning")}>{detail.text}</span>
+      <button
+        type="button"
+        onClick={onOpen}
+        data-running-row={row.chat.id}
+        data-active={active || undefined}
+        className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-md pl-2 text-left font-sans transition-transform active:scale-[0.99]"
+      >
+        <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
+          {/* The hover names the chat in full on the name itself: the row's own
+              title stays with the chat's row in its project folder. */}
+          <span title={`${row.chat.titleLadder?.at(-1) ?? name} · ${harnessLabel(row.chat.harness)}`} className={clsx("min-w-0 truncate text-ui leading-4 tracking-[-0.008em] text-foreground", active && "font-medium")}>{name}</span>
+          <span className="flex min-w-0 items-center gap-1.5 text-caption leading-3.5 tracking-[-0.004em] text-muted-foreground">
+            <span data-active-dot aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-info motion-safe:animate-pulse" />
+            <span data-running-elapsed className="shrink-0 tabular-nums text-info">{formatElapsed(now - row.since)}</span>
+            <span aria-hidden="true">·</span>
+            <span data-running-detail={detail.tone} className={clsx("min-w-0 truncate", detail.tone === "needsYou" && "text-warning")}>{detail.text}</span>
+          </span>
         </span>
-      </span>
-      <HarnessMark harness={row.chat.harness} size={13} className={clsx("mr-2 shrink-0", !active && "text-muted-foreground")} />
-    </button>
+      </button>
+      {trail && onOpenTrail && <SidebarTrailButton trail={trail} onOpenTrail={onOpenTrail} />}
+      <HarnessMark harness={row.chat.harness} size={13} className={clsx("mx-2 shrink-0", !active && "text-muted-foreground")} />
+    </div>
   );
 }
 
@@ -69,10 +85,13 @@ const COLLAPSED_KEY = "bridge.sidebar.active.collapsed";
  * grid button beside the heading opens it. Folded, the group is its heading
  * and a count; the choice holds across launches.
  */
-export function SidebarRunning({ rows, activeSessionId, onOpenSession, onOpenMissionControl, missionControlActive = false }: {
+export function SidebarRunning({ rows, activeSessionId, onOpenSession, onOpenMissionControl, missionControlActive = false, trailBySession, onOpenTrail }: {
   rows: readonly RunningChat[];
   activeSessionId?: string;
   onOpenSession: (id: string) => void;
+  /** Each chat's trail: a running chat on one shows the trail button on hover. */
+  trailBySession?: ReadonlyMap<string, TrailSummary>;
+  onOpenTrail?: (trailId: string) => void;
   onOpenMissionControl?: () => void;
   missionControlActive?: boolean;
 }) {
@@ -131,6 +150,8 @@ export function SidebarRunning({ rows, activeSessionId, onOpenSession, onOpenMis
               now={now}
               active={row.chat.id === activeSessionId}
               onOpen={() => onOpenSession(row.chat.id)}
+              trail={trailBySession?.get(row.chat.id)}
+              onOpenTrail={onOpenTrail}
             />
           ))}
         </div>

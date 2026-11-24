@@ -6,7 +6,9 @@ import type { AppKey, BadgeText, LaunchEntry } from "../apps/registry";
 import { HarnessMark } from "./harnessMarks";
 import { FittedTitle } from "./FittedTitle";
 import type { AgentEvent, AttentionKind, Session, SessionStatus, Workspace } from "../types";
-import type { SessionPullRequest } from "../protocol/generated/protocol";
+import type { SessionPullRequest, TrailSummary } from "../protocol/generated/protocol";
+import { SidebarTrailButton } from "./trails/SidebarTrailButton";
+import { trailsBySession } from "../trails";
 import { PullRequestGlyph, type SidebarPullRequests } from "./ChatPullRequests";
 import { SHELF_TONE } from "./WorkShelf";
 import { sidebarPrChip } from "../workSummary";
@@ -112,6 +114,8 @@ function ChatRow({
   liveAgents,
   unread,
   pullRequests,
+  trail,
+  onOpenTrail,
   onPrefetch,
   onMarkRead,
   onMarkUnread,
@@ -137,6 +141,9 @@ function ChatRow({
   unread?: AttentionKind;
   /** PRs linked to this chat; the row shows the most urgent one. */
   pullRequests?: SessionPullRequest[];
+  /** The trail this chat sits on: hovering the row shows its button, hovering that shows the trail. */
+  trail?: TrailSummary;
+  onOpenTrail?: (trailId: string) => void;
 }) {
   const name = chatName(chat);
   // The hover names the chat in full: the ladder's longest rung, whatever width shows.
@@ -216,6 +223,7 @@ function ChatRow({
         composer recognizes — and the mention action drops the same alias
         straight into the open chat's draft. Sibling of the row button, never
         a descendant of it: a <button> inside a <button> is invalid HTML. */}
+    {trail && onOpenTrail && <SidebarTrailButton trail={trail} onOpenTrail={onOpenTrail} />}
     <ChatRowMenu
       chat={chat}
       name={name}
@@ -602,6 +610,9 @@ export type BridgeSidebarProps = {
   unread?: Readonly<Record<string, AttentionKind>>;
   /** Session id to the pull requests linked to that chat. */
   pullRequests?: SidebarPullRequests;
+  /** Trails, for the trail button and card on a chat's row. */
+  trails?: readonly TrailSummary[];
+  onOpenTrail?: (trailId: string) => void;
   /** Only for `Group by → Project` labels; the tree itself lives on the projects
    * screen now. */
   workspaces: Workspace[];
@@ -672,6 +683,8 @@ export function BridgeSidebar({
   subagents,
   unread,
   pullRequests,
+  trails,
+  onOpenTrail,
   workspaces,
   activeSessionId,
   settingsActive,
@@ -862,6 +875,7 @@ export function BridgeSidebar({
 
   const agents = useMemo(() => agentOptions(chats), [chats]);
   const chatsById = useMemo(() => new Map(chats.map(chat => [chat.id, chat])), [chats]);
+  const trailBySession = useMemo(() => trailsBySession(trails ?? []), [trails]);
   const workspaceTitle = useMemo(() => {
     const titles = new Map(workspaces.map(workspace => [workspace.id, workspace.title]));
     return (id: string | null | undefined) => (id ? titles.get(id) : undefined);
@@ -1053,6 +1067,8 @@ export function BridgeSidebar({
             rows={running}
             activeSessionId={activeSessionId}
             onOpenSession={onOpenSession}
+            trailBySession={trailBySession}
+            onOpenTrail={onOpenTrail}
             onOpenMissionControl={() => onOpenApp("mission-control")}
             missionControlActive={activeApp === "mission-control"}
           />
@@ -1140,6 +1156,8 @@ export function BridgeSidebar({
                     liveAgents={liveAgents?.get(chat.id)?.length}
                     unread={unread?.[chat.id]}
                     pullRequests={pullRequests?.[chat.id]}
+                    trail={trailBySession.get(chat.id)}
+                    onOpenTrail={onOpenTrail}
                     onMarkRead={onMarkChatRead && (() => onMarkChatRead(chat.id))}
                     onMarkUnread={onMarkChatUnread && (() => onMarkChatUnread(chat.id))}
                   />

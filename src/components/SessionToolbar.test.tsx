@@ -249,3 +249,29 @@ describe("SessionToolbar", () => {
     expect(onOpenPane).toHaveBeenCalledWith("tasks");
   });
 });
+
+describe("SessionToolbar trail chip", () => {
+  const trail = {
+    id: "trail-1", title: "Archive a chat", state: "inProgress", stage: 2, harnesses: [], sessionIds: ["s1"], memberCount: 2,
+    createdAt: "2026-11-20T00:00:00Z", updatedAt: "2026-11-20T00:00:00Z",
+  } as const;
+
+  it("opens the trail on click and offers no Add to trail while on one", () => {
+    const onOpenTrail = vi.fn();
+    mount({ trail: { ...trail, harnesses: [], sessionIds: ["s1"] }, onOpenTrail, onAddToTrail: vi.fn() });
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="trail-chip"]')!;
+    expect(chip.textContent).toBe("Archive a chat");
+    expect(chip.getAttribute("aria-label")).toBe("Open trail Archive a chat");
+    click(chip);
+    expect(onOpenTrail).toHaveBeenCalledWith("trail-1");
+    click(overflow());
+    expect(menu()!.textContent).not.toContain("Add to trail");
+  });
+
+  it("offers Add to trail when the chat is on none", () => {
+    mount({ onOpenTrail: vi.fn(), onAddToTrail: vi.fn() });
+    expect(container.querySelector('[data-testid="trail-chip"]')).toBeNull();
+    click(overflow());
+    expect(menu()!.textContent).toContain("Add to trail");
+  });
+});

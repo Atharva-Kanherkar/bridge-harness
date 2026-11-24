@@ -60,20 +60,21 @@ export function TrailPeekCard({ trail, detail, failed, onOpen }: {
   return (
     <div data-trail-peek={trail.id} className="flex flex-col">
       <div className="px-3.5 pb-3 pt-3">
-        <p className="flex items-center gap-1.5 text-caption text-faint">
-          <Route className="size-3" aria-hidden="true" />Trail
-        </p>
-        <p className="mt-1 line-clamp-2 text-ui font-semibold leading-snug text-foreground">{summary.title}</p>
-        <div className="mt-2 flex items-center gap-2">
-          <StateWord state={summary.state} />
-          <StageBar stage={summary.stage} state={summary.state} />
-          <span className="text-caption text-faint">{stageLabel(summary.stage)}</span>
+        <div className="flex items-center gap-1.5 text-caption text-faint">
+          <Route className="size-3" aria-hidden="true" />
+          <span className="flex-1">Trail</span>
           {chats > 0 && (
-            <span className="ml-auto flex shrink-0 items-center gap-1 text-caption text-muted-foreground">
+            <span className="flex shrink-0 items-center gap-1 text-muted-foreground">
               {summary.harnesses.map(item => <HarnessMark key={item.harness} harness={item.harness} size={11} />)}
               <span className="ml-0.5 tabular-nums">{chats} {chats === 1 ? "chat" : "chats"}</span>
             </span>
           )}
+        </div>
+        <p className="mt-1 line-clamp-2 text-ui font-semibold leading-snug text-foreground">{summary.title}</p>
+        <div className="mt-2 flex items-center gap-2 whitespace-nowrap">
+          <StateWord state={summary.state} />
+          <StageBar stage={summary.stage} state={summary.state} />
+          <span className="truncate text-caption text-faint">{stageLabel(summary.stage)}</span>
         </div>
         {summary.needsYouReason && (
           <p className="mt-2.5 flex items-start gap-2 rounded-lg bg-warning/10 px-2.5 py-1.5 text-caption text-foreground">
@@ -104,9 +105,11 @@ export function TrailPeekCard({ trail, detail, failed, onOpen }: {
               const Icon = KIND_ICON[event.kind];
               return (
                 <li key={event.id} data-peek-event={event.kind} className="flex h-7 items-center gap-2 px-2">
-                  {event.harness
-                    ? <HarnessMark harness={event.harness} size={12} className="shrink-0" />
-                    : <Icon className={cn("size-3.5 shrink-0", TONE_INK[event.tone])} />}
+                  <span className="flex size-3.5 shrink-0 items-center justify-center">
+                    {event.harness
+                      ? <HarnessMark harness={event.harness} size={12} />
+                      : <Icon className={cn("size-3.5", TONE_INK[event.tone])} />}
+                  </span>
                   <span className="min-w-0 flex-1 truncate text-caption text-body">{event.title}</span>
                   <time dateTime={event.at} className="shrink-0 text-micro tabular-nums text-faint">{whenLabel(event.at)}</time>
                 </li>
