@@ -784,7 +784,7 @@ struct TokensFlags {
 fn flag_value<'a>(iter: &mut std::slice::Iter<'a, String>, flag: &str) -> Result<&'a str, String> {
     iter.next()
         .map(String::as_str)
-        .filter(|value| !value.starts_with("--"))
+        .filter(|value| !value.is_empty() && !value.starts_with("--"))
         .ok_or_else(|| format!("{flag} needs a value"))
 }
 
@@ -979,6 +979,12 @@ mod tests {
             let (code, message) = run_tokens(&strings(args)).unwrap_err();
             assert_eq!(code, 2, "{args:?}");
             assert!(message.contains(TOKENS_USAGE), "{message}");
+        }
+        for flag in ["--database", "--data-dir", "--session", "--cohort", "--since", "--top"] {
+            let (code, message) = run_tokens(&strings(&[flag, ""])).unwrap_err();
+            assert_eq!(code, 2, "{flag}");
+            assert!(message.contains(TOKENS_USAGE), "{message}");
+            assert!(message.contains(&format!("{flag} needs a value")), "{message}");
         }
     }
 
