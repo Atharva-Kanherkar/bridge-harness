@@ -1,0 +1,41 @@
+{
+  "eval": "live_incremental_review_on_a_fixture_pr",
+  "harness": "codex",
+  "model": null,
+  "seconds": 23.489555542,
+  "usage": {
+    "tokensIn": 140373,
+    "tokensOut": 548,
+    "costMicrousd": 0,
+    "deniedRequests": 0,
+    "tools": [
+      "js",
+      "js"
+    ]
+  },
+  "answer": "```json\n{\n  \"summary\": \"The new commits fix f-divide-by-zero by returning 0 for an empty slice and add first(). The new helper can panic when requesting more items than exist, unlike last(), which safely returns the available items.\",\n  \"findings\": [\n    {\n      \"path\": \"src/lib.rs\",\n      \"line\": 16,\n      \"side\": \"RIGHT\",\n      \"severity\": \"major\",\n      \"title\": \"Clamp the requested prefix length to the slice length\",\n      \"body\": \"`first(&[1, 2], 3)` and `first(&[], 1)` panic because the range ends beyond the slice. The companion `last()` handles oversized requests by returning all available items. Use `&items[..n.min(items.len())]` for consistent behavior, and add coverage for oversized requests and empty slices.\",\n      \"confidence\": 0.99\n    }\n  ],\n  \"fixed\": [\"f-divide-by-zero\"]\n}\n```",
+  "fixedAsGiven": [
+    "f-divide-by-zero"
+  ],
+  "draftedFindings": [
+    {
+      "path": "src/lib.rs",
+      "line": 16,
+      "severity": "major",
+      "title": "Clamp the requested prefix length to the slice length",
+      "body": "`first(&[1, 2], 3)` and `first(&[], 1)` panic because the range ends beyond the slice. The companion `last()` handles oversized requests by returning all available items. Use `&items[..n.min(items.len())]` for consistent behavior, and add coverage for oversized requests and empty slices."
+    }
+  ],
+  "draftedFixed": [
+    "f-divide-by-zero"
+  ],
+  "checks": {
+    "exactlyOneFinding": true,
+    "onFirst": true,
+    "aboutThePanic": true,
+    "droppedNotRaised": true,
+    "modelRepeatedDropped": false,
+    "fixedExactly": true
+  },
+  "pass": true
+}

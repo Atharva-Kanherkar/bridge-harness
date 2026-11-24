@@ -1,0 +1,49 @@
+{
+  "eval": "live_incremental_review_on_a_fixture_pr",
+  "harness": "claude",
+  "model": null,
+  "seconds": 12.024129375,
+  "usage": {
+    "tokensIn": 4,
+    "tokensOut": 897,
+    "costMicrousd": 76282,
+    "deniedRequests": 0,
+    "tools": [
+      "Read",
+      "Read",
+      "Read"
+    ]
+  },
+  "answer": "The empty-slice fix resolves the divide-by-zero. The new `first` function panics when `n` is larger than the slice length. That's inconsistent with `last`, which uses `saturating_sub` to avoid this.\n\n```json\n{\"summary\":\"Adds `average` and `first` to src/lib.rs. The new commit fixes the earlier divide-by-zero finding (f-divide-by-zero) by returning 0 for an empty slice. The new `first` function panics when `n` exceeds the slice length, unlike the sibling `last`, which clamps. There are no tests. I did not raise the dropped integer-division finding again.\",\"fixed\":[\"f-divide-by-zero\"],\"findings\":[{\"path\":\"src/lib.rs\",\"line\":20,\"side\":\"RIGHT\",\"severity\":\"major\",\"title\":\"first panics when n > items.len()\",\"body\":\"`&items[..n]` panics with an out-of-range slice index if `n` is larger than the slice length. The sibling `last` clamps with `saturating_sub`, so callers will reasonably expect `first` to clamp too. Use `&items[..n.min(items.len())]`.\",\"confidence\":0.9},{\"path\":\"src/lib.rs\",\"line\":16,\"side\":\"RIGHT\",\"severity\":\"minor\",\"title\":\"average can overflow i32 and has no tests\",\"body\":\"`sum::<i32>()` panics in debug builds and wraps in release when the total exceeds `i32::MAX`. Summing in `i64` avoids this. Neither `average` (including the empty case) nor `first` has a test, so the empty-slice fix and the `n > len` behaviour are unguarded.\",\"confidence\":0.6}]}\n```",
+  "fixedAsGiven": [
+    "f-divide-by-zero"
+  ],
+  "draftedFindings": [
+    {
+      "path": "src/lib.rs",
+      "line": 16,
+      "severity": "minor",
+      "title": "average can overflow i32 and has no tests",
+      "body": "`sum::<i32>()` panics in debug builds and wraps in release when the total exceeds `i32::MAX`. Summing in `i64` avoids this. Neither `average` (including the empty case) nor `first` has a test, so the empty-slice fix and the `n > len` behaviour are unguarded."
+    },
+    {
+      "path": "src/lib.rs",
+      "line": 20,
+      "severity": "major",
+      "title": "first panics when n > items.len()",
+      "body": "`&items[..n]` panics with an out-of-range slice index if `n` is larger than the slice length. The sibling `last` clamps with `saturating_sub`, so callers will reasonably expect `first` to clamp too. Use `&items[..n.min(items.len())]`."
+    }
+  ],
+  "draftedFixed": [
+    "f-divide-by-zero"
+  ],
+  "checks": {
+    "exactlyOneFinding": false,
+    "onFirst": false,
+    "aboutThePanic": true,
+    "droppedNotRaised": true,
+    "modelRepeatedDropped": false,
+    "fixedExactly": true
+  },
+  "pass": false
+}
