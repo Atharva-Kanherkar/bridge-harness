@@ -175,6 +175,7 @@ fn surface_error(error: GithubSurfaceError) -> StepError {
     match error {
         // The network or GitHub hiccuped: worth another try.
         GithubSurfaceError::CommandFailed { .. } | GithubSurfaceError::Io(_) => StepError::Transient(error.to_string()),
+        GithubSurfaceError::RateLimited { ref message, retry_after, .. } => StepError::RateLimited(message.clone(), retry_after),
         // Signed out, no repository, a response Bridge cannot read: trying
         // again changes nothing.
         other => StepError::Fatal(other.to_string()),

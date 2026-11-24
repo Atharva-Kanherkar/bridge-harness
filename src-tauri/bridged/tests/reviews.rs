@@ -241,7 +241,8 @@ fn decide_and_post(client: &mut Client, gh: &Path, job_id: &str) {
     assert!(finding["decidedAt"].is_string(), "{decided}");
     std::fs::write(
         gh.join("review-comments.json"),
-        r#"[{"id":9001,"path":"README.md","line":2,"original_line":2,"side":"RIGHT","body":"as posted"}]"#,
+        r#"[{"id":8000,"pull_request_review_id":1,"path":"README.md","line":2,"original_line":2,"side":"RIGHT","body":"another review"},
+            {"id":9001,"pull_request_review_id":555,"path":"README.md","line":2,"original_line":2,"side":"RIGHT","body":"as posted"}]"#,
     )
     .unwrap();
 

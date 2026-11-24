@@ -250,6 +250,51 @@ fn bodies_stay_under_the_github_limit() {
     assert!(plan.payload.body.ends_with("<!-- bridge-review:job-1 -->"));
 }
 
+#[test]
+fn rate_limit_responses_wait_and_permission_refusals_fail() {
+    use crate::github_surface::http_body;
+    let now = 1_800_000_000;
+    let reply = |head: &str, body: &str| format!("HTTP/2.0 {head}\r\nContent-Type: application/json\r\n\r\n{body}");
+    let step = |output: String| match http_body("post review", output.as_bytes(), now) {
+        Ok(body) => Ok(body),
+        Err(error) => Err(gh_error(error)),
+    };
+    let waits = |output: String| match step(output) {
+        Err(StepError::RateLimited(message, wait)) => (message, wait),
+        other => panic!("expected a rate limit, got {other:?}"),
+    };
+
+    // Primary limit: no requests left, wait for the reset.
+    let (message, wait) = waits(reply(
+        "403 Forbidden\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset: 1800000120",
+        r#"{"message":"API rate limit exceeded for user ID 1."}"#,
+    ));
+    assert_eq!(wait, Duration::from_secs(120));
+    assert!(message.contains("HTTP 403: API rate limit exceeded"), "{message}");
+    // Secondary limit with Retry-After, as a 403 and as a 429.
+    for status in ["403 Forbidden", "429 Too Many Requests"] {
+        let (_, wait) = waits(reply(&format!("{status}\r\nRetry-After: 30"), r#"{"message":"You have exceeded a secondary rate limit."}"#));
+        assert_eq!(wait, Duration::from_secs(30), "{status}");
+    }
+    // Saying so without headers: at least a minute.
+    assert_eq!(waits(reply("403 Forbidden", r#"{"message":"You have exceeded a secondary rate limit."}"#)).1, Duration::from_secs(60));
+    assert_eq!(waits(reply("429 Too Many Requests", "")).1, Duration::from_secs(60));
+    // The same through gh's own error text.
+    let throttled = gh_error(GithubSurfaceError::CommandFailed { operation: "list reviews", stderr: "HTTP 403: API rate limit exceeded".into() });
+    assert!(matches!(throttled, StepError::RateLimited(_, wait) if wait == Duration::from_secs(60)), "{throttled:?}");
+
+    // A permission refusal is a 403 too, with requests to spare: it fails.
+    let refused = step(reply(
+        "403 Forbidden\r\nX-RateLimit-Remaining: 4999\r\nX-RateLimit-Reset: 1800000120",
+        r#"{"message":"Resource not accessible by integration"}"#,
+    ));
+    assert!(matches!(&refused, Err(StepError::Fatal(message)) if message.contains("HTTP 403: Resource not accessible")), "{refused:?}");
+    assert!(matches!(step(reply("404 Not Found", r#"{"message":"Not Found"}"#)), Err(StepError::Fatal(_))));
+    assert!(matches!(step(reply("502 Bad Gateway", "")), Err(StepError::Transient(_))));
+    assert_eq!(step(reply("201 Created", r#"{"id":1}"#)).unwrap(), br#"{"id":1}"#);
+    assert!(matches!(step("not http".into()), Err(StepError::Fatal(_))), "gh printed no status");
+}
+
 fn returned(id: &str, path: &str, line: u32, body: &str) -> ReturnedComment {
     ReturnedComment { id: id.into(), path: path.into(), line: Some(line), side: Some(ReviewSide::Right), body: body.into() }
 }
@@ -314,7 +359,6 @@ fn gh_errors_map_to_retry_or_fail() {
     for passing in [
         "timed out after 30s and was killed",
         "HTTP 502: Bad Gateway",
-        "HTTP 429: secondary rate limit",
         "error connecting to api.github.com",
         "dial tcp: lookup api.github.com: could not resolve host",
     ] {
@@ -351,33 +395,47 @@ use std::time::Duration;
 /// A `gh` that keeps the PR's reviews in files: a POST stores the review
 /// it was given (so a later list finds its marker) unless told to refuse.
 const STUB: &str = r#"#!/bin/sh
+# Answers as `gh api --include` does: status line, headers, blank line, body.
+# The review-specific comments endpoint answers in its real shape, without
+# line or side, which is why Bridge reads the PR's comments instead.
 root=$(dirname "$0")
 printf '%s\n' "$*" >> "$root/invocations.log"
 if [ "$1 $2" = "auth status" ]; then exit 0; fi
-if [ "$1" != "api" ]; then exit 1; fi
+if [ "$1" != "api" ] || [ "$7" != "--include" ]; then exit 1; fi
+ok() { printf 'HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n\r\n'; }
 endpoint="$6"
 if [ "$5" = "POST" ]; then
-n=$(( $(cat "$root/posts" 2>/dev/null || echo 0) + 1 ))
-echo "$n" > "$root/posts"
-cp "$8" "$root/posted-$n.json"
-if [ -f "$root/reject" ]; then cat "$root/reject" >&2; exit 1; fi
-marker=$(grep -o '<!-- bridge-review:[^ ]* -->' "$8" | head -1)
-url="https://github.com/octo/repo/pull/7#pullrequestreview-555"
-printf '[{"id":555,"html_url":"%s","body":"Earlier.\\n\\n%s"}]' "$url" "$marker" > "$root/reviews.json"
-if [ -f "$root/accept-then-time-out" ]; then
-    rm "$root/accept-then-time-out"
-    echo 'HTTP 504: Gateway Timeout' >&2
-    exit 1
-fi
-printf '{"id":555,"html_url":"%s","body":"posted"}' "$url"
-exit 0
+    n=$(( $(cat "$root/posts" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$root/posts"
+    cp "$9" "$root/posted-$n.json"
+    if [ -f "$root/rate-limit" ]; then cat "$root/rate-limit"; rm "$root/rate-limit"; exit 1; fi
+    if [ -f "$root/reject" ]; then cat "$root/reject"; exit 1; fi
+    marker=$(grep -o '<!-- bridge-review:[^ ]* -->' "$9" | head -1)
+    url="https://github.com/octo/repo/pull/7#pullrequestreview-555"
+    printf '[{"id":555,"html_url":"%s","body":"Earlier.\\n\\n%s"}]' "$url" "$marker" > "$root/reviews.json"
+    if [ -f "$root/accept-then-time-out" ]; then
+        rm "$root/accept-then-time-out"
+        printf 'HTTP/2.0 504 Gateway Timeout\r\n\r\n{"message":"Gateway Timeout"}'
+        exit 1
+    fi
+    ok
+    printf '{"id":555,"html_url":"%s","body":"posted"}' "$url"
+    exit 0
 fi
 case "$endpoint" in
-*/reviews/*/comments*) cat "$root/comments.json" 2>/dev/null || echo '[]' ;;
-*/reviews*) cat "$root/reviews.json" 2>/dev/null || echo '[]' ;;
-*) exit 1 ;;
+    */reviews/*/comments*) ok; printf '[{"id":901,"pull_request_review_id":555,"path":"a.rs","position":1,"original_position":1,"body":"legacy"}]' ;;
+    */pulls/*/comments*) ok; cat "$root/pr-comments.json" 2>/dev/null || echo '[]' ;;
+    */reviews*) ok; cat "$root/reviews.json" 2>/dev/null || echo '[]' ;;
+    *) exit 1 ;;
 esac
 "#;
+
+/// The PR's review comments as GitHub lists them: one from an earlier review
+/// on the same line first, then the one review 555 made.
+const PR_COMMENTS: &str = r#"[
+    {"id":700,"pull_request_review_id":444,"path":"a.rs","line":2,"original_line":2,"side":"RIGHT","body":"older"},
+    {"id":901,"pull_request_review_id":555,"path":"a.rs","line":null,"original_line":2,"side":"RIGHT","body":"as posted"}
+]"#;
 
 /// Real posting; preparation and the reviewer are scripted.
 struct Offline {
@@ -544,11 +602,7 @@ fn decide(fixture: &Fixture, job_id: &str) {
 #[test]
 fn a_draft_post_reaches_github_once_with_the_kept_findings() {
     let fixture = fixture(ReviewPostMode::Draft);
-    std::fs::write(
-        fixture.gh.join("comments.json"),
-        r#"[{"id":901,"path":"a.rs","line":2,"original_line":2,"side":"RIGHT","body":"anything"}]"#,
-    )
-    .unwrap();
+    std::fs::write(fixture.gh.join("pr-comments.json"), PR_COMMENTS).unwrap();
     let id = fixture.start();
     fixture.drive();
     assert_eq!(fixture.job(&id).status, Status::Drafted);
@@ -575,7 +629,7 @@ fn a_draft_post_reaches_github_once_with_the_kept_findings() {
     assert!(body.ends_with(&post_marker(&id)));
 
     let log = fixture.invocations();
-    let list = log.iter().position(|line| line.contains("--method GET") && line.ends_with("/reviews?per_page=100 --paginate"));
+    let list = log.iter().position(|line| line.contains("--method GET") && line.contains("/pulls/7/reviews?per_page=100&page=1"));
     let post = log.iter().position(|line| line.contains("--method POST"));
     assert!(list.unwrap() < post.unwrap(), "the marker is checked before posting: {log:?}");
 
@@ -587,9 +641,42 @@ fn a_draft_post_reaches_github_once_with_the_kept_findings() {
 }
 
 #[test]
+fn comment_ids_come_from_the_pr_comments_of_that_review() {
+    let fixture = fixture(ReviewPostMode::Auto);
+    std::fs::write(fixture.gh.join("pr-comments.json"), PR_COMMENTS).unwrap();
+    let id = fixture.start();
+    fixture.drive();
+    assert_eq!(fixture.job(&id).status, Status::Posted);
+    let findings = fixture.findings(&id);
+    assert_eq!(findings[0].github_comment_id.as_deref(), Some("901"), "review 555's comment, not the older one on that line");
+    assert_eq!(findings[1].github_comment_id, None, "no comment of review 555 sits on b.rs");
+    let log = fixture.invocations();
+    assert!(log.iter().any(|line| line.contains("/pulls/7/comments?per_page=100&page=1")), "{log:?}");
+    assert!(!log.iter().any(|line| line.contains("/reviews/555/comments")), "the endpoint without line numbers is not used");
+}
+
+#[test]
+fn a_rate_limited_post_waits_and_then_posts() {
+    let fixture = fixture(ReviewPostMode::Auto);
+    std::fs::write(
+        fixture.gh.join("rate-limit"),
+        "HTTP/2.0 403 Forbidden\r\nRetry-After: 1\r\n\r\n{\"message\":\"You have exceeded a secondary rate limit.\"}",
+    )
+    .unwrap();
+    let id = fixture.start();
+    let started = std::time::Instant::now();
+    fixture.drive();
+    let job = fixture.job(&id);
+    assert_eq!(job.status, Status::Posted, "a throttled post is retried, not failed: {:?}", job.error);
+    assert!(started.elapsed() >= Duration::from_secs(1), "it waited as long as GitHub asked");
+    assert_eq!(fixture.posts(), 2, "one refused attempt, one post");
+}
+
+#[test]
 fn a_post_that_timed_out_after_github_took_it_is_not_posted_twice() {
     let fixture = fixture(ReviewPostMode::Draft);
     std::fs::write(fixture.gh.join("accept-then-time-out"), "").unwrap();
+    std::fs::write(fixture.gh.join("pr-comments.json"), PR_COMMENTS).unwrap();
     let id = fixture.start();
     fixture.drive();
     decide(&fixture, &id);
@@ -600,6 +687,8 @@ fn a_post_that_timed_out_after_github_took_it_is_not_posted_twice() {
     assert_eq!(job.posted_review_id.as_deref(), Some("555"), "the review GitHub already had");
     assert_eq!(fixture.posts(), 1, "one review on GitHub");
     let findings = fixture.findings(&id);
+    assert_eq!(findings[0].github_comment_id.as_deref(), Some("901"), "the recovered review's inline comment");
+    assert!(findings[0].posted_at.is_some(), "a review found by its marker still marks what it holds");
     assert!(findings[2].posted_at.is_none(), "the found review's body does not hold the outside finding");
 }
 
@@ -616,13 +705,19 @@ fn an_auto_job_posts_without_anyone_deciding() {
     let comments = payload["comments"].as_array().unwrap();
     assert_eq!(comments.len(), 2);
     assert_eq!(comments[1]["side"], "LEFT");
-    assert!(payload["body"].as_str().unwrap().contains("Why c.rs is wrong."));
+    let body = payload["body"].as_str().unwrap();
+    assert!(body.contains("Why c.rs is wrong."));
+    assert!(body.starts_with("One real problem."), "the reviewers' summary, not the stale claim's: {body}");
 }
 
 #[test]
 fn a_rejected_post_returns_the_draft_with_the_reason() {
     let fixture = fixture(ReviewPostMode::Draft);
-    std::fs::write(fixture.gh.join("reject"), "HTTP 422: Unprocessable Entity (line must be part of the diff)").unwrap();
+    std::fs::write(
+        fixture.gh.join("reject"),
+        "HTTP/2.0 422 Unprocessable Entity\r\n\r\n{\"message\":\"Unprocessable Entity\",\"errors\":[\"Line could not be resolved\"]}",
+    )
+    .unwrap();
     let id = fixture.start();
     fixture.drive();
     decide(&fixture, &id);
@@ -630,7 +725,10 @@ fn a_rejected_post_returns_the_draft_with_the_reason() {
     fixture.drive();
     let job = fixture.job(&id);
     assert_eq!(job.status, Status::Drafted);
-    assert!(job.error.as_deref().unwrap().starts_with("GitHub refused the review"), "{:?}", job.error);
+    assert_eq!(
+        job.error.as_deref(),
+        Some("GitHub refused the review: HTTP 422: Unprocessable Entity (Line could not be resolved)")
+    );
     assert_eq!(fixture.posts(), 1, "a refusal is not retried");
     assert_eq!(fixture.findings(&id)[0].decision, ReviewFindingDecision::Kept, "the triage stays");
 
@@ -771,15 +869,18 @@ fn live_post_on_a_sandbox_pr() {
     .unwrap();
     assert_eq!(review["state"], "COMMENTED", "{review}");
     assert_eq!(review["commit_id"], json!(head));
+    // The PR's comments carry line and side; the review's own list does not.
     let comments: Value = serde_json::from_str(&gh_text(
         &gh,
-        &["api", &format!("repos/{repository}/pulls/{number}/reviews/{}/comments", posted.review_id)],
+        &["api", &format!("repos/{repository}/pulls/{number}/comments?per_page=100")],
     ))
     .unwrap();
+    let review_id: u64 = posted.review_id.parse().unwrap();
     let placed: Vec<(String, u64, String, Option<u64>)> = comments
         .as_array()
         .unwrap()
         .iter()
+        .filter(|comment| comment["pull_request_review_id"].as_u64() == Some(review_id))
         .map(|comment| {
             (
                 comment["path"].as_str().unwrap().to_owned(),

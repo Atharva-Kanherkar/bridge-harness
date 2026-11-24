@@ -84,26 +84,33 @@ if [ "$1 $2" = "run rerun" ]; then
     exit 0
 fi
 if [ "$1" = "api" ] && [ "$2" = "--hostname" ] && [ "$4" = "--method" ]; then
-    # Pull-request reviews Bridge posts: a POST is kept as review-posted-<n>.json.
-    case "$6" in
-        repos/*/pulls/*/reviews/*/comments*)
-            if [ -f "$root/review-comments.json" ]; then cat "$root/review-comments.json"; else echo '[]'; fi
-            exit 0
-            ;;
-        repos/*/pulls/*/reviews)
-            if [ "$5" = "POST" ] && [ "$7" = "--input" ]; then
-                n=$(( $(cat "$root/review-posts" 2>/dev/null || echo 0) + 1 ))
-                echo "$n" > "$root/review-posts"
-                cp "$8" "$root/review-posted-$n.json"
-                printf '%s\n' '{"id":555,"html_url":"https://github.com/fixture/project/pull/103#pullrequestreview-555","body":"posted"}'
+    # Pull-request reviews Bridge posts, answered as `gh api --include` does
+    # (status line, headers, blank line, body). A POST is kept as
+    # review-posted-<n>.json; the PR's comments come from review-comments.json.
+    if [ "$7" = "--include" ]; then
+        case "$6" in
+            repos/*/pulls/*/comments\?*)
+                printf 'HTTP/2.0 200 OK\r\n\r\n'
+                if [ -f "$root/review-comments.json" ]; then cat "$root/review-comments.json"; else echo '[]'; fi
                 exit 0
-            fi
-            ;;
-        repos/*/pulls/*/reviews\?*)
-            if [ -f "$root/reviews.json" ]; then cat "$root/reviews.json"; else echo '[]'; fi
-            exit 0
-            ;;
-    esac
+                ;;
+            repos/*/pulls/*/reviews)
+                if [ "$5" = "POST" ] && [ "$8" = "--input" ]; then
+                    n=$(( $(cat "$root/review-posts" 2>/dev/null || echo 0) + 1 ))
+                    echo "$n" > "$root/review-posts"
+                    cp "$9" "$root/review-posted-$n.json"
+                    printf 'HTTP/2.0 200 OK\r\n\r\n'
+                    printf '%s\n' '{"id":555,"html_url":"https://github.com/fixture/project/pull/103#pullrequestreview-555","body":"posted"}'
+                    exit 0
+                fi
+                ;;
+            repos/*/pulls/*/reviews\?*)
+                printf 'HTTP/2.0 200 OK\r\n\r\n'
+                if [ -f "$root/reviews.json" ]; then cat "$root/reviews.json"; else echo '[]'; fi
+                exit 0
+                ;;
+        esac
+    fi
     if [ -f "$root/comment-response.json" ]; then cat "$root/comment-response.json"; fi
     exit 0
 fi

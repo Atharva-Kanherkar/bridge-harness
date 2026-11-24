@@ -14,12 +14,12 @@
 //! [`post_marker`], which a retry looks for before posting again.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use bridge_protocol::messages::{self as wire, ReviewFindingDecision, ReviewPostMode, ReviewSeverity, ReviewSide};
 use serde::{Serialize, Serializer};
-
-use std::path::PathBuf;
-use std::sync::Arc;
 
 use super::steps::{post_marker, CancelToken, PostedFinding, PostedReview, StepError};
 use super::store::{self, JobRow};
@@ -301,18 +301,27 @@ pub fn held_by(plan: &PostPlan, found: &FoundReview, returned: &[ReturnedComment
 /// took.
 pub fn gh_error(error: GithubSurfaceError) -> StepError {
     match error {
+        // Throttled: wait as long as GitHub asked, then try again.
+        GithubSurfaceError::RateLimited { message, retry_after, .. } => {
+            StepError::RateLimited(format!("GitHub is rate limiting Bridge: {message}"), retry_after)
+        }
         GithubSurfaceError::CommandFailed { ref stderr, .. } => {
             let lower = stderr.to_ascii_lowercase();
+            // A 403 can be throttling too; one that says so waits, not fails.
+            if lower.contains("rate limit") || lower.contains("http 429") {
+                return StepError::RateLimited(
+                    format!("GitHub is rate limiting Bridge: {}", stderr.trim()),
+                    Duration::from_secs(60),
+                );
+            }
             let refused = ["http 401", "http 403", "http 404", "http 422"].iter().any(|code| lower.contains(code));
             let passing = [
                 "timed out",
                 "timeout",
-                "http 429",
                 "http 500",
                 "http 502",
                 "http 503",
                 "http 504",
-                "rate limit",
                 "connection",
                 "error connecting",
                 "network",
@@ -322,10 +331,10 @@ pub fn gh_error(error: GithubSurfaceError) -> StepError {
             ]
             .iter()
             .any(|sign| lower.contains(sign));
-            if passing && !refused {
-                StepError::Transient(error.to_string())
-            } else if lower.contains("http 422") {
+            if lower.contains("http 422") {
                 StepError::Fatal(format!("GitHub refused the review: {}", stderr.trim()))
+            } else if passing && !refused {
+                StepError::Transient(error.to_string())
             } else {
                 StepError::Fatal(error.to_string())
             }
@@ -344,11 +353,15 @@ fn target(core: &BridgeCore, job: &JobRow) -> Result<(PathBuf, GithubRepository)
 }
 
 /// The post a job makes now, from what is stored.
+///
+/// The job is read again: the runner's copy was claimed before the review,
+/// so its summary (and in auto mode everything the review wrote) is stale.
 fn plan(core: &BridgeCore, job: &JobRow, current_head: Option<String>) -> Result<PostPlan, StepError> {
     let fatal = |error: crate::BridgeError| StepError::Fatal(error.to_string());
-    let (findings, harness_of, harnesses, hide_attribution) = {
+    let (job, findings, harness_of, harnesses, hide_attribution) = {
         let db = super::lock_db(core);
         (
+            store::require_job(&db, &job.id).map_err(fatal)?,
             store::findings(&db, &job.id).map_err(fatal)?,
             store::finding_harnesses(&db, &job.id).map_err(fatal)?,
             store::finished_harnesses(&db, &job.id).map_err(fatal)?,
@@ -362,7 +375,7 @@ fn plan(core: &BridgeCore, job: &JobRow, current_head: Option<String>) -> Result
             (finding, harness)
         })
         .collect();
-    Ok(build(&PostInput { job, findings, harnesses, hide_attribution, current_head }))
+    Ok(build(&PostInput { job: &job, findings, harnesses, hide_attribution, current_head }))
 }
 
 /// The review this job, or the job it retried, already posted: the one whose

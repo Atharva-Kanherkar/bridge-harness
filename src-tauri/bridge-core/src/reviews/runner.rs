@@ -26,6 +26,10 @@ use super::store::{self, JobRow};
 use crate::runtime::BridgeCore;
 use crate::BridgeError;
 
+/// The longest a rate-limited step waits before its next attempt, whatever
+/// GitHub asked for. The job keeps its lease meanwhile.
+pub const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(15 * 60);
+
 /// The runner's live state in one process.
 pub struct ReviewRuntime {
     steps: RwLock<Arc<dyn ReviewSteps>>,
@@ -438,6 +442,14 @@ impl Driver {
             match step() {
                 Err(StepError::Transient(_)) if attempt < self.config.step_retries => {
                     let delay = self.config.retry_backoff.saturating_mul(1 << attempt.min(16));
+                    attempt += 1;
+                    if token.sleep(delay) {
+                        return Err(StepError::Cancelled);
+                    }
+                }
+                // Throttled: wait as long as GitHub asked, within reason.
+                Err(StepError::RateLimited(_, wait)) if attempt < self.config.step_retries => {
+                    let delay = wait.max(self.config.retry_backoff).min(MAX_RATE_LIMIT_WAIT);
                     attempt += 1;
                     if token.sleep(delay) {
                         return Err(StepError::Cancelled);

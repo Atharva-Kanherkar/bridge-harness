@@ -61,6 +61,9 @@ pub enum StepError {
     Harness(String),
     /// Trying again will not help. The job fails with this reason.
     Fatal(String),
+    /// GitHub throttled the call: worth another try once the wait it asked
+    /// for has passed.
+    RateLimited(String, Duration),
     /// The cancel token was set.
     Cancelled,
 }
@@ -68,7 +71,10 @@ pub enum StepError {
 impl StepError {
     pub fn message(&self) -> String {
         match self {
-            StepError::Transient(message) | StepError::Harness(message) | StepError::Fatal(message) => message.clone(),
+            StepError::Transient(message)
+            | StepError::Harness(message)
+            | StepError::Fatal(message)
+            | StepError::RateLimited(message, _) => message.clone(),
             StepError::Cancelled => "The review was cancelled".into(),
         }
     }

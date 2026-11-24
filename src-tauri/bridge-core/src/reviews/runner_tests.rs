@@ -403,6 +403,20 @@ fn a_post_retried_after_a_timeout_never_creates_a_second_review() {
 }
 
 #[test]
+fn a_rate_limited_step_waits_as_long_as_github_asked() {
+    let (_scratch, core, script) = fixture();
+    settings(&core, |settings| settings.post_mode = wire::ReviewPostMode::Auto);
+    let wait = Duration::from_millis(300);
+    script.post.lock().unwrap().push_back(PostPlan::Fail(StepError::RateLimited("secondary rate limit".into(), wait)));
+    let id = queue(&core, 5, &["claude"]);
+    let started = std::time::Instant::now();
+    drain(&Runner::with(core.clone(), fast(), Arc::new(Utc::now)));
+    assert!(started.elapsed() >= wait, "the 1 ms backoff gave way to GitHub's wait");
+    assert_eq!(script.calls("post:").len(), 2);
+    assert_eq!(job(&core, &id).status, Status::Posted);
+}
+
+#[test]
 fn a_failed_post_in_draft_mode_returns_to_the_draft() {
     let (_scratch, core, script) = fixture();
     let id = queue(&core, 4, &["claude"]);

@@ -636,6 +636,13 @@ pub enum GithubSurfaceError {
     },
     #[error("could not resolve a GitHub repository for {workspace}: {detail}")]
     RepositoryResolution { workspace: String, detail: String },
+    /// GitHub throttled the call; try again after `retry_after`.
+    #[error("GitHub rate limit during {operation}: {message}")]
+    RateLimited {
+        operation: &'static str,
+        message: String,
+        retry_after: Duration,
+    },
     #[error("I/O while invoking GitHub tooling: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -1458,34 +1465,17 @@ impl GithubSurface {
         self.pr_review_threads_in(workspace, &repository, number)
     }
 
-    /// Every review on a pull request, each page: id, URL and body. Never
-    /// cached: a post retry reads it to find a review that already went
-    /// through.
+    /// Every review on a pull request: id, URL and body. Never cached: a
+    /// post retry reads it to find a review that already went through.
     pub fn pr_reviews(
         &self,
         workspace: &Path,
         repository: &GithubRepository,
         number: u64,
     ) -> Result<Vec<crate::reviews::post::FoundReview>, GithubSurfaceError> {
-        self.require_binary()?;
-        let bytes = self.run_gh(
-            workspace,
-            "list reviews",
-            &[
-                "api".into(),
-                "--hostname".into(),
-                repository.host.clone(),
-                "--method".into(),
-                "GET".into(),
-                format!(
-                    "repos/{}/{}/pulls/{number}/reviews?per_page=100",
-                    repository.owner, repository.name
-                ),
-                "--paginate".into(),
-            ],
-            false,
-        )?;
-        Ok(parse_pages::<RawPostedReview>("pull-request reviews", &bytes)?
+        let endpoint = format!("repos/{}/{}/pulls/{number}/reviews", repository.owner, repository.name);
+        Ok(self
+            .review_api_pages::<RawPostedReview>(workspace, repository, "list reviews", &endpoint)?
             .into_iter()
             .map(RawPostedReview::found)
             .collect())
@@ -1510,30 +1500,16 @@ impl GithubSurface {
             .tempfile()?;
         serde_json::to_writer(&mut file, payload).map_err(std::io::Error::other)?;
         file.flush()?;
-        let posted = self.run_gh(
-            workspace,
-            "post review",
-            &[
-                "api".into(),
-                "--hostname".into(),
-                repository.host.clone(),
-                "--method".into(),
-                "POST".into(),
-                format!(
-                    "repos/{}/{}/pulls/{number}/reviews",
-                    repository.owner, repository.name
-                ),
-                "--input".into(),
-                file.path().to_string_lossy().into_owned(),
-            ],
-            false,
-        );
+        let endpoint = format!("repos/{}/{}/pulls/{number}/reviews", repository.owner, repository.name);
+        let posted = self.review_api(workspace, repository, "post review", "POST", &endpoint, Some(file.path()));
         // Whatever happened, the pull request's threads may have changed.
         self.invalidate_action_resources(repository, number);
         Ok(parse_json::<RawPostedReview>("posted review", &posted?)?.found())
     }
 
-    /// The inline comments of one review, each page.
+    /// The inline comments of one review, with the lines they sit on. The
+    /// review's own comments endpoint leaves out `line` and `side`, so this
+    /// reads the pull request's comments and keeps that review's.
     pub fn pr_review_comments(
         &self,
         workspace: &Path,
@@ -1541,26 +1517,11 @@ impl GithubSurface {
         number: u64,
         review_id: &str,
     ) -> Result<Vec<crate::reviews::post::ReturnedComment>, GithubSurfaceError> {
-        self.require_binary()?;
-        let bytes = self.run_gh(
-            workspace,
-            "list review comments",
-            &[
-                "api".into(),
-                "--hostname".into(),
-                repository.host.clone(),
-                "--method".into(),
-                "GET".into(),
-                format!(
-                    "repos/{}/{}/pulls/{number}/reviews/{review_id}/comments?per_page=100",
-                    repository.owner, repository.name
-                ),
-                "--paginate".into(),
-            ],
-            false,
-        )?;
-        Ok(parse_pages::<RawPostedReviewComment>("review comments", &bytes)?
+        let endpoint = format!("repos/{}/{}/pulls/{number}/comments", repository.owner, repository.name);
+        Ok(self
+            .review_api_pages::<RawPostedReviewComment>(workspace, repository, "list review comments", &endpoint)?
             .into_iter()
+            .filter(|comment| comment.pull_request_review_id.is_some_and(|id| id.to_string() == review_id))
             .map(|comment| crate::reviews::post::ReturnedComment {
                 id: comment.id.to_string(),
                 path: comment.path,
@@ -1572,6 +1533,71 @@ impl GithubSurface {
                 body: comment.body,
             })
             .collect())
+    }
+
+    /// One `gh api --include` call for posting reviews: the body of a 2xx
+    /// answer. A rate limit comes back as [`GithubSurfaceError::RateLimited`]
+    /// with the wait GitHub asked for, any other HTTP error as
+    /// `CommandFailed` naming its status.
+    fn review_api(
+        &self,
+        workspace: &Path,
+        repository: &GithubRepository,
+        operation: &'static str,
+        method: &str,
+        endpoint: &str,
+        input: Option<&Path>,
+    ) -> Result<Vec<u8>, GithubSurfaceError> {
+        self.require_binary()?;
+        let mut args = vec![
+            "api".to_owned(),
+            "--hostname".to_owned(),
+            repository.host.clone(),
+            "--method".to_owned(),
+            method.to_owned(),
+            endpoint.to_owned(),
+            "--include".to_owned(),
+        ];
+        if let Some(input) = input {
+            args.push("--input".to_owned());
+            args.push(input.to_string_lossy().into_owned());
+        }
+        // `--include` prints the status and headers even for an error, so a
+        // failed call still says why; only a call with no answer at all (no
+        // network, a timeout) fails as a command.
+        let output = self.run_gh(workspace, operation, &args, true)?;
+        http_body(operation, &output, unix_now())
+    }
+
+    /// Every page of a list, 100 at a time. Pages are read one by one rather
+    /// than with `--paginate`, so each page's headers are seen.
+    fn review_api_pages<T: serde::de::DeserializeOwned>(
+        &self,
+        workspace: &Path,
+        repository: &GithubRepository,
+        operation: &'static str,
+        endpoint: &str,
+    ) -> Result<Vec<T>, GithubSurfaceError> {
+        const PER_PAGE: usize = 100;
+        const MAX_PAGES: usize = 50;
+        let mut items = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let body = self.review_api(
+                workspace,
+                repository,
+                operation,
+                "GET",
+                &format!("{endpoint}?per_page={PER_PAGE}&page={page}"),
+                None,
+            )?;
+            let batch: Vec<T> = parse_json(operation, &body)?;
+            let full = batch.len() == PER_PAGE;
+            items.extend(batch);
+            if !full {
+                break;
+            }
+        }
+        Ok(items)
     }
 
     /// [`Self::pr_review_threads`] of a named repository. See
@@ -3043,16 +3069,109 @@ fn parse_json<T: serde::de::DeserializeOwned>(
     serde_json::from_slice(bytes).map_err(|error| malformed(resource, error.to_string()))
 }
 
-/// `gh api --paginate` prints one JSON array per page, back to back.
-fn parse_pages<T: serde::de::DeserializeOwned>(
-    resource: &'static str,
-    bytes: &[u8],
-) -> Result<Vec<T>, GithubSurfaceError> {
-    let mut items = Vec::new();
-    for page in serde_json::Deserializer::from_slice(bytes).into_iter::<Vec<T>>() {
-        items.extend(page.map_err(|error| malformed(resource, error.to_string()))?);
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default()
+}
+
+/// What `gh api --include` printed: the status line, the headers, a blank
+/// line, then the body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HttpReply {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+impl HttpReply {
+    pub(crate) fn parse(output: &[u8]) -> Option<HttpReply> {
+        let mut rest = output;
+        let mut next_line = || -> Option<String> {
+            let end = rest.iter().position(|byte| *byte == b'\n')?;
+            let line = String::from_utf8_lossy(&rest[..end]).trim_end_matches('\r').to_owned();
+            rest = &rest[end + 1..];
+            Some(line)
+        };
+        let status_line = next_line()?;
+        if !status_line.starts_with("HTTP/") {
+            return None;
+        }
+        let status = status_line.split_whitespace().nth(1)?.parse().ok()?;
+        let mut headers = Vec::new();
+        loop {
+            let line = next_line()?;
+            if line.is_empty() {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':') {
+                headers.push((name.trim().to_ascii_lowercase(), value.trim().to_owned()));
+            }
+        }
+        Some(HttpReply { status, headers, body: rest.to_vec() })
     }
-    Ok(items)
+
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str())
+    }
+
+    /// How long GitHub asked to wait, when this is a rate limit: a 403 or
+    /// 429 with `Retry-After`, with no requests left (wait for the reset), or
+    /// saying so (at least a minute, as GitHub documents). A 403 that is none
+    /// of those is a refusal.
+    pub(crate) fn rate_limit_wait(&self, message: &str, now: u64) -> Option<Duration> {
+        if !matches!(self.status, 403 | 429) {
+            return None;
+        }
+        let number = |name: &str| self.header(name).and_then(|value| value.parse::<u64>().ok());
+        if let Some(seconds) = number("retry-after") {
+            return Some(Duration::from_secs(seconds.max(1)));
+        }
+        if number("x-ratelimit-remaining") == Some(0) {
+            let seconds = number("x-ratelimit-reset").map_or(60, |reset| reset.saturating_sub(now).max(1));
+            return Some(Duration::from_secs(seconds));
+        }
+        if self.status == 429 || message.to_ascii_lowercase().contains("rate limit") {
+            return Some(Duration::from_secs(60));
+        }
+        None
+    }
+}
+
+/// The body of a 2xx reply, or the error it is.
+pub(crate) fn http_body(operation: &'static str, output: &[u8], now: u64) -> Result<Vec<u8>, GithubSurfaceError> {
+    let reply = HttpReply::parse(output).ok_or_else(|| malformed(operation, "gh printed no HTTP status"))?;
+    if (200..300).contains(&reply.status) {
+        return Ok(reply.body);
+    }
+    let json = serde_json::from_slice::<serde_json::Value>(&reply.body).ok();
+    let mut message = json
+        .as_ref()
+        .and_then(|value| value.get("message"))
+        .and_then(|message| message.as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| String::from_utf8_lossy(&reply.body).trim().to_owned());
+    // A 422 says which comment GitHub could not place.
+    let details: Vec<String> = json
+        .as_ref()
+        .and_then(|value| value.get("errors"))
+        .and_then(|errors| errors.as_array())
+        .map(|errors| {
+            errors
+                .iter()
+                .filter_map(|error| error.as_str().map(str::to_owned).or_else(|| error.get("message")?.as_str().map(str::to_owned)))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !details.is_empty() {
+        message = format!("{message} ({})", details.join("; "));
+    }
+    let text = format!("HTTP {}: {message}", reply.status);
+    match reply.rate_limit_wait(&message, now) {
+        Some(retry_after) => Err(GithubSurfaceError::RateLimited { operation, message: text, retry_after }),
+        None => Err(GithubSurfaceError::CommandFailed { operation, stderr: text }),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -3077,6 +3196,8 @@ impl RawPostedReview {
 #[derive(Debug, Deserialize)]
 struct RawPostedReviewComment {
     id: u64,
+    #[serde(default)]
+    pull_request_review_id: Option<u64>,
     path: String,
     #[serde(default)]
     line: Option<u32>,
