@@ -49,7 +49,7 @@ describe("ReviewJobs", () => {
     await mount(<ReviewJobs workspaceId="w" number={7} />);
     const posted = row("old")!;
     expect(posted.textContent).toContain("Posted");
-    expect(posted.textContent).toContain("2m 05s");
+    expect(posted.textContent, "a finished job says when, not how long").not.toContain("2m 05s");
     expect(posted.textContent).toContain("1 critical");
     expect(posted.querySelector("a")!.getAttribute("href")).toBe("https://github.com/o/r/pull/7#pullrequestreview-1");
 

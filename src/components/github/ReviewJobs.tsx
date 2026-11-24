@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { CircleAlert, CircleCheck, LoaderCircle, RotateCcw, SquareArrowOutUpRight, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../../api";
+import { relativeTime } from "../workDashboard";
 import type { ReviewJob, ReviewJobStatus, ReviewSeverity } from "../../protocol/generated/protocol";
 import { ReviewDraft } from "./ReviewDraft";
 import { harnessLabel, SEVERITY_TEXT } from "./reviewLabels";
@@ -38,12 +39,15 @@ export function formatElapsed(milliseconds: number): string {
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
 
+/** How long a running job has been at it, or when a finished one ended. A
+ *  finished job's duration would include however long the draft waited for
+ *  the person, so it says when instead. */
 function elapsed(job: ReviewJob, now: number): string | undefined {
-  const from = Date.parse(job.startedAt ?? job.createdAt);
-  if (Number.isNaN(from)) return undefined;
-  if (running(job)) return formatElapsed(now - from);
-  const to = job.finishedAt ? Date.parse(job.finishedAt) : NaN;
-  return Number.isNaN(to) ? undefined : formatElapsed(to - from);
+  if (running(job)) {
+    const from = Date.parse(job.startedAt ?? job.createdAt);
+    return Number.isNaN(from) ? undefined : formatElapsed(now - from);
+  }
+  return job.finishedAt && !Number.isNaN(Date.parse(job.finishedAt)) ? relativeTime(job.finishedAt, new Date(now)) : undefined;
 }
 
 function upsert(jobs: ReviewJob[], job: ReviewJob): ReviewJob[] {

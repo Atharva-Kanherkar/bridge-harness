@@ -164,7 +164,7 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
   </div>;
   const count = findings.filter(chosen).length;
   const blocked = findings.length > 0 && count === 0;
-  const label = findings.length === 0 ? "Post summary" : `Post ${count} ${count === 1 ? "finding" : "findings"}`;
+  const label = findings.length === 0 ? "Post summary" : count === 0 ? "Post" : `Post ${count} ${count === 1 ? "finding" : "findings"}`;
   return <div data-review-draft={job.id} className="border-t border-border/70 bg-muted/20 px-3 py-2.5">
     {findings.length > 0 && <div className="mb-2 flex flex-wrap items-center gap-1.5">
       <button type="button" disabled={busy} onClick={() => void decide(findings.map(finding => ({ findingId: finding.id, decision: "kept" })))} className="rounded-md border border-border bg-card px-2 py-0.5 text-meta text-foreground hover:bg-accent disabled:opacity-50">Keep all</button>

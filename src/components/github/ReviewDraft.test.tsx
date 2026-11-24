@@ -92,6 +92,7 @@ describe("ReviewDraft", () => {
     const { decide, post } = mockStore(FINDINGS);
     const onPosting = await mount();
     expect(postButton().disabled).toBe(true);
+    expect(postButton().textContent?.trim()).toBe("Post");
     expect(host!.textContent).toContain("Keep or edit at least one finding to post.");
 
     await act(async () => { button(item("b-critical"), "Keep").click(); await flush(); });
