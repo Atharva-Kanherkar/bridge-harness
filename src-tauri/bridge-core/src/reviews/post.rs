@@ -184,7 +184,12 @@ pub fn build(input: &PostInput<'_>) -> PostPlan {
     let ran: Vec<&str> = input.harnesses.iter().map(String::as_str).collect();
     let tail = format!("{}\n\n{}", footer(&ran, input.hide_attribution), post_marker(&job.publication_key));
     let mut body = String::new();
-    let summary = job.summary.as_deref().map(str::trim).unwrap_or_default();
+    // Reviewer names reach GitHub only while attribution is shown, read now.
+    let summary = match (&job.named_summary, input.hide_attribution) {
+        (Some(named), false) => named.as_str(),
+        _ => job.summary.as_deref().unwrap_or_default(),
+    }
+    .trim();
     if !summary.is_empty() {
         body.push_str(&fit(summary, MAX_SUMMARY_CHARS));
     } else if chosen_findings.is_empty() {

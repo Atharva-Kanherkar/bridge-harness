@@ -30,6 +30,9 @@ use crate::BridgeError;
 /// GitHub asked for. The job keeps its lease meanwhile.
 pub const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(15 * 60);
 
+/// How often a second pass waiting for a runner slot looks again.
+const SECOND_PASS_POLL: Duration = Duration::from_millis(20);
+
 /// The runner's live state in one process.
 pub struct ReviewRuntime {
     steps: RwLock<Arc<dyn ReviewSteps>>,
@@ -231,7 +234,10 @@ impl Runner {
             super::publish(&self.core, id);
         }
         let mut handles = Vec::new();
-        while self.active() < limit {
+        // Every slot, a job's or a second pass's, is reserved through one
+        // bounded compare-and-swap before it is used, so a second pass taking
+        // the last slot between a check and a claim cannot push past `limit`.
+        while let Some(slot) = reserve_slot(&self.active, limit) {
             // A full checkout budget leaves queued jobs queued; posting needs
             // no checkout, so a posting job is still claimed.
             let take_queued = steps.has_capacity();
@@ -239,17 +245,12 @@ impl Runner {
                 let db = super::lock_db(&self.core);
                 store::claim(&db, &self.owner, (self.clock)(), take_queued)?
             };
+            // Nothing claimed (or a failed claim, via `?`): the reservation
+            // drops here and the slot is free again.
             let Some(job) = claimed else { break };
             let Some(claim) = job.lease_owner.clone() else { continue };
             super::publish(&self.core, &job.id);
-            self.active.fetch_add(1, Ordering::SeqCst);
-            let driver = Driver {
-                core: self.core.clone(),
-                claim,
-                config: self.config.clone(),
-                clock: self.clock.clone(),
-                slot: SlotGuard(self.active.clone()),
-            };
+            let driver = Driver { core: self.core.clone(), claim, config: self.config.clone(), clock: self.clock.clone(), slot };
             let handle = std::thread::Builder::new()
                 .name(format!("review-{}", job.id))
                 .spawn(move || driver.drive(job))
@@ -291,6 +292,20 @@ pub fn start_review_maintenance(core: Arc<BridgeCore>) {
 
 /// Frees its slot however the driver ends, panics included.
 struct SlotGuard(Arc<AtomicUsize>);
+
+/// Take one of `limit` slots, if one is free: the only way a slot is taken.
+fn reserve_slot(active: &Arc<AtomicUsize>, limit: usize) -> Option<SlotGuard> {
+    let mut current = active.load(Ordering::SeqCst);
+    loop {
+        if current >= limit {
+            return None;
+        }
+        match active.compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return Some(SlotGuard(active.clone())),
+            Err(now) => current = now,
+        }
+    }
+}
 
 impl Drop for SlotGuard {
     fn drop(&mut self) {
@@ -398,18 +413,21 @@ impl Driver {
                 }
             }
             self.advance(&job, Status::Preparing, Status::Reviewing, false)?;
-            let summary = self.review(&job, &prepared, steps.as_ref(), token)?;
+            let summaries = self.review(&job, &prepared, steps.as_ref(), token)?;
             // A re-review says what it covers before anything else.
             let head = if prepared.head_sha.is_empty() { job.head_sha.as_str() } else { prepared.head_sha.as_str() };
-            let summary = match prepared.incremental.summary_lead(head) {
-                Some(lead) if summary.trim().is_empty() => lead,
+            let lead = prepared.incremental.summary_lead(head);
+            let with_lead = |summary: String| match &lead {
+                Some(lead) if summary.trim().is_empty() => lead.clone(),
                 Some(lead) => format!("{lead}\n\n{summary}"),
                 None => summary,
             };
+            let summary = with_lead(summaries.anonymous);
+            let named = summaries.named.map(with_lead);
             let auto = job.post_mode == ReviewPostMode::Auto;
             let drafted = {
                 let db = super::lock_db(&self.core);
-                store::finish_review(&db, &job.id, &self.claim, &summary, !auto).map_err(fatal)?
+                store::finish_review(&db, &job.id, &self.claim, &summary, named.as_deref(), !auto).map_err(fatal)?
             };
             if !drafted {
                 // Cancelled or reclaimed: the job, and its worktree, belong to
@@ -473,14 +491,14 @@ impl Driver {
 
     /// One pass per requested harness. Two passes (a second opinion) run at
     /// once when the runner has another free slot, which the second pass then
-    /// holds; otherwise one after the other. A harness that cannot run hands
+    /// holds; otherwise the second runs after the first. A harness that cannot run hands
     /// its pass to the next fallback harness not tried yet and not in use by
     /// the other pass. The job goes on while at least one pass finished: the
     /// summary then names the reviewer that failed. Findings both reviewers
     /// flagged are merged. Every write is checked against this claim, so a
     /// driver that lost the job stores nothing, even a pass it finished.
-    /// Returns the summary.
-    fn review(&self, job: &JobRow, prepared: &Prepared, steps: &dyn ReviewSteps, token: &CancelToken) -> Result<String, StepError> {
+    /// Returns the summaries.
+    fn review(&self, job: &JobRow, prepared: &Prepared, steps: &dyn ReviewSteps, token: &CancelToken) -> Result<Summaries, StepError> {
         let (fallbacks, limit) = {
             let db = super::lock_db(&self.core);
             let settings = super::settings::load(&db).ok();
@@ -495,25 +513,39 @@ impl Driver {
         };
         let in_use = Mutex::new(job.harnesses.clone());
         let run_slot = |slot: usize| self.run_slot(job, prepared, steps, token, slot, &fallbacks, &in_use);
-        let ends = match (job.harnesses.len(), self.extra_slot(limit)) {
-            (2, Some(extra)) => std::thread::scope(|scope| {
-                let second = scope.spawn(|| {
-                    let end = run_slot(1);
-                    drop(extra);
-                    self.core.reviews.wake();
-                    end
+        let ends = if job.harnesses.len() == 2 {
+            // The second pass starts as soon as a runner slot is free while the
+            // first runs (a tick may hold one for a moment), and otherwise
+            // runs after it in this job's own slot.
+            let first_done = AtomicBool::new(false);
+            std::thread::scope(|scope| {
+                let second = scope.spawn(|| loop {
+                    if let Some(extra) = self.extra_slot(limit) {
+                        let end = run_slot(1);
+                        drop(extra);
+                        self.core.reviews.wake();
+                        return Some(end);
+                    }
+                    if first_done.load(Ordering::SeqCst) || token.is_cancelled() {
+                        return None;
+                    }
+                    std::thread::sleep(SECOND_PASS_POLL);
                 });
                 let first = run_slot(0);
-                let second = second
-                    .join()
-                    .unwrap_or_else(|_| Ok(SlotEnd::Failed(job.harnesses[1].clone(), "it stopped unexpectedly".into(), StepError::Fatal("The review stopped unexpectedly".into()))));
+                first_done.store(true, Ordering::SeqCst);
+                let second = match second.join() {
+                    Ok(Some(end)) => end,
+                    Ok(None) => run_slot(1),
+                    Err(_) => Ok(SlotEnd::Failed(
+                        job.harnesses[1].clone(),
+                        "it stopped unexpectedly".into(),
+                        StepError::Fatal("The review stopped unexpectedly".into()),
+                    )),
+                };
                 vec![first, second]
-            }),
-            (_, extra) => {
-                // No second pass to run alongside: give the slot back.
-                drop(extra);
-                (0..job.harnesses.len()).map(run_slot).collect()
-            }
+            })
+        } else {
+            (0..job.harnesses.len()).map(run_slot).collect()
         };
         let mut finished = Vec::new();
         let mut failed = Vec::new();
@@ -534,7 +566,7 @@ impl Driver {
         if finished.len() > 1 {
             self.merge(job)?;
         }
-        Ok(second_opinion_summary(&finished, &failed))
+        Ok(summaries(&finished, &failed))
     }
 
     /// Merge what both reviewers flagged, under this claim.
@@ -554,17 +586,7 @@ impl Driver {
 
     /// Take one more runner slot for a job's second pass, if one is free.
     fn extra_slot(&self, limit: usize) -> Option<SlotGuard> {
-        let active = &self.slot.0;
-        let mut current = active.load(Ordering::SeqCst);
-        loop {
-            if current >= limit {
-                return None;
-            }
-            match active.compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::SeqCst) {
-                Ok(_) => return Some(SlotGuard(active.clone())),
-                Err(now) => current = now,
-            }
-        }
+        reserve_slot(&self.slot.0, limit)
     }
 
     /// Run one slot's pass, falling back as needed. `Err` only when the job
@@ -738,30 +760,47 @@ fn harness_name(harness: &str) -> String {
     }
 }
 
-/// The draft's summary: a reviewer that failed is named first, then each
-/// finished reviewer's summary, labelled when there are two.
-fn second_opinion_summary(finished: &[(String, String)], failed: &[(String, String)]) -> String {
-    let mut parts = Vec::new();
-    if !failed.is_empty() {
-        let names: Vec<String> = finished.iter().map(|(harness, _)| harness_name(harness)).collect();
-        for (harness, error) in failed {
-            parts.push(format!(
-                "{} could not finish its review ({}). This draft has {}'s findings only.",
-                harness_name(harness),
-                error.trim_end_matches('.'),
-                names.join(" and ")
-            ));
-        }
+/// A draft's summary twice: `anonymous` names no reviewer and is what posts
+/// while attribution is hidden; `named` labels each reviewer and says why one
+/// failed, and is absent when it would read the same.
+#[derive(Debug, Clone, PartialEq)]
+struct Summaries {
+    anonymous: String,
+    named: Option<String>,
+}
+
+/// A reviewer that failed is mentioned first, then each finished reviewer's
+/// summary, labelled when there are two. Reviewers are numbered by slot in
+/// the anonymous form, so naming them is the only difference.
+fn summaries(finished: &[(String, String)], failed: &[(String, String)]) -> Summaries {
+    let mut anonymous = Vec::new();
+    let mut named = Vec::new();
+    for (harness, error) in failed {
+        anonymous.push("One reviewer could not finish its review, so this draft has the other reviewer's findings only.".to_owned());
+        let others: Vec<String> = finished.iter().map(|(harness, _)| harness_name(harness)).collect();
+        named.push(format!(
+            "{} could not finish its review ({}). This draft has {}'s findings only.",
+            harness_name(harness),
+            error.trim_end_matches('.'),
+            others.join(" and ")
+        ));
     }
     let labelled = finished.len() > 1;
-    for (harness, summary) in finished {
+    for (index, (harness, summary)) in finished.iter().enumerate() {
         let summary = summary.trim();
         if summary.is_empty() {
             continue;
         }
-        parts.push(if labelled { format!("**{}:** {summary}", harness_name(harness)) } else { summary.to_owned() });
+        if labelled {
+            anonymous.push(format!("**Reviewer {}:** {summary}", index + 1));
+            named.push(format!("**{}:** {summary}", harness_name(harness)));
+        } else {
+            anonymous.push(summary.to_owned());
+            named.push(summary.to_owned());
+        }
     }
-    parts.join("\n\n")
+    let (anonymous, named) = (anonymous.join("\n\n"), named.join("\n\n"));
+    Summaries { named: (named != anonymous).then_some(named), anonymous }
 }
 
 fn fatal(error: BridgeError) -> StepError {

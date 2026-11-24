@@ -11,6 +11,7 @@ fn job(mode: ReviewPostMode) -> JobRow {
         id: "job-1".into(),
         workspace_id: "w".into(),
         repo_host: Some("github.com".into()),
+        named_summary: None,
         repo_owner: "octo".into(),
         repo_name: "repo".into(),
         number: 7,
@@ -223,6 +224,33 @@ fn a_merged_comment_names_both_harnesses() {
     let plan = build(&both);
     assert!(plan.payload.comments[0].body.ends_with("<sub>Bridge review · claude, codex</sub>"), "{}", plan.payload.comments[0].body);
     assert_eq!(plan.payload.comments.len(), 1, "one comment for the one finding both flagged");
+}
+
+#[test]
+fn a_hidden_attribution_post_names_no_reviewer() {
+    let cases = [
+        ("**Reviewer 1:** Off by one.\n\n**Reviewer 2:** One real bug.", "**Claude:** Off by one.\n\n**Codex:** One real bug."),
+        (
+            "One reviewer could not finish its review, so this draft has the other reviewer's findings only.\n\nOff by one.",
+            "Codex could not finish its review (Codex is signed out). This draft has Claude's findings only.\n\nOff by one.",
+        ),
+    ];
+    for (anonymous, named) in cases {
+        let mut job = job(ReviewPostMode::Draft);
+        job.summary = Some(anonymous.into());
+        job.named_summary = Some(named.into());
+        let mut post = input(&job, vec![finding("k", ReviewFindingDecision::Kept)]);
+        post.findings[0].1 = vec!["claude".into(), "codex".into()];
+        post.hide_attribution = true;
+        let hidden = build(&post);
+        let all = format!("{}{}", hidden.payload.body, hidden.payload.comments[0].body);
+        assert!(all.contains(anonymous), "{all}");
+        for named in ["Claude", "Codex", "claude", "codex", "signed out"] {
+            assert!(!all.contains(named), "{named} in {all}");
+        }
+        post.hide_attribution = false;
+        assert!(build(&post).payload.body.contains(named), "names are posted while attribution is shown");
+    }
 }
 
 #[test]
@@ -833,7 +861,7 @@ fn live_posting_job(
             ..Default::default()
         };
         assert!(store::complete_pass(&db, &job.id, &token, &pass, &outcome, chrono::Utc::now()).unwrap());
-        assert!(store::finish_review(&db, &job.id, &token, "Bridge live posting test. Safe to ignore.", true).unwrap());
+        assert!(store::finish_review(&db, &job.id, &token, "Bridge live posting test. Safe to ignore.", None, true).unwrap());
         let decisions: Vec<wire::ReviewFindingDecisionInput> = store::findings(&db, &job.id)
             .unwrap()
             .into_iter()

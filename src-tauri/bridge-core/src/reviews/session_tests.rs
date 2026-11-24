@@ -1034,3 +1034,22 @@ fn ranked_after(entries: &[crate::reviews::merge::Entry], merges: &[crate::revie
     });
     kept
 }
+
+/// The live fixture's two bounds-check titles, merged by a second opinion and
+/// posted: a later report under the absorbed title is still a repeat.
+#[test]
+fn a_merged_findings_other_title_is_a_repeat() {
+    let mut posted = prior("bounds", "Fix off-by-one bounds check in get", "kept", true, None);
+    posted.also_known_as = vec![crate::reviews::store::FindingIdentity {
+        title: "Reject indices equal to the slice length".into(),
+        fingerprint: "fp-codex".into(),
+    }];
+    let again = draft("src/a.rs", "Reject indices equal to the slice length", "fp-moved", ReviewSeverity::Major);
+    let by_fingerprint = draft("src/b.rs", "Something else", "fp-codex", ReviewSeverity::Major);
+    let new = draft("src/a.rs", "Sum_All is not snake case", "fp-new", ReviewSeverity::Minor);
+    let kept = without_repeats(vec![again, by_fingerprint, new], std::slice::from_ref(&posted));
+    assert_eq!(kept.iter().map(|finding| finding.title.as_str()).collect::<Vec<_>>(), ["Sum_All is not snake case"]);
+    posted.also_known_as.clear();
+    let unmerged = without_repeats(vec![draft("src/a.rs", "Reject indices equal to the slice length", "fp-moved", ReviewSeverity::Major)], &[posted]);
+    assert_eq!(unmerged.len(), 1, "without the absorbed identity the wording comes back");
+}

@@ -176,12 +176,16 @@ pub struct JobRow {
     pub worktree_path: Option<String>,
     /// The GitHub host. Absent on a job from before hosts were recorded.
     pub repo_host: Option<String>,
+    /// The summary with reviewers named (a second opinion's labels and why a
+    /// reviewer failed). Posted only while attribution is shown; `summary`
+    /// names no reviewer. Absent when the two would be the same.
+    pub named_summary: Option<String>,
 }
 
 const SELECT_JOB: &str = "SELECT id, workspace_id, repo_owner, repo_name, pr_number, head_sha, base_sha,
     incremental_from_sha, trigger_kind, post_mode, harnesses, status, error, summary, posted_review_id,
     posted_review_url, retry_of, attempts, lease_owner, lease_expires_at, created_at, started_at, finished_at,
-    publication_key, worktree_path, repo_host
+    publication_key, worktree_path, repo_host, named_summary
     FROM review_jobs";
 
 fn invalid_column(index: usize, text: &str) -> rusqlite::Error {
@@ -224,6 +228,7 @@ fn read_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
         publication_key: row.get(23)?,
         worktree_path: row.get(24)?,
         repo_host: row.get(25)?,
+        named_summary: row.get(26)?,
     })
 }
 
@@ -608,8 +613,8 @@ pub fn live_job_for_worktree(db: &Connection, path: &str) -> Result<Option<Strin
         .optional()?)
 }
 
-fn set_summary(db: &Connection, id: &str, summary: &str) -> Result<(), BridgeError> {
-    db.execute("UPDATE review_jobs SET summary=?2 WHERE id=?1", params![id, summary])?;
+fn set_summary(db: &Connection, id: &str, summary: &str, named_summary: Option<&str>) -> Result<(), BridgeError> {
+    db.execute("UPDATE review_jobs SET summary=?2, named_summary=?3 WHERE id=?1", params![id, summary, named_summary])?;
     Ok(())
 }
 
@@ -898,15 +903,22 @@ pub fn end_pass(
     Ok(true)
 }
 
-/// `reviewing -> drafted` with the summary, in one transaction under
-/// `claim`. `release` gives the lease up (a draft waiting for a person holds
-/// none).
-pub fn finish_review(db: &Connection, job_id: &str, claim: &str, summary: &str, release: bool) -> Result<bool, BridgeError> {
+/// `reviewing -> drafted` with the summary (and its named form, see
+/// [`JobRow::named_summary`]), in one transaction under `claim`. `release`
+/// gives the lease up (a draft waiting for a person holds none).
+pub fn finish_review(
+    db: &Connection,
+    job_id: &str,
+    claim: &str,
+    summary: &str,
+    named_summary: Option<&str>,
+    release: bool,
+) -> Result<bool, BridgeError> {
     let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
     if !holds(&transaction, job_id, claim, Status::Reviewing)? {
         return Ok(false);
     }
-    set_summary(&transaction, job_id, summary)?;
+    set_summary(&transaction, job_id, summary, named_summary)?;
     let moved = advance(&transaction, job_id, claim, Status::Reviewing, Status::Drafted, release)?;
     transaction.commit()?;
     Ok(moved)
@@ -1143,9 +1155,23 @@ pub fn merge_findings(db: &Connection, job_id: &str, claim: &str, merges: &[supe
     }
     for merge in merges {
         let pass_ids = serde_json::to_string(&merge.pass_ids).map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        // The absorbed finding's title and fingerprint stay on the survivor, so
+        // a re-review still knows that wording as settled once it is posted
+        // or dropped.
+        let absorbed: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT title, fingerprint FROM review_findings WHERE id=?1 AND job_id=?2",
+                params![merge.drop, job_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let identities: Vec<FindingIdentity> =
+            absorbed.into_iter().map(|(title, fingerprint)| FindingIdentity { title, fingerprint }).collect();
+        let identities = serde_json::to_string(&identities).map_err(|error| BridgeError::Invalid(error.to_string()))?;
         transaction.execute(
-            "UPDATE review_findings SET severity=?3, confidence=?4, agreed_by=2, pass_ids=?5 WHERE id=?1 AND job_id=?2",
-            params![merge.keep, job_id, merge.severity.as_str(), merge.confidence.clamp(0.0, 1.0), pass_ids],
+            "UPDATE review_findings SET severity=?3, confidence=?4, agreed_by=2, pass_ids=?5, merged_identities=?6
+             WHERE id=?1 AND job_id=?2",
+            params![merge.keep, job_id, merge.severity.as_str(), merge.confidence.clamp(0.0, 1.0), pass_ids, identities],
         )?;
         transaction.execute("DELETE FROM review_findings WHERE id=?1 AND job_id=?2", params![merge.drop, job_id])?;
     }
@@ -1325,6 +1351,9 @@ pub fn supersede_queued_pushes(db: &Connection, pr: PrKey<'_>, head_sha: &str, n
 #[derive(Debug, Clone, PartialEq)]
 pub struct PriorFinding {
     pub id: String,
+    /// Other findings merged into this one (a second opinion), by the title
+    /// and fingerprint they had. Same path as this one.
+    pub also_known_as: Vec<FindingIdentity>,
     pub job_id: String,
     /// The head that review looked at.
     pub head_sha: String,
@@ -1343,6 +1372,13 @@ pub struct PriorFinding {
     pub fixed_in_sha: Option<String>,
 }
 
+/// What a finding is recognised by when a re-review checks for repeats.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FindingIdentity {
+    pub title: String,
+    pub fingerprint: String,
+}
+
 /// Most earlier findings a re-review is shown, the newest kept.
 pub const MAX_PRIOR_FINDINGS: usize = 300;
 
@@ -1354,7 +1390,7 @@ pub fn prior_findings(db: &Connection, pr: PrKey<'_>, job_id: &str) -> Result<Ve
         "SELECT * FROM (
             SELECT f.id, f.job_id, j.head_sha, f.path, f.line, f.start_line, f.side, f.severity, f.title,
                 COALESCE(f.edited_body, f.body), f.fingerprint, f.decision, f.posted_at IS NOT NULL,
-                f.github_comment_id, f.fixed_in_sha, j.created_at AS job_created, f.rowid AS finding_row
+                f.github_comment_id, f.fixed_in_sha, j.created_at AS job_created, f.rowid AS finding_row, f.merged_identities
             FROM review_findings f JOIN review_jobs j ON j.id=f.job_id
             WHERE {} AND j.id<>?5 AND j.status IN ('drafted','posting','posted')
             ORDER BY j.created_at DESC, f.rowid DESC LIMIT ?6
@@ -1368,6 +1404,10 @@ pub fn prior_findings(db: &Connection, pr: PrKey<'_>, job_id: &str) -> Result<Ve
             let decision: String = row.get(11)?;
             Ok(PriorFinding {
                 id: row.get(0)?,
+                also_known_as: match row.get::<_, Option<String>>(17)? {
+                    Some(text) => serde_json::from_str(&text).map_err(|_| invalid_column(17, &text))?,
+                    None => Vec::new(),
+                },
                 job_id: row.get(1)?,
                 head_sha: row.get(2)?,
                 path: row.get(3)?,

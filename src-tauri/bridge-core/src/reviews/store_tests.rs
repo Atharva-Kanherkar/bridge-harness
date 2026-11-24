@@ -435,7 +435,7 @@ fn a_superseded_claim_cannot_advance_or_renew_the_replacement() {
     let now = at(LEASE_SECONDS + 2);
     assert!(!renew(&db, &job.id, &stale, now).unwrap());
     assert!(!advance(&db, &job.id, &stale, Status::Reviewing, Status::Drafted, true).unwrap());
-    assert!(!finish_review(&db, &job.id, &stale, "stale summary", true).unwrap());
+    assert!(!finish_review(&db, &job.id, &stale, "stale summary", None, true).unwrap());
     assert!(begin_pass(&db, &job.id, &stale, 0, "claude", now).unwrap().is_none());
     assert!(!finish(&db, &job.id, Some(&stale), Status::Failed, Some("stale"), now).unwrap());
     assert_eq!(status(&db, &job.id), Status::Reviewing, "the replacement still holds the job");
@@ -445,7 +445,7 @@ fn a_superseded_claim_cannot_advance_or_renew_the_replacement() {
     assert!(!complete_pass(&db, &job.id, &stale, &pass, &outcome, now).unwrap(), "a stale claim stores no pass");
     assert!(findings(&db, &job.id).unwrap().is_empty());
     assert!(complete_pass(&db, &job.id, &current, &pass, &outcome, now).unwrap());
-    assert!(finish_review(&db, &job.id, &current, "summary", true).unwrap());
+    assert!(finish_review(&db, &job.id, &current, "summary", None, true).unwrap());
     let drafted = require_job(&db, &job.id).unwrap();
     assert_eq!((drafted.status, drafted.summary.as_deref(), drafted.lease_owner), (Status::Drafted, Some("summary"), None));
     assert_eq!(passes(&db, &job.id).unwrap()[0].attempt, 2);
@@ -506,7 +506,7 @@ fn waiting_draft_with(db: &Connection, number: u64, mode: ReviewPostMode, paths:
     let pass = begin_pass(db, &job.id, &token, 0, "claude", at(1)).unwrap().unwrap();
     let outcome = PassOutcome { findings: paths.iter().map(|path| draft(path)).collect(), ..Default::default() };
     assert!(complete_pass(db, &job.id, &token, &pass, &outcome, at(2)).unwrap());
-    assert!(finish_review(db, &job.id, &token, "summary", true).unwrap());
+    assert!(finish_review(db, &job.id, &token, "summary", None, true).unwrap());
     let mut ids: Vec<(String, String)> =
         findings(db, &job.id).unwrap().into_iter().map(|finding| (finding.path, finding.id)).collect();
     ids.sort();
@@ -908,4 +908,19 @@ fn pass_ids_round_trip_on_the_wire() {
     assert_eq!(single["agreedBy"], 1);
     let decoded: wire::ReviewFinding = serde_json::from_value(single).unwrap();
     assert!(decoded.pass_ids.is_empty());
+}
+
+#[test]
+fn merge_findings_keeps_the_dropped_identity() {
+    let (_scratch, db) = open();
+    let (job, token, _, _) = second_opinion(&db);
+    let entries = merge_entries(&db, &job.id).unwrap();
+    let merges = crate::reviews::merge::merges(&entries);
+    let dropped = entries.iter().find(|entry| entry.id == merges[0].drop).unwrap().finding.clone();
+    assert!(merge_findings(&db, &job.id, &token, &merges).unwrap());
+    assert!(finish_review(&db, &job.id, &token, "s", None, true).unwrap());
+    let prior = prior_findings(&db, PrKey { host: "github.com", owner: "octo", name: "repo", number: 9 }, "later").unwrap();
+    let merged = prior.iter().find(|finding| finding.id == merges[0].keep).unwrap();
+    assert_eq!(merged.also_known_as, [FindingIdentity { title: dropped.title, fingerprint: dropped.fingerprint }]);
+    assert!(prior.iter().filter(|finding| finding.id != merged.id).all(|finding| finding.also_known_as.is_empty()));
 }

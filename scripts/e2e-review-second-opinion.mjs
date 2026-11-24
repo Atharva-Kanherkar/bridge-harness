@@ -90,10 +90,14 @@ await new Promise(resolve => first.on("exit", resolve));
 const job = (scheme, minutes) => {
   const id = `job-${scheme}`;
   const at = new Date(Date.now() - minutes * 60_000).toISOString();
-  const summary = "**Claude:** `get` panics at the end of the slice; `Sum_All` is not snake case.\n\n**Codex:** One real problem: the bound check lets `index == len` through.";
+  const parts = ["`get` panics at the end of the slice; `Sum_All` is not snake case.", "One real problem: the bound check lets `index == len` through."];
+  // As the runner stores it: no reviewer named, and the named form for when
+  // attribution is shown.
+  const summary = `**Reviewer 1:** ${parts[0]}\n\n**Reviewer 2:** ${parts[1]}`;
+  const named = `**Claude:** ${parts[0]}\n\n**Codex:** ${parts[1]}`;
   return `
-  INSERT INTO review_jobs(id,workspace_id,repo_host,repo_owner,repo_name,pr_number,head_sha,trigger_kind,post_mode,harnesses,dedupe_key,publication_key,status,summary,attempts,created_at,started_at,finished_at)
-    VALUES('${id}','w','github.com','fixture','project',103,'${prHead}','manual','draft','["claude","codex"]','dedupe-${scheme}','${id}','drafted','${summary.replace(/'/g, "''")}',1,'${at}','${at}','${at}');
+  INSERT INTO review_jobs(id,workspace_id,repo_host,repo_owner,repo_name,pr_number,head_sha,trigger_kind,post_mode,harnesses,dedupe_key,publication_key,status,summary,named_summary,attempts,created_at,started_at,finished_at)
+    VALUES('${id}','w','github.com','fixture','project',103,'${prHead}','manual','draft','["claude","codex"]','dedupe-${scheme}','${id}','drafted','${summary.replace(/'/g, "''")}','${named.replace(/'/g, "''")}',1,'${at}','${at}','${at}');
   INSERT INTO review_passes(id,job_id,slot,attempt,harness,status,tokens_in,tokens_out,cost_microusd,created_at,started_at,finished_at)
     VALUES('${id}-claude','${id}',0,1,'claude','done',1200,300,41000,'${at}','${at}','${at}'),
           ('${id}-codex','${id}',1,1,'codex','done',90000,400,0,'${at}','${at}','${at}');
@@ -173,7 +177,7 @@ try {
     assert.equal(posted.event, "COMMENT");
     assert.equal(posted.comments.length, 1, "one comment for the one finding both flagged");
     assert.match(posted.comments[0].body, /Bridge review · codex, claude/);
-    assert.match(posted.body, /\*\*Claude:\*\*[\s\S]*\*\*Codex:\*\*/, "each reviewer's summary, labelled");
+    assert.match(posted.body, /\*\*Claude:\*\*[\s\S]*\*\*Codex:\*\*/, "each reviewer's summary, named while attribution is shown");
     await pane.locator(`[data-review-job="${jobId}"]`).scrollIntoViewIfNeeded();
     await pane.screenshot({ path: path.join(out, `${scheme}-2-posted.png`) });
     results.push({ scheme, comment: posted.comments[0].body.split("\n").pop(), errors: [...errors] });
