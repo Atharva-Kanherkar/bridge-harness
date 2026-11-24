@@ -181,7 +181,11 @@ export function ComposerPill({
   const attachmentInput = useRef<HTMLInputElement>(null);
   const isHero = layout === "hero";
   const isInline = layout === "inline";
-  const textSize = isInline ? "text-sm" : "text-message";
+  const fieldMetrics = cn(
+    "w-full whitespace-pre-wrap wrap-break-word leading-relaxed tracking-[-0.006em]",
+    isInline ? "text-sm" : "text-message",
+    isHero ? "min-h-16 max-h-44 px-1 py-1" : "min-h-7 max-h-35 px-1 py-0.5",
+  );
   // A working agent is exactly when supervision is worth the most, so a turn in
   // flight no longer locks the composer. Where an active turn cannot take input
   // at all (`activeAction` omitted) the old behaviour stands.
@@ -206,13 +210,6 @@ export function ComposerPill({
     textareaRef.current?.focus({ preventScroll: true });
   }, [voiceBusy]);
   const submitLabel = steerable ? ACTIVE_ACTION_LABEL[activeAction] : "Send";
-
-  useEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.style.height = "0px";
-    textarea.style.height = `${Math.min(textarea.scrollHeight, isHero ? 180 : 140)}px`;
-  }, [displayValue, isHero]);
 
   return (
     <div className={cn("w-full", isHero ? "mx-auto max-w-3xl" : isInline ? "px-2 pb-2 pt-1.5" : "mx-auto max-w-conversation-frame px-4 pb-3 pt-2 sm:px-8 sm:pb-4", className)}>
@@ -308,19 +305,15 @@ export function ComposerPill({
           )}
           <div className={isInline ? "flex items-end gap-1.5" : "contents"}>
           <div className={cn("relative", isInline && "min-w-0 flex-1 self-center")}>
-            {/* The mirror overlay: `value` rendered invisibly so it occupies the
-                same box the textarea's own text does, followed by the visible
-                ghost text — which then only ever shows past where the real text
-                ends. Sizing must track the textarea exactly, or the seam shows. */}
+            <div aria-hidden="true" className={cn(fieldMetrics, "invisible overflow-hidden")}>
+              {/* A zero-width space keeps a final newline in the measured height. */}
+              {displayValue || placeholder}{"\u200b"}
+            </div>
             {showSuggestion && (
               <div
                 ref={overlayRef}
                 aria-hidden="true"
-                className={cn(
-                  "pointer-events-none absolute inset-0 max-h-44 min-h-[28px] w-full overflow-hidden whitespace-pre-wrap break-words leading-relaxed tracking-[-0.006em]",
-                  textSize,
-                  isHero ? "min-h-16 px-1 py-1" : "px-1 py-0.5",
-                )}
+                className={cn(fieldMetrics, "pointer-events-none absolute inset-0 overflow-hidden")}
               >
                 <span className="invisible">{value}</span>
                 <span className="text-muted-foreground/50">{suggestion}</span>
@@ -371,11 +364,8 @@ export function ComposerPill({
                 }
               }}
               className={cn(
-                "relative z-10 max-h-44 min-h-[28px] w-full resize-none bg-transparent leading-relaxed tracking-[-0.006em] text-foreground outline-none placeholder:text-muted-foreground",
-                textSize,
-                isHero ? "min-h-16 px-1 py-1" : "px-1 py-0.5",
-                // an inline-block textarea sits on the text baseline and grows its row.
-                isInline && "block",
+                fieldMetrics,
+                "absolute inset-0 z-10 h-full resize-none overflow-x-hidden overflow-y-auto scrollbar-none! bg-transparent text-foreground outline-none placeholder:text-muted-foreground",
               )}
             />
           </div>
