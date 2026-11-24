@@ -239,6 +239,27 @@ export function query({ prompt, options = {} }) {
       yield* finish(summary + resultBlock("done", summary));
       return;
     }
+    if (brief.includes("E2E:step-read")) {
+      // Step 1 of a multi-step run: read Slack, which only this step has.
+      const read = yield* tool("mcp__claude_ai_Slack__slack_read_thread", { channel: "#bugs" }, () => appendFileSync(writes, "step 1 read slack\n"));
+      if (brief.includes("E2E:step-fail")) {
+        yield* finish(`Slack had nothing.${resultBlock("not_done", "Slack had nothing to act on.")}`);
+        return;
+      }
+      const summary = read ? "Two bugs: login and export." : "Could not read Slack.";
+      yield* finish(summary + resultBlock(read ? "done" : "not_done", summary));
+      return;
+    }
+    if (brief.includes("E2E:step-write")) {
+      // Step 2: Slack belongs to step 1, so it must not be reachable here.
+      yield* tool("mcp__claude_ai_Slack__slack_read_thread", { channel: "#bugs" }, () => appendFileSync(writes, "step 2 read slack\n"));
+      const earlier = text.match(/```workflow-earlier-steps\n([\s\S]*?)\n```/);
+      const handed = earlier ? JSON.parse(earlier[1]).map((entry) => entry.summary).join(" ") : "nothing";
+      const filed = yield* tool("mcp__claude_ai_Linear__save_issue", { title: handed }, () => appendFileSync(writes, "save_issue\n"));
+      const summary = `Filed an issue. Step 1 said: ${handed}`;
+      yield* finish(summary + resultBlock(filed ? "done" : "not_done", summary));
+      return;
+    }
     if (brief.includes("E2E:edit")) {
       // A code workflow attempts a connector call even though it has no grants.
       // The real sidecar's pre-tool hook must refuse it before any effect.
