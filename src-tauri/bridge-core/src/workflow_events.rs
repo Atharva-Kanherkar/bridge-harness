@@ -45,8 +45,15 @@ pub const PREVIEW_DAYS: i64 = 7;
 pub const GITHUB_POLL_SECONDS: i64 = 60;
 /// The longest a Slack filter may be.
 pub const MAX_FILTER_CHARS: usize = 200;
-/// How many items one `gh` read returns.
-const GH_LIMIT: &str = "30";
+/// How many items one `gh` read returns: a preview, a baseline, and the first
+/// page of a poll.
+const GH_LIMIT: usize = 30;
+/// The larger reads a poll repeats when a full page is all newer than what it
+/// has already seen, so a long gap on a busy repository loses nothing (R9).
+const GH_PAGE_LIMITS: [usize; 4] = [GH_LIMIT, 100, 300, 1000];
+/// Review requests have no time of their own to page back to: one read of
+/// this many covers any reviewer.
+const GH_REVIEW_LIMIT: usize = 100;
 const GH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 /// The fence an event run's first turn carries its events in.
 pub const EVENT_FENCE: &str = "workflow-event";
@@ -341,7 +348,7 @@ impl GhRunner for SystemGh {
 }
 
 /// The `gh` arguments that read one GitHub trigger's source.
-pub fn gh_args(event: wire::WorkflowEventKind, repo: Option<&str>) -> Vec<String> {
+pub fn gh_args(event: wire::WorkflowEventKind, repo: Option<&str>, limit: usize) -> Vec<String> {
     use wire::WorkflowEventKind as K;
     let mut args: Vec<String> = match event {
         K::GithubPullRequestOpened => vec!["pr".into(), "list".into(), "--state".into(), "all".into()],
@@ -349,7 +356,7 @@ pub fn gh_args(event: wire::WorkflowEventKind, repo: Option<&str>) -> Vec<String
         _ => vec!["search".into(), "prs".into(), "--review-requested=@me".into(), "--state=open".into()],
     };
     let fields = if event == K::GithubReviewRequested { "number,title,url,repository,author,createdAt" } else { "number,title,url,author,createdAt" };
-    args.extend(["--limit".into(), GH_LIMIT.into(), "--json".into(), fields.into()]);
+    args.extend(["--limit".into(), limit.to_string(), "--json".into(), fields.into()]);
     if let Some(repo) = repo {
         args.extend([if event == K::GithubReviewRequested { "--repo" } else { "-R" }.into(), repo.into()]);
     }
@@ -543,10 +550,40 @@ fn source_digest(trigger: &EventTrigger<'_>, listener: DateTime<Utc>) -> String 
     format!("{:?}|{}|{}", trigger.event, trigger.repo.unwrap_or_default().to_lowercase(), workflow_trigger::stamp(listener))
 }
 
+/// The newest event a source has already shown this workflow, or its baseline
+/// time when it showed none: a poll pages back until it reaches this.
+fn watermark(db: &Connection, workflow_id: &str, baseline_at: Option<&str>) -> Result<Option<DateTime<Utc>>, BridgeError> {
+    let newest: Option<String> = db.query_row("SELECT MAX(occurred_at) FROM workflow_events WHERE workflow_id=?1", params![workflow_id], |row| row.get(0))?;
+    Ok(newest.as_deref().and_then(instant).or_else(|| baseline_at.and_then(instant)))
+}
+
+/// One source's read. A baseline reads one page: it is history. A poll whose
+/// full page is all newer than the watermark reads again, larger, until it
+/// reaches the watermark or the largest read (R9).
+fn read_source(gh: &dyn GhRunner, trigger: &EventTrigger<'_>, baseline: bool, seen_up_to: Option<DateTime<Utc>>) -> Result<Vec<wire::WorkflowEventSample>, String> {
+    let read = |limit: usize| gh.run(&gh_args(trigger.event, trigger.repo, limit)).and_then(|stdout| parse_github(trigger.event, trigger.repo, &stdout));
+    if baseline {
+        return read(GH_LIMIT);
+    }
+    if trigger.event == wire::WorkflowEventKind::GithubReviewRequested {
+        return read(GH_REVIEW_LIMIT);
+    }
+    let mut samples = Vec::new();
+    for limit in GH_PAGE_LIMITS {
+        samples = read(limit)?;
+        let full = samples.len() >= limit;
+        let reaches = seen_up_to.is_none_or(|mark| samples.iter().any(|sample| instant(&sample.occurred_at).is_none_or(|at| at <= mark)));
+        if !full || reaches {
+            break;
+        }
+    }
+    Ok(samples)
+}
+
 /// Read each GitHub source that is due and record what is new. `gh` runs with
 /// the store unlocked. Returns how many events were recorded.
 pub fn poll_github(core: &Arc<BridgeCore>, gh: &dyn GhRunner, now: DateTime<Utc>) -> Result<usize, BridgeError> {
-    let due: Vec<(wire::Workflow, Vec<String>, String, bool)> = {
+    let due: Vec<(wire::Workflow, String, bool, Option<DateTime<Utc>>)> = {
         let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut due = Vec::new();
         for workflow in listening(&db)? {
@@ -568,15 +605,15 @@ pub fn poll_github(core: &Arc<BridgeCore>, gh: &dyn GhRunner, now: DateTime<Utc>
                 .and_then(|(_, _, polled)| polled.as_deref().and_then(instant))
                 .is_some_and(|polled| now - polled < Duration::seconds(GITHUB_POLL_SECONDS));
             if fresh_source || !recently {
-                due.push((workflow.clone(), gh_args(trigger.event, trigger.repo), digest, fresh_source));
+                due.push((workflow.clone(), digest, fresh_source, watermark(&db, &workflow.id, source.as_ref().and_then(|(_, baseline, _)| baseline.as_deref()))?));
             }
         }
         due
     };
     let mut recorded = 0;
-    for (workflow, args, digest, baseline) in due {
+    for (workflow, digest, baseline, seen_up_to) in due {
         let Some(trigger) = EventTrigger::of(&workflow.definition.trigger) else { continue };
-        let read = gh.run(&args).and_then(|stdout| parse_github(trigger.event, trigger.repo, &stdout));
+        let read = read_source(gh, &trigger, baseline, seen_up_to);
         let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         match read {
             Ok(samples) => {
@@ -804,7 +841,7 @@ pub fn preview(core: &Arc<BridgeCore>, trigger: &wire::WorkflowTrigger, gh: &dyn
             Some(_) => None,
         };
     } else {
-        let read = gh.run(&gh_args(event.event, event.repo)).and_then(|stdout| parse_github(event.event, event.repo, &stdout));
+        let read = gh.run(&gh_args(event.event, event.repo, GH_LIMIT)).and_then(|stdout| parse_github(event.event, event.repo, &stdout));
         let samples = match read {
             Ok(samples) => samples,
             Err(error) => return unsupported(error),
@@ -820,7 +857,7 @@ pub fn preview(core: &Arc<BridgeCore>, trigger: &wire::WorkflowTrigger, gh: &dyn
             .collect();
         note = if event.event == wire::WorkflowEventKind::GithubReviewRequested {
             Some("Counts the reviews waiting for you now; GitHub does not say when each was requested.".to_owned())
-        } else if all_recent && returned >= GH_LIMIT.parse::<usize>().unwrap_or(30) {
+        } else if all_recent && returned >= GH_LIMIT {
             Some(format!("At least {returned}: GitHub returned only its {returned} newest, all from this week. On a repository this busy, collecting them and running once a day may suit you better."))
         } else {
             None

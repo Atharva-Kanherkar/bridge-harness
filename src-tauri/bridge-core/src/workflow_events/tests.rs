@@ -177,12 +177,12 @@ fn github_lists_parse_into_stable_events_and_skip_what_they_cannot_identify() {
 #[test]
 fn gh_reads_each_source_with_its_own_query() {
     use wire::WorkflowEventKind as K;
-    assert_eq!(gh_args(K::GithubPullRequestOpened, Some("acme/app")).join(" "), "pr list --state all --limit 30 --json number,title,url,author,createdAt -R acme/app");
-    assert_eq!(gh_args(K::GithubIssueOpened, Some("acme/app"))[0], "issue");
-    let review = gh_args(K::GithubReviewRequested, None).join(" ");
+    assert_eq!(gh_args(K::GithubPullRequestOpened, Some("acme/app"), 30).join(" "), "pr list --state all --limit 30 --json number,title,url,author,createdAt -R acme/app");
+    assert_eq!(gh_args(K::GithubIssueOpened, Some("acme/app"), 30)[0], "issue");
+    let review = gh_args(K::GithubReviewRequested, None, 100).join(" ");
     assert!(review.starts_with("search prs --review-requested=@me --state=open"), "{review}");
     assert!(!review.contains("--repo"));
-    assert!(gh_args(K::GithubReviewRequested, Some("acme/app")).ends_with(&["--repo".to_owned(), "acme/app".to_owned()]));
+    assert!(gh_args(K::GithubReviewRequested, Some("acme/app"), 100).ends_with(&["--repo".to_owned(), "acme/app".to_owned()]));
 }
 
 /// A `gh` that answers from a script and counts its calls.
@@ -833,4 +833,34 @@ fn a_review_request_that_arrived_while_paused_never_runs() {
     gh.set(Ok(&format!("[{}, {}, {}]", request(9), request(8), request(7))));
     assert_eq!(poll_github(&core, &gh, at("2026-11-24T02:02:00Z")).unwrap(), 1);
     assert_eq!(pending(&core.db.lock().unwrap(), &workflow.id), vec!["github:review:acme/app#9"]);
+}
+
+#[test]
+fn a_poll_after_a_long_gap_pages_back_to_what_it_has_seen() {
+    let (dir, core) = test_support::core();
+    let workflow = {
+        let db = core.db.lock().unwrap();
+        let mut trigger = event_trigger(wire::WorkflowEventKind::GithubPullRequestOpened);
+        if let wire::WorkflowTrigger::Event { repo, .. } = &mut trigger {
+            *repo = Some("acme/app".into());
+        }
+        listening_workflow(&db, dir.path(), trigger, "2026-11-20T00:00:00Z")
+    };
+    // `gh` answers its newest `--limit` PRs, newest first.
+    let prs = std::sync::Arc::new(Mutex::new(vec![pr(1, "2026-11-21T00:00:00Z")]));
+    let shown = std::sync::Arc::clone(&prs);
+    let gh = ViewGh::new(move |args| {
+        let limit: usize = args.iter().position(|arg| arg == "--limit").and_then(|at| args[at + 1].parse().ok()).unwrap_or(30);
+        let all = shown.lock().unwrap();
+        Ok(format!("[{}]", all.iter().rev().take(limit).cloned().collect::<Vec<_>>().join(",")))
+    });
+    assert_eq!(poll_github(&core, &gh, at("2026-11-22T00:00:00Z")).unwrap(), 0, "the baseline");
+    // Overnight, 31 PRs are opened: more than one page.
+    prs.lock().unwrap().extend((2..=32).map(|number| pr(number, &format!("2026-11-23T{:02}:{:02}:00Z", number / 60, number % 60))));
+    assert_eq!(poll_github(&core, &gh, at("2026-11-24T00:00:00Z")).unwrap(), 31, "none is lost");
+    let limits: Vec<String> = gh.calls.lock().unwrap().iter().map(|args| args[args.iter().position(|arg| arg == "--limit").unwrap() + 1].clone()).collect();
+    assert_eq!(limits, ["30", "30", "100"], "a baseline page, then a full page that never reached the last seen PR, then a larger read");
+    // A quiet poll reads one page.
+    assert_eq!(poll_github(&core, &gh, at("2026-11-24T00:02:00Z")).unwrap(), 0);
+    assert_eq!(gh.calls.lock().unwrap().len(), 4);
 }
