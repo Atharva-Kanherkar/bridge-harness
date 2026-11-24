@@ -192,3 +192,18 @@ fn jobs_and_findings_are_capped_and_newest_first() {
     assert_eq!(overview.findings[0].number, MAX_JOBS as u64 + 4);
     assert_eq!(overview.stats.reviews, MAX_JOBS as u32 + 5, "numbers are not capped");
 }
+
+#[test]
+fn a_job_without_a_title_borrows_its_prs() {
+    let (_scratch, db) = open();
+    let (untitled, _) = job(&db, "w1", 7, 20, &["claude"], 60, "drafted", &[finding("a", ReviewSeverity::Minor)]);
+    job(&db, "w1", 7, 21, &["codex"], 60, "posted", &[]);
+    job(&db, "w1", 8, 21, &["codex"], 60, "posted", &[]);
+    db.execute("UPDATE review_jobs SET pr_title=NULL WHERE id=?1", params![untitled]).unwrap();
+    db.execute("UPDATE review_jobs SET pr_title=NULL WHERE pr_number=8", []).unwrap();
+    let overview = overview_at(&db, None, None).unwrap();
+    let title = |number: u64| overview.jobs.iter().find(|job| job.number == number).unwrap().pr_title.clone();
+    assert_eq!(title(7), Some("PR 7".into()), "from the other review of PR 7");
+    assert_eq!(title(8), None, "no review of PR 8 knows its title");
+    assert_eq!(overview.findings[0].pr_title.as_deref(), Some("PR 7"));
+}

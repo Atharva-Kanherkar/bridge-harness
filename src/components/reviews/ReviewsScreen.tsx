@@ -110,8 +110,8 @@ function Counts({ job }: { job: ReviewJob }) {
 }
 
 function PrName({ job }: { job: Pick<ReviewJob, "number" | "prTitle" | "repoOwner" | "repoName"> }) {
-  return <span className="min-w-0">
-    <span className="block truncate text-meta font-medium text-foreground">{job.prTitle ?? `Pull request #${job.number}`}</span>
+  return <span className="min-w-0 flex-1">
+    <span className="block truncate text-meta font-medium text-foreground" title={job.prTitle ?? undefined}>{job.prTitle ?? `Pull request #${job.number}`}</span>
     <span className="block truncate font-mono text-caption text-muted-foreground">{repoOf(job) ?? "Repository"} #{job.number}</span>
   </span>;
 }
@@ -121,12 +121,12 @@ function JobList({ title, jobs, empty, now, onOpen }: { title: string; jobs: Rev
     <h2 className="mb-2 flex items-baseline gap-2 text-ui font-semibold text-foreground">{title}<span className="text-caption font-normal tabular-nums text-muted-foreground">{jobs.length}</span></h2>
     {jobs.length === 0
       ? <p className="text-meta text-muted-foreground">{empty}</p>
-      : <ul className="-mx-2 grid gap-0.5">{jobs.map(job => <li key={job.id}>
+      : <ul className="-mx-2 grid grid-cols-1 gap-0.5">{jobs.map(job => <li key={job.id}>
           <button type="button" data-open-job={job.id} onClick={() => onOpen(job)} className="flex w-full items-center gap-3 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none">
             <PrName job={job} />
             <span className="ml-auto flex shrink-0 flex-col items-end gap-0.5">
               <StatusLabel job={job} now={now} />
-              {job.status === "drafted" ? <Counts job={job} /> : <Reviewers harnesses={job.harnesses} />}
+              <span className="flex items-center gap-1.5"><Reviewers harnesses={job.harnesses} />{job.status === "drafted" && <Counts job={job} />}</span>
             </span>
           </button>
         </li>)}</ul>}
@@ -206,7 +206,7 @@ function FindingsTable({ findings, onOpenJob }: { findings: ReviewOverviewFindin
     </div>
     {shown.length === 0
       ? <p className="py-6 text-center text-meta text-muted-foreground">{findings.length === 0 ? "No findings in this period." : "No findings match."}</p>
-      : <ul className="grid gap-1">{shown.map(item => <li key={item.finding.id}>
+      : <ul className="grid grid-cols-1 gap-1">{shown.map(item => <li key={item.finding.id} className="min-w-0">
           <button type="button" data-finding-row={item.finding.id} onClick={() => onOpenJob(item.finding.jobId)} className="grid w-full grid-cols-[72px_minmax(0,1fr)_auto] items-start gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none">
             <span className={cn("text-caption font-semibold", SEVERITY_TEXT[item.finding.severity])}>{item.finding.severity.charAt(0).toUpperCase() + item.finding.severity.slice(1)}</span>
             <span className="min-w-0">

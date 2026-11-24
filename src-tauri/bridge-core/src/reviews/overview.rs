@@ -46,8 +46,26 @@ pub fn overview_at(db: &Connection, since: Option<&str>, repository: Option<&str
             _ => return Err(BridgeError::Invalid(format!("a repository is owner/name, not `{text}`"))),
         },
     };
-    let period = load(db, since, repository, false)?;
-    let live = load(db, None, repository, true)?;
+    let mut period = load(db, since, repository, false)?;
+    let mut live = load(db, None, repository, true)?;
+    // A job that prepared before titles were stored borrows its PR's title
+    // from another review of the same PR.
+    let titles: HashMap<(String, String, u64), (String, Option<String>)> = db
+        .prepare(
+            "SELECT lower(repo_owner), lower(repo_name), pr_number, pr_title, pr_author FROM review_jobs
+             WHERE pr_title IS NOT NULL ORDER BY created_at",
+        )?
+        .query_map([], |row| Ok(((row.get(0)?, row.get(1)?, row.get::<_, i64>(2)?.max(0) as u64), (row.get(3)?, row.get(4)?))))?
+        .collect::<Result<_, _>>()?;
+    for loaded in period.iter_mut().chain(live.iter_mut()) {
+        let job = &mut loaded.job;
+        if job.pr_title.is_none() {
+            if let Some((title, author)) = titles.get(&(job.repo_owner.to_lowercase(), job.repo_name.to_lowercase(), job.number)) {
+                job.pr_title = Some(title.clone());
+                job.pr_author = job.pr_author.clone().or_else(|| author.clone());
+            }
+        }
+    }
     let mut jobs = Vec::new();
     let mut listed = std::collections::HashSet::new();
     // Live first (they need attention), then the period's newest.
