@@ -39,6 +39,32 @@ prepared checkout (#1126) and the reviewer session (#1129).
   the marker before every post attempt.
 - `github/github_review` is not flipped here (that is #1120, with the pane).
 
+## Amendments after review 6033190154
+
+- **Comment ids come from the PR's comment list.** The review-specific comments endpoint omits
+  `line`, `original_line` and `side`, so nothing matched. Bridge lists
+  `pulls/{n}/comments` and keeps the ones whose `pull_request_review_id` is the posted review.
+  The stubs answer in the real shapes (the review endpoint without line fields).
+- **A post is built from the job as stored now.** An auto post used the row claimed before the
+  review, whose summary was still empty. The post reloads the job, so the reviewers' summary is
+  in the body.
+- **Rate limits wait, permission refusals fail.** The three review calls run `gh api --include`
+  and read the status, `Retry-After`, `X-RateLimit-Remaining` and `X-RateLimit-Reset`. A 403 or
+  429 that is a rate limit (a `Retry-After`, no requests remaining, or a rate-limit message) is
+  a new `StepError::RateLimited` with the wait GitHub asked for (`Retry-After`, else until the
+  reset, else 60 s). The runner sleeps that long (at most 15 minutes) before the next attempt.
+  Any other 401, 403, 404 or 422 stays fatal. Lists page by hand (`page=N`) instead of
+  `--paginate`, so each page's headers are read.
+
+New regressions:
+- `reviews::post::tests::comment_ids_come_from_the_pr_comments_of_that_review`
+- `reviews::post::tests::an_auto_job_posts_without_anyone_deciding` (now asserts the summary)
+- `reviews::post::tests::a_post_that_timed_out_after_github_took_it_is_not_posted_twice` (now
+  asserts the recovered inline finding is marked posted)
+- `reviews::post::tests::rate_limit_responses_wait_and_permission_refusals_fail`
+- `reviews::post::tests::a_rate_limited_post_waits_and_then_posts`
+- `reviews::runner::tests::a_rate_limited_step_waits_as_long_as_github_asked`
+
 ## Functional Behavior
 
 ### Payload (`reviews/post.rs`)
