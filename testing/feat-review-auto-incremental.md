@@ -167,6 +167,34 @@ Tests added for this review:
   are left out; after a force-push they are kept as `rewritten`.
 - `post_tests`: a reconciled post carries the found review's commit.
 
+## Review on 56e69161 (amended before the fixes)
+
+- **Legacy posted rows.** Migration 92 also fills `posted_head_sha` for posted jobs that are
+  not retries (only a retry can reconcile another attempt's review). A posted retry from before
+  it stays unknown, and a re-review whose last posted review is unknown runs as a full review.
+- **The host is part of a PR's identity.** `review_jobs.repo_host` (migration 92), set from
+  the PR head lookup; every history query and the fix-mark guard match host, owner, name and
+  number. A row from before it (no host) matches nothing.
+- **Only live workspaces are watched.** An archived workspace leaves the watch at once (its
+  row is gone), so a live workspace of the same repository takes over.
+- **Any change to the auto-review settings starts a new baseline,** even Off then On between
+  two polls: saving bumps a generation under the store lock, the tick drops its state when the
+  generation moved, and the insertion gate refuses a start from an older generation.
+- **A closed or merged PR is never started:** the fresh head lookup reads the PR's state.
+- **"Newly opened" means a number above every PR this watch has seen,** in any listing,
+  complete or partial. A PR that was out of view (or reopened) is a baseline, not new.
+- **Fix marks follow git, not queue order.** `prepare` places each earlier head; only a
+  finding of an `earlier` head (an ancestor) can be marked fixed. That set travels in
+  `Prepared` to the store, which marks nothing outside it. A `rewritten` head is memory only.
+
+Tests added for this review:
+- `store_tests`: a legacy posted retry gives no incremental base and a legacy non-retry
+  gives its head; history and fix marks do not cross hosts; a fix mark from a review queued
+  earlier but at a later head stands when git says so.
+- `auto_tests`: an archived workspace hands the watch to the live one; Off then On between
+  polls starts a new baseline; a closed PR is not started; a partial listing that becomes
+  complete does not make an old PR new.
+
 ## Manual
 
 - None beyond the evals.
