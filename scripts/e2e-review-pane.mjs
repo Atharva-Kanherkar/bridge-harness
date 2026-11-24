@@ -123,7 +123,7 @@ try {
     if (results.length) await pane.locator("[data-review-job]").first().waitFor({ timeout: 30_000 });
     const before = await pane.locator("[data-review-job]").evaluateAll(rows => rows.map(row => row.getAttribute("data-review-job")));
     await pane.getByRole("button", { name: "Review", exact: true }).click();
-    await pane.getByRole("menuitem", { name: "Claude" }).click();
+    await pane.getByRole("group", { name: "Review harness" }).getByRole("button", { name: "Claude", exact: true }).click();
     const reviews = pane.getByRole("region", { name: "Reviews" });
     await reviews.waitFor({ timeout: 30_000 });
     await page.waitForFunction(known => [...document.querySelectorAll("[data-review-job]")].some(row => !known.includes(row.getAttribute("data-review-job"))), before);
@@ -165,10 +165,13 @@ try {
       await advanced.waitFor({ timeout: 15_000 });
       if (!(await page.getByText("Background tasks", { exact: true }).first().isVisible())) await advanced.click();
       await page.getByText("Background tasks", { exact: true }).first().click({ timeout: 15_000 });
-      const group = page.locator('[data-settings-anchor="review-jobs"], #review-jobs').first();
-      await page.getByText("Review jobs", { exact: true }).first().scrollIntoViewIfNeeded();
+      // The group itself, or the run fails: no silent fallback to a wider shot.
+      const group = page.locator('[data-settings-row="review-jobs"]');
+      await group.waitFor({ timeout: 15_000 });
+      assert.equal(await group.count(), 1, "the Review jobs settings group");
+      await group.scrollIntoViewIfNeeded();
       await page.waitForTimeout(500);
-      await (await group.count() ? group : page.locator("[data-reviewer-settings]")).screenshot({ path: path.join(out, "light-5-settings.png") });
+      await group.screenshot({ path: path.join(out, "light-5-settings.png") });
     }
     await page.close();
     // The second pass reviews afresh: the first job is posted (terminal).
