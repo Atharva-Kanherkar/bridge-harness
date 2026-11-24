@@ -56,4 +56,10 @@ describe("the search index", () => {
     expect(groups.map(group => group.page)).toEqual(["chatDefaults"]);
     expect(filterSettingsRows("active-turn", [...PAGE_ROWS, ...SETTINGS_ROWS])).toEqual([]);
   });
+
+  it("finds the early compaction switch on Coding agents", () => {
+    const groups = filterSettingsRows("compaction", [...PAGE_ROWS, ...SETTINGS_ROWS]);
+    expect(groups.map(group => group.page)).toEqual(["codingAgents"]);
+    expect(groups[0].rows.map(row => [row.id, row.label])).toEqual([["early-compaction", "Early compaction"]]);
+  });
 });

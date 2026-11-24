@@ -1532,6 +1532,20 @@ async fn save_delegation_notify_settings(session_id: Option<String>, level: Opti
 }
 
 #[tauri::command]
+async fn get_early_compaction_settings(session_id: Option<String>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::EarlyCompactionSettingsView, BridgeError> {
+    api::get_early_compaction_settings(state.inner(), &bridge_protocol::messages::GetEarlyCompactionSettingsParams { session_id })
+}
+
+// A save waits on the input lease.
+#[tauri::command]
+async fn save_early_compaction_settings(session_id: Option<String>, enabled: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::EarlyCompactionSettingsView, BridgeError> {
+    let core = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || api::save_early_compaction_settings(&core, &bridge_protocol::messages::SaveEarlyCompactionSettingsParams { session_id, enabled }))
+        .await
+        .map_err(|e| BridgeError::Invalid(e.to_string()))?
+}
+
+#[tauri::command]
 async fn get_attribution_settings(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::AttributionSettings, BridgeError> {
     api::get_attribution_settings(state.inner())
 }
@@ -3995,6 +4009,8 @@ pub fn run() -> i32 {
             resume_limit_recovery,
             get_delegation_notify_settings,
             save_delegation_notify_settings,
+            get_early_compaction_settings,
+            save_early_compaction_settings,
             list_attention,
             mark_attention_seen,
             mark_attention_unread,

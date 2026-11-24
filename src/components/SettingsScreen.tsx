@@ -12,6 +12,7 @@ import { type OpenCodeAdvancedSettings } from "./OpenCodeHarnessSettings";
 import { ImportHarnessSection } from "./ImportHarnessSection";
 import { SettingsRail } from "./settings/SettingsRail";
 import { SettingsPage } from "./settings/kit";
+import { EarlyCompactionSetting } from "./settings/EarlyCompactionSetting";
 import { AppearancePage } from "./settings/AppearancePage";
 import { UpdatesPage } from "./settings/UpdatesPage";
 import { NotificationsPage } from "./settings/NotificationsPage";
@@ -77,6 +78,9 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
   const [openCodeDiscoveryError, setOpenCodeDiscoveryError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  // Reset all deletes the early compaction switch too. That switch loads its
+  // own value, so each reset gives it a new key and it reads the value again.
+  const [resets, setResets] = useState(0);
   // One copy of the runtime list, read by both the Harnesses list and a single
   // harness's detail page, so an install never has to be reported twice.
   const managed = useManagedAgents(undefined, onHealthChange);
@@ -270,6 +274,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     try {
       const [next, setup] = await Promise.all([bridgeApi.resetAllConfig(), bridgeApi.resetModelProfiles()]);
       acceptConfig(next); setAgentDrafts({}); setPresetDetailId(null); setHarnessDrafts({}); setHarnessDetailId(null);
+      setResets(count => count + 1);
       setModelSetup(setup); setProfiles(profileDraftsFromSetup(setup)); onModelSetupChange(setup); flashSaved();
     }
     catch (error) { onError(String(error)); } finally { setBusy(false); }
@@ -357,6 +362,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
         harnesses={config.harnesses}
         modelOptions={modelOptions}
         managed={managed}
+        extra={<EarlyCompactionSetting key={resets} />}
         busy={busy}
         openCodeCatalog={openCodeCatalog}
         openCodeDiscoveryError={openCodeDiscoveryError}

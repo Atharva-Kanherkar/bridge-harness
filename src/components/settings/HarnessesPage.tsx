@@ -12,7 +12,7 @@
 // dragged along by a switch. The system prompt, the executable path, and the
 // advanced JSON are text, so they dirty the page and go through the save bar.
 
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import type { AdapterDescriptor, HarnessConfig, OpenCodeCatalog, ReasoningEffort } from "../../types";
 import { advertisedEfforts } from "../../modelProfiles";
 import { HarnessMark } from "../harnessMarks";
@@ -59,8 +59,10 @@ export function HarnessesPage(props: Shared & {
   detailId: string | null;
   onOpenDetail: (id: string) => void;
   onCloseDetail: () => void;
+  /** Settings for every coding agent at once, drawn on the list under the agents. */
+  extra?: ReactNode;
 }) {
-  const { harnesses, managed, adapters, detailId, onOpenDetail, onCloseDetail, onAuthenticationChanged } = props;
+  const { harnesses, managed, adapters, detailId, onOpenDetail, onCloseDetail, onAuthenticationChanged, extra } = props;
   const detail = detailId ? harnesses.find(item => item.id === detailId) : undefined;
   if (detail) return <HarnessDetail {...props} harness={detail} onBack={onCloseDetail} />;
 
@@ -79,6 +81,7 @@ export function HarnessesPage(props: Shared & {
           control={<StatusPill tone={adapter?.available ? "success" : "neutral"}>{adapter?.available ? "Available" : "Unavailable"}</StatusPill>} />
       </SettingsGroup>;
     })}
+    {extra}
     {bridge && <SettingsFold><SettingsGroup label="Bridge defaults" note="Bridge's own routing">
       <SettingsRow
         lead={<HarnessMark harness="bridge" size={14} />}

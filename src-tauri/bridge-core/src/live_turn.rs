@@ -3243,10 +3243,16 @@ fn handle_agent_value_timed(
     let mut pending_telemetry: Vec<store::TelemetrySpan> = Vec::new();
     let mut turn_completed = false;
     let mut turn_failed = false;
+    // The text of a provider error in this frame. An early compaction attempt
+    // that fails keeps it.
+    let mut provider_error: Option<String> = None;
     // Set when a native boundary released the optimistic `working` mark a
     // forwarded `/compact` wrote. The release's side effects run after the
     // database guard is dropped, because draining takes the lock itself.
     let mut native_compaction_released = false;
+    // The early compaction receipt reads only the values above and below.
+    let mut native_boundary: Option<crate::early_compaction::Boundary> = None;
+    let early_receipt: Option<crate::early_compaction::Receipt>;
     let mut checkpoint_prompt_after_turn: Option<String> = None;
     let mut checkpoint_response_seen = false;
     let mut checkpoint_turn_handled = false;
@@ -3606,6 +3612,13 @@ fn handle_agent_value_timed(
                 // status instead.
                 agent::NATIVE_COMPACTION_KIND => {
                     native_compaction_released |= release_native_compaction(&db, session_id);
+                    // A Claude compaction runs under a synthetic turn id,
+                    // and its readings carry no turn id at all.
+                    native_boundary = Some(crate::early_compaction::Boundary {
+                        pre_tokens: event.data.get("preTokens").and_then(serde_json::Value::as_i64),
+                        post_tokens: event.data.get("postTokens").and_then(serde_json::Value::as_i64),
+                        turn_id: observed_turn_id.clone().filter(|_| adapter_id != "claude"),
+                    });
                 }
                 "usage.updated" => {
                     let scope = workspace_id.as_deref().unwrap_or(session_id);
@@ -3761,6 +3774,9 @@ fn handle_agent_value_timed(
                     if status == "failed" {
                         turn_completed = true;
                         turn_failed = true;
+                        if event.text.is_some() {
+                            provider_error.clone_from(&event.text);
+                        }
                         *current_turn.lock().unwrap() = None;
                         void_orphaned_questions(&db, session_id, "provider_error");
                         // The provider's own words are the only place a usage
@@ -4335,6 +4351,27 @@ fn handle_agent_value_timed(
                 chrono::Utc::now(),
             );
         }
+        early_receipt = state.early_compaction.receipt(
+            &crate::early_compaction::Frame {
+                session_id,
+                harness: &adapter_id,
+                direct: is_direct,
+                depth: own_depth,
+                turn_completed,
+                turn_failed,
+                checkpoint_turn: checkpoint_turn_active,
+                prompt_control: prompt_control_turn || completes_prompt_control,
+                turn_id: observed_turn_id.as_deref(),
+                boundary: native_boundary,
+                launch: expected_launch,
+                error: provider_error.as_deref(),
+            },
+            Utc::now(),
+        );
+    }
+
+    if let Some(receipt) = early_receipt {
+        crate::early_compaction::accept(core, receipt, Utc::now());
     }
 
     // A released compaction owes what a turn's end owes. The status change
@@ -11970,76 +12007,14 @@ fn prepare_input(
             // of its own falls back to a Bridge checkpoint, which summarises
             // history for a later cold start without freeing a single
             // provider token. See `docs/compaction-and-resume.md`.
-            //
-            // The static half of the capability is asked here, off the
-            // adapters mutex, because answering it can cost a process launch:
-            // Codex reads its app-server schema, and doing that while holding
-            // the mutex would stall every other session's adapter I/O behind
-            // one chat's first `/compact`.
-            let harness_compacts = state
-                .adapter_registry
-                .supports_native_compaction(&session_harness);
-            let requested = if harness_compacts {
-                let adapters = state.adapters.lock().unwrap();
-                match adapters.get(session_id) {
-                    // The runtime refines the static answer with what only a
-                    // live process knows, then serves the request under the
-                    // same acquisition so nothing can slip in between.
-                    Some(runtime) => {
-                        let support = runtime.native_compaction();
-                        if support.is_supported() {
-                            runtime.compact_native(
-                                focus.as_deref().filter(|_| support.accepts_focus()),
-                            )?;
-                        }
-                        support
-                    }
-                    // The process went away between the two questions. Falling
-                    // through to the Bridge checkpoint is the honest answer:
-                    // it reports the missing process rather than inventing a
-                    // compaction that never happened.
-                    None => adapters::NativeCompaction::Unsupported,
-                }
-            } else {
-                adapters::NativeCompaction::Unsupported
-            };
-            if requested.is_supported() {
-                // A forwarded compaction is a turn the provider is now
-                // running: Claude reads the slash line off its input stream,
-                // Codex and OpenCode each run theirs as a turn of their own.
-                // Marking it before returning closes the window between this
-                // dispatch and the provider's `turn.started`, which is exactly
-                // where a message typed immediately after would otherwise be
-                // routed as a new turn and collide with the compaction. The
-                // provider's own `turn.completed` clears it, as it does for
-                // any other turn. See `turn_is_active`.
-                let _ = state.db.lock().unwrap().execute(
-                    "UPDATE sessions SET status='working' WHERE id=?1",
-                    params![session_id],
-                );
-                let focus_ignored = focus
-                    .as_deref()
-                    .map(str::trim)
-                    .is_some_and(|value| !value.is_empty())
-                    && !requested.accepts_focus();
-                if focus_ignored {
-                    // Naming what was ignored, rather than letting the reader
-                    // believe a focus they typed was applied.
-                    emit_local_assistant(
-                        core,
-                        session_id,
-                        &session_harness,
-                        &format!(
-                            "{} compacts the whole conversation, so the focus was not applied.",
-                            crate::model::Harness::from_stored(&session_harness).label()
-                        ),
-                    )?;
-                }
-                // The harness says when it starts compacting too, but not all
-                // of them do (OpenCode reports only the boundary), and a click
-                // that shows nothing until then reads as ignored.
-                emit_native_compacting(core, session_id, &session_harness)?;
-                core.events.publish(CoreEvent::StateChanged);
+            let forwarded = forward_native_compaction(
+                core,
+                session_id,
+                &session_harness,
+                focus.as_deref(),
+                CompactOrigin::Person,
+            )?;
+            if forwarded == Forwarded::Yes {
                 return Ok(InputPreparation::Handled { interceptions });
             }
             let prompt = state.begin_manual_compaction(session_id)?;
@@ -13611,6 +13586,19 @@ pub const QUEUED_INPUT_SWEEP_INTERVAL: Duration = Duration::from_secs(2);
 /// cannot see: a daemon that restarted while input was queued, and a turn that
 /// ended without the completion event reaching the drain.
 pub fn start_queued_input_maintenance(core: Arc<BridgeCore>) {
+    let mut attention_seen = recover_before_maintenance(&core);
+    thread::spawn(move || loop {
+        thread::sleep(QUEUED_INPUT_SWEEP_INTERVAL);
+        queued_input_maintenance_tick(&core, &mut attention_seen);
+    });
+}
+
+/// What the maintenance loop settles once, before its first tick. Returns
+/// the attention revision that the first tick compares with.
+fn recover_before_maintenance(core: &Arc<BridgeCore>) -> i64 {
+    // The process that sent an open early compaction is gone, so no signal
+    // can settle the attempt. Nothing is sent again.
+    crate::early_compaction::settle_at_startup(core, Utc::now());
     // Rows a previous process claimed but never confirmed. Redelivering could
     // duplicate and silence would lose, so each one is surfaced to the session
     // it belonged to and the user decides.
@@ -13640,7 +13628,7 @@ pub fn start_queued_input_maintenance(core: Arc<BridgeCore>) {
         // them rather than being left to wonder.
         if let Some(harness) = harness {
             let _ = emit_local_assistant(
-                &core,
+                core,
                 &input.session_id,
                 &harness,
                 &format!(
@@ -13650,27 +13638,30 @@ pub fn start_queued_input_maintenance(core: Arc<BridgeCore>) {
             );
         }
     }
-    let mut attention_seen = crate::attention::revision(&core.db.lock().unwrap()).unwrap_or(0);
-    thread::spawn(move || loop {
-        thread::sleep(QUEUED_INPUT_SWEEP_INTERVAL);
-        prepare_pending_worker_results(&core);
-        recover_prompt_mutation_feedback(&core);
-        let sessions = {
-            let db = core.db.lock().unwrap();
-            session_input::sessions_with_queued_input(&db).unwrap_or_default()
-        };
-        for session_id in sessions {
-            drain_queued_input(&core, &session_id);
-        }
-        // A bridge-wait past its deadline, including one a restart left armed.
-        fire_due_orchestrator_waits(&core);
-        // What is still queued now has no adapter to drain into, or is waiting
-        // on a turn. The first kind is the person's to know about.
-        escalate_stranded_input(&core);
-        // Last, so this tick's escalations and anything committed without an
-        // agent event go out as one hint.
-        publish_attention_if_moved(&core, &mut attention_seen);
-    });
+    crate::attention::revision(&core.db.lock().unwrap()).unwrap_or(0)
+}
+
+/// One pass of the maintenance sweep. A test runs it on its own clock.
+fn queued_input_maintenance_tick(core: &Arc<BridgeCore>, attention_seen: &mut i64) {
+    prepare_pending_worker_results(core);
+    recover_prompt_mutation_feedback(core);
+    let sessions = {
+        let db = core.db.lock().unwrap();
+        session_input::sessions_with_queued_input(&db).unwrap_or_default()
+    };
+    for session_id in sessions {
+        drain_queued_input(core, &session_id);
+    }
+    // A bridge-wait past its deadline, including one a restart left armed.
+    fire_due_orchestrator_waits(core);
+    // After the drain, so a chat with delivered input reads as busy.
+    crate::early_compaction::sweep(core, Utc::now());
+    // What is still queued now has no adapter to drain into, or is waiting
+    // on a turn. The first kind is the person's to know about.
+    escalate_stranded_input(core);
+    // Last, so this tick's escalations and anything committed without an
+    // agent event go out as one hint.
+    publish_attention_if_moved(core, attention_seen);
 }
 
 fn escalate_stranded_input(core: &Arc<BridgeCore>) {
@@ -13782,6 +13773,103 @@ fn record_recoverable_adapter_failure(
         &error.to_string(),
     )?;
     Ok(())
+}
+
+/// Who asked for a native compaction. The origin selects nothing in the
+/// adapter call: each origin sends the same bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactOrigin {
+    /// A person typed `/compact`.
+    Person,
+    /// Bridge asked at an idle turn boundary. It never names a focus.
+    Early,
+}
+
+/// Whether the harness took the compaction command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Forwarded {
+    Yes,
+    /// The harness has no compaction command, or the process is gone.
+    /// Nothing was sent.
+    Unsupported,
+}
+
+/// Send the harness its own compaction command. This is the one dispatch
+/// path for each origin, so a manual `/compact` and an early compaction
+/// write the same bytes.
+pub fn forward_native_compaction(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    harness: &str,
+    focus: Option<&str>,
+    origin: CompactOrigin,
+) -> Result<Forwarded, BridgeError> {
+    // The static half of the capability is asked here, off the
+    // adapters mutex, because answering it can cost a process launch:
+    // Codex reads its app-server schema, and doing that while holding
+    // the mutex would stall every other session's adapter I/O behind
+    // one chat's first `/compact`.
+    let harness_compacts = core.adapter_registry.supports_native_compaction(harness);
+    let requested = if harness_compacts {
+        let adapters = core.adapters.lock().unwrap();
+        match adapters.get(session_id) {
+            // The runtime refines the static answer with what only a
+            // live process knows, then serves the request under the
+            // same acquisition so nothing can slip in between.
+            Some(runtime) => {
+                let support = runtime.native_compaction();
+                if support.is_supported() {
+                    runtime.compact_native(focus.filter(|_| support.accepts_focus()))?;
+                }
+                support
+            }
+            // The process went away between the two questions. Falling
+            // through to the Bridge checkpoint is the honest answer:
+            // it reports the missing process rather than inventing a
+            // compaction that never happened.
+            None => adapters::NativeCompaction::Unsupported,
+        }
+    } else {
+        adapters::NativeCompaction::Unsupported
+    };
+    if !requested.is_supported() {
+        return Ok(Forwarded::Unsupported);
+    }
+    // A forwarded compaction is a turn the provider is now
+    // running: Claude reads the slash line off its input stream,
+    // Codex and OpenCode each run theirs as a turn of their own.
+    // Marking it before returning closes the window between this
+    // dispatch and the provider's `turn.started`, which is exactly
+    // where a message typed immediately after would otherwise be
+    // routed as a new turn and collide with the compaction. The
+    // provider's own `turn.completed` clears it, as it does for
+    // any other turn. See `turn_is_active`.
+    let _ = core.db.lock().unwrap().execute(
+        "UPDATE sessions SET status='working' WHERE id=?1",
+        params![session_id],
+    );
+    let focus_ignored = origin == CompactOrigin::Person
+        && focus.map(str::trim).is_some_and(|value| !value.is_empty())
+        && !requested.accepts_focus();
+    if focus_ignored {
+        // Naming what was ignored, rather than letting the reader
+        // believe a focus they typed was applied.
+        emit_local_assistant(
+            core,
+            session_id,
+            harness,
+            &format!(
+                "{} compacts the whole conversation, so the focus was not applied.",
+                crate::model::Harness::from_stored(harness).label()
+            ),
+        )?;
+    }
+    // The harness says when it starts compacting too, but not all
+    // of them do (OpenCode reports only the boundary), and a click
+    // that shows nothing until then reads as ignored.
+    emit_native_compacting(core, session_id, harness)?;
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(Forwarded::Yes)
 }
 
 fn emit_local_assistant(
