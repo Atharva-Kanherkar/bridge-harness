@@ -375,6 +375,9 @@ pub fn connector_states(
     definition: &wire::WorkflowDefinition,
     configuration: Option<&crate::marketplace::ClaudeSdkConfiguration>,
 ) -> Vec<wire::WorkflowConnectorStatus> {
+    // A probe that failed lists nothing: absent is not missing, it is unknown,
+    // and an unknown connector must not fail a run before it starts (R5).
+    let configuration = configuration.filter(|configuration| crate::marketplace::connector_answer_problem(configuration).is_none());
     definition
         .grants
         .iter()

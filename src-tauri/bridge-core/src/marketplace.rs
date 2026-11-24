@@ -2374,6 +2374,19 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_probe_makes_every_granted_connector_unknown_not_missing() {
+        let mut definition = crate::workflows::test_support::definition();
+        definition.grants = vec![bridge_protocol::messages::WorkflowGrant { server: "claude.ai Slack".into(), read: true, write: bridge_protocol::messages::WorkflowWriteAccess::Never }];
+        let failed = answer(&[], &["mcp"]);
+        let states = crate::workflows::connector_states(&definition, Some(&failed));
+        assert_eq!(states[0].state, bridge_protocol::messages::WorkflowConnectorState::Unknown);
+        assert_eq!(crate::workflows::unavailable_summary(&definition, Some(&failed)), None, "nothing is known, so the run is not stopped");
+        // A probe that worked and lists no Slack does mean it is gone.
+        let worked = answer(&["claude.ai Linear"], &[]);
+        assert_eq!(crate::workflows::connector_states(&definition, Some(&worked))[0].state, bridge_protocol::messages::WorkflowConnectorState::Missing);
+    }
+
+    #[test]
     fn a_failed_probe_never_replaces_a_real_connector_answer() {
         let mut cache = ConnectorCache::default();
         let start = Instant::now();
