@@ -201,9 +201,17 @@ pub fn tick(core: &Arc<BridgeCore>, now: Instant) {
             }
         };
         let viewer = if current.auto_review == ReviewAutoMode::Mine {
-            let fresh = state.viewer.as_ref().filter(|(_, read)| now.duration_since(*read) < VIEWER_TTL).map(|(login, _)| login.clone());
-            let login = fresh.unwrap_or_else(|| core.github_surface.viewer_login(path).ok());
+            let fresh = state.viewer.as_ref().filter(|(login, read)| login.is_some() && now.duration_since(*read) < VIEWER_TTL);
+            let login = match fresh {
+                Some((login, _)) => login.clone(),
+                None => core.github_surface.viewer_login(path).ok(),
+            };
             state.viewer = Some((login.clone(), now));
+            if login.is_none() {
+                // Not knowing who "me" is, no baseline: otherwise the first
+                // read that works would make every PR of theirs look new.
+                continue;
+            }
             login
         } else {
             None

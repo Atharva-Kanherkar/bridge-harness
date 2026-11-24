@@ -252,6 +252,19 @@ fn off_lists_nothing_and_starts_nothing_and_mine_skips_others() {
     tick(&fixture.core, start + LIST_EVERY * 6 + DEBOUNCE);
     assert!(fixture.jobs().is_empty(), "someone else's PR");
 
+    // Who "me" is cannot be read: no baseline, so when it can be, nothing
+    // of theirs looks new.
+    fixture.mode(ReviewAutoMode::Off);
+    tick(&fixture.core, start + LIST_EVERY * 9);
+    std::fs::write(fixture.gh.join("viewer"), "not json").unwrap();
+    fixture.mode(ReviewAutoMode::Mine);
+    fixture.heads(&[(103, "c", false, "fixture-user")]);
+    tick(&fixture.core, start + LIST_EVERY * 10);
+    std::fs::remove_file(fixture.gh.join("viewer")).unwrap();
+    tick(&fixture.core, start + LIST_EVERY * 11);
+    tick(&fixture.core, start + LIST_EVERY * 11 + DEBOUNCE);
+    assert!(fixture.jobs().is_empty(), "the first listing after the viewer is known is a baseline");
+
     // Turned off with a change pending: the change is forgotten.
     fixture.mode(ReviewAutoMode::All);
     tick(&fixture.core, start + LIST_EVERY * 20);
