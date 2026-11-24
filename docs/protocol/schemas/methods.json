@@ -898,6 +898,13 @@
       "resultSchema": "memory-record.json"
     },
     {
+      "command": "review_memory_records",
+      "domain": "memory",
+      "method": "memory/review_memory_records",
+      "paramsSchema": "review-memory-records-params.json",
+      "resultSchema": "review-memory-records-result.json"
+    },
+    {
       "command": "get_extraction_settings",
       "domain": "memory",
       "method": "memory/get_extraction_settings",
@@ -2587,7 +2594,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 55
+    "minor": 56
   },
   "reserved": {
     "cancel": "$/cancel",

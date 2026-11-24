@@ -2579,9 +2579,11 @@ pub fn list_memory_records(
     core: &Arc<BridgeCore>,
     scope_key: &str,
     status: Option<&str>,
+    cursor: Option<&str>,
+    limit: Option<u32>,
 ) -> Result<bridge_protocol::messages::ListMemoryRecordsResult, BridgeError> {
     let db = core.db.lock().unwrap();
-    memory_ledger::list(&db, scope_key, status)
+    memory_ledger::list_page(&db, scope_key, status, cursor, limit)
 }
 
 pub fn delete_memory_record(
@@ -2640,6 +2642,26 @@ pub fn reject_memory_record(
         scope_key: record.scope_key.clone(),
     });
     Ok(record)
+}
+
+/// Many review decisions, one transaction and one change event, so a client
+/// reloads once rather than once per record.
+pub fn review_memory_records(
+    core: &Arc<BridgeCore>,
+    scope_key: &str,
+    approve: &[String],
+    reject: &[String],
+) -> Result<bridge_protocol::messages::ReviewMemoryRecordsResult, BridgeError> {
+    let result = {
+        let db = core.db.lock().unwrap();
+        memory_ledger::review_batch(&db, scope_key, approve, reject)?
+    };
+    if !result.approved.is_empty() || !result.rejected.is_empty() {
+        core.events.publish(CoreEvent::MemoryChanged {
+            scope_key: result.scope_key.clone(),
+        });
+    }
+    Ok(result)
 }
 
 fn extraction_settings_wire(

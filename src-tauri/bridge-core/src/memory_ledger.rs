@@ -7,8 +7,8 @@
 use crate::secret_interception;
 use crate::BridgeError;
 use bridge_protocol::messages::{
-    ListMemoryRecordsResult, MemoryRecord, ACCOUNT_MEMORY_SCOPE, MAX_MEMORY_BODY_CHARS,
-    MAX_MEMORY_LIST_LIMIT,
+    ListMemoryRecordsResult, MemoryRecord, MemoryReviewRefusal, ReviewMemoryRecordsResult,
+    ACCOUNT_MEMORY_SCOPE, MAX_MEMORY_BODY_CHARS, MAX_MEMORY_LIST_LIMIT, MAX_MEMORY_REVIEW_BATCH,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -325,6 +325,59 @@ pub fn list(
     scope_key: &str,
     status: Option<&str>,
 ) -> Result<ListMemoryRecordsResult, BridgeError> {
+    list_page(db, scope_key, status, None, None)
+}
+
+/// Where a page ended, so the next page starts strictly after it. Keyset
+/// rather than offset: approving, rejecting or editing a record between two
+/// reads cannot shift a later page and skip or repeat a record.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PageCursor {
+    status: String,
+    updated_at: String,
+    id: String,
+}
+
+fn encode_cursor(status: &str, record: &MemoryRecord) -> String {
+    use base64::Engine;
+    let cursor = PageCursor {
+        status: status.to_string(),
+        updated_at: record.updated_at.clone(),
+        id: record.id.clone(),
+    };
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&cursor).expect("a cursor always serializes"))
+}
+
+fn decode_cursor(raw: &str, status: &str) -> Result<PageCursor, BridgeError> {
+    use base64::Engine;
+    let refused = || {
+        BridgeError::Invalid(
+            "That memory page cursor is not valid. Reload the list from its first page.".into(),
+        )
+    };
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(raw.trim())
+        .map_err(|_| refused())?;
+    let cursor: PageCursor = serde_json::from_slice(&bytes).map_err(|_| refused())?;
+    if cursor.status != status {
+        return Err(BridgeError::Invalid(format!(
+            "That memory page cursor lists {} records, not {status} ones.",
+            cursor.status
+        )));
+    }
+    Ok(cursor)
+}
+
+/// One page of a scope's `active` or `proposed` records, newest change first,
+/// with the status's total and a cursor for the next page.
+pub fn list_page(
+    db: &Connection,
+    scope_key: &str,
+    status: Option<&str>,
+    cursor: Option<&str>,
+    limit: Option<u32>,
+) -> Result<ListMemoryRecordsResult, BridgeError> {
     let scope_key = parse_scope_key(scope_key)?;
     let status = match status.map(str::trim).filter(|value| !value.is_empty()) {
         None => STATUS_ACTIVE,
@@ -336,20 +389,149 @@ pub fn list(
             )))
         }
     };
-    let mut statement = db.prepare(&format!(
-        "SELECT {RECORD_COLUMNS}
-         FROM memory_records
-         WHERE scope_key=?1 AND status=?2
-         ORDER BY updated_at DESC, id DESC
-         LIMIT ?3",
-    ))?;
-    let records = statement
-        .query_map(
-            params![scope_key, status, MAX_MEMORY_LIST_LIMIT as i64],
-            map_row,
-        )?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(ListMemoryRecordsResult { scope_key, records })
+    let limit = match limit {
+        None => MAX_MEMORY_LIST_LIMIT,
+        Some(value) if (1..=MAX_MEMORY_LIST_LIMIT).contains(&value) => value,
+        Some(_) => {
+            return Err(BridgeError::Invalid(format!(
+                "A memory page holds 1 to {MAX_MEMORY_LIST_LIMIT} records."
+            )))
+        }
+    };
+    let after = cursor
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|raw| decode_cursor(raw, status))
+        .transpose()?;
+    // One row past the page tells whether another page exists without a
+    // second count query.
+    let fetch = i64::from(limit) + 1;
+    let mut records = match &after {
+        None => {
+            let mut statement = db.prepare(&format!(
+                "SELECT {RECORD_COLUMNS}
+                 FROM memory_records
+                 WHERE scope_key=?1 AND status=?2
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT ?3",
+            ))?;
+            let rows = statement
+                .query_map(params![scope_key, status, fetch], map_row)?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        }
+        Some(after) => {
+            let mut statement = db.prepare(&format!(
+                "SELECT {RECORD_COLUMNS}
+                 FROM memory_records
+                 WHERE scope_key=?1 AND status=?2
+                   AND (updated_at < ?3 OR (updated_at = ?3 AND id < ?4))
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT ?5",
+            ))?;
+            let rows = statement
+                .query_map(
+                    params![scope_key, status, after.updated_at, after.id, fetch],
+                    map_row,
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        }
+    };
+    let next_cursor = if records.len() > limit as usize {
+        records.truncate(limit as usize);
+        records.last().map(|record| encode_cursor(status, record))
+    } else {
+        None
+    };
+    let total: i64 = db.query_row(
+        "SELECT COUNT(*) FROM memory_records WHERE scope_key=?1 AND status=?2",
+        params![scope_key, status],
+        |row| row.get(0),
+    )?;
+    Ok(ListMemoryRecordsResult {
+        scope_key,
+        records,
+        total,
+        next_cursor,
+    })
+}
+
+/// Approve and reject many proposals in one transaction. Each id goes through
+/// the same transition as its single-record method, so a rule added there
+/// (such as a budget check on approval) applies here too. An id that is not a
+/// proposal in this scope is reported, not fatal: the rest of the batch
+/// applies. Malformed input (too many ids, an id in both lists) changes
+/// nothing.
+pub fn review_batch(
+    db: &Connection,
+    scope_key: &str,
+    approve_ids: &[String],
+    reject_ids: &[String],
+) -> Result<ReviewMemoryRecordsResult, BridgeError> {
+    let scope_key = parse_scope_key(scope_key)?;
+    let clean = |ids: &[String]| -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        ids.iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty() && seen.insert(id.clone()))
+            .collect()
+    };
+    let approve_ids = clean(approve_ids);
+    let reject_ids = clean(reject_ids);
+    if approve_ids.len() + reject_ids.len() > MAX_MEMORY_REVIEW_BATCH {
+        return Err(BridgeError::Invalid(format!(
+            "One review can decide at most {MAX_MEMORY_REVIEW_BATCH} memory records."
+        )));
+    }
+    if let Some(both) = approve_ids.iter().find(|id| reject_ids.contains(id)) {
+        return Err(BridgeError::Invalid(format!(
+            "Memory record '{both}' cannot be approved and rejected in one review."
+        )));
+    }
+    let transaction = db.unchecked_transaction()?;
+    let mut result = ReviewMemoryRecordsResult {
+        scope_key: scope_key.clone(),
+        approved: Vec::new(),
+        rejected: Vec::new(),
+        refused: Vec::new(),
+    };
+    let decisions = approve_ids
+        .iter()
+        .map(|id| (id, true))
+        .chain(reject_ids.iter().map(|id| (id, false)));
+    for (id, approving) in decisions {
+        let current: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT scope_key, status FROM memory_records WHERE id=?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let reason = match current {
+            None => Some("This memory record does not exist.".to_string()),
+            Some((record_scope, _)) if record_scope != scope_key => {
+                Some("This memory record belongs to another scope.".to_string())
+            }
+            Some((_, status)) if status != STATUS_PROPOSED => {
+                Some(format!("This record is already {status}, not waiting for review."))
+            }
+            Some(_) => None,
+        };
+        if let Some(reason) = reason {
+            result.refused.push(MemoryReviewRefusal { id: id.clone(), reason });
+            continue;
+        }
+        if approving {
+            approve(&transaction, id)?;
+            result.approved.push(id.clone());
+        } else {
+            reject(&transaction, id)?;
+            result.rejected.push(id.clone());
+        }
+    }
+    transaction.commit()?;
+    Ok(result)
 }
 
 pub fn forget(db: &Connection, record_id: &str) -> Result<MemoryRecord, BridgeError> {
@@ -737,7 +919,21 @@ pub fn list_as_of(
             map_row,
         )?
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(ListMemoryRecordsResult { scope_key, records })
+    // History reads stay one page; the total still counts everything that
+    // held at the instant, so a surface can say what it is not showing.
+    let total: i64 = db.query_row(
+        "SELECT COUNT(*) FROM memory_records
+         WHERE scope_key=?1 AND status<>?3
+           AND valid_from <= ?2 AND (valid_to IS NULL OR valid_to > ?2)",
+        params![scope_key, at, STATUS_DELETED],
+        |row| row.get(0),
+    )?;
+    Ok(ListMemoryRecordsResult {
+        scope_key,
+        records,
+        total,
+        next_cursor: None,
+    })
 }
 
 /// Move every active record whose expiry has arrived to `expired`, closing its
@@ -1009,11 +1205,13 @@ pub fn format_list(result: &ListMemoryRecordsResult) -> String {
             result.scope_key
         );
     }
-    let mut out = format!(
-        "Account memory in `{}` ({}):\n",
-        result.scope_key,
-        result.records.len()
-    );
+    let shown = result.records.len() as i64;
+    let count = if result.total > shown {
+        format!("{shown} of {}", result.total)
+    } else {
+        shown.to_string()
+    };
+    let mut out = format!("Account memory in `{}` ({count}):\n", result.scope_key);
     for record in &result.records {
         let body = record.body.replace('\n', " ");
         out.push_str(&format!(
@@ -1059,6 +1257,121 @@ mod tests {
             params![id, ACCOUNT_MEMORY_SCOPE, body],
         )
         .unwrap();
+    }
+
+    fn insert_at(db: &Connection, id: &str, status: &str, updated_at: &str) {
+        db.execute(
+            "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status,
+                 valid_from, valid_to, created_at, updated_at)
+             VALUES(?1, ?2, 'fact', ?1, 'model_proposal', ?3, ?4, ?4, ?4, ?4)",
+            params![id, ACCOUNT_MEMORY_SCOPE, status, updated_at],
+        )
+        .unwrap();
+    }
+
+    fn page_ids(result: &ListMemoryRecordsResult) -> Vec<String> {
+        result.records.iter().map(|record| record.id.clone()).collect()
+    }
+
+    fn read_all_pages(db: &Connection, status: &str) -> Vec<String> {
+        let mut seen = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = list_page(db, ACCOUNT_MEMORY_SCOPE, Some(status), cursor.as_deref(), None).unwrap();
+            seen.extend(page_ids(&page));
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => return seen,
+            }
+        }
+    }
+
+    #[test]
+    fn proposals_page_as_fifty_fifty_thirty_eight_with_a_true_total() {
+        let (_dir, db) = ledger_db();
+        for index in 0..138 {
+            insert_at(&db, &format!("p{index:03}"), "proposed", &format!("2026-11-{:02}T00:00:00+00:00", 1 + index % 20));
+        }
+        let first = list_page(&db, ACCOUNT_MEMORY_SCOPE, Some("proposed"), None, None).unwrap();
+        assert_eq!((first.records.len(), first.total), (50, 138));
+        let second = list_page(&db, ACCOUNT_MEMORY_SCOPE, Some("proposed"), first.next_cursor.as_deref(), None).unwrap();
+        assert_eq!((second.records.len(), second.total), (50, 138));
+        let third = list_page(&db, ACCOUNT_MEMORY_SCOPE, Some("proposed"), second.next_cursor.as_deref(), None).unwrap();
+        assert_eq!((third.records.len(), third.total), (38, 138));
+        assert!(third.next_cursor.is_none(), "the last page has no cursor");
+
+        let all = read_all_pages(&db, "proposed");
+        let unique: std::collections::HashSet<_> = all.iter().collect();
+        assert_eq!((all.len(), unique.len()), (138, 138), "no duplicate and no gap across ties");
+        let legacy = list(&db, ACCOUNT_MEMORY_SCOPE, Some("proposed")).unwrap();
+        assert_eq!(page_ids(&legacy), page_ids(&first), "callers without a cursor get the same first page");
+    }
+
+    #[test]
+    fn reviewing_a_record_between_pages_neither_skips_nor_repeats() {
+        let (_dir, db) = ledger_db();
+        for index in 0..60 {
+            insert_at(&db, &format!("p{index:02}"), "proposed", "2026-11-20T00:00:00+00:00");
+        }
+        let first = list_page(&db, ACCOUNT_MEMORY_SCOPE, Some("proposed"), None, Some(20)).unwrap();
+        approve(&db, &first.records[3].id).unwrap();
+        reject(&db, &first.records[7].id).unwrap();
+        let mut seen = page_ids(&first);
+        let mut cursor = first.next_cursor;
+        while let Some(next) = cursor {
+            let page = list_page(&db, ACCOUNT_MEMORY_SCOPE, Some("proposed"), Some(&next), Some(20)).unwrap();
+            seen.extend(page_ids(&page));
+            cursor = page.next_cursor;
+        }
+        let unique: std::collections::HashSet<_> = seen.iter().collect();
+        assert_eq!((seen.len(), unique.len()), (60, 60));
+    }
+
+    #[test]
+    fn a_bad_limit_or_cursor_is_refused_not_read_as_the_first_page() {
+        let (_dir, db) = ledger_db();
+        for index in 0..3 {
+            insert_at(&db, &format!("a{index}"), "active", "2026-11-20T00:00:00+00:00");
+            insert_at(&db, &format!("p{index}"), "proposed", "2026-11-20T00:00:00+00:00");
+        }
+        for limit in [0, 51] {
+            assert!(list_page(&db, ACCOUNT_MEMORY_SCOPE, None, None, Some(limit)).is_err(), "limit {limit}");
+        }
+        assert!(list_page(&db, ACCOUNT_MEMORY_SCOPE, None, Some("not a cursor"), None).is_err());
+        let proposed = list_page(&db, ACCOUNT_MEMORY_SCOPE, Some("proposed"), None, Some(1)).unwrap();
+        let foreign = proposed.next_cursor.expect("more proposals");
+        let error = list_page(&db, ACCOUNT_MEMORY_SCOPE, Some("active"), Some(&foreign), None).unwrap_err();
+        assert!(error.to_string().contains("proposed"), "{error}");
+    }
+
+    #[test]
+    fn a_review_batch_applies_what_it_can_and_reports_the_rest() {
+        let (_dir, db) = ledger_db();
+        for index in 0..6 {
+            insert_proposed(&db, &format!("p{index}"), &format!("proposal {index}"));
+        }
+        reject(&db, "p5").unwrap();
+        let ids = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+        let result = review_batch(&db, ACCOUNT_MEMORY_SCOPE, &ids(&["p0", "p1", "p2", "p5"]), &ids(&["p3", "p4", "missing"])).unwrap();
+        assert_eq!(result.approved, ids(&["p0", "p1", "p2"]));
+        assert_eq!(result.rejected, ids(&["p3", "p4"]));
+        let refused: Vec<_> = result.refused.iter().map(|refusal| refusal.id.as_str()).collect();
+        assert_eq!(refused, vec!["p5", "missing"]);
+        assert!(result.refused[0].reason.contains("rejected"), "{}", result.refused[0].reason);
+        assert_eq!(list(&db, ACCOUNT_MEMORY_SCOPE, None).unwrap().total, 3);
+        assert_eq!(list(&db, ACCOUNT_MEMORY_SCOPE, Some("proposed")).unwrap().total, 0);
+    }
+
+    #[test]
+    fn a_malformed_review_batch_changes_nothing() {
+        let (_dir, db) = ledger_db();
+        insert_proposed(&db, "p0", "proposal");
+        insert_proposed(&db, "p1", "proposal");
+        let both = review_batch(&db, ACCOUNT_MEMORY_SCOPE, &["p0".into(), "p1".into()], &["p1".into()]);
+        assert!(both.is_err(), "an id in both lists is refused");
+        let too_many: Vec<String> = (0..=MAX_MEMORY_REVIEW_BATCH).map(|index| format!("x{index}")).collect();
+        assert!(review_batch(&db, ACCOUNT_MEMORY_SCOPE, &too_many, &[]).is_err());
+        assert_eq!(list(&db, ACCOUNT_MEMORY_SCOPE, Some("proposed")).unwrap().total, 2, "nothing moved");
     }
 
     fn chain_columns(db: &Connection, id: &str) -> (Option<String>, Option<String>) {
