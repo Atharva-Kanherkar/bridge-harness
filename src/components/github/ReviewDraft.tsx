@@ -74,7 +74,7 @@ function FindingItem({ finding, harness, repositoryUrl, editing, busy, onFocusMo
       chosen(finding) ? "border-success/40 bg-success/5" : "border-border bg-background", dropped && "opacity-60")}
   >
     <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-      <span className={cn("text-caption font-semibold uppercase tracking-wide", SEVERITY_TEXT[finding.severity])}>{finding.severity}</span>
+      <span className={cn("text-caption font-semibold", SEVERITY_TEXT[finding.severity])}>{finding.severity.charAt(0).toUpperCase() + finding.severity.slice(1)}</span>
       <span className={cn("min-w-0 flex-1 text-meta font-medium text-foreground", dropped && "line-through")}>{finding.title}</span>
       {finding.agreedBy > 1 && <span className="rounded-sm bg-info/10 px-1.5 text-caption font-medium text-info">Both reviewers</span>}
     </div>

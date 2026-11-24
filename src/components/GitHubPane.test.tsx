@@ -518,7 +518,7 @@ describe("GitHubPane", () => {
     await mount();
     await click(buttonByText("Safe GitHub surface"));
     await click(buttonByText("Review"));
-    expect(host!.textContent).toContain("PICK TWO FOR A SECOND OPINION");
+    expect(host!.textContent).toContain("Pick two for a second opinion.");
     const option = (label: string) => [...host!.querySelectorAll<HTMLButtonElement>('[role="menuitemcheckbox"]')].find(item => item.textContent?.includes(label))!;
     await click(option("Claude"));
     await click(option("Codex"));

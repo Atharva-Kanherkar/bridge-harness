@@ -1727,7 +1727,8 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
             })}
           />
           {summary.state === "open" && reviewOpen && <div className="animate-page-mount mt-2 grid gap-1 rounded-lg border border-border bg-card p-1.5" role="menu" aria-label="Review harness">
-            <p className="px-2 pb-0.5 pt-1 text-caption font-semibold text-muted-foreground">{secondOpinion ? "RUN REVIEW WITH (PICK TWO FOR A SECOND OPINION)" : "RUN REVIEW WITH"}</p>
+            <p className="px-2 pb-0.5 pt-1 text-caption font-semibold text-muted-foreground">RUN REVIEW WITH</p>
+            {secondOpinion && <p className="px-2 pb-0.5 text-caption text-muted-foreground">Pick two for a second opinion.</p>}
             {REVIEW_HARNESSES.map(choice => {
               const checked = picked.includes(choice.id);
               return secondOpinion
