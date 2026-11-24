@@ -10,10 +10,20 @@ use std::collections::HashSet;
 use super::contract::severity_rank;
 use super::steps::DraftFinding;
 
-/// Ranges further apart than this are about different code.
-pub const MAX_LINE_GAP: u32 = 3;
+/// Ranges further apart than this are about different code. Wider than a
+/// hunk's context because a reviewer may point at the end of a block (Claude
+/// gives an `if`'s closing line with no `start_line`).
+pub const MAX_LINE_GAP: u32 = 6;
 /// Title-word overlap (Jaccard) at or above which two near findings match.
 pub const MIN_TITLE_OVERLAP: f64 = 0.5;
+/// Overlap of the code two findings quote (backticked spans in title and body)
+/// at or above which they match. Measured on live reviews: one finding seen by
+/// two reviewers scored 0.29 to 0.86, two different findings at most 0.08.
+pub const MIN_CODE_OVERLAP: f64 = 0.25;
+/// Title-and-body word overlap at or above which two findings match. Live:
+/// 0.21 to 0.42 for one finding, at most 0.14 for two different ones; this
+/// only catches what the quoted code misses.
+pub const MIN_TEXT_OVERLAP: f64 = 0.3;
 /// Confidences further apart than this pick the more confident body.
 const CONFIDENCE_GAP: f64 = 0.2;
 
@@ -44,7 +54,7 @@ pub struct Merge {
 }
 
 /// The merges among `entries`, one to one, best pair first: equal
-/// fingerprints, then higher title overlap, then nearer lines.
+/// fingerprints, then the higher overlap, then nearer lines.
 pub fn merges(entries: &[Entry]) -> Vec<Merge> {
     let mut candidates = Vec::new();
     for (left_index, left) in entries.iter().enumerate() {
@@ -57,9 +67,9 @@ pub fn merges(entries: &[Entry]) -> Vec<Merge> {
                 continue;
             }
             let same_fingerprint = left.finding.fingerprint == right.finding.fingerprint;
-            let overlap = title_overlap(&left.finding.title, &right.finding.title);
-            if same_fingerprint || overlap >= MIN_TITLE_OVERLAP {
-                candidates.push((same_fingerprint, overlap, gap, left_index, right_index));
+            let similarity = Similarity::of(&left.finding, &right.finding);
+            if same_fingerprint || similarity.matches() {
+                candidates.push((same_fingerprint, similarity.best(), gap, left_index, right_index));
             }
         }
     }
@@ -118,15 +128,59 @@ fn range(finding: &DraftFinding) -> (u32, u32) {
     (start.min(finding.line), start.max(finding.line))
 }
 
+/// How alike two findings read, three ways.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Similarity {
+    /// Title words.
+    pub title: f64,
+    /// Code quoted in backticks, in title and body.
+    pub code: f64,
+    /// Title and body words.
+    pub text: f64,
+}
+
+impl Similarity {
+    pub fn of(a: &DraftFinding, b: &DraftFinding) -> Self {
+        let all = |finding: &DraftFinding| format!("{}\n{}", finding.title, finding.body);
+        Self {
+            title: title_overlap(&a.title, &b.title),
+            code: jaccard(&quoted(&all(a)), &quoted(&all(b))),
+            text: jaccard(&words(&all(a)), &words(&all(b))),
+        }
+    }
+
+    pub fn matches(&self) -> bool {
+        self.title >= MIN_TITLE_OVERLAP || self.code >= MIN_CODE_OVERLAP || self.text >= MIN_TEXT_OVERLAP
+    }
+
+    fn best(&self) -> f64 {
+        self.title.max(self.code).max(self.text)
+    }
+}
+
 /// Jaccard overlap of two titles' meaningful words.
 pub fn title_overlap(a: &str, b: &str) -> f64 {
-    let (a, b) = (words(a), words(b));
+    jaccard(&words(a), &words(b))
+}
+
+fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
     if a.is_empty() || b.is_empty() {
         return 0.0;
     }
-    let shared = a.intersection(&b).count();
-    let union = a.union(&b).count();
+    let shared = a.intersection(b).count();
+    let union = a.union(b).count();
     shared as f64 / union as f64
+}
+
+/// The code a finding quotes: each backticked span, lowercased, whitespace
+/// removed, so `index <= items.len()` and `index<=items.len()` are one.
+fn quoted(text: &str) -> HashSet<String> {
+    text.split('`')
+        .skip(1)
+        .step_by(2)
+        .map(|span| span.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_lowercase())
+        .filter(|span| !span.is_empty())
+        .collect()
 }
 
 fn words(title: &str) -> HashSet<String> {

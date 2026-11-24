@@ -47,16 +47,72 @@ fn near_lines_and_similar_titles_merge() {
 }
 
 #[test]
-fn four_lines_apart_stay_separate() {
+fn seven_lines_apart_stay_separate() {
     let a = entry("a", "p1", 10, "Division by zero on empty slice");
-    let b = entry("b", "p2", 14, "Division by zero on empty slice");
+    let b = entry("b", "p2", 17, "Division by zero on empty slice");
     assert!(merges(&[a, b]).is_empty());
+    let c = entry("c", "p2", 16, "Division by zero on empty slice");
+    assert_eq!(merges(&[entry("a", "p1", 10, "Division by zero on empty slice"), c]).len(), 1, "six apart is still near");
+}
+
+/// A live pair word for word: Codex and OpenCode (GPT-5.5) on one line, no
+/// title word in common.
+#[test]
+fn quoted_code_in_the_bodies_merges() {
+    let codex = with(entry("codex", "p1", 8, "Reject indices equal to the slice length"), |f| {
+        f.body = "When `index == items.len()`, this condition allows `items[index]`, which panics instead of returning the documented `None`. This also makes `get(&[], 0)` panic. Change `<=` to `<`, or use `items.get(index).copied()`, and add tests for an empty slice.".into();
+    });
+    let gpt = with(entry("gpt", "p2", 8, "Fix off-by-one bounds check in get"), |f| {
+        f.body = "This condition allows `index == items.len()`, but indexing with `items[index]` on the next line panics in that case. That violates the documented behavior of returning `None` when the index is out of range. Use `index < items.len()` or simply `items.get(index).copied()`.".into();
+    });
+    let similarity = Similarity::of(&codex.finding, &gpt.finding);
+    assert_eq!(similarity.title, 0.0);
+    assert!(similarity.code >= MIN_CODE_OVERLAP, "{similarity:?}");
+    assert_eq!(merges(&[codex, gpt]).len(), 1);
+}
+
+/// A live pair: Claude points at the end of the `if` (line 12), Codex at the
+/// condition (line 8).
+#[test]
+fn four_lines_apart_merge_when_the_bodies_agree() {
+    let claude = with(entry("claude", "p1", 12, "Off-by-one in `get`: `index <= items.len()` panics when index == len"), |f| {
+        f.body = "When `index == items.len()` the condition is true and `items[index]` panics with an out-of-bounds error. The doc comment promises `None` for out-of-range indices. Use `<` instead, or simply `items.get(index).copied()`.".into();
+    });
+    let codex = with(entry("codex", "p2", 8, "Reject indices equal to the slice length"), |f| {
+        f.body = "The `<=` check allows `index == items.len()`, so `get(&[1], 1)` and `get(&[], 0)` reach `items[index]` and panic instead of returning the documented `None`. Use `<` or replace the implementation with `items.get(index).copied()`.".into();
+    });
+    assert_eq!(merges(&[claude, codex]).len(), 1);
+}
+
+/// Live negatives: a finding that the PR has no tests, three lines from the
+/// bug, and the naming finding four lines away, stay their own findings.
+#[test]
+fn a_test_gap_finding_near_the_bug_stays_separate() {
+    let tests = with(entry("tests", "p1", 11, "No tests for the new functions"), |f| {
+        f.body = "Nothing tests either function. A test for `get` at `index == len` would have caught the panic. Add tests for the empty slice, in-range, `index == len` and far-out-of-range cases. Add one for `Sum_All` with values near `i32::MAX`.".into();
+    });
+    let bug = with(entry("bug", "p2", 8, "Fix off-by-one bounds check in get"), |f| {
+        f.body = "`index <= items.len()` allows `index == items.len()`, but `items[index]` panics in that case. This violates the documented behavior of returning `None` for out-of-range indexes. Use `index < items.len()` or simply `items.get(index).copied()`.".into();
+    });
+    assert!(!Similarity::of(&tests.finding, &bug.finding).matches());
+    assert!(merges(&[tests, bug]).is_empty());
+}
+
+#[test]
+fn naming_and_the_bug_stay_separate() {
+    let bug = with(entry("bug", "p1", 12, "Off-by-one in `get`: index == len panics instead of returning None"), |f| {
+        f.body = "`index <= items.len()` admits `index == items.len()`, so `items[index]` panics with an out-of-bounds error. Use `index < items.len()`, or simply `items.get(index).copied()`.".into();
+    });
+    let naming = with(entry("naming", "p2", 16, "Sum_All violates Rust snake_case naming and triggers non_snake_case lint"), |f| {
+        f.body = "`Sum_All` should be `sum_all`: Rust function names are snake_case, and this spelling fires the warn-by-default `non_snake_case` lint on every build.".into();
+    });
+    assert!(merges(&[bug, naming]).is_empty());
 }
 
 #[test]
 fn low_title_overlap_stays_separate() {
-    let a = entry("a", "p1", 10, "Division by zero on empty slice");
-    let b = entry("b", "p2", 10, "Integer overflow in sum");
+    let a = with(entry("a", "p1", 10, "Division by zero on empty slice"), |f| f.body = "`average` divides by `items.len()`.".into());
+    let b = with(entry("b", "p2", 10, "Integer overflow in sum"), |f| f.body = "`sum::<i32>()` overflows past `i32::MAX`.".into());
     assert!(title_overlap(&a.finding.title, &b.finding.title) < MIN_TITLE_OVERLAP);
     assert!(merges(&[a, b]).is_empty(), "two problems on one line stay two findings");
 }
