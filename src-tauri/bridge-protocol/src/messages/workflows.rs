@@ -57,6 +57,13 @@ pub enum WorkflowEventKind {
     GithubIssueOpened,
     /// The person's review was requested on a pull request (in `repo`, if set).
     GithubReviewRequested,
+    /// A new email arrived in the Gmail inbox (`from` filters the sender).
+    GmailMessageReceived,
+    /// A Linear issue was assigned to the person (`channel` filters the team).
+    LinearIssueAssigned,
+    /// A page was added to a Notion database (`channel` names the database
+    /// and is required; `from` filters who created the page).
+    NotionPageCreated,
 }
 
 /// Run collected events at each slot of a schedule.

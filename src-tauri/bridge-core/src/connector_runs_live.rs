@@ -39,8 +39,29 @@ use crate::work_connectors::ConnectorFamily;
 /// Hidden session kind. No surface lists these.
 pub const CONNECTOR_SESSION_KIND: &str = "connector";
 
-/// The one working folder every connector run shares, under the chats folder.
+/// The folder connector runs work in, under the chats folder.
 const CONNECTOR_RUNS_FOLDER: &str = "connector-runs";
+
+/// The working folder for runs on one server: `connector-runs/<server>`.
+///
+/// Claude Code keeps per-folder state (a project entry, a memory folder), so a
+/// fresh folder per poll left a new one behind every cycle. But a run also
+/// switches off, for its folder, every server it was not granted, and Claude
+/// Code remembers that. With one folder for every run, a Slack poll disabled
+/// Gmail for the next Gmail read, and back again. One folder per server keeps
+/// both: no folder per poll, and a folder's own server is never switched off
+/// in it. These runs have no file tools, so the folder holds nothing they use.
+fn connector_run_folder(core: &BridgeCore, server: &str) -> std::path::PathBuf {
+    let name: String = server
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    core.chat_scratch_dir(CONNECTOR_RUNS_FOLDER).join(if name.is_empty() { "unnamed".to_owned() } else { name })
+}
 
 /// How often ingress runs.
 ///
@@ -701,11 +722,7 @@ fn launch_run(
     let harness_id = connection.harness.as_deref().unwrap_or_default();
     let (harness, model) = run_profile(core, harness_id)?;
     let session_id = Uuid::new_v4().to_string();
-    // One folder for every connector run: Claude Code keeps per-folder state
-    // (a project entry, a memory folder), and a fresh folder per poll left a
-    // new one behind every cycle. These runs have no file tools, so sharing
-    // the folder shares nothing they can touch.
-    let scratch = core.chat_scratch_dir(CONNECTOR_RUNS_FOLDER);
+    let scratch = connector_run_folder(core, connection.server.as_deref().unwrap_or_default());
     std::fs::create_dir_all(&scratch).map_err(|error| error.to_string())?;
     let cwd = scratch.to_string_lossy().to_string();
     {
@@ -1181,6 +1198,20 @@ mod tests {
         assert_eq!(poll_cadence(&core, ConnectorFamily::Slack, Utc::now()), None, "a background read is not a reader");
         crate::api::connector_inbox(&core, None, true).unwrap();
         assert_eq!(poll_cadence(&core, ConnectorFamily::Slack, Utc::now()), Some(POLL_CADENCE));
+    }
+
+    #[test]
+    fn each_server_runs_in_its_own_folder() {
+        // A run switches off the servers it was not granted, for its folder,
+        // and Claude Code remembers it: runs on two servers must never share one.
+        let (_dir, core) = crate::workflows::test_support::core();
+        let slack = connector_run_folder(&core, "claude.ai Slack");
+        let gmail = connector_run_folder(&core, "claude.ai Gmail");
+        assert_ne!(slack, gmail);
+        assert_eq!(slack, connector_run_folder(&core, "claude.ai Slack"), "the same server keeps one folder, not one per poll");
+        assert_eq!(slack.file_name().unwrap(), "claude-ai-slack");
+        assert_eq!(connector_run_folder(&core, "../../etc").file_name().unwrap(), "etc", "a server name never leaves the folder");
+        assert!(slack.starts_with(core.chat_scratch_dir(CONNECTOR_RUNS_FOLDER)));
     }
 
     #[test]

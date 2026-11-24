@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ErrorNote } from "./parts";
-import { EVENT_OPTIONS, isGithubEvent, localTimezone, needsRepo, presetCron, presetFor, presetForCron, WEEKDAY_OPTIONS, type SchedulePreset } from "./format";
+import { EVENT_APPS, EVENT_OPTIONS, eventFilters, localTimezone, presetCron, presetFor, presetForCron, WEEKDAY_OPTIONS, type SchedulePreset } from "./format";
 
 const FIELD = "block text-caption font-medium text-muted-foreground";
 const SELECT = "mt-1 h-8 w-full rounded-lg border border-input bg-background dark:bg-input/32 px-2 text-ui text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -16,14 +16,14 @@ export type EditorSubmit = { definition: WorkflowDefinition; approve: boolean; d
 
 /** The event trigger the editor's fields describe. */
 export function composeEventTrigger(fields: { event: WorkflowEventKind; repo: string; channel: string; from: string; collect: boolean; batchCron: string | null; timezone: string }): WorkflowTrigger {
-  const github = isGithubEvent(fields.event);
+  const filters = eventFilters(fields.event);
   const text = (value: string) => value.trim() || null;
   return {
     kind: "event",
     event: fields.event,
-    repo: github ? text(fields.repo) : null,
-    channel: github ? null : text(fields.channel),
-    from: github ? null : text(fields.from),
+    repo: filters.repo ? text(fields.repo) : null,
+    channel: filters.channel ? text(fields.channel) : null,
+    from: filters.from ? text(fields.from) : null,
     batch: fields.collect && fields.batchCron ? { cron: fields.batchCron, timezone: fields.timezone } : null,
   };
 }
@@ -169,8 +169,11 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
     update({ grants: next ? [...rest, next] : rest });
   };
   const refusal = harnessRefusal(options, step.harness, composed);
-  const missingRepo = composed.trigger.kind === "event" && needsRepo(composed.trigger.event) && !composed.trigger.repo;
-  const ready = composed.name.length > 0 && step.instructions.trim().length > 0 && step.model.trim().length > 0 && !refusal && !missingRepo;
+  // A filter the event cannot run without: a GitHub repository, a Notion database.
+  const filters = eventFilters(eventKind);
+  const missingRepo = composed.trigger.kind === "event" && Boolean(filters.repo?.required) && !composed.trigger.repo;
+  const missingChannel = composed.trigger.kind === "event" && Boolean(filters.channel?.required) && !composed.trigger.channel;
+  const ready = composed.name.length > 0 && step.instructions.trim().length > 0 && step.model.trim().length > 0 && !refusal && !missingRepo && !missingChannel;
   // Only the preview of the trigger as it is now: an older one's sample may be
   // another event entirely.
   const shown = preview?.key === triggerKey ? preview.result : null;
@@ -214,14 +217,13 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
           <div className="grid gap-3 sm:grid-cols-2">
             <label className={FIELD}>When
               <select aria-label="Event" className={SELECT} value={eventKind} onChange={event => setEventKind(event.target.value as WorkflowEventKind)}>
-                {(["Slack", "GitHub"] as const).map(app => <optgroup key={app} label={app}>{EVENT_OPTIONS.filter(option => option.app === app).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</optgroup>)}
+                {EVENT_APPS.map(app => <optgroup key={app} label={app}>{EVENT_OPTIONS.filter(option => option.app === app).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</optgroup>)}
               </select>
             </label>
-            {isGithubEvent(eventKind)
-              ? <label className={FIELD}>Repository{needsRepo(eventKind) ? "" : " (optional)"}<Input aria-label="Repository" className="mt-1 font-mono" placeholder="owner/name" value={repo} onChange={event => setRepo(event.target.value)}/></label>
-              : <label className={FIELD}>In channel (optional)<Input aria-label="Channel filter" className="mt-1" placeholder="#eng" value={channel} onChange={event => setChannel(event.target.value)}/></label>}
+            {filters.repo && <label className={FIELD}>{filters.repo.label}{filters.repo.required ? "" : " (optional)"}<Input aria-label="Repository" className="mt-1 font-mono" placeholder={filters.repo.placeholder} value={repo} onChange={event => setRepo(event.target.value)}/></label>}
+            {filters.channel && <label className={FIELD}>{filters.channel.label}{filters.channel.required ? "" : " (optional)"}<Input aria-label="Channel filter" className="mt-1" placeholder={filters.channel.placeholder} value={channel} onChange={event => setChannel(event.target.value)}/></label>}
           </div>
-          {!isGithubEvent(eventKind) && <label className={FIELD}>From (optional)<Input aria-label="Sender filter" className="mt-1" placeholder="a name" value={from} onChange={event => setFrom(event.target.value)}/></label>}
+          {filters.from && <label className={FIELD}>{filters.from.label} (optional)<Input aria-label="Sender filter" className="mt-1" placeholder={filters.from.placeholder} value={from} onChange={event => setFrom(event.target.value)}/></label>}
           <div role="radiogroup" aria-label="How often" className="flex flex-wrap items-center gap-x-4 gap-y-2 text-caption text-muted-foreground">
             <label className="flex items-center gap-1.5"><input type="radio" name="event-mode" aria-label="Run for each event" checked={!collect} onChange={() => setCollect(false)} className="accent-foreground"/>Run for each event</label>
             <label className="flex items-center gap-1.5"><input type="radio" name="event-mode" aria-label="Collect them and run at a set time" checked={collect} onChange={() => setCollect(true)} className="accent-foreground"/>Collect them and run</label>
@@ -313,6 +315,7 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
         {refusal && <p className="text-caption text-muted-foreground">This agent cannot run this workflow: {refusal}.</p>}
         {!options && <p className="inline-flex items-center gap-1.5 text-caption text-muted-foreground"><LoaderCircle className="animate-spin" size={11}/>Loading agents and connectors…</p>}
         {missingRepo && <p className="text-caption text-muted-foreground">Choose the repository to watch, as owner/name.</p>}
+        {missingChannel && <p className="text-caption text-muted-foreground">Choose the Notion database to watch, by name or link.</p>}
         {options && !step.model.trim() && <p className="text-caption text-muted-foreground">Choose a model.</p>}
         <ErrorNote message={error}/>
       </DialogPanel>

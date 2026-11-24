@@ -98,6 +98,19 @@ const SPECS: &[Spec] = &[
         notify_on_success: true,
     },
     Spec {
+        id: "gmail-new-email-triage",
+        name: "Triage each new email",
+        description: "When an email arrives, whether it needs you, and a reply you could send.",
+        starts: Starts::Event(wire::WorkflowEventKind::GmailMessageReceived),
+        reads: &[App::Gmail],
+        needs_project: false,
+        instructions: "A new email arrived; it is below. Read it, and the thread if it is a reply. \
+            Tell me in two or three lines whether it needs me, what it asks, and a reply I could send. \
+            If it is a newsletter, receipt or notification, say so in one line. Send nothing.",
+        expected: "Two or three lines: whether it needs me, the ask, and a suggested reply.",
+        notify_on_success: true,
+    },
+    Spec {
         id: "gmail-needs-reply",
         name: "Email that needs a reply",
         description: "Every weekday at 8:30, the unread email that needs an answer from you.",
