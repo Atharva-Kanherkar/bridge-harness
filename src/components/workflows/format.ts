@@ -5,17 +5,35 @@ const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Frid
 const pad = (value: number) => String(value).padStart(2, "0");
 
 /** The events a workflow can start on, as a person would say them. */
-export const EVENT_OPTIONS: Array<{ value: WorkflowEventKind; app: "Slack" | "GitHub"; label: string }> = [
+export type EventApp = "Slack" | "GitHub" | "Gmail" | "Linear" | "Notion";
+export const EVENT_APPS: EventApp[] = ["Slack", "GitHub", "Gmail", "Linear", "Notion"];
+
+export const EVENT_OPTIONS: Array<{ value: WorkflowEventKind; app: EventApp; label: string }> = [
   { value: "slack_mention", app: "Slack", label: "I'm mentioned in Slack" },
   { value: "slack_direct_message", app: "Slack", label: "I get a Slack direct message" },
   { value: "slack_thread_reply", app: "Slack", label: "Someone replies in my Slack thread" },
   { value: "github_pull_request_opened", app: "GitHub", label: "A pull request is opened" },
   { value: "github_issue_opened", app: "GitHub", label: "An issue is opened" },
   { value: "github_review_requested", app: "GitHub", label: "My review is requested on GitHub" },
+  { value: "gmail_message_received", app: "Gmail", label: "A new email arrives" },
+  { value: "linear_issue_assigned", app: "Linear", label: "An issue is assigned to me in Linear" },
+  { value: "notion_page_created", app: "Notion", label: "A page is added to a Notion database" },
 ];
 
 export const isGithubEvent = (event: WorkflowEventKind) => event.startsWith("github_");
-/** GitHub events that need a repository to watch. */
+
+/** The filters an event takes, as its fields' labels and placeholders. `required` marks one that must be set. */
+export type EventFilter = { label: string; placeholder: string; required?: boolean };
+export function eventFilters(event: WorkflowEventKind): { repo?: EventFilter; channel?: EventFilter; from?: EventFilter } {
+  if (isGithubEvent(event)) return { repo: { label: "Repository", placeholder: "owner/name", required: needsRepo(event) } };
+  switch (event) {
+    case "gmail_message_received": return { from: { label: "From", placeholder: "a name or address" } };
+    case "linear_issue_assigned": return { channel: { label: "Team", placeholder: "Platform" } };
+    case "notion_page_created": return { channel: { label: "Database", placeholder: "Roadmap, or a link", required: true }, from: { label: "Created by", placeholder: "a name" } };
+    default: return { channel: { label: "In channel", placeholder: "#eng" }, from: { label: "From", placeholder: "a name" } };
+  }
+}
+
 export const needsRepo = (event: WorkflowEventKind) => event === "github_pull_request_opened" || event === "github_issue_opened";
 
 /** Plain words for an event trigger: "When I'm mentioned in Slack in #eng". */
@@ -26,9 +44,16 @@ export function eventSummary(trigger: Extract<WorkflowTrigger, { kind: "event" }
   const label = option?.label ?? trigger.event;
   const phrase = /^I\b|^I'/.test(label) ? label : label.charAt(0).toLowerCase() + label.slice(1);
   let text = `When ${phrase}`;
-  if (trigger.repo) text += ` in ${trigger.repo}`;
-  if (trigger.channel) text += ` in ${trigger.channel.startsWith("#") ? trigger.channel : `#${trigger.channel}`}`;
-  if (trigger.from) text += ` from ${trigger.from}`;
+  if (trigger.event === "notion_page_created") {
+    text = `When a page is added to ${trigger.channel ? `${trigger.channel} in Notion` : "a Notion database"}`;
+    if (trigger.from) text += ` by ${trigger.from}`;
+  } else if (trigger.event === "linear_issue_assigned") {
+    if (trigger.channel) text += ` (team ${trigger.channel})`;
+  } else {
+    if (trigger.repo) text += ` in ${trigger.repo}`;
+    if (trigger.channel) text += ` in ${trigger.channel.startsWith("#") ? trigger.channel : `#${trigger.channel}`}`;
+    if (trigger.from) text += ` from ${trigger.from}`;
+  }
   if (trigger.batch) text += `, collected and run ${cronSummary(trigger.batch.cron).replace(/^Every day/, "every day").replace(/^Weekdays/, "on weekdays")}`;
   return text;
 }

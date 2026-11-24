@@ -165,9 +165,48 @@ impl<'a> EventTrigger<'a> {
     }
 }
 
-pub fn is_slack(kind: wire::WorkflowEventKind) -> bool {
+/// Where an event kind is read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventSource {
+    /// The Slack Inbox's ingress ledger.
+    Slack,
+    /// `gh`, with no model turn.
+    Github,
+    /// A trigger-only ingress turn on this app's connector (`workflow_ingress`).
+    Ingress(crate::work_connectors::ConnectorFamily),
+}
+
+pub fn source(kind: wire::WorkflowEventKind) -> EventSource {
+    use crate::work_connectors::ConnectorFamily as F;
     use wire::WorkflowEventKind as K;
-    matches!(kind, K::SlackMention | K::SlackDirectMessage | K::SlackThreadReply)
+    match kind {
+        K::SlackMention | K::SlackDirectMessage | K::SlackThreadReply => EventSource::Slack,
+        K::GithubPullRequestOpened | K::GithubIssueOpened | K::GithubReviewRequested => EventSource::Github,
+        K::GmailMessageReceived => EventSource::Ingress(F::Gmail),
+        K::LinearIssueAssigned => EventSource::Ingress(F::Linear),
+        K::NotionPageCreated => EventSource::Ingress(F::Notion),
+    }
+}
+
+pub fn is_slack(kind: wire::WorkflowEventKind) -> bool {
+    source(kind) == EventSource::Slack
+}
+
+pub fn is_github(kind: wire::WorkflowEventKind) -> bool {
+    source(kind) == EventSource::Github
+}
+
+/// The filters an event takes: (repository, channel, sender). Linear's
+/// `channel` is its team.
+fn filters_taken(kind: wire::WorkflowEventKind) -> (bool, bool, bool) {
+    use wire::WorkflowEventKind as K;
+    match kind {
+        K::SlackMention | K::SlackDirectMessage | K::SlackThreadReply => (false, true, true),
+        K::GithubPullRequestOpened | K::GithubIssueOpened | K::GithubReviewRequested => (true, false, false),
+        K::GmailMessageReceived => (false, false, true),
+        K::LinearIssueAssigned => (false, true, false),
+        K::NotionPageCreated => (false, true, true),
+    }
 }
 
 /// `owner/name`, as GitHub spells a repository.
@@ -197,14 +236,21 @@ pub fn validate(trigger: &EventTrigger<'_>) -> Result<(), String> {
             }
         }
     }
-    if is_slack(trigger.event) {
-        if trigger.repo.is_some() {
-            return Err("A Slack event has no repository; remove it".into());
-        }
-    } else {
-        if trigger.channel.is_some() || trigger.from.is_some() {
-            return Err("Channel and sender filters are for Slack events".into());
-        }
+    let app = event_family(trigger.event).display_name();
+    let (takes_repo, takes_channel, takes_from) = filters_taken(trigger.event);
+    if trigger.repo.is_some() && !takes_repo {
+        return Err(format!("A {app} event has no repository; remove it"));
+    }
+    if trigger.channel.is_some() && !takes_channel {
+        return Err(if is_github(trigger.event) { "Channel and sender filters are for Slack events".to_owned() } else { format!("A {app} event takes no channel filter; remove it") });
+    }
+    if trigger.from.is_some() && !takes_from {
+        return Err(if is_github(trigger.event) { "Channel and sender filters are for Slack events".to_owned() } else { format!("A {app} event takes no sender filter; remove it") });
+    }
+    if trigger.event == wire::WorkflowEventKind::NotionPageCreated && trigger.channel.is_none() {
+        return Err("Choose the Notion database to watch, by name or link".into());
+    }
+    if is_github(trigger.event) {
         match (trigger.event, trigger.repo) {
             (K::GithubPullRequestOpened | K::GithubIssueOpened, None) => {
                 return Err("Choose the repository to watch, as owner/name".into());
@@ -235,18 +281,25 @@ pub fn matches(trigger: &EventTrigger<'_>, sample: &wire::WorkflowEventSample) -
     if sample.kind != trigger.event {
         return false;
     }
-    if is_slack(trigger.event) {
-        let channel_ok = trigger
-            .channel
-            .is_none_or(|channel| normalized(payload_text(&sample.payload, "channelLabel")).contains(&normalized(channel)));
-        let from_ok = trigger
-            .from
-            .is_none_or(|from| normalized(payload_text(&sample.payload, "author")).contains(&normalized(from)));
-        return channel_ok && from_ok;
+    if is_github(trigger.event) {
+        return trigger
+            .repo
+            .is_none_or(|repo| payload_text(&sample.payload, "repo").eq_ignore_ascii_case(repo));
     }
-    trigger
-        .repo
-        .is_none_or(|repo| payload_text(&sample.payload, "repo").eq_ignore_ascii_case(repo))
+    // Slack's channel is its channel label, Linear's its team, Notion's its
+    // database.
+    let container = match trigger.event {
+        wire::WorkflowEventKind::LinearIssueAssigned => "team",
+        wire::WorkflowEventKind::NotionPageCreated => "database",
+        _ => "channelLabel",
+    };
+    let channel_ok = trigger
+        .channel
+        .is_none_or(|channel| normalized(payload_text(&sample.payload, container)).contains(&normalized(channel)));
+    let from_ok = trigger
+        .from
+        .is_none_or(|from| normalized(payload_text(&sample.payload, "author")).contains(&normalized(from)));
+    channel_ok && from_ok
 }
 
 // --- events from sources ---------------------------------------------------------
@@ -369,7 +422,7 @@ pub fn gh_args(event: wire::WorkflowEventKind, repo: Option<&str>, limit: usize)
 /// at most [`MAX_ENRICHED`] per run. A read that fails leaves its event as it
 /// was, with the reason, so the run still starts.
 pub fn enrich_github(events: &mut [wire::WorkflowEventSample], gh: &dyn GhRunner) {
-    for event in events.iter_mut().filter(|event| !is_slack(event.kind)).take(MAX_ENRICHED) {
+    for event in events.iter_mut().filter(|event| is_github(event.kind)).take(MAX_ENRICHED) {
         let Some(args) = view_args(event) else { continue };
         let read = gh.run(&args).and_then(|stdout| {
             serde_json::from_str::<Value>(stdout.trim()).map_err(|_| "GitHub answered with something that is not JSON".to_owned())
@@ -451,6 +504,12 @@ fn clip(text: &str, limit: usize) -> String {
 
 /// Every enabled, approved workflow listening for events, while Workflows are
 /// not paused.
+/// Every approved, enabled workflow listening for events, while Workflows
+/// are not paused.
+pub(crate) fn listening_workflows(db: &Connection) -> Result<Vec<wire::Workflow>, BridgeError> {
+    listening(db)
+}
+
 fn listening(db: &Connection) -> Result<Vec<wire::Workflow>, BridgeError> {
     if workflow_trigger::paused(db)? {
         return Ok(Vec::new());
@@ -514,10 +573,10 @@ pub fn observe(db: &Connection, samples: &[wire::WorkflowEventSample], now: Date
 
 /// The connector family an event comes from.
 pub fn event_family(kind: wire::WorkflowEventKind) -> crate::work_connectors::ConnectorFamily {
-    if is_slack(kind) {
-        crate::work_connectors::ConnectorFamily::Slack
-    } else {
-        crate::work_connectors::ConnectorFamily::GitHub
+    match source(kind) {
+        EventSource::Slack => crate::work_connectors::ConnectorFamily::Slack,
+        EventSource::Github => crate::work_connectors::ConnectorFamily::GitHub,
+        EventSource::Ingress(family) => family,
     }
 }
 
@@ -546,8 +605,77 @@ pub fn observe_inbox(db: &Connection, fresh: &[InboxItem], now: DateTime<Utc>) -
 /// listener (approval, a change, turning it back on, Workflows resuming),
 /// re-baselines. A review request has no time of its own, so only a fresh
 /// baseline keeps one that arrived while nothing listened from running (R8).
-fn source_digest(trigger: &EventTrigger<'_>, listener: DateTime<Utc>) -> String {
-    format!("{:?}|{}|{}", trigger.event, trigger.repo.unwrap_or_default().to_lowercase(), workflow_trigger::stamp(listener))
+pub(crate) fn source_digest(trigger: &EventTrigger<'_>, listener: DateTime<Utc>) -> String {
+    let scope = trigger.repo.or(trigger.channel).unwrap_or_default().trim().to_lowercase();
+    format!("{:?}|{}|{}", trigger.event, scope, workflow_trigger::stamp(listener))
+}
+
+/// Whether a workflow's source (by its digest) still needs its first read:
+/// a new listener, or a read that never succeeded.
+pub(crate) fn source_is_fresh(db: &Connection, workflow_id: &str, digest: &str) -> bool {
+    db.query_row("SELECT trigger_digest, baseline_at FROM workflow_event_sources WHERE workflow_id=?1", params![workflow_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+    })
+    .ok()
+    .is_none_or(|(stored, baseline)| stored != digest || baseline.is_none())
+}
+
+/// Events with no time of their own: a key the baseline did not hold is new.
+fn has_own_time(kind: wire::WorkflowEventKind) -> bool {
+    !matches!(kind, wire::WorkflowEventKind::GithubReviewRequested | wire::WorkflowEventKind::LinearIssueAssigned)
+}
+
+/// Record one read of a workflow's source. The first read after its listener
+/// starts is a baseline: what the source shows is history, seen and never
+/// run. After that, an item the workflow has not seen (and, when it has a
+/// time, one from after the anchor) becomes a pending event. A failed read is
+/// kept for the person. Returns how many events were recorded.
+pub(crate) fn record_source_read(
+    db: &Connection,
+    workflow: &wire::Workflow,
+    trigger: &EventTrigger<'_>,
+    digest: &str,
+    baseline: bool,
+    read: Result<&[wire::WorkflowEventSample], &str>,
+    now: DateTime<Utc>,
+) -> Result<usize, BridgeError> {
+    let samples = match read {
+        Ok(samples) => samples,
+        Err(error) => {
+            db.execute(
+                "INSERT INTO workflow_event_sources(workflow_id,trigger_digest,baseline_at,last_polled_at,last_error)
+                 VALUES(?1,?2,NULL,?3,?4)
+                 ON CONFLICT(workflow_id) DO UPDATE SET last_polled_at=excluded.last_polled_at, last_error=excluded.last_error",
+                params![workflow.id, digest, workflow_trigger::stamp(now), error],
+            )?;
+            return Ok(0);
+        }
+    };
+    let mut recorded = 0;
+    if baseline {
+        for sample in samples {
+            insert_event(db, &workflow.id, sample, "baseline", now)?;
+        }
+    } else {
+        let anchor = workflow_trigger::anchor(db, workflow)?;
+        for sample in samples.iter().filter(|sample| matches(trigger, sample)) {
+            let after_anchor = !has_own_time(trigger.event) || instant(&sample.occurred_at).is_some_and(|occurred| occurred >= anchor);
+            if after_anchor && insert_event(db, &workflow.id, sample, "pending", now)? {
+                recorded += 1;
+            }
+        }
+    }
+    db.execute(
+        "INSERT INTO workflow_event_sources(workflow_id,trigger_digest,baseline_at,last_polled_at,last_error)
+         VALUES(?1,?2,?3,?3,NULL)
+         ON CONFLICT(workflow_id) DO UPDATE SET trigger_digest=excluded.trigger_digest,
+            baseline_at=CASE WHEN workflow_event_sources.trigger_digest=excluded.trigger_digest
+                AND workflow_event_sources.baseline_at IS NOT NULL
+                THEN workflow_event_sources.baseline_at ELSE excluded.baseline_at END,
+            last_polled_at=excluded.last_polled_at, last_error=NULL",
+        params![workflow.id, digest, workflow_trigger::stamp(now)],
+    )?;
+    Ok(recorded)
 }
 
 /// The newest event a source has already shown this workflow, or its baseline
@@ -588,7 +716,7 @@ pub fn poll_github(core: &Arc<BridgeCore>, gh: &dyn GhRunner, now: DateTime<Utc>
         let mut due = Vec::new();
         for workflow in listening(&db)? {
             let Some(trigger) = EventTrigger::of(&workflow.definition.trigger) else { continue };
-            if is_slack(trigger.event) {
+            if !is_github(trigger.event) {
                 continue;
             }
             let digest = source_digest(&trigger, workflow_trigger::listener_anchor(&db, &workflow)?);
@@ -615,46 +743,7 @@ pub fn poll_github(core: &Arc<BridgeCore>, gh: &dyn GhRunner, now: DateTime<Utc>
         let Some(trigger) = EventTrigger::of(&workflow.definition.trigger) else { continue };
         let read = read_source(gh, &trigger, baseline, seen_up_to);
         let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        match read {
-            Ok(samples) => {
-                if baseline {
-                    // What the source already shows is history: seen, never run.
-                    for sample in &samples {
-                        insert_event(&db, &workflow.id, sample, "baseline", now)?;
-                    }
-                } else {
-                    let anchor = workflow_trigger::anchor(&db, &workflow)?;
-                    for sample in samples.iter().filter(|sample| matches(&trigger, sample)) {
-                        // A review request has no time of its own: a key the
-                        // baseline did not hold is new. A PR or issue must
-                        // also have been opened after the anchor.
-                        let after_anchor = trigger.event == wire::WorkflowEventKind::GithubReviewRequested
-                            || instant(&sample.occurred_at).is_some_and(|occurred| occurred >= anchor);
-                        if after_anchor && insert_event(&db, &workflow.id, sample, "pending", now)? {
-                            recorded += 1;
-                        }
-                    }
-                }
-                db.execute(
-                    "INSERT INTO workflow_event_sources(workflow_id,trigger_digest,baseline_at,last_polled_at,last_error)
-                     VALUES(?1,?2,?3,?3,NULL)
-                     ON CONFLICT(workflow_id) DO UPDATE SET trigger_digest=excluded.trigger_digest,
-                        baseline_at=CASE WHEN workflow_event_sources.trigger_digest=excluded.trigger_digest
-                            AND workflow_event_sources.baseline_at IS NOT NULL
-                            THEN workflow_event_sources.baseline_at ELSE excluded.baseline_at END,
-                        last_polled_at=excluded.last_polled_at, last_error=NULL",
-                    params![workflow.id, digest, workflow_trigger::stamp(now)],
-                )?;
-            }
-            Err(error) => {
-                db.execute(
-                    "INSERT INTO workflow_event_sources(workflow_id,trigger_digest,baseline_at,last_polled_at,last_error)
-                     VALUES(?1,?2,NULL,?3,?4)
-                     ON CONFLICT(workflow_id) DO UPDATE SET last_polled_at=excluded.last_polled_at, last_error=excluded.last_error",
-                    params![workflow.id, digest, workflow_trigger::stamp(now), error],
-                )?;
-            }
-        }
+        recorded += record_source_read(&db, &workflow, &trigger, &digest, baseline, read.as_deref().map_err(String::as_str), now)?;
     }
     Ok(recorded)
 }
@@ -840,6 +929,14 @@ pub fn preview(core: &Arc<BridgeCore>, trigger: &wire::WorkflowTrigger, gh: &dyn
             Some(_) if items.is_empty() => Some("Bridge has no Slack messages from this week yet; it keeps the ones it reads from now on.".to_owned()),
             Some(_) => None,
         };
+    } else if let EventSource::Ingress(family) = source(event.event) {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (items, read) = match crate::workflow_ingress::history(&db, family, since) {
+            Ok(history) => history,
+            Err(error) => return unsupported(format!("Bridge could not read its {} history: {error}", family.display_name())),
+        };
+        found = items.into_iter().filter(|sample| matches(&event, sample)).collect();
+        note = crate::workflow_ingress::preview_note(family, read);
     } else {
         let read = gh.run(&gh_args(event.event, event.repo, GH_LIMIT)).and_then(|stdout| parse_github(event.event, event.repo, &stdout));
         let samples = match read {

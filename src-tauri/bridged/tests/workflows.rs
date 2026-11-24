@@ -595,6 +595,49 @@ fn e6_a_github_source_baselines_then_fires_once_per_new_pull_request() {
 }
 
 #[test]
+fn e8_a_linear_assignment_found_by_the_app_read_starts_one_run() {
+    fake_model();
+    let fixture = tempfile::tempdir().unwrap();
+    seed_data_dir(fixture.path());
+    let running = RunningDaemon::start(fixture.path());
+    let mut rpc = running.rpc();
+    let model = claude_model(&mut rpc);
+    let workflow_id = save_and_approve(&mut rpc, json!({
+        "name": "Assigned to me",
+        "steps": [{ "harness": "claude", "model": model, "instructions": "Tell me what the issue needs." }],
+        "trigger": { "kind": "event", "event": "linear_issue_assigned", "channel": "platform" },
+        "files": "none",
+        "grants": [{ "server": "claude.ai Linear", "read": true, "write": "never" }],
+        "budget": budget(),
+    }));
+    let issue = |id: &str, team: &str| json!({ "id": id, "title": format!("{id} · Fix the importer"), "author": "Sam", "url": format!("https://linear.app/acme/issue/{id}"), "occurredAt": "2026-10-01T00:00:00Z", "text": "", "team": team });
+    let answer = fixture.path().join("app-events.json");
+    std::env::set_var("BRIDGE_E2E_APP_EVENTS", &answer);
+    let read = |items: Vec<Value>| {
+        std::fs::write(&answer, json!({ "items": items }).to_string()).unwrap();
+        // The production read: the signed-in connector, the ingress policy,
+        // the real sidecar (answered by the fake model).
+        bridge_core::workflow_ingress::poll_scope(&running.daemon.core, bridge_core::work_connectors::ConnectorFamily::Linear, "", &bridge_core::workflow_ingress::LiveTurn, Utc::now()).unwrap()
+    };
+    assert_eq!(read(vec![issue("ENG-1", "Platform")]), 0, "the first read is a baseline");
+    assert_eq!(read(vec![issue("ENG-1", "Platform"), issue("ENG-2", "Platform"), issue("WEB-3", "Web")]), 1, "only the new Platform issue");
+    let fired = tick_at(&running.daemon, Utc::now() + ChronoDuration::seconds(1));
+    assert_eq!(fired.len(), 1);
+    let run = rpc.wait_run(&workflow_id, &fired[0], "the assignment run to finish", |run| run["status"] == json!("succeeded") || run["status"] == json!("failed"));
+    assert_eq!(run["status"], json!("succeeded"), "{run}");
+    assert_eq!(run["triggerKind"], json!("event"));
+    assert!(run["summary"].as_str().unwrap_or_default().starts_with("Handled 1 event: ENG-2 · Fix the importer"), "{run}");
+
+    // The same read again, and another tick: nothing new.
+    assert_eq!(read(vec![issue("ENG-1", "Platform"), issue("ENG-2", "Platform")]), 0);
+    assert!(tick_at(&running.daemon, Utc::now() + ChronoDuration::seconds(5)).is_empty());
+    let preview = rpc.call("workflows/preview_workflow_trigger", json!({ "trigger": { "kind": "event", "event": "linear_issue_assigned" } }));
+    assert_eq!(preview["supported"], json!(true), "{preview}");
+    std::env::remove_var("BRIDGE_E2E_APP_EVENTS");
+    running.stop();
+}
+
+#[test]
 fn e7_a_burst_of_runs_never_exceeds_the_cap_and_every_run_finishes() {
     fake_model();
     let fixture = tempfile::tempdir().unwrap();

@@ -168,6 +168,14 @@ export function query({ prompt, options = {} }) {
       yield* finish("```bridge-connector-inbox\n" + items + "\n```");
       return;
     }
+    if (brief.includes("```bridge-workflow-events")) {
+      // An app trigger's read (Gmail, Linear, Notion): whatever the journey
+      // wrote to $BRIDGE_E2E_APP_EVENTS, or nothing new.
+      const file = process.env.BRIDGE_E2E_APP_EVENTS;
+      const items = file && existsSync(file) ? readFileSync(file, "utf8").trim() : '{"items":[]}';
+      yield* finish("```bridge-workflow-events\n" + items + "\n```");
+      return;
+    }
     if (brief.includes("You review a pull request for Bridge")) {
       // The PR reviewer (src-tauri/bridged/tests/reviews.rs): read the
       // context, try to reach GitHub through a shell, which the read-only

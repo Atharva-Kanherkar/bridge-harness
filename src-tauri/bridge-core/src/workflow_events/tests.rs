@@ -118,6 +118,10 @@ fn each_malformed_event_trigger_is_refused_with_its_reason() {
         (trigger(K::SlackMention, None, None, Some(&long), None), "at most"),
         (trigger(K::SlackMention, None, None, None, Some(("*/5 * * * *", "UTC"))), "15 minutes"),
         (trigger(K::SlackMention, None, None, None, Some(("0 9 * * *", "Nowhere"))), "IANA"),
+        (trigger(K::GmailMessageReceived, Some("acme/app"), None, None, None), "A Gmail event has no repository"),
+        (trigger(K::GmailMessageReceived, None, Some("inbox"), None, None), "A Gmail event takes no channel filter"),
+        (trigger(K::LinearIssueAssigned, None, None, Some("Sam"), None), "A Linear event takes no sender filter"),
+        (trigger(K::NotionPageCreated, None, None, Some("Priya"), None), "Choose the Notion database"),
     ];
     for (candidate, needle) in cases {
         let error = validate(&EventTrigger::of(&candidate).unwrap()).unwrap_err();
@@ -127,6 +131,9 @@ fn each_malformed_event_trigger_is_refused_with_its_reason() {
         trigger(K::GithubPullRequestOpened, Some("acme/app.rs"), None, None, None),
         trigger(K::GithubReviewRequested, None, None, None, None),
         trigger(K::SlackThreadReply, None, Some("#eng"), Some("Alex"), Some(("0 9 * * 1-5", "Asia/Tokyo"))),
+        trigger(K::GmailMessageReceived, None, None, Some("alice@acme.test"), None),
+        trigger(K::LinearIssueAssigned, None, Some("Platform"), None, Some(("0 9 * * 1-5", "Asia/Tokyo"))),
+        trigger(K::NotionPageCreated, None, Some("Roadmap"), Some("Priya"), None),
         // Exactly the limit, counted in characters rather than bytes.
         trigger(K::SlackMention, None, Some(&longest), Some(&longest), None),
     ] {
