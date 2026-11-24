@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 92;
+const LATEST_SCHEMA_VERSION: i64 = 93;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -829,6 +829,10 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // Event triggers: event runs carry their events, and each event
             // is recorded once per workflow. See `workflow_events`.
             92 => crate::workflow_events::install_store(&transaction)?,
+            // The commit a posted review is on: a re-review starts there. It
+            // can be older than the job's own head when a retry found an
+            // earlier attempt's review already on GitHub.
+            93 => migration_93_review_identity(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -2363,6 +2367,23 @@ fn migration_1_current_schema(transaction: &Transaction<'_>) -> Result<(), Bridg
     add_column_if_missing(transaction, "sessions", "effort", "TEXT")?;
     add_column_if_missing(transaction, "sessions", "parent_session_id", "TEXT")?;
     add_column_if_missing(transaction, "sessions", "depth", "INTEGER")?;
+    Ok(())
+}
+
+/// The commit a posted review is on, and the GitHub host of each review's
+/// repository. A posted job that is not a retry posted its own review, at its
+/// own head; only a retry can have reconciled an earlier attempt's review at
+/// another head, so a posted retry from before this stays unknown, and a
+/// re-review from it runs as a full review. A row from before this has no
+/// host and so matches no repository's history.
+pub(crate) fn migration_93_review_identity(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(transaction, "review_jobs", "posted_head_sha", "TEXT")?;
+    add_column_if_missing(transaction, "review_jobs", "repo_host", "TEXT")?;
+    transaction.execute(
+        "UPDATE review_jobs SET posted_head_sha=head_sha
+         WHERE status='posted' AND retry_of IS NULL AND posted_head_sha IS NULL",
+        [],
+    )?;
     Ok(())
 }
 

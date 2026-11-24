@@ -73,6 +73,13 @@
         "id": {
           "type": "string"
         },
+        "incrementalFromSha": {
+          "description": "A re-review: the head of the PR's last posted review. The reviewer looks at the commits since it, remembering earlier findings.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "number": {
           "format": "uint64",
           "minimum": 0.0,

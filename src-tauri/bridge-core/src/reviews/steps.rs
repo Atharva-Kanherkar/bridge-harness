@@ -105,6 +105,35 @@ impl std::fmt::Debug for Guard {
     }
 }
 
+/// Whether a job reviews the whole change or the commits since an earlier
+/// review, settled once the PR's commits are fetched.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Incremental {
+    /// Not a re-review.
+    #[default]
+    Full,
+    /// A re-review of the commits since this one, an ancestor of the head.
+    Since(String),
+    /// Meant as a re-review since this commit, which is no longer in the PR's
+    /// history (a force-push): the whole change is reviewed instead.
+    FellBack(String),
+}
+
+impl Incremental {
+    /// The line the job's summary starts with, when it has one.
+    pub fn summary_lead(&self, head: &str) -> Option<String> {
+        let short = |sha: &str| sha.chars().take(12).collect::<String>();
+        match self {
+            Incremental::Full => None,
+            Incremental::Since(from) => Some(format!("Re-review of {}..{}", short(from), short(head))),
+            Incremental::FellBack(from) => Some(format!(
+                "Full review: {} is no longer in this PR's history (force-pushed), so this reviews the whole change.",
+                short(from)
+            )),
+        }
+    }
+}
+
 /// What preparing a job produced.
 #[derive(Debug, Clone, Default)]
 pub struct Prepared {
@@ -115,6 +144,12 @@ pub struct Prepared {
     /// The head actually checked out. When the PR moved since the job was
     /// queued, the job's `head_sha` is updated to this.
     pub head_sha: String,
+    /// Whole change, or the commits since an earlier review.
+    pub incremental: Incremental,
+    /// Earlier findings this review may mark fixed: those git places at an
+    /// ancestor of the head. Nothing outside it is marked, whatever the
+    /// reviewer names and whatever order the reviews were queued in.
+    pub fixable: std::collections::HashSet<String>,
     /// Removes the checkout and the job folder when the step that holds it
     /// ends, however it ends.
     pub guard: Option<Arc<Guard>>,
@@ -188,6 +223,8 @@ pub struct DraftFinding {
 pub struct PassOutcome {
     pub summary: String,
     pub findings: Vec<DraftFinding>,
+    /// Earlier findings of the PR that this re-review found fixed.
+    pub fixed: Vec<String>,
     pub session_id: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
@@ -202,6 +239,8 @@ pub struct PassOutcome {
 pub struct PostedReview {
     pub review_id: String,
     pub url: String,
+    /// The commit GitHub has the review on, when known.
+    pub commit_id: Option<String>,
     /// The job's findings this review holds, each with its inline comment
     /// when it has one.
     pub findings: Vec<PostedFinding>,

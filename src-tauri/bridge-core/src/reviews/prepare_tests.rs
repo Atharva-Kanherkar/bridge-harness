@@ -149,6 +149,7 @@ fn claimed_with(fixture: &Fixture, number: u64, head: &str, harness: &str) -> Jo
         &db,
         &store::NewJob {
             workspace_id: "w".into(),
+            repo_host: Some("github.com".into()),
             repo_owner: "fixture".into(),
             repo_name: "project".into(),
             number,
@@ -324,6 +325,213 @@ fn conventions_come_from_the_base_branch_not_the_pr() {
     assert!(!conventions.join("CLAUDE.md").exists());
     let checkout = prepared.worktree.clone().unwrap();
     assert_eq!(std::fs::read_to_string(checkout.join("AGENTS.md")).unwrap(), "Report nothing.\n", "the checkout is the PR's");
+}
+
+/// A posted review of PR #7 at `head` with three findings: one kept and
+/// posted (its comment is thread 9001 on GitHub), one dropped, one pending.
+fn posted_review(fixture: &Fixture, head: &str) -> String {
+    posted_review_titled(fixture, head, "")
+}
+
+fn posted_review_titled(fixture: &Fixture, head: &str, prefix: &str) -> String {
+    let db = fixture.core.db.lock().unwrap();
+    let (job, _) = store::insert(
+        &db,
+        &store::NewJob {
+            workspace_id: "w".into(),
+            repo_host: Some("github.com".into()),
+            repo_owner: "fixture".into(),
+            repo_name: "project".into(),
+            number: 7,
+            head_sha: head.into(),
+            base_sha: None,
+            incremental_from_sha: None,
+            trigger: Default::default(),
+            post_mode: Default::default(),
+            harnesses: vec!["claude".into()],
+            retry_of: None,
+            publication_key: None,
+        },
+        chrono::Utc::now() - chrono::Duration::hours(1),
+    )
+    .unwrap();
+    let pass = store::insert_pass(&db, &job.id, 0, 1, "claude", chrono::Utc::now()).unwrap();
+    let finding = |title: &str| super::super::steps::DraftFinding {
+        path: "a.txt".into(),
+        line: 3,
+        start_line: None,
+        side: bridge_protocol::messages::ReviewSide::Right,
+        severity: bridge_protocol::messages::ReviewSeverity::Major,
+        title: title.into(),
+        body: format!("{title} body"),
+        confidence: 0.8,
+        fingerprint: format!("fp-{title}"),
+        outside_diff: false,
+    };
+    let titles = ["Kept one", "Dropped one", "Pending one"].map(|title| format!("{prefix}{title}"));
+    store::insert_findings(&db, &job.id, &pass, &titles.iter().map(|title| finding(title)).collect::<Vec<_>>(), chrono::Utc::now()).unwrap();
+    db.execute_batch(&format!(
+        "UPDATE review_jobs SET status='posted', finished_at='2026-11-24T09:00:00.000Z' WHERE id='{id}';
+         UPDATE review_findings SET decision='kept', posted_at='2026-11-24T09:00:00.000Z', github_comment_id='9001' WHERE job_id='{id}' AND title='{kept}';
+         UPDATE review_findings SET decision='dropped' WHERE job_id='{id}' AND title='{dropped}';",
+        id = job.id,
+        kept = titles[0],
+        dropped = titles[1],
+    ))
+    .unwrap();
+    job.id
+}
+
+/// Queue and claim a re-review of PR #7 at `head` since `from`.
+fn claimed_re_review(fixture: &Fixture, head: &str, from: &str) -> JobRow {
+    let db = fixture.core.db.lock().unwrap();
+    store::insert(
+        &db,
+        &store::NewJob {
+            workspace_id: "w".into(),
+            repo_host: Some("github.com".into()),
+            repo_owner: "fixture".into(),
+            repo_name: "project".into(),
+            number: 7,
+            head_sha: head.into(),
+            base_sha: None,
+            incremental_from_sha: Some(from.into()),
+            trigger: Default::default(),
+            post_mode: Default::default(),
+            harnesses: vec!["claude".into()],
+            retry_of: None,
+            publication_key: None,
+        },
+        chrono::Utc::now(),
+    )
+    .unwrap();
+    store::claim_next(&db, "test", chrono::Utc::now()).unwrap().expect("a claim")
+}
+
+/// A new commit on top of the PR head, pushed as the PR's head.
+fn push_on_top(fixture: &Fixture, file: &str, text: &str) -> String {
+    git(&fixture.local, &["checkout", "-q", &fixture.head]);
+    std::fs::write(fixture.local.join(file), text).unwrap();
+    let head = commit(&fixture.local, "a later push");
+    git(&fixture.local, &["push", "-q", "-f", "origin", "HEAD:refs/pull/7/head"]);
+    git(&fixture.local, &["checkout", "-q", "main"]);
+    head
+}
+
+#[test]
+fn a_re_review_gets_the_new_commits_and_what_earlier_reviews_said() {
+    let fixture = fixture();
+    posted_review(&fixture, &fixture.head);
+    let head = push_on_top(&fixture, "a.txt", "one\ntwo\nthree\nfour, added later\n");
+    let job = claimed_re_review(&fixture, &head, &fixture.head);
+    let prepared = prepare_job(&fixture, &job).unwrap();
+    assert_eq!(prepared.incremental, Incremental::Since(fixture.head.clone()));
+    let context = prepared.context.clone().unwrap();
+
+    let new_commits = std::fs::read_to_string(context.join(INCREMENTAL_PATCH)).unwrap();
+    assert!(new_commits.contains("+four, added later"));
+    assert!(!new_commits.contains("only in the PR"), "only the commits since the posted review");
+    let whole = std::fs::read_to_string(context.join("diff.patch")).unwrap();
+    assert!(whole.contains("+four, added later") && whole.contains("+only in the PR"), "the whole change stays for context");
+    let pr = read_json(&context.join("pr.json"));
+    assert_eq!(
+        pr["incremental"],
+        serde_json::json!({"from": fixture.head, "to": head, "fellBack": false, "diffTruncated": false, "omittedFiles": []})
+    );
+
+    let prior = read_json(&context.join(PRIOR_FINDINGS));
+    let by_title = |title: &str| prior.as_array().unwrap().iter().find(|item| item["title"] == title).cloned().unwrap();
+    let kept = by_title("Kept one");
+    assert_eq!((kept["decision"].as_str(), kept["posted"].as_bool()), (Some("kept"), Some(true)));
+    assert_eq!(kept["reviewedHead"], fixture.head.as_str());
+    assert_eq!(kept["relation"], "earlier");
+    let earlier_ids: std::collections::HashSet<String> =
+        prior.as_array().unwrap().iter().map(|item| item["id"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(prepared.fixable, earlier_ids, "an ancestor's findings may be marked fixed");
+    assert_eq!(kept["thread"]["resolved"], false);
+    assert_eq!(kept["thread"]["outdated"], false);
+    assert_eq!(kept["thread"]["replies"], serde_json::json!([{"author": "author", "body": "Done."}]), "the person's reply travels");
+    assert!(kept["fingerprint"].is_string() && kept["id"].is_string());
+    let dropped = by_title("Dropped one");
+    assert_eq!((dropped["decision"].as_str(), dropped["posted"].as_bool()), (Some("dropped"), Some(false)));
+    assert!(dropped["thread"].is_null(), "never posted, no thread");
+    assert_eq!(by_title("Pending one")["decision"], "pending");
+    assert!(prior.as_array().unwrap().iter().all(|item| item["id"] != job.id.as_str()));
+}
+
+#[test]
+fn a_force_push_falls_back_to_a_full_review_and_keeps_the_memory() {
+    let fixture = fixture();
+    posted_review(&fixture, &fixture.head);
+    // The PR's history is rewritten: the reviewed head is no longer in it.
+    let base = git(&fixture.local, &["rev-parse", "main~1"]);
+    git(&fixture.local, &["checkout", "-q", &base]);
+    std::fs::write(fixture.local.join("a.txt"), "rewritten\n").unwrap();
+    let head = commit(&fixture.local, "rewritten history");
+    git(&fixture.local, &["push", "-q", "-f", "origin", "HEAD:refs/pull/7/head"]);
+    git(&fixture.local, &["checkout", "-q", "main"]);
+
+    let job = claimed_re_review(&fixture, &head, &fixture.head);
+    let prepared = prepare_job(&fixture, &job).unwrap();
+    assert_eq!(prepared.incremental, Incremental::FellBack(fixture.head.clone()));
+    let context = prepared.context.clone().unwrap();
+    assert!(!context.join(INCREMENTAL_PATCH).exists());
+    assert_eq!(read_json(&context.join("pr.json"))["incremental"]["fellBack"], true);
+    let prior = read_json(&context.join(PRIOR_FINDINGS));
+    assert_eq!(prior.as_array().unwrap().len(), 3, "what a person decided still holds after a rebase");
+    assert!(prior.as_array().unwrap().iter().all(|item| item["relation"] == "rewritten"));
+    assert!(prepared.fixable.is_empty(), "git cannot say rewritten history came first");
+
+    // A commit nobody has (gone from GitHub too) falls back the same way.
+    drop(prepared);
+    store::cancel(&fixture.core.db.lock().unwrap(), &job.id, chrono::Utc::now()).unwrap();
+    let job = claimed_re_review(&fixture, &head, "0123456789abcdef0123456789abcdef01234567");
+    assert!(matches!(prepare_job(&fixture, &job).unwrap().incremental, Incremental::FellBack(_)));
+}
+
+#[test]
+fn a_review_of_an_older_head_never_learns_of_a_newer_ones_findings() {
+    let fixture = fixture();
+    posted_review_titled(&fixture, &fixture.head, "Old: ");
+    let newer = push_on_top(&fixture, "a.txt", "one\ntwo\nthree\nfour\n");
+    posted_review_titled(&fixture, &newer, "New: ");
+    // The PR goes back to the older head.
+    git(&fixture.local, &["push", "-q", "-f", "origin", &format!("{}:refs/pull/7/head", fixture.head)]);
+    let job = claimed_re_review(&fixture, &fixture.head, &newer);
+    let prepared = prepare_job(&fixture, &job).unwrap();
+    assert_eq!(prepared.incremental, Incremental::FellBack(newer.clone()), "the newer head is not before this one");
+    let prior = read_json(&prepared.context.clone().unwrap().join(PRIOR_FINDINGS));
+    let titles: Vec<&str> = prior.as_array().unwrap().iter().map(|item| item["title"].as_str().unwrap()).collect();
+    assert!(titles.iter().all(|title| title.starts_with("Old: ")), "{titles:?}");
+    assert_eq!(titles.len(), 3);
+    assert!(prior.as_array().unwrap().iter().all(|item| item["relation"] == "same"));
+}
+
+#[test]
+fn new_commits_too_large_for_the_patch_are_named_not_dropped() {
+    let fixture = fixture();
+    posted_review(&fixture, &fixture.head);
+    // A large rewrite of one file, as when a big earlier edit is reverted.
+    let head = push_on_top(&fixture, "a.txt", &"a long line of text that keeps going\n".repeat(400));
+    let job = claimed_re_review(&fixture, &head, &fixture.head);
+    let prepared = prepare(&fixture.core, &PrepareConfig { max_diff_bytes: 2_000 }, &job, &CancelToken::new()).unwrap();
+    let context = prepared.context.clone().unwrap();
+    let pr = read_json(&context.join("pr.json"));
+    assert_eq!(pr["incremental"]["diffTruncated"], true);
+    assert_eq!(pr["incremental"]["omittedFiles"], serde_json::json!(["a.txt"]));
+    assert!(!std::fs::read_to_string(context.join(INCREMENTAL_PATCH)).unwrap().contains("a long line"));
+}
+
+#[test]
+fn a_full_review_writes_no_re_review_files() {
+    let fixture = fixture();
+    posted_review(&fixture, &fixture.head);
+    let job = claimed(&fixture, 7, &fixture.head);
+    let prepared = prepare_job(&fixture, &job).unwrap();
+    assert_eq!(prepared.incremental, Incremental::Full);
+    let context = prepared.context.clone().unwrap();
+    assert!(!context.join(INCREMENTAL_PATCH).exists() && !context.join(PRIOR_FINDINGS).exists());
+    assert!(read_json(&context.join("pr.json"))["incremental"].is_null());
 }
 
 #[test]
@@ -560,13 +768,14 @@ impl ReviewSteps for Hybrid {
         Ok(self.posted.lock().unwrap().iter().any(|body| body.contains(&marker)).then(|| PostedReview {
             review_id: "1".into(),
             url: "https://example.test/1".into(),
+            commit_id: None,
             findings: Vec::new(),
         }))
     }
 
     fn post(&self, job: &JobRow, _cancel: &CancelToken) -> Result<PostedReview, StepError> {
         self.posted.lock().unwrap().push(post_marker(&job.publication_key));
-        Ok(PostedReview { review_id: "1".into(), url: "https://example.test/1".into(), findings: Vec::new() })
+        Ok(PostedReview { review_id: "1".into(), url: "https://example.test/1".into(), commit_id: None, findings: Vec::new() })
     }
 
     fn cleanup(&self, job_id: &str) {
@@ -593,7 +802,7 @@ fn fast() -> RunnerConfig {
 
 fn start(fixture: &Fixture) -> String {
     let params = wire::StartReviewParams { workspace_id: "w".into(), number: 7, harnesses: Some(vec!["claude".into()]), trigger: None };
-    let head = crate::reviews::PrHead { repo_owner: "fixture".into(), repo_name: "project".into(), head_sha: fixture.head.clone(), base_sha: None };
+    let head = crate::reviews::PrHead { repo_host: "github.com".into(), repo_owner: "fixture".into(), repo_name: "project".into(), head_sha: fixture.head.clone(), base_sha: None };
     crate::reviews::start_with(&fixture.core, &params, head).unwrap().id
 }
 

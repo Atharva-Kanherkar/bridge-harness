@@ -3196,6 +3196,8 @@ export type RestorationMode = "hot" | "native" | "checkpoint_restored" | "fresh"
 
 export type ResumeEligibility = "native" | "checkpoint_restored" | "fresh";
 
+export type ReviewAutoMode = "off" | "mine" | "all";
+
 export interface ReviewComment {
   author?: GithubActor | null;
   body: string;
@@ -3218,6 +3220,7 @@ export interface ReviewFinding {
   decision: ReviewFindingDecision;
   editedBody?: string | null;
   fingerprint: string;
+  fixedInSha?: string | null;
   githubCommentId?: string | null;
   id: string;
   jobId: string;
@@ -3256,6 +3259,7 @@ export interface ReviewJob {
   harnesses: string[];
   headSha: string;
   id: string;
+  incrementalFromSha?: string | null;
   number: number;
   postMode: ReviewPostMode;
   postedReviewUrl?: string | null;
@@ -3267,12 +3271,15 @@ export interface ReviewJob {
 }
 
 export interface ReviewJobSettings {
+  autoReview?: ReviewAutoMode;
   defaultHarnesses?: string[];
   fallbackHarnesses?: string[];
+  incremental?: boolean;
   maxConcurrentReviews?: number;
   maxReviewWorktrees?: number;
   postMode?: ReviewPostMode;
   secondOpinion?: boolean;
+  skipDraftPrs?: boolean;
 }
 
 export type ReviewJobStatus = "queued" | "preparing" | "reviewing" | "drafted" | "posting" | "posted" | "failed" | "cancelled" | "interrupted";

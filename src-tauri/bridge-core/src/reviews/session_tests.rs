@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use serde_json::json;
 
 use crate::reviews::steps::Prepared;
+use bridge_protocol::messages::{ReviewSeverity, ReviewSide};
 
 /// One thing a scripted session yields when read.
 enum Step {
@@ -282,6 +283,7 @@ fn job(core: &BridgeCore) -> crate::reviews::store::JobRow {
         &db,
         &crate::reviews::store::NewJob {
             workspace_id: "w".into(),
+            repo_host: Some("github.com".into()),
             repo_owner: "o".into(),
             repo_name: "r".into(),
             number: 42,
@@ -318,7 +320,7 @@ fn a_pass_reads_the_context_and_keeps_inline_and_outside_findings_apart() {
     std::fs::write(context.join("diff.patch"), PATCH).unwrap();
     std::fs::write(context.join("threads.json"), "[]").unwrap();
     let job = job(&core);
-    let prepared = Prepared { worktree: Some(checkout.clone()), context: Some(context), head_sha: "h".into(), guard: None };
+    let prepared = Prepared { worktree: Some(checkout.clone()), context: Some(context), head_sha: "h".into(), ..Prepared::default() };
 
     let findings = json!([
         {"path": "src/a.rs", "line": 2, "side": "RIGHT", "severity": "major", "title": "Unwrap on user input", "body": "Panics on bad input.", "confidence": 0.9},
@@ -362,7 +364,7 @@ fn a_pass_reads_the_context_and_keeps_inline_and_outside_findings_apart() {
 #[test]
 #[ignore = "live: runs a real harness; set BRIDGE_REVIEW_LIVE_HARNESS"]
 fn live_review_on_a_fixture_pr() {
-    let Ok(harness) = std::env::var("BRIDGE_REVIEW_LIVE_HARNESS") else { return };
+    let harness = std::env::var("BRIDGE_REVIEW_LIVE_HARNESS").expect("set BRIDGE_REVIEW_LIVE_HARNESS to claude, codex or opencode");
     let model = std::env::var("BRIDGE_REVIEW_LIVE_MODEL").ok();
     let scratch = tempfile::tempdir().unwrap();
     // OpenCode keeps its sign-ins in its own data folder, so a paid model
@@ -419,12 +421,25 @@ fn live_review_on_a_fixture_pr() {
     let start = SessionStart { cwd: &repo, model: model.as_deref(), effort: Some("medium"), instructions: &instructions };
     let pr = read_json(&placed.join("pr.json")).unwrap();
     let started = Instant::now();
-    let (result, usage) = run(&transport, &harness, &start, &prompt(&pr, &context_name), &CancelToken::new(), Limits::default());
-    eprintln!("{harness}: {:?} in {:?}\nusage: {usage:#?}", result.as_ref().map(|review| review.findings.len()), started.elapsed());
-    let review = result.expect("a valid findings set");
+    let (result, usage) = run_answered(&transport, &harness, &start, &prompt(&pr, &context_name), &CancelToken::new(), Limits::default());
+    eprintln!("{harness}: {:?} in {:?}\nusage: {usage:#?}", result.as_ref().map(|(review, _)| review.findings.len()), started.elapsed());
+    let (review, answer) = result.expect("a valid findings set");
     let changed = ["src/lib.rs".to_owned()].into_iter().collect();
     let validated = contract::validate(review, &changed, &contract::hunks(&patch));
     eprintln!("{:#?}", validated.findings);
+    save_live_record(
+        &format!("fixture-{harness}{}", model.as_deref().map(|model| format!("-{}", model.replace('/', "_"))).unwrap_or_default()),
+        &json!({
+            "eval": "live_review_on_a_fixture_pr",
+            "harness": harness,
+            "model": model,
+            "seconds": started.elapsed().as_secs_f64(),
+            "usage": {"tokensIn": usage.tokens_in, "tokensOut": usage.tokens_out, "costMicrousd": usage.cost_microusd,
+                "deniedRequests": usage.denied_requests, "tools": usage.tools},
+            "answer": answer,
+            "findings": validated.findings.iter().map(|finding| json!({"path": finding.path, "line": finding.line, "severity": finding.severity.as_str(), "title": finding.title})).collect::<Vec<_>>(),
+        }),
+    );
     assert!(!validated.findings.is_empty(), "the planted bug is found");
     if harness != "codex" {
         assert!(
@@ -433,6 +448,171 @@ fn live_review_on_a_fixture_pr() {
             usage.tools
         );
     }
+}
+
+/// A real harness re-reviews a fixture PR (#1122's acceptance, by hand). The
+/// first commit was reviewed: its divide-by-zero finding was kept and posted,
+/// its integer-division finding dropped. The new commit fixes the first and
+/// adds a slice that panics. Expect one new finding, the posted one in
+/// `fixed`, and the dropped one not raised again. Same environment as
+/// [`live_review_on_a_fixture_pr`]:
+///
+/// ```text
+/// BRIDGE_REVIEW_LIVE_HARNESS=claude \
+///   cargo test -p bridge-core --lib reviews::session::tests::live_incremental_review_on_a_fixture_pr -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "live: runs a real harness; set BRIDGE_REVIEW_LIVE_HARNESS"]
+fn live_incremental_review_on_a_fixture_pr() {
+    let harness = std::env::var("BRIDGE_REVIEW_LIVE_HARNESS").expect("set BRIDGE_REVIEW_LIVE_HARNESS to claude, codex or opencode");
+    let model = std::env::var("BRIDGE_REVIEW_LIVE_MODEL").ok();
+    let scratch = tempfile::tempdir().unwrap();
+    if harness == "opencode" && std::env::var_os("BRIDGE_REVIEW_LIVE_OPENCODE_SIGNED_IN").is_none() {
+        std::env::set_var("XDG_DATA_HOME", scratch.path().join("xdg-data"));
+    }
+    let fixture = incremental_fixture(scratch.path());
+    let (repo, context, patch, head) = (&fixture.repo, &fixture.context, &fixture.patch, &fixture.head);
+    let (placed, context_name) = place_context(context, repo).unwrap();
+
+    let registry = Arc::new(AdapterRegistry::built_in().unwrap());
+    let wait = std::env::var("BRIDGE_REVIEW_LIVE_WAIT_SECS").ok().and_then(|secs| secs.parse().ok()).unwrap_or(8);
+    std::thread::sleep(Duration::from_secs(wait));
+    let transport = RegistryTransport { registry };
+    let instructions = instructions(&conventions_in(&placed), REVIEW_INSTRUCTIONS, false);
+    let start = SessionStart { cwd: repo, model: model.as_deref(), effort: Some("medium"), instructions: &instructions };
+    let pr = read_json(&placed.join("pr.json")).unwrap();
+    let started = Instant::now();
+    let (result, usage) = run_answered(&transport, &harness, &start, &prompt(&pr, &context_name), &CancelToken::new(), Limits::default());
+    let elapsed = started.elapsed();
+    let (review, answer) = result.expect("a valid findings set");
+    let changed = ["src/lib.rs".to_owned()].into_iter().collect();
+    let validated = contract::validate(review.clone(), &changed, &contract::hunks(patch));
+    let prior = read_prior(&placed).unwrap();
+    let findings = without_repeats(validated.findings.clone(), &prior);
+    let fixed = known_fixed(&validated.fixed, &prior, head);
+    let (checks, pass) = score_incremental(&validated.findings, &findings, &fixed, fixture.first_line);
+    let record = json!({
+        "eval": "live_incremental_review_on_a_fixture_pr",
+        "harness": harness,
+        "model": model,
+        "seconds": elapsed.as_secs_f64(),
+        "usage": {"tokensIn": usage.tokens_in, "tokensOut": usage.tokens_out, "costMicrousd": usage.cost_microusd,
+            "deniedRequests": usage.denied_requests, "tools": usage.tools},
+        "answer": answer,
+        "fixedAsGiven": review.fixed,
+        "draftedFindings": findings.iter().map(|finding| json!({"path": finding.path, "line": finding.line, "severity": finding.severity.as_str(), "title": finding.title, "body": finding.body})).collect::<Vec<_>>(),
+        "draftedFixed": fixed,
+        "checks": checks,
+        "pass": pass,
+    });
+    save_live_record(&format!("incremental-{harness}{}", model.as_deref().map(|model| format!("-{}", model.replace('/', "_"))).unwrap_or_default()), &record);
+    eprintln!("{}", serde_json::to_string_pretty(&record).unwrap());
+    assert!(pass, "the re-review missed the acceptance: {checks}");
+}
+
+/// The repository and context of the incremental eval.
+struct IncrementalFixture {
+    repo: std::path::PathBuf,
+    context: std::path::PathBuf,
+    /// The whole change, base to head.
+    patch: String,
+    head: String,
+    /// Where `first` starts in the new file.
+    first_line: u32,
+}
+
+fn incremental_fixture(scratch: &Path) -> IncrementalFixture {
+    let repo = std::fs::canonicalize(scratch).unwrap().join("repo");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    let git = |args: &[&str]| {
+        let output = crate::git::git_command(&repo).args(args).output().unwrap();
+        assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "t@example.invalid"]);
+    git(&["config", "user.name", "T"]);
+    let last = "/// The last `n` items, or all of them when there are fewer.\npub fn last(items: &[i32], n: usize) -> &[i32] {\n    &items[items.len().saturating_sub(n)..]\n}\n";
+    std::fs::write(repo.join("src/lib.rs"), last).unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "base"]);
+    let base = git(&["rev-parse", "HEAD"]);
+    // Reviewed and posted: `average` divides by zero on an empty slice.
+    let average = "\n/// The average of the items.\npub fn average(items: &[i32]) -> i32 {\n    items.iter().sum::<i32>() / items.len() as i32\n}\n";
+    std::fs::write(repo.join("src/lib.rs"), format!("{last}{average}")).unwrap();
+    git(&["commit", "-q", "-am", "Add average"]);
+    let reviewed = git(&["rev-parse", "HEAD"]);
+    // The new commit: the empty case is handled, and `first` panics when
+    // n is larger than the slice.
+    let fixed_src = "\n/// The average of the items, or 0 for none.\npub fn average(items: &[i32]) -> i32 {\n    if items.is_empty() {\n        return 0;\n    }\n    items.iter().sum::<i32>() / items.len() as i32\n}\n\n/// The first `n` items.\npub fn first(items: &[i32], n: usize) -> &[i32] {\n    &items[..n]\n}\n";
+    std::fs::write(repo.join("src/lib.rs"), format!("{last}{fixed_src}")).unwrap();
+    git(&["commit", "-q", "-am", "Handle no items, add first"]);
+    let head = git(&["rev-parse", "HEAD"]);
+
+    let context = scratch.join("context");
+    std::fs::create_dir_all(&context).unwrap();
+    let patch = git(&["diff", "-M", &base, &head]) + "\n";
+    std::fs::write(context.join("diff.patch"), &patch).unwrap();
+    std::fs::write(context.join(INCREMENTAL_PATCH), git(&["diff", "-M", &reviewed, &head]) + "\n").unwrap();
+    std::fs::write(context.join("files.json"), json!([{"path": "src/lib.rs", "status": "modified", "additions": 13, "deletions": 0}]).to_string()).unwrap();
+    std::fs::write(
+        context.join("pr.json"),
+        json!({"number": 1, "title": "Add average and first", "body": "", "changedFiles": 1, "omittedFiles": [],
+            "incremental": {"from": reviewed, "to": head, "fellBack": false}})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(context.join("threads.json"), "[]").unwrap();
+    std::fs::write(
+        context.join(PRIOR_FINDINGS),
+        json!([
+            {"id": "f-divide-by-zero", "reviewedHead": reviewed, "path": "src/lib.rs", "line": 8, "startLine": null, "side": "RIGHT",
+             "severity": "major", "title": "average divides by zero on an empty slice",
+             "body": "`items.len()` is 0 for an empty slice, so this panics. Return early or return an Option.",
+             "fingerprint": "f1", "decision": "kept", "posted": true, "fixedInSha": null, "relation": "earlier",
+             "thread": {"resolved": false, "outdated": false, "replies": []}},
+            {"id": "f-integer-division", "reviewedHead": reviewed, "path": "src/lib.rs", "line": 8, "startLine": null, "side": "RIGHT",
+             "severity": "minor", "title": "Integer division truncates the average",
+             "body": "The average of [1, 2] is 1, not 1.5. Consider returning f64.",
+             "fingerprint": "f2", "decision": "dropped", "posted": false, "fixedInSha": null, "thread": null, "relation": "earlier"},
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let new_text = format!("{last}{fixed_src}");
+    let first_line = new_text.lines().position(|line| line.starts_with("pub fn first")).unwrap() as u32 + 1;
+    IncrementalFixture { repo, context, patch, head, first_line }
+}
+
+/// #1122's acceptance, scored strictly on what Bridge would draft: exactly
+/// one finding, on `first`, about its panic; the dropped finding not raised;
+/// `fixed` exactly the posted one. `raised` is what the model said before
+/// Bridge's repeat filter, kept to show whether the model repeated itself.
+fn score_incremental(raised: &[DraftFinding], findings: &[DraftFinding], fixed: &[String], first_line: u32) -> (Value, bool) {
+    let about = |finding: &DraftFinding, words: &[&str]| {
+        let text = format!("{} {}", finding.title, finding.body).to_lowercase();
+        words.iter().any(|word| text.contains(word))
+    };
+    let dropped_words = ["integer division", "truncat", "f64", "floating", "rounds down"];
+    let checks = json!({
+        "exactlyOneFinding": findings.len() == 1,
+        "onFirst": findings.iter().all(|finding| finding.path == "src/lib.rs" && (first_line..=first_line + 2).contains(&finding.line)),
+        "aboutThePanic": findings.iter().all(|finding| about(finding, &["panic", "out of bounds", "bounds", "exceed", "larger than", "len()"])),
+        "droppedNotRaised": !findings.iter().any(|finding| about(finding, &dropped_words)),
+        "modelRepeatedDropped": raised.iter().any(|finding| about(finding, &dropped_words)),
+        "fixedExactly": fixed == ["f-divide-by-zero"],
+    });
+    let pass = ["exactlyOneFinding", "onFirst", "aboutThePanic", "droppedNotRaised", "fixedExactly"].iter().all(|key| checks[key] == true);
+    (checks, pass)
+}
+
+/// Keep a live eval's evidence: the reviewer's answer word for word and how
+/// it was scored, in `BRIDGE_REVIEW_LIVE_OUT` when it is set.
+fn save_live_record(name: &str, record: &Value) {
+    let Some(folder) = std::env::var_os("BRIDGE_REVIEW_LIVE_OUT") else { return };
+    let folder = std::path::PathBuf::from(folder);
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join(format!("{name}.json")), serde_json::to_string_pretty(record).unwrap()).unwrap();
 }
 
 #[test]
@@ -510,7 +690,7 @@ fn a_failed_pass_still_records_what_it_spent() {
     std::fs::write(context.join("diff.patch"), "").unwrap();
     std::fs::write(context.join("threads.json"), "[]").unwrap();
     let job = job(&core);
-    let prepared = Prepared { worktree: Some(checkout), context: Some(context), head_sha: "h".into(), guard: None };
+    let prepared = Prepared { worktree: Some(checkout), context: Some(context), head_sha: "h".into(), ..Prepared::default() };
     let broken = || {
         vec![Step::Events(vec![
             event("turn.started"),
@@ -529,4 +709,152 @@ fn a_failed_pass_still_records_what_it_spent() {
         PassUsage { tokens_in: 200, tokens_out: 20, cost_microusd: 4_000, denied_requests: 0 },
         "both turns of a failed pass are on its meter"
     );
+}
+
+// --- re-reviews ------------------------------------------------------------------
+
+fn prior(id: &str, title: &str, decision: &str, posted: bool, resolved: Option<bool>) -> Prior {
+    serde_json::from_value(json!({
+        "id": id, "path": "src/a.rs", "title": title, "severity": "major", "fingerprint": format!("fp-{id}"),
+        "decision": decision, "posted": posted, "fixedInSha": null, "relation": "earlier",
+        "thread": resolved.map(|resolved| json!({"resolved": resolved, "outdated": false, "replies": []})),
+    }))
+    .unwrap()
+}
+
+fn draft(path: &str, title: &str, fingerprint: &str, severity: ReviewSeverity) -> DraftFinding {
+    DraftFinding {
+        path: path.into(),
+        line: 2,
+        start_line: None,
+        side: ReviewSide::Right,
+        severity,
+        title: title.into(),
+        body: "b".into(),
+        confidence: 0.8,
+        fingerprint: fingerprint.into(),
+        outside_diff: false,
+    }
+}
+
+#[test]
+fn a_re_review_leaves_out_what_was_settled_unless_it_got_worse() {
+    use ReviewSeverity::{Critical, Major, Nit};
+    let priors = [
+        prior("dropped", "Dropped thing", "dropped", false, None),
+        prior("posted", "Posted thing", "kept", true, Some(false)),
+        prior("resolved", "Resolved thing", "edited", true, Some(true)),
+        prior("drafted", "Waiting thing", "kept", false, None),
+    ];
+    // (finding, kept)
+    let cases = [
+        (draft("src/a.rs", "Other words", "fp-dropped", Major), false),
+        (draft("src/a.rs", "Dropped  thing!", "fp-new", Major), false),
+        (draft("src/b.rs", "Dropped thing", "fp-new", Major), true),
+        (draft("src/a.rs", "Posted thing", "fp-new", Major), false),
+        (draft("src/a.rs", "Posted thing", "fp-new", Nit), false),
+        (draft("src/a.rs", "Posted thing", "fp-new", Critical), true),
+        (draft("src/a.rs", "Resolved thing", "fp-resolved", Major), false),
+        (draft("src/a.rs", "Waiting thing", "fp-drafted", Major), true),
+        (draft("src/a.rs", "Brand new", "fp-brand-new", Major), true),
+    ];
+    for (index, (finding, kept)) in cases.into_iter().enumerate() {
+        let left = without_repeats(vec![finding.clone()], &priors);
+        assert_eq!(left.len() == 1, kept, "case {index}: {finding:?}");
+    }
+    assert_eq!(without_repeats(vec![draft("src/a.rs", "Brand new", "fp-x", Major)], &[]).len(), 1, "a full review has no memory");
+}
+
+#[test]
+fn only_earlier_findings_that_could_be_fixed_are_marked_fixed() {
+    let mut fixed_already = prior("old", "Old", "kept", true, None);
+    fixed_already.fixed_in_sha = Some("abc".into());
+    let priors = [
+        prior("kept", "Kept", "kept", false, None),
+        prior("edited", "Edited", "edited", false, None),
+        prior("posted", "Posted", "pending", true, Some(false)),
+        prior("dropped", "Dropped", "dropped", false, None),
+        prior("pending", "Pending", "pending", false, None),
+        fixed_already,
+    ];
+    let said = ["kept", "dropped", "unknown", "kept", "posted", "pending", "old", "edited"].map(String::from);
+    assert_eq!(known_fixed(&said, &priors, "new-head"), ["kept", "posted", "edited"]);
+    // One found at this very head was not fixed by it.
+    let mut same_head = prior("kept", "Kept", "kept", false, None);
+    same_head.reviewed_head = Some("new-head".into());
+    assert!(known_fixed(&["kept".to_owned()], &[same_head], "new-head").is_empty());
+    // Nor one git cannot place before it (rewritten history, or no relation).
+    for relation in [Some("rewritten"), Some("same"), None] {
+        let mut unplaced = prior("kept", "Kept", "kept", false, None);
+        unplaced.relation = relation.map(String::from);
+        assert!(known_fixed(&["kept".to_owned()], &[unplaced], "new-head").is_empty(), "{relation:?}");
+    }
+}
+
+#[test]
+fn a_re_review_turn_keeps_the_stable_prefix_and_adds_its_files_last() {
+    let full = json!({"number": 42, "title": "Parse input", "changedFiles": 2, "omittedFiles": []});
+    let mut incremental = full.clone();
+    incremental["incremental"] = json!({"from": "aaaaaaaaaaaaaaaa", "to": "bbbbbbbbbbbbbbbb", "fellBack": false});
+    let turn = prompt(&incremental, ".bridge-review-0a1b2c3d4e5f");
+    assert!(turn.starts_with(&prompt(&full, ".bridge-review-0a1b2c3d4e5f")), "what a full review says comes first, unchanged");
+    assert!(turn.contains(".bridge-review-0a1b2c3d4e5f/incremental.patch") && turn.contains("`aaaaaaaaaaaa..bbbbbbbbbbbb`"));
+    assert!(turn.contains(".bridge-review-0a1b2c3d4e5f/prior_findings.json") && turn.contains("`fixed`"));
+    assert!(turn.contains("`relation`"));
+    let mut large = incremental.clone();
+    large["incremental"]["omittedFiles"] = json!(["huge.rs", "big.rs"]);
+    assert!(prompt(&large, "ctx").contains("too large for incremental.patch; read them in the checkout: huge.rs, big.rs."));
+    let mut fell_back = full.clone();
+    fell_back["incremental"] = json!({"from": "aaaaaaaaaaaaaaaa", "to": "bbbbbbbbbbbbbbbb", "fellBack": true});
+    let turn = prompt(&fell_back, "ctx");
+    assert!(turn.contains("no longer in the pull request's history") && !turn.contains("incremental.patch"));
+    assert!(turn.contains("ctx/prior_findings.json"), "the memory stays after a force-push");
+    // The cached prefix never mentions a re-review: it is the same for both.
+    assert!(OUTPUT_CONTRACT.contains("\"fixed\""));
+}
+
+#[test]
+fn a_re_review_pass_drops_repeats_and_reports_what_the_new_commits_fixed() {
+    let scratch = tempfile::tempdir().unwrap();
+    let core = BridgeCore::for_tests(scratch.path());
+    let checkout = scratch.path().join("checkout");
+    let context = scratch.path().join("context");
+    std::fs::create_dir_all(&checkout).unwrap();
+    std::fs::create_dir_all(&context).unwrap();
+    let pr = json!({"number": 42, "title": "Parse input", "changedFiles": 1, "omittedFiles": [],
+        "incremental": {"from": "aaaaaaaaaaaaaaaa", "to": "bbbbbbbbbbbbbbbb", "fellBack": false, "omittedFiles": ["huge.rs"]}});
+    std::fs::write(context.join("pr.json"), pr.to_string()).unwrap();
+    std::fs::write(context.join("files.json"), json!([{"path": "src/a.rs", "status": "modified"}]).to_string()).unwrap();
+    std::fs::write(context.join("diff.patch"), PATCH).unwrap();
+    std::fs::write(context.join("incremental.patch"), PATCH).unwrap();
+    std::fs::write(context.join("threads.json"), "[]").unwrap();
+    std::fs::write(
+        context.join("prior_findings.json"),
+        json!([
+            {"id": "f-kept", "path": "src/a.rs", "title": "Missing check", "severity": "major", "fingerprint": "x1", "decision": "kept", "posted": true, "thread": null, "relation": "earlier"},
+            {"id": "f-dropped", "path": "src/a.rs", "title": "Style nit", "severity": "nit", "fingerprint": "x2", "decision": "dropped", "posted": false, "thread": null},
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let job = job(&core);
+    let prepared = Prepared { worktree: Some(checkout.clone()), context: Some(context), head_sha: "h".into(), ..Prepared::default() };
+    let reply = format!(
+        "```json\n{}\n```",
+        json!({"summary": "The new commit fixes the missing check.", "fixed": ["f-kept", "f-dropped", "made-up"], "findings": [
+            {"path": "src/a.rs", "line": 2, "side": "RIGHT", "severity": "nit", "title": "Style nit", "body": "Again.", "confidence": 0.4},
+            {"path": "src/a.rs", "line": 2, "side": "RIGHT", "severity": "major", "title": "Unwrap on user input", "body": "New.", "confidence": 0.9},
+        ]})
+    );
+    let script = script(vec![vec![Step::Events(vec![event("turn.started"), said("m", &reply), event("turn.completed")])]]);
+    let meter = crate::reviews::steps::UsageMeter::default();
+    let request = PassRequest { job: &job, prepared: &prepared, pass_id: "p", harness: "claude", usage: &meter };
+    let outcome = review_pass_with(&core, &ScriptedTransport(script.clone()), request, &CancelToken::new(), Limits::default()).unwrap();
+    let titles: Vec<&str> = outcome.findings.iter().map(|finding| finding.title.as_str()).collect();
+    assert_eq!(titles, ["Unwrap on user input"], "the dropped nit is not raised again");
+    assert_eq!(outcome.fixed, ["f-kept"], "only a known finding that could be fixed");
+    let placed: Vec<_> = std::fs::read_dir(&checkout).unwrap().filter_map(Result::ok).map(|entry| entry.path()).collect();
+    assert!(placed[0].join("incremental.patch").is_file() && placed[0].join("prior_findings.json").is_file(), "the re-review files reach the reviewer");
+    assert!(script.sent.lock().unwrap()[0].contains("This is a re-review."));
+    assert!(outcome.summary.ends_with("Not in the re-review's patch of the new commits (too large to include): huge.rs."), "{}", outcome.summary);
 }

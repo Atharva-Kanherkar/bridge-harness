@@ -135,6 +135,22 @@ export function query({ prompt, options = {} }) {
     return allowed;
   }
 
+  /** `path:line` of every old-side line a unified diff removes or replaces. */
+  function rewrittenLines(patch) {
+    const lines = new Set();
+    let file = null;
+    let old = 0;
+    for (const line of patch.split("\n")) {
+      if (line.startsWith("--- ")) { file = line.slice(4).replace(/^a\//, ""); continue; }
+      if (line.startsWith("+++ ")) continue;
+      const hunk = line.match(/^@@ -(\d+)/);
+      if (hunk) { old = Number(hunk[1]); continue; }
+      if (line.startsWith("-")) { lines.add(`${file}:${old}`); old += 1; }
+      else if (line.startsWith(" ")) old += 1;
+    }
+    return lines;
+  }
+
   async function* turn(text) {
     const brief = `${JSON.stringify(options.systemPrompt ?? "")}\n${text}`;
     const drafted = text.match(/The person wrote:\n"""\n([\s\S]*?)\n"""/);
@@ -167,6 +183,26 @@ export function query({ prompt, options = {} }) {
           confidence: 0.6,
         }],
       };
+      // A re-review (scripts/e2e-review-auto-incremental.mjs). An earlier
+      // finding counts as fixed only when incremental.patch rewrites the line
+      // it was on, the way a reviewer would check, so the E2E cannot pass on
+      // a commit that leaves the problem alone. The second-line finding above
+      // is raised again on purpose: Bridge must leave the repeat out.
+      const prior = text.match(/`([^`]*prior_findings\.json)`/);
+      if (prior) {
+        const earlier = JSON.parse(readFileSync(join(cwd, prior[1]), "utf8"));
+        const patchFile = text.match(/`([^`]*incremental\.patch)`/);
+        const rewritten = patchFile ? rewrittenLines(readFileSync(join(cwd, patchFile[1]), "utf8")) : new Set();
+        review.summary = "The new commit adds a third line.";
+        review.fixed = earlier
+          .filter((finding) => (finding.posted || finding.decision === "kept") && rewritten.has(`${finding.path}:${finding.line}`))
+          .map((finding) => finding.id);
+        review.findings.push({
+          path: "README.md", line: 3, side: "RIGHT", severity: "major",
+          title: "The third line repeats the second",
+          body: "Drop it or say something new.", confidence: 0.7,
+        });
+      }
       yield* finish(`I read the diff.\n\n\`\`\`json\n${JSON.stringify(review)}\n\`\`\``);
       return;
     }

@@ -27,7 +27,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::contract::{self, RawReview, OUTPUT_CONTRACT};
-use super::steps::{CancelToken, PassOutcome, PassRequest, PassUsage, StepError};
+use super::prepare::{INCREMENTAL_PATCH, PRIOR_FINDINGS};
+use super::steps::{CancelToken, DraftFinding, PassOutcome, PassRequest, PassUsage, StepError};
 use crate::adapters::{AdapterRegistry, AdapterRuntime, ShutdownReason, StartRequest};
 use crate::agent::NormalizedEvent;
 use crate::delegation::WriteMode;
@@ -398,6 +399,20 @@ pub fn run(
     cancel: &CancelToken,
     limits: Limits,
 ) -> (Result<RawReview, SessionError>, Usage) {
+    let (result, usage) = run_answered(transport, harness, start, prompt, cancel, limits);
+    (result.map(|(review, _)| review), usage)
+}
+
+/// [`run`], also handing back the final message the review was read from,
+/// word for word: what an eval keeps as evidence.
+pub fn run_answered(
+    transport: &dyn Transport,
+    harness: &str,
+    start: &SessionStart<'_>,
+    prompt: &str,
+    cancel: &CancelToken,
+    limits: Limits,
+) -> (Result<(RawReview, String), SessionError>, Usage) {
     let mut usage = Usage::default();
     let mut session = match transport.start(harness, start) {
         Ok(session) => session,
@@ -405,10 +420,10 @@ pub fn run(
     };
     let deadline = Instant::now() + limits.max_wall;
     let result = turn(session.as_mut(), prompt, &mut usage, deadline, limits, cancel).and_then(|text| match contract::parse(&text) {
-        Ok(review) => Ok(review),
+        Ok(review) => Ok((review, text)),
         Err(error) => {
             let repaired = turn(session.as_mut(), &repair_prompt(&error), &mut usage, deadline, limits, cancel)?;
-            contract::parse(&repaired).map_err(SessionError::Contract)
+            contract::parse(&repaired).map(|review| (review, repaired)).map_err(SessionError::Contract)
         }
     });
     session.stop(result.is_ok());
@@ -498,6 +513,39 @@ them in the checkout if they matter: {}.",
             omitted.join(", ")
         ));
     }
+    if let Some(incremental) = pr["incremental"].as_object() {
+        let short = |key: &str| incremental.get(key).and_then(Value::as_str).unwrap_or("").chars().take(12).collect::<String>();
+        let (from, to) = (short("from"), short("to"));
+        if incremental.get("fellBack").and_then(Value::as_bool).unwrap_or(false) {
+            text.push_str(&format!(
+                "\n\nThis was meant as a re-review since `{from}`, but that commit is no longer in the pull request's \
+history (it was force-pushed), so review the whole change."
+            ));
+        } else {
+            text.push_str(&format!(
+                "\n\nThis is a re-review. The last posted review looked at `{from}`; the pull request has new commits since.\n\
+- `{context}/{INCREMENTAL_PATCH}`: the new commits, `{from}..{to}`. Review these. diff.patch is still the whole change, for \
+context, and inline comments still go on its lines."
+            ));
+            let left_out = new_commits_left_out(pr);
+            if !left_out.is_empty() {
+                text.push_str(&format!(
+                    " These files changed in the new commits but were too large for {INCREMENTAL_PATCH}; read them in the \
+checkout: {}.",
+                    left_out.join(", ")
+                ));
+            }
+        }
+        text.push_str(&format!(
+            "\n- `{context}/{PRIOR_FINDINGS}`: what earlier reviews of this pull request found, each with its `id`, the \
+`decision` a person made (pending, kept, dropped, edited), whether it was `posted`, its GitHub `thread` (resolved, \
+outdated, replies), and its `relation` to this head (`earlier`, `same`, or `rewritten` when the history was since \
+rewritten).\n\n\
+Do not raise again a finding that was dropped, posted, or whose thread is resolved, unless the new commits made it \
+worse; then say what got worse. Put the `id` of each earlier finding the new commits fixed in `fixed`, and say in the \
+summary which ones they fixed."
+        ));
+    }
     text
 }
 
@@ -533,6 +581,12 @@ fn place_context_as(context: &Path, checkout: &Path, name: &str) -> Result<PathB
     };
     for file in ["pr.json", "diff.patch", "files.json", "threads.json"] {
         copy_file(&context.join(file), &target.join(file), file)?;
+    }
+    // A re-review's extra files, when it has them.
+    for file in [INCREMENTAL_PATCH, PRIOR_FINDINGS] {
+        if context.join(file).is_file() {
+            copy_file(&context.join(file), &target.join(file), file)?;
+        }
     }
     // The base branch's conventions, when it has any. `target` is a folder
     // this call just made, so nothing under it can be a planted link.
@@ -613,20 +667,127 @@ pub fn review_pass_with(
         .filter_map(|file| file["path"].as_str().map(str::to_owned))
         .collect();
     let validated = contract::validate(review, &changed, &contract::hunks(&patch));
+    let prior = read_prior(&placed)?;
+    let findings = without_repeats(validated.findings, &prior);
+    let reviewed = if request.prepared.head_sha.is_empty() { request.job.head_sha.as_str() } else { request.prepared.head_sha.as_str() };
+    let fixed = known_fixed(&validated.fixed, &prior, reviewed);
     let mut summary = validated.summary;
     let omitted: Vec<&str> = pr["omittedFiles"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
     if !omitted.is_empty() {
         summary.push_str(&format!("\n\nNot reviewed in the diff (too large to include): {}.", omitted.join(", ")));
     }
+    let left_out = new_commits_left_out(&pr);
+    if !left_out.is_empty() {
+        summary.push_str(&format!(
+            "\n\nNot in the re-review's patch of the new commits (too large to include): {}.",
+            left_out.join(", ")
+        ));
+    }
     Ok(PassOutcome {
         summary,
-        findings: validated.findings,
+        findings,
+        fixed,
         session_id: None,
         model,
         effort: Some(effort),
         // Already on the pass's meter, with every earlier attempt.
         ..PassOutcome::default()
     })
+}
+
+/// An earlier finding, as `prior_findings.json` holds it.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Prior {
+    pub id: String,
+    /// The head the earlier review looked at.
+    #[serde(default)]
+    pub reviewed_head: Option<String>,
+    /// How that head stands to this one: `earlier`, `same` or `rewritten`.
+    #[serde(default)]
+    pub relation: Option<String>,
+    pub path: String,
+    pub title: String,
+    pub severity: bridge_protocol::messages::ReviewSeverity,
+    pub fingerprint: String,
+    pub decision: bridge_protocol::messages::ReviewFindingDecision,
+    pub posted: bool,
+    #[serde(default)]
+    pub fixed_in_sha: Option<String>,
+    #[serde(default)]
+    pub thread: Option<PriorThread>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct PriorThread {
+    pub resolved: bool,
+}
+
+impl Prior {
+    /// Settled: dropped by a person, posted, or its thread resolved. Raising
+    /// it again is a repeat.
+    fn settled(&self) -> bool {
+        use bridge_protocol::messages::ReviewFindingDecision as Decision;
+        self.decision == Decision::Dropped || self.posted || self.thread.as_ref().is_some_and(|thread| thread.resolved)
+    }
+
+    /// Kept, edited or posted, not already marked fixed, and found at a head
+    /// git places before `head` (`earlier`): something the commits since can
+    /// fix.
+    fn fixable(&self, head: &str) -> bool {
+        use bridge_protocol::messages::ReviewFindingDecision as Decision;
+        self.fixed_in_sha.is_none()
+            && self.reviewed_head.as_deref() != Some(head)
+            && self.relation.as_deref() == Some("earlier")
+            && (matches!(self.decision, Decision::Kept | Decision::Edited) || self.posted)
+    }
+}
+
+/// The earlier findings a re-review was shown, or none for a full review.
+fn read_prior(placed: &Path) -> Result<Vec<Prior>, StepError> {
+    let path = placed.join(PRIOR_FINDINGS);
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read(&path).map_err(|error| StepError::Fatal(format!("Could not read {PRIOR_FINDINGS}: {error}")))?;
+    serde_json::from_slice(&text).map_err(|error| StepError::Fatal(format!("Could not read {PRIOR_FINDINGS}: {error}")))
+}
+
+/// Leave out what a settled earlier finding already said: the same
+/// fingerprint, or the same file and title. A repeat that is more severe
+/// than before stays: the new commits made it worse.
+pub fn without_repeats(findings: Vec<DraftFinding>, prior: &[Prior]) -> Vec<DraftFinding> {
+    findings
+        .into_iter()
+        .filter(|finding| {
+            let title = contract::normalized(&finding.title);
+            !prior.iter().any(|earlier| {
+                earlier.settled()
+                    && (earlier.fingerprint == finding.fingerprint
+                        || (earlier.path == finding.path && contract::normalized(&earlier.title) == title))
+                    && contract::severity_rank(finding.severity) >= contract::severity_rank(earlier.severity)
+            })
+        })
+        .collect()
+}
+
+/// The files the new commits changed that did not fit in the re-review's
+/// patch.
+fn new_commits_left_out(pr: &Value) -> Vec<&str> {
+    pr["incremental"]["omittedFiles"].as_array().into_iter().flatten().filter_map(Value::as_str).collect()
+}
+
+/// The `fixed` ids that name an earlier finding the commits up to `head`
+/// could fix, each once, in the order given. Only findings the reviewer was
+/// shown can be named, and those came from heads before `head` (`prepare`).
+pub fn known_fixed(fixed: &[String], prior: &[Prior], head: &str) -> Vec<String> {
+    let mut known = Vec::new();
+    for id in fixed {
+        if !known.contains(id) && prior.iter().any(|earlier| &earlier.id == id && earlier.fixable(head)) {
+            known.push(id.clone());
+        }
+    }
+    known
 }
 
 #[cfg(test)]

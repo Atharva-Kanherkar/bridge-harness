@@ -44,6 +44,11 @@ const PR_DETAIL_FIELDS: &str = "number,title,body,state,isDraft,author,headRefNa
 const PR_CHECK_FIELDS: &str = "name,state,bucket,link,workflow";
 const PR_BRIEF_FIELDS: &str = "number,title,state,isDraft,headRefName,headRefOid,url,mergeable";
 const PR_HEAD_FIELDS: &str = "headRefOid";
+/// What auto-review reads of each open pull request.
+const PR_OPEN_HEAD_FIELDS: &str = "number,headRefOid,isDraft,author";
+/// Most open pull requests auto-review reads per listing (`gh` pages through
+/// them). A listing this long may have left some out.
+pub const OPEN_HEADS_LIMIT: usize = 1000;
 const PR_RESTORE_FIELDS: &str = "headRefName,headRefOid,isCrossRepository";
 const ISSUE_LIST_FIELDS: &str = "number,title,state,author,labels,createdAt,updatedAt,url";
 const ISSUE_DETAIL_FIELDS: &str = "number,title,body,state,author,labels,comments,createdAt,updatedAt,url";
@@ -175,6 +180,16 @@ pub struct CheckRollup {
     pub cancelled: u32,
 }
 
+/// An open pull request as auto-review sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenPullRequestHead {
+    pub number: u64,
+    pub head_sha: String,
+    pub is_draft: bool,
+    /// The author's login; absent for a deleted account.
+    pub author: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PullRequestSummary {
@@ -226,6 +241,8 @@ pub struct PullRequestHead {
     pub base_ref: String,
     pub is_draft: bool,
     pub author: Option<String>,
+    /// Open, rather than closed or merged.
+    pub is_open: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1091,6 +1108,58 @@ impl GithubSurface {
     /// Where a pull request's head and base point right now. Never cached: a
     /// review job is keyed by the head it reviews, so a stale head would
     /// review the wrong commit.
+    /// Each open pull request's head, draft state and author: what
+    /// auto-review compares between polls. Never cached, so a push shows up
+    /// on the next read.
+    pub fn list_open_heads(&self, workspace: &Path) -> Result<Vec<OpenPullRequestHead>, GithubSurfaceError> {
+        self.require_binary()?;
+        let repository = self.resolve_repository(workspace)?;
+        let bytes = self.run_gh(workspace, "pr list", &pr_list_args(&repository, PR_OPEN_HEAD_FIELDS, &OPEN_HEADS_LIMIT.to_string()), false)?;
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Raw {
+            number: u64,
+            head_ref_oid: String,
+            #[serde(default)]
+            is_draft: bool,
+            #[serde(default)]
+            author: Option<RawActor>,
+        }
+        let raw: Vec<Raw> = parse_json("open pull-request heads", &bytes)?;
+        Ok(raw
+            .into_iter()
+            .filter(|pull_request| !pull_request.head_ref_oid.trim().is_empty())
+            .map(|pull_request| OpenPullRequestHead {
+                number: pull_request.number,
+                head_sha: pull_request.head_ref_oid,
+                is_draft: pull_request.is_draft,
+                author: pull_request.author.map(|author| author.login),
+            })
+            .collect())
+    }
+
+    /// The login of the account `gh` is signed in as, on the workspace's host.
+    pub fn viewer_login(&self, workspace: &Path) -> Result<String, GithubSurfaceError> {
+        self.require_binary()?;
+        let repository = self.resolve_repository(workspace)?;
+        let mut args: Vec<String> = vec!["api".into()];
+        if !repository.host.eq_ignore_ascii_case("github.com") {
+            args.push("--hostname".into());
+            args.push(repository.host.clone());
+        }
+        args.push("user".into());
+        let bytes = self.run_gh(workspace, "viewer", &args, false)?;
+        #[derive(Deserialize)]
+        struct Raw {
+            login: String,
+        }
+        let raw: Raw = parse_json("signed-in account", &bytes)?;
+        if raw.login.trim().is_empty() {
+            return Err(malformed("signed-in account", "login is empty"));
+        }
+        Ok(raw.login)
+    }
+
     pub fn pr_head(&self, workspace: &Path, number: u64) -> Result<PullRequestHead, GithubSurfaceError> {
         self.require_binary()?;
         let repository = self.resolve_repository(workspace)?;
@@ -1104,7 +1173,7 @@ impl GithubSurface {
                 "--repo".into(),
                 repository.selector(),
                 "--json".into(),
-                "number,headRefOid,baseRefOid,headRefName,baseRefName,isDraft,author".into(),
+                "number,headRefOid,baseRefOid,headRefName,baseRefName,isDraft,author,state".into(),
             ],
             false,
         )?;
@@ -1122,6 +1191,8 @@ impl GithubSurface {
             is_draft: bool,
             #[serde(default)]
             author: Option<RawActorLogin>,
+            #[serde(default)]
+            state: Option<String>,
         }
         #[derive(Deserialize)]
         struct RawActorLogin {
@@ -1139,6 +1210,9 @@ impl GithubSurface {
             base_ref: raw.base_ref_name,
             is_draft: raw.is_draft,
             author: raw.author.map(|author| author.login),
+            // Only an explicit CLOSED or MERGED closes it: an older read
+            // without the field stays open, as before.
+            is_open: !raw.state.is_some_and(|state| matches!(state.to_ascii_uppercase().as_str(), "CLOSED" | "MERGED")),
         })
     }
 
@@ -3181,6 +3255,8 @@ struct RawPostedReview {
     html_url: String,
     #[serde(default)]
     body: Option<String>,
+    #[serde(default)]
+    commit_id: Option<String>,
 }
 
 impl RawPostedReview {
@@ -3189,6 +3265,7 @@ impl RawPostedReview {
             id: self.id.to_string(),
             url: self.html_url,
             body: self.body.unwrap_or_default(),
+            commit_id: self.commit_id.filter(|commit| !commit.is_empty()),
         }
     }
 }

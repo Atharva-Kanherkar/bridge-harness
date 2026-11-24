@@ -36,6 +36,13 @@
         "fingerprint": {
           "type": "string"
         },
+        "fixedInSha": {
+          "description": "The head of a later re-review that found this fixed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "githubCommentId": {
           "type": [
             "string",
@@ -185,6 +192,13 @@
         },
         "id": {
           "type": "string"
+        },
+        "incrementalFromSha": {
+          "description": "A re-review: the head of the PR's last posted review. The reviewer looks at the commits since it, remembering earlier findings.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "number": {
           "format": "uint64",

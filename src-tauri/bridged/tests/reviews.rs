@@ -70,6 +70,7 @@ fn seed(data_dir: &Path, repo: &Path) -> String {
         &db,
         &store::NewJob {
             workspace_id: "w".into(),
+            repo_host: Some("github.com".into()),
             repo_owner: "fixture".into(),
             repo_name: "project".into(),
             number: 103,

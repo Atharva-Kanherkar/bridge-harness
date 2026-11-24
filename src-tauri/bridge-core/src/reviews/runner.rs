@@ -39,6 +39,8 @@ pub struct ReviewRuntime {
     /// Held while a review checkout is reserved and cut, and while one is
     /// removed or swept, so a sweep never mistakes one being cut for an orphan.
     checkouts: Mutex<()>,
+    /// Auto-review on push: what it watches and has seen.
+    pub auto: super::auto::AutoReview,
 }
 
 impl Default for ReviewRuntime {
@@ -48,6 +50,7 @@ impl Default for ReviewRuntime {
             tokens: Mutex::new(HashMap::new()),
             wake: (Mutex::new(false), Condvar::new()),
             checkouts: Mutex::new(()),
+            auto: super::auto::AutoReview::default(),
         }
     }
 }
@@ -396,6 +399,13 @@ impl Driver {
             }
             self.advance(&job, Status::Preparing, Status::Reviewing, false)?;
             let summary = self.review(&job, &prepared, steps.as_ref(), token)?;
+            // A re-review says what it covers before anything else.
+            let head = if prepared.head_sha.is_empty() { job.head_sha.as_str() } else { prepared.head_sha.as_str() };
+            let summary = match prepared.incremental.summary_lead(head) {
+                Some(lead) if summary.trim().is_empty() => lead,
+                Some(lead) => format!("{lead}\n\n{summary}"),
+                None => summary,
+            };
             let auto = job.post_mode == ReviewPostMode::Auto;
             let drafted = {
                 let db = super::lock_db(&self.core);
@@ -503,6 +513,8 @@ impl Driver {
                         outcome.tokens_out = spent.tokens_out;
                         outcome.cost_microusd = spent.cost_microusd;
                         outcome.denied_requests = spent.denied_requests;
+                        // Fix marks only on findings git placed before this head.
+                        outcome.fixed.retain(|id| prepared.fixable.contains(id));
                         let stored = {
                             let db = super::lock_db(&self.core);
                             store::complete_pass(&db, &job.id, &self.claim, &pass_id, &outcome, self.now()).map_err(fatal)?
