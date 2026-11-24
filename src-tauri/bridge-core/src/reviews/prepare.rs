@@ -30,7 +30,7 @@ use std::sync::{Arc, Weak};
 use serde_json::json;
 
 use super::steps::{
-    CancelToken, Guard, PassOutcome, PassRequest, PostedReview, Prepared, ReviewSteps, StepError, UnavailableSteps,
+    CancelToken, Guard, PassOutcome, PassRequest, PostedReview, Prepared, ReviewSteps, StepError,
 };
 use super::store::{self, JobRow};
 use crate::github_surface::{GithubRepository, GithubSurfaceError};
@@ -110,8 +110,8 @@ impl Default for PrepareConfig {
     }
 }
 
-/// The steps a host runs: real preparation, the hidden reviewer session and
-/// cleanup; posting is not in this build yet.
+/// The steps a host runs: real preparation, the hidden reviewer session,
+/// posting and cleanup.
 pub struct LiveSteps {
     core: Weak<BridgeCore>,
     config: PrepareConfig,
@@ -143,11 +143,13 @@ impl ReviewSteps for LiveSteps {
     }
 
     fn find_posted(&self, job: &JobRow) -> Result<Option<PostedReview>, StepError> {
-        UnavailableSteps.find_posted(job)
+        let core = self.core().ok_or_else(|| StepError::Fatal("Bridge is shutting down".into()))?;
+        super::post::find_posted(&core, job)
     }
 
     fn post(&self, job: &JobRow, cancel: &CancelToken) -> Result<PostedReview, StepError> {
-        UnavailableSteps.post(job, cancel)
+        let core = self.core().ok_or_else(|| StepError::Fatal("Bridge is shutting down".into()))?;
+        super::post::post(&core, job, cancel)
     }
 
     fn cleanup(&self, job_id: &str) {
@@ -173,6 +175,7 @@ fn surface_error(error: GithubSurfaceError) -> StepError {
     match error {
         // The network or GitHub hiccuped: worth another try.
         GithubSurfaceError::CommandFailed { .. } | GithubSurfaceError::Io(_) => StepError::Transient(error.to_string()),
+        GithubSurfaceError::RateLimited { ref message, retry_after, .. } => StepError::RateLimited(message.clone(), retry_after),
         // Signed out, no repository, a response Bridge cannot read: trying
         // again changes nothing.
         other => StepError::Fatal(other.to_string()),
@@ -209,7 +212,7 @@ fn remote_for(workspace: &Path, owner: &str, name: &str) -> String {
 /// The repository the job was started for, on the host the workspace
 /// resolves to: metadata and threads are read from it, never from whatever
 /// the workspace points at by the time the job runs.
-fn job_repository(core: &BridgeCore, workspace: &Path, job: &JobRow) -> GithubRepository {
+pub(crate) fn job_repository(core: &BridgeCore, workspace: &Path, job: &JobRow) -> GithubRepository {
     let host = core
         .github_surface
         .resolve_repository(workspace)

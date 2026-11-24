@@ -114,6 +114,7 @@ impl ReviewSteps for Script {
         Ok(github.iter().position(|body| body.contains(&marker)).map(|index| PostedReview {
             review_id: format!("review-{index}"),
             url: format!("https://github.com/octo/repo/pull/{}#pullrequestreview-{index}", job.number),
+            findings: Vec::new(),
         }))
     }
 
@@ -130,6 +131,7 @@ impl ReviewSteps for Script {
                 Ok(PostedReview {
                     review_id: format!("review-{index}"),
                     url: format!("https://github.com/octo/repo/pull/{}#pullrequestreview-{index}", job.number),
+                    findings: Vec::new(),
                 })
             }
             PostPlan::PostThenTimeOut => {
@@ -398,6 +400,20 @@ fn a_post_retried_after_a_timeout_never_creates_a_second_review() {
     assert_eq!(script.github.lock().unwrap().len(), 1, "exactly one review on the PR");
     let posted = job(&core, &id);
     assert_eq!((posted.status, posted.posted_review_id.as_deref()), (Status::Posted, Some("review-0")));
+}
+
+#[test]
+fn a_rate_limited_step_waits_as_long_as_github_asked() {
+    let (_scratch, core, script) = fixture();
+    settings(&core, |settings| settings.post_mode = wire::ReviewPostMode::Auto);
+    let wait = Duration::from_millis(300);
+    script.post.lock().unwrap().push_back(PostPlan::Fail(StepError::RateLimited("secondary rate limit".into(), wait)));
+    let id = queue(&core, 5, &["claude"]);
+    let started = std::time::Instant::now();
+    drain(&Runner::with(core.clone(), fast(), Arc::new(Utc::now)));
+    assert!(started.elapsed() >= wait, "the 1 ms backoff gave way to GitHub's wait");
+    assert_eq!(script.calls("post:").len(), 2);
+    assert_eq!(job(&core, &id).status, Status::Posted);
 }
 
 #[test]

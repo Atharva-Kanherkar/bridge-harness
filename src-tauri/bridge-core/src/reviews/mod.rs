@@ -7,6 +7,7 @@
 //! and `steps` for the work a job does.
 
 pub mod contract;
+pub mod post;
 pub mod prepare;
 pub mod runner;
 pub mod session;
@@ -186,6 +187,31 @@ pub fn retry(core: &Arc<BridgeCore>, job_id: &str) -> Result<wire::ReviewJob, Br
         core.events.publish(CoreEvent::ReviewJobUpdated { job: job.clone() });
         core.reviews.wake();
     }
+    Ok(job)
+}
+
+/// Store a person's decisions on a drafted job, all or none, and return
+/// every finding of the job.
+pub fn decide(core: &Arc<BridgeCore>, params: &wire::DecideReviewParams) -> Result<wire::ReviewFindingList, BridgeError> {
+    let findings = {
+        let db = lock_db(core);
+        store::decide(&db, &params.job_id, &params.decisions, Utc::now())?;
+        store::findings(&db, &params.job_id)?
+    };
+    publish(core, &params.job_id);
+    Ok(wire::ReviewFindingList { findings })
+}
+
+/// Post a drafted job's kept and edited findings: the job moves to
+/// `posting`, and the runner posts it as one `COMMENT` review.
+pub fn post(core: &Arc<BridgeCore>, job_id: &str) -> Result<wire::ReviewJob, BridgeError> {
+    let job = {
+        let db = lock_db(core);
+        let job = store::request_post(&db, job_id)?;
+        store::to_wire(&db, &job)?
+    };
+    core.events.publish(CoreEvent::ReviewJobUpdated { job: job.clone() });
+    core.reviews.wake();
     Ok(job)
 }
 

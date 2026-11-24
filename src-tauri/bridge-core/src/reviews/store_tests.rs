@@ -211,7 +211,8 @@ fn an_expired_posting_lease_keeps_the_job_posting_without_a_lease() {
     assert_eq!(reclaimed.lease_owner, None);
     let (claimed, token) = claim(&db, "runner-b", at(LEASE_SECONDS + 2));
     assert_eq!(claimed.status, Status::Posting, "a posting job is claimed as-is");
-    assert!(mark_posted(&db, &job.id, &token, "r1", "https://example.test/r1", at(LEASE_SECONDS + 3)).unwrap());
+    let posted = PostedReview { review_id: "r1".into(), url: "https://example.test/r1".into(), findings: Vec::new() };
+    assert!(mark_posted(&db, &job.id, &token, &posted, at(LEASE_SECONDS + 3)).unwrap());
     let posted = require_job(&db, &job.id).unwrap();
     assert_eq!(posted.status, Status::Posted);
     assert_eq!(posted.posted_review_url.as_deref(), Some("https://example.test/r1"));
@@ -239,7 +240,10 @@ fn startup_recovery_interrupts_in_flight_jobs_only() {
     let (_scratch, db) = open();
     let mut ids = std::collections::HashMap::new();
     for (number, label) in ["queued", "preparing", "reviewing", "drafted", "posting", "posted", "failed"].into_iter().enumerate() {
-        let (job, _) = insert(&db, &new_job(number as u64, "sha", &["claude"]), at(number as i64)).unwrap();
+        // An automatic post: a post a person asked for returns to their draft
+        // (`a_draft_post_interrupted_by_restart_returns_to_the_draft`).
+        let new = NewJob { post_mode: ReviewPostMode::Auto, ..new_job(number as u64, "sha", &["claude"]) };
+        let (job, _) = insert(&db, &new, at(number as i64)).unwrap();
         db.execute(
             "UPDATE review_jobs SET status=?2, lease_owner=CASE WHEN ?2 IN ('preparing','reviewing','posting') THEN 'old' END
              WHERE id=?1",
@@ -485,4 +489,201 @@ fn a_terminal_transition_settles_running_passes() {
     interrupt_in_flight(&db, at(2)).unwrap();
     let pass = &passes(&db, &job.id).unwrap()[0];
     assert_eq!((pass.status, pass.error.as_deref()), (ReviewPassStatus::Cancelled, Some(RESTARTED)));
+}
+
+// --- triage and posting (testing/feat-review-draft-post.md) ---------------------
+
+/// A drafted job of PR `number` waiting for a person, with one finding per
+/// path. Returns the job and its finding ids in path order.
+fn waiting_draft_with(db: &Connection, number: u64, mode: ReviewPostMode, paths: &[&str]) -> (JobRow, Vec<String>) {
+    let new = NewJob { post_mode: mode, ..new_job(number, "sha", &["claude"]) };
+    let (job, _) = insert(db, &new, at(0)).unwrap();
+    let claimed = claim_next(db, "runner", at(0)).unwrap().unwrap();
+    assert_eq!(claimed.id, job.id);
+    let token = claimed.lease_owner.unwrap();
+    assert!(advance(db, &job.id, &token, Status::Preparing, Status::Reviewing, false).unwrap());
+    let pass = begin_pass(db, &job.id, &token, 0, "claude", at(1)).unwrap().unwrap();
+    let outcome = PassOutcome { findings: paths.iter().map(|path| draft(path)).collect(), ..Default::default() };
+    assert!(complete_pass(db, &job.id, &token, &pass, &outcome, at(2)).unwrap());
+    assert!(finish_review(db, &job.id, &token, "summary", true).unwrap());
+    let mut ids: Vec<(String, String)> =
+        findings(db, &job.id).unwrap().into_iter().map(|finding| (finding.path, finding.id)).collect();
+    ids.sort();
+    (require_job(db, &job.id).unwrap(), ids.into_iter().map(|(_, id)| id).collect())
+}
+
+fn decision(id: &str, decision: ReviewFindingDecision, edited_body: Option<&str>) -> wire::ReviewFindingDecisionInput {
+    wire::ReviewFindingDecisionInput { finding_id: id.into(), decision, edited_body: edited_body.map(str::to_owned) }
+}
+
+fn decisions_of(db: &Connection, job_id: &str) -> Vec<(String, ReviewFindingDecision, Option<String>, bool)> {
+    let mut found: Vec<_> = findings(db, job_id)
+        .unwrap()
+        .into_iter()
+        .map(|finding| (finding.path, finding.decision, finding.edited_body, finding.decided_at.is_some()))
+        .collect();
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    found
+}
+
+#[test]
+fn decisions_are_stored_with_a_timestamp_and_survive_reopening() {
+    let scratch = tempfile::tempdir().unwrap();
+    let path = scratch.path().join("bridge.db");
+    let job_id = {
+        let db = crate::store::open(&path).unwrap();
+        let (job, ids) = waiting_draft_with(&db, 1, ReviewPostMode::Draft, &["a.rs", "b.rs", "c.rs"]);
+        decide(
+            &db,
+            &job.id,
+            &[
+                decision(&ids[0], ReviewFindingDecision::Kept, None),
+                decision(&ids[1], ReviewFindingDecision::Edited, Some("  Use the guard here.  ")),
+            ],
+            at(10),
+        )
+        .unwrap();
+        // A later decision replaces an earlier one, and keeping clears an edit.
+        decide(&db, &job.id, &[decision(&ids[0], ReviewFindingDecision::Dropped, None)], at(11)).unwrap();
+        job.id
+    };
+    let db = crate::store::open(&path).unwrap();
+    assert_eq!(
+        decisions_of(&db, &job_id),
+        [
+            ("a.rs".to_owned(), ReviewFindingDecision::Dropped, None, true),
+            ("b.rs".to_owned(), ReviewFindingDecision::Edited, Some("Use the guard here.".to_owned()), true),
+            ("c.rs".to_owned(), ReviewFindingDecision::Pending, None, false),
+        ]
+    );
+    let stored = findings(&db, &job_id).unwrap();
+    let dropped = stored.iter().find(|finding| finding.path == "a.rs").unwrap();
+    assert_eq!(dropped.decided_at.as_deref(), Some(stamp(at(11)).as_str()));
+    let ids: Vec<String> = stored.iter().filter(|finding| finding.path == "b.rs").map(|finding| finding.id.clone()).collect();
+    decide(&db, &job_id, &[decision(&ids[0], ReviewFindingDecision::Kept, None)], at(12)).unwrap();
+    assert_eq!(decisions_of(&db, &job_id)[1], ("b.rs".to_owned(), ReviewFindingDecision::Kept, None, true), "keeping clears the edit");
+}
+
+#[test]
+fn decide_refuses_outside_a_waiting_draft_and_bad_batches() {
+    let (_scratch, db) = open();
+    let (job, ids) = waiting_draft_with(&db, 1, ReviewPostMode::Draft, &["a.rs", "b.rs"]);
+    let (other, other_ids) = waiting_draft_with(&db, 2, ReviewPostMode::Draft, &["z.rs"]);
+    let kept = decision(&ids[0], ReviewFindingDecision::Kept, None);
+    let refusals: Vec<(Vec<wire::ReviewFindingDecisionInput>, &str)> = vec![
+        (vec![kept.clone(), decision("missing", ReviewFindingDecision::Kept, None)], "no finding missing"),
+        (vec![kept.clone(), decision(&other_ids[0], ReviewFindingDecision::Kept, None)], "no finding"),
+        (vec![kept.clone(), kept.clone()], "decided twice"),
+        (vec![decision(&ids[1], ReviewFindingDecision::Pending, None)], "kept, dropped or edited"),
+        (vec![decision(&ids[1], ReviewFindingDecision::Edited, None)], "needs its new body"),
+        (vec![decision(&ids[1], ReviewFindingDecision::Edited, Some("   "))], "needs its new body"),
+        (vec![decision(&ids[1], ReviewFindingDecision::Kept, Some("text"))], "Only an edited finding"),
+        (
+            vec![decision(&ids[1], ReviewFindingDecision::Edited, Some(&"x".repeat(MAX_EDITED_BODY_CHARS + 1)))],
+            "at most",
+        ),
+    ];
+    for (batch, reason) in refusals {
+        let refused = decide(&db, &job.id, &batch, at(5)).unwrap_err().to_string();
+        assert!(refused.contains(reason), "{refused} should say {reason}");
+        assert!(decisions_of(&db, &job.id).iter().all(|row| row.1 == ReviewFindingDecision::Pending), "all or nothing");
+    }
+    assert!(decisions_of(&db, &other.id).iter().all(|row| row.1 == ReviewFindingDecision::Pending));
+
+    // A draft a runner still holds (auto mode on its way to posting), a job
+    // posting, and a finished one are not a person's to triage.
+    db.execute("UPDATE review_jobs SET lease_owner='runner/x' WHERE id=?1", params![job.id]).unwrap();
+    assert!(decide(&db, &job.id, &[kept.clone()], at(6)).unwrap_err().to_string().contains("waiting for you"));
+    for status in ["posting", "posted", "cancelled"] {
+        db.execute("UPDATE review_jobs SET status=?2, lease_owner=NULL WHERE id=?1", params![job.id, status]).unwrap();
+        let refused = decide(&db, &job.id, &[kept.clone()], at(6)).unwrap_err().to_string();
+        assert!(refused.contains(status), "{refused}");
+    }
+}
+
+#[test]
+fn post_requires_a_kept_finding_or_no_findings() {
+    let (_scratch, db) = open();
+    let (job, ids) = waiting_draft_with(&db, 1, ReviewPostMode::Draft, &["a.rs", "b.rs"]);
+    assert!(request_post(&db, &job.id).unwrap_err().to_string().contains("Keep or edit at least one"));
+    decide(&db, &job.id, &[decision(&ids[0], ReviewFindingDecision::Dropped, None)], at(3)).unwrap();
+    assert!(request_post(&db, &job.id).unwrap_err().to_string().contains("Keep or edit at least one"));
+    assert_eq!(status(&db, &job.id), Status::Drafted);
+    decide(&db, &job.id, &[decision(&ids[1], ReviewFindingDecision::Edited, Some("better"))], at(4)).unwrap();
+    db.execute("UPDATE review_jobs SET error='the last post failed' WHERE id=?1", params![job.id]).unwrap();
+    let posting = request_post(&db, &job.id).unwrap();
+    assert_eq!((posting.status, posting.error, posting.lease_owner), (Status::Posting, None, None));
+    assert!(request_post(&db, &job.id).unwrap_err().to_string().contains("posting"), "only once");
+    let claimed = claim_next(&db, "runner", at(5)).unwrap().unwrap();
+    assert_eq!((claimed.id, claimed.status), (job.id, Status::Posting), "the runner picks the post up");
+
+    let (empty, _) = waiting_draft_with(&db, 2, ReviewPostMode::Draft, &[]);
+    assert_eq!(request_post(&db, &empty.id).unwrap().status, Status::Posting, "a summary-only review");
+}
+
+#[test]
+fn marking_posted_records_comment_ids_and_posted_at() {
+    let (_scratch, db) = open();
+    let (job, ids) = waiting_draft_with(&db, 1, ReviewPostMode::Draft, &["a.rs", "b.rs", "c.rs"]);
+    decide(
+        &db,
+        &job.id,
+        &[decision(&ids[0], ReviewFindingDecision::Kept, None), decision(&ids[1], ReviewFindingDecision::Kept, None)],
+        at(3),
+    )
+    .unwrap();
+    request_post(&db, &job.id).unwrap();
+    let token = claim_next(&db, "runner", at(4)).unwrap().unwrap().lease_owner.unwrap();
+    let posted = PostedReview {
+        review_id: "9".into(),
+        url: "https://github.com/octo/repo/pull/1#pullrequestreview-9".into(),
+        findings: vec![
+            crate::reviews::steps::PostedFinding { finding_id: ids[0].clone(), comment_id: Some("101".into()) },
+            crate::reviews::steps::PostedFinding { finding_id: ids[1].clone(), comment_id: None },
+        ],
+    };
+    assert!(!mark_posted(&db, &job.id, "runner/stale", &posted, at(5)).unwrap(), "only the holder");
+    assert!(findings(&db, &job.id).unwrap().iter().all(|finding| finding.posted_at.is_none()));
+    assert!(mark_posted(&db, &job.id, &token, &posted, at(5)).unwrap());
+    let job = require_job(&db, &job.id).unwrap();
+    assert_eq!((job.status, job.posted_review_id.as_deref()), (Status::Posted, Some("9")));
+    let mut stored: Vec<_> = findings(&db, &job.id)
+        .unwrap()
+        .into_iter()
+        .map(|finding| (finding.path, finding.github_comment_id, finding.posted_at))
+        .collect();
+    stored.sort();
+    let at5 = Some(stamp(at(5)));
+    assert_eq!(
+        stored,
+        [
+            ("a.rs".to_owned(), Some("101".to_owned()), at5.clone()),
+            ("b.rs".to_owned(), None, at5),
+            ("c.rs".to_owned(), None, None),
+        ]
+    );
+}
+
+#[test]
+fn a_draft_post_interrupted_by_restart_returns_to_the_draft() {
+    let (_scratch, db) = open();
+    let (job, ids) = waiting_draft_with(&db, 1, ReviewPostMode::Draft, &["a.rs"]);
+    decide(&db, &job.id, &[decision(&ids[0], ReviewFindingDecision::Kept, None)], at(3)).unwrap();
+    request_post(&db, &job.id).unwrap();
+    claim_next(&db, "runner", at(4)).unwrap().unwrap();
+    let (auto, _) = waiting_draft_with(&db, 2, ReviewPostMode::Auto, &["a.rs"]);
+    db.execute("UPDATE review_jobs SET status='posting' WHERE id=?1", params![auto.id]).unwrap();
+
+    let mut settled = interrupt_in_flight(&db, at(10)).unwrap();
+    settled.sort();
+    let mut expected = vec![job.id.clone(), auto.id.clone()];
+    expected.sort();
+    assert_eq!(settled, expected);
+    let back = require_job(&db, &job.id).unwrap();
+    assert_eq!((back.status, back.error.as_deref(), back.lease_owner), (Status::Drafted, Some(RESTARTED_POSTING), None));
+    assert_eq!(back.finished_at, None);
+    assert_eq!(decisions_of(&db, &job.id)[0].1, ReviewFindingDecision::Kept, "the triage survives");
+    assert_eq!(request_post(&db, &job.id).unwrap().status, Status::Posting, "and it can post again");
+    let auto = require_job(&db, &auto.id).unwrap();
+    assert_eq!((auto.status, auto.error.as_deref()), (Status::Interrupted, Some(RESTARTED)));
 }

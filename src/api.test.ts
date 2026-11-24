@@ -368,10 +368,12 @@ describe("browser-mode live agent-event fan-out", () => {
 });
 
 describe("reviews in browser mode", () => {
-  it("lists no review jobs and refuses to start one instead of inventing a job", async () => {
+  it("lists no review jobs and refuses to start, decide or post instead of inventing a result", async () => {
     await expect(bridgeApi.listReviews("w1", 7)).resolves.toEqual({ jobs: [] });
     await expect(bridgeApi.startReview({ workspaceId: "w1", number: 7 })).rejects.toThrow("requires the Bridge desktop app");
     await expect(bridgeApi.getReview("job-1")).rejects.toThrow("No review job job-1");
+    await expect(bridgeApi.decideReview("job-1", [{ findingId: "f1", decision: "kept" }])).rejects.toThrow("No review job job-1");
+    await expect(bridgeApi.postReview("job-1")).rejects.toThrow("No review job job-1");
     const unlisten = await bridgeApi.onReviewJobUpdated(() => {});
     expect(typeof unlisten).toBe("function");
     unlisten();

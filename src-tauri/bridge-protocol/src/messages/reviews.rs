@@ -335,6 +335,9 @@ pub struct ReviewFinding {
     pub decision: ReviewFindingDecision,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edited_body: Option<String>,
+    /// When a person last decided. Absent while `pending`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_comment_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -430,6 +433,41 @@ pub struct RetryReviewParams {
     pub job_id: String,
 }
 
+/// What a person decided about one finding of a drafted job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReviewFindingDecisionInput {
+    pub finding_id: String,
+    /// `kept`, `dropped` or `edited`.
+    pub decision: ReviewFindingDecision,
+    /// The body to post instead of the reviewer's. Required with `edited`,
+    /// refused with anything else.
+    #[serde(default)]
+    pub edited_body: Option<String>,
+}
+
+/// Decide findings of a drafted job. All or nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DecideReviewParams {
+    pub job_id: String,
+    pub decisions: Vec<ReviewFindingDecisionInput>,
+}
+
+/// Every finding of the job, after the decisions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewFindingList {
+    pub findings: Vec<ReviewFinding>,
+}
+
+/// Post a drafted job's kept and edited findings as one `COMMENT` review.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PostReviewParams {
+    pub job_id: String,
+}
+
 /// One job: the answer to start, cancel and retry, and the payload of
 /// `reviews/job_updated`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -500,6 +538,18 @@ mod tests {
         assert!(serde_json::from_value::<GetReviewParams>(json!({ "jobId": "j", "x": 1 })).is_err());
         let list: ListReviewsParams = serde_json::from_value(json!({ "workspaceId": "w" })).unwrap();
         assert_eq!(list.number, None);
+        let decide: DecideReviewParams = serde_json::from_value(json!({
+            "jobId": "j",
+            "decisions": [{ "findingId": "f", "decision": "edited", "editedBody": "b" }, { "findingId": "g", "decision": "dropped" }]
+        }))
+        .unwrap();
+        assert_eq!(decide.decisions[0].decision, ReviewFindingDecision::Edited);
+        assert_eq!(decide.decisions[1].edited_body, None);
+        assert!(serde_json::from_value::<DecideReviewParams>(
+            json!({ "jobId": "j", "decisions": [{ "findingId": "f", "decision": "kept", "why": 1 }] })
+        )
+        .is_err());
+        assert!(serde_json::from_value::<PostReviewParams>(json!({ "jobId": "j", "event": "APPROVE" })).is_err());
     }
 
     #[test]

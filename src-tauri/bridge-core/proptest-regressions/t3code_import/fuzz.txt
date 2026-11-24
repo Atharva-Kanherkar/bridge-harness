@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1437c626a3bcc5d35239706621876b2f0a6af9f2db2addcb0d53b2b8aeb8efa0 # shrinks to version = 55, specs = [Spec { id: "-", driver: "grok", native: Some("-"), .. }, Spec { id: "--", driver: "grok", native: Some("-"), .. }], garbage = []

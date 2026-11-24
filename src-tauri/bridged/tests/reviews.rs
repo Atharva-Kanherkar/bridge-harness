@@ -10,7 +10,8 @@
 //! Bridge's real Claude sidecar against the fake SDK in
 //! `testing/fixtures/workflow-e2e`, so the job drafts a real finding. A
 //! drafted job (which the runner never claims) gives the idempotency checks a
-//! job that holds still.
+//! job that holds still. The drafted retry is then triaged and posted
+//! (testing/feat-review-draft-post.md), with `gh` keeping the review it got.
 
 // A test harness: a failed unwrap or expect in a helper is the test failing.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -221,6 +222,58 @@ fn retry_reviews_offline_and_drafts(client: &mut Client, data_dir: &Path, repo: 
     retry_id
 }
 
+/// Triage and post the drafted retry over the socket: the finding is edited,
+/// the post moves the job through `posting` to `posted`, and `gh` received
+/// exactly one `COMMENT` review at the reviewed commit, with the edited body
+/// inline.
+fn decide_and_post(client: &mut Client, gh: &Path, job_id: &str) {
+    let detail = client.call("reviews/get_review", json!({"jobId": job_id}));
+    let finding_id = detail["result"]["findings"][0]["id"].as_str().unwrap().to_owned();
+    let refused = client.call("reviews/post_review", json!({"jobId": job_id}));
+    assert!(refused["error"]["message"].as_str().unwrap().contains("Keep or edit at least one"), "{refused}");
+    let decided = client.call(
+        "reviews/decide_review",
+        json!({"jobId": job_id, "decisions": [{"findingId": finding_id, "decision": "edited", "editedBody": "Say what the new line is for."}]}),
+    );
+    let finding = &decided["result"]["findings"][0];
+    assert_eq!(finding["decision"], json!("edited"), "{decided}");
+    assert_eq!(finding["editedBody"], json!("Say what the new line is for."));
+    assert!(finding["decidedAt"].is_string(), "{decided}");
+    std::fs::write(
+        gh.join("review-comments.json"),
+        r#"[{"id":8000,"pull_request_review_id":1,"path":"README.md","line":2,"original_line":2,"side":"RIGHT","body":"another review"},
+            {"id":9001,"pull_request_review_id":555,"path":"README.md","line":2,"original_line":2,"side":"RIGHT","body":"as posted"}]"#,
+    )
+    .unwrap();
+
+    let posting = client.call("reviews/post_review", json!({"jobId": job_id}));
+    assert_eq!(posting["result"]["job"]["status"], json!("posting"), "{posting}");
+    // Posted, failed, or back in the draft with the reason a post failed.
+    let posted = client.job_update(job_id, |job| match job["status"].as_str() {
+        Some("posted" | "failed") => true,
+        Some("drafted") => job["error"].is_string(),
+        _ => false,
+    });
+    assert_eq!(posted["status"], json!("posted"), "{posted}");
+    assert_eq!(posted["postedReviewUrl"], json!("https://github.com/fixture/project/pull/103#pullrequestreview-555"));
+
+    assert_eq!(std::fs::read_to_string(gh.join("review-posts")).unwrap().trim(), "1", "one review reached GitHub");
+    let payload: Value = serde_json::from_slice(&std::fs::read(gh.join("review-posted-1.json")).unwrap()).unwrap();
+    assert_eq!(payload["event"], json!("COMMENT"));
+    assert_eq!(payload["commit_id"], posted["headSha"], "posted at the reviewed commit");
+    let comments = payload["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 1, "{payload}");
+    assert_eq!((comments[0]["path"].clone(), comments[0]["line"].clone(), comments[0]["side"].clone()), (json!("README.md"), json!(2), json!("RIGHT")));
+    let body = comments[0]["body"].as_str().unwrap();
+    assert!(body.contains("Say what the new line is for.") && !body.contains("Shell was refused"), "posted as edited: {body}");
+    assert!(payload["body"].as_str().unwrap().ends_with(" -->"), "the marker closes the review body");
+
+    let detail = client.call("reviews/get_review", json!({"jobId": job_id}));
+    let finding = &detail["result"]["findings"][0];
+    assert_eq!(finding["githubCommentId"], json!("9001"), "{detail}");
+    assert!(finding["postedAt"].is_string(), "{detail}");
+}
+
 /// A repository whose `origin` is a local bare repository standing in for
 /// GitHub, with `main` and pull request #103.
 fn repository_with_a_pull_request(repo: &Path, github: &Path) {
@@ -243,7 +296,7 @@ fn repository_with_a_pull_request(repo: &Path, github: &Path) {
 
 #[test]
 fn reviews_methods_round_trip_through_the_daemon() {
-    let _gh = fake_gh();
+    let gh = fake_gh();
     fake_claude();
     let fixture = tempfile::tempdir().unwrap();
     let repo = tempfile::tempdir().unwrap();
@@ -295,6 +348,7 @@ fn reviews_methods_round_trip_through_the_daemon() {
     assert!(again["error"]["message"].as_str().unwrap().contains("already cancelled"), "{again}");
 
     let retry_id = retry_reviews_offline_and_drafts(&mut client, fixture.path(), repo.path(), &seeded);
+    decide_and_post(&mut client, gh.path(), &retry_id);
     let listed = client.call("reviews/list_reviews", json!({"workspaceId": "w"}));
     let ids: Vec<&str> = listed["result"]["jobs"].as_array().unwrap().iter().map(|job| job["id"].as_str().unwrap()).collect();
     assert_eq!(ids, [retry_id.as_str(), seeded.as_str()], "newest first");

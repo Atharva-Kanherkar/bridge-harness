@@ -203,9 +203,13 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// `config/get_early_compaction_settings` and
 /// `config/save_early_compaction_settings`. A 1.51 client still pairs: it
 /// never calls them.
+///
+/// **1.53 adds review triage and posting**: `reviews/decide_review`,
+/// `reviews/post_review`, and `ReviewFinding.decidedAt`. A 1.52 client still
+/// pairs: it never calls them, and the new field is optional.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 52,
+    minor: 53,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -579,10 +583,18 @@ mod tests {
     fn a_1_51_client_pairs_with_an_early_compaction_daemon() {
         let before = ProtocolVersion { major: 1, minor: 51 };
         let early = ProtocolVersion { major: 1, minor: 52 };
-        assert_eq!(PROTOCOL_VERSION, early);
         assert!(!before.accepts(early), "a 1.52 client needs the switch methods");
         assert!(early.accepts(before), "a 1.51 client still pairs with a 1.52 daemon");
         assert!(PROTOCOL_VERSION.accepts(before));
+    }
+
+    #[test]
+    fn a_1_52_client_pairs_with_a_daemon_that_posts_reviews() {
+        let before = ProtocolVersion { major: 1, minor: 52 };
+        let posting = ProtocolVersion { major: 1, minor: 53 };
+        assert_eq!(PROTOCOL_VERSION, posting);
+        assert!(posting.accepts(before), "a 1.52 client never decides or posts a review");
+        assert!(!before.accepts(posting));
     }
 
     #[test]

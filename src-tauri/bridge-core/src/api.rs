@@ -1508,6 +1508,14 @@ pub fn retry_review(core: &Arc<BridgeCore>, params: &wire::RetryReviewParams) ->
     Ok(wire::ReviewJobResult { job: crate::reviews::retry(core, &params.job_id)? })
 }
 
+pub fn decide_review(core: &Arc<BridgeCore>, params: &wire::DecideReviewParams) -> Result<wire::ReviewFindingList, BridgeError> {
+    crate::reviews::decide(core, params)
+}
+
+pub fn post_review(core: &Arc<BridgeCore>, params: &wire::PostReviewParams) -> Result<wire::ReviewJobResult, BridgeError> {
+    Ok(wire::ReviewJobResult { job: crate::reviews::post(core, &params.job_id)? })
+}
+
 pub fn get_review_job_settings(core: &Arc<BridgeCore>) -> Result<wire::ReviewJobSettings, BridgeError> {
     crate::reviews::job_settings(core)
 }

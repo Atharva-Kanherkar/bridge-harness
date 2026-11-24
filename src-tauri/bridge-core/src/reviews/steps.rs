@@ -61,6 +61,9 @@ pub enum StepError {
     Harness(String),
     /// Trying again will not help. The job fails with this reason.
     Fatal(String),
+    /// GitHub throttled the call: worth another try once the wait it asked
+    /// for has passed.
+    RateLimited(String, Duration),
     /// The cancel token was set.
     Cancelled,
 }
@@ -68,7 +71,10 @@ pub enum StepError {
 impl StepError {
     pub fn message(&self) -> String {
         match self {
-            StepError::Transient(message) | StepError::Harness(message) | StepError::Fatal(message) => message.clone(),
+            StepError::Transient(message)
+            | StepError::Harness(message)
+            | StepError::Fatal(message)
+            | StepError::RateLimited(message, _) => message.clone(),
             StepError::Cancelled => "The review was cancelled".into(),
         }
     }
@@ -192,10 +198,20 @@ pub struct PassOutcome {
 }
 
 /// A review on GitHub, posted now or found by its marker.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PostedReview {
     pub review_id: String,
     pub url: String,
+    /// The job's findings this review holds, each with its inline comment
+    /// when it has one.
+    pub findings: Vec<PostedFinding>,
+}
+
+/// One finding GitHub holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostedFinding {
+    pub finding_id: String,
+    pub comment_id: Option<String>,
 }
 
 /// The marker every posted review body carries, so a retry can tell it

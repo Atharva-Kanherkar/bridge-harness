@@ -458,6 +458,8 @@ methods![
     (GetReview, "reviews", "get_review"),
     (CancelReview, "reviews", "cancel_review"),
     (RetryReview, "reviews", "retry_review"),
+    (DecideReview, "reviews", "decide_review"),
+    (PostReview, "reviews", "post_review"),
     (GetReviewJobSettings, "reviews", "get_review_job_settings"),
     (SaveReviewJobSettings, "reviews", "save_review_job_settings"),
 ];
