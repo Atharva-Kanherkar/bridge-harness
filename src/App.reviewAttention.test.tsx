@@ -78,6 +78,19 @@ describe("App review attention", () => {
     expect(notifyAttention).toHaveBeenCalledTimes(3);
   });
 
+  it("raises a failed post again when the retry fails too", async () => {
+    await emit(job({ status: "reviewing" }));
+    await emit(job({ status: "drafted" }));
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await emit(job({ status: "posting" }));
+      await emit(job({ status: "drafted", error: `GitHub refused (${attempt})` }));
+    }
+    const failed = notifyAttention.mock.calls.filter(([headline]) => headline === "Posting the review on PR #7 failed");
+    expect(failed).toHaveLength(2);
+    expect(container.querySelectorAll('button[aria-label="Posting the review on PR #7 failed — open the pull request"]')).toHaveLength(1);
+    expect(toast("Posting the review on PR #7 failed")!.textContent, "the card shows the newest reason").toContain("GitHub refused (1)");
+  });
+
   it("says nothing for a job it first sees already drafted", async () => {
     await emit(job({ status: "drafted" }));
     expect(toast("Review ready on PR #7")).toBeNull();

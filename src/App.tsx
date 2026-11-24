@@ -1427,7 +1427,10 @@ function AppContent() {
       const notice = reviewNotice(seen.get(job.id), job);
       seen.set(job.id, job.status);
       if (!notice) return;
-      setReviewToasts(current => current.some(item => item.key === notice.key) ? current : [...current.slice(-3), { ...notice, job }]);
+      // A notice only comes on a change of status, so the same one again (a
+      // second failed post) is new news: it replaces the old card and
+      // restarts its timer.
+      setReviewToasts(current => [...current.filter(item => item.key !== notice.key).slice(-3), { ...notice, job, firedAt: Date.now() }]);
       void notifyAttention(notice.headline, notice.detail);
     }).then(unlisten => { if (active) off = unlisten; else unlisten(); });
     return () => { active = false; off?.(); };

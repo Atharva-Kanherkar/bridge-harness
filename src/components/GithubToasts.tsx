@@ -31,13 +31,15 @@ function CiCard({ toast, onOpen, onDismiss }: { toast: CiToast; onOpen: (toast: 
   />;
 }
 
-/** A review job that needs the person or is done. */
-export type ReviewToast = ReviewNotice & { job: ReviewJob };
+/** A review job that needs the person or is done. `firedAt` restarts the
+ *  card's timer when the same notice comes again (a second failed post). */
+export type ReviewToast = ReviewNotice & { job: ReviewJob; firedAt?: number };
 
 function ReviewCard({ toast, onOpen, onDismiss }: { toast: ReviewToast; onOpen: (toast: ReviewToast) => void; onDismiss: (key: string) => void }) {
   const Icon = toast.tone === "failure" ? CircleX : toast.tone === "done" ? CircleCheck : MessageSquareText;
   return <ToastCard
     toastKey={toast.key}
+    firedAt={toast.firedAt}
     durationMs={CI_TOAST_TTL_MS}
     onDismiss={onDismiss}
     icon={<Icon size={16} aria-hidden="true" className={cn("mt-0.5 shrink-0", toast.tone === "failure" ? "text-destructive" : toast.tone === "done" ? "text-success" : "text-foreground")} />}

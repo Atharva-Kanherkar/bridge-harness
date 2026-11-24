@@ -1380,6 +1380,9 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   const [startedJob, setStartedJob] = useState<ReviewJob>();
   const [secondOpinion, setSecondOpinion] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
+  // Picks belong to one opening of the picker on one PR.
+  useEffect(() => { if (!reviewOpen) setPicked([]); }, [reviewOpen]);
+  useEffect(() => { setPicked([]); }, [number]);
   useEffect(() => {
     if (!reviewOpen) return;
     let active = true;
@@ -1432,7 +1435,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
         const result = await bridgeApi.startReview({ workspaceId, number, harnesses });
         setStartedJob(result.job);
       }
-      setReviewOpen(false); setPicked([]);
+      setReviewOpen(false);
     } catch (value) {
       setReviewNotice({ tone: "error", text: errorMessage(value) });
     } finally { setReviewBusy(false); }
@@ -1726,17 +1729,17 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
               build: () => ({ kind: "restoreBranch", number, branch: summary.headBranch }),
             })}
           />
-          {summary.state === "open" && reviewOpen && <div className="animate-page-mount mt-2 grid gap-1 rounded-lg border border-border bg-card p-1.5" role="menu" aria-label="Review harness">
+          {summary.state === "open" && reviewOpen && <div className="animate-page-mount mt-2 grid gap-1 rounded-lg border border-border bg-card p-1.5" role="group" aria-label="Review harness">
             <p className="px-2 pb-0.5 pt-1 text-caption font-semibold text-muted-foreground">RUN REVIEW WITH</p>
             {secondOpinion && <p className="px-2 pb-0.5 text-caption text-muted-foreground">Pick two for a second opinion.</p>}
             {REVIEW_HARNESSES.map(choice => {
               const checked = picked.includes(choice.id);
               return secondOpinion
-                ? <button key={choice.id} type="button" role="menuitemcheckbox" aria-checked={checked} disabled={reviewBusy || (!checked && picked.length >= 2)} onClick={() => setPicked(current => checked ? current.filter(id => id !== choice.id) : [...current, choice.id])} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
+                ? <button key={choice.id} type="button" role="checkbox" aria-checked={checked} disabled={reviewBusy || (!checked && picked.length >= 2)} onClick={() => setPicked(current => checked ? current.filter(id => id !== choice.id) : [...current, choice.id])} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
                     <span aria-hidden="true" className={cn("grid size-3 place-items-center rounded-sm border border-border", checked && "border-primary bg-primary text-primary-foreground")}>{checked && <Check size={9} />}</span>
                     <span className="min-w-0 flex-1 truncate">{choice.label}</span>
                   </button>
-                : <button key={choice.id} type="button" role="menuitem" disabled={reviewBusy} onClick={() => void startReview([choice.id])} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
+                : <button key={choice.id} type="button" disabled={reviewBusy} onClick={() => void startReview([choice.id])} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
                     <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />
                     <span className="min-w-0 flex-1 truncate">{choice.label}</span>
                   </button>;
@@ -1744,7 +1747,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
             {secondOpinion && <button type="button" disabled={reviewBusy || picked.length === 0} onClick={() => void startReview(picked)} className={cn(PRIMARY_ACTION, "mx-1 my-0.5 justify-center")}>
               {picked.length === 0 ? "Pick a harness" : `Review with ${picked.map(id => REVIEW_HARNESSES.find(choice => choice.id === id)?.label ?? id).join(" and ")}`}
             </button>}
-            <button type="button" role="menuitem" disabled={reviewBusy} onClick={() => void startReview([BUGBOT.id])} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
+            <button type="button" disabled={reviewBusy} onClick={() => void startReview([BUGBOT.id])} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
               <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />
               <span className="min-w-0 flex-1 truncate">{BUGBOT.label}</span>
               <span className="shrink-0 text-micro text-muted-foreground">{BUGBOT.note}</span>

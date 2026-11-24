@@ -519,7 +519,7 @@ describe("GitHubPane", () => {
     await click(buttonByText("Safe GitHub surface"));
     await click(buttonByText("Review"));
     expect(host!.textContent).toContain("Pick two for a second opinion.");
-    const option = (label: string) => [...host!.querySelectorAll<HTMLButtonElement>('[role="menuitemcheckbox"]')].find(item => item.textContent?.includes(label))!;
+    const option = (label: string) => [...host!.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Review harness"] [role="checkbox"]')].find(item => item.textContent?.includes(label))!;
     await click(option("Claude"));
     await click(option("Codex"));
     expect(option("Claude").getAttribute("aria-checked")).toBe("true");
@@ -527,6 +527,21 @@ describe("GitHubPane", () => {
     expect(start).not.toHaveBeenCalled();
     await click(buttonByText("Review with Claude and Codex"));
     expect(start).toHaveBeenCalledWith({ workspaceId: "w", number: 1, harnesses: ["claude", "codex"] });
+  });
+
+  it("clears Second opinion picks when the picker closes", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "getReviewJobSettings").mockResolvedValue({ secondOpinion: true });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    await click(buttonByText("Review"));
+    expect(host!.querySelector('[role="menu"][aria-label="Review harness"]'), "a group of buttons, not a menu").toBeNull();
+    const option = (label: string) => [...host!.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Review harness"] [role="checkbox"]')].find(item => item.textContent?.includes(label))!;
+    await click(option("Claude"));
+    expect(option("Claude").getAttribute("aria-checked")).toBe("true");
+    await click(buttonByText("Review"));
+    await click(buttonByText("Review"));
+    expect(option("Claude").getAttribute("aria-checked")).toBe("false");
   });
 
   it("asks Cursor Bugbot by posting the GitHub trigger comment", async () => {
