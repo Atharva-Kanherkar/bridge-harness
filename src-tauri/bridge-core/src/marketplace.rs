@@ -319,6 +319,19 @@ impl ConnectorCache {
     pub fn release(&mut self) {
         self.refreshing = false;
     }
+
+    /// Store a probe's answer and return what the cache now holds, without
+    /// claiming a refresh: the caller has just probed, and a claim nobody
+    /// serves would stop every later read from retrying (R4).
+    pub fn settle(&mut self, configuration: ClaudeSdkConfiguration, at: Instant) -> ClaudeSdkConfiguration {
+        self.store(configuration, at);
+        self.answer.as_ref().map(|(_, answer)| answer.clone()).unwrap_or_default()
+    }
+
+    /// The cached answer, fresh or not, without claiming a refresh.
+    pub fn answer(&self) -> Option<ClaudeSdkConfiguration> {
+        self.answer.as_ref().map(|(_, answer)| answer.clone())
+    }
 }
 
 fn connector_cache() -> &'static std::sync::Mutex<ConnectorCache> {
@@ -343,13 +356,11 @@ pub fn connectors_now() -> ClaudeSdkConfiguration {
     // Cold. Another caller may be probing already: wait for it, and probe
     // only if it left nothing behind.
     let _probe = connector_probe_lock().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let (Some(answer), _) = connector_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).read(Instant::now(), Duration::MAX) {
+    if let Some(answer) = connector_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).answer() {
         return answer;
     }
     let configuration = connector_probe();
-    let mut cache = connector_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    cache.store(configuration, Instant::now());
-    cache.read(Instant::now(), Duration::MAX).0.unwrap_or_default()
+    connector_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).settle(configuration, Instant::now())
 }
 
 /// The cached answer at any age, without ever probing inline: for a list or a
@@ -377,9 +388,7 @@ pub fn connectors_peek() -> Option<ClaudeSdkConfiguration> {
 pub fn refresh_connectors() -> ClaudeSdkConfiguration {
     let _probe = connector_probe_lock().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let configuration = connector_probe();
-    let mut cache = connector_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    cache.store(configuration, Instant::now());
-    cache.read(Instant::now(), Duration::MAX).0.unwrap_or_default()
+    connector_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).settle(configuration, Instant::now())
 }
 
 /// Fill the cache in the background at boot, so the first workflow save or
@@ -2382,6 +2391,14 @@ mod tests {
         cache.release();
         assert!(cache.read(later, CONNECTOR_FRESH).1, "released: the next read refreshes");
         cache.release();
+
+        // A cold cache's first probe failed: what `connectors_now` and
+        // `refresh_connectors` settle must leave the next read free to retry.
+        let mut failed_first = ConnectorCache::default();
+        let settled = failed_first.settle(answer(&[], &["mcp"]), start);
+        assert!(connector_answer_problem(&settled).is_some());
+        assert!(failed_first.answer().is_some());
+        assert!(failed_first.read(start, CONNECTOR_FRESH).1, "no claim was left behind: the next read refreshes");
         // With nothing better, a failed answer is still an answer, but never
         // a fresh one: the very next read refreshes it.
         let mut cold = ConnectorCache::default();
