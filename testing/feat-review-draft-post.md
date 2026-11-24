@@ -8,7 +8,8 @@ prepared checkout (#1126) and the reviewer session (#1129).
 
 - **Method names follow the registry rule** (`domain/<tauri command>`):
   `reviews/decide_review` and `reviews/post_review`, not `reviews/decide` and `reviews/post`.
-  Protocol minor goes to 1.52; a 1.51 client still pairs (it never calls them).
+  Protocol minor goes to 1.53 (main took 1.52 for early compaction); a 1.52 client still pairs
+  (it never calls them).
 - **`postMode` already exists** in `ReviewJobSettings` (draft by default, from #1124). Nothing
   new there.
 - **`event` cannot be anything but `COMMENT`.** The payload's `event` field is a unit type
