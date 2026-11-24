@@ -2,73 +2,67 @@
 //!
 //! Codex has no per-tool authority (see `briefing_policy`), so a workflow
 //! step on Codex cannot be held to a few granted connector tools. It can be
-//! held to none: the step launches with every MCP server and every plugin
-//! switched off, and with Codex apps off. The list comes from the config
-//! Codex itself reports for the step's folder, so servers from a project's
-//! own `.codex/config.toml` are included.
+//! held to none. The step launches with:
+//!
+//! * every MCP server in the config Codex reports for the step's folder
+//!   switched off, so a project's own `.codex/config.toml` servers count too;
+//! * Codex apps off;
+//! * plugins, remote plugins and skill-installed MCP servers off
+//!   ([`CODEX_CONNECTOR_FEATURES`]). Remote plugins are account-level, are
+//!   named in no config entry, and connect seconds after the thread starts,
+//!   so only their feature switch reaches them.
 //!
 //! Two checks fail the launch closed before the step can work:
 //!
-//! * the launched process's own config must show every server and plugin
-//!   `enabled = false`, and apps off ([`isolation_holds`]);
+//! * the launched process's own config must show every server off and each
+//!   of those features off ([`isolation_holds`]);
 //! * once the thread starts, no MCP server may report a tool
-//!   ([`reachable_tools`]). That catches a source the config does not name.
+//!   ([`reachable_tools`]).
 
 use serde_json::Value;
 
-/// The connectors a Codex config holds.
+use crate::tool_selection::{codex_key_is_safe, CODEX_CONNECTOR_FEATURES};
+
+/// The MCP servers a Codex config holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Inventory {
     pub servers: Vec<String>,
-    pub plugins: Vec<String>,
-}
-
-/// Only these characters reach a `-c` key path: a dot would split it and a
-/// quote would end it.
-fn key_is_safe(key: &str) -> bool {
-    (1..=128).contains(&key.len()) && key.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'@'))
 }
 
 fn table<'a>(config: &'a serde_json::Map<String, Value>, name: &str) -> Vec<(&'a String, &'a Value)> {
     config.get(name).and_then(Value::as_object).map(|entries| entries.iter().collect()).unwrap_or_default()
 }
 
-/// Every MCP server and plugin in a `config/read` result. A key Bridge cannot
-/// write safely refuses the launch: it could not be turned off.
+/// Every MCP server in a `config/read` result. A key Bridge cannot write
+/// safely refuses the launch: it could not be turned off.
 pub fn inventory(result: &Value) -> Result<Inventory, String> {
     let config = result.get("config").and_then(Value::as_object).ok_or("Codex did not report its config")?;
     let mut inventory = Inventory::default();
     for (key, _) in table(config, "mcp_servers") {
-        if !crate::tool_selection::codex_key_is_safe(key) {
+        if !codex_key_is_safe(key) {
             return Err(format!("Codex has an MCP server named `{key}`, which Bridge cannot turn off safely"));
         }
         inventory.servers.push(key.clone());
     }
-    for (key, _) in table(config, "plugins") {
-        if !key_is_safe(key) {
-            return Err(format!("Codex has a plugin named `{key}`, which Bridge cannot turn off safely"));
-        }
-        inventory.plugins.push(key.clone());
-    }
     inventory.servers.sort();
-    inventory.plugins.sort();
     Ok(inventory)
 }
 
 /// Does the launched process's own config show everything off? Any server
-/// or plugin it holds must say `enabled = false`, whether or not the first
-/// read listed it, and apps must be off.
+/// it holds must say `enabled = false`, whether or not the first read listed
+/// it, and apps and each connector feature must be off.
 pub fn isolation_holds(result: &Value) -> Result<(), String> {
     let config = result.get("config").and_then(Value::as_object).ok_or("Codex did not report its config")?;
-    for (kind, name) in [("MCP server", "mcp_servers"), ("plugin", "plugins")] {
-        for (key, entry) in table(config, name) {
-            if entry.get("enabled").and_then(Value::as_bool) != Some(false) {
-                return Err(format!("Codex's {kind} `{key}` is still on"));
-            }
+    for (key, entry) in table(config, "mcp_servers") {
+        if entry.get("enabled").and_then(Value::as_bool) != Some(false) {
+            return Err(format!("Codex's MCP server `{key}` is still on"));
         }
     }
-    if config.get("features").and_then(|features| features.get("apps")).and_then(Value::as_bool) != Some(false) {
-        return Err("Codex apps are still on".into());
+    let features = config.get("features");
+    for feature in std::iter::once("apps").chain(CODEX_CONNECTOR_FEATURES) {
+        if features.and_then(|features| features.get(feature)).and_then(Value::as_bool) != Some(false) {
+            return Err(format!("Codex's `{feature}` feature is still on"));
+        }
     }
     Ok(())
 }
@@ -99,14 +93,23 @@ pub fn reachable_tools(result: &Value) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool_selection::{codex_overrides, ToolLaunch};
     use serde_json::json;
 
     fn config(value: Value) -> Value {
         json!({ "config": value, "layers": [] })
     }
 
+    fn all_off() -> Value {
+        json!({
+            "mcp_servers": { "a": { "enabled": false } },
+            "plugins": { "slack@openai-curated": { "enabled": true } },
+            "features": { "apps": false, "plugins": false, "remote_plugin": false, "skill_mcp_dependency_install": false }
+        })
+    }
+
     #[test]
-    fn every_server_and_plugin_is_listed_and_turned_off() {
+    fn every_server_is_listed_and_turned_off_with_the_connector_features() {
         let read = config(json!({
             "mcp_servers": { "railway": { "enabled": true }, "computer-use": { "enabled": false } },
             "plugins": { "slack@openai-curated": { "enabled": true } },
@@ -114,59 +117,60 @@ mod tests {
         }));
         let found = inventory(&read).unwrap();
         assert_eq!(found.servers, ["computer-use", "railway"]);
-        assert_eq!(found.plugins, ["slack@openai-curated"]);
-        let launch = crate::tool_selection::ToolLaunch {
-            servers_off: found.servers,
-            plugins_off: found.plugins,
-            ..crate::tool_selection::ToolLaunch::connectors_off("codex")
-        };
+        let launch = ToolLaunch { servers_off: found.servers, ..ToolLaunch::connectors_off("codex") };
         assert_eq!(
-            crate::tool_selection::codex_overrides(&launch),
+            codex_overrides(&launch),
             [
                 "mcp_servers.computer-use.enabled=false",
                 "mcp_servers.railway.enabled=false",
-                "plugins.slack@openai-curated.enabled=false",
                 "features.apps=false",
+                "features.plugins=false",
+                "features.remote_plugin=false",
+                "features.skill_mcp_dependency_install=false",
             ]
         );
         assert_eq!(
-            crate::tool_selection::codex_overrides(&crate::tool_selection::ToolLaunch::connectors_off("codex")),
-            ["features.apps=false"],
-            "apps are always turned off"
+            codex_overrides(&ToolLaunch::connectors_off("codex")),
+            ["features.apps=false", "features.plugins=false", "features.remote_plugin=false", "features.skill_mcp_dependency_install=false"],
+            "apps and the connector features are always turned off"
         );
+        assert!(codex_overrides(&ToolLaunch::connectors_off("claude")).is_empty(), "Codex only");
     }
 
     #[test]
-    fn a_key_bridge_cannot_write_refuses_the_launch() {
-        for (table, key) in [("mcp_servers", "my.server"), ("mcp_servers", "a\"b"), ("mcp_servers", "a@b"), ("plugins", "x y@z"), ("plugins", "p.q"), ("mcp_servers", "")] {
-            let read = config(json!({ table: { key: { "enabled": true } } }));
+    fn a_server_bridge_cannot_write_refuses_the_launch() {
+        for key in ["my.server", "a\"b", "a@b", ""] {
+            let read = config(json!({ "mcp_servers": { key: { "enabled": true } } }));
             let error = inventory(&read).unwrap_err();
-            assert!(error.contains("cannot turn off safely"), "{table} {key}: {error}");
+            assert!(error.contains("cannot turn off safely"), "{key}: {error}");
         }
         assert!(inventory(&json!({ "error": "nope" })).is_err(), "no config is no inventory");
     }
 
     #[test]
-    fn isolation_holds_only_when_everything_says_off() {
-        let off = json!({ "mcp_servers": { "a": { "enabled": false } }, "plugins": { "p@m": { "enabled": false } }, "features": { "apps": false } });
-        assert_eq!(isolation_holds(&config(off.clone())), Ok(()));
+    fn isolation_holds_only_when_every_server_and_feature_says_off() {
+        assert_eq!(isolation_holds(&config(all_off())), Ok(()), "a plugin entry does not matter once plugins are off");
         let cases = [
             ("/mcp_servers/a/enabled", json!(true), "MCP server `a`"),
-            ("/plugins/p@m/enabled", json!(true), "plugin `p@m`"),
-            ("/features/apps", json!(true), "apps"),
+            ("/features/apps", json!(true), "`apps`"),
+            ("/features/plugins", json!(true), "`plugins`"),
+            ("/features/remote_plugin", json!(true), "`remote_plugin`"),
+            ("/features/skill_mcp_dependency_install", json!(true), "`skill_mcp_dependency_install`"),
         ];
         for (pointer, value, needle) in cases {
-            let mut changed = off.clone();
+            let mut changed = all_off();
             *changed.pointer_mut(pointer).unwrap() = value;
             assert!(isolation_holds(&config(changed)).unwrap_err().contains(needle), "{pointer}");
         }
-        // A server the first read never saw, and one with no `enabled` at all.
-        let mut extra = off.clone();
+        // A server the first read never saw, and a feature left unset (on by default).
+        let mut extra = all_off();
         extra["mcp_servers"]["late"] = json!({ "command": "x" });
         assert!(isolation_holds(&config(extra)).unwrap_err().contains("`late`"));
-        let mut no_apps = off;
-        no_apps["features"] = json!({});
-        assert!(isolation_holds(&config(no_apps)).is_err(), "apps unset is on by default");
+        for feature in ["apps", "plugins", "remote_plugin", "skill_mcp_dependency_install"] {
+            let mut unset = all_off();
+            unset["features"].as_object_mut().unwrap().remove(feature);
+            assert!(isolation_holds(&config(unset)).is_err(), "{feature} unset");
+        }
     }
 
     #[test]

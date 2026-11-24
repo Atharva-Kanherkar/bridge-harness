@@ -520,11 +520,7 @@ fn open_connectors_off(
     let (first, read, _) = request_within(first, &config_read_request(cwd), CONFIG_READ_ID, wait).map_err(refuse)?;
     drop(first);
     let inventory = connectors_off::inventory(read.get("result").unwrap_or(&Value::Null)).map_err(refuse)?;
-    let launch = ToolLaunch {
-        servers_off: inventory.servers,
-        plugins_off: inventory.plugins,
-        ..ToolLaunch::connectors_off("codex")
-    };
+    let launch = ToolLaunch { servers_off: inventory.servers, ..ToolLaunch::connectors_off("codex") };
 
     let mut spawned = spawn(Some(&launch))?;
     let mut startup_messages = handshake(&mut spawned, on_progress)?;
@@ -2735,8 +2731,8 @@ done"#;
     fn all_off() -> Value {
         json!({"config": {
             "mcp_servers": {"railway": {"enabled": false}, "computer-use": {"enabled": false}},
-            "plugins": {"slack@openai-curated": {"enabled": false}},
-            "features": {"apps": false}
+            "plugins": {"slack@openai-curated": {"enabled": true}},
+            "features": {"apps": false, "plugins": false, "remote_plugin": false, "skill_mcp_dependency_install": false}
         }, "layers": []})
     }
 
@@ -2758,7 +2754,14 @@ done"#;
         assert!(reaped(first.pid), "and it is reaped");
         assert_eq!(
             second.values,
-            ["mcp_servers.computer-use.enabled=false", "mcp_servers.railway.enabled=false", "plugins.slack@openai-curated.enabled=false", "features.apps=false"]
+            [
+                "mcp_servers.computer-use.enabled=false",
+                "mcp_servers.railway.enabled=false",
+                "features.apps=false",
+                "features.plugins=false",
+                "features.remote_plugin=false",
+                "features.skill_mcp_dependency_install=false",
+            ]
         );
         assert_eq!(second.methods(), ["initialize", "initialized", "config/read", "thread/start", "mcpServerStatus/list"]);
         assert_eq!(second.requests[4]["params"], json!({"threadId": "thread-1", "detail": "toolsAndAuthOnly"}));
@@ -2780,12 +2783,12 @@ done"#;
     #[test]
     fn a_connector_still_on_refuses_the_launch_before_any_thread() {
         let mut still_on = all_off();
-        still_on["config"]["plugins"]["slack@openai-curated"]["enabled"] = json!(true);
+        still_on["config"]["features"]["remote_plugin"] = json!(true);
         let mut late = all_off();
         late["config"]["mcp_servers"]["project-server"] = json!({"command": "x"});
         let mut apps = all_off();
         apps["config"]["features"] = json!({});
-        for (case, second, needle) in [("a plugin", still_on, "slack@openai-curated"), ("a project server", late, "project-server"), ("apps", apps, "apps")] {
+        for (case, second, needle) in [("remote plugins", still_on, "remote_plugin"), ("a project server", late, "project-server"), ("apps", apps, "apps")] {
             let (opened, processes) = off_launch(&holding(), &second, &no_tools(), GATE_WAIT);
             let error = opened.err().unwrap_or_else(|| panic!("{case}: refused")).to_string();
             assert!(error.contains(needle) && error.contains("Bridge could not turn off Codex's connectors"), "{case}: {error}");

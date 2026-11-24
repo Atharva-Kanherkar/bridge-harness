@@ -2602,7 +2602,6 @@ mod tests {
             effective_hash: "hash".into(),
             stored_hash: "hash".into(),
             connectors_off: false,
-            plugins_off: vec![],
         };
         let calls = Arc::new(Mutex::new(Vec::new()));
         let plain = PlainAdapter { calls: calls.clone() };

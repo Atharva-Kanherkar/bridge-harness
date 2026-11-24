@@ -23,6 +23,10 @@ pub const MAX_ROW_BYTES: usize = 64 * 1024;
 pub const CODEX_APPS: &str = "codex_apps";
 /// The one Codex value that turns off `codex_apps`, with each app inside it.
 pub const CODEX_APPS_OFF: &str = "features.apps=false";
+/// The Codex features that bring MCP servers no config entry names: plugins,
+/// account-level remote plugins that load after the thread starts, and MCP
+/// servers a skill installs. A connectors-off launch turns each off.
+pub const CODEX_CONNECTOR_FEATURES: [&str; 3] = ["plugins", "remote_plugin", "skill_mcp_dependency_install"];
 const MAX_ID_BYTES: usize = 128;
 const MAX_SERVERS: usize = 128;
 const MAX_SKILLS: usize = 384;
@@ -478,12 +482,11 @@ pub struct ToolLaunch {
     /// The hash of the stored choice. It differs from `effective_hash` when
     /// the launch cannot apply a part of the choice.
     pub stored_hash: String,
-    /// A workflow step on Codex: every MCP server, plugin and app off, found
-    /// from Codex's own config at launch and checked before the step works.
-    /// Never set from a stored chat choice.
+    /// A workflow step on Codex: every MCP server off, found from Codex's
+    /// own config at launch, and apps, plugins and skill-installed servers
+    /// off, all checked before the step works. Never set from a stored chat
+    /// choice.
     pub connectors_off: bool,
-    /// Codex plugins off. Set only by the launch of a `connectors_off` step.
-    pub plugins_off: Vec<String>,
 }
 
 impl ToolLaunch {
@@ -508,7 +511,6 @@ impl ToolLaunch {
             stored_hash: effective_hash.clone(),
             effective_hash,
             connectors_off: false,
-            plugins_off: Vec::new(),
         }
     }
 
@@ -526,7 +528,6 @@ impl ToolLaunch {
             stored_hash: effective_hash.clone(),
             effective_hash,
             connectors_off: true,
-            plugins_off: Vec::new(),
         }
     }
 
@@ -1011,15 +1012,11 @@ pub fn codex_overrides(tools: &ToolLaunch) -> Vec<String> {
         .filter(|key| !is_bridge(key) && key.as_str() != CODEX_APPS && codex_key_is_safe(key))
         .map(|key| format!("mcp_servers.{key}.enabled=false"))
         .collect();
-    values.extend(
-        tools
-            .plugins_off
-            .iter()
-            .filter(|key| (1..=128).contains(&key.len()) && key.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'@')))
-            .map(|key| format!("plugins.{key}.enabled=false")),
-    );
     if tools.codex_apps_off {
         values.push(CODEX_APPS_OFF.to_owned());
+    }
+    if tools.connectors_off {
+        values.extend(CODEX_CONNECTOR_FEATURES.iter().map(|feature| format!("features.{feature}=false")));
     }
     if !tools.codex_skills_off.is_empty() {
         let entries: Vec<String> =
