@@ -413,6 +413,28 @@ fn write_context(workspace: &Path, context: &Path, config: &PrepareConfig, facts
         }),
     )?;
     write_json(&context.join("threads.json"), &serde_json::to_value(threads).map_err(|error| StepError::Fatal(error.to_string()))?)?;
+    write_conventions(workspace, &context.join(super::session::CONVENTIONS_DIR), base_tip)
+}
+
+/// A convention file past this size is left out rather than read whole.
+const MAX_CONVENTION_BYTES: usize = 256 * 1024;
+
+/// The repository's conventions as the base branch has them, flat under
+/// `conventions/`. The reviewer reads these, not the checkout's: the PR's
+/// copies are part of what is under review, so a PR cannot rewrite the rules
+/// it is judged by.
+fn write_conventions(workspace: &Path, folder: &Path, base_tip: &str) -> Result<(), StepError> {
+    for file in super::session::CONVENTION_FILES {
+        let Ok(output) = git::git_command(workspace).args(["cat-file", "blob", &format!("{base_tip}:{file}")]).output() else {
+            continue;
+        };
+        if !output.status.success() || output.stdout.is_empty() || output.stdout.len() > MAX_CONVENTION_BYTES {
+            continue;
+        }
+        std::fs::create_dir_all(folder).map_err(|error| StepError::Fatal(error.to_string()))?;
+        std::fs::write(folder.join(super::session::convention_name(file)), &output.stdout)
+            .map_err(|error| StepError::Fatal(format!("Could not write the conventions for the reviewer: {error}")))?;
+    }
     Ok(())
 }
 

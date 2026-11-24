@@ -40,7 +40,7 @@ import { ComposerContextStrip } from "./components/ComposerContextStrip";
 import { ComposerKeyHints } from "./components/ComposerKeyHints";
 import { ProjectsScreen } from "./components/ProjectsScreen";
 import { NewProjectDialog } from "./components/NewProjectDialog";
-import type { GithubRepository, QuestionAction, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
+import type { GithubRepository, QuestionAction, ReviewJob, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { byRecency, chatName, importedSubagents, isHiddenSession, isWorkerSession, liveAgentSessions } from "./components/sidebarChats";
@@ -72,7 +72,8 @@ import { chatPrStatus } from "./chatPullRequests";
 import { fixPrompt } from "./workSummary";
 import { PullsScreen } from "./components/PullsScreen";
 import { pullsJumpStep, type PullsJump } from "./pullsJump";
-import { GithubToasts, type CiToast } from "./components/GithubToasts";
+import { GithubToasts, type CiToast, type ReviewToast } from "./components/GithubToasts";
+import { reviewNotice } from "./reviewAttention";
 import { ImportToast } from "./components/ImportToast";
 import { importNotice } from "./moveToBridge";
 import { TrailToasts, trailToastKey, type TrailToast } from "./components/trails/TrailToasts";
@@ -1269,6 +1270,7 @@ function AppContent() {
   const githubIntentNonce = useRef(0);
   const [githubIntent, setGithubIntent] = useState<{ view: GithubLinkView; nonce: number }>();
   const [githubToasts, setGithubToasts] = useState<CiToast[]>([]);
+  const [reviewToasts, setReviewToasts] = useState<ReviewToast[]>([]);
   // A background import ended: say so wherever the person is in Bridge, and
   // with a system notification when Bridge is in the background.
   const [importToast, setImportToast] = useState<ImportJob | null>(null);
@@ -1389,21 +1391,50 @@ function AppContent() {
     return () => setInternalLinkRouter(undefined);
   }, [routeInternalLink]);
 
-  function openCiToast(toast: CiToast) {
-    setGithubToasts(current => current.filter(item => item.key !== toast.key));
-    const payload = toast.payload;
-    if (workspace?.id !== payload.workspaceId) {
-      // The PR lives in another workspace; land in one of its chats first so
-      // the pane reads the right repo.
-      const target = state.sessions.find(candidate => candidate.workspaceId === payload.workspaceId && !candidate.parentSessionId);
+  /** Open a PR of any workspace in the GitHub pane: land in one of that
+   *  workspace's chats first so the pane reads the right repo. */
+  function openWorkspacePullRequest(workspaceId: string, number: number, missing: string) {
+    if (workspace?.id !== workspaceId) {
+      const target = state.sessions.find(candidate => candidate.workspaceId === workspaceId && !candidate.parentSessionId);
       if (!target) {
-        setError(`CI finished on ${payload.headBranch}, but its workspace has no open chat to show it in.`);
+        setError(missing);
         return;
       }
       openSession(target.id);
     }
-    openPullRequestPane(payload.number);
+    openPullRequestPane(number);
   }
+
+  function openCiToast(toast: CiToast) {
+    setGithubToasts(current => current.filter(item => item.key !== toast.key));
+    openWorkspacePullRequest(toast.payload.workspaceId, toast.payload.number, `CI finished on ${toast.payload.headBranch}, but its workspace has no open chat to show it in.`);
+  }
+
+  function openReviewToast(toast: ReviewToast) {
+    setReviewToasts(current => current.filter(item => item.key !== toast.key));
+    openWorkspacePullRequest(toast.job.workspaceId, toast.job.number, `${toast.headline}, but its workspace has no open chat to show it in.`);
+  }
+
+  // A review job drafted, posted or failed: say so wherever the person is in
+  // Bridge, and with a system notification when Bridge is in the background.
+  // Only a change of status counts (see `reviewNotice`).
+  useEffect(() => {
+    let active = true;
+    let off: (() => void) | undefined;
+    const seen = new Map<string, ReviewJob["status"]>();
+    void bridgeApi.onReviewJobUpdated(({ job }) => {
+      if (!active) return;
+      const notice = reviewNotice(seen.get(job.id), job);
+      seen.set(job.id, job.status);
+      if (!notice) return;
+      // A notice only comes on a change of status, so the same one again (a
+      // second failed post) is new news: it replaces the old card and
+      // restarts its timer.
+      setReviewToasts(current => [...current.filter(item => item.key !== notice.key).slice(-3), { ...notice, job, firedAt: Date.now() }]);
+      void notifyAttention(notice.headline, notice.detail);
+    }).then(unlisten => { if (active) off = unlisten; else unlisten(); });
+    return () => { active = false; off?.(); };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -4560,9 +4591,14 @@ function AppContent() {
     {/* Behind the error alert on purpose: a failure to act outranks CI news. */}
     <GithubToasts
       toasts={githubToasts}
+      reviewToasts={reviewToasts}
       hint={githubJumpHint}
       onOpen={openCiToast}
-      onDismiss={key => setGithubToasts(current => current.filter(toast => toast.key !== key))}
+      onOpenReview={openReviewToast}
+      onDismiss={key => {
+        setGithubToasts(current => current.filter(toast => toast.key !== key));
+        setReviewToasts(current => current.filter(toast => toast.key !== key));
+      }}
       onDismissHint={() => setGithubJumpHint(undefined)}
     />
     {/* Last: an update can wait behind anything happening now. */}

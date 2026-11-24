@@ -62,6 +62,11 @@
       ],
       "default": "draft",
       "description": "Draft first (the default) or post as soon as findings are drafted."
+    },
+    "secondOpinion": {
+      "default": false,
+      "description": "Whether a review may run on two harnesses at once. Off (the default), a review runs on one.",
+      "type": "boolean"
     }
   },
   "title": "ReviewJobSettings",

@@ -1343,150 +1343,54 @@ pub fn github_act(
     Ok(wire::GithubActResult { executed: true, message })
 }
 
-/// Review a pull request with a Bridge subagent and post the review as a
-/// comment via `gh`. The worker is research-role (read-only, network-on), so it
-/// is exempt from the write-scope approval gate and gets a read-only seatbelt
-/// sandbox — posting through `gh` leaves the tree clean and fires no approval
-/// card. The harness is the user's click-time pick; the model comes from the
-/// Reviewer model profile when its provider matches that harness, otherwise the
-/// launch path resolves the harness's tier default.
+/// Review a pull request from the GitHub pane's older entry point. A local
+/// harness queues a review job (`reviews::start`), exactly as
+/// `reviews/start_review` does; `session_id` is ignored, since a review has
+/// no parent chat. The answer says where to follow it.
 ///
-/// `bugbot` (and `cursor-bugbot`) is not a local worker: it posts `cursor review`
+/// `bugbot` (and `cursor-bugbot`) is not a local job: it posts `cursor review`
 /// on the pull request so Cursor Bugbot runs the review on GitHub.
 pub fn github_review(
     core: &Arc<BridgeCore>,
     workspace_id: &str,
     number: u64,
     harness: &str,
-    session_id: Option<String>,
+    _session_id: Option<String>,
 ) -> Result<wire::GithubReviewResult, BridgeError> {
     if is_cursor_bugbot(harness) {
         return request_cursor_bugbot_review(core, workspace_id, number);
     }
-    let harness = crate::delegation::normalize_harness(harness)
-        .ok_or_else(|| BridgeError::Invalid(format!("unsupported harness: {harness}")))?;
-    // Validate the workspace exists before spending a session on it.
-    core.workspace_path(workspace_id)?;
-
-    // The reviewer settings name a model and effort per harness; the Reviewer
-    // model profile fills whatever they leave unset, and its tier shapes the
-    // worker. The profile's model is only used when its provider matches the
-    // chosen harness, otherwise the launch path picks the harness's tier default.
-    let (resolved, reviewer_settings, supports_read_only, hide_attribution) = {
-        let db = core.db.lock().unwrap();
-        let descriptors = core.adapter_registry.descriptors();
-        let supports_read_only = descriptors
-            .iter()
-            .find(|descriptor| descriptor.id == harness)
-            .map(|descriptor| {
-                descriptor.supports_sandbox(crate::model::SandboxMode::ReadOnly)
-            })
-            // An unknown descriptor is treated as unconstrained (read-only
-            // allowed) so a third-party harness is never forced isolated.
-            .unwrap_or(true);
-        (
-            crate::model_profiles::resolve_profile(
-                &db,
-                &descriptors,
-                crate::model_profiles::ProfilePurpose::Reviewer,
-            )?,
-            crate::reviewer_settings::load(&db)?,
-            supports_read_only,
-            crate::attribution_settings::hide_enabled(&db),
-        )
-    };
-    let plan = reviewer_launch_plan(&reviewer_settings, resolved.as_ref(), &harness, number, supports_read_only, hide_attribution);
-    let ReviewerLaunchPlan { capability_tier, effort, model, write_mode, objective } = plan;
-
-    // Establish the parent orchestrator session. Reuse the caller's session when
-    // it exists and belongs to this workspace; otherwise mint a fresh one.
-    let parent_session_id = match session_id {
-        Some(existing)
-            if session_belongs_to_workspace(core, &existing, workspace_id)? =>
-        {
-            existing
+    let job = crate::reviews::start(
+        core,
+        &wire::StartReviewParams {
+            workspace_id: workspace_id.to_owned(),
+            number,
+            harnesses: Some(vec![harness.to_owned()]),
+            trigger: None,
+        },
+    )?;
+    let with = job.harnesses.join(" and ");
+    let message = match job.status {
+        wire::ReviewJobStatus::Drafted => {
+            format!("A review of PR #{number} by {with} is already drafted. Triage it in the pull request's Reviews section.")
         }
-        _ => {
-            // Mirror `create_workspace_session` but keep the planned id: an
-            // orchestrator session (depth 0) with no isolated worktree — the
-            // worker gets its own read-only sandbox at launch.
-            let operation = core.workspace_operation(workspace_id);
-            let _operation = crate::runtime::lock_operation(&operation);
-            let plan = core.plan_workspace_session(workspace_id, false)?;
-            let new_id = plan.session_id().to_owned();
-            core.persist_workspace_session(plan, None)?;
-            new_id
+        wire::ReviewJobStatus::Posting => format!("A review of PR #{number} by {with} is being posted."),
+        wire::ReviewJobStatus::Preparing | wire::ReviewJobStatus::Reviewing => {
+            format!("PR #{number} is already being reviewed by {with}. Follow it in the pull request's Reviews section.")
         }
+        _ => format!("Review of PR #{number} queued with {with}. Follow it in the pull request's Reviews section."),
     };
-
-    // A turn id is a free-form string here — the launch path takes any id, as the
-    // user-driven retry (`retry-<uuid>`) does; no turn row is a precondition.
-    let turn_id = format!("github-review-{}", Uuid::new_v4());
-
-    let directive = delegation::DelegationRequest {
-        schema_version: delegation::SCHEMA_VERSION,
-        role: delegation::WorkerRole::Research,
-        objective,
-        acceptance_criteria: vec![
-            format!("A review comment is posted on PR #{number} via gh"),
-            "The review cites concrete files or lines".into(),
-        ],
-        known_facts: Vec::new(),
-        decisions: Vec::new(),
-        evidence_ids: Vec::new(),
-        relevant_files: Vec::new(),
-        owned_paths: Vec::new(),
-        write_mode,
-        capability_tier,
-        effort,
-        network_access: true,
-        writable_output_paths: Vec::new(),
-        verification: Vec::new(),
-        output_contract: delegation::OutputContract::ResearchResult,
-        harness: Some(harness.clone()),
-        model,
-    };
-    directive
-        .validate()
-        .map_err(BridgeError::Invalid)?;
-
-    let outcome = live_turn::launch_worker_outcome(core, &parent_session_id, &turn_id, &directive, true);
-    let result = match outcome {
-        live_turn::WorkerLaunchOutcome::Launched(child_session_id) => wire::GithubReviewResult {
-            status: "launched".into(),
-            session_id: Some(child_session_id),
-            message: format!("Review started with {harness} — comments will post to PR #{number} shortly."),
-        },
-        live_turn::WorkerLaunchOutcome::Queued(_) => wire::GithubReviewResult {
-            status: "queued".into(),
-            session_id: None,
-            message: format!("Review queued with {harness}; it will start when a worker slot frees up."),
-        },
-        live_turn::WorkerLaunchOutcome::AwaitingApproval { .. } => wire::GithubReviewResult {
-            status: "awaitingApproval".into(),
-            session_id: None,
-            message: if write_mode == delegation::WriteMode::Isolated {
-                format!(
-                    "Review with {harness} is pending an approval on the conversation: {harness} cannot run \
-                     read-only, so the reviewer gets its own isolated worktree. Approve it to start."
-                )
-            } else {
-                "Review is pending an approval; resolve it to let the worker start.".into()
-            },
-        },
-        live_turn::WorkerLaunchOutcome::Failed => wire::GithubReviewResult {
-            status: "failed".into(),
-            session_id: None,
-            message: "The review worker could not launch; the reason is on the conversation.".into(),
-        },
-    };
-    Ok(result)
+    Ok(wire::GithubReviewResult {
+        status: job.status.as_str().into(),
+        session_id: None,
+        job_id: Some(job.id),
+        message,
+    })
 }
 
 // ── reviews ──────────────────────────────────────────────────────────────────
 // Pull-request reviews as stored background jobs on Bridge's own runner. See
-// `reviews`. `github_review` above keeps its worker path until the pipeline
-// steps land.
+// `reviews`. `github_review` above queues one of these for a local harness.
 
 pub fn start_review(core: &Arc<BridgeCore>, params: &wire::StartReviewParams) -> Result<wire::ReviewJobResult, BridgeError> {
     Ok(wire::ReviewJobResult { job: crate::reviews::start(core, params)? })
@@ -1527,65 +1431,6 @@ pub fn save_review_job_settings(
     crate::reviews::save_job_settings(core, &params.settings)
 }
 
-/// How the pull-request reviewer launches on one harness, decided before a
-/// session is spent on it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ReviewerLaunchPlan {
-    pub capability_tier: CapabilityTier,
-    pub effort: delegation::Effort,
-    pub model: Option<String>,
-    pub write_mode: delegation::WriteMode,
-    pub objective: String,
-}
-
-/// Precedence: the reviewer settings for this harness, then the Reviewer model
-/// profile, then the harness default. A harness whose adapter descriptor does
-/// not advertise `read_only` cannot run inside the read-only sandbox (refused
-/// at launch by design), so its reviewer runs isolated in its own
-/// worktree instead of failing to start; the policy engine still gates that
-/// with an approval.
-pub(crate) fn reviewer_launch_plan(
-    settings: &wire::ReviewerSettings,
-    profile: Option<&crate::model_profiles::ResolvedProfile>,
-    harness: &str,
-    number: u64,
-    supports_read_only: bool,
-    hide_attribution: bool,
-) -> ReviewerLaunchPlan {
-    let per_harness = settings.harnesses.get(harness);
-    let (capability_tier, profile_effort, profile_model) = match profile {
-        Some(profile) => (
-            profile.tier,
-            Some(profile.effort),
-            (profile.provider == harness).then(|| profile.model.clone()),
-        ),
-        // Model setup is incomplete: a strong reviewer tier, and the launch
-        // path resolves the harness's tier default.
-        None => (CapabilityTier::Strong, None, None),
-    };
-    let effort = per_harness
-        .and_then(|entry| entry.effort)
-        .map(crate::reviewer_settings::effort_from_wire)
-        .or(profile_effort)
-        .unwrap_or(delegation::Effort::High);
-    let model = per_harness
-        .and_then(|entry| entry.model.clone())
-        .filter(|model| !model.trim().is_empty())
-        .or(profile_model);
-    let write_mode = if supports_read_only {
-        delegation::WriteMode::ReadOnly
-    } else {
-        delegation::WriteMode::Isolated
-    };
-    ReviewerLaunchPlan {
-        capability_tier,
-        effort,
-        model,
-        write_mode,
-        objective: crate::reviewer_settings::objective_with_hide(settings, number, hide_attribution),
-    }
-}
-
 fn is_cursor_bugbot(harness: &str) -> bool {
     matches!(
         harness.trim().to_ascii_lowercase().as_str(),
@@ -1605,6 +1450,7 @@ fn request_cursor_bugbot_review(
     Ok(wire::GithubReviewResult {
         status: "launched".into(),
         session_id: None,
+        job_id: None,
         message: format!(
             "Asked Cursor Bugbot to review PR #{number}. It will comment on the pull request."
         ),
@@ -8351,66 +8197,49 @@ mod tests {
     }
 
     #[test]
-    fn reviewer_launch_plan_prefers_settings_then_profile_then_defaults() {
-        use bridge_protocol::messages::{self as wire, ReviewerHarnessSettings, ReviewerSettings};
-        use crate::{delegation, model::CapabilityTier};
-        let profile = crate::model_profiles::ResolvedProfile {
-            purpose: crate::model_profiles::ProfilePurpose::Reviewer,
-            profile_version: 1,
-            provider: "codex".into(),
-            model: "gpt-5-codex".into(),
-            tier: CapabilityTier::Standard,
-            effort: delegation::Effort::Medium,
-            selection_mode: crate::model_profiles::ProfileSelectionMode::Pinned,
-            pinned: true,
-            learning_enabled: false,
-            budget_preference: None,
-            latency_preference: None,
-            used_fallback: false,
-        };
-        // Nothing configured: the profile speaks for its own provider only.
-        let plain = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "codex", 9, true, false);
-        assert_eq!((plain.model.as_deref(), plain.effort, plain.capability_tier), (Some("gpt-5-codex"), delegation::Effort::Medium, CapabilityTier::Standard));
-        assert_eq!(plain.write_mode, delegation::WriteMode::ReadOnly);
-        assert!(plain.objective.starts_with("Review pull request #9"));
-        let other = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "claude", 9, true, false);
-        assert_eq!(other.model, None, "a Codex model is not handed to Claude");
-        assert_eq!(other.effort, delegation::Effort::Medium);
-        // Settings for the harness win over the profile.
-        let mut settings = ReviewerSettings { system_prompt: "Check PR {number}.".into(), ..Default::default() };
-        settings.harnesses.insert("claude".into(), ReviewerHarnessSettings { model: Some("claude-opus-5".into()), effort: Some(wire::Effort::Xhigh) });
-        let configured = super::reviewer_launch_plan(&settings, Some(&profile), "claude", 9, true, false);
-        assert_eq!((configured.model.as_deref(), configured.effort), (Some("claude-opus-5"), delegation::Effort::Xhigh));
-        assert!(configured.objective.starts_with("Check PR 9."), "{}", configured.objective);
-        assert!(configured.objective.contains("only post a comment"), "custom prompts keep the safety guardrail: {}", configured.objective);
-        // No profile at all: strong tier, high effort, harness default model.
-        let bare = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 9, true, false);
-        assert_eq!((bare.model, bare.effort, bare.capability_tier), (None, delegation::Effort::High, CapabilityTier::Strong));
-        // A harness without read_only support reviews from an isolated worktree.
-        let opencode = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "opencode", 9, false, false);
-        assert_eq!(opencode.write_mode, delegation::WriteMode::Isolated);
-    }
-
-    #[test]
-    fn reviewer_launch_plan_uses_descriptor_sandbox_capability() {
-        use bridge_protocol::messages::ReviewerSettings;
-        use crate::delegation;
-        // The same harness id gets isolated iff its descriptor lacks read_only —
-        // no hard-coded name decides write access.
-        let isolated = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "custom", 3, false, false);
-        assert_eq!(isolated.write_mode, delegation::WriteMode::Isolated);
-        let readonly = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "custom", 3, true, false);
-        assert_eq!(readonly.write_mode, delegation::WriteMode::ReadOnly);
-    }
-
-    #[test]
-    fn reviewer_launch_plan_prepends_hiding_rule_when_on() {
-        use bridge_protocol::messages::ReviewerSettings;
-        let hidden = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 7, true, true);
-        assert!(hidden.objective.starts_with(crate::prompts::ATTRIBUTION_HIDING_RULE));
-        assert!(hidden.objective.contains("Review pull request #7"));
-        let shown = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 7, true, false);
-        assert!(!shown.objective.contains("Co-authored-by"));
+    fn github_review_queues_a_review_job_for_local_harnesses() {
+        let scratch = tempfile::tempdir().unwrap();
+        let repo = scratch.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        for args in [vec!["init", "-q", "-b", "main"], vec!["remote", "add", "origin", "https://github.com/fixture/project.git"]] {
+            assert!(crate::git::git_command(&repo).args(&args).status().unwrap().success());
+        }
+        let gh = scratch.path().join("gh-bin");
+        std::fs::create_dir(&gh).unwrap();
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testing/fixtures/github").canonicalize().unwrap();
+        std::fs::write(gh.join("fixture-root"), fixtures.to_str().unwrap()).unwrap();
+        std::fs::write(gh.join("auth-exit"), "0").unwrap();
+        std::fs::write(gh.join("default-repository"), "fixture/project").unwrap();
+        std::os::unix::fs::symlink(fixtures.join("fake-gh.sh"), gh.join("gh")).unwrap();
+        let mut core = crate::runtime::BridgeCore::for_tests(&scratch.path().join("data"));
+        core.github_surface = crate::github_surface::GithubSurface::discover_on_path(&gh);
+        let core = std::sync::Arc::new(core);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','P',?1,'now')", params![repo.to_string_lossy()]).unwrap();
+            db.execute(
+                "INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','c','t','main',?1,'ready','now')",
+                params![repo.to_string_lossy()],
+            )
+            .unwrap();
+        }
+        let sessions_before: i64 = core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0)).unwrap();
+        let result = super::github_review(&core, "w", 103, "claude-code", Some("ignored-session".into())).unwrap();
+        assert_eq!(result.status, "queued");
+        assert_eq!(result.session_id, None);
+        assert!(result.message.contains("queued with claude") && result.message.contains("Reviews section"), "{}", result.message);
+        let jobs = crate::reviews::list(&core, &wire::ListReviewsParams { workspace_id: "w".into(), number: Some(103) }).unwrap().jobs;
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(result.job_id.as_deref(), Some(jobs[0].id.as_str()), "the job, for clients that follow it");
+        assert_eq!((jobs[0].head_sha.as_str(), jobs[0].harnesses.as_slice()), ("current-head-sha", ["claude".to_owned()].as_slice()));
+        let sessions_after: i64 = core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0)).unwrap();
+        assert_eq!(sessions_after, sessions_before, "no orchestrator or worker session");
+        // Again, once it has drafted: the same job, and it says so.
+        core.db.lock().unwrap().execute("UPDATE review_jobs SET status='drafted' WHERE id=?1", params![jobs[0].id]).unwrap();
+        let again = super::github_review(&core, "w", 103, "claude", None).unwrap();
+        assert_eq!(crate::reviews::list(&core, &wire::ListReviewsParams { workspace_id: "w".into(), number: Some(103) }).unwrap().jobs.len(), 1);
+        assert_eq!((again.status.as_str(), again.job_id.as_deref()), ("drafted", Some(jobs[0].id.as_str())));
+        assert!(again.message.contains("already drafted"), "{}", again.message);
     }
 
     #[test]
