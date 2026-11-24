@@ -10,6 +10,7 @@ fn job(mode: ReviewPostMode) -> JobRow {
     JobRow {
         id: "job-1".into(),
         workspace_id: "w".into(),
+        repo_host: Some("github.com".into()),
         repo_owner: "octo".into(),
         repo_name: "repo".into(),
         number: 7,
@@ -510,6 +511,7 @@ impl Fixture {
             trigger: None,
         };
         let head = crate::reviews::PrHead {
+            repo_host: "github.com".into(),
             repo_owner: "octo".into(),
             repo_name: "repo".into(),
             head_sha: HEAD.into(),
@@ -783,6 +785,7 @@ fn live_posting_job(
             &db,
             &store::NewJob {
                 workspace_id: "w".into(),
+                repo_host: Some("github.com".into()),
                 repo_owner: owner.into(),
                 repo_name: name.into(),
                 number,

@@ -17,6 +17,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -41,10 +42,16 @@ pub struct AutoReview {
     /// lock, so the pane never waits on a slow `gh` read of the tick.
     exposed: Mutex<HashMap<String, PathBuf>>,
     state: Mutex<State>,
+    /// Bumped by every save that changes auto-review's settings, under the
+    /// store lock. A round from an older generation drops what it saw and
+    /// starts nothing, so Off then On between two polls is a fresh start.
+    generation: AtomicU64,
 }
 
 #[derive(Debug, Default)]
 struct State {
+    /// The settings generation the watches were built under.
+    generation: u64,
     /// The filters the watches were built under. A change starts a new
     /// baseline, so switching "My PRs" to "All PRs" reviews nothing at once.
     filters: Option<(ReviewAutoMode, bool)>,
@@ -73,6 +80,10 @@ pub struct Watch {
     pub next_list: Option<Instant>,
     /// Whether the first listing (the baseline) has been seen.
     pub baselined: bool,
+    /// The highest PR number any listing has shown. GitHub numbers rise, so
+    /// only a PR above it was opened since; any other unseen one was out of
+    /// view (past a partial listing, or closed and reopened).
+    pub highest_seen: Option<u64>,
     pub prs: HashMap<u64, Seen>,
 }
 
@@ -114,10 +125,10 @@ impl Filters {
 /// forgotten. `catch_up` decides, on the baseline only, whether a PR was
 /// pushed while Bridge was closed.
 ///
-/// A listing that is not `complete` (it hit [`OPEN_HEADS_LIMIT`]) keeps the
-/// PRs it left out, and a PR it shows for the first time counts as newly
-/// opened only when its number is above every PR seen: older ones were just
-/// outside the earlier listings.
+/// A PR this watch has not seen counts as newly opened only when its number
+/// is above every PR any listing has shown ([`Watch::highest_seen`]). A
+/// listing that is not `complete` (it hit [`OPEN_HEADS_LIMIT`]) also keeps
+/// the PRs it left out.
 pub fn observe(
     watch: &mut Watch,
     listing: &[OpenPullRequestHead],
@@ -127,13 +138,13 @@ pub fn observe(
     catch_up: impl Fn(u64, &str) -> bool,
 ) {
     let baseline = !watch.baselined;
-    let highest_seen = watch.prs.keys().max().copied();
+    let highest_seen = watch.highest_seen;
     let mut next = HashMap::new();
     for pull_request in listing {
         let eligible = filters.takes(pull_request);
         let pending_since = match watch.prs.get(&pull_request.number) {
             None if baseline => (eligible && catch_up(pull_request.number, &pull_request.head_sha)).then_some(now),
-            None if !complete && highest_seen.is_some_and(|highest| pull_request.number <= highest) => None,
+            None if highest_seen.is_some_and(|highest| pull_request.number <= highest) => None,
             None => eligible.then_some(now),
             Some(seen) if seen.head_sha != pull_request.head_sha => eligible.then_some(now),
             Some(seen) if eligible && !seen.eligible => Some(now),
@@ -148,6 +159,7 @@ pub fn observe(
     }
     watch.prs = next;
     watch.baselined = true;
+    watch.highest_seen = listing.iter().map(|pull_request| pull_request.number).chain(highest_seen).max();
 }
 
 /// The PRs whose change has been quiet for [`DEBOUNCE`], with the head to
@@ -171,25 +183,36 @@ impl AutoReview {
         self.exposed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(workspace_id.to_owned(), path);
     }
 
-    /// The workspaces watched, with their paths.
+    /// Auto-review's settings changed: the next round starts afresh. Called
+    /// with the store lock held, right after the save.
+    pub fn settings_changed(&self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The live workspaces watched, with their paths as the store has them.
+    /// One archived (its row is gone) leaves the watch at once, so another
+    /// workspace of its repository takes over.
     fn watched(&self, core: &BridgeCore) -> Vec<(String, PathBuf)> {
-        let mut workspaces: HashMap<String, PathBuf> =
-            self.exposed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        let reviewed: Vec<String> = {
+        let (live, reviewed): (HashMap<String, String>, Vec<String>) = {
             let db = super::lock_db(core);
-            super::store::reviewed_workspaces(&db).unwrap_or_default()
+            let live = db
+                .prepare("SELECT id, path FROM workspaces WHERE path IS NOT NULL")
+                .and_then(|mut statement| {
+                    statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<Result<HashMap<_, _>, _>>()
+                })
+                .unwrap_or_default();
+            (live, super::store::reviewed_workspaces(&db).unwrap_or_default())
         };
-        for workspace_id in reviewed {
-            if workspaces.contains_key(&workspace_id) {
-                continue;
-            }
-            if let Ok(path) = core.workspace_path(&workspace_id) {
-                workspaces.insert(workspace_id, PathBuf::from(path));
-            }
-        }
-        let mut sorted: Vec<_> = workspaces.into_iter().collect();
-        sorted.sort();
-        sorted
+        let mut exposed = self.exposed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        exposed.retain(|workspace_id, _| live.contains_key(workspace_id));
+        let mut watched: Vec<(String, PathBuf)> = exposed
+            .keys()
+            .chain(reviewed.iter())
+            .filter_map(|workspace_id| live.get(workspace_id).map(|path| (workspace_id.clone(), PathBuf::from(path))))
+            .collect();
+        watched.sort();
+        watched.dedup();
+        watched
     }
 }
 
@@ -203,9 +226,15 @@ pub fn tick(core: &Arc<BridgeCore>, now: Instant) {
     let auto = &core.reviews.auto;
     let Some(current) = settings(core) else { return };
     let mut state = auto.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let generation = auto.generation.load(Ordering::SeqCst);
+    if state.generation != generation {
+        // The settings changed since the last round, perhaps more than once
+        // (Off, then On again): nothing seen under the old ones counts.
+        *state = State { generation, ..State::default() };
+    }
     if current.auto_review == ReviewAutoMode::Off {
         // Off forgets everything: turning it on again starts a new baseline.
-        *state = State::default();
+        *state = State { generation, ..State::default() };
         return;
     }
     let filters_key = (current.auto_review, current.skip_draft_prs);
@@ -251,7 +280,8 @@ pub fn tick(core: &Arc<BridgeCore>, now: Instant) {
         let filters = Filters { mode: current.auto_review, skip_drafts: current.skip_draft_prs, viewer };
         let latest: HashMap<u64, (wire::ReviewTrigger, String)> = {
             let db = super::lock_db(core);
-            super::store::latest_jobs(&db, &target.repository.owner, &target.repository.name).unwrap_or_default()
+            super::store::latest_jobs(&db, &target.repository.host, &target.repository.owner, &target.repository.name)
+                .unwrap_or_default()
         };
         let (_, watch) = state.watches.entry(key.clone()).or_insert_with(|| (target.clone(), Watch::default()));
         observe(watch, &listing, complete, &filters, now, |number, head| {
@@ -268,7 +298,7 @@ pub fn tick(core: &Arc<BridgeCore>, now: Instant) {
     for (key, target, number) in starts {
         let viewer = state.viewers.get(&target.repository.host.to_lowercase()).and_then(|(login, _)| login.clone());
         let filters = Filters { mode: current.auto_review, skip_drafts: current.skip_draft_prs, viewer };
-        let started = start_one(core, &target, number, &filters);
+        let started = start_one(core, &target, number, &filters, generation);
         let Some((_, watch)) = state.watches.get_mut(&key) else { continue };
         let Some(seen) = watch.prs.get_mut(&number) else { continue };
         match started {
@@ -317,9 +347,10 @@ enum Started {
 /// Start the push review of one PR, judged on what GitHub says now: a PR that
 /// became a draft, or is someone else's, is not started. The last word is the
 /// store's: under its lock, with the settings as they are then, auto-review
-/// must still be on with the same filters, and no workspace may have
-/// reviewed that head already.
-fn start_one(core: &Arc<BridgeCore>, target: &Target, number: u64, filters: &Filters) -> Result<Started, crate::BridgeError> {
+/// must still be on with the same filters and unchanged since this round
+/// began, and no workspace may have reviewed that head already. A closed or
+/// merged PR is never started.
+fn start_one(core: &Arc<BridgeCore>, target: &Target, number: u64, filters: &Filters, generation: u64) -> Result<Started, crate::BridgeError> {
     let fresh = core
         .github_surface
         .pr_head(&target.path, number)
@@ -330,7 +361,7 @@ fn start_one(core: &Arc<BridgeCore>, target: &Target, number: u64, filters: &Fil
         is_draft: fresh.is_draft,
         author: fresh.author.clone(),
     };
-    if !filters.takes(&now_open) {
+    if !fresh.is_open || !filters.takes(&now_open) {
         return Ok(Started::NotNow);
     }
     let params = wire::StartReviewParams {
@@ -341,11 +372,13 @@ fn start_one(core: &Arc<BridgeCore>, target: &Target, number: u64, filters: &Fil
     };
     let head_sha = fresh.head_sha.clone();
     let gate = |db: &rusqlite::Connection, settings: &ReviewJobSettings, pr: super::store::PrKey<'_>| {
-        settings.auto_review == filters.mode
+        core.reviews.auto.generation.load(Ordering::SeqCst) == generation
+            && settings.auto_review == filters.mode
             && settings.skip_draft_prs == filters.skip_drafts
             && !super::store::has_review_of_head(db, pr, &head_sha).unwrap_or(true)
     };
     let head = super::PrHead {
+        repo_host: fresh.repository.host,
         repo_owner: fresh.repository.owner,
         repo_name: fresh.repository.name,
         head_sha: fresh.head_sha,

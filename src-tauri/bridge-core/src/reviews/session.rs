@@ -731,13 +731,14 @@ impl Prior {
         self.decision == Decision::Dropped || self.posted || self.thread.as_ref().is_some_and(|thread| thread.resolved)
     }
 
-    /// Kept, edited or posted, not already marked fixed, and found at an
-    /// earlier head than `head`: something the commits since can fix.
+    /// Kept, edited or posted, not already marked fixed, and found at a head
+    /// git places before `head` (`earlier`): something the commits since can
+    /// fix.
     fn fixable(&self, head: &str) -> bool {
         use bridge_protocol::messages::ReviewFindingDecision as Decision;
         self.fixed_in_sha.is_none()
             && self.reviewed_head.as_deref() != Some(head)
-            && self.relation.as_deref() != Some("same")
+            && self.relation.as_deref() == Some("earlier")
             && (matches!(self.decision, Decision::Kept | Decision::Edited) || self.posted)
     }
 }

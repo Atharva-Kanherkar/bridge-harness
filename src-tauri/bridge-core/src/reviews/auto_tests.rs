@@ -47,8 +47,11 @@ fn a_pr_that_opens_after_the_baseline_is_reviewed_and_a_closed_one_is_forgotten(
     assert_eq!(due(&mut watch, start + LIST_EVERY + DEBOUNCE), [(8, "x".to_owned())]);
     observe(&mut watch, &[pr(8, "y", false, "me")], true, &all(), start + LIST_EVERY * 2, never);
     assert!(!watch.prs.contains_key(&7), "closed or merged: forgotten");
-    // Reopened later, it is new again.
+    // Reopened later, it is not newly opened: its number is old. Its next
+    // push is a change like any other.
     observe(&mut watch, &[pr(7, "a", false, "me"), pr(8, "y", false, "me")], true, &all(), start + LIST_EVERY * 3, never);
+    assert_eq!(watch.prs[&7].pending_since, None);
+    observe(&mut watch, &[pr(7, "b", false, "me"), pr(8, "y", false, "me")], true, &all(), start + LIST_EVERY * 4, never);
     assert!(watch.prs[&7].pending_since.is_some());
 }
 
@@ -194,8 +197,9 @@ impl Fixture {
     fn mode(&self, mode: ReviewAutoMode) {
         let db = self.core.db.lock().unwrap();
         let settings = super::super::settings::load(&db).unwrap();
+        drop(db);
         let default_harnesses = vec!["claude".into()];
-        super::super::settings::save(&db, &ReviewJobSettings { auto_review: mode, default_harnesses, ..settings }).unwrap();
+        super::super::save_job_settings(&self.core, &ReviewJobSettings { auto_review: mode, default_harnesses, ..settings }).unwrap();
     }
 
     fn jobs(&self) -> Vec<super::super::store::JobRow> {
@@ -240,6 +244,7 @@ fn a_push_review_supersedes_queued_push_reviews_of_older_heads_but_not_a_persons
             &db,
             &super::super::store::NewJob {
                 workspace_id: "w".into(),
+                repo_host: Some("github.com".into()),
                 repo_owner: "fixture".into(),
                 repo_name: "project".into(),
                 number: 103,
@@ -390,4 +395,67 @@ fn the_signed_in_login_is_read_again_after_an_hour() {
         tick(&fixture.core, start + LIST_EVERY * minute);
     }
     assert_eq!(fixture.calls("api user"), 2, "read at the start and once the hour was up, not every minute and not never");
+}
+
+#[test]
+fn a_partial_listing_that_becomes_complete_does_not_make_an_old_pr_new() {
+    let start = Instant::now();
+    let mut watch = Watch::default();
+    // Over the limit: the newest PRs only; #1 is out of view.
+    observe(&mut watch, &[pr(1003, "a", false, "me"), pr(2, "b", false, "me")], false, &all(), start, never);
+    // Three close, and the listing now reaches #1.
+    observe(&mut watch, &[pr(1003, "a", false, "me"), pr(2, "b", false, "me"), pr(1, "z", false, "me")], true, &all(), start + LIST_EVERY, never);
+    assert_eq!(watch.prs[&1].pending_since, None, "#1 was open all along");
+    assert!(due(&mut watch, start + LIST_EVERY * 10).is_empty());
+}
+
+#[test]
+fn off_then_on_between_two_polls_starts_a_new_baseline() {
+    let fixture = Fixture::new();
+    fixture.mode(ReviewAutoMode::All);
+    let start = Instant::now();
+    fixture.pending_change(start);
+    // Both saves return before the next poll.
+    fixture.mode(ReviewAutoMode::Off);
+    fixture.mode(ReviewAutoMode::All);
+    tick(&fixture.core, start + LIST_EVERY + DEBOUNCE);
+    tick(&fixture.core, start + LIST_EVERY * 10);
+    assert_eq!(fixture.all_jobs(), 0, "the change seen before Off is forgotten");
+}
+
+#[test]
+fn a_closed_pr_is_not_started_from_a_stale_listing() {
+    let fixture = Fixture::new();
+    fixture.mode(ReviewAutoMode::All);
+    let start = Instant::now();
+    fixture.pending_change(start);
+    let mut detail: serde_json::Value = serde_json::from_slice(&std::fs::read(fixture.fixtures().join("pr-detail.json")).unwrap()).unwrap();
+    detail["state"] = serde_json::json!("CLOSED");
+    std::fs::write(fixture.fixtures().join("pr-detail-closed.json"), detail.to_string()).unwrap();
+    std::fs::write(fixture.gh.join("pr-view-fixture"), "pr-detail-closed.json").unwrap();
+    std::fs::write(fixture.fixtures().join("heads.json"), "not json").unwrap();
+    tick(&fixture.core, start + LIST_EVERY + DEBOUNCE);
+    assert_eq!(fixture.all_jobs(), 0);
+}
+
+#[test]
+fn archiving_a_workspace_hands_the_watch_to_a_live_one() {
+    let fixture = Fixture::new();
+    fixture.second_workspace();
+    fixture.mode(ReviewAutoMode::All);
+    let start = Instant::now();
+    fixture.heads(&[(103, "old-sha", false, "review-author")]);
+    tick(&fixture.core, start);
+    // The first workspace, which owned the watch, is archived; its checkout
+    // stays on disk.
+    fixture.core.db.lock().unwrap().execute("DELETE FROM workspaces WHERE id='w'", []).unwrap();
+    fixture.heads(&[(103, "current-head-sha", false, "review-author")]);
+    tick(&fixture.core, start + LIST_EVERY);
+    tick(&fixture.core, start + LIST_EVERY + DEBOUNCE);
+    let started_in: Vec<String> = {
+        let db = fixture.core.db.lock().unwrap();
+        let mut statement = db.prepare("SELECT workspace_id FROM review_jobs WHERE pr_number=103").unwrap();
+        statement.query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
+    };
+    assert_eq!(started_in, ["w2"], "the live workspace reviews it");
 }

@@ -146,6 +146,10 @@ pub struct Prepared {
     pub head_sha: String,
     /// Whole change, or the commits since an earlier review.
     pub incremental: Incremental,
+    /// Earlier findings this review may mark fixed: those git places at an
+    /// ancestor of the head. Nothing outside it is marked, whatever the
+    /// reviewer names and whatever order the reviews were queued in.
+    pub fixable: std::collections::HashSet<String>,
     /// Removes the checkout and the job folder when the step that holds it
     /// ends, however it ends.
     pub guard: Option<Arc<Guard>>,

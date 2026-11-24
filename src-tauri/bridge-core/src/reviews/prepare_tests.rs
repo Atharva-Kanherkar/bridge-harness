@@ -149,6 +149,7 @@ fn claimed_with(fixture: &Fixture, number: u64, head: &str, harness: &str) -> Jo
         &db,
         &store::NewJob {
             workspace_id: "w".into(),
+            repo_host: Some("github.com".into()),
             repo_owner: "fixture".into(),
             repo_name: "project".into(),
             number,
@@ -338,6 +339,7 @@ fn posted_review_titled(fixture: &Fixture, head: &str, prefix: &str) -> String {
         &db,
         &store::NewJob {
             workspace_id: "w".into(),
+            repo_host: Some("github.com".into()),
             repo_owner: "fixture".into(),
             repo_name: "project".into(),
             number: 7,
@@ -387,6 +389,7 @@ fn claimed_re_review(fixture: &Fixture, head: &str, from: &str) -> JobRow {
         &db,
         &store::NewJob {
             workspace_id: "w".into(),
+            repo_host: Some("github.com".into()),
             repo_owner: "fixture".into(),
             repo_name: "project".into(),
             number: 7,
@@ -442,6 +445,9 @@ fn a_re_review_gets_the_new_commits_and_what_earlier_reviews_said() {
     assert_eq!((kept["decision"].as_str(), kept["posted"].as_bool()), (Some("kept"), Some(true)));
     assert_eq!(kept["reviewedHead"], fixture.head.as_str());
     assert_eq!(kept["relation"], "earlier");
+    let earlier_ids: std::collections::HashSet<String> =
+        prior.as_array().unwrap().iter().map(|item| item["id"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(prepared.fixable, earlier_ids, "an ancestor's findings may be marked fixed");
     assert_eq!(kept["thread"]["resolved"], false);
     assert_eq!(kept["thread"]["outdated"], false);
     assert_eq!(kept["thread"]["replies"], serde_json::json!([{"author": "author", "body": "Done."}]), "the person's reply travels");
@@ -474,6 +480,7 @@ fn a_force_push_falls_back_to_a_full_review_and_keeps_the_memory() {
     let prior = read_json(&context.join(PRIOR_FINDINGS));
     assert_eq!(prior.as_array().unwrap().len(), 3, "what a person decided still holds after a rebase");
     assert!(prior.as_array().unwrap().iter().all(|item| item["relation"] == "rewritten"));
+    assert!(prepared.fixable.is_empty(), "git cannot say rewritten history came first");
 
     // A commit nobody has (gone from GitHub too) falls back the same way.
     drop(prepared);
@@ -795,7 +802,7 @@ fn fast() -> RunnerConfig {
 
 fn start(fixture: &Fixture) -> String {
     let params = wire::StartReviewParams { workspace_id: "w".into(), number: 7, harnesses: Some(vec!["claude".into()]), trigger: None };
-    let head = crate::reviews::PrHead { repo_owner: "fixture".into(), repo_name: "project".into(), head_sha: fixture.head.clone(), base_sha: None };
+    let head = crate::reviews::PrHead { repo_host: "github.com".into(), repo_owner: "fixture".into(), repo_name: "project".into(), head_sha: fixture.head.clone(), base_sha: None };
     crate::reviews::start_with(&fixture.core, &params, head).unwrap().id
 }
 

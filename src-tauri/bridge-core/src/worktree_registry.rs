@@ -1984,6 +1984,7 @@ mod tests {
                 &db,
                 &crate::reviews::store::NewJob {
                     workspace_id: "w".into(),
+                    repo_host: Some("github.com".into()),
                     repo_owner: "o".into(),
                     repo_name: "r".into(),
                     number: 7,

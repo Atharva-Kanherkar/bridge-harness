@@ -174,12 +174,14 @@ pub struct JobRow {
     pub finished_at: Option<String>,
     /// The checkout the current attempt reads, once prepared.
     pub worktree_path: Option<String>,
+    /// The GitHub host. Absent on a job from before hosts were recorded.
+    pub repo_host: Option<String>,
 }
 
 const SELECT_JOB: &str = "SELECT id, workspace_id, repo_owner, repo_name, pr_number, head_sha, base_sha,
     incremental_from_sha, trigger_kind, post_mode, harnesses, status, error, summary, posted_review_id,
     posted_review_url, retry_of, attempts, lease_owner, lease_expires_at, created_at, started_at, finished_at,
-    publication_key, worktree_path
+    publication_key, worktree_path, repo_host
     FROM review_jobs";
 
 fn invalid_column(index: usize, text: &str) -> rusqlite::Error {
@@ -221,6 +223,7 @@ fn read_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
         finished_at: row.get(22)?,
         publication_key: row.get(23)?,
         worktree_path: row.get(24)?,
+        repo_host: row.get(25)?,
     })
 }
 
@@ -242,6 +245,9 @@ fn active_by_key(db: &Connection, key: &str) -> Result<Option<JobRow>, BridgeErr
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewJob {
     pub workspace_id: String,
+    /// The GitHub host; `None` only when retrying a job from before hosts
+    /// were recorded.
+    pub repo_host: Option<String>,
     pub repo_owner: String,
     pub repo_name: String,
     pub number: u64,
@@ -274,8 +280,8 @@ pub fn insert(db: &Connection, job: &NewJob, now: DateTime<Utc>) -> Result<(JobR
     transaction.execute(
         "INSERT INTO review_jobs(id, workspace_id, repo_owner, repo_name, pr_number, head_sha, base_sha,
             incremental_from_sha, trigger_kind, post_mode, harnesses, dedupe_key, status, retry_of, created_at,
-            publication_key)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'queued',?13,?14,COALESCE(?15,?1))",
+            publication_key, repo_host)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'queued',?13,?14,COALESCE(?15,?1),?16)",
         params![
             id,
             job.workspace_id,
@@ -292,6 +298,7 @@ pub fn insert(db: &Connection, job: &NewJob, now: DateTime<Utc>) -> Result<(JobR
             job.retry_of,
             stamp(now),
             job.publication_key,
+            job.repo_host,
         ],
     )?;
     let created = require_job(&transaction, &id)?;
@@ -800,6 +807,7 @@ pub fn retry(db: &Connection, id: &str, now: DateTime<Utc>) -> Result<(JobRow, b
         db,
         &NewJob {
             workspace_id: job.workspace_id,
+            repo_host: job.repo_host,
             repo_owner: job.repo_owner,
             repo_name: job.repo_name,
             number: job.number,
@@ -1126,37 +1134,48 @@ fn slot_harnesses(db: &Connection, job: &JobRow) -> Result<Vec<String>, BridgeEr
 /// pointed at another repository shares none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrKey<'a> {
+    /// The GitHub host: an enterprise repository never shares a
+    /// github.com one's history, whatever its owner and name.
+    pub host: &'a str,
     pub owner: &'a str,
     pub name: &'a str,
     pub number: u64,
 }
 
 impl<'a> PrKey<'a> {
+    /// A job from before hosts were recorded matches no history.
     pub fn of(job: &'a JobRow) -> Self {
-        Self { owner: &job.repo_owner, name: &job.repo_name, number: job.number }
+        Self { host: job.repo_host.as_deref().unwrap_or(""), owner: &job.repo_owner, name: &job.repo_name, number: job.number }
     }
 }
 
-/// The SQL that matches a [`PrKey`] at `?1..?3`, on `review_jobs` as `table`.
+/// The SQL that matches a [`PrKey`] at `?1..?4`, on `review_jobs` as `table`.
+/// A row with no host matches nothing.
 fn same_pr(table: &str) -> String {
-    format!("{table}.repo_owner=?1 COLLATE NOCASE AND {table}.repo_name=?2 COLLATE NOCASE AND {table}.pr_number=?3")
+    format!(
+        "{table}.repo_host=?1 COLLATE NOCASE AND {table}.repo_owner=?2 COLLATE NOCASE
+         AND {table}.repo_name=?3 COLLATE NOCASE AND {table}.pr_number=?4"
+    )
 }
 
 /// The commit the PR's latest posted review is on: where a re-review starts.
 /// That is the commit GitHub holds the review on, which a reconciled retry
-/// can leave older than the job's own head.
+/// can leave older than the job's own head. When the latest posted review's
+/// commit is unknown (a retry posted before it was recorded), there is no
+/// safe start and the review is a full one.
 pub fn latest_posted_head(db: &Connection, pr: PrKey<'_>) -> Result<Option<String>, BridgeError> {
-    Ok(db
+    let latest: Option<Option<String>> = db
         .query_row(
             &format!(
-                "SELECT COALESCE(posted_head_sha, head_sha) FROM review_jobs WHERE {} AND status='posted'
+                "SELECT posted_head_sha FROM review_jobs WHERE {} AND status='posted'
                  ORDER BY COALESCE(finished_at, created_at) DESC, rowid DESC LIMIT 1",
                 same_pr("review_jobs")
             ),
-            params![pr.owner, pr.name, pr.number as i64],
+            params![pr.host, pr.owner, pr.name, pr.number as i64],
             |row| row.get(0),
         )
-        .optional()?)
+        .optional()?;
+    Ok(latest.flatten())
 }
 
 /// Workspaces that have review jobs: auto-review may watch them.
@@ -1169,13 +1188,14 @@ pub fn reviewed_workspaces(db: &Connection) -> Result<Vec<String>, BridgeError> 
 
 /// Each PR's latest review in a repository, from any workspace: what
 /// started it and the head it covered.
-pub fn latest_jobs(db: &Connection, owner: &str, name: &str) -> Result<std::collections::HashMap<u64, (ReviewTrigger, String)>, BridgeError> {
+pub fn latest_jobs(db: &Connection, host: &str, owner: &str, name: &str) -> Result<std::collections::HashMap<u64, (ReviewTrigger, String)>, BridgeError> {
     let mut latest = std::collections::HashMap::new();
     let mut statement = db.prepare(
         "SELECT pr_number, trigger_kind, head_sha FROM review_jobs
-         WHERE repo_owner=?1 COLLATE NOCASE AND repo_name=?2 COLLATE NOCASE ORDER BY created_at, rowid",
+         WHERE repo_host=?1 COLLATE NOCASE AND repo_owner=?2 COLLATE NOCASE AND repo_name=?3 COLLATE NOCASE
+         ORDER BY created_at, rowid",
     )?;
-    let rows = statement.query_map(params![owner, name], |row| {
+    let rows = statement.query_map(params![host, owner, name], |row| {
         Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
     })?;
     for row in rows {
@@ -1194,11 +1214,11 @@ pub fn has_review_of_head(db: &Connection, pr: PrKey<'_>, head_sha: &str) -> Res
     Ok(db
         .query_row(
             &format!(
-                "SELECT 1 FROM review_jobs WHERE {} AND head_sha=?4
+                "SELECT 1 FROM review_jobs WHERE {} AND head_sha=?5
                  AND status NOT IN ('failed','cancelled','interrupted') LIMIT 1",
                 same_pr("review_jobs")
             ),
-            params![pr.owner, pr.name, pr.number as i64, head_sha],
+            params![pr.host, pr.owner, pr.name, pr.number as i64, head_sha],
             |_| Ok(()),
         )
         .optional()?
@@ -1214,10 +1234,10 @@ pub const SUPERSEDED_BY_PUSH: &str = "Superseded by a newer push";
 pub fn supersede_queued_pushes(db: &Connection, pr: PrKey<'_>, head_sha: &str, now: DateTime<Utc>) -> Result<Vec<String>, BridgeError> {
     let queued: Vec<String> = db
         .prepare(&format!(
-            "SELECT id FROM review_jobs WHERE {} AND trigger_kind='push' AND status='queued' AND head_sha<>?4",
+            "SELECT id FROM review_jobs WHERE {} AND trigger_kind='push' AND status='queued' AND head_sha<>?5",
             same_pr("review_jobs")
         ))?
-        .query_map(params![pr.owner, pr.name, pr.number as i64, head_sha], |row| row.get(0))?
+        .query_map(params![pr.host, pr.owner, pr.name, pr.number as i64, head_sha], |row| row.get(0))?
         .collect::<Result<_, _>>()?;
     let mut cancelled = Vec::new();
     for id in queued {
@@ -1265,13 +1285,13 @@ pub fn prior_findings(db: &Connection, pr: PrKey<'_>, job_id: &str) -> Result<Ve
                 COALESCE(f.edited_body, f.body), f.fingerprint, f.decision, f.posted_at IS NOT NULL,
                 f.github_comment_id, f.fixed_in_sha, j.created_at AS job_created, f.rowid AS finding_row
             FROM review_findings f JOIN review_jobs j ON j.id=f.job_id
-            WHERE {} AND j.id<>?4 AND j.status IN ('drafted','posting','posted')
-            ORDER BY j.created_at DESC, f.rowid DESC LIMIT ?5
+            WHERE {} AND j.id<>?5 AND j.status IN ('drafted','posting','posted')
+            ORDER BY j.created_at DESC, f.rowid DESC LIMIT ?6
          ) ORDER BY job_created, finding_row",
         same_pr("j")
     ))?;
     let rows = statement
-        .query_map(params![pr.owner, pr.name, pr.number as i64, job_id, MAX_PRIOR_FINDINGS as i64], |row| {
+        .query_map(params![pr.host, pr.owner, pr.name, pr.number as i64, job_id, MAX_PRIOR_FINDINGS as i64], |row| {
             let side: String = row.get(6)?;
             let severity: String = row.get(7)?;
             let decision: String = row.get(11)?;
@@ -1300,10 +1320,9 @@ pub fn prior_findings(db: &Connection, pr: PrKey<'_>, job_id: &str) -> Result<Ve
 /// Mark earlier findings of the same PR fixed at `job_id`'s head. Only one
 /// that was kept, edited or posted, and not already marked, is marked: a
 /// dropped finding was never a problem to fix. One found at this very head
-/// cannot have been fixed by it, nor one of a review queued after this one.
-/// That the finding's head is not newer than this one is checked with git
-/// when the context is prepared: a pass can only name findings it was shown
-/// (`session::known_fixed`).
+/// cannot have been fixed by it. Order is git's: the runner passes only
+/// findings `prepare` placed at an ancestor of this head
+/// (`Prepared::fixable`), whatever order the reviews were queued in.
 fn mark_fixed(db: &Connection, job_id: &str, finding_ids: &[String]) -> Result<usize, BridgeError> {
     let mut marked = 0;
     for id in finding_ids {
@@ -1312,9 +1331,10 @@ fn mark_fixed(db: &Connection, job_id: &str, finding_ids: &[String]) -> Result<u
              WHERE id=?1 AND job_id<>?2 AND fixed_in_sha IS NULL
                AND (decision IN ('kept','edited') OR posted_at IS NOT NULL)
                AND job_id IN (SELECT other.id FROM review_jobs other, review_jobs this
-                   WHERE this.id=?2 AND other.repo_owner=this.repo_owner COLLATE NOCASE
+                   WHERE this.id=?2 AND other.repo_host=this.repo_host COLLATE NOCASE
+                     AND other.repo_owner=this.repo_owner COLLATE NOCASE
                      AND other.repo_name=this.repo_name COLLATE NOCASE AND other.pr_number=this.pr_number
-                     AND other.head_sha<>this.head_sha AND other.created_at<=this.created_at)",
+                     AND other.head_sha<>this.head_sha)",
             params![id, job_id],
         )?;
     }

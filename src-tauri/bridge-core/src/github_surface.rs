@@ -241,6 +241,8 @@ pub struct PullRequestHead {
     pub base_ref: String,
     pub is_draft: bool,
     pub author: Option<String>,
+    /// Open, rather than closed or merged.
+    pub is_open: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1171,7 +1173,7 @@ impl GithubSurface {
                 "--repo".into(),
                 repository.selector(),
                 "--json".into(),
-                "number,headRefOid,baseRefOid,headRefName,baseRefName,isDraft,author".into(),
+                "number,headRefOid,baseRefOid,headRefName,baseRefName,isDraft,author,state".into(),
             ],
             false,
         )?;
@@ -1189,6 +1191,8 @@ impl GithubSurface {
             is_draft: bool,
             #[serde(default)]
             author: Option<RawActorLogin>,
+            #[serde(default)]
+            state: Option<String>,
         }
         #[derive(Deserialize)]
         struct RawActorLogin {
@@ -1206,6 +1210,9 @@ impl GithubSurface {
             base_ref: raw.base_ref_name,
             is_draft: raw.is_draft,
             author: raw.author.map(|author| author.login),
+            // Only an explicit CLOSED or MERGED closes it: an older read
+            // without the field stays open, as before.
+            is_open: !raw.state.is_some_and(|state| matches!(state.to_ascii_uppercase().as_str(), "CLOSED" | "MERGED")),
         })
     }
 

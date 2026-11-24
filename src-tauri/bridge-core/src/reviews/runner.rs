@@ -513,6 +513,8 @@ impl Driver {
                         outcome.tokens_out = spent.tokens_out;
                         outcome.cost_microusd = spent.cost_microusd;
                         outcome.denied_requests = spent.denied_requests;
+                        // Fix marks only on findings git placed before this head.
+                        outcome.fixed.retain(|id| prepared.fixable.contains(id));
                         let stored = {
                             let db = super::lock_db(&self.core);
                             store::complete_pass(&db, &job.id, &self.claim, &pass_id, &outcome, self.now()).map_err(fatal)?

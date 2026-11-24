@@ -283,6 +283,7 @@ fn job(core: &BridgeCore) -> crate::reviews::store::JobRow {
         &db,
         &crate::reviews::store::NewJob {
             workspace_id: "w".into(),
+            repo_host: Some("github.com".into()),
             repo_owner: "o".into(),
             repo_name: "r".into(),
             number: 42,
@@ -568,12 +569,12 @@ fn incremental_fixture(scratch: &Path) -> IncrementalFixture {
             {"id": "f-divide-by-zero", "reviewedHead": reviewed, "path": "src/lib.rs", "line": 8, "startLine": null, "side": "RIGHT",
              "severity": "major", "title": "average divides by zero on an empty slice",
              "body": "`items.len()` is 0 for an empty slice, so this panics. Return early or return an Option.",
-             "fingerprint": "f1", "decision": "kept", "posted": true, "fixedInSha": null,
+             "fingerprint": "f1", "decision": "kept", "posted": true, "fixedInSha": null, "relation": "earlier",
              "thread": {"resolved": false, "outdated": false, "replies": []}},
             {"id": "f-integer-division", "reviewedHead": reviewed, "path": "src/lib.rs", "line": 8, "startLine": null, "side": "RIGHT",
              "severity": "minor", "title": "Integer division truncates the average",
              "body": "The average of [1, 2] is 1, not 1.5. Consider returning f64.",
-             "fingerprint": "f2", "decision": "dropped", "posted": false, "fixedInSha": null, "thread": null},
+             "fingerprint": "f2", "decision": "dropped", "posted": false, "fixedInSha": null, "thread": null, "relation": "earlier"},
         ])
         .to_string(),
     )
@@ -715,7 +716,7 @@ fn a_failed_pass_still_records_what_it_spent() {
 fn prior(id: &str, title: &str, decision: &str, posted: bool, resolved: Option<bool>) -> Prior {
     serde_json::from_value(json!({
         "id": id, "path": "src/a.rs", "title": title, "severity": "major", "fingerprint": format!("fp-{id}"),
-        "decision": decision, "posted": posted, "fixedInSha": null,
+        "decision": decision, "posted": posted, "fixedInSha": null, "relation": "earlier",
         "thread": resolved.map(|resolved| json!({"resolved": resolved, "outdated": false, "replies": []})),
     }))
     .unwrap()
@@ -782,6 +783,12 @@ fn only_earlier_findings_that_could_be_fixed_are_marked_fixed() {
     let mut same_head = prior("kept", "Kept", "kept", false, None);
     same_head.reviewed_head = Some("new-head".into());
     assert!(known_fixed(&["kept".to_owned()], &[same_head], "new-head").is_empty());
+    // Nor one git cannot place before it (rewritten history, or no relation).
+    for relation in [Some("rewritten"), Some("same"), None] {
+        let mut unplaced = prior("kept", "Kept", "kept", false, None);
+        unplaced.relation = relation.map(String::from);
+        assert!(known_fixed(&["kept".to_owned()], &[unplaced], "new-head").is_empty(), "{relation:?}");
+    }
 }
 
 #[test]
@@ -824,7 +831,7 @@ fn a_re_review_pass_drops_repeats_and_reports_what_the_new_commits_fixed() {
     std::fs::write(
         context.join("prior_findings.json"),
         json!([
-            {"id": "f-kept", "path": "src/a.rs", "title": "Missing check", "severity": "major", "fingerprint": "x1", "decision": "kept", "posted": true, "thread": null},
+            {"id": "f-kept", "path": "src/a.rs", "title": "Missing check", "severity": "major", "fingerprint": "x1", "decision": "kept", "posted": true, "thread": null, "relation": "earlier"},
             {"id": "f-dropped", "path": "src/a.rs", "title": "Style nit", "severity": "nit", "fingerprint": "x2", "decision": "dropped", "posted": false, "thread": null},
         ])
         .to_string(),

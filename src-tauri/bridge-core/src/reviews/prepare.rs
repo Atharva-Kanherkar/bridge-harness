@@ -315,6 +315,11 @@ pub fn prepare(
     } else {
         Vec::new()
     };
+    let fixable = prior
+        .iter()
+        .filter(|(_, relation)| *relation == Relation::Earlier)
+        .map(|(finding, _)| finding.id.clone())
+        .collect();
     if cancel.is_cancelled() {
         return Err(StepError::Cancelled);
     }
@@ -355,7 +360,7 @@ pub fn prepare(
         prior: &prior,
     };
     write_context(&workspace, &context, config, &facts)?;
-    Ok(Prepared { worktree: Some(checkout), context: Some(context), head_sha: head, incremental, guard: Some(guard) })
+    Ok(Prepared { worktree: Some(checkout), context: Some(context), head_sha: head, incremental, fixable, guard: Some(guard) })
 }
 
 /// How an earlier review's head stands to the head under review.
@@ -366,7 +371,8 @@ pub enum Relation {
     /// An ancestor: the commits since may have fixed what it found.
     Earlier,
     /// Neither ancestor nor descendant: the history was rewritten (a rebase or
-    /// force-push). What a person decided still holds.
+    /// force-push). What a person decided still holds, but git cannot say it
+    /// came first, so nothing of it is marked fixed.
     Rewritten,
 }
 

@@ -202,7 +202,7 @@ fn queue(core: &Arc<BridgeCore>, number: u64, harnesses: &[&str]) -> String {
         harnesses: Some(harnesses.iter().map(|harness| harness.to_string()).collect()),
         trigger: None,
     };
-    let head = PrHead { repo_owner: "octo".into(), repo_name: "repo".into(), head_sha: format!("sha-{number}"), base_sha: None };
+    let head = PrHead { repo_host: "github.com".into(), repo_owner: "octo".into(), repo_name: "repo".into(), head_sha: format!("sha-{number}"), base_sha: None };
     crate::reviews::start_with(core, &params, head).unwrap().id
 }
 
@@ -395,6 +395,28 @@ fn a_re_review_summary_says_what_it_covers_or_why_it_reviewed_everything() {
     let fell_back = job(&core, &second).summary.unwrap();
     assert!(fell_back.starts_with(&format!("Full review: {} is no longer in this PR's history", "c".repeat(12))), "{fell_back}");
     assert!(fell_back.ends_with("Looks mostly fine."));
+}
+
+#[test]
+fn only_findings_git_placed_earlier_are_marked_fixed() {
+    let (_scratch, core, script) = fixture();
+    // An earlier review of the PR with two kept findings.
+    let second = DraftFinding { path: "src/other.rs".into(), fingerprint: "fp-2".into(), ..outcome().findings[0].clone() };
+    let two = PassOutcome { findings: vec![outcome().findings[0].clone(), second], ..outcome() };
+    script.plan_review("claude", vec![Ok(two)]);
+    let earlier = queue(&core, 1, &["claude"]);
+    drain(&Runner::with(core.clone(), fast(), Arc::new(Utc::now)));
+    let ids: Vec<String> = crate::reviews::get(&core, &earlier).unwrap().findings.into_iter().map(|finding| finding.id).collect();
+    core.db.lock().unwrap().execute_batch("UPDATE review_findings SET decision='kept'; UPDATE review_jobs SET status='posted';").unwrap();
+    // The re-review's reviewer names both; git placed only the first earlier.
+    let mut fixable = std::collections::HashSet::new();
+    fixable.insert(ids[0].clone());
+    script.prepare.lock().unwrap().push_back(Ok(Prepared { head_sha: "later-head".into(), fixable, ..Prepared::default() }));
+    script.plan_review("codex", vec![Ok(PassOutcome { fixed: ids.clone(), ..outcome() })]);
+    queue(&core, 1, &["codex"]);
+    drain(&Runner::with(core.clone(), fast(), Arc::new(Utc::now)));
+    let marked: Vec<Option<String>> = crate::reviews::get(&core, &earlier).unwrap().findings.into_iter().map(|finding| finding.fixed_in_sha).collect();
+    assert_eq!(marked.iter().filter(|mark| mark.is_some()).count(), 1, "{marked:?}");
 }
 
 #[test]
@@ -593,7 +615,7 @@ fn starting_a_review_creates_no_session() {
 #[test]
 fn start_resolves_harnesses_from_the_request_then_the_settings() {
     let (_scratch, core, _script) = fixture();
-    let head = || PrHead { repo_owner: "octo".into(), repo_name: "repo".into(), head_sha: "abc".into(), base_sha: None };
+    let head = || PrHead { repo_host: "github.com".into(), repo_owner: "octo".into(), repo_name: "repo".into(), head_sha: "abc".into(), base_sha: None };
     let params = |harnesses: Option<Vec<&str>>| wire::StartReviewParams {
         workspace_id: "w1".into(),
         number: 5,
@@ -716,7 +738,7 @@ fn a_moved_head_updates_the_dedupe_key() {
     drain(&Runner::with(core.clone(), fast(), Arc::new(Utc::now)));
     assert_eq!(job(&core, &id).head_sha, "sha-moved");
     let params = wire::StartReviewParams { workspace_id: "w1".into(), number: 1, harnesses: Some(vec!["claude".into()]), trigger: None };
-    let head = PrHead { repo_owner: "octo".into(), repo_name: "repo".into(), head_sha: "sha-moved".into(), base_sha: None };
+    let head = PrHead { repo_host: "github.com".into(), repo_owner: "octo".into(), repo_name: "repo".into(), head_sha: "sha-moved".into(), base_sha: None };
     let again = crate::reviews::start_with(&core, &params, head).unwrap();
     assert_eq!(again.id, id, "starting a review of the new head finds the job that already reviews it");
 }
@@ -728,7 +750,7 @@ fn a_moved_head_already_under_review_supersedes_the_job() {
     let stale = queue(&core, 1, &["claude"]);
     let current = {
         let params = wire::StartReviewParams { workspace_id: "w1".into(), number: 1, harnesses: Some(vec!["claude".into()]), trigger: None };
-        let head = PrHead { repo_owner: "octo".into(), repo_name: "repo".into(), head_sha: "sha-2".into(), base_sha: None };
+        let head = PrHead { repo_host: "github.com".into(), repo_owner: "octo".into(), repo_name: "repo".into(), head_sha: "sha-2".into(), base_sha: None };
         crate::reviews::start_with(&core, &params, head).unwrap().id
     };
     // The older job prepares and finds the PR at the head the newer one reviews.

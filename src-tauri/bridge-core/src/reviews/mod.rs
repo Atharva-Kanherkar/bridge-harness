@@ -34,6 +34,7 @@ pub const DEFAULT_HARNESS_ORDER: [&str; 3] = ["claude", "codex", "opencode"];
 /// What the PR looks like right now, read before a job is queued.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrHead {
+    pub repo_host: String,
     pub repo_owner: String,
     pub repo_name: String,
     pub head_sha: String,
@@ -107,6 +108,7 @@ pub fn start(core: &Arc<BridgeCore>, params: &wire::StartReviewParams) -> Result
         core,
         params,
         PrHead {
+            repo_host: head.repository.host,
             repo_owner: head.repository.owner,
             repo_name: head.repository.name,
             head_sha: head.head_sha,
@@ -138,8 +140,8 @@ pub fn start_gated(
     core.workspace_path(&params.workspace_id)?;
     let harnesses = resolve_harnesses(core, params.harnesses.as_deref())?;
     let trigger = params.trigger.unwrap_or_default();
-    let (owner, name) = (head.repo_owner.clone(), head.repo_name.clone());
-    let pr = store::PrKey { owner: &owner, name: &name, number: params.number };
+    let (host, owner, name) = (head.repo_host.clone(), head.repo_owner.clone(), head.repo_name.clone());
+    let pr = store::PrKey { host: &host, owner: &owner, name: &name, number: params.number };
     let (job, created, superseded) = {
         let db = lock_db(core);
         let settings = settings::load(&db)?;
@@ -158,6 +160,7 @@ pub fn start_gated(
             &db,
             &store::NewJob {
                 workspace_id: params.workspace_id.clone(),
+                repo_host: Some(head.repo_host),
                 repo_owner: head.repo_owner,
                 repo_name: head.repo_name,
                 number: params.number,
@@ -270,7 +273,17 @@ pub fn job_settings(core: &Arc<BridgeCore>) -> Result<wire::ReviewJobSettings, B
 
 /// Save how review jobs run, and let the runner pick up a wider pool now.
 pub fn save_job_settings(core: &Arc<BridgeCore>, next: &wire::ReviewJobSettings) -> Result<wire::ReviewJobSettings, BridgeError> {
-    let saved = settings::save(&lock_db(core), next)?;
+    let saved = {
+        let db = lock_db(core);
+        let before = settings::load(&db)?;
+        let saved = settings::save(&db, next)?;
+        // Under the same lock as the save: an auto-review start checks it
+        // under that lock too, so none starts from the settings before.
+        if (before.auto_review, before.skip_draft_prs) != (saved.auto_review, saved.skip_draft_prs) {
+            core.reviews.auto.settings_changed();
+        }
+        saved
+    };
     core.reviews.wake();
     Ok(saved)
 }
@@ -306,12 +319,15 @@ mod tests {
     #[test]
     fn a_re_review_starts_at_the_last_posted_head_only_when_incremental_is_on() {
         let (_scratch, core) = core();
-        let at = |sha: &str| PrHead { repo_owner: "o".into(), repo_name: "r".into(), head_sha: sha.into(), base_sha: None };
+        let at = |sha: &str| PrHead { repo_host: "github.com".into(), repo_owner: "o".into(), repo_name: "r".into(), head_sha: sha.into(), base_sha: None };
         let request = wire::StartReviewParams { workspace_id: "w".into(), number: 3, harnesses: Some(vec!["claude".into()]), trigger: None };
         let first = start_with(&core, &request, at("aaa")).unwrap();
         assert_eq!(first.incremental_from_sha, None, "nothing posted yet");
         lock_db(&core)
-            .execute("UPDATE review_jobs SET status='posted', finished_at='2026-11-24T10:00:00.000Z' WHERE id=?1", params![first.id])
+            .execute(
+                "UPDATE review_jobs SET status='posted', posted_head_sha=head_sha, finished_at='2026-11-24T10:00:00.000Z' WHERE id=?1",
+                params![first.id],
+            )
             .unwrap();
 
         let off = start_with(&core, &request, at("bbb")).unwrap();
@@ -334,7 +350,7 @@ mod tests {
     #[test]
     fn two_harnesses_need_second_opinion() {
         let (_scratch, core) = core();
-        let head = || PrHead { repo_owner: "o".into(), repo_name: "r".into(), head_sha: "abc".into(), base_sha: None };
+        let head = || PrHead { repo_host: "github.com".into(), repo_owner: "o".into(), repo_name: "r".into(), head_sha: "abc".into(), base_sha: None };
         let params = |harnesses: &[&str]| wire::StartReviewParams {
             workspace_id: "w".into(),
             number: 3,
