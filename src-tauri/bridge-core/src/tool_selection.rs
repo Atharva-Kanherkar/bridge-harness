@@ -478,6 +478,12 @@ pub struct ToolLaunch {
     /// The hash of the stored choice. It differs from `effective_hash` when
     /// the launch cannot apply a part of the choice.
     pub stored_hash: String,
+    /// A workflow step on Codex: every MCP server, plugin and app off, found
+    /// from Codex's own config at launch and checked before the step works.
+    /// Never set from a stored chat choice.
+    pub connectors_off: bool,
+    /// Codex plugins off. Set only by the launch of a `connectors_off` step.
+    pub plugins_off: Vec<String>,
 }
 
 impl ToolLaunch {
@@ -501,6 +507,26 @@ impl ToolLaunch {
             codex_skills_off,
             stored_hash: effective_hash.clone(),
             effective_hash,
+            connectors_off: false,
+            plugins_off: Vec::new(),
+        }
+    }
+
+    /// The launch of a workflow step on `harness` with every connector off.
+    /// Only the Codex adapter reads it; see `codex_adapter::connectors_off`.
+    pub fn connectors_off(harness: &str) -> Self {
+        let effective_hash = hash_of(harness, &[], true, None, &[]);
+        Self {
+            revision: 0,
+            harness: harness.to_owned(),
+            servers_off: Vec::new(),
+            codex_apps_off: true,
+            claude_skills: None,
+            codex_skills_off: Vec::new(),
+            stored_hash: effective_hash.clone(),
+            effective_hash,
+            connectors_off: true,
+            plugins_off: Vec::new(),
         }
     }
 
@@ -985,6 +1011,13 @@ pub fn codex_overrides(tools: &ToolLaunch) -> Vec<String> {
         .filter(|key| !is_bridge(key) && key.as_str() != CODEX_APPS && codex_key_is_safe(key))
         .map(|key| format!("mcp_servers.{key}.enabled=false"))
         .collect();
+    values.extend(
+        tools
+            .plugins_off
+            .iter()
+            .filter(|key| (1..=128).contains(&key.len()) && key.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'@')))
+            .map(|key| format!("plugins.{key}.enabled=false")),
+    );
     if tools.codex_apps_off {
         values.push(CODEX_APPS_OFF.to_owned());
     }
