@@ -118,16 +118,38 @@ pub fn start(core: &Arc<BridgeCore>, params: &wire::StartReviewParams) -> Result
 /// Queue a review of the PR at `head`, or return the live job that already
 /// reviews that head with those harnesses.
 pub fn start_with(core: &Arc<BridgeCore>, params: &wire::StartReviewParams, head: PrHead) -> Result<wire::ReviewJob, BridgeError> {
+    start_gated(core, params, head, &|_, _, _| true)?
+        .ok_or_else(|| BridgeError::Invalid("The review was not started".into()))
+}
+
+/// A last check before a job is inserted, made under the store lock with the
+/// settings as they are at that moment: nothing can change between it and
+/// the insert. False means no job.
+pub type StartGate<'a> = &'a dyn Fn(&rusqlite::Connection, &wire::ReviewJobSettings, store::PrKey<'_>) -> bool;
+
+/// [`start_with`], with `gate` deciding at insertion time. `None` means the
+/// gate refused.
+pub fn start_gated(
+    core: &Arc<BridgeCore>,
+    params: &wire::StartReviewParams,
+    head: PrHead,
+    gate: StartGate<'_>,
+) -> Result<Option<wire::ReviewJob>, BridgeError> {
     core.workspace_path(&params.workspace_id)?;
     let harnesses = resolve_harnesses(core, params.harnesses.as_deref())?;
     let trigger = params.trigger.unwrap_or_default();
+    let (owner, name) = (head.repo_owner.clone(), head.repo_name.clone());
+    let pr = store::PrKey { owner: &owner, name: &name, number: params.number };
     let (job, created, superseded) = {
         let db = lock_db(core);
         let settings = settings::load(&db)?;
-        // A re-review starts at the PR's last posted review, when there is
-        // one and the PR has moved since.
+        if !gate(&db, &settings, pr) {
+            return Ok(None);
+        }
+        // A re-review starts at the commit the PR's last posted review is
+        // on, when there is one and the PR has moved since.
         let incremental_from_sha = if settings.incremental {
-            store::latest_posted_head(&db, &params.workspace_id, params.number)?.filter(|from| *from != head.head_sha)
+            store::latest_posted_head(&db, pr)?.filter(|from| *from != head.head_sha)
         } else {
             None
         };
@@ -152,7 +174,7 @@ pub fn start_with(core: &Arc<BridgeCore>, params: &wire::StartReviewParams, head
         )?;
         // A push review replaces the queued push reviews of older heads.
         let superseded = if trigger == wire::ReviewTrigger::Push {
-            store::supersede_queued_pushes(&db, &params.workspace_id, params.number, &head_sha, Utc::now())?
+            store::supersede_queued_pushes(&db, pr, &head_sha, Utc::now())?
         } else {
             Vec::new()
         };
@@ -166,7 +188,7 @@ pub fn start_with(core: &Arc<BridgeCore>, params: &wire::StartReviewParams, head
         core.events.publish(CoreEvent::ReviewJobUpdated { job: job.clone() });
         core.reviews.wake();
     }
-    Ok(job)
+    Ok(Some(job))
 }
 
 pub fn list(core: &Arc<BridgeCore>, params: &wire::ListReviewsParams) -> Result<wire::ReviewJobList, BridgeError> {

@@ -342,6 +342,7 @@ fn a_found_review_marks_only_what_it_holds() {
     let found = FoundReview {
         id: "5".into(),
         url: "https://github.com/octo/repo/pull/7#pullrequestreview-5".into(),
+        commit_id: None,
         body: format!("Earlier.\n\n{}\n\nBody o\n\n<!-- bridge-review:job-1 -->", outside_heading(&outside)),
     };
     let held = held_by(&plan, &found, &[returned("77", "src/a.rs", 12, "**Major** · Title a\n\nBody a")]);
@@ -413,7 +414,8 @@ if [ "$5" = "POST" ]; then
     if [ -f "$root/reject" ]; then cat "$root/reject"; exit 1; fi
     marker=$(grep -o '<!-- bridge-review:[^ ]* -->' "$9" | head -1)
     url="https://github.com/octo/repo/pull/7#pullrequestreview-555"
-    printf '[{"id":555,"html_url":"%s","body":"Earlier.\\n\\n%s"}]' "$url" "$marker" > "$root/reviews.json"
+    commit=$(grep -o '"commit_id":"[^"]*"' "$9" | head -1 | cut -d'"' -f4)
+    printf '[{"id":555,"html_url":"%s","commit_id":"%s","body":"Earlier.\\n\\n%s"}]' "$url" "$commit" "$marker" > "$root/reviews.json"
     if [ -f "$root/accept-then-time-out" ]; then
         rm "$root/accept-then-time-out"
         printf 'HTTP/2.0 504 Gateway Timeout\r\n\r\n{"message":"Gateway Timeout"}'
@@ -687,6 +689,12 @@ fn a_post_that_timed_out_after_github_took_it_is_not_posted_twice() {
     assert_eq!(job.status, Status::Posted, "{:?}", job.error);
     assert_eq!(job.posted_review_id.as_deref(), Some("555"), "the review GitHub already had");
     assert_eq!(fixture.posts(), 1, "one review on GitHub");
+    // The found review says which commit it is on, and that is the posted head.
+    let posted_head = store::latest_posted_head(&fixture.core.db.lock().unwrap(), store::PrKey::of(&job)).unwrap();
+    assert_eq!(posted_head.as_deref(), Some(job.head_sha.as_str()));
+    let recorded: Option<String> = fixture.core.db.lock().unwrap()
+        .query_row("SELECT posted_head_sha FROM review_jobs WHERE id=?1", rusqlite::params![id], |row| row.get(0)).unwrap();
+    assert_eq!(recorded.as_deref(), Some(job.head_sha.as_str()), "from the found review's commit_id");
     let findings = fixture.findings(&id);
     assert_eq!(findings[0].github_comment_id.as_deref(), Some("901"), "the recovered review's inline comment");
     assert!(findings[0].posted_at.is_some(), "a review found by its marker still marks what it holds");

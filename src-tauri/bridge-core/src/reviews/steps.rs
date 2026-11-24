@@ -235,6 +235,8 @@ pub struct PassOutcome {
 pub struct PostedReview {
     pub review_id: String,
     pub url: String,
+    /// The commit GitHub has the review on, when known.
+    pub commit_id: Option<String>,
     /// The job's findings this review holds, each with its inline comment
     /// when it has one.
     pub findings: Vec<PostedFinding>,

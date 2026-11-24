@@ -42,7 +42,11 @@ if [ "$1 $2" = "pr list" ]; then
     cat "$fixtures/$fixture"
     exit 0
 fi
-if [ "$1 $2" = "pr view" ]; then cat "$fixtures/pr-detail.json"; exit 0; fi
+if [ "$1 $2" = "pr view" ]; then
+    if [ -f "$root/pr-view-delay" ]; then sleep "$(cat "$root/pr-view-delay")"; fi
+    if [ -f "$root/pr-view-fixture" ]; then cat "$fixtures/$(cat "$root/pr-view-fixture")"; else cat "$fixtures/pr-detail.json"; fi
+    exit 0
+fi
 if [ "$1 $2" = "issue list" ]; then cat "$fixtures/issues.json"; exit 0; fi
 if [ "$1 $2" = "issue view" ]; then cat "$fixtures/issue-detail.json"; exit 0; fi
 if [ "$1 $2" = "repo view" ]; then cat "$fixtures/repository.json"; exit 0; fi

@@ -329,6 +329,10 @@ fn conventions_come_from_the_base_branch_not_the_pr() {
 /// A posted review of PR #7 at `head` with three findings: one kept and
 /// posted (its comment is thread 9001 on GitHub), one dropped, one pending.
 fn posted_review(fixture: &Fixture, head: &str) -> String {
+    posted_review_titled(fixture, head, "")
+}
+
+fn posted_review_titled(fixture: &Fixture, head: &str, prefix: &str) -> String {
     let db = fixture.core.db.lock().unwrap();
     let (job, _) = store::insert(
         &db,
@@ -362,12 +366,15 @@ fn posted_review(fixture: &Fixture, head: &str) -> String {
         fingerprint: format!("fp-{title}"),
         outside_diff: false,
     };
-    store::insert_findings(&db, &job.id, &pass, &[finding("Kept one"), finding("Dropped one"), finding("Pending one")], chrono::Utc::now()).unwrap();
+    let titles = ["Kept one", "Dropped one", "Pending one"].map(|title| format!("{prefix}{title}"));
+    store::insert_findings(&db, &job.id, &pass, &titles.iter().map(|title| finding(title)).collect::<Vec<_>>(), chrono::Utc::now()).unwrap();
     db.execute_batch(&format!(
         "UPDATE review_jobs SET status='posted', finished_at='2026-11-24T09:00:00.000Z' WHERE id='{id}';
-         UPDATE review_findings SET decision='kept', posted_at='2026-11-24T09:00:00.000Z', github_comment_id='9001' WHERE job_id='{id}' AND title='Kept one';
-         UPDATE review_findings SET decision='dropped' WHERE job_id='{id}' AND title='Dropped one';",
-        id = job.id
+         UPDATE review_findings SET decision='kept', posted_at='2026-11-24T09:00:00.000Z', github_comment_id='9001' WHERE job_id='{id}' AND title='{kept}';
+         UPDATE review_findings SET decision='dropped' WHERE job_id='{id}' AND title='{dropped}';",
+        id = job.id,
+        kept = titles[0],
+        dropped = titles[1],
     ))
     .unwrap();
     job.id
@@ -424,13 +431,17 @@ fn a_re_review_gets_the_new_commits_and_what_earlier_reviews_said() {
     let whole = std::fs::read_to_string(context.join("diff.patch")).unwrap();
     assert!(whole.contains("+four, added later") && whole.contains("+only in the PR"), "the whole change stays for context");
     let pr = read_json(&context.join("pr.json"));
-    assert_eq!(pr["incremental"], serde_json::json!({"from": fixture.head, "to": head, "fellBack": false}));
+    assert_eq!(
+        pr["incremental"],
+        serde_json::json!({"from": fixture.head, "to": head, "fellBack": false, "diffTruncated": false, "omittedFiles": []})
+    );
 
     let prior = read_json(&context.join(PRIOR_FINDINGS));
     let by_title = |title: &str| prior.as_array().unwrap().iter().find(|item| item["title"] == title).cloned().unwrap();
     let kept = by_title("Kept one");
     assert_eq!((kept["decision"].as_str(), kept["posted"].as_bool()), (Some("kept"), Some(true)));
     assert_eq!(kept["reviewedHead"], fixture.head.as_str());
+    assert_eq!(kept["relation"], "earlier");
     assert_eq!(kept["thread"]["resolved"], false);
     assert_eq!(kept["thread"]["outdated"], false);
     assert_eq!(kept["thread"]["replies"], serde_json::json!([{"author": "author", "body": "Done."}]), "the person's reply travels");
@@ -460,13 +471,48 @@ fn a_force_push_falls_back_to_a_full_review_and_keeps_the_memory() {
     let context = prepared.context.clone().unwrap();
     assert!(!context.join(INCREMENTAL_PATCH).exists());
     assert_eq!(read_json(&context.join("pr.json"))["incremental"]["fellBack"], true);
-    assert_eq!(read_json(&context.join(PRIOR_FINDINGS)).as_array().unwrap().len(), 3, "earlier findings still count");
+    let prior = read_json(&context.join(PRIOR_FINDINGS));
+    assert_eq!(prior.as_array().unwrap().len(), 3, "what a person decided still holds after a rebase");
+    assert!(prior.as_array().unwrap().iter().all(|item| item["relation"] == "rewritten"));
 
     // A commit nobody has (gone from GitHub too) falls back the same way.
     drop(prepared);
     store::cancel(&fixture.core.db.lock().unwrap(), &job.id, chrono::Utc::now()).unwrap();
     let job = claimed_re_review(&fixture, &head, "0123456789abcdef0123456789abcdef01234567");
     assert!(matches!(prepare_job(&fixture, &job).unwrap().incremental, Incremental::FellBack(_)));
+}
+
+#[test]
+fn a_review_of_an_older_head_never_learns_of_a_newer_ones_findings() {
+    let fixture = fixture();
+    posted_review_titled(&fixture, &fixture.head, "Old: ");
+    let newer = push_on_top(&fixture, "a.txt", "one\ntwo\nthree\nfour\n");
+    posted_review_titled(&fixture, &newer, "New: ");
+    // The PR goes back to the older head.
+    git(&fixture.local, &["push", "-q", "-f", "origin", &format!("{}:refs/pull/7/head", fixture.head)]);
+    let job = claimed_re_review(&fixture, &fixture.head, &newer);
+    let prepared = prepare_job(&fixture, &job).unwrap();
+    assert_eq!(prepared.incremental, Incremental::FellBack(newer.clone()), "the newer head is not before this one");
+    let prior = read_json(&prepared.context.clone().unwrap().join(PRIOR_FINDINGS));
+    let titles: Vec<&str> = prior.as_array().unwrap().iter().map(|item| item["title"].as_str().unwrap()).collect();
+    assert!(titles.iter().all(|title| title.starts_with("Old: ")), "{titles:?}");
+    assert_eq!(titles.len(), 3);
+    assert!(prior.as_array().unwrap().iter().all(|item| item["relation"] == "same"));
+}
+
+#[test]
+fn new_commits_too_large_for_the_patch_are_named_not_dropped() {
+    let fixture = fixture();
+    posted_review(&fixture, &fixture.head);
+    // A large rewrite of one file, as when a big earlier edit is reverted.
+    let head = push_on_top(&fixture, "a.txt", &"a long line of text that keeps going\n".repeat(400));
+    let job = claimed_re_review(&fixture, &head, &fixture.head);
+    let prepared = prepare(&fixture.core, &PrepareConfig { max_diff_bytes: 2_000 }, &job, &CancelToken::new()).unwrap();
+    let context = prepared.context.clone().unwrap();
+    let pr = read_json(&context.join("pr.json"));
+    assert_eq!(pr["incremental"]["diffTruncated"], true);
+    assert_eq!(pr["incremental"]["omittedFiles"], serde_json::json!(["a.txt"]));
+    assert!(!std::fs::read_to_string(context.join(INCREMENTAL_PATCH)).unwrap().contains("a long line"));
 }
 
 #[test]
@@ -715,13 +761,14 @@ impl ReviewSteps for Hybrid {
         Ok(self.posted.lock().unwrap().iter().any(|body| body.contains(&marker)).then(|| PostedReview {
             review_id: "1".into(),
             url: "https://example.test/1".into(),
+            commit_id: None,
             findings: Vec::new(),
         }))
     }
 
     fn post(&self, job: &JobRow, _cancel: &CancelToken) -> Result<PostedReview, StepError> {
         self.posted.lock().unwrap().push(post_marker(&job.publication_key));
-        Ok(PostedReview { review_id: "1".into(), url: "https://example.test/1".into(), findings: Vec::new() })
+        Ok(PostedReview { review_id: "1".into(), url: "https://example.test/1".into(), commit_id: None, findings: Vec::new() })
     }
 
     fn cleanup(&self, job_id: &str) {

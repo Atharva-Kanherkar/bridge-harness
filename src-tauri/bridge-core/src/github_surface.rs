@@ -46,6 +46,9 @@ const PR_BRIEF_FIELDS: &str = "number,title,state,isDraft,headRefName,headRefOid
 const PR_HEAD_FIELDS: &str = "headRefOid";
 /// What auto-review reads of each open pull request.
 const PR_OPEN_HEAD_FIELDS: &str = "number,headRefOid,isDraft,author";
+/// Most open pull requests auto-review reads per listing (`gh` pages through
+/// them). A listing this long may have left some out.
+pub const OPEN_HEADS_LIMIT: usize = 1000;
 const PR_RESTORE_FIELDS: &str = "headRefName,headRefOid,isCrossRepository";
 const ISSUE_LIST_FIELDS: &str = "number,title,state,author,labels,createdAt,updatedAt,url";
 const ISSUE_DETAIL_FIELDS: &str = "number,title,body,state,author,labels,comments,createdAt,updatedAt,url";
@@ -1109,7 +1112,7 @@ impl GithubSurface {
     pub fn list_open_heads(&self, workspace: &Path) -> Result<Vec<OpenPullRequestHead>, GithubSurfaceError> {
         self.require_binary()?;
         let repository = self.resolve_repository(workspace)?;
-        let bytes = self.run_gh(workspace, "pr list", &pr_list_args(&repository, PR_OPEN_HEAD_FIELDS, "100"), false)?;
+        let bytes = self.run_gh(workspace, "pr list", &pr_list_args(&repository, PR_OPEN_HEAD_FIELDS, &OPEN_HEADS_LIMIT.to_string()), false)?;
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Raw {
@@ -3245,6 +3248,8 @@ struct RawPostedReview {
     html_url: String,
     #[serde(default)]
     body: Option<String>,
+    #[serde(default)]
+    commit_id: Option<String>,
 }
 
 impl RawPostedReview {
@@ -3253,6 +3258,7 @@ impl RawPostedReview {
             id: self.id.to_string(),
             url: self.html_url,
             body: self.body.unwrap_or_default(),
+            commit_id: self.commit_id.filter(|commit| !commit.is_empty()),
         }
     }
 }

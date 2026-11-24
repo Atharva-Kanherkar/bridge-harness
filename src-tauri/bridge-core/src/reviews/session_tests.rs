@@ -363,7 +363,7 @@ fn a_pass_reads_the_context_and_keeps_inline_and_outside_findings_apart() {
 #[test]
 #[ignore = "live: runs a real harness; set BRIDGE_REVIEW_LIVE_HARNESS"]
 fn live_review_on_a_fixture_pr() {
-    let Ok(harness) = std::env::var("BRIDGE_REVIEW_LIVE_HARNESS") else { return };
+    let harness = std::env::var("BRIDGE_REVIEW_LIVE_HARNESS").expect("set BRIDGE_REVIEW_LIVE_HARNESS to claude, codex or opencode");
     let model = std::env::var("BRIDGE_REVIEW_LIVE_MODEL").ok();
     let scratch = tempfile::tempdir().unwrap();
     // OpenCode keeps its sign-ins in its own data folder, so a paid model
@@ -420,12 +420,25 @@ fn live_review_on_a_fixture_pr() {
     let start = SessionStart { cwd: &repo, model: model.as_deref(), effort: Some("medium"), instructions: &instructions };
     let pr = read_json(&placed.join("pr.json")).unwrap();
     let started = Instant::now();
-    let (result, usage) = run(&transport, &harness, &start, &prompt(&pr, &context_name), &CancelToken::new(), Limits::default());
-    eprintln!("{harness}: {:?} in {:?}\nusage: {usage:#?}", result.as_ref().map(|review| review.findings.len()), started.elapsed());
-    let review = result.expect("a valid findings set");
+    let (result, usage) = run_answered(&transport, &harness, &start, &prompt(&pr, &context_name), &CancelToken::new(), Limits::default());
+    eprintln!("{harness}: {:?} in {:?}\nusage: {usage:#?}", result.as_ref().map(|(review, _)| review.findings.len()), started.elapsed());
+    let (review, answer) = result.expect("a valid findings set");
     let changed = ["src/lib.rs".to_owned()].into_iter().collect();
     let validated = contract::validate(review, &changed, &contract::hunks(&patch));
     eprintln!("{:#?}", validated.findings);
+    save_live_record(
+        &format!("fixture-{harness}{}", model.as_deref().map(|model| format!("-{}", model.replace('/', "_"))).unwrap_or_default()),
+        &json!({
+            "eval": "live_review_on_a_fixture_pr",
+            "harness": harness,
+            "model": model,
+            "seconds": started.elapsed().as_secs_f64(),
+            "usage": {"tokensIn": usage.tokens_in, "tokensOut": usage.tokens_out, "costMicrousd": usage.cost_microusd,
+                "deniedRequests": usage.denied_requests, "tools": usage.tools},
+            "answer": answer,
+            "findings": validated.findings.iter().map(|finding| json!({"path": finding.path, "line": finding.line, "severity": finding.severity.as_str(), "title": finding.title})).collect::<Vec<_>>(),
+        }),
+    );
     assert!(!validated.findings.is_empty(), "the planted bug is found");
     if harness != "codex" {
         assert!(
@@ -450,7 +463,7 @@ fn live_review_on_a_fixture_pr() {
 #[test]
 #[ignore = "live: runs a real harness; set BRIDGE_REVIEW_LIVE_HARNESS"]
 fn live_incremental_review_on_a_fixture_pr() {
-    let Ok(harness) = std::env::var("BRIDGE_REVIEW_LIVE_HARNESS") else { return };
+    let harness = std::env::var("BRIDGE_REVIEW_LIVE_HARNESS").expect("set BRIDGE_REVIEW_LIVE_HARNESS to claude, codex or opencode");
     let model = std::env::var("BRIDGE_REVIEW_LIVE_MODEL").ok();
     let scratch = tempfile::tempdir().unwrap();
     if harness == "opencode" && std::env::var_os("BRIDGE_REVIEW_LIVE_OPENCODE_SIGNED_IN").is_none() {
@@ -478,8 +491,8 @@ fn live_incremental_review_on_a_fixture_pr() {
     let reviewed = git(&["rev-parse", "HEAD"]);
     // The new commit: the empty case is handled, and `first` panics when
     // n is larger than the slice.
-    let fixed = "\n/// The average of the items, or 0 for none.\npub fn average(items: &[i32]) -> i32 {\n    if items.is_empty() {\n        return 0;\n    }\n    items.iter().sum::<i32>() / items.len() as i32\n}\n\n/// The first `n` items.\npub fn first(items: &[i32], n: usize) -> &[i32] {\n    &items[..n]\n}\n";
-    std::fs::write(repo.join("src/lib.rs"), format!("{last}{fixed}")).unwrap();
+    let fixed_src = "\n/// The average of the items, or 0 for none.\npub fn average(items: &[i32]) -> i32 {\n    if items.is_empty() {\n        return 0;\n    }\n    items.iter().sum::<i32>() / items.len() as i32\n}\n\n/// The first `n` items.\npub fn first(items: &[i32], n: usize) -> &[i32] {\n    &items[..n]\n}\n";
+    std::fs::write(repo.join("src/lib.rs"), format!("{last}{fixed_src}")).unwrap();
     git(&["commit", "-q", "-am", "Handle no items, add first"]);
     let head = git(&["rev-parse", "HEAD"]);
 
@@ -523,19 +536,58 @@ fn live_incremental_review_on_a_fixture_pr() {
     let start = SessionStart { cwd: &repo, model: model.as_deref(), effort: Some("medium"), instructions: &instructions };
     let pr = read_json(&placed.join("pr.json")).unwrap();
     let started = Instant::now();
-    let (result, usage) = run(&transport, &harness, &start, &prompt(&pr, &context_name), &CancelToken::new(), Limits::default());
-    eprintln!("{harness}: {:?} in {:?}\nusage: {usage:#?}", result.as_ref().map(|review| review.findings.len()), started.elapsed());
-    let review = result.expect("a valid findings set");
-    eprintln!("summary: {}\nfixed: {:?}", review.summary, review.fixed);
+    let (result, usage) = run_answered(&transport, &harness, &start, &prompt(&pr, &context_name), &CancelToken::new(), Limits::default());
+    let elapsed = started.elapsed();
+    let (review, answer) = result.expect("a valid findings set");
     let changed = ["src/lib.rs".to_owned()].into_iter().collect();
-    let validated = contract::validate(review, &changed, &contract::hunks(&patch));
+    let validated = contract::validate(review.clone(), &changed, &contract::hunks(&patch));
     let prior = read_prior(&placed).unwrap();
-    let raised = validated.findings.len();
-    let findings = without_repeats(validated.findings, &prior);
-    let fixed = known_fixed(&validated.fixed, &prior);
-    eprintln!("raised {raised}, kept after repeats {}, fixed {fixed:?}\n{findings:#?}", findings.len());
-    assert!(fixed.contains(&"f-divide-by-zero".to_owned()), "the posted finding the new commit fixed");
-    assert!(findings.iter().any(|finding| finding.title.to_lowercase().contains("first") || finding.body.contains("first")), "the new bug in `first`");
+    let findings = without_repeats(validated.findings.clone(), &prior);
+    let fixed = known_fixed(&validated.fixed, &prior, &head);
+
+    // Scored strictly: the acceptance of #1122, on what Bridge would draft.
+    let new_text = format!("{last}{fixed_text}", fixed_text = fixed_src);
+    let first_line = new_text.lines().position(|line| line.starts_with("pub fn first")).unwrap() as u32 + 1;
+    let about = |finding: &DraftFinding, words: &[&str]| {
+        let text = format!("{} {}", finding.title, finding.body).to_lowercase();
+        words.iter().any(|word| text.contains(word))
+    };
+    let dropped_words = ["integer division", "truncat", "f64", "floating", "rounds down"];
+    let checks = json!({
+        "exactlyOneFinding": findings.len() == 1,
+        "onFirst": findings.iter().all(|finding| finding.path == "src/lib.rs" && (first_line..=first_line + 2).contains(&finding.line)),
+        "aboutThePanic": findings.iter().all(|finding| about(finding, &["panic", "out of bounds", "bounds", "exceed", "larger than", "len()"])),
+        "droppedNotRaised": !findings.iter().any(|finding| about(finding, &dropped_words)),
+        "modelRepeatedDropped": validated.findings.iter().any(|finding| about(finding, &dropped_words)),
+        "fixedExactly": fixed == ["f-divide-by-zero"],
+    });
+    let pass = ["exactlyOneFinding", "onFirst", "aboutThePanic", "droppedNotRaised", "fixedExactly"].iter().all(|key| checks[key] == true);
+    let record = json!({
+        "eval": "live_incremental_review_on_a_fixture_pr",
+        "harness": harness,
+        "model": model,
+        "seconds": elapsed.as_secs_f64(),
+        "usage": {"tokensIn": usage.tokens_in, "tokensOut": usage.tokens_out, "costMicrousd": usage.cost_microusd,
+            "deniedRequests": usage.denied_requests, "tools": usage.tools},
+        "answer": answer,
+        "fixedAsGiven": review.fixed,
+        "draftedFindings": findings.iter().map(|finding| json!({"path": finding.path, "line": finding.line, "severity": finding.severity.as_str(), "title": finding.title, "body": finding.body})).collect::<Vec<_>>(),
+        "draftedFixed": fixed,
+        "checks": checks,
+        "pass": pass,
+    });
+    save_live_record(&format!("incremental-{harness}{}", model.as_deref().map(|model| format!("-{}", model.replace('/', "_"))).unwrap_or_default()), &record);
+    eprintln!("{}", serde_json::to_string_pretty(&record).unwrap());
+    assert!(pass, "the re-review missed the acceptance: {checks}");
+}
+
+/// Keep a live eval's evidence: the reviewer's answer word for word and how
+/// it was scored, in `BRIDGE_REVIEW_LIVE_OUT` when it is set.
+fn save_live_record(name: &str, record: &Value) {
+    let Some(folder) = std::env::var_os("BRIDGE_REVIEW_LIVE_OUT") else { return };
+    let folder = std::path::PathBuf::from(folder);
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join(format!("{name}.json")), serde_json::to_string_pretty(record).unwrap()).unwrap();
 }
 
 #[test]
@@ -701,7 +753,11 @@ fn only_earlier_findings_that_could_be_fixed_are_marked_fixed() {
         fixed_already,
     ];
     let said = ["kept", "dropped", "unknown", "kept", "posted", "pending", "old", "edited"].map(String::from);
-    assert_eq!(known_fixed(&said, &priors), ["kept", "posted", "edited"]);
+    assert_eq!(known_fixed(&said, &priors, "new-head"), ["kept", "posted", "edited"]);
+    // One found at this very head was not fixed by it.
+    let mut same_head = prior("kept", "Kept", "kept", false, None);
+    same_head.reviewed_head = Some("new-head".into());
+    assert!(known_fixed(&["kept".to_owned()], &[same_head], "new-head").is_empty());
 }
 
 #[test]
@@ -713,6 +769,10 @@ fn a_re_review_turn_keeps_the_stable_prefix_and_adds_its_files_last() {
     assert!(turn.starts_with(&prompt(&full, ".bridge-review-0a1b2c3d4e5f")), "what a full review says comes first, unchanged");
     assert!(turn.contains(".bridge-review-0a1b2c3d4e5f/incremental.patch") && turn.contains("`aaaaaaaaaaaa..bbbbbbbbbbbb`"));
     assert!(turn.contains(".bridge-review-0a1b2c3d4e5f/prior_findings.json") && turn.contains("`fixed`"));
+    assert!(turn.contains("`relation`"));
+    let mut large = incremental.clone();
+    large["incremental"]["omittedFiles"] = json!(["huge.rs", "big.rs"]);
+    assert!(prompt(&large, "ctx").contains("too large for incremental.patch; read them in the checkout: huge.rs, big.rs."));
     let mut fell_back = full.clone();
     fell_back["incremental"] = json!({"from": "aaaaaaaaaaaaaaaa", "to": "bbbbbbbbbbbbbbbb", "fellBack": true});
     let turn = prompt(&fell_back, "ctx");
@@ -731,7 +791,7 @@ fn a_re_review_pass_drops_repeats_and_reports_what_the_new_commits_fixed() {
     std::fs::create_dir_all(&checkout).unwrap();
     std::fs::create_dir_all(&context).unwrap();
     let pr = json!({"number": 42, "title": "Parse input", "changedFiles": 1, "omittedFiles": [],
-        "incremental": {"from": "aaaaaaaaaaaaaaaa", "to": "bbbbbbbbbbbbbbbb", "fellBack": false}});
+        "incremental": {"from": "aaaaaaaaaaaaaaaa", "to": "bbbbbbbbbbbbbbbb", "fellBack": false, "omittedFiles": ["huge.rs"]}});
     std::fs::write(context.join("pr.json"), pr.to_string()).unwrap();
     std::fs::write(context.join("files.json"), json!([{"path": "src/a.rs", "status": "modified"}]).to_string()).unwrap();
     std::fs::write(context.join("diff.patch"), PATCH).unwrap();
@@ -765,4 +825,5 @@ fn a_re_review_pass_drops_repeats_and_reports_what_the_new_commits_fixed() {
     let placed: Vec<_> = std::fs::read_dir(&checkout).unwrap().filter_map(Result::ok).map(|entry| entry.path()).collect();
     assert!(placed[0].join("incremental.patch").is_file() && placed[0].join("prior_findings.json").is_file(), "the re-review files reach the reviewer");
     assert!(script.sent.lock().unwrap()[0].contains("This is a re-review."));
+    assert!(outcome.summary.ends_with("Not in the re-review's patch of the new commits (too large to include): huge.rs."), "{}", outcome.summary);
 }

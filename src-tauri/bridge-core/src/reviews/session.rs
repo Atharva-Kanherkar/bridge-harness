@@ -399,6 +399,20 @@ pub fn run(
     cancel: &CancelToken,
     limits: Limits,
 ) -> (Result<RawReview, SessionError>, Usage) {
+    let (result, usage) = run_answered(transport, harness, start, prompt, cancel, limits);
+    (result.map(|(review, _)| review), usage)
+}
+
+/// [`run`], also handing back the final message the review was read from,
+/// word for word: what an eval keeps as evidence.
+pub fn run_answered(
+    transport: &dyn Transport,
+    harness: &str,
+    start: &SessionStart<'_>,
+    prompt: &str,
+    cancel: &CancelToken,
+    limits: Limits,
+) -> (Result<(RawReview, String), SessionError>, Usage) {
     let mut usage = Usage::default();
     let mut session = match transport.start(harness, start) {
         Ok(session) => session,
@@ -406,10 +420,10 @@ pub fn run(
     };
     let deadline = Instant::now() + limits.max_wall;
     let result = turn(session.as_mut(), prompt, &mut usage, deadline, limits, cancel).and_then(|text| match contract::parse(&text) {
-        Ok(review) => Ok(review),
+        Ok(review) => Ok((review, text)),
         Err(error) => {
             let repaired = turn(session.as_mut(), &repair_prompt(&error), &mut usage, deadline, limits, cancel)?;
-            contract::parse(&repaired).map_err(SessionError::Contract)
+            contract::parse(&repaired).map(|review| (review, repaired)).map_err(SessionError::Contract)
         }
     });
     session.stop(result.is_ok());
@@ -513,11 +527,20 @@ history (it was force-pushed), so review the whole change."
 - `{context}/{INCREMENTAL_PATCH}`: the new commits, `{from}..{to}`. Review these. diff.patch is still the whole change, for \
 context, and inline comments still go on its lines."
             ));
+            let left_out = new_commits_left_out(pr);
+            if !left_out.is_empty() {
+                text.push_str(&format!(
+                    " These files changed in the new commits but were too large for {INCREMENTAL_PATCH}; read them in the \
+checkout: {}.",
+                    left_out.join(", ")
+                ));
+            }
         }
         text.push_str(&format!(
             "\n- `{context}/{PRIOR_FINDINGS}`: what earlier reviews of this pull request found, each with its `id`, the \
-`decision` a person made (pending, kept, dropped, edited), whether it was `posted`, and its GitHub `thread` (resolved, \
-outdated, replies).\n\n\
+`decision` a person made (pending, kept, dropped, edited), whether it was `posted`, its GitHub `thread` (resolved, \
+outdated, replies), and its `relation` to this head (`earlier`, `same`, or `rewritten` when the history was since \
+rewritten).\n\n\
 Do not raise again a finding that was dropped, posted, or whose thread is resolved, unless the new commits made it \
 worse; then say what got worse. Put the `id` of each earlier finding the new commits fixed in `fixed`, and say in the \
 summary which ones they fixed."
@@ -646,11 +669,19 @@ pub fn review_pass_with(
     let validated = contract::validate(review, &changed, &contract::hunks(&patch));
     let prior = read_prior(&placed)?;
     let findings = without_repeats(validated.findings, &prior);
-    let fixed = known_fixed(&validated.fixed, &prior);
+    let reviewed = if request.prepared.head_sha.is_empty() { request.job.head_sha.as_str() } else { request.prepared.head_sha.as_str() };
+    let fixed = known_fixed(&validated.fixed, &prior, reviewed);
     let mut summary = validated.summary;
     let omitted: Vec<&str> = pr["omittedFiles"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
     if !omitted.is_empty() {
         summary.push_str(&format!("\n\nNot reviewed in the diff (too large to include): {}.", omitted.join(", ")));
+    }
+    let left_out = new_commits_left_out(&pr);
+    if !left_out.is_empty() {
+        summary.push_str(&format!(
+            "\n\nNot in the re-review's patch of the new commits (too large to include): {}.",
+            left_out.join(", ")
+        ));
     }
     Ok(PassOutcome {
         summary,
@@ -669,6 +700,12 @@ pub fn review_pass_with(
 #[serde(rename_all = "camelCase")]
 pub struct Prior {
     pub id: String,
+    /// The head the earlier review looked at.
+    #[serde(default)]
+    pub reviewed_head: Option<String>,
+    /// How that head stands to this one: `earlier`, `same` or `rewritten`.
+    #[serde(default)]
+    pub relation: Option<String>,
     pub path: String,
     pub title: String,
     pub severity: bridge_protocol::messages::ReviewSeverity,
@@ -694,11 +731,14 @@ impl Prior {
         self.decision == Decision::Dropped || self.posted || self.thread.as_ref().is_some_and(|thread| thread.resolved)
     }
 
-    /// Kept, edited or posted, and not already marked fixed: something a
-    /// later commit can fix.
-    fn fixable(&self) -> bool {
+    /// Kept, edited or posted, not already marked fixed, and found at an
+    /// earlier head than `head`: something the commits since can fix.
+    fn fixable(&self, head: &str) -> bool {
         use bridge_protocol::messages::ReviewFindingDecision as Decision;
-        self.fixed_in_sha.is_none() && (matches!(self.decision, Decision::Kept | Decision::Edited) || self.posted)
+        self.fixed_in_sha.is_none()
+            && self.reviewed_head.as_deref() != Some(head)
+            && self.relation.as_deref() != Some("same")
+            && (matches!(self.decision, Decision::Kept | Decision::Edited) || self.posted)
     }
 }
 
@@ -730,12 +770,19 @@ pub fn without_repeats(findings: Vec<DraftFinding>, prior: &[Prior]) -> Vec<Draf
         .collect()
 }
 
-/// The `fixed` ids that name an earlier finding something could fix, each
-/// once, in the order given.
-pub fn known_fixed(fixed: &[String], prior: &[Prior]) -> Vec<String> {
+/// The files the new commits changed that did not fit in the re-review's
+/// patch.
+fn new_commits_left_out(pr: &Value) -> Vec<&str> {
+    pr["incremental"]["omittedFiles"].as_array().into_iter().flatten().filter_map(Value::as_str).collect()
+}
+
+/// The `fixed` ids that name an earlier finding the commits up to `head`
+/// could fix, each once, in the order given. Only findings the reviewer was
+/// shown can be named, and those came from heads before `head` (`prepare`).
+pub fn known_fixed(fixed: &[String], prior: &[Prior], head: &str) -> Vec<String> {
     let mut known = Vec::new();
     for id in fixed {
-        if !known.contains(id) && prior.iter().any(|earlier| &earlier.id == id && earlier.fixable()) {
+        if !known.contains(id) && prior.iter().any(|earlier| &earlier.id == id && earlier.fixable(head)) {
             known.push(id.clone());
         }
     }

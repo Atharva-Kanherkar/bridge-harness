@@ -211,7 +211,7 @@ fn an_expired_posting_lease_keeps_the_job_posting_without_a_lease() {
     assert_eq!(reclaimed.lease_owner, None);
     let (claimed, token) = claim(&db, "runner-b", at(LEASE_SECONDS + 2));
     assert_eq!(claimed.status, Status::Posting, "a posting job is claimed as-is");
-    let posted = PostedReview { review_id: "r1".into(), url: "https://example.test/r1".into(), findings: Vec::new() };
+    let posted = PostedReview { review_id: "r1".into(), url: "https://example.test/r1".into(), commit_id: None, findings: Vec::new() };
     assert!(mark_posted(&db, &job.id, &token, &posted, at(LEASE_SECONDS + 3)).unwrap());
     let posted = require_job(&db, &job.id).unwrap();
     assert_eq!(posted.status, Status::Posted);
@@ -637,6 +637,7 @@ fn marking_posted_records_comment_ids_and_posted_at() {
     let posted = PostedReview {
         review_id: "9".into(),
         url: "https://github.com/octo/repo/pull/1#pullrequestreview-9".into(),
+        commit_id: None,
         findings: vec![
             crate::reviews::steps::PostedFinding { finding_id: ids[0].clone(), comment_id: Some("101".into()) },
             crate::reviews::steps::PostedFinding { finding_id: ids[1].clone(), comment_id: None },
@@ -730,7 +731,71 @@ fn a_re_review_marks_fixed_only_findings_of_the_same_pr_that_were_kept_edited_or
         assert_eq!(fixed_in(&earlier, path), None, "{path} was never a problem to fix");
     }
     assert_eq!(fixed_in(&other_pr, "src/kept.rs"), None, "another PR's finding is not this re-review's to mark");
-    let prior = prior_findings(&db, "w1", 7, &job.id).unwrap();
+    let prior = prior_findings(&db, PrKey { owner: "octo", name: "repo", number: 7 }, &job.id).unwrap();
     assert_eq!(prior.len(), 5, "the re-review's own findings are not prior ones");
     assert_eq!(prior.iter().find(|finding| finding.path == "src/edited.rs").unwrap().body, "e", "the edited body is what was said");
+}
+
+#[test]
+fn the_posted_head_is_the_commit_github_has_the_review_on() {
+    let (_scratch, db) = open();
+    insert(&db, &new_job(7, "h2", &["claude"]), at(0)).unwrap();
+    let (job, token) = claim(&db, "runner", at(1));
+    for (from, to) in [(Status::Preparing, Status::Reviewing), (Status::Reviewing, Status::Drafted), (Status::Drafted, Status::Posting)] {
+        assert!(advance(&db, &job.id, &token, from, to, false).unwrap(), "{from:?} -> {to:?}");
+    }
+    // A retry found the earlier attempt's review, made on h1, already posted.
+    let posted = PostedReview { review_id: "r".into(), url: "u".into(), commit_id: Some("h1".into()), findings: Vec::new() };
+    assert!(mark_posted(&db, &job.id, &token, &posted, at(2)).unwrap());
+    let pr = PrKey { owner: "octo", name: "repo", number: 7 };
+    assert_eq!(latest_posted_head(&db, pr).unwrap().as_deref(), Some("h1"), "never past what GitHub holds");
+}
+
+#[test]
+fn history_belongs_to_the_repository_not_the_workspace() {
+    let (_scratch, db) = open();
+    let with = |workspace: &str, name: &str, sha: &str| NewJob { workspace_id: workspace.into(), repo_name: name.into(), ..new_job(7, sha, &["claude"]) };
+    let (one, _) = insert(&db, &with("w1", "repo", "a"), at(0)).unwrap();
+    let (two, _) = insert(&db, &with("w2", "Repo", "b"), at(1)).unwrap();
+    // The same workspace, later pointed at another repository with its own #7.
+    let (elsewhere, _) = insert(&db, &with("w1", "other", "c"), at(2)).unwrap();
+    for job in [&one, &two, &elsewhere] {
+        let pass = insert_pass(&db, &job.id, 0, 1, "claude", at(3)).unwrap();
+        insert_findings(&db, &job.id, &pass, &[draft("src/a.rs")], at(3)).unwrap();
+    }
+    db.execute("UPDATE review_jobs SET status='posted'", []).unwrap();
+    let repo = PrKey { owner: "OCTO", name: "repo", number: 7 };
+    let (current, _) = insert(&db, &with("w1", "repo", "d"), at(4)).unwrap();
+    let prior: Vec<String> = prior_findings(&db, repo, &current.id).unwrap().into_iter().map(|finding| finding.job_id).collect();
+    assert_eq!(prior, [one.id.clone(), two.id.clone()], "both workspaces of the repository, never the other repository");
+    assert_eq!(latest_posted_head(&db, repo).unwrap().as_deref(), Some("b"));
+    assert!(has_review_of_head(&db, repo, "a").unwrap() && has_review_of_head(&db, repo, "b").unwrap());
+    assert!(!has_review_of_head(&db, repo, "c").unwrap(), "another repository's head");
+    let other = PrKey { owner: "octo", name: "other", number: 7 };
+    assert!(prior_findings(&db, other, "none").unwrap().iter().all(|finding| finding.job_id == elsewhere.id));
+}
+
+#[test]
+fn a_fix_mark_never_reaches_a_review_queued_later() {
+    let (_scratch, db) = open();
+    let (later, _) = insert(&db, &new_job(7, "h2", &["claude"]), at(10)).unwrap();
+    let pass = insert_pass(&db, &later.id, 0, 1, "claude", at(10)).unwrap();
+    insert_findings(&db, &later.id, &pass, &[draft("src/a.rs")], at(10)).unwrap();
+    db.execute_batch("UPDATE review_jobs SET status='posted'; UPDATE review_findings SET decision='kept';").unwrap();
+    let finding = findings(&db, &later.id).unwrap().remove(0).id;
+    // An older review, queued before it, finishes afterwards.
+    db.execute(
+        "INSERT INTO review_jobs(id, workspace_id, repo_owner, repo_name, pr_number, head_sha, trigger_kind, post_mode, harnesses,
+            dedupe_key, publication_key, status, created_at)
+         VALUES('earlier','w1','octo','repo',7,'h1','manual','draft','[\"claude\"]','k','p','queued',?1)",
+        params![stamp(at(5))],
+    )
+    .unwrap();
+    let (job, token) = claim(&db, "runner", at(11));
+    assert_eq!(job.id, "earlier");
+    assert!(advance(&db, &job.id, &token, Status::Preparing, Status::Reviewing, false).unwrap());
+    let pass = begin_pass(&db, &job.id, &token, 0, "claude", at(12)).unwrap().unwrap();
+    let outcome = PassOutcome { fixed: vec![finding.clone()], ..Default::default() };
+    assert!(complete_pass(&db, &job.id, &token, &pass, &outcome, at(13)).unwrap());
+    assert_eq!(findings(&db, &later.id).unwrap()[0].fixed_in_sha, None, "history does not run backward");
 }

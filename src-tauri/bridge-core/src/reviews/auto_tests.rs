@@ -17,10 +17,10 @@ fn never(_: u64, _: &str) -> bool {
 fn the_first_listing_is_a_baseline_and_a_new_head_waits_for_the_debounce() {
     let start = Instant::now();
     let mut watch = Watch::default();
-    observe(&mut watch, &[pr(7, "a", false, "me")], &all(), start, never);
+    observe(&mut watch, &[pr(7, "a", false, "me")], true, &all(), start, never);
     assert!(due(&mut watch, start + DEBOUNCE * 10).is_empty(), "turning it on reviews nothing at once");
 
-    observe(&mut watch, &[pr(7, "b", false, "me")], &all(), start + LIST_EVERY, never);
+    observe(&mut watch, &[pr(7, "b", false, "me")], true, &all(), start + LIST_EVERY, never);
     assert!(due(&mut watch, start + LIST_EVERY + DEBOUNCE - Duration::from_secs(1)).is_empty());
     assert_eq!(due(&mut watch, start + LIST_EVERY + DEBOUNCE), [(7, "b".to_owned())]);
     assert!(due(&mut watch, start + LIST_EVERY * 10).is_empty(), "handed out once");
@@ -30,10 +30,10 @@ fn the_first_listing_is_a_baseline_and_a_new_head_waits_for_the_debounce() {
 fn two_pushes_within_a_minute_start_one_review_at_the_last_head() {
     let start = Instant::now();
     let mut watch = Watch::default();
-    observe(&mut watch, &[pr(7, "a", false, "me")], &all(), start, never);
-    observe(&mut watch, &[pr(7, "b", false, "me")], &all(), start + LIST_EVERY, never);
+    observe(&mut watch, &[pr(7, "a", false, "me")], true, &all(), start, never);
+    observe(&mut watch, &[pr(7, "b", false, "me")], true, &all(), start + LIST_EVERY, never);
     // The second push lands before the first one's quiet period ends.
-    observe(&mut watch, &[pr(7, "c", false, "me")], &all(), start + LIST_EVERY * 2, never);
+    observe(&mut watch, &[pr(7, "c", false, "me")], true, &all(), start + LIST_EVERY * 2, never);
     assert!(due(&mut watch, start + LIST_EVERY + DEBOUNCE).is_empty(), "the debounce restarts on the second push");
     assert_eq!(due(&mut watch, start + LIST_EVERY * 2 + DEBOUNCE), [(7, "c".to_owned())]);
 }
@@ -42,13 +42,13 @@ fn two_pushes_within_a_minute_start_one_review_at_the_last_head() {
 fn a_pr_that_opens_after_the_baseline_is_reviewed_and_a_closed_one_is_forgotten() {
     let start = Instant::now();
     let mut watch = Watch::default();
-    observe(&mut watch, &[pr(7, "a", false, "me")], &all(), start, never);
-    observe(&mut watch, &[pr(7, "a", false, "me"), pr(8, "x", false, "me")], &all(), start + LIST_EVERY, never);
+    observe(&mut watch, &[pr(7, "a", false, "me")], true, &all(), start, never);
+    observe(&mut watch, &[pr(7, "a", false, "me"), pr(8, "x", false, "me")], true, &all(), start + LIST_EVERY, never);
     assert_eq!(due(&mut watch, start + LIST_EVERY + DEBOUNCE), [(8, "x".to_owned())]);
-    observe(&mut watch, &[pr(8, "y", false, "me")], &all(), start + LIST_EVERY * 2, never);
+    observe(&mut watch, &[pr(8, "y", false, "me")], true, &all(), start + LIST_EVERY * 2, never);
     assert!(!watch.prs.contains_key(&7), "closed or merged: forgotten");
     // Reopened later, it is new again.
-    observe(&mut watch, &[pr(7, "a", false, "me"), pr(8, "y", false, "me")], &all(), start + LIST_EVERY * 3, never);
+    observe(&mut watch, &[pr(7, "a", false, "me"), pr(8, "y", false, "me")], true, &all(), start + LIST_EVERY * 3, never);
     assert!(watch.prs[&7].pending_since.is_some());
 }
 
@@ -57,7 +57,7 @@ fn on_the_baseline_only_a_pr_pushed_while_bridge_was_closed_is_reviewed() {
     let start = Instant::now();
     let mut watch = Watch::default();
     // #7's last review was a push review of an older head; #8's was manual.
-    observe(&mut watch, &[pr(7, "new", false, "me"), pr(8, "new", false, "me")], &all(), start, |number, _| number == 7);
+    observe(&mut watch, &[pr(7, "new", false, "me"), pr(8, "new", false, "me")], true, &all(), start, |number, _| number == 7);
     assert_eq!(due(&mut watch, start + DEBOUNCE), [(7, "new".to_owned())]);
 }
 
@@ -85,17 +85,17 @@ fn the_filters_decide_which_prs_are_reviewed() {
 fn a_draft_marked_ready_counts_as_a_change() {
     let start = Instant::now();
     let mut watch = Watch::default();
-    observe(&mut watch, &[pr(7, "a", true, "me")], &all(), start, never);
-    observe(&mut watch, &[pr(7, "b", true, "me")], &all(), start + LIST_EVERY, never);
+    observe(&mut watch, &[pr(7, "a", true, "me")], true, &all(), start, never);
+    observe(&mut watch, &[pr(7, "b", true, "me")], true, &all(), start + LIST_EVERY, never);
     assert!(due(&mut watch, start + LIST_EVERY * 10).is_empty(), "a draft is skipped");
-    observe(&mut watch, &[pr(7, "b", false, "me")], &all(), start + LIST_EVERY * 11, never);
+    observe(&mut watch, &[pr(7, "b", false, "me")], true, &all(), start + LIST_EVERY * 11, never);
     assert_eq!(due(&mut watch, start + LIST_EVERY * 11 + DEBOUNCE), [(7, "b".to_owned())]);
 }
 
 // --- the tick, against the fake `gh` and a real store --------------------------
 
 struct Fixture {
-    _scratch: tempfile::TempDir,
+    scratch: tempfile::TempDir,
     gh: std::path::PathBuf,
     core: Arc<BridgeCore>,
 }
@@ -136,7 +136,47 @@ impl Fixture {
             .unwrap();
         }
         core.reviews.auto.expose("w", repo);
-        Fixture { gh, core, _scratch: scratch }
+        Fixture { gh, core, scratch }
+    }
+
+    /// A second workspace: another checkout of the same repository.
+    fn second_workspace(&self) {
+        let repo = self.scratch.path().join("repo-2");
+        std::fs::create_dir(&repo).unwrap();
+        for args in [vec!["init", "-q", "-b", "main"], vec!["remote", "add", "origin", "https://github.com/fixture/project.git"]] {
+            assert!(crate::git::git_command(&repo).args(&args).status().unwrap().success());
+        }
+        self.core
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w2','p','c','t2','main',?1,'ready','now')",
+                params![repo.to_string_lossy()],
+            )
+            .unwrap();
+        self.core.reviews.auto.expose("w2", repo);
+    }
+
+    fn fixtures(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from(std::fs::read_to_string(self.gh.join("fixture-root")).unwrap())
+    }
+
+    /// Every job of #103, from any workspace.
+    fn all_jobs(&self) -> i64 {
+        self.core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM review_jobs WHERE pr_number=103", [], |row| row.get(0)).unwrap()
+    }
+
+    fn calls(&self, prefix: &str) -> usize {
+        std::fs::read_to_string(self.gh.join("invocations.log")).unwrap_or_default().lines().filter(|line| line.starts_with(prefix)).count()
+    }
+
+    /// A head change on #103 seen at `start + LIST_EVERY`, due at `start + LIST_EVERY + DEBOUNCE`.
+    fn pending_change(&self, start: Instant) {
+        self.heads(&[(103, "old-sha", false, "review-author")]);
+        tick(&self.core, start);
+        self.heads(&[(103, "current-head-sha", false, "review-author")]);
+        tick(&self.core, start + LIST_EVERY);
     }
 
     /// What `gh pr list` answers from now on.
@@ -273,4 +313,75 @@ fn off_lists_nothing_and_starts_nothing_and_mine_skips_others() {
     fixture.mode(ReviewAutoMode::Off);
     tick(&fixture.core, start + LIST_EVERY * 21 + DEBOUNCE);
     assert!(fixture.jobs().is_empty(), "off stops new reviews at once");
+}
+
+#[test]
+fn a_partial_listing_keeps_what_it_left_out_and_only_new_numbers_are_new() {
+    let start = Instant::now();
+    let mut watch = Watch::default();
+    observe(&mut watch, &[pr(5, "a", false, "me"), pr(9, "b", false, "me")], true, &all(), start, never);
+    // A listing that hit the limit: #5 is past it, #7 was just outside before.
+    observe(&mut watch, &[pr(9, "b", false, "me"), pr(7, "c", false, "me")], false, &all(), start + LIST_EVERY, never);
+    assert!(watch.prs.contains_key(&5), "left out is not closed");
+    assert_eq!(watch.prs[&7].pending_since, None, "an older number first seen is not a new PR");
+    observe(&mut watch, &[pr(12, "d", false, "me"), pr(9, "b", false, "me")], false, &all(), start + LIST_EVERY * 2, never);
+    assert!(watch.prs[&12].pending_since.is_some(), "a number above every PR seen is newly opened");
+}
+
+#[test]
+fn saving_off_while_the_head_is_read_starts_nothing() {
+    let fixture = Fixture::new();
+    fixture.mode(ReviewAutoMode::All);
+    let start = Instant::now();
+    fixture.pending_change(start);
+    // GitHub is slow to answer the head lookup; Off is saved meanwhile.
+    std::fs::write(fixture.gh.join("pr-view-delay"), "2").unwrap();
+    let core = fixture.core.clone();
+    let ticking = std::thread::spawn(move || tick(&core, start + LIST_EVERY + DEBOUNCE));
+    while fixture.calls("pr view") == 0 {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    fixture.mode(ReviewAutoMode::Off);
+    ticking.join().unwrap();
+    assert_eq!(fixture.all_jobs(), 0, "the save returned before the insert, so no job");
+}
+
+#[test]
+fn two_workspaces_of_one_repository_review_a_head_once() {
+    let fixture = Fixture::new();
+    fixture.second_workspace();
+    fixture.mode(ReviewAutoMode::All);
+    let start = Instant::now();
+    fixture.pending_change(start);
+    tick(&fixture.core, start + LIST_EVERY + DEBOUNCE);
+    assert_eq!(fixture.all_jobs(), 1);
+    assert_eq!(fixture.calls("pr list"), 3, "three rounds, one listing each: per repository, not per workspace");
+}
+
+#[test]
+fn a_pr_that_turned_draft_is_not_started_from_a_stale_listing() {
+    let fixture = Fixture::new();
+    fixture.mode(ReviewAutoMode::All);
+    let start = Instant::now();
+    fixture.pending_change(start);
+    // The listing then fails, and GitHub now says the PR is a draft.
+    let mut detail: serde_json::Value = serde_json::from_slice(&std::fs::read(fixture.fixtures().join("pr-detail.json")).unwrap()).unwrap();
+    detail["isDraft"] = serde_json::json!(true);
+    std::fs::write(fixture.fixtures().join("pr-detail-draft.json"), detail.to_string()).unwrap();
+    std::fs::write(fixture.gh.join("pr-view-fixture"), "pr-detail-draft.json").unwrap();
+    std::fs::write(fixture.fixtures().join("heads.json"), "not json").unwrap();
+    tick(&fixture.core, start + LIST_EVERY + DEBOUNCE);
+    assert_eq!(fixture.all_jobs(), 0);
+}
+
+#[test]
+fn the_signed_in_login_is_read_again_after_an_hour() {
+    let fixture = Fixture::new();
+    fixture.mode(ReviewAutoMode::Mine);
+    fixture.heads(&[(103, "a", false, "fixture-user")]);
+    let start = Instant::now();
+    for minute in 0..=61 {
+        tick(&fixture.core, start + LIST_EVERY * minute);
+    }
+    assert_eq!(fixture.calls("api user"), 2, "read at the start and once the hour was up, not every minute and not never");
 }

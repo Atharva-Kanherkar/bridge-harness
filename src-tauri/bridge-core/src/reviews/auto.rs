@@ -3,8 +3,10 @@
 //!
 //! Only repositories the person already looks at are read: those whose GitHub
 //! pane listed pull requests since Bridge started, and those that already
-//! have review jobs. Each is listed once a minute (number, head, draft,
-//! author), and only while auto-review is on.
+//! have review jobs. Each repository is listed once a minute (number, head,
+//! draft, author), and only while auto-review is on. Two workspaces of one
+//! repository share one watch: a PR head is reviewed once, whichever
+//! workspace saw it.
 //!
 //! The first listing is a baseline, so turning auto-review on (or starting
 //! Bridge) never reviews every open PR at once. After it, a new head or a PR
@@ -13,14 +15,14 @@
 //! review was started by a push and covered an older head was pushed while
 //! Bridge was closed, so it is reviewed again.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bridge_protocol::messages::{self as wire, ReviewAutoMode, ReviewJobSettings};
 
-use crate::github_surface::OpenPullRequestHead;
+use crate::github_surface::{GithubRepository, OpenPullRequestHead, OPEN_HEADS_LIMIT};
 use crate::runtime::BridgeCore;
 
 /// How often a watched repository's open pull requests are read.
@@ -46,8 +48,23 @@ struct State {
     /// The filters the watches were built under. A change starts a new
     /// baseline, so switching "My PRs" to "All PRs" reviews nothing at once.
     filters: Option<(ReviewAutoMode, bool)>,
-    watches: HashMap<String, Watch>,
-    viewer: Option<(Option<String>, Instant)>,
+    /// One per repository (`host/owner/name`, lowercase).
+    watches: HashMap<String, (Target, Watch)>,
+    /// The signed-in login per GitHub host, and when it was read.
+    viewers: HashMap<String, (Option<String>, Instant)>,
+}
+
+/// Where a repository's watch lists from and starts reviews in: the first
+/// of its workspaces, by id.
+#[derive(Debug, Clone, PartialEq)]
+struct Target {
+    workspace_id: String,
+    path: PathBuf,
+    repository: GithubRepository,
+}
+
+fn repository_key(repository: &GithubRepository) -> String {
+    format!("{}/{}/{}", repository.host, repository.owner, repository.name).to_lowercase()
 }
 
 /// One workspace's open pull requests as last listed.
@@ -91,30 +108,43 @@ impl Filters {
     }
 }
 
-/// Fold one listing into a workspace's watch. A new head, a PR that appears
-/// after the baseline, or one that becomes reviewable (a draft marked ready)
-/// waits from now. A PR no longer listed (closed or merged) is forgotten.
-/// `catch_up` decides, on the baseline only, whether a PR was pushed while
-/// Bridge was closed.
+/// Fold one listing into a repository's watch. A new head, a PR that
+/// appears after the baseline, or one that becomes reviewable (a draft
+/// marked ready) waits from now. A PR no longer listed (closed or merged) is
+/// forgotten. `catch_up` decides, on the baseline only, whether a PR was
+/// pushed while Bridge was closed.
+///
+/// A listing that is not `complete` (it hit [`OPEN_HEADS_LIMIT`]) keeps the
+/// PRs it left out, and a PR it shows for the first time counts as newly
+/// opened only when its number is above every PR seen: older ones were just
+/// outside the earlier listings.
 pub fn observe(
     watch: &mut Watch,
     listing: &[OpenPullRequestHead],
+    complete: bool,
     filters: &Filters,
     now: Instant,
     catch_up: impl Fn(u64, &str) -> bool,
 ) {
     let baseline = !watch.baselined;
+    let highest_seen = watch.prs.keys().max().copied();
     let mut next = HashMap::new();
     for pull_request in listing {
         let eligible = filters.takes(pull_request);
         let pending_since = match watch.prs.get(&pull_request.number) {
             None if baseline => (eligible && catch_up(pull_request.number, &pull_request.head_sha)).then_some(now),
+            None if !complete && highest_seen.is_some_and(|highest| pull_request.number <= highest) => None,
             None => eligible.then_some(now),
             Some(seen) if seen.head_sha != pull_request.head_sha => eligible.then_some(now),
             Some(seen) if eligible && !seen.eligible => Some(now),
             Some(seen) => seen.pending_since.filter(|_| eligible),
         };
         next.insert(pull_request.number, Seen { head_sha: pull_request.head_sha.clone(), eligible, pending_since });
+    }
+    if !complete {
+        for (number, seen) in watch.prs.drain() {
+            next.entry(number).or_insert(seen);
+        }
     }
     watch.prs = next;
     watch.baselined = true;
@@ -183,89 +213,131 @@ pub fn tick(core: &Arc<BridgeCore>, now: Instant) {
         state.watches.clear();
         state.filters = Some(filters_key);
     }
-    let watched = auto.watched(core);
-    let keep: HashSet<&String> = watched.iter().map(|(id, _)| id).collect();
-    state.watches.retain(|workspace_id, _| keep.contains(workspace_id));
+    // One watch per repository, owned by the first of its workspaces.
+    let mut targets: BTreeMap<String, Target> = BTreeMap::new();
+    for (workspace_id, path) in auto.watched(core) {
+        let Ok(repository) = core.github_surface.resolve_repository(&path) else { continue };
+        targets.entry(repository_key(&repository)).or_insert(Target { workspace_id, path, repository });
+    }
+    state.watches.retain(|key, _| targets.contains_key(key));
 
-    for (workspace_id, path) in &watched {
-        let watch = state.watches.entry(workspace_id.clone()).or_default();
+    for (key, target) in &targets {
+        let (owner, watch) = state.watches.entry(key.clone()).or_insert_with(|| (target.clone(), Watch::default()));
+        *owner = target.clone();
         if watch.next_list.is_some_and(|next| next > now) {
             continue;
         }
         watch.next_list = Some(now + LIST_EVERY);
-        let listing = match core.github_surface.list_open_heads(path) {
+        let listing = match core.github_surface.list_open_heads(&target.path) {
             Ok(listing) => listing,
             Err(error) => {
-                eprintln!("[reviews] auto-review could not list the pull requests of {workspace_id}: {error}");
+                eprintln!("[reviews] auto-review could not list the pull requests of {key}: {error}");
                 continue;
             }
         };
-        let viewer = if current.auto_review == ReviewAutoMode::Mine {
-            let fresh = state.viewer.as_ref().filter(|(login, read)| login.is_some() && now.duration_since(*read) < VIEWER_TTL);
-            let login = match fresh {
-                Some((login, _)) => login.clone(),
-                None => core.github_surface.viewer_login(path).ok(),
-            };
-            state.viewer = Some((login.clone(), now));
-            if login.is_none() {
+        let complete = listing.len() < OPEN_HEADS_LIMIT;
+        if !complete {
+            eprintln!("[reviews] auto-review read the first {OPEN_HEADS_LIMIT} open pull requests of {key}; older ones keep what was seen");
+        }
+        let viewer = match current.auto_review {
+            ReviewAutoMode::Mine => match viewer(core, &mut state.viewers, target, now) {
+                Some(login) => Some(login),
                 // Not knowing who "me" is, no baseline: otherwise the first
                 // read that works would make every PR of theirs look new.
-                continue;
-            }
-            login
-        } else {
-            None
+                None => continue,
+            },
+            _ => None,
         };
         let filters = Filters { mode: current.auto_review, skip_drafts: current.skip_draft_prs, viewer };
         let latest: HashMap<u64, (wire::ReviewTrigger, String)> = {
             let db = super::lock_db(core);
-            super::store::latest_jobs(&db, workspace_id).unwrap_or_default()
+            super::store::latest_jobs(&db, &target.repository.owner, &target.repository.name).unwrap_or_default()
         };
-        let watch = state.watches.entry(workspace_id.clone()).or_default();
-        observe(watch, &listing, &filters, now, |number, head| {
+        let (_, watch) = state.watches.entry(key.clone()).or_insert_with(|| (target.clone(), Watch::default()));
+        observe(watch, &listing, complete, &filters, now, |number, head| {
             latest.get(&number).is_some_and(|(trigger, reviewed)| *trigger == wire::ReviewTrigger::Push && reviewed != head)
         });
     }
 
     let mut starts = Vec::new();
-    for (workspace_id, watch) in &mut state.watches {
-        for (number, head) in due(watch, now) {
-            starts.push((workspace_id.clone(), number, head));
+    for (key, (target, watch)) in &mut state.watches {
+        for (number, _) in due(watch, now) {
+            starts.push((key.clone(), target.clone(), number));
         }
     }
-    for (workspace_id, number, head) in starts {
-        // Read again right before starting: a save that turned it off wins.
-        if settings(core).is_none_or(|settings| settings.auto_review == ReviewAutoMode::Off) {
-            *state = State::default();
-            return;
-        }
-        let reviewed = super::store::has_review_of_head(&super::lock_db(core), &workspace_id, number, &head).unwrap_or(true);
-        if reviewed {
-            continue;
-        }
-        let params = wire::StartReviewParams {
-            workspace_id: workspace_id.clone(),
-            number,
-            harnesses: None,
-            trigger: Some(wire::ReviewTrigger::Push),
-        };
-        match super::start(core, &params) {
-            Ok(job) => {
-                // The job reviews the head GitHub has now, which may be newer
-                // than the listing's: that one is not a change to review again.
-                if let Some(seen) = state.watches.get_mut(&workspace_id).and_then(|watch| watch.prs.get_mut(&number)) {
-                    seen.head_sha = job.head_sha;
-                }
-            }
+    for (key, target, number) in starts {
+        let viewer = state.viewers.get(&target.repository.host.to_lowercase()).and_then(|(login, _)| login.clone());
+        let filters = Filters { mode: current.auto_review, skip_drafts: current.skip_draft_prs, viewer };
+        let started = start_one(core, &target, number, &filters);
+        let Some((_, watch)) = state.watches.get_mut(&key) else { continue };
+        let Some(seen) = watch.prs.get_mut(&number) else { continue };
+        match started {
+            // The job reviews the head GitHub has now, which may be newer
+            // than the listing's: that one is not a change to review again.
+            Ok(Some(head)) => seen.head_sha = head,
+            Ok(None) => {}
             Err(error) => {
-                eprintln!("[reviews] auto-review could not start a review of #{number} in {workspace_id}: {error}");
+                eprintln!("[reviews] auto-review could not start a review of {key}#{number}: {error}");
                 // Try again after another quiet period.
-                if let Some(seen) = state.watches.get_mut(&workspace_id).and_then(|watch| watch.prs.get_mut(&number)) {
-                    seen.pending_since = Some(now);
-                }
+                seen.pending_since = Some(now);
             }
         }
     }
+}
+
+/// The signed-in login on the target's host. A read is trusted for
+/// [`VIEWER_TTL`] from when it was made; a failed read is tried again next
+/// time.
+fn viewer(core: &BridgeCore, viewers: &mut HashMap<String, (Option<String>, Instant)>, target: &Target, now: Instant) -> Option<String> {
+    let host = target.repository.host.to_lowercase();
+    if let Some((Some(login), read)) = viewers.get(&host) {
+        if now.duration_since(*read) < VIEWER_TTL {
+            return Some(login.clone());
+        }
+    }
+    let login = core.github_surface.viewer_login(&target.path).ok();
+    viewers.insert(host, (login.clone(), now));
+    login
+}
+
+/// Start the push review of one PR, judged on what GitHub says now: a PR that
+/// became a draft, or is someone else's, is not started. The last word is the
+/// store's: under its lock, with the settings as they are then, auto-review
+/// must still be on with the same filters, and no workspace may have
+/// reviewed that head already. Returns the head the job reviews.
+fn start_one(core: &Arc<BridgeCore>, target: &Target, number: u64, filters: &Filters) -> Result<Option<String>, crate::BridgeError> {
+    let fresh = core
+        .github_surface
+        .pr_head(&target.path, number)
+        .map_err(|error| crate::BridgeError::Invalid(error.to_string()))?;
+    let now_open = OpenPullRequestHead {
+        number,
+        head_sha: fresh.head_sha.clone(),
+        is_draft: fresh.is_draft,
+        author: fresh.author.clone(),
+    };
+    if !filters.takes(&now_open) {
+        return Ok(None);
+    }
+    let params = wire::StartReviewParams {
+        workspace_id: target.workspace_id.clone(),
+        number,
+        harnesses: None,
+        trigger: Some(wire::ReviewTrigger::Push),
+    };
+    let head_sha = fresh.head_sha.clone();
+    let gate = |db: &rusqlite::Connection, settings: &ReviewJobSettings, pr: super::store::PrKey<'_>| {
+        settings.auto_review == filters.mode
+            && settings.skip_draft_prs == filters.skip_drafts
+            && !super::store::has_review_of_head(db, pr, &head_sha).unwrap_or(true)
+    };
+    let head = super::PrHead {
+        repo_owner: fresh.repository.owner,
+        repo_name: fresh.repository.name,
+        head_sha: fresh.head_sha,
+        base_sha: fresh.base_sha,
+    };
+    Ok(super::start_gated(core, &params, head, &gate)?.map(|job| job.head_sha))
 }
 
 #[cfg(test)]
