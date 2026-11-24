@@ -25,6 +25,8 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
+mod read_only_shell;
+
 /// The class of the tokens of one group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -135,7 +137,9 @@ pub struct SessionTokens {
     pub chat_kind: String,
     pub total: i64,
     pub classes: BTreeMap<TokenClass, i64>,
+    pub shell_read: i64,
     pub reading_share: f64,
+    pub combined_share: f64,
     pub shell_share: f64,
     pub unestimated: u64,
     pub fork_prefix_entries: i64,
@@ -273,6 +277,7 @@ fn classify_tool(kind: &str, start: Option<&Value>, completion: Option<&Value>) 
         start.and_then(|payload| named_class(payload, false)),
         completion.and_then(|payload| named_class(payload, kind == "command.completed")),
     )
+    .class
 }
 
 /// The class of a shell command, a string or an argv array. The rule is
@@ -313,7 +318,9 @@ pub fn render_markdown(report: &Report) -> String {
     let mut columns = vec!["rank", "session", "harness", "total"];
     columns.extend(TokenClass::ALL.iter().map(|class| class.as_str()));
     columns.extend([
+        "shellRead",
         "readingShare",
+        "combinedShare",
         "shellShare",
         "unestimated",
         "lastContextUsed",
@@ -361,7 +368,9 @@ fn session_cells(session: &SessionTokens) -> impl Iterator<Item = String> {
     );
     let number = |value: Option<i64>| value.map_or_else(|| "-".to_owned(), |value| value.to_string());
     cells.extend([
+        session.shell_read.to_string(),
         percent(session.reading_share),
+        percent(session.combined_share),
         percent(session.shell_share),
         session.unestimated.to_string(),
         number(session.last_context_used),
@@ -625,11 +634,12 @@ struct Group {
     tokens: Option<i64>,
     /// True when a row of the group is not a preparing start.
     full: bool,
-    named: Option<TokenClass>,
+    named: Option<Classified>,
 }
 
 struct Counted {
     classes: BTreeMap<TokenClass, i64>,
+    shell_read: i64,
     unestimated: u64,
 }
 
@@ -656,7 +666,7 @@ fn count_session(db: &Connection, session: &str, prefix: i64) -> Result<Counted,
     let mut statement = db.prepare(&sql)?;
     let mut rows = statement.query(params_from_iter(values))?;
     let mut groups: HashMap<(String, ItemKey), Group> = HashMap::new();
-    let mut started: HashMap<ItemKey, TokenClass> = HashMap::new();
+    let mut started: HashMap<ItemKey, Classified> = HashMap::new();
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
         let kind: String = row.get(1)?;
@@ -693,19 +703,27 @@ fn count_session(db: &Connection, session: &str, prefix: i64) -> Result<Counted,
     }
     let mut classes: BTreeMap<TokenClass, i64> =
         TokenClass::ALL.iter().map(|class| (*class, 0)).collect();
+    let mut shell_read = 0i64;
     let mut unestimated = 0;
     for ((kind, key), group) in groups {
-        let class = group_class(&kind, started.get(&key).copied(), group.named);
+        let classified = group_class(&kind, started.get(&key).copied(), group.named);
         match group.tokens {
             Some(tokens) => {
-                let slot = classes.entry(class).or_insert(0);
+                let slot = classes.entry(classified.class).or_insert(0);
                 *slot = slot.saturating_add(tokens);
+                if classified.shell_read {
+                    shell_read = shell_read.saturating_add(tokens);
+                }
             }
             None if group.full => unestimated += 1,
             None => {}
         }
     }
-    Ok(Counted { classes, unestimated })
+    Ok(Counted {
+        classes,
+        shell_read,
+        unestimated,
+    })
 }
 
 fn session_tokens(
@@ -718,13 +736,16 @@ fn session_tokens(
     let total = counted.classes.values().fold(0i64, |sum, tokens| sum.saturating_add(*tokens));
     let share = |tokens: i64| if total == 0 { 0.0 } else { tokens as f64 / total as f64 };
     let class = |class: TokenClass| counted.classes.get(&class).copied().unwrap_or(0);
+    let reading = class(TokenClass::Read).saturating_add(class(TokenClass::Search));
     SessionTokens {
         rank: 0,
         session_id: candidate.id,
         harness: candidate.harness,
         chat_kind: candidate.kind,
         total,
-        reading_share: share(class(TokenClass::Read).saturating_add(class(TokenClass::Search))),
+        shell_read: counted.shell_read,
+        reading_share: share(reading),
+        combined_share: share(reading.saturating_add(counted.shell_read)),
         shell_share: share(class(TokenClass::Shell)),
         classes: counted.classes,
         unestimated: counted.unestimated,
@@ -789,10 +810,29 @@ fn integer_at(row: &Row<'_>, index: usize) -> rusqlite::Result<Option<i64>> {
     })
 }
 
-/// The class from the kind, else from a start of the item, else from the
-/// fields of the row, else `other_tool`.
-fn group_class(kind: &str, start: Option<TokenClass>, own: Option<TokenClass>) -> TokenClass {
-    kind_class(kind).or(start).or(own).unwrap_or(TokenClass::OtherTool)
+#[derive(Clone, Copy)]
+struct Classified {
+    class: TokenClass,
+    shell_read: bool,
+}
+
+impl From<TokenClass> for Classified {
+    fn from(class: TokenClass) -> Self {
+        Self {
+            class,
+            shell_read: false,
+        }
+    }
+}
+
+/// Use the kind first, then a start of the item, then the fields of the row.
+/// Use `other_tool` if none supplies a class.
+fn group_class(kind: &str, start: Option<Classified>, own: Option<Classified>) -> Classified {
+    kind_class(kind)
+        .map(Classified::from)
+        .or(start)
+        .or(own)
+        .unwrap_or_else(|| TokenClass::OtherTool.into())
 }
 
 fn kind_class(kind: &str) -> Option<TokenClass> {
@@ -811,7 +851,7 @@ fn kind_class(kind: &str) -> Option<TokenClass> {
 /// `data.type`, OpenCode `data.tool`, Claude and import `data.name`, and
 /// `data.command` on a Bash completion. `title` is free text, so the report
 /// never reads it.
-fn named_class(payload: &Value, command_rule: bool) -> Option<TokenClass> {
+fn named_class(payload: &Value, command_rule: bool) -> Option<Classified> {
     let data = payload.get("data")?;
     let codex = data.get("type").and_then(Value::as_str);
     if let Some(class) = codex.and_then(|item_type| codex_class(item_type, data)) {
@@ -824,48 +864,59 @@ fn named_class(payload: &Value, command_rule: bool) -> Option<TokenClass> {
         return Some(claude_class(name, data));
     }
     if command_rule {
-        return data.get("command").filter(|command| !command.is_null()).map(classify_shell);
+        return data.get("command").filter(|command| !command.is_null()).map(shell_class);
     }
     None
 }
 
-fn codex_class(item_type: &str, data: &Value) -> Option<TokenClass> {
-    Some(match item_type {
-        "commandExecution" => classify_shell(data.get("command").unwrap_or(&Value::Null)),
+fn codex_class(item_type: &str, data: &Value) -> Option<Classified> {
+    let class = match item_type {
+        "commandExecution" => return Some(shell_class(data.get("command").unwrap_or(&Value::Null))),
         "mcpToolCall" => TokenClass::Mcp,
         "webSearch" => TokenClass::Web,
         "collabAgentToolCall" => TokenClass::Agent,
         "fileChange" => TokenClass::Edit,
         "dynamicToolCall" => TokenClass::OtherTool,
         _ => return None,
-    })
+    };
+    Some(class.into())
 }
 
-fn opencode_class(tool: &str, data: &Value) -> TokenClass {
-    match tool {
+fn opencode_class(tool: &str, data: &Value) -> Classified {
+    let class = match tool {
         "read" => TokenClass::Read,
         "grep" | "glob" | "list" => TokenClass::Search,
         "bash" | "shell" => {
-            classify_shell(data.pointer("/state/input/command").unwrap_or(&Value::Null))
+            return shell_class(data.pointer("/state/input/command").unwrap_or(&Value::Null));
         }
         "edit" | "write" | "patch" | "multiedit" | "apply_patch" => TokenClass::Edit,
         "webfetch" | "websearch" => TokenClass::Web,
         "task" => TokenClass::Agent,
         other if other.starts_with("bridge_") => TokenClass::Mcp,
         _ => TokenClass::OtherTool,
-    }
+    };
+    class.into()
 }
 
-fn claude_class(name: &str, data: &Value) -> TokenClass {
-    match name {
+fn claude_class(name: &str, data: &Value) -> Classified {
+    let class = match name {
         "Read" | "NotebookRead" => TokenClass::Read,
         "Grep" | "Glob" | "LS" => TokenClass::Search,
-        "Bash" => classify_shell(data.pointer("/input/command").unwrap_or(&Value::Null)),
+        "Bash" => return shell_class(data.pointer("/input/command").unwrap_or(&Value::Null)),
         "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => TokenClass::Edit,
         "WebFetch" | "WebSearch" => TokenClass::Web,
         "Task" | "Agent" => TokenClass::Agent,
         other if other.starts_with("mcp__") => TokenClass::Mcp,
         _ => TokenClass::OtherTool,
+    };
+    class.into()
+}
+
+fn shell_class(command: &Value) -> Classified {
+    let class = classify_shell(command);
+    Classified {
+        class,
+        shell_read: class == TokenClass::Shell && read_only_shell::matches(command),
     }
 }
 

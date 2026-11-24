@@ -893,6 +893,188 @@ fn unknown_programs_and_unsplittable_commands_are_shell() {
     }
 }
 
+#[test]
+fn shell_read_recognizes_read_only_compounds() {
+    for command in [
+        "cd x && sed -n 1,9p a",
+        "cd 'dir name' && grep -rn term .",
+        "cat a && head -2 b; tail -n 5 log",
+        "cat a | head -n 9 | tail -2 | wc -l | sort -nru | uniq -c",
+        "cat a | cut -f1,3-4 -d ':' | nl -ba | tr '[:lower:]' '[:upper:]'",
+        "cat a | tr -d ' ;&|'",
+        "rg -e 'foo|bar' | head --lines=2",
+        "grep -n \"a|b && c;d\" 'name;with&operators'",
+        "cd 'dir&&name' && ls -la | head",
+        "bash -lc 'cd x && cat a | head'",
+        "find . -maxdepth 3 -type f -name '*.rs' -print | head",
+        "fd -e rs file src | wc -l",
+        "git grep -n -e pattern -- src | head",
+        "git ls-files src | head",
+        "git show HEAD:src/a.rs | nl",
+        "git diff --no-textconv --no-ext-diff main -- src | head",
+        "git log --oneline -5 -- src | head",
+        "git blame --no-textconv src/a.rs | head",
+    ] {
+        let command = json!(command);
+        let classified = shell_class(&command);
+        assert_eq!(classified.class, Shell, "{command}");
+        assert!(classified.shell_read, "{command}");
+    }
+
+    let wrapped_argv = json!(["/bin/zsh", "-cl", "cd 'a;b' && wc -l x | sort"]);
+    assert!(shell_class(&wrapped_argv).shell_read);
+    let literal_argv = json!(["rg", "-n", "fn", "file name"]);
+    assert!(read_only_shell::matches(&literal_argv));
+    let classified = shell_class(&literal_argv);
+    assert_eq!(classified.class, Search);
+    assert!(!classified.shell_read);
+}
+
+#[test]
+fn shell_read_rejects_unsafe_or_unknown_segments() {
+    for command in [
+        "",
+        "cat a > out",
+        "cat < a",
+        "cat 'a>b'",
+        "cat $FILE",
+        "cat \x60pwd\x60",
+        "cat (a)",
+        "cat a || cat b",
+        "cat a &",
+        "cat a\ncat b",
+        "cat a\r",
+        "cat a\0",
+        "cat a\\ b",
+        "cat *.rs",
+        "cat ?.rs",
+        "cat [ab]",
+        "cat {a,b}",
+        "cat ~user",
+        "cat a # text",
+        "cat !pattern",
+        "cat a | tee out",
+        "cat a | xargs head",
+        "cat a | awk '{system(\"pwd\")}'",
+        "cd x && awk '{print}' a",
+        "cat a | sed -n 1p",
+        "cd x && sed -i 1p a",
+        "cd x && sed -n '1,9w out' a",
+        "cd x && sed -n '1,9p;2p' a",
+        "cat a | sort -o out",
+        "cat a | sort --compress-program=helper",
+        "cat a | uniq a b",
+        "cat a | head b",
+        "cat a | wc -l b",
+        "cat a | cut -d ':'",
+        "cat a | tr -d",
+        "cat a | ls",
+        "find . -delete | head",
+        "find . -exec helper '{}' ';' | head",
+        "find . -execdir helper | head",
+        "find . -ok helper | head",
+        "find . -okdir helper | head",
+        "find . -fprint out | head",
+        "find . -fprintf out fmt | head",
+        "find . -fls out | head",
+        "find . -maxdepth many | head",
+        "fd --exec helper | head",
+        "fd -x helper | head",
+        "fd -X helper | head",
+        "fd --exec-batch helper | head",
+        "rg --pre helper . | head",
+        "rg --pre-glob helper . | head",
+        "grep --unknown pattern . | head",
+        "git -c core.pager=helper log | head",
+        "git grep -O pattern | head",
+        "git grep --open-files-in-pager pattern | head",
+        "git ls-files --output=out | head",
+        "git show --output=out HEAD:a | head",
+        "git show HEAD | head",
+        "git diff main | head",
+        "git diff --no-ext-diff main | head",
+        "git diff --no-textconv --no-ext-diff --output=out | head",
+        "git diff -- --no-textconv --no-ext-diff | head",
+        "git log --ext-diff | head",
+        "git blame src/a.rs | head",
+        "git status | head",
+        "unknown a | head",
+        "NAME=value cat a | head",
+        "NAME=bin/cat a | head",
+        "cat a | NAME=bin/head",
+        "NAME=bin/sh -c 'cat a | head'",
+        "cd x && sed -n 1,9p a && rm b",
+        "cd x; cat a",
+        "cd x | head",
+        "cd -- x && cat a",
+        "cd - && cat a",
+        "cd '' && cat a",
+        "cat a && cd x && cat b",
+        "cat a &&",
+        "cat a;; cat b",
+        "; cat a",
+        "cat a |",
+        "cat a | | head",
+        "cat a 'unterminated | head",
+        "sh -c \"sh -c 'cat a | head'\"",
+        "sh -c 'cat a | head' extra",
+    ] {
+        let command = json!(command);
+        assert!(!read_only_shell::matches(&command), "{command}");
+        assert!(!shell_class(&command).shell_read, "{command}");
+    }
+
+    for command in [
+        json!(["rg", "a|b"]),
+        json!(["cd", "x", "&&", "cat", "a"]),
+        json!(["bash", "-c", "cat a | head", "extra"]),
+        json!(["bash", "-c", "cd x && cat a && rm b"]),
+        json!(["bash", "-c", 42]),
+        json!(["NAME=bin/bash", "-c", "cat a | head"]),
+    ] {
+        assert!(!read_only_shell::matches(&command), "{command}");
+        assert!(!shell_class(&command).shell_read, "{command}");
+    }
+    let mixed = shell_class(&json!("cd x && sed -n 1,9p a && rm b"));
+    assert_eq!(mixed.class, Shell);
+}
+
+#[test]
+fn shell_read_is_counted_once_with_the_selected_group_class() {
+    let w = world();
+    w.chat("chat-a");
+    let start = |id, command| {
+        row(
+            "command.started",
+            claude_start(id, "Bash", json!({"command": command}), "running"),
+        )
+    };
+    let complete = |id, command| {
+        row("command.completed", opencode_part(id, "bash", Some(command)))
+    };
+    w.put(
+        "chat-a",
+        vec![
+            start("read", "cd x && sed -n 1,9p a").est(9),
+            start("read", "cd x && sed -n 1,9p a").est(5),
+            complete("read", "cat a | tee out").est(12),
+            complete("read", "cat a | tee out").est(20),
+            start("mixed", "cd x && sed -n 1,9p a && rm b").est(4),
+            complete("mixed", "cat b | head").est(6),
+            complete("result-only", "cat a | head").est(8),
+            row("tool.completed", import_tool("read-tool", "Read")).est(10),
+            row("tool.completed", import_tool("search-tool", "Grep")).est(11),
+        ],
+    );
+    let tokens = w.one("chat-a");
+    assert_eq!(class(&tokens, Shell), 47);
+    assert_eq!(tokens.shell_read, 37);
+    assert_eq!(tokens.total, 68);
+    assert_eq!(tokens.reading_share, 21.0 / 68.0);
+    assert_eq!(tokens.combined_share, 58.0 / 68.0);
+    assert_eq!(tokens.shell_share, 47.0 / 68.0);
+}
+
 // Cohort and recency
 
 #[test]
@@ -1222,7 +1404,7 @@ fn an_empty_recent_session_ranks_last_with_zero_shares() {
     assert_eq!(ids(&report), ["full", "empty"]);
     let empty = &report.sessions[1];
     assert_eq!((empty.total, empty.unestimated), (0, 0));
-    assert_eq!((empty.reading_share, empty.shell_share), (0.0, 0.0));
+    assert_eq!((empty.reading_share, empty.combined_share, empty.shell_share), (0.0, 0.0, 0.0));
     assert!(render_markdown(&report).contains("| 2 | empty | claude | 0 |"));
 }
 
@@ -1383,7 +1565,9 @@ fn fixed_report() -> Report {
         chat_kind: "orchestrator".into(),
         total: 100,
         classes,
+        shell_read: 10,
         reading_share: 0.6,
+        combined_share: 0.7,
         shell_share: 0.25,
         unestimated: 2,
         fork_prefix_entries: 3,
@@ -1399,7 +1583,9 @@ fn fixed_report() -> Report {
         chat_kind: "orchestrator".into(),
         total: 0,
         classes: zero,
+        shell_read: 0,
         reading_share: 0.0,
+        combined_share: 0.0,
         shell_share: 0.0,
         unestimated: 0,
         fork_prefix_entries: 0,
@@ -1425,10 +1611,10 @@ fn markdown_output_matches_a_fixed_table() {
 Token report: schema 85, cohort orchestrator, since 2026-05-01, eligible 3, shown 2, unreadableTimestamps 1
 Fallback: no usage_ledger.context_used_tokens: lastContextUsed and maxContextUsed are null
 
-| rank | session | harness | total | read | search | shell | edit | web | mcp | agent | other_tool | conversation | bridge | readingShare | shellShare | unestimated | lastContextUsed | maxContextUsed | lastActivityAt | notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | chat-a | claude | 100 | 40 | 20 | 25 | 0 | 0 | 0 | 0 | 0 | 15 | 0 | 60.0% | 25.0% | 2 | 1200 | 3400 | 2026-06-10T12:00:00Z | - |
-| 2 | fork-b | codex | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0.0% | 0.0% | 0 | - | - | - | fork-prefix-unknown |
+| rank | session | harness | total | read | search | shell | edit | web | mcp | agent | other_tool | conversation | bridge | shellRead | readingShare | combinedShare | shellShare | unestimated | lastContextUsed | maxContextUsed | lastActivityAt | notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | chat-a | claude | 100 | 40 | 20 | 25 | 0 | 0 | 0 | 0 | 0 | 15 | 0 | 10 | 60.0% | 70.0% | 25.0% | 2 | 1200 | 3400 | 2026-06-10T12:00:00Z | - |
+| 2 | fork-b | codex | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0.0% | 0.0% | 0.0% | 0 | - | - | - | fork-prefix-unknown |
 ";
     assert_eq!(render_markdown(&fixed_report()), expected);
 }
@@ -1456,7 +1642,9 @@ fn json_output_has_the_documented_fields() {
             "chatKind",
             "total",
             "classes",
+            "shellRead",
             "readingShare",
+            "combinedShare",
             "shellShare",
             "unestimated",
             "forkPrefixEntries",
@@ -1474,6 +1662,8 @@ fn json_output_has_the_documented_fields() {
     assert_eq!(value["since"], "2026-05-01");
     assert_eq!(session["sessionId"], "chat-a");
     assert_eq!(session["classes"]["conversation"], 10);
+    assert_eq!(session["shellRead"], 0);
+    assert_eq!(session["combinedShare"], 0.0);
     assert_eq!(session["lastActivityAt"], RECENT);
     assert_eq!(session["lastContextUsed"], 1500);
     assert_eq!(serde_json::to_value(fixed_report()).unwrap()["sessions"][1]["lastActivityAt"], Value::Null);
