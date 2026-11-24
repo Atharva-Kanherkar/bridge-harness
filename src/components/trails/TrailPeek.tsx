@@ -166,7 +166,8 @@ export function TrailPeek({ trail, trigger, onOpen, side = "right", align = "sta
   const read = useTrailDetail(trail.id, open, trail.updatedAt);
   return (
     <PreviewCard.Root open={open} onOpenChange={setOpen}>
-      <PreviewCard.Trigger render={trigger} delay={delay} closeDelay={150} />
+      {/* The trigger's own click (open the trail) goes elsewhere: the card goes with it. */}
+      <PreviewCard.Trigger render={trigger} delay={delay} closeDelay={150} onClick={() => setOpen(false)} />
       <PreviewCard.Portal>
         <PreviewCard.Positioner side={side} align={align} sideOffset={8} collisionPadding={8} className="z-50">
           <PreviewCard.Popup

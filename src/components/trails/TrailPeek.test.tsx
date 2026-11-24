@@ -117,6 +117,21 @@ describe("TrailPeek", () => {
   });
 });
 
+describe("TrailPeek trigger", () => {
+  it("keeps the trigger's own click and closes the card with it", async () => {
+    controlledRead();
+    const onClick = vi.fn();
+    act(() => root.render(<TrailPeek trail={summary()} trigger={<button type="button" onClick={onClick}>Trail</button>} onOpen={vi.fn()} delay={0} />));
+    const trigger = host.querySelector<HTMLButtonElement>("button")!;
+    await openWith(trigger);
+    expect(card()).not.toBeNull();
+    act(() => trigger.click());
+    expect(onClick).toHaveBeenCalledTimes(1);
+    await wait(400);
+    expect(card()).toBeNull();
+  });
+});
+
 describe("TrailPeekCard", () => {
   it("lists two open items and counts the rest", () => {
     const detail = mockReadTrail("trail-archive").trail;
