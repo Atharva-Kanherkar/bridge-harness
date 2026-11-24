@@ -1173,6 +1173,16 @@ mod tests {
     }
 
     #[test]
+    fn only_a_person_viewing_the_inbox_keeps_ingress_polling() {
+        let (_dir, core) = crate::workflows::test_support::core();
+        // The app's unread badge reads the Inbox on launch and on every change.
+        crate::api::connector_inbox(&core, None, false).unwrap();
+        assert_eq!(poll_cadence(&core, ConnectorFamily::Slack, Utc::now()), None, "a background read is not a reader");
+        crate::api::connector_inbox(&core, None, true).unwrap();
+        assert_eq!(poll_cadence(&core, ConnectorFamily::Slack, Utc::now()), Some(POLL_CADENCE));
+    }
+
+    #[test]
     fn connector_runs_load_the_signed_in_connector_and_ingress_leaves_no_transcript() {
         let limits = |kind| connector_runs::run_limits(kind);
         let ingress = connector_policy(RunKind::Ingress, "claude.ai Slack", None, limits(RunKind::Ingress)).unwrap();

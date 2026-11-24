@@ -297,3 +297,13 @@ describe("ConnectorPane", () => {
     expect(node.querySelector("article")!.textContent).toContain("Devesh asked about notarisation");
   });
 });
+
+describe("the Inbox pane and paid polling", () => {
+  it("reads as viewing only while it shows", async () => {
+    stub(inbox([]));
+    await mount(<ConnectorPane visible/>);
+    expect(vi.mocked(bridgeApi.connectorInbox).mock.calls.at(-1)).toEqual([undefined, true]);
+    await act(async () => { root!.render(<ConnectorPane visible={false}/>); await flush(); });
+    expect(vi.mocked(bridgeApi.connectorInbox).mock.calls.at(-1)).toEqual([undefined, false]);
+  });
+});

@@ -190,9 +190,9 @@ async fn connector_list(refresh: Option<bool>, state: State<'_, Arc<BridgeCore>>
 }
 
 #[tauri::command]
-async fn connector_inbox(limit: Option<u32>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorInboxResult, BridgeError> {
+async fn connector_inbox(limit: Option<u32>, viewing: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorInboxResult, BridgeError> {
     let core = state.inner().clone();
-    blocking("Connector inbox", move || api::connector_inbox(&core, limit)).await
+    blocking("Connector inbox", move || api::connector_inbox(&core, limit, viewing.unwrap_or(false))).await
 }
 
 #[tauri::command]

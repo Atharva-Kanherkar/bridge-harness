@@ -2119,8 +2119,9 @@ export const bridgeApi = {
   },
   connectorList: (refresh = false): Promise<ConnectorListResult> =>
     hasBackend() ? call("connectors/connector_list", { refresh }) : Promise.resolve(mockConnectorList()),
-  connectorInbox: (limit?: number): Promise<ConnectorInboxResult> =>
-    hasBackend() ? call("connectors/connector_inbox", { limit: limit ?? null }) : Promise.resolve(mockConnectorInbox()),
+  /** `viewing` only from the open Inbox: it keeps ingress polling (paid). */
+  connectorInbox: (limit?: number, viewing = false): Promise<ConnectorInboxResult> =>
+    hasBackend() ? call("connectors/connector_inbox", { limit: limit ?? null, viewing }) : Promise.resolve(mockConnectorInbox()),
   connectorAct: (itemKey: string, action: ConnectorActionRequest, approved?: boolean): Promise<ConnectorActResult> =>
     hasBackend()
       ? call("connectors/connector_act", { itemKey, action, approved: approved ?? null })

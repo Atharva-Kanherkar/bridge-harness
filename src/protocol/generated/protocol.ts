@@ -4767,6 +4767,7 @@ export interface ConnectorListResult {
 
 export interface ConnectorInboxParams {
   limit?: number | null;
+  viewing?: boolean;
 }
 
 export interface ConnectorInboxResult {

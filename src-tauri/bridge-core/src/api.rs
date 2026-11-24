@@ -586,10 +586,14 @@ const CONNECTOR_INBOX_MAX: u32 = 200;
 pub fn connector_inbox(
     core: &Arc<BridgeCore>,
     limit: Option<u32>,
+    viewing: bool,
 ) -> Result<wire::ConnectorInboxResult, BridgeError> {
     let limit = limit.unwrap_or(50).clamp(1, CONNECTOR_INBOX_MAX);
-    // Someone is reading the Inbox: keep ingress running for a while.
-    core.connector_poller.viewed(chrono::Utc::now());
+    // Someone is reading the Inbox: keep ingress running for a while. A
+    // background read (the unread badge) does not count (R3).
+    if viewing {
+        core.connector_poller.viewed(chrono::Utc::now());
+    }
     let db = core.db.lock().unwrap();
     let items = crate::connector_inbox::list(&db, limit as usize)?
         .into_iter()

@@ -85,7 +85,7 @@ pub fn dispatch(
         }
         MethodName::ConnectorInbox => {
             let p: wire::ConnectorInboxParams = decode(method, params)?;
-            reply(api::connector_inbox(core, p.limit))
+            reply(api::connector_inbox(core, p.limit, p.viewing))
         }
         MethodName::ConnectorAct => {
             let p: wire::ConnectorActParams = decode(method, params)?;
