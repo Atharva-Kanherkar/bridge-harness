@@ -1,0 +1,86 @@
+{
+  "eval": "live_second_opinion_on_a_fixture_pr",
+  "seconds": 35.750327833,
+  "passes": [
+    {
+      "harness": "claude",
+      "model": null,
+      "seconds": 9.074594625,
+      "usage": {
+        "tokensIn": 4,
+        "tokensOut": 723,
+        "costMicrousd": 69963,
+        "tools": [
+          "Read",
+          "Read"
+        ]
+      },
+      "answer": "I found two problems: an off-by-one panic in `get`, and a non-snake-case function name.\n\n```json\n{\"summary\":\"Adds `get` (bounds-checked index access) and `Sum_All` (sum into i64) to src/lib.rs. `get` has an off-by-one bounds check that panics when `index == items.len()`, which defeats the documented contract. `Sum_All` is correct but has a non-idiomatic name. No tests are included.\",\"findings\":[{\"path\":\"src/lib.rs\",\"line\":12,\"severity\":\"critical\",\"title\":\"Off-by-one in `get`: `<=` panics when index == items.len()\",\"body\":\"`index <= items.len()` lets `index == items.len()` through, and `items[index]` then panics with an out-of-bounds error. The doc says it returns `None` when out of range. Use `<`, or simply `items.get(index).copied()`. Please also add tests for the empty slice and the `index == len` case.\",\"confidence\":0.98},{\"path\":\"src/lib.rs\",\"line\":20,\"severity\":\"minor\",\"title\":\"`Sum_All` breaks Rust naming conventions (non_snake_case)\",\"body\":\"Public functions should be snake_case. `Sum_All` triggers the `non_snake_case` warning and is awkward as public API. Rename it to `sum_all`. The body can also be `items.iter().map(|&x| x as i64).sum()`. Since it is public, rename it now, before callers depend on the name.\",\"confidence\":0.9}]}\n```",
+      "findings": [
+        {
+          "line": 12,
+          "startLine": null,
+          "severity": "critical",
+          "title": "Off-by-one in `get`: `<=` panics when index == items.len()"
+        },
+        {
+          "line": 20,
+          "startLine": null,
+          "severity": "minor",
+          "title": "`Sum_All` breaks Rust naming conventions (non_snake_case)"
+        }
+      ]
+    },
+    {
+      "harness": "codex",
+      "model": null,
+      "seconds": 27.640737666,
+      "usage": {
+        "tokensIn": 174088,
+        "tokensOut": 521,
+        "costMicrousd": 0,
+        "tools": [
+          "js",
+          "js"
+        ]
+      },
+      "answer": "```json\n{\"summary\":\"The change adds indexed lookup and an i64 sum function. The lookup has an off-by-one bounds check that causes a panic for an out-of-range index and should be fixed before merging. Review was limited to static inspection.\",\"findings\":[{\"path\":\"src/lib.rs\",\"line\":8,\"side\":\"RIGHT\",\"severity\":\"major\",\"title\":\"Reject an index equal to the slice length\",\"body\":\"When `index == items.len()`, this condition succeeds and `items[index]` panics instead of returning the documented `None`. This also makes `get(&[], 0)` panic. Change `<=` to `<`, or use `items.get(index).copied()`, and add regression tests for both boundary cases.\",\"confidence\":1.0}]}\n```",
+      "findings": [
+        {
+          "line": 8,
+          "startLine": null,
+          "severity": "major",
+          "title": "Reject an index equal to the slice length"
+        }
+      ]
+    }
+  ],
+  "merges": [
+    {
+      "keep": "claude-0",
+      "drop": "codex-0",
+      "severity": "critical"
+    }
+  ],
+  "merged": [
+    {
+      "agreedBy": 2,
+      "line": 12,
+      "severity": "critical",
+      "title": "Off-by-one in `get`: `<=` panics when index == items.len()"
+    },
+    {
+      "agreedBy": 1,
+      "line": 20,
+      "severity": "minor",
+      "title": "`Sum_All` breaks Rust naming conventions (non_snake_case)"
+    }
+  ],
+  "checks": {
+    "bothFlaggedTheBug": true,
+    "bugOnce": true,
+    "bugAgreedByTwo": true,
+    "bugRanksFirst": true
+  },
+  "pass": true
+}
