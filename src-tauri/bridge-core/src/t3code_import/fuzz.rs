@@ -80,10 +80,14 @@ fn fill(fixture: &Fixture, specs: &[Spec]) {
     }
     fixture.delete_project("p2");
     let ids: Vec<String> = specs.iter().map(|spec| spec.id.clone()).collect();
+    // One provider thread belongs to one app thread in T3 Code (its id is
+    // unique), so a later thread on the same driver and native id gets none.
+    let mut natives = std::collections::HashSet::new();
     for (index, spec) in specs.iter().enumerate() {
         if ids[..index].contains(&spec.id) {
             continue;
         }
+        let native = spec.native.as_deref().filter(|native| natives.insert((spec.driver, *native)));
         let parent = spec.parent.and_then(|parent| ids.get(parent)).filter(|parent| **parent != spec.id).map(String::as_str);
         let worktree = spec.worktree.as_deref().map(Path::new);
         let project = format!("p{}", spec.project);
@@ -97,7 +101,7 @@ fn fill(fixture: &Fixture, specs: &[Spec]) {
             pinned: spec.pinned,
             parent: if fixture.v2() { parent } else { None },
             driver: spec.driver,
-            native: spec.native.as_deref(),
+            native,
             updated_at: "2026-11-05T00:00:00.000Z",
             ..ThreadRow::default()
         };
