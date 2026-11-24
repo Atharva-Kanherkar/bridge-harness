@@ -666,7 +666,9 @@ pub fn max_concurrent_runs(db: &Connection) -> i64 {
 /// Runs working right now. A run waiting for a person's answer holds no slot:
 /// approvals can take hours and must not stall every other workflow.
 pub fn running_count(db: &Connection) -> Result<i64, BridgeError> {
-    Ok(db.query_row("SELECT COUNT(*) FROM workflow_runs WHERE status='running'", [], |row| row.get(0))?)
+    // A run waiting for an approval keeps its slot: the answer resumes its
+    // agent at once, with no chance to wait for a free slot first (R2).
+    Ok(db.query_row("SELECT COUNT(*) FROM workflow_runs WHERE status IN ('running','waiting_approval')", [], |row| row.get(0))?)
 }
 
 /// What [`reserve_slot`] did.
@@ -1678,6 +1680,24 @@ mod tests {
         assert!(unpark_queued(&db, now).unwrap().is_empty(), "a run on its way to a slot counts against the free slots");
         assert_eq!(queue_positions(&db).unwrap(), vec![second.run.id.clone(), third.run.id.clone()]);
         assert_eq!(reserve_slot(&db, &first.run.id, &first.lease_owner, now).unwrap(), Slot::Lost, "a reclaimed run has no lease to reserve with");
+    }
+
+    #[test]
+    fn a_run_waiting_for_an_approval_keeps_its_slot() {
+        let (dir, core) = test_support::core();
+        let now = Utc::now();
+        let [waiting, other] = ["waiting", "other"].map(|name| manual_run(&core, dir.path(), name, now));
+        let db = core.db.lock().unwrap();
+        cap(&db, 1);
+        assert_eq!(reserve_slot(&db, &waiting.run.id, &waiting.lease_owner, now).unwrap(), Slot::Reserved);
+        assert!(transition(&db, &waiting.run.id, &waiting.lease_owner, wire::WorkflowRunStatus::WaitingApproval, None, now).unwrap());
+        assert_eq!(reserve_slot(&db, &other.run.id, &other.lease_owner, now).unwrap(), Slot::Queued, "the waiting run still holds the only slot");
+        assert!(unpark_queued(&db, now).unwrap().is_empty());
+        // The approval is answered: the agent resumes, and still only one runs.
+        assert!(transition(&db, &waiting.run.id, &waiting.lease_owner, wire::WorkflowRunStatus::Running, None, now).unwrap());
+        assert_eq!(running_count(&db).unwrap(), 1);
+        let running: i64 = db.query_row("SELECT COUNT(*) FROM workflow_runs WHERE status='running'", [], |row| row.get(0)).unwrap();
+        assert_eq!(running, 1);
     }
 
     #[test]
