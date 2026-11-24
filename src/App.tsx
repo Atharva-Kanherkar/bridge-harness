@@ -78,6 +78,7 @@ import { ImportToast } from "./components/ImportToast";
 import { importNotice } from "./moveToBridge";
 import { TrailToasts, trailToastKey, type TrailToast } from "./components/trails/TrailToasts";
 import { AddToTrailDialog } from "./components/trails/AddToTrailDialog";
+import { TrailsScreenSkeleton } from "./components/trails/TrailSkeletons";
 import type { TrailStartRequest } from "./components/TrailsScreen";
 import type { TrailMemberRef, TrailSummary } from "./protocol/generated/protocol";
 import { noteDisplayTitle } from "./notesDraft";
@@ -3886,6 +3887,8 @@ function AppContent() {
       subagents={subagents}
       unread={unread.byChat}
       pullRequests={sidebarPrs}
+      trails={trailSummaries}
+      onOpenTrail={openTrail}
       workspaces={state.workspaces}
       activeSessionId={session?.id}
       settingsActive={view === "settings"}
@@ -3962,8 +3965,9 @@ function AppContent() {
         onNewWorkspace={() => setNewProjectOpen(true)}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "trails" ? <Suspense fallback={null}><TrailsScreen
+      /> : view === "trails" ? <Suspense fallback={<TrailsScreenSkeleton trailOpen={!!trailId} />}><TrailsScreen
         trailId={trailId}
+        knownTrails={trailSummaries}
         onSelectTrail={id => setTrailId(id)}
         workspaces={state.workspaces.map(item => ({ id: item.id, title: item.title }))}
         defaultWorkspaceId={workspace?.id ?? null}
@@ -4024,8 +4028,8 @@ function AppContent() {
       /></Suspense> : session ? <>
         <SessionToolbar
           title={chatName(session)}
-          trailTitle={trailForSession(trailSummaries, session.id)?.title}
-          onOpenTrail={() => { const trail = trailForSession(trailSummaries, session.id); if (trail) openTrail(trail.id); }}
+          trail={trailForSession(trailSummaries, session.id)}
+          onOpenTrail={openTrail}
           onAddToTrail={!session.parentSessionId ? () => setAddToTrail({ member: { kind: "session", ref: session.id }, title: chatName(session), workspaceId: session.workspaceId ?? null }) : undefined}
           projectName={workspace?.title}
           sourceBadge={session.kind === "imported" ? importedChatBadge(importedSource?.tool, importedSource?.fingerprint) : undefined}

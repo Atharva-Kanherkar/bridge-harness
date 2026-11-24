@@ -5,6 +5,8 @@ import { MenuItem, MenuPanel, MenuSeparator, useMenuPanel } from "@/components/u
 import type { DockPaneId } from "../dockLayout";
 import type { DockPaneDescriptor } from "./SessionDock";
 import { formatShortcut } from "@/lib/platform";
+import type { TrailSummary } from "@/protocol/generated/protocol";
+import { TrailPeek } from "./trails/TrailPeek";
 
 // One strip for the whole session: what it is, where its panes are, and the
 // window actions. The dock's collapsed rail is gone, so this row is now the
@@ -18,9 +20,9 @@ import { formatShortcut } from "@/lib/platform";
 
 export type SessionToolbarProps = {
   title: string;
-  /** The trail this chat sits on: a chip that opens it. */
-  trailTitle?: string;
-  onOpenTrail?: () => void;
+  /** The trail this chat sits on: a chip that opens it, and shows it on hover. */
+  trail?: TrailSummary;
+  onOpenTrail?: (trailId: string) => void;
   /** "Add to trail…" in the overflow menu. */
   onAddToTrail?: () => void;
   /** The workspace/project this session belongs to. Renders as the muted first
@@ -88,7 +90,7 @@ function toolButtonClass(active: boolean) {
 
 export function SessionToolbar({
   title,
-  trailTitle,
+  trail,
   onOpenTrail,
   onAddToTrail,
   projectName,
@@ -151,18 +153,23 @@ export function SessionToolbar({
         {projectName && <p className="truncate text-caption leading-4 text-muted-foreground">{projectName}</p>}
       </div>
 
-      {trailTitle && onOpenTrail && (
-        <button
-          type="button"
-          onClick={onOpenTrail}
-          title={`Trail: ${trailTitle}`}
-          aria-label={`Open trail ${trailTitle}`}
-          data-testid="trail-chip"
-          className="hidden h-6 max-w-[220px] shrink-0 items-center gap-1.5 rounded-md bg-muted px-2 text-caption font-medium text-muted-foreground transition-colors hover:text-foreground sm:inline-flex"
-        >
-          <Route size={12} strokeWidth={1.8} aria-hidden="true" />
-          <span className="truncate">{trailTitle}</span>
-        </button>
+      {trail && onOpenTrail && (
+        <TrailPeek
+          trail={trail}
+          onOpen={onOpenTrail}
+          side="bottom"
+          align="end"
+          trigger={<button
+            type="button"
+            onClick={() => onOpenTrail(trail.id)}
+            aria-label={`Open trail ${trail.title}`}
+            data-testid="trail-chip"
+            className="hidden h-6 max-w-[220px] shrink-0 items-center gap-1.5 rounded-md bg-muted px-2 text-caption font-medium text-muted-foreground transition-colors hover:text-foreground data-popup-open:text-foreground sm:inline-flex"
+          >
+            <Route size={12} strokeWidth={1.8} aria-hidden="true" />
+            <span className="truncate">{trail.title}</span>
+          </button>}
+        />
       )}
 
       {sourceBadge && <span data-testid="import-source-badge" title={sourceBadge} className="hidden max-w-[260px] shrink-0 truncate rounded-full border border-border px-2 py-0.5 font-mono text-caption font-medium text-muted-foreground sm:inline">{sourceBadge}</span>}
@@ -305,7 +312,7 @@ export function SessionToolbar({
           />
         )}
         {overflowPanes.length > 0 && <MenuSeparator />}
-        {onAddToTrail && !trailTitle && (
+        {onAddToTrail && !trail && (
           <MenuItem
             label="Add to trail…"
             leading={<Route size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />}

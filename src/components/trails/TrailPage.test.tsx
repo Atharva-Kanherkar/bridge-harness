@@ -70,6 +70,67 @@ describe("TrailPage", () => {
     expect(host.querySelector("[data-event-kind=checks] [aria-label^='Remove']")).toBeNull();
   });
 
+  it("puts the kind label and detail on one meta line under the title", async () => {
+    page(mockReadTrail("trail-archive").trail);
+    await settle();
+    const row = host.querySelector("[data-event-kind=pullRequest]")!;
+    const meta = row.querySelector("[data-event-meta]")!;
+    expect(meta.textContent).toBe("Pull request·open·added automatically");
+    // The meta line is the title's sibling, under it, not a column beside it.
+    expect(meta.previousElementSibling?.textContent).toContain("#1012 feat(sidebar): archive a chat from its row");
+    expect(row.querySelector(".w-24")).toBeNull();
+  });
+
+  it("reserves the remove slot so every time lines up", async () => {
+    page(mockReadTrail("trail-archive").trail);
+    await settle();
+    for (const kind of ["checks", "note", "pullRequest"]) {
+      const row = host.querySelector(`[data-event-kind=${kind}]`)!;
+      expect(row.querySelector("[data-remove-slot]")).not.toBeNull();
+      // Times read in sans tabular figures, never mono.
+      expect(row.querySelector("time")?.className).toContain("tabular-nums");
+      expect(row.querySelector("time")?.className).not.toContain("font-mono");
+    }
+    expect(host.querySelector("[data-event-kind=checks] [data-remove-slot] button")).toBeNull();
+    expect(host.querySelector("[data-event-kind=note] [data-remove-slot] button")).not.toBeNull();
+  });
+
+  it("renders the header from a summary while the detail loads", async () => {
+    const summary = mockReadTrail("trail-archive").trail.summary;
+    act(() => root.render(<TrailPage trail={null} summary={summary} loading onBack={vi.fn()} onContinue={vi.fn()} onOpenEvent={vi.fn()} onRemove={vi.fn()} onRename={vi.fn(async () => undefined)} onArchive={vi.fn()} onRefresh={vi.fn()} onAdd={vi.fn()} />));
+    await settle();
+    expect(host.querySelector("h1")?.textContent).toBe("Archive a chat from the sidebar");
+    expect(host.textContent).toContain("Needs you");
+    expect(host.textContent).toContain("vitest is failing on #1012");
+    expect(host.querySelector("[role=status][aria-label='Loading trail']")).not.toBeNull();
+    expect(host.querySelector("ol[aria-label=Timeline]")).toBeNull();
+    // Nothing known at all: the back link and a header skeleton, not a blank page.
+    act(() => root.render(<TrailPage trail={null} loading onBack={vi.fn()} onContinue={vi.fn()} onOpenEvent={vi.fn()} onRemove={vi.fn()} onRename={vi.fn(async () => undefined)} onArchive={vi.fn()} onRefresh={vi.fn()} onAdd={vi.fn()} />));
+    await settle();
+    expect(named(/^Trails$/)).toBeTruthy();
+    expect(host.querySelector("[role=status][aria-label='Loading trail']")).not.toBeNull();
+  });
+
+  it("gives each brief item its kind's icon, and the token total in tabular figures", async () => {
+    page(mockReadTrail("trail-archive").trail);
+    await settle();
+    const kinds = [...host.querySelectorAll("[data-brief-kind]")].map(item => item.getAttribute("data-brief-kind"));
+    expect(kinds).toEqual(["issue", "note", "pullRequest", "chat", "chat", "message"]);
+    const total = [...host.querySelectorAll("section span")].find(item => /tokens$/.test(item.textContent ?? ""))!;
+    expect(total.className).toContain("tabular-nums");
+    expect(total.className).not.toContain("font-mono");
+  });
+
+  it("says the brief could not be read instead of loading forever", async () => {
+    const api = (await import("@/api")).bridgeApi;
+    const spy = vi.spyOn(api, "previewTrailBrief").mockRejectedValue(new Error("boom"));
+    page(mockReadTrail("trail-archive").trail);
+    await settle();
+    expect(host.textContent).toContain("Could not read the brief.");
+    expect(host.querySelector("[role=status][aria-label='Loading the brief']")).toBeNull();
+    spy.mockRestore();
+  });
+
   it("removes and opens members, and continues", async () => {
     const trail = mockReadTrail("trail-archive").trail;
     const props = page(trail);
