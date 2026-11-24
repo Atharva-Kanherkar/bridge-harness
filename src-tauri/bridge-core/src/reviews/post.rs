@@ -69,8 +69,9 @@ pub struct InlineComment {
 #[derive(Debug, Clone)]
 pub struct PostInput<'a> {
     pub job: &'a JobRow,
-    /// Every finding of the job, each with the harness that found it.
-    pub findings: Vec<(wire::ReviewFinding, String)>,
+    /// Every finding of the job, each with the harnesses that found it (two
+    /// when both reviewers of a second opinion flagged it).
+    pub findings: Vec<(wire::ReviewFinding, Vec<String>)>,
     /// The harnesses whose passes finished, for the footer.
     pub harnesses: Vec<String>,
     /// Attribution hiding: no footer naming Bridge or a harness.
@@ -138,8 +139,9 @@ fn short(sha: &str) -> &str {
 }
 
 /// One inline comment's body: label, title, text, footer.
-pub fn comment_body(finding: &wire::ReviewFinding, harness: &str, hide: bool) -> String {
-    let footer = footer(&[harness], hide);
+pub fn comment_body(finding: &wire::ReviewFinding, harnesses: &[String], hide: bool) -> String {
+    let harnesses: Vec<&str> = harnesses.iter().map(String::as_str).collect();
+    let footer = footer(&harnesses, hide);
     let head = format!("**{}** · {}\n\n", label(finding.severity), finding.title);
     let room = MAX_COMMENT_CHARS.saturating_sub(head.chars().count() + footer.chars().count());
     format!("{head}{}{footer}", fit(text(finding), room))
@@ -154,7 +156,7 @@ pub fn outside_heading(finding: &wire::ReviewFinding) -> String {
 /// Build the review a job posts.
 pub fn build(input: &PostInput<'_>) -> PostPlan {
     let job = input.job;
-    let mut chosen_findings: Vec<&(wire::ReviewFinding, String)> =
+    let mut chosen_findings: Vec<&(wire::ReviewFinding, Vec<String>)> =
         input.findings.iter().filter(|(finding, _)| chosen(job.post_mode, finding)).collect();
     // Stored order is already severity then confidence; keep it stable.
     chosen_findings.sort_by_key(|(finding, _)| finding.outside_diff);
@@ -162,7 +164,7 @@ pub fn build(input: &PostInput<'_>) -> PostPlan {
     let mut comments = Vec::new();
     let mut inline = Vec::new();
     let mut outside_entries = Vec::new();
-    for (finding, harness) in &chosen_findings {
+    for (finding, harnesses) in &chosen_findings {
         if finding.outside_diff {
             outside_entries.push(finding);
             continue;
@@ -174,7 +176,7 @@ pub fn build(input: &PostInput<'_>) -> PostPlan {
             side: finding.side,
             start_line,
             start_side: start_line.map(|_| finding.side),
-            body: comment_body(finding, harness, input.hide_attribution),
+            body: comment_body(finding, harnesses, input.hide_attribution),
         });
         inline.push(finding.id.clone());
     }
@@ -373,8 +375,8 @@ fn plan(core: &BridgeCore, job: &JobRow, current_head: Option<String>) -> Result
     let findings = findings
         .into_iter()
         .map(|finding| {
-            let harness = harness_of.get(&finding.id).cloned().unwrap_or_default();
-            (finding, harness)
+            let harnesses = harness_of.get(&finding.id).cloned().unwrap_or_default();
+            (finding, harnesses)
         })
         .collect();
     Ok(build(&PostInput { job: &job, findings, harnesses, hide_attribution, current_head }))

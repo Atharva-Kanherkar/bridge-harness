@@ -52,6 +52,7 @@ fn finding(id: &str, decision: ReviewFindingDecision) -> wire::ReviewFinding {
         confidence: 0.8,
         fingerprint: id.into(),
         agreed_by: 1,
+        pass_ids: Vec::new(),
         outside_diff: false,
         decision,
         edited_body: None,
@@ -65,7 +66,7 @@ fn finding(id: &str, decision: ReviewFindingDecision) -> wire::ReviewFinding {
 fn input<'a>(job: &'a JobRow, findings: Vec<wire::ReviewFinding>) -> PostInput<'a> {
     PostInput {
         job,
-        findings: findings.into_iter().map(|finding| (finding, "claude".to_owned())).collect(),
+        findings: findings.into_iter().map(|finding| (finding, vec!["claude".to_owned()])).collect(),
         harnesses: vec!["claude".into()],
         hide_attribution: false,
         current_head: Some(HEAD.into()),
@@ -209,6 +210,19 @@ fn the_footer_names_the_harness_only_when_attribution_is_shown() {
         assert!(!all.contains(named), "{named} in {all}");
     }
     assert!(hidden.payload.body.ends_with("<!-- bridge-review:job-1 -->"), "the marker stays: it is how a retry finds the post");
+}
+
+#[test]
+fn a_merged_comment_names_both_harnesses() {
+    let job = job(ReviewPostMode::Draft);
+    let mut merged = finding("k", ReviewFindingDecision::Kept);
+    merged.agreed_by = 2;
+    merged.pass_ids = vec!["pass-1".into(), "pass-2".into()];
+    let mut both = input(&job, vec![merged]);
+    both.findings[0].1 = vec!["claude".into(), "codex".into()];
+    let plan = build(&both);
+    assert!(plan.payload.comments[0].body.ends_with("<sub>Bridge review · claude, codex</sub>"), "{}", plan.payload.comments[0].body);
+    assert_eq!(plan.payload.comments.len(), 1, "one comment for the one finding both flagged");
 }
 
 #[test]

@@ -1037,7 +1037,7 @@ const SEVERITY_RANK: &str =
 pub fn findings(db: &Connection, job_id: &str) -> Result<Vec<wire::ReviewFinding>, BridgeError> {
     let mut statement = db.prepare(&format!(
         "SELECT id, job_id, pass_id, path, line, start_line, side, severity, title, body, confidence, fingerprint,
-            agreed_by, outside_diff, decision, edited_body, github_comment_id, posted_at, decided_at, fixed_in_sha
+            agreed_by, outside_diff, decision, edited_body, github_comment_id, posted_at, decided_at, fixed_in_sha, pass_ids
          FROM review_findings WHERE job_id=?1
          ORDER BY agreed_by DESC, {SEVERITY_RANK}, confidence DESC, rowid"
     ))?;
@@ -1060,6 +1060,10 @@ pub fn findings(db: &Connection, job_id: &str) -> Result<Vec<wire::ReviewFinding
                 confidence: row.get(10)?,
                 fingerprint: row.get(11)?,
                 agreed_by: row.get::<_, i64>(12)?.max(1) as u32,
+                pass_ids: match row.get::<_, Option<String>>(20)? {
+                    Some(text) => serde_json::from_str(&text).map_err(|_| invalid_column(20, &text))?,
+                    None => Vec::new(),
+                },
                 outside_diff: row.get(13)?,
                 decision: ReviewFindingDecision::parse(&decision).ok_or_else(|| invalid_column(14, &decision))?,
                 edited_body: row.get(15)?,
@@ -1073,13 +1077,80 @@ pub fn findings(db: &Connection, job_id: &str) -> Result<Vec<wire::ReviewFinding
     Ok(rows)
 }
 
-/// The harness whose pass found each finding of a job.
-pub fn finding_harnesses(db: &Connection, job_id: &str) -> Result<std::collections::HashMap<String, String>, BridgeError> {
+/// The harnesses whose passes found each finding of a job: one, or two for a
+/// finding both reviewers flagged, the kept finding's first.
+pub fn finding_harnesses(db: &Connection, job_id: &str) -> Result<std::collections::HashMap<String, Vec<String>>, BridgeError> {
+    let harness_of: std::collections::HashMap<String, String> = {
+        let mut statement = db.prepare("SELECT id, harness FROM review_passes WHERE job_id=?1")?;
+        let rows = statement.query_map(params![job_id], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<Result<_, _>>()?;
+        rows
+    };
+    let mut statement = db.prepare("SELECT id, pass_id, pass_ids FROM review_findings WHERE job_id=?1")?;
+    let rows: Vec<(String, String, Option<String>)> =
+        statement.query_map(params![job_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect::<Result<_, _>>()?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, pass_id, pass_ids)| {
+            let passes: Vec<String> = pass_ids.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_else(|| vec![pass_id]);
+            let harnesses = passes.iter().filter_map(|pass| harness_of.get(pass).cloned()).collect();
+            (id, harnesses)
+        })
+        .collect())
+}
+
+/// The findings of a job's finished passes, for the merge.
+pub fn merge_entries(db: &Connection, job_id: &str) -> Result<Vec<super::merge::Entry>, BridgeError> {
     let mut statement = db.prepare(
-        "SELECT f.id, p.harness FROM review_findings f JOIN review_passes p ON p.id=f.pass_id WHERE f.job_id=?1",
+        "SELECT f.id, f.pass_id, f.path, f.line, f.start_line, f.side, f.severity, f.title, f.body, f.confidence,
+            f.fingerprint, f.outside_diff
+         FROM review_findings f JOIN review_passes p ON p.id=f.pass_id
+         WHERE f.job_id=?1 AND p.status='done' AND f.pass_ids IS NULL
+         ORDER BY p.slot, f.rowid",
     )?;
-    let rows = statement.query_map(params![job_id], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<Result<_, _>>()?;
+    let rows = statement
+        .query_map(params![job_id], |row| {
+            let side: String = row.get(5)?;
+            let severity: String = row.get(6)?;
+            Ok(super::merge::Entry {
+                id: row.get(0)?,
+                pass_id: row.get(1)?,
+                finding: DraftFinding {
+                    path: row.get(2)?,
+                    line: row.get::<_, i64>(3)?.max(0) as u32,
+                    start_line: row.get::<_, Option<i64>>(4)?.map(|line| line.max(0) as u32),
+                    side: ReviewSide::parse(&side).ok_or_else(|| invalid_column(5, &side))?,
+                    severity: ReviewSeverity::parse(&severity).ok_or_else(|| invalid_column(6, &severity))?,
+                    title: row.get(7)?,
+                    body: row.get(8)?,
+                    confidence: row.get(9)?,
+                    fingerprint: row.get(10)?,
+                    outside_diff: row.get(11)?,
+                },
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+/// Write a second opinion's merges in one transaction under `claim`: each kept
+/// finding takes the merged severity and confidence, `agreed_by = 2` and both
+/// pass ids; the other is deleted. False (nothing written) when the claim no
+/// longer holds the job in `reviewing`.
+pub fn merge_findings(db: &Connection, job_id: &str, claim: &str, merges: &[super::merge::Merge]) -> Result<bool, BridgeError> {
+    let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+    if !holds(&transaction, job_id, claim, Status::Reviewing)? {
+        return Ok(false);
+    }
+    for merge in merges {
+        let pass_ids = serde_json::to_string(&merge.pass_ids).map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        transaction.execute(
+            "UPDATE review_findings SET severity=?3, confidence=?4, agreed_by=2, pass_ids=?5 WHERE id=?1 AND job_id=?2",
+            params![merge.keep, job_id, merge.severity.as_str(), merge.confidence.clamp(0.0, 1.0), pass_ids],
+        )?;
+        transaction.execute("DELETE FROM review_findings WHERE id=?1 AND job_id=?2", params![merge.drop, job_id])?;
+    }
+    transaction.commit()?;
+    Ok(true)
 }
 
 /// The harnesses whose passes finished, in slot order, each once.
