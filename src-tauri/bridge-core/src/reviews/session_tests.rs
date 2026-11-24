@@ -350,14 +350,21 @@ fn a_pass_reads_the_context_and_keeps_inline_and_outside_findings_apart() {
 /// ```
 ///
 /// OpenCode runs in a scratch `XDG_DATA_HOME` so it never touches the
-/// person's own sessions; Claude and Codex use the signed-in account.
+/// person's own sessions; that leaves only OpenCode's free models. For a paid
+/// one, `BRIDGE_REVIEW_LIVE_OPENCODE_SIGNED_IN=1` uses their sign-in and saves
+/// the review in their OpenCode history. Claude and Codex use the signed-in
+/// account. `BRIDGE_REVIEW_LIVE_WAIT_SECS` lengthens the catalog wait.
 #[test]
 #[ignore = "live: runs a real harness; set BRIDGE_REVIEW_LIVE_HARNESS"]
 fn live_review_on_a_fixture_pr() {
     let Ok(harness) = std::env::var("BRIDGE_REVIEW_LIVE_HARNESS") else { return };
     let model = std::env::var("BRIDGE_REVIEW_LIVE_MODEL").ok();
     let scratch = tempfile::tempdir().unwrap();
-    if harness == "opencode" {
+    // OpenCode keeps its sign-ins in its own data folder, so a paid model
+    // needs the person's (`BRIDGE_REVIEW_LIVE_OPENCODE_SIGNED_IN=1`), and the
+    // review is then saved in their OpenCode history, as in the app. Without
+    // it, a scratch folder keeps their history untouched (free models only).
+    if harness == "opencode" && std::env::var_os("BRIDGE_REVIEW_LIVE_OPENCODE_SIGNED_IN").is_none() {
         std::env::set_var("XDG_DATA_HOME", scratch.path().join("xdg-data"));
     }
     let repo = std::fs::canonicalize(scratch.path()).unwrap().join("repo");
@@ -393,8 +400,15 @@ fn live_review_on_a_fixture_pr() {
     let (placed, context_name) = place_context(&context, &repo).unwrap();
 
     let registry = Arc::new(AdapterRegistry::built_in().unwrap());
-    // OpenCode discovers its catalog in the background.
-    std::thread::sleep(Duration::from_secs(8));
+    // OpenCode discovers its catalog in the background; a signed-in provider
+    // with many models can take longer than the default wait.
+    let wait = std::env::var("BRIDGE_REVIEW_LIVE_WAIT_SECS").ok().and_then(|secs| secs.parse().ok()).unwrap_or(8);
+    std::thread::sleep(Duration::from_secs(wait));
+    if let Some(descriptor) = registry.descriptor(&harness) {
+        let usable: Vec<&str> =
+            descriptor.models.iter().filter(|model| model.available).map(|model| model.id.as_str()).take(8).collect();
+        eprintln!("{harness} catalog: {} models, usable {usable:?}", descriptor.models.len());
+    }
     let transport = RegistryTransport { registry };
     let instructions = instructions(&repo, REVIEW_INSTRUCTIONS, false);
     let start = SessionStart { cwd: &repo, model: model.as_deref(), effort: Some("medium"), instructions: &instructions };
