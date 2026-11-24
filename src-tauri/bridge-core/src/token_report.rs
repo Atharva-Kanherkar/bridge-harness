@@ -266,7 +266,8 @@ pub fn utc_today() -> NaiveDate {
 /// The class of a group of `kind`. `start` is a start row of the same item,
 /// and `completion` is the row of the group. A row that names no tool gives
 /// `other_tool`. The report never reads `title`.
-pub fn classify_tool(kind: &str, start: Option<&Value>, completion: Option<&Value>) -> TokenClass {
+#[cfg(test)]
+fn classify_tool(kind: &str, start: Option<&Value>, completion: Option<&Value>) -> TokenClass {
     group_class(
         kind,
         start.and_then(|payload| named_class(payload, false)),
