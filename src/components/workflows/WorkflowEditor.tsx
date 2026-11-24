@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ErrorNote } from "./parts";
-import { EVENT_OPTIONS, isGithubEvent, localTimezone, needsRepo, presetCron, presetFor, WEEKDAY_OPTIONS, type SchedulePreset } from "./format";
+import { EVENT_OPTIONS, isGithubEvent, localTimezone, needsRepo, presetCron, presetFor, presetForCron, WEEKDAY_OPTIONS, type SchedulePreset } from "./format";
 
 const FIELD = "block text-caption font-medium text-muted-foreground";
 const SELECT = "mt-1 h-8 w-full rounded-lg border border-input bg-background dark:bg-input/32 px-2 text-ui text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -34,6 +34,20 @@ export function previewSentence(preview: WorkflowTriggerPreview): string {
   const atLeast = preview.note?.startsWith("At least") ? "at least " : "";
   const times = preview.matches === 1 ? "once" : `${atLeast}${preview.matches} times`;
   return preview.matches === 0 ? `Would not have run in the last ${preview.windowDays} days.` : `Would have run ${times} in the last ${preview.windowDays} days.`;
+}
+
+/** The batch schedules the editor offers; a saved one keeps its own. */
+type BatchPreset = "daily" | "weekdays" | "weekly" | "hourly" | "custom";
+const BATCH_OPTIONS: Array<{ value: BatchPreset; label: string }> = [
+  { value: "daily", label: "every day" },
+  { value: "weekdays", label: "on weekdays" },
+  { value: "weekly", label: "once a week" },
+  { value: "hourly", label: "every hour" },
+  { value: "custom", label: "on a cron schedule" },
+];
+function batchPresetFor(cron: string | undefined): BatchPreset {
+  const preset = presetForCron(cron ?? "0 9 * * *").preset;
+  return preset === "daily" || preset === "weekdays" || preset === "weekly" || preset === "hourly" ? preset : "custom";
 }
 
 function emptyDefinition(options: WorkflowOptions | null): WorkflowDefinition {
@@ -96,7 +110,8 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
   const [channel, setChannel] = useState(startEvent?.channel ?? "");
   const [from, setFrom] = useState(startEvent?.from ?? "");
   const [collect, setCollect] = useState(Boolean(startEvent?.batch));
-  const [batchDays, setBatchDays] = useState<"daily" | "weekdays">(startEvent?.batch?.cron.trim().endsWith("1-5") ? "weekdays" : "daily");
+  // A saved batch keeps its own schedule until the person changes it (R10).
+  const [batchPreset, setBatchPreset] = useState<BatchPreset>(batchPresetFor(startEvent?.batch?.cron));
   const [preview, setPreview] = useState<WorkflowTriggerPreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const step = definition.steps[0];
@@ -107,12 +122,12 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
 
   const composed = useMemo<WorkflowDefinition>(() => {
     if (preset === "event") {
-      const trigger = composeEventTrigger({ event: eventKind, repo, channel, from, collect, batchCron: presetCron(batchDays, time, weekday, custom), timezone });
+      const trigger = composeEventTrigger({ event: eventKind, repo, channel, from, collect, batchCron: presetCron(batchPreset, time, weekday, custom), timezone });
       return { ...definition, name: definition.name.trim(), trigger };
     }
     const cron = presetCron(preset, time, weekday, custom);
     return { ...definition, name: definition.name.trim(), trigger: cron === null ? { kind: "manual" } : { kind: "schedule", cron, timezone } };
-  }, [definition, preset, time, weekday, custom, timezone, eventKind, repo, channel, from, collect, batchDays]);
+  }, [definition, preset, time, weekday, custom, timezone, eventKind, repo, channel, from, collect, batchPreset]);
 
   // What this trigger would have done last week, refreshed as it is edited.
   const triggerKey = JSON.stringify(composed.trigger);
@@ -198,9 +213,12 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
             <label className="flex items-center gap-1.5"><input type="radio" name="event-mode" aria-label="Run for each event" checked={!collect} onChange={() => setCollect(false)} className="accent-foreground"/>Run for each event</label>
             <label className="flex items-center gap-1.5"><input type="radio" name="event-mode" aria-label="Collect them and run at a set time" checked={collect} onChange={() => setCollect(true)} className="accent-foreground"/>Collect them and run</label>
             {collect && <>
-              <select aria-label="Collect on" className="h-7 rounded-md border border-input bg-background px-1.5 text-caption text-foreground dark:bg-input/32" value={batchDays} onChange={event => setBatchDays(event.target.value as "daily" | "weekdays")}><option value="daily">every day</option><option value="weekdays">on weekdays</option></select>
-              <span>at</span>
-              <Input aria-label="Collect at" type="time" className="h-7 w-28" value={time} onChange={event => setTime(event.target.value)}/>
+              <select aria-label="Collect on" className="h-7 rounded-md border border-input bg-background px-1.5 text-caption text-foreground dark:bg-input/32" value={batchPreset} onChange={event => setBatchPreset(event.target.value as BatchPreset)}>{BATCH_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+              {batchPreset === "weekly" && <select aria-label="Collect weekday" className="h-7 rounded-md border border-input bg-background px-1.5 text-caption text-foreground dark:bg-input/32" value={weekday} onChange={event => setWeekday(Number(event.target.value))}>{WEEKDAY_OPTIONS.map(day => <option key={day.value} value={day.value}>on {day.label}</option>)}</select>}
+              {batchPreset === "custom"
+                ? <Input aria-label="Collect cron" className="h-7 w-40 font-mono" placeholder="minute hour day month weekday" value={custom} onChange={event => setCustom(event.target.value)}/>
+                : <><span>{batchPreset === "hourly" ? "at minute" : "at"}</span>
+                  <Input aria-label="Collect at" type="time" className="h-7 w-28" value={time} onChange={event => setTime(event.target.value)}/></>}
             </>}
           </div>
           <div aria-live="polite" className="rounded-lg bg-muted px-2.5 py-2 text-caption text-muted-foreground">

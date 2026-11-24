@@ -116,7 +116,7 @@ export function presetFor(trigger: WorkflowTrigger): { preset: SchedulePreset; t
   return presetForCron(trigger.cron);
 }
 
-function presetForCron(cron: string): { preset: SchedulePreset; time: string; weekday: number; custom: string } {
+export function presetForCron(cron: string): { preset: SchedulePreset; time: string; weekday: number; custom: string } {
   const trigger = { cron };
   const [minute, hour, dom, month, dow] = trigger.cron.trim().split(/\s+/);
   const numeric = /^\d+$/.test(minute) && /^\d+$/.test(hour);

@@ -86,6 +86,22 @@ describe("the editor's event trigger", () => {
     expect(submitted.definition.trigger).toMatchObject({ kind: "event", event: "slack_mention", batch: null });
   });
 
+  it("keeps a saved batch schedule it offers no preset for", async () => {
+    const options = await bridgeApi.workflowOptions();
+    for (const cron of ["0 9 * * 1", "*/15 * * * *", "30 * * * *"]) {
+      const onSubmit = vi.fn();
+      const workflow = { id: "wf", revisionId: `r-${cron}`, approved: true, enabled: true, disabledReason: null, definition: {
+        name: "Batch", projectId: null, steps: [{ harness: "claude", model: options.harnesses.find(harness => harness.id === "claude")!.defaultModel ?? "claude-haiku-5-5", instructions: "Summarise them." }],
+        trigger: { kind: "event" as const, event: "slack_mention" as const, repo: null, channel: null, from: null, batch: { cron, timezone: "UTC" } },
+        grants: [], alwaysAllow: [], files: "none" as const, budget: { maxWallSeconds: 600, maxTurns: 24, maxToolCalls: 64, maxOutputTokens: null, costCeilingMicrousd: null }, expectedResult: "", notify: { onSuccess: false },
+      } };
+      await act(async () => root.render(<WorkflowEditor key={cron} open workflow={workflow as never} options={options} projects={[]} busy={false} error={null} onCancel={() => {}} onSubmit={onSubmit}/>));
+      await settle(500);
+      await act(async () => button("Approve and save")!.click());
+      expect(onSubmit.mock.calls[0][0].definition.trigger.batch).toEqual({ cron, timezone: "UTC" });
+    }
+  });
+
   it("asks for a repository before a GitHub pull request trigger can be saved", async () => {
     const options = await bridgeApi.workflowOptions();
     await act(async () => root.render(<WorkflowEditor open workflow={null} options={options} projects={[]} busy={false} error={null} onCancel={() => {}} onSubmit={() => {}}/>));
