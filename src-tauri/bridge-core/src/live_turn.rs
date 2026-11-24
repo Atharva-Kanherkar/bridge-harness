@@ -1231,7 +1231,13 @@ mod account_launch_tests {
 /// write to the conversation of its source.
 fn reusable_workspace_session(db: &Connection, workspace_id: &str, harness: &str) -> Option<(String, Option<String>)> {
     db.query_row(
-        "SELECT id,provider_session_id FROM sessions WHERE workspace_id=?1 AND harness=?2 AND parent_session_id IS NULL AND NOT EXISTS(SELECT 1 FROM worker_runtime w WHERE w.session_id=sessions.id) AND NOT EXISTS(SELECT 1 FROM session_heads h WHERE h.session_id=sessions.id AND h.restoration_mode='native_fork') AND status IN ('idle','stopped','failed','ready','working','waiting') ORDER BY rowid DESC LIMIT 1",
+        "SELECT id,provider_session_id FROM sessions
+         WHERE workspace_id=?1 AND harness=?2 AND sessions.kind IN ('direct','orchestrator')
+           AND parent_session_id IS NULL
+           AND NOT EXISTS(SELECT 1 FROM worker_runtime w WHERE w.session_id=sessions.id)
+           AND NOT EXISTS(SELECT 1 FROM session_heads h WHERE h.session_id=sessions.id AND h.restoration_mode='native_fork')
+           AND status IN ('idle','stopped','failed','ready','working','waiting')
+         ORDER BY rowid DESC LIMIT 1",
         params![workspace_id, harness],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )

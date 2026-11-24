@@ -1608,6 +1608,47 @@ fn start_session_reuse_skips_workers_and_harness_subagents() {
     assert_eq!(lineage(&core, &claude_worker), (1, Some("codex-chat".to_owned()), "orchestrator".to_owned()));
 }
 
+#[test]
+fn start_session_reuses_only_direct_and_orchestrator_chats() {
+    const OTHER_KINDS: [&str; 3] = ["workflow", "briefing", "imported"];
+
+    for kind in [Some("direct"), Some("orchestrator"), None] {
+        let (dir, core, script) = live();
+        let harness = if kind.is_some() { "claude" } else { "codex" };
+        let chat = workspace_chat(&core, dir.path(), harness, "chat-thread");
+        {
+            let db = core.db.lock().unwrap();
+            if let Some(kind) = kind {
+                db.execute("UPDATE sessions SET kind=?1 WHERE id=?2", params![kind, chat])
+                    .unwrap();
+            }
+            for other in OTHER_KINDS {
+                db.execute(
+                    "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind)
+                     VALUES(?1,'w','claude',?1,'stopped','reported',0,?1)",
+                    [other],
+                )
+                .unwrap();
+            }
+        }
+
+        start_session(&core, "w".into(), Some(Harness::Claude), None).unwrap();
+        if kind.is_some() {
+            assert_eq!(verbs(&asked(&script)), [("resume", Some("chat-thread"))]);
+            assert_eq!(warm_thread(&core, &chat).as_deref(), Some("chat-thread"));
+        } else {
+            assert_eq!(verbs(&asked(&script)), [("start", None)]);
+            let started = new_session_of(&core, "w", "claude", &OTHER_KINDS);
+            assert_eq!(lineage(&core, &started), (0, None, "orchestrator".into()));
+            assert!(warm_thread(&core, &started).is_some());
+        }
+        for other in OTHER_KINDS {
+            assert_eq!(row_of(&core, other), ("stopped".into(), None), "{other}");
+            assert!(warm_thread(&core, other).is_none(), "{other}");
+        }
+    }
+}
+
 /// The one session of the workspace and harness that is not in `known`.
 fn new_session_of(core: &BridgeCore, workspace: &str, harness: &str, known: &[&str]) -> String {
     let db = core.db.lock().unwrap();
