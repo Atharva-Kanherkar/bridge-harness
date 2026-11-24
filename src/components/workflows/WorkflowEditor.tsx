@@ -112,7 +112,8 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
   const [collect, setCollect] = useState(Boolean(startEvent?.batch));
   // A saved batch keeps its own schedule until the person changes it (R10).
   const [batchPreset, setBatchPreset] = useState<BatchPreset>(batchPresetFor(startEvent?.batch?.cron));
-  const [preview, setPreview] = useState<WorkflowTriggerPreview | null>(null);
+  // A preview belongs to the trigger it answered (R11).
+  const [preview, setPreview] = useState<{ key: string; result: WorkflowTriggerPreview } | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const step = definition.steps[0];
   const grants = definition.grants ?? [];
@@ -135,10 +136,11 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
     if (!open || composed.trigger.kind !== "event") { setPreview(null); return; }
     let current = true;
     setPreviewing(true);
+    const key = triggerKey;
     const timer = window.setTimeout(() => {
       bridgeApi.previewWorkflowTrigger(composed.trigger)
-        .then(result => { if (current) setPreview(result); })
-        .catch(reason => { if (current) setPreview({ supported: false, reason: String(reason?.message ?? reason), windowDays: 7, matches: 0, samples: [], note: null }); })
+        .then(result => { if (current) setPreview({ key, result }); })
+        .catch(reason => { if (current) setPreview({ key, result: { supported: false, reason: String(reason?.message ?? reason), windowDays: 7, matches: 0, samples: [], note: null } }); })
         .finally(() => { if (current) setPreviewing(false); });
     }, 400);
     return () => { current = false; window.clearTimeout(timer); };
@@ -162,8 +164,12 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
   const refusal = harnessRefusal(options, step.harness, composed);
   const missingRepo = composed.trigger.kind === "event" && needsRepo(composed.trigger.event) && !composed.trigger.repo;
   const ready = composed.name.length > 0 && step.instructions.trim().length > 0 && step.model.trim().length > 0 && !refusal && !missingRepo;
+  // Only the preview of the trigger as it is now: an older one's sample may be
+  // another event entirely.
+  const shown = preview?.key === triggerKey ? preview.result : null;
+  const previewPending = composed.trigger.kind === "event" && !shown;
   // An event workflow's dry run is tried on the newest real event, when there is one.
-  const tryOn = composed.trigger.kind === "event" ? preview?.samples[0] ?? null : null;
+  const tryOn = composed.trigger.kind === "event" ? shown?.samples[0] ?? null : null;
 
   return <Dialog open={open} onOpenChange={next => { if (!next && !busy) onCancel(); }}>
     {open && <DialogContent className="sm:max-w-2xl" showCloseButton={!busy}>
@@ -222,12 +228,12 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
             </>}
           </div>
           <div aria-live="polite" className="rounded-lg bg-muted px-2.5 py-2 text-caption text-muted-foreground">
-            {previewing && !preview ? <span className="inline-flex items-center gap-1.5"><LoaderCircle className="animate-spin" size={11}/>Checking the last week…</span>
-              : preview ? <>
-                <p className={preview.supported ? "text-foreground" : ""}>{previewSentence(preview)}</p>
-                {preview.note && <p className="mt-0.5">{preview.note}</p>}
-                {preview.samples.length > 0 && <ul aria-label="Recent events" className="mt-1.5 space-y-0.5 contain-inline-size">{preview.samples.slice(0, 3).map(sample => <li key={sample.key} className="truncate">{sample.title}</li>)}</ul>}
-              </> : null}
+            {!shown ? (previewing ? <span className="inline-flex items-center gap-1.5"><LoaderCircle className="animate-spin" size={11}/>Checking the last week…</span> : null)
+              : <>
+                <p className={shown.supported ? "text-foreground" : ""}>{previewSentence(shown)}</p>
+                {shown.note && <p className="mt-0.5">{shown.note}</p>}
+                {shown.samples.length > 0 && <ul aria-label="Recent events" className="mt-1.5 space-y-0.5 contain-inline-size">{shown.samples.slice(0, 3).map(sample => <li key={sample.key} className="truncate">{sample.title}</li>)}</ul>}
+              </>}
           </div>
         </div>}
         {preset !== "manual" && (preset !== "event" || collect) && <div className="grid gap-3 sm:grid-cols-3">
@@ -305,7 +311,7 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
       </DialogPanel>
       <DialogFooter>
         <Button variant="ghost" disabled={busy} onClick={onCancel}>Cancel</Button>
-        <Button variant="secondary" disabled={busy || !ready} title={tryOn ? `On: ${tryOn.title}` : undefined} onClick={() => onSubmit({ definition: composed, approve: false, dryRun: true, event: tryOn })}>{tryOn ? "Dry run on the latest event" : "Dry run first"}</Button>
+        <Button variant="secondary" disabled={busy || !ready || previewPending} title={tryOn ? `On: ${tryOn.title}` : undefined} onClick={() => onSubmit({ definition: composed, approve: false, dryRun: true, event: tryOn })}>{tryOn ? "Dry run on the latest event" : "Dry run first"}</Button>
         <Button disabled={busy || !ready} onClick={() => onSubmit({ definition: composed, approve: true, dryRun: false })}>{busy ? <LoaderCircle className="animate-spin" size={12}/> : <ShieldCheck size={12}/>}Approve and save</Button>
       </DialogFooter>
     </DialogContent>}

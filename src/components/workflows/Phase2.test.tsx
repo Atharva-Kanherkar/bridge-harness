@@ -86,6 +86,34 @@ describe("the editor's event trigger", () => {
     expect(submitted.definition.trigger).toMatchObject({ kind: "event", event: "slack_mention", batch: null });
   });
 
+  it("never sends a dry run with a sample from the trigger before an edit", async () => {
+    const options = await bridgeApi.workflowOptions();
+    const onSubmit = vi.fn();
+    // Each event's preview has its own sample, and the second arrives late.
+    vi.spyOn(bridgeApi, "previewWorkflowTrigger").mockImplementation(async trigger => {
+      const event = trigger.kind === "event" ? trigger.event : "slack_mention";
+      if (event === "slack_direct_message") await new Promise(resolve => setTimeout(resolve, 300));
+      return { supported: true, reason: null, windowDays: 7, matches: 1, note: null, samples: [{ key: `sample:${event}`, kind: event, title: event, url: null, occurredAt: "2026-11-23T00:00:00Z", payload: {} }] };
+    });
+    await act(async () => root.render(<WorkflowEditor open workflow={null} options={options} projects={[]} busy={false} error={null} onCancel={() => {}} onSubmit={onSubmit}/>));
+    change(field<HTMLInputElement>("Workflow name"), "Messages");
+    change(field<HTMLTextAreaElement>("Workflow instructions"), "Tell me what they need.");
+    change(field<HTMLSelectElement>("Workflow schedule"), "event");
+    await settle(500);
+    expect(button("Dry run on the latest event")).toBeTruthy();
+    change(field<HTMLSelectElement>("Event"), "slack_direct_message");
+    await settle(0);
+    // The mention's sample is not offered for the DM trigger while its own preview loads.
+    expect(button("Dry run on the latest event")).toBeUndefined();
+    await act(async () => button("Dry run")!.click());
+    expect(onSubmit).not.toHaveBeenCalled();
+    await settle(800);
+    await act(async () => button("Dry run on the latest event")!.click());
+    const submitted = onSubmit.mock.calls[0][0];
+    expect(submitted.definition.trigger).toMatchObject({ event: "slack_direct_message" });
+    expect(submitted.event.key).toBe("sample:slack_direct_message");
+  });
+
   it("keeps a saved batch schedule it offers no preset for", async () => {
     const options = await bridgeApi.workflowOptions();
     for (const cron of ["0 9 * * 1", "*/15 * * * *", "30 * * * *"]) {
