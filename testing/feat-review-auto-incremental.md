@@ -120,6 +120,51 @@ TypeScript (vitest):
   dropped one. Record time, tokens, cost.
 - Everything under `env -i`; the harnesses' real data folders are checked afterwards.
 
+## Review on 08871b39 (amended before the fixes)
+
+- **Off wins at insertion.** An auto-review start checks the settings (mode and draft rule
+  unchanged, auto-review not off) inside the same store lock as the insert. A save of Off
+  that lands while the PR's head is being read means no job.
+- **Posted means what GitHub holds.** A posted job records the commit its review is on
+  (`posted_head_sha`: the commit posted, or the found review's `commit_id` when a retry
+  reconciles an earlier post). A re-review starts there, never past an unpublished head.
+- **One repository, one watch.** Auto-review keys its watches by repository (host, owner,
+  name). Two workspaces of one repository share one watch and one job per head; the insertion
+  gate refuses a push job when any workspace already reviewed that PR head.
+- **History is the repository's.** Prior findings, the last posted head, push-job superseding,
+  the catch-up rule and fixed marks all key on (owner, name, PR), not the workspace, so a
+  workspace pointed at another repository never inherits the old one's history.
+- **Nothing omitted silently.** Files left out of `incremental.patch` for size are listed in
+  `pr.json.incremental.omittedFiles`, named in the turn, and noted in the summary.
+- **History only runs forward.** Prior findings are only those of reviews whose head is an
+  ancestor of (or equal to) the reviewed head, checked with git (a missing commit is fetched,
+  else left out). `fixed` can only name such a finding from an earlier head, and the store
+  refuses a mark on a finding of the same head or another PR.
+- **"My PRs" re-reads the login** once its hour is up (a cache hit does not refresh it), per
+  GitHub host.
+- **Drafts are checked fresh.** At start, the head lookup's draft state and author are checked
+  against the filters; a PR that became a draft (or someone else's) is not started.
+- **Large repositories.** The listing reads up to 1,000 open PRs. A listing that hits the
+  limit is partial: PRs missing from it are kept, and only a PR numbered above every PR seen
+  counts as newly opened. Bridge logs when it happens.
+- **Evals that can fail.** The live tests fail when no harness is set, save the raw answer and
+  a scored record (`BRIDGE_REVIEW_LIVE_OUT`), and the incremental one requires: exactly one
+  finding after Bridge's filters, on `first`, about the panic; no finding about integer
+  division; `fixed` exactly `["f-divide-by-zero"]`. The artifacts are linked from the PR.
+- **E2E fix detection is not scripted.** The new commit really changes the posted line, and
+  the fake reviewer reports a finding fixed only when `incremental.patch` changes its line. The
+  E2E proves the plumbing; the live evals measure detection.
+
+Tests added for this review:
+- `auto_tests`: a save of Off during the head lookup starts nothing (threaded, the fake `gh`
+  holds `pr view`); two workspaces of one repository start one job; a cached login expires; a
+  PR that turned draft (fresh lookup) is not started; a partial listing keeps unseen PRs.
+- `store_tests`: posted head from the found review's commit; history by repository across
+  workspaces and not across repositories; fixed marks refuse same-head and other-PR findings.
+- `prepare_tests`: an omitted incremental file is listed; prior findings of a descendant head
+  are left out.
+- `post_tests`: a reconciled post carries the found review's commit.
+
 ## Manual
 
 - None beyond the evals.
