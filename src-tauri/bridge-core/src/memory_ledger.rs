@@ -338,15 +338,16 @@ struct PageCursor {
     id: String,
 }
 
-fn encode_cursor(status: &str, record: &MemoryRecord) -> String {
+fn encode_cursor(status: &str, record: &MemoryRecord) -> Result<String, BridgeError> {
     use base64::Engine;
     let cursor = PageCursor {
         status: status.to_string(),
         updated_at: record.updated_at.clone(),
         id: record.id.clone(),
     };
-    base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(serde_json::to_vec(&cursor).expect("a cursor always serializes"))
+    let json = serde_json::to_vec(&cursor)
+        .map_err(|error| BridgeError::Invalid(format!("Memory page cursor: {error}")))?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json))
 }
 
 fn decode_cursor(raw: &str, status: &str) -> Result<PageCursor, BridgeError> {
@@ -440,7 +441,10 @@ pub fn list_page(
     };
     let next_cursor = if records.len() > limit as usize {
         records.truncate(limit as usize);
-        records.last().map(|record| encode_cursor(status, record))
+        records
+            .last()
+            .map(|record| encode_cursor(status, record))
+            .transpose()?
     } else {
         None
     };
