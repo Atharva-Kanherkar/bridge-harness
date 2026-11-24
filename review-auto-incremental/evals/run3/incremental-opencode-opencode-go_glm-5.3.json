@@ -1,0 +1,56 @@
+{
+  "eval": "live_incremental_review_on_a_fixture_pr",
+  "harness": "opencode",
+  "model": "opencode-go/glm-5.3",
+  "seconds": 88.338352667,
+  "usage": {
+    "tokensIn": 24097,
+    "tokensOut": 6223,
+    "costMicrousd": 42877,
+    "deniedRequests": 0,
+    "tools": [
+      "read",
+      "read",
+      "read",
+      "read",
+      "read",
+      "read",
+      "read",
+      "glob",
+      "grep",
+      "read"
+    ]
+  },
+  "answer": "The repo is a single-file crate (`src/lib.rs`); the new commits since the last review add the empty-slice guard to `average` and the new `first` function.\n\n**What the new commits do:**\n- They fix the previously kept, posted finding `f-divide-by-zero`: `average` now returns 0 for an empty slice and the doc comment matches. I'm marking that finding as fixed.\n- They add `first(items, n)`, which slices `&items[..n]` with no bounds clamping. Unlike its sibling `last` (which uses `saturating_sub` and documents \"or all of them when there are fewer\"), `first` panics for any `n > items.len()` — e.g. `first(&[1, 2, 3], 5)`. That's the main remaining problem.\n- Separately, the `i32` sum inside `average` can overflow on realistic inputs (a few million values around 1000 already exceed `i32::MAX` when summed): a debug build panics and a release build silently wraps to a wrong answer.\n\nI am not re-raising the dropped `f-integer-division` finding, since the new commits didn't change that behavior.\n\n```json\n{\"summary\":\"The PR adds average() and first() helpers to src/lib.rs. The new commits fix the earlier kept finding f-divide-by-zero by guarding the empty slice in average(), so that issue is resolved at this head. The newly added first(), however, panics whenever n exceeds the slice length, inconsistent with last(), which saturates. I also flag a reachable i32 overflow in average()'s sum. The dropped integer-truncation finding is intentionally not re-raised.\",\n \"findings\":[\n  {\"path\":\"src/lib.rs\",\"line\":16,\"startLine\":15,\"side\":\"RIGHT\",\"severity\":\"major\",\n   \"title\":\"first() panics when n exceeds the slice length\",\n   \"body\":\"`&items[..n]` requires `n <= items.len()`, so `first(&[1, 2, 3], 5)` panics. The sibling `last()` deliberately avoids this via `items.len().saturating_sub(n)` and documents \\\"or all of them when there are fewer\\\", so `first` is both inconsistent and a trap for plausible call sites. Fix by clamping: `&items[..items.len().min(n)]`, and mirror `last`'s doc comment.\",\n   \"confidence\":0.9},\n  {\"path\":\"src/lib.rs\",\"line\":11,\"side\":\"RIGHT\",\"severity\":\"minor\",\n   \"title\":\"average() can overflow the i32 sum\",\n   \"body\":\"`items.iter().sum::<i32>()` panics on overflow in debug builds and silently wraps in release, yielding a wrong average. This is reachable with realistic data: a few million values around 1000 already exceed `i32::MAX` when summed. Consider summing in `i64` (e.g. `items.iter().map(|&x| i64::from(x)).sum::<i64>() / items.len() as i64`, cast back to `i32`) or documenting the overflow behavior.\",\n   \"confidence\":0.7}],\n \"fixed\":[\"f-divide-by-zero\"]}\n```",
+  "fixedAsGiven": [
+    "f-divide-by-zero"
+  ],
+  "draftedFindings": [
+    {
+      "path": "src/lib.rs",
+      "line": 16,
+      "severity": "major",
+      "title": "first() panics when n exceeds the slice length",
+      "body": "`&items[..n]` requires `n <= items.len()`, so `first(&[1, 2, 3], 5)` panics. The sibling `last()` deliberately avoids this via `items.len().saturating_sub(n)` and documents \"or all of them when there are fewer\", so `first` is both inconsistent and a trap for plausible call sites. Fix by clamping: `&items[..items.len().min(n)]`, and mirror `last`'s doc comment."
+    },
+    {
+      "path": "src/lib.rs",
+      "line": 11,
+      "severity": "minor",
+      "title": "average() can overflow the i32 sum",
+      "body": "`items.iter().sum::<i32>()` panics on overflow in debug builds and silently wraps in release, yielding a wrong average. This is reachable with realistic data: a few million values around 1000 already exceed `i32::MAX` when summed. Consider summing in `i64` (e.g. `items.iter().map(|&x| i64::from(x)).sum::<i64>() / items.len() as i64`, cast back to `i32`) or documenting the overflow behavior."
+    }
+  ],
+  "draftedFixed": [
+    "f-divide-by-zero"
+  ],
+  "checks": {
+    "exactlyOneFinding": false,
+    "onFirst": false,
+    "aboutThePanic": true,
+    "droppedNotRaised": true,
+    "modelRepeatedDropped": false,
+    "fixedExactly": true
+  },
+  "pass": false
+}

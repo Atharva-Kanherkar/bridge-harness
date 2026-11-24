@@ -1,0 +1,42 @@
+{
+  "eval": "live_incremental_review_on_a_fixture_pr",
+  "harness": "claude",
+  "model": null,
+  "seconds": 7.534060375,
+  "usage": {
+    "tokensIn": 4,
+    "tokensOut": 738,
+    "costMicrousd": 90439,
+    "deniedRequests": 0,
+    "tools": [
+      "Read",
+      "Read",
+      "Read"
+    ]
+  },
+  "answer": "The divide-by-zero finding is fixed. The new `first` function panics when `n > len`, unlike `last`, which uses `saturating_sub`. The sum can also overflow i32, but that was already there, so I'm not raising it.\n\n```json\n{\"summary\":\"Adds `average` and `first` to src/lib.rs. The new commit fixes the earlier divide-by-zero finding (f-divide-by-zero) with an early return of 0 for an empty slice. The dropped integer-division finding is not raised again. The new `first` function panics when `n` is larger than the slice length, which is inconsistent with `last`.\",\"findings\":[{\"path\":\"src/lib.rs\",\"line\":15,\"side\":\"RIGHT\",\"severity\":\"major\",\"title\":\"`first` panics when n exceeds the slice length\",\"body\":\"`&items[..n]` panics if `n > items.len()`. The sibling `last` clamps with `saturating_sub`, so callers will expect `first` to be safe too. Clamp instead: `&items[..n.min(items.len())]`. Also add tests for n = 0, n > len and an empty slice.\",\"confidence\":0.9}],\"fixed\":[\"f-divide-by-zero\"]}\n```",
+  "fixedAsGiven": [
+    "f-divide-by-zero"
+  ],
+  "draftedFindings": [
+    {
+      "path": "src/lib.rs",
+      "line": 15,
+      "severity": "major",
+      "title": "`first` panics when n exceeds the slice length",
+      "body": "`&items[..n]` panics if `n > items.len()`. The sibling `last` clamps with `saturating_sub`, so callers will expect `first` to be safe too. Clamp instead: `&items[..n.min(items.len())]`. Also add tests for n = 0, n > len and an empty slice."
+    }
+  ],
+  "draftedFixed": [
+    "f-divide-by-zero"
+  ],
+  "checks": {
+    "exactlyOneFinding": true,
+    "onFirst": true,
+    "aboutThePanic": true,
+    "droppedNotRaised": true,
+    "modelRepeatedDropped": false,
+    "fixedExactly": true
+  },
+  "pass": true
+}

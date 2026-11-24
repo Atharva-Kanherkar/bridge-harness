@@ -1,0 +1,46 @@
+{
+  "eval": "live_incremental_review_on_a_fixture_pr",
+  "harness": "opencode",
+  "model": "openai/gpt-5.5",
+  "seconds": 17.408734583,
+  "usage": {
+    "tokensIn": 9062,
+    "tokensOut": 833,
+    "costMicrousd": 63388,
+    "deniedRequests": 0,
+    "tools": [
+      "read",
+      "read",
+      "read",
+      "read",
+      "read",
+      "read",
+      "glob"
+    ]
+  },
+  "answer": "```json\n{\"summary\":\"The new commits fix the previously reported empty-slice divide-by-zero in `average` (f-divide-by-zero). However, the newly added `first` helper can still panic when asked for more items than the slice contains.\",\"findings\":[{\"path\":\"src/lib.rs\",\"line\":16,\"side\":\"RIGHT\",\"severity\":\"major\",\"title\":\"first panics when n exceeds the slice length\",\"body\":\"`&items[..n]` panics if `n > items.len()`, so `first(&[1, 2], 3)` crashes instead of returning the available items. This is especially surprising next to `last`, which explicitly handles over-large `n`. Clamp the end index, e.g. `&items[..n.min(items.len())]`, or document the panic if that is intentional.\",\"confidence\":0.9}],\"fixed\":[\"f-divide-by-zero\"]}\n```",
+  "fixedAsGiven": [
+    "f-divide-by-zero"
+  ],
+  "draftedFindings": [
+    {
+      "path": "src/lib.rs",
+      "line": 16,
+      "severity": "major",
+      "title": "first panics when n exceeds the slice length",
+      "body": "`&items[..n]` panics if `n > items.len()`, so `first(&[1, 2], 3)` crashes instead of returning the available items. This is especially surprising next to `last`, which explicitly handles over-large `n`. Clamp the end index, e.g. `&items[..n.min(items.len())]`, or document the panic if that is intentional."
+    }
+  ],
+  "draftedFixed": [
+    "f-divide-by-zero"
+  ],
+  "checks": {
+    "exactlyOneFinding": true,
+    "onFirst": true,
+    "aboutThePanic": true,
+    "droppedNotRaised": true,
+    "modelRepeatedDropped": false,
+    "fixedExactly": true
+  },
+  "pass": true
+}

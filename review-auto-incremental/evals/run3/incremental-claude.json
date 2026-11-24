@@ -1,0 +1,42 @@
+{
+  "eval": "live_incremental_review_on_a_fixture_pr",
+  "harness": "claude",
+  "model": null,
+  "seconds": 9.978648541,
+  "usage": {
+    "tokensIn": 4,
+    "tokensOut": 1014,
+    "costMicrousd": 77261,
+    "deniedRequests": 0,
+    "tools": [
+      "Read",
+      "Read",
+      "Read"
+    ]
+  },
+  "answer": "The new commits fix the empty-slice panic in `average`, but they add a new panic in `first`.\n\n- **Fixed:** `f-divide-by-zero`. `average` now returns 0 for an empty slice.\n- **Not raised again:** `f-integer-division` was dropped earlier, so I left it alone.\n- **New problem:** `first` panics when `n` is larger than the slice length. The neighbouring `last` clamps instead, so the two behave inconsistently. Neither function has tests.\n\n```json\n{\"summary\":\"Adds `average` (now returning 0 for empty input) and `first`. The new commits fix the earlier divide-by-zero finding (f-divide-by-zero). `first` panics when n exceeds the slice length, unlike the sibling `last`, which clamps. No tests accompany either function.\",\"findings\":[{\"path\":\"src/lib.rs\",\"line\":16,\"side\":\"RIGHT\",\"severity\":\"major\",\"title\":\"`first` panics when n > items.len()\",\"body\":\"`&items[..n]` panics with an out-of-range slice index if `n` exceeds the length. The sibling `last` uses `saturating_sub` and never panics, so callers will reasonably expect `first` to clamp as well. Fix: `&items[..n.min(items.len())]`.\",\"confidence\":0.9}],\"fixed\":[\"f-divide-by-zero\"]}\n```",
+  "fixedAsGiven": [
+    "f-divide-by-zero"
+  ],
+  "draftedFindings": [
+    {
+      "path": "src/lib.rs",
+      "line": 16,
+      "severity": "major",
+      "title": "`first` panics when n > items.len()",
+      "body": "`&items[..n]` panics with an out-of-range slice index if `n` exceeds the length. The sibling `last` uses `saturating_sub` and never panics, so callers will reasonably expect `first` to clamp as well. Fix: `&items[..n.min(items.len())]`."
+    }
+  ],
+  "draftedFixed": [
+    "f-divide-by-zero"
+  ],
+  "checks": {
+    "exactlyOneFinding": true,
+    "onFirst": true,
+    "aboutThePanic": true,
+    "droppedNotRaised": true,
+    "modelRepeatedDropped": false,
+    "fixedExactly": true
+  },
+  "pass": true
+}

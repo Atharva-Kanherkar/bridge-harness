@@ -1,0 +1,46 @@
+{
+  "eval": "live_incremental_review_on_a_fixture_pr",
+  "harness": "opencode",
+  "model": "opencode-go/glm-5.3",
+  "seconds": 23.363461958,
+  "usage": {
+    "tokensIn": 11956,
+    "tokensOut": 1477,
+    "costMicrousd": 13532,
+    "deniedRequests": 0,
+    "tools": [
+      "read",
+      "read",
+      "read",
+      "read",
+      "read",
+      "read",
+      "read"
+    ]
+  },
+  "answer": "The new commits fix the empty-slice divide-by-zero in `average`, but the newly added `first` function has the same class of bug the sibling `last` function guards against: it indexes without bounds handling and panics when `n` exceeds the slice length.\n\n- `src/lib.rs:8-10` — the empty-slice early return fixes prior finding `f-divide-by-zero`; I'm marking it fixed.\n- `src/lib.rs:16` — `&items[..n]` panics for `n > items.len()`, while `last` at `src/lib.rs:3` deliberately saturates and documents the \"fewer than n\" case. The doc comment on `first` doesn't mention a panic either.\n- The dropped `f-integer-division` finding stays dropped.\n\n```json\n{\"summary\":\"The PR adds `average` and `first` to src/lib.rs. The new commits since the last review fix the empty-slice divide-by-zero in `average` (prior finding f-divide-by-zero, now fixed), but they also add `first`, which panics when `n` exceeds the slice length instead of saturating like the sibling `last` function. Overall: one new major bug to fix before merge.\",\"findings\":[{\"path\":\"src/lib.rs\",\"line\":16,\"side\":\"RIGHT\",\"severity\":\"major\",\"title\":\"first panics when n exceeds the slice length\",\"body\":\"`&items[..n]` is an out-of-bounds slice index when `n > items.len()`, so `first(&[1, 2], 5)` panics. The sibling `last` function (`src/lib.rs:3`) deliberately avoids this with `items.len().saturating_sub(n)` and documents the fewer-than-`n` case; `first` should be consistent. Use `&items[..n.min(items.len())]` and mention the clamping behavior in the doc comment, mirroring `last`.\",\"confidence\":0.95}],\"fixed\":[\"f-divide-by-zero\"]}\n```",
+  "fixedAsGiven": [
+    "f-divide-by-zero"
+  ],
+  "draftedFindings": [
+    {
+      "path": "src/lib.rs",
+      "line": 16,
+      "severity": "major",
+      "title": "first panics when n exceeds the slice length",
+      "body": "`&items[..n]` is an out-of-bounds slice index when `n > items.len()`, so `first(&[1, 2], 5)` panics. The sibling `last` function (`src/lib.rs:3`) deliberately avoids this with `items.len().saturating_sub(n)` and documents the fewer-than-`n` case; `first` should be consistent. Use `&items[..n.min(items.len())]` and mention the clamping behavior in the doc comment, mirroring `last`."
+    }
+  ],
+  "draftedFixed": [
+    "f-divide-by-zero"
+  ],
+  "checks": {
+    "exactlyOneFinding": true,
+    "onFirst": true,
+    "aboutThePanic": true,
+    "droppedNotRaised": true,
+    "modelRepeatedDropped": false,
+    "fixedExactly": true
+  },
+  "pass": true
+}

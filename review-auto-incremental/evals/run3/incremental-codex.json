@@ -1,0 +1,41 @@
+{
+  "eval": "live_incremental_review_on_a_fixture_pr",
+  "harness": "codex",
+  "model": null,
+  "seconds": 22.793936875,
+  "usage": {
+    "tokensIn": 139606,
+    "tokensOut": 559,
+    "costMicrousd": 0,
+    "deniedRequests": 0,
+    "tools": [
+      "js",
+      "js"
+    ]
+  },
+  "answer": "```json\n{\"summary\":\"The new commits fix f-divide-by-zero by returning 0 for an empty slice and add first. The new first helper can panic when asked for more items than the slice contains, unlike the existing last helper.\",\"findings\":[{\"path\":\"src/lib.rs\",\"line\":17,\"side\":\"RIGHT\",\"severity\":\"major\",\"title\":\"Clamp n to the slice length in first\",\"body\":\"`first(&[1, 2], 3)` and `first(&[], 1)` panic because the slice endpoint exceeds the length. The existing `last` helper handles oversized requests by returning all available items. Use `&items[..n.min(items.len())]` to give `first` the same behavior.\",\"confidence\":0.98}],\"fixed\":[\"f-divide-by-zero\"]}\n```",
+  "fixedAsGiven": [
+    "f-divide-by-zero"
+  ],
+  "draftedFindings": [
+    {
+      "path": "src/lib.rs",
+      "line": 17,
+      "severity": "major",
+      "title": "Clamp n to the slice length in first",
+      "body": "`first(&[1, 2], 3)` and `first(&[], 1)` panic because the slice endpoint exceeds the length. The existing `last` helper handles oversized requests by returning all available items. Use `&items[..n.min(items.len())]` to give `first` the same behavior."
+    }
+  ],
+  "draftedFixed": [
+    "f-divide-by-zero"
+  ],
+  "checks": {
+    "exactlyOneFinding": true,
+    "onFirst": true,
+    "aboutThePanic": true,
+    "droppedNotRaised": true,
+    "modelRepeatedDropped": false,
+    "fixedExactly": true
+  },
+  "pass": true
+}
