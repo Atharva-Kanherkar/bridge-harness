@@ -481,26 +481,52 @@ describe("GitHubPane", () => {
     expect(host!.textContent).toContain("Reusing the task worktree already on ");
   });
 
-  it("starts a subagent review with the picked harness and shows a success notice", async () => {
+  it("starts a review job with the picked harness and shows it in Reviews", async () => {
     mockReads();
-    const review = vi.spyOn(bridgeApi, "githubReview").mockResolvedValue({
-      status: "launched", sessionId: "child-1", message: "Review started with codex — comments will post to PR #1 shortly.",
-    });
+    vi.spyOn(bridgeApi, "getReviewJobSettings").mockResolvedValue({ secondOpinion: false });
+    const legacy = vi.spyOn(bridgeApi, "githubReview");
+    const start = vi.spyOn(bridgeApi, "startReview").mockResolvedValue({ job: {
+      id: "job-1", workspaceId: "w", number: 1, headSha: "abc", status: "queued", trigger: "manual", postMode: "draft",
+      harnesses: ["codex"], findingCounts: { total: 0, critical: 0, major: 0, minor: 0, nit: 0 }, createdAt: new Date().toISOString(),
+    } });
     await mount({ sessionId: "sess-1" });
     await click(buttonByText("Safe GitHub surface"));
 
     // The button is present for an open PR; opening it reveals the harness picker.
     await click(buttonByText("Review"));
     expect(host!.textContent).toContain("RUN REVIEW WITH");
-    expect(review).not.toHaveBeenCalled();
-    // OpenCode cannot review read-only; the menu says what it does instead.
-    const opencode = [...host!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(item => item.textContent?.includes("OpenCode"))!;
-    expect(opencode.textContent).toContain("isolated worktree, needs approval");
-    expect([...host!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(item => item.textContent?.startsWith("Codex"))!.textContent).toBe("Codex");
+    expect(start).not.toHaveBeenCalled();
+    // No harness needs an approval or a worktree of its own any more.
+    expect(host!.textContent).not.toContain("isolated worktree");
 
     await click(buttonByText("Codex"));
-    expect(review).toHaveBeenCalledWith("w", 1, "codex", "sess-1");
-    expect(host!.textContent).toContain("Review started with codex");
+    expect(start).toHaveBeenCalledWith({ workspaceId: "w", number: 1, harnesses: ["codex"] });
+    expect(legacy).not.toHaveBeenCalled();
+    const reviews = host!.querySelector('section[aria-label="Reviews"]')!;
+    expect(reviews.textContent).toContain("Codex");
+    expect(reviews.textContent).toContain("Queued");
+    expect(host!.textContent).not.toContain("RUN REVIEW WITH");
+  });
+
+  it("with Second opinion on, starts one job with the two picked harnesses", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "getReviewJobSettings").mockResolvedValue({ secondOpinion: true });
+    const start = vi.spyOn(bridgeApi, "startReview").mockResolvedValue({ job: {
+      id: "job-2", workspaceId: "w", number: 1, headSha: "abc", status: "queued", trigger: "manual", postMode: "draft",
+      harnesses: ["claude", "codex"], findingCounts: { total: 0, critical: 0, major: 0, minor: 0, nit: 0 }, createdAt: new Date().toISOString(),
+    } });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    await click(buttonByText("Review"));
+    expect(host!.textContent).toContain("PICK TWO FOR A SECOND OPINION");
+    const option = (label: string) => [...host!.querySelectorAll<HTMLButtonElement>('[role="menuitemcheckbox"]')].find(item => item.textContent?.includes(label))!;
+    await click(option("Claude"));
+    await click(option("Codex"));
+    expect(option("Claude").getAttribute("aria-checked")).toBe("true");
+    expect(option("OpenCode").disabled).toBe(true);
+    expect(start).not.toHaveBeenCalled();
+    await click(buttonByText("Review with Claude and Codex"));
+    expect(start).toHaveBeenCalledWith({ workspaceId: "w", number: 1, harnesses: ["claude", "codex"] });
   });
 
   it("asks Cursor Bugbot by posting the GitHub trigger comment", async () => {
@@ -517,16 +543,15 @@ describe("GitHubPane", () => {
     expect(host!.textContent).toContain("Asked Cursor Bugbot to review PR #1");
   });
 
-  it("surfaces a failed review launch as an error notice", async () => {
+  it("surfaces a refused review start as an error notice", async () => {
     mockReads();
-    vi.spyOn(bridgeApi, "githubReview").mockResolvedValue({
-      status: "failed", sessionId: null, message: "The review worker could not launch; the reason is on the conversation.",
-    });
+    vi.spyOn(bridgeApi, "getReviewJobSettings").mockResolvedValue({});
+    vi.spyOn(bridgeApi, "startReview").mockRejectedValue(new Error("No harness is available to review with"));
     await mount({ sessionId: "sess-1" });
     await click(buttonByText("Safe GitHub surface"));
     await click(buttonByText("Review"));
     await click(buttonByText("Claude"));
-    expect(host!.textContent).toContain("could not launch");
+    expect(host!.querySelector('[role="status"]')!.textContent).toContain("No harness is available to review with");
   });
 
   it("hides the checkout affordance when the PR head is already checked out here", async () => {
