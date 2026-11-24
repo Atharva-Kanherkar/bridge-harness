@@ -5,7 +5,7 @@ import { groupTrails, stageLabel } from "@/trails";
 import { HarnessMark } from "@/components/harnessMarks";
 import { Button } from "@/components/ui/button";
 import { ScreenHeading } from "@/components/ui/screen";
-import { StageBar, StateWord } from "./TrailParts";
+import { StageBar, StateWord, TrailScroll, riseDelay } from "./TrailParts";
 import { TrailListSkeleton } from "./TrailSkeletons";
 import { clsx as cn } from "clsx";
 
@@ -71,10 +71,10 @@ function NewTrailForm({ workspaces, defaultWorkspaceId, onCreate, onCancel }: {
   );
 }
 
-function TrailRow({ trail, workspaceTitle, onOpen }: { trail: TrailSummary; workspaceTitle?: string; onOpen: () => void }) {
+function TrailRow({ trail, workspaceTitle, order, onOpen }: { trail: TrailSummary; workspaceTitle?: string; order: number; onOpen: () => void }) {
   const last = trail.needsYouReason ?? (trail.lastEvent ? `${trail.lastEvent.title} · ${relative(trail.lastEvent.at)}` : "Nothing on it yet");
   return (
-    <li>
+    <li className="trail-rise" style={riseDelay(order)}>
       <button
         type="button"
         onClick={onOpen}
@@ -114,54 +114,61 @@ export function TrailsList({ trails, loading, error, workspaces, defaultWorkspac
   const titleOf = (id?: string | null) => workspaces.find(workspace => workspace.id === id)?.title;
   const sections = trails ? groupTrails(trails) : [];
   const archived = trails?.filter(trail => trail.archivedAt) ?? [];
+  // One count across the sections, so the rows cascade top to bottom.
+  let order = 0;
   return (
-    <div className="mx-auto w-full max-w-page px-5 pb-12 pt-6 sm:px-8">
-      <ScreenHeading
-        title="Trails"
-        action={<Button size="sm" onClick={() => setCreating(true)}><Plus aria-hidden="true" />New trail</Button>}
-      />
-      {creating && (
-        <NewTrailForm
-          workspaces={workspaces}
-          defaultWorkspaceId={defaultWorkspaceId}
-          onCancel={() => setCreating(false)}
-          onCreate={async (title, workspaceId) => { await onCreate(title, workspaceId); setCreating(false); }}
+    <TrailScroll
+      title="Trails"
+      action={<Button size="sm" variant="ghost" onClick={() => setCreating(true)}><Plus aria-hidden="true" />New trail</Button>}
+    >
+      <div className="mx-auto w-full max-w-page px-5 pb-12 pt-6 sm:px-8">
+        <ScreenHeading
+          title="Trails"
+          action={<Button size="sm" onClick={() => setCreating(true)}><Plus aria-hidden="true" />New trail</Button>}
         />
-      )}
-      {error && <p role="alert" className="mb-4 rounded-lg bg-destructive/8 px-3 py-2 text-ui text-destructive">{error}</p>}
-      {!trails && loading && <TrailListSkeleton />}
-      {trails && sections.length === 0 && !creating && (
-        <div className="flex flex-col items-center gap-3 rounded-xl bg-card px-6 py-12 text-center">
-          <Route className="size-5 text-muted-foreground" aria-hidden="true" />
-          <p className="max-w-md text-ui text-muted-foreground">
-            No trails yet. Start one for a piece of work, or add a chat to a trail from its menu. Its pull requests, drafts and notes follow it.
-          </p>
-          <Button size="sm" onClick={() => setCreating(true)}><Plus aria-hidden="true" />New trail</Button>
-        </div>
-      )}
-      {sections.map(section => (
-        <section key={section.state} className="mb-5" aria-label={section.label}>
-          <h2 className="mb-1 px-4 text-caption font-medium text-faint">
-            {section.label} · {section.trails.length}
-          </h2>
-          <ul>
-            {section.trails.map(trail => <TrailRow key={trail.id} trail={trail} workspaceTitle={titleOf(trail.workspaceId)} onOpen={() => onOpen(trail.id)} />)}
-          </ul>
-        </section>
-      ))}
-      {trails && (
-        <div className="mt-6 px-4">
-          <button type="button" onClick={onToggleArchived} className={cn("text-caption hover:text-foreground", showArchived ? "text-foreground" : "text-muted-foreground")} aria-pressed={showArchived}>
-            {showArchived ? "Hide archived" : "Show archived"}
-          </button>
-          {showArchived && (
-            <ul className="mt-2">
-              {archived.length === 0 && <li className="px-4 py-2 text-caption text-faint">No archived trails.</li>}
-              {archived.map(trail => <TrailRow key={trail.id} trail={trail} workspaceTitle={titleOf(trail.workspaceId)} onOpen={() => onOpen(trail.id)} />)}
+        {creating && (
+          <NewTrailForm
+            workspaces={workspaces}
+            defaultWorkspaceId={defaultWorkspaceId}
+            onCancel={() => setCreating(false)}
+            onCreate={async (title, workspaceId) => { await onCreate(title, workspaceId); setCreating(false); }}
+          />
+        )}
+        {error && <p role="alert" className="mb-4 rounded-lg bg-destructive/8 px-3 py-2 text-ui text-destructive">{error}</p>}
+        {!trails && loading && <TrailListSkeleton />}
+        {trails && sections.length === 0 && !creating && (
+          <div className="flex flex-col items-center gap-3 rounded-xl bg-card px-6 py-12 text-center">
+            <Route className="size-5 text-muted-foreground" aria-hidden="true" />
+            <p className="max-w-md text-ui text-muted-foreground">
+              No trails yet. Start one for a piece of work, or add a chat to a trail from its menu. Its pull requests, drafts and notes follow it.
+            </p>
+            <Button size="sm" onClick={() => setCreating(true)}><Plus aria-hidden="true" />New trail</Button>
+          </div>
+        )}
+        {sections.map(section => (
+          <section key={section.state} className="mb-5" aria-label={section.label}>
+            <h2 className="mb-1 px-4 text-caption font-medium text-faint">
+              {section.label} · {section.trails.length}
+            </h2>
+            <ul>
+              {section.trails.map(trail => <TrailRow key={trail.id} trail={trail} order={order++} workspaceTitle={titleOf(trail.workspaceId)} onOpen={() => onOpen(trail.id)} />)}
             </ul>
-          )}
-        </div>
-      )}
-    </div>
+          </section>
+        ))}
+        {trails && (
+          <div className="mt-6 px-4">
+            <button type="button" onClick={onToggleArchived} className={cn("text-caption hover:text-foreground", showArchived ? "text-foreground" : "text-muted-foreground")} aria-pressed={showArchived}>
+              {showArchived ? "Hide archived" : "Show archived"}
+            </button>
+            {showArchived && (
+              <ul className="mt-2">
+                {archived.length === 0 && <li className="px-4 py-2 text-caption text-faint">No archived trails.</li>}
+                {archived.map((trail, index) => <TrailRow key={trail.id} trail={trail} order={index} workspaceTitle={titleOf(trail.workspaceId)} onOpen={() => onOpen(trail.id)} />)}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
+    </TrailScroll>
   );
 }

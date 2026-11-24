@@ -357,6 +357,10 @@ pub struct ReviewFinding {
     pub fingerprint: String,
     /// How many reviewers reported it (2 when a second opinion agreed).
     pub agreed_by: u32,
+    /// The passes a merged finding came from, `pass_id`'s first. Empty unless
+    /// two reviewers agreed on it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pass_ids: Vec<String>,
     /// True when its line falls outside the diff: it goes in the summary
     /// rather than inline.
     pub outside_diff: bool,

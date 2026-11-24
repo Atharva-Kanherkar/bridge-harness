@@ -67,6 +67,13 @@
         "passId": {
           "type": "string"
         },
+        "passIds": {
+          "description": "The passes a merged finding came from, `pass_id`'s first. Empty unless two reviewers agreed on it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "path": {
           "type": "string"
         },

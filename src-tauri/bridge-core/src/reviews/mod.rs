@@ -8,6 +8,7 @@
 
 pub mod auto;
 pub mod contract;
+pub mod merge;
 pub mod post;
 pub mod prepare;
 pub mod runner;
