@@ -745,3 +745,14 @@ fn a_slack_preview_with_a_healthy_read_but_no_history_says_so() {
     assert_eq!(empty.matches, 0);
     assert!(empty.note.as_deref().is_some_and(|note| note.starts_with("Bridge has no Slack messages from this week yet")), "{:?}", empty.note);
 }
+
+#[test]
+fn only_slack_arrivals_reach_slack_triggers() {
+    let (dir, core) = test_support::core();
+    let db = core.db.lock().unwrap();
+    let workflow = listening_workflow(&db, dir.path(), event_trigger(wire::WorkflowEventKind::SlackMention), "2026-11-20T00:00:00Z");
+    let mut other = slack(ItemKind::Mention, "#eng", "Priya", "1.0", "2026-11-24T00:00:00Z");
+    other.family = crate::work_connectors::ConnectorFamily::GitHub;
+    assert_eq!(observe_inbox(&db, &[other], at("2026-11-24T00:00:01Z")).unwrap(), 0);
+    assert!(pending(&db, &workflow.id).is_empty());
+}

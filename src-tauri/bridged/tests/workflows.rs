@@ -482,20 +482,6 @@ fn e3_a_daemon_killed_after_one_write_reclaims_the_run_without_repeating_it() {
     running.stop();
 }
 
-fn slack_mention(ts: &str, received_at: DateTime<Utc>) -> bridge_core::connector_surface::InboxItem {
-    bridge_core::connector_surface::InboxItem {
-        family: bridge_core::work_connectors::ConnectorFamily::Slack,
-        channel_id: "C-eng".into(),
-        channel_label: "#eng".into(),
-        message_ts: ts.into(),
-        author: "Priya".into(),
-        kind: bridge_core::connector_surface::ItemKind::Mention,
-        text: "can you look at the deploy before 5?".into(),
-        permalink: None,
-        received_at: received_at.to_rfc3339(),
-    }
-}
-
 fn save_and_approve(rpc: &mut Rpc, definition: Value) -> String {
     let saved = rpc.call("workflows/save_workflow", json!({ "definition": definition }));
     // A save without an id fails the approve call below, which says why.
@@ -523,11 +509,18 @@ fn e5_a_slack_mention_starts_one_run_carrying_it_and_a_replay_starts_none() {
     let summary = rpc.call("workflows/list_workflows", Value::Null)["workflows"][0].clone();
     assert_eq!(summary["trigger"]["kind"], json!("event"));
 
-    // Ingress records a mention after the approval.
+    // Inbox ingress reads Slack (the fake model answers the real ingress
+    // prompt) and finds a mention that arrived after the approval. The
+    // production poll, not a test helper, must hand it to the workflow (R1).
     let arrived = Utc::now() + ChronoDuration::seconds(1);
-    let items = [slack_mention("100.1", arrived)];
-    let observed = bridge_core::workflow_events::observe_inbox(&running.daemon.core.db.lock().unwrap(), &items, arrived).unwrap();
-    assert_eq!(observed, 1);
+    let ingress = fixture.path().join("ingress.json");
+    std::fs::write(&ingress, json!({ "items": [{
+        "channelId": "C-eng", "channelLabel": "#eng", "messageTs": "100.1", "author": "Priya", "kind": "mention",
+        "text": "can you look at this?", "permalink": "https://app.slack.com/x", "receivedAt": arrived.to_rfc3339(),
+    }] }).to_string()).unwrap();
+    std::env::set_var("BRIDGE_E2E_INGRESS", &ingress);
+    let refreshed = rpc.call("connectors/connector_refresh", json!({ "family": "slack" }));
+    assert_eq!(refreshed["announced"], json!(1), "{refreshed}");
     let fired = tick_at(&running.daemon, arrived + ChronoDuration::seconds(1));
     assert_eq!(fired.len(), 1, "one event, one run");
     let run = rpc.wait_run(&workflow_id, &fired[0], "the event run to finish", |run| run["status"] == json!("succeeded") || run["status"] == json!("failed"));
@@ -538,14 +531,15 @@ fn e5_a_slack_mention_starts_one_run_carrying_it_and_a_replay_starts_none() {
     assert!(run["summary"].as_str().unwrap().starts_with("Handled 1 event: #eng · Priya"), "the run's first turn carried the event: {run}");
 
     // The same ingress cycle replayed, and another tick: nothing new.
-    let replayed = bridge_core::workflow_events::observe_inbox(&running.daemon.core.db.lock().unwrap(), &items, arrived).unwrap();
-    assert_eq!(replayed, 0);
+    let replayed = rpc.call("connectors/connector_refresh", json!({ "family": "slack" }));
+    assert_eq!(replayed["announced"], json!(0), "{replayed}");
+    std::env::remove_var("BRIDGE_E2E_INGRESS");
     assert!(tick_at(&running.daemon, arrived + ChronoDuration::seconds(5)).is_empty());
 
     // The preview reads the same ledger.
     let preview = rpc.call("workflows/preview_workflow_trigger", json!({ "trigger": { "kind": "event", "event": "slack_mention" } }));
     assert_eq!(preview["supported"], json!(true), "{preview}");
-    assert_eq!(preview["matches"], json!(0), "the ledger only holds what Inbox ingress recorded: {preview}");
+    assert_eq!(preview["matches"], json!(1), "the preview reads what Inbox ingress recorded: {preview}");
     running.stop();
 }
 

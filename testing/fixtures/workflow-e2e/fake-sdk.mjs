@@ -3,7 +3,7 @@
 // SDK; the replies are scripted from markers in the run's instructions, and
 // every write that actually executes is appended to `writes.log` in the run's
 // folder, so a test can count them.
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -142,6 +142,14 @@ export function query({ prompt, options = {} }) {
       // A draft turn: the reply the real model gave this sentence, recorded.
       const known = drafts.find((draft) => draft.sentence === drafted[1].trim());
       yield* finish(known?.reply ?? "{}");
+      return;
+    }
+    if (brief.includes("```bridge-connector-inbox")) {
+      // Inbox ingress: whatever the journey wrote to $BRIDGE_E2E_INGRESS, or
+      // a quiet inbox. Bridge parses this exactly as it parses a real read.
+      const file = process.env.BRIDGE_E2E_INGRESS;
+      const items = file && existsSync(file) ? readFileSync(file, "utf8").trim() : '{"items":[]}';
+      yield* finish("```bridge-connector-inbox\n" + items + "\n```");
       return;
     }
     if (brief.includes("You review a pull request for Bridge")) {

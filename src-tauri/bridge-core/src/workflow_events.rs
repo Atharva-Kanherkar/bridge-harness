@@ -523,10 +523,15 @@ pub fn listens_for(db: &Connection, family: crate::work_connectors::ConnectorFam
 
 /// The Slack Inbox's fresh arrivals, offered to every listening workflow.
 pub fn observe_inbox(db: &Connection, fresh: &[InboxItem], now: DateTime<Utc>) -> Result<usize, BridgeError> {
-    if fresh.is_empty() {
+    // Only Slack's inbox has event triggers; the poller passes every family's.
+    let samples: Vec<_> = fresh
+        .iter()
+        .filter(|item| item.family == crate::work_connectors::ConnectorFamily::Slack)
+        .map(sample_from_inbox)
+        .collect();
+    if samples.is_empty() {
         return Ok(0);
     }
-    let samples: Vec<_> = fresh.iter().map(sample_from_inbox).collect();
     observe(db, &samples, now)
 }
 

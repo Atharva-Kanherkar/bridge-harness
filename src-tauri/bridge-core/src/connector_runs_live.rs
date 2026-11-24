@@ -246,6 +246,11 @@ fn poll_claimed(core: &Arc<BridgeCore>, family: ConnectorFamily) -> usize {
         let db = core.db.lock().unwrap();
         let fresh = connector_inbox::record_arrivals(&db, &reported).unwrap_or_default();
         let _ = connector_inbox::record_poll_success(&db, family, &now);
+        // Event workflows listen to the same arrivals (R1). The ledger
+        // records each once per workflow, so a replayed cycle adds nothing.
+        if let Err(error) = crate::workflow_events::observe_inbox(&db, &fresh, Utc::now()) {
+            eprintln!("bridge: workflow events from the inbox were not recorded: {error}");
+        }
         fresh
     };
 
