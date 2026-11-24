@@ -882,45 +882,9 @@ fn live_second_opinion_on_a_fixture_pr() {
         .collect();
     assert!(harnesses.len() == 2 && harnesses[0] != harnesses[1], "two different harnesses: {harnesses:?}");
     let model_of = |harness: &str| std::env::var(format!("BRIDGE_REVIEW_LIVE_MODEL_{}", harness.to_uppercase())).ok();
-    let scratch = tempfile::tempdir().unwrap();
-    if harnesses.iter().any(|harness| harness == "opencode") && std::env::var_os("BRIDGE_REVIEW_LIVE_OPENCODE_SIGNED_IN").is_none() {
-        std::env::set_var("XDG_DATA_HOME", scratch.path().join("xdg-data"));
-    }
-    let repo = std::fs::canonicalize(scratch.path()).unwrap().join("repo");
-    std::fs::create_dir_all(repo.join("src")).unwrap();
-    let git = |args: &[&str]| {
-        let output = crate::git::git_command(&repo).args(args).output().unwrap();
-        assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
-        String::from_utf8_lossy(&output.stdout).trim().to_owned()
-    };
-    git(&["init", "-q", "-b", "main"]);
-    git(&["config", "user.email", "t@example.invalid"]);
-    git(&["config", "user.name", "T"]);
-    std::fs::write(repo.join("src/lib.rs"), "/// The first item.\npub fn first(items: &[i32]) -> Option<i32> {\n    items.first().copied()\n}\n").unwrap();
-    git(&["add", "."]);
-    git(&["commit", "-q", "-m", "base"]);
-    let base = git(&["rev-parse", "HEAD"]);
-    // Lines 6-12: `get`, whose bound check is off by one. Lines 14-21: `Sum_All`.
-    std::fs::write(
-        repo.join("src/lib.rs"),
-        "/// The first item.\npub fn first(items: &[i32]) -> Option<i32> {\n    items.first().copied()\n}\n\n\
-/// The item at `index`, or `None` when it is out of range.\npub fn get(items: &[i32], index: usize) -> Option<i32> {\n    if index <= items.len() {\n        Some(items[index])\n    } else {\n        None\n    }\n}\n\n\
-/// The sum of the items.\npub fn Sum_All(items: &[i32]) -> i64 {\n    let mut total: i64 = 0;\n    for i in 0..items.len() {\n        total = total + items[i] as i64;\n    }\n    total\n}\n",
-    )
-    .unwrap();
-    git(&["commit", "-q", "-am", "Add get and Sum_All"]);
-    let head = git(&["rev-parse", "HEAD"]);
-
-    let context = scratch.path().join("context");
-    std::fs::create_dir_all(&context).unwrap();
-    let patch = git(&["diff", "-M", &base, &head]) + "\n";
-    std::fs::write(context.join("diff.patch"), &patch).unwrap();
-    std::fs::write(context.join("files.json"), json!([{"path": "src/lib.rs", "status": "modified", "additions": 18, "deletions": 0}]).to_string()).unwrap();
-    std::fs::write(context.join("pr.json"), json!({"number": 1, "title": "Add get and Sum_All", "body": "", "changedFiles": 1, "omittedFiles": []}).to_string()).unwrap();
-    std::fs::write(context.join("threads.json"), "[]").unwrap();
-    let (placed, context_name) = place_context(&context, &repo).unwrap();
-    let instructions = instructions(&conventions_in(&placed), REVIEW_INSTRUCTIONS, false);
-    let pr = read_json(&placed.join("pr.json")).unwrap();
+    let opencode_scratch = harnesses.iter().any(|harness| harness == "opencode") && std::env::var_os("BRIDGE_REVIEW_LIVE_OPENCODE_SIGNED_IN").is_none();
+    let (_scratch, repo, patch, pr, context_name) = second_opinion_fixture(opencode_scratch);
+    let instructions = instructions(&conventions_in(&repo.join(&context_name)), REVIEW_INSTRUCTIONS, false);
     let wait = std::env::var("BRIDGE_REVIEW_LIVE_WAIT_SECS").ok().and_then(|secs| secs.parse().ok()).unwrap_or(8);
 
     // Both passes at once, each on its own adapter registry, as the runner does.
@@ -963,21 +927,7 @@ fn live_second_opinion_on_a_fixture_pr() {
     }
     let merges = crate::reviews::merge::merges(&entries);
     let merged = ranked_after(&entries, &merges);
-    let about_bug = |finding: &DraftFinding| {
-        let text = format!("{} {}", finding.title, finding.body).to_lowercase();
-        finding.start_line.unwrap_or(finding.line) <= 12
-            && finding.line >= 6
-            && ["bound", "panic", "off-by-one", "off by one", "<=", "out of range", "out-of-range", "len()"].iter().any(|word| text.contains(word))
-    };
-    let bug: Vec<usize> = merged.iter().enumerate().filter(|(_, (finding, _))| about_bug(finding)).map(|(index, _)| index).collect();
-    let flagged_by = |harness: &str| entries.iter().any(|entry| entry.pass_id == harness && about_bug(&entry.finding));
-    let checks = json!({
-        "bothFlaggedTheBug": harnesses.iter().all(|harness| flagged_by(harness)),
-        "bugOnce": bug.len() == 1,
-        "bugAgreedByTwo": bug.len() == 1 && merged[bug[0]].1 == 2,
-        "bugRanksFirst": bug == [0],
-    });
-    let pass = ["bugOnce", "bugAgreedByTwo", "bugRanksFirst"].iter().all(|key| checks[key] == true);
+    let (checks, pass) = score_second_opinion(&harnesses, &entries, &merged);
     eprintln!("merged: {:#?}\nchecks: {checks}", merged.iter().map(|(finding, agreed)| (agreed, finding.line, finding.severity, &finding.title)).collect::<Vec<_>>());
     save_live_record(
         &format!("second-opinion-{}", harnesses.iter().map(|harness| match model_of(harness) {
@@ -995,6 +945,73 @@ fn live_second_opinion_on_a_fixture_pr() {
         }),
     );
     assert!(pass, "the bug once, agreed by both, ranked first: {checks}");
+}
+
+/// The second-opinion fixture: a repository whose PR adds `get` (lines 6-13,
+/// off-by-one bound check on line 8) and `Sum_All` (lines 15-22), with its
+/// context placed in the checkout. Returns the scratch folder (keep it alive),
+/// the checkout, the patch, the PR context and the context folder's name.
+fn second_opinion_fixture(opencode_scratch: bool) -> (tempfile::TempDir, std::path::PathBuf, String, Value, String) {
+    let scratch = tempfile::tempdir().unwrap();
+    if opencode_scratch {
+        std::env::set_var("XDG_DATA_HOME", scratch.path().join("xdg-data"));
+    }
+    let repo = std::fs::canonicalize(scratch.path()).unwrap().join("repo");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    let git = |args: &[&str]| {
+        let output = crate::git::git_command(&repo).args(args).output().unwrap();
+        assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "t@example.invalid"]);
+    git(&["config", "user.name", "T"]);
+    std::fs::write(repo.join("src/lib.rs"), "/// The first item.\npub fn first(items: &[i32]) -> Option<i32> {\n    items.first().copied()\n}\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "base"]);
+    let base = git(&["rev-parse", "HEAD"]);
+    // Lines 6-12: `get`, whose bound check is off by one. Lines 14-21: `Sum_All`.
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "/// The first item.\npub fn first(items: &[i32]) -> Option<i32> {\n    items.first().copied()\n}\n\n\
+/// The item at `index`, or `None` when it is out of range.\npub fn get(items: &[i32], index: usize) -> Option<i32> {\n    if index <= items.len() {\n        Some(items[index])\n    } else {\n        None\n    }\n}\n\n\
+/// The sum of the items.\npub fn Sum_All(items: &[i32]) -> i64 {\n    let mut total: i64 = 0;\n    for i in 0..items.len() {\n        total = total + items[i] as i64;\n    }\n    total\n}\n",
+    )
+    .unwrap();
+    git(&["commit", "-q", "-am", "Add get and Sum_All"]);
+    let head = git(&["rev-parse", "HEAD"]);
+
+    let context = scratch.path().join("context");
+    std::fs::create_dir_all(&context).unwrap();
+    let patch = git(&["diff", "-M", &base, &head]) + "\n";
+    std::fs::write(context.join("diff.patch"), &patch).unwrap();
+    std::fs::write(context.join("files.json"), json!([{"path": "src/lib.rs", "status": "modified", "additions": 18, "deletions": 0}]).to_string()).unwrap();
+    std::fs::write(context.join("pr.json"), json!({"number": 1, "title": "Add get and Sum_All", "body": "", "changedFiles": 1, "omittedFiles": []}).to_string()).unwrap();
+    std::fs::write(context.join("threads.json"), "[]").unwrap();
+    let (placed, context_name) = place_context(&context, &repo).unwrap();
+    let pr = read_json(&placed.join("pr.json")).unwrap();
+    (scratch, repo, patch, pr, context_name)
+}
+
+/// Score a second opinion on its fixture: the bug once, flagged by both,
+/// ranked first. `bothFlaggedTheBug` says whether a miss was the reviewers'.
+fn score_second_opinion(harnesses: &[String], entries: &[crate::reviews::merge::Entry], merged: &[(DraftFinding, u32)]) -> (Value, bool) {
+    let about_bug = |finding: &DraftFinding| {
+        let text = format!("{} {}", finding.title, finding.body).to_lowercase();
+        finding.start_line.unwrap_or(finding.line) <= 12
+            && finding.line >= 6
+            && ["bound", "panic", "off-by-one", "off by one", "<=", "out of range", "out-of-range", "len()"].iter().any(|word| text.contains(word))
+    };
+    let bug: Vec<usize> = merged.iter().enumerate().filter(|(_, (finding, _))| about_bug(finding)).map(|(index, _)| index).collect();
+    let flagged_by = |harness: &str| entries.iter().any(|entry| entry.pass_id == harness && about_bug(&entry.finding));
+    let checks = json!({
+        "bothFlaggedTheBug": harnesses.iter().all(|harness| flagged_by(harness)),
+        "bugOnce": bug.len() == 1,
+        "bugAgreedByTwo": bug.len() == 1 && merged[bug[0]].1 == 2,
+        "bugRanksFirst": bug == [0],
+    });
+    let pass = ["bugOnce", "bugAgreedByTwo", "bugRanksFirst"].iter().all(|key| checks[key] == true);
+    (checks, pass)
 }
 
 /// What the draft would list after `merges`, ranked as the store ranks it:
