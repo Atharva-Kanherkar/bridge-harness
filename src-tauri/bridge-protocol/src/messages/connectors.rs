@@ -63,6 +63,11 @@ pub struct ConnectorInboxParams {
     /// Most items to return. Clamped host-side.
     #[serde(default)]
     pub limit: Option<u32>,
+    /// True only when a person is looking at the Inbox. It keeps ingress
+    /// polling for a while; a background read (the app's unread badge) must
+    /// leave it false, or it would keep a paid poll alive with nobody reading.
+    #[serde(default)]
+    pub viewing: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

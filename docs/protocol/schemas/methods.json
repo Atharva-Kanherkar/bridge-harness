@@ -2501,6 +2501,27 @@
       "resultSchema": "unit-result.json"
     },
     {
+      "command": "preview_workflow_trigger",
+      "domain": "workflows",
+      "method": "workflows/preview_workflow_trigger",
+      "paramsSchema": "preview-workflow-trigger-params.json",
+      "resultSchema": "workflow-trigger-preview.json"
+    },
+    {
+      "command": "list_workflow_templates",
+      "domain": "workflows",
+      "method": "workflows/list_workflow_templates",
+      "paramsSchema": null,
+      "resultSchema": "workflow-template-list.json"
+    },
+    {
+      "command": "refresh_workflow_connectors",
+      "domain": "workflows",
+      "method": "workflows/refresh_workflow_connectors",
+      "paramsSchema": null,
+      "resultSchema": "workflow-options.json"
+    },
+    {
       "command": "start_review",
       "domain": "reviews",
       "method": "reviews/start_review",
@@ -2566,7 +2587,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 53
+    "minor": 54
   },
   "reserved": {
     "cancel": "$/cancel",

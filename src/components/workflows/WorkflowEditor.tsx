@@ -1,17 +1,61 @@
-import { useMemo, useState } from "react";
-import { LoaderCircle, ShieldCheck } from "lucide-react";
-import type { Project, Workflow, WorkflowDefinition, WorkflowGrant, WorkflowOptions } from "../../protocol/generated/protocol";
+import { useEffect, useMemo, useState } from "react";
+import { LoaderCircle, RefreshCw, ShieldCheck } from "lucide-react";
+import { bridgeApi } from "../../api";
+import type { Project, Workflow, WorkflowDefinition, WorkflowEventKind, WorkflowEventSample, WorkflowGrant, WorkflowOptions, WorkflowTrigger, WorkflowTriggerPreview } from "../../protocol/generated/protocol";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ErrorNote } from "./parts";
-import { localTimezone, presetCron, presetFor, WEEKDAY_OPTIONS, type SchedulePreset } from "./format";
+import { EVENT_OPTIONS, isGithubEvent, localTimezone, needsRepo, presetCron, presetFor, presetForCron, WEEKDAY_OPTIONS, type SchedulePreset } from "./format";
 
 const FIELD = "block text-caption font-medium text-muted-foreground";
 const SELECT = "mt-1 h-8 w-full rounded-lg border border-input bg-background dark:bg-input/32 px-2 text-ui text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
-export type EditorSubmit = { definition: WorkflowDefinition; approve: boolean; dryRun: boolean };
+export type EditorSubmit = { definition: WorkflowDefinition; approve: boolean; dryRun: boolean; event?: WorkflowEventSample | null };
+
+/** The event trigger the editor's fields describe. */
+export function composeEventTrigger(fields: { event: WorkflowEventKind; repo: string; channel: string; from: string; collect: boolean; batchCron: string | null; timezone: string }): WorkflowTrigger {
+  const github = isGithubEvent(fields.event);
+  const text = (value: string) => value.trim() || null;
+  return {
+    kind: "event",
+    event: fields.event,
+    repo: github ? text(fields.repo) : null,
+    channel: github ? null : text(fields.channel),
+    from: github ? null : text(fields.from),
+    batch: fields.collect && fields.batchCron ? { cron: fields.batchCron, timezone: fields.timezone } : null,
+  };
+}
+
+/** "Would have run 4 times in the last 7 days." In batch mode the count is of
+ * events, which are collected into one run per slot, not of runs. */
+export function previewSentence(preview: WorkflowTriggerPreview, collected = false): string {
+  if (!preview.supported) return preview.reason ?? "Bridge cannot read this yet.";
+  const atLeast = preview.note?.startsWith("At least") ? "at least " : "";
+  const days = `in the last ${preview.windowDays} days`;
+  if (collected) {
+    if (preview.matches === 0) return `No matching events ${days}.`;
+    const count = `${atLeast ? "At least " : ""}${preview.matches} matching event${preview.matches === 1 ? "" : "s"}`;
+    return `${count} ${days}, collected into one run per scheduled time.`;
+  }
+  const times = preview.matches === 1 ? "once" : `${atLeast}${preview.matches} times`;
+  return preview.matches === 0 ? `Would not have run ${days}.` : `Would have run ${times} ${days}.`;
+}
+
+/** The batch schedules the editor offers; a saved one keeps its own. */
+type BatchPreset = "daily" | "weekdays" | "weekly" | "hourly" | "custom";
+const BATCH_OPTIONS: Array<{ value: BatchPreset; label: string }> = [
+  { value: "daily", label: "every day" },
+  { value: "weekdays", label: "on weekdays" },
+  { value: "weekly", label: "once a week" },
+  { value: "hourly", label: "every hour" },
+  { value: "custom", label: "on a cron schedule" },
+];
+function batchPresetFor(cron: string | undefined): BatchPreset {
+  const preset = presetForCron(cron ?? "0 9 * * *").preset;
+  return preset === "daily" || preset === "weekdays" || preset === "weekly" || preset === "hourly" ? preset : "custom";
+}
 
 function emptyDefinition(options: WorkflowOptions | null): WorkflowDefinition {
   const claude = options?.harnesses.find(harness => harness.id === "claude" && harness.connectorsAllowed) ?? options?.harnesses.find(harness => harness.connectorsAllowed);
@@ -41,7 +85,7 @@ export function harnessRefusal(options: WorkflowOptions | null, harnessId: strin
   return null;
 }
 
-export function WorkflowEditor({ open, workflow, initial, notes = [], options, projects, busy, error, onCancel, onSubmit }: {
+export function WorkflowEditor({ open, workflow, initial, notes = [], options, projects, busy, error, onCancel, onSubmit, onRefreshConnectors, refreshing = false }: {
   open: boolean;
   /** The workflow being edited, or null to create one. */
   workflow: Workflow | null;
@@ -55,6 +99,9 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
   error: string | null;
   onCancel: () => void;
   onSubmit: (submit: EditorSubmit) => void;
+  /** Ask Claude afresh which connectors it has. */
+  onRefreshConnectors?: () => void;
+  refreshing?: boolean;
 }) {
   const start = workflow?.definition ?? initial ?? emptyDefinition(options);
   const [definition, setDefinition] = useState<WorkflowDefinition>(start);
@@ -63,7 +110,18 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
   const [time, setTime] = useState(schedule.time);
   const [weekday, setWeekday] = useState(schedule.weekday);
   const [custom, setCustom] = useState(schedule.custom);
-  const [timezone, setTimezone] = useState(start.trigger.kind === "schedule" ? start.trigger.timezone : localTimezone());
+  const [timezone, setTimezone] = useState(start.trigger.kind === "schedule" ? start.trigger.timezone : start.trigger.kind === "event" && start.trigger.batch ? start.trigger.batch.timezone : localTimezone());
+  const startEvent = start.trigger.kind === "event" ? start.trigger : null;
+  const [eventKind, setEventKind] = useState<WorkflowEventKind>(startEvent?.event ?? "slack_mention");
+  const [repo, setRepo] = useState(startEvent?.repo ?? "");
+  const [channel, setChannel] = useState(startEvent?.channel ?? "");
+  const [from, setFrom] = useState(startEvent?.from ?? "");
+  const [collect, setCollect] = useState(Boolean(startEvent?.batch));
+  // A saved batch keeps its own schedule until the person changes it (R10).
+  const [batchPreset, setBatchPreset] = useState<BatchPreset>(batchPresetFor(startEvent?.batch?.cron));
+  // A preview belongs to the trigger it answered (R11).
+  const [preview, setPreview] = useState<{ key: string; result: WorkflowTriggerPreview } | null>(null);
+  const [previewing, setPreviewing] = useState(false);
   const step = definition.steps[0];
   const grants = definition.grants ?? [];
   const harness = options?.harnesses.find(candidate => candidate.id === step.harness);
@@ -71,9 +129,39 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
   const updateStep = (change: Partial<typeof step>) => setDefinition(current => ({ ...current, steps: [{ ...current.steps[0], ...change }] }));
 
   const composed = useMemo<WorkflowDefinition>(() => {
+    if (preset === "event") {
+      const trigger = composeEventTrigger({ event: eventKind, repo, channel, from, collect, batchCron: presetCron(batchPreset, time, weekday, custom), timezone });
+      return { ...definition, name: definition.name.trim(), trigger };
+    }
     const cron = presetCron(preset, time, weekday, custom);
     return { ...definition, name: definition.name.trim(), trigger: cron === null ? { kind: "manual" } : { kind: "schedule", cron, timezone } };
-  }, [definition, preset, time, weekday, custom, timezone]);
+  }, [definition, preset, time, weekday, custom, timezone, eventKind, repo, channel, from, collect, batchPreset]);
+
+  // What this trigger would have done last week, refreshed as it is edited.
+  const triggerKey = JSON.stringify(composed.trigger);
+  useEffect(() => {
+    if (!open || composed.trigger.kind !== "event") { setPreview(null); return; }
+    let current = true;
+    setPreviewing(true);
+    const key = triggerKey;
+    const timer = window.setTimeout(() => {
+      bridgeApi.previewWorkflowTrigger(composed.trigger)
+        .then(result => { if (current) setPreview({ key, result }); })
+        .catch(reason => { if (current) setPreview({ key, result: { supported: false, reason: String(reason?.message ?? reason), windowDays: 7, matches: 0, samples: [], note: null } }); })
+        .finally(() => { if (current) setPreviewing(false); });
+    }, 400);
+    return () => { current = false; window.clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, triggerKey]);
+
+  // Options can arrive after the editor opened (a cold start): take their
+  // default model instead of keeping an empty one the select would hide.
+  useEffect(() => {
+    if (!options || step.model.trim()) return;
+    const candidate = options.harnesses.find(entry => entry.id === step.harness);
+    const model = candidate?.defaultModel ?? candidate?.models[0]?.id;
+    if (model) setDefinition(current => ({ ...current, steps: [{ ...current.steps[0], model }] }));
+  }, [options, step.harness, step.model]);
 
   const grantFor = (server: string): WorkflowGrant | undefined => grants.find(grant => grant.server === server);
   const setGrant = (server: string, next: WorkflowGrant | null) => {
@@ -81,7 +169,14 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
     update({ grants: next ? [...rest, next] : rest });
   };
   const refusal = harnessRefusal(options, step.harness, composed);
-  const ready = composed.name.length > 0 && step.instructions.trim().length > 0 && step.model.trim().length > 0 && !refusal;
+  const missingRepo = composed.trigger.kind === "event" && needsRepo(composed.trigger.event) && !composed.trigger.repo;
+  const ready = composed.name.length > 0 && step.instructions.trim().length > 0 && step.model.trim().length > 0 && !refusal && !missingRepo;
+  // Only the preview of the trigger as it is now: an older one's sample may be
+  // another event entirely.
+  const shown = preview?.key === triggerKey ? preview.result : null;
+  const previewPending = composed.trigger.kind === "event" && !shown;
+  // An event workflow's dry run is tried on the newest real event, when there is one.
+  const tryOn = composed.trigger.kind === "event" ? shown?.samples[0] ?? null : null;
 
   return <Dialog open={open} onOpenChange={next => { if (!next && !busy) onCancel(); }}>
     {open && <DialogContent className="sm:max-w-2xl" showCloseButton={!busy}>
@@ -106,6 +201,7 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
           <label className={FIELD}>When
             <select aria-label="Workflow schedule" className={SELECT} value={preset} onChange={event => setPreset(event.target.value as SchedulePreset)}>
               <option value="manual">Only when I press Run now</option>
+              <option value="event">When something happens</option>
               <option value="daily">Every day</option>
               <option value="weekdays">Weekdays</option>
               <option value="weekly">Once a week</option>
@@ -114,8 +210,41 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
             </select>
           </label>
         </div>
-        {preset !== "manual" && <div className="grid gap-3 sm:grid-cols-3">
-          {preset === "custom"
+        {preset === "event" && <div className="space-y-3 rounded-xl border border-border px-3 py-2.5">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className={FIELD}>When
+              <select aria-label="Event" className={SELECT} value={eventKind} onChange={event => setEventKind(event.target.value as WorkflowEventKind)}>
+                {(["Slack", "GitHub"] as const).map(app => <optgroup key={app} label={app}>{EVENT_OPTIONS.filter(option => option.app === app).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</optgroup>)}
+              </select>
+            </label>
+            {isGithubEvent(eventKind)
+              ? <label className={FIELD}>Repository{needsRepo(eventKind) ? "" : " (optional)"}<Input aria-label="Repository" className="mt-1 font-mono" placeholder="owner/name" value={repo} onChange={event => setRepo(event.target.value)}/></label>
+              : <label className={FIELD}>In channel (optional)<Input aria-label="Channel filter" className="mt-1" placeholder="#eng" value={channel} onChange={event => setChannel(event.target.value)}/></label>}
+          </div>
+          {!isGithubEvent(eventKind) && <label className={FIELD}>From (optional)<Input aria-label="Sender filter" className="mt-1" placeholder="a name" value={from} onChange={event => setFrom(event.target.value)}/></label>}
+          <div role="radiogroup" aria-label="How often" className="flex flex-wrap items-center gap-x-4 gap-y-2 text-caption text-muted-foreground">
+            <label className="flex items-center gap-1.5"><input type="radio" name="event-mode" aria-label="Run for each event" checked={!collect} onChange={() => setCollect(false)} className="accent-foreground"/>Run for each event</label>
+            <label className="flex items-center gap-1.5"><input type="radio" name="event-mode" aria-label="Collect them and run at a set time" checked={collect} onChange={() => setCollect(true)} className="accent-foreground"/>Collect them and run</label>
+            {collect && <>
+              <select aria-label="Collect on" className="h-7 rounded-md border border-input bg-background px-1.5 text-caption text-foreground dark:bg-input/32" value={batchPreset} onChange={event => setBatchPreset(event.target.value as BatchPreset)}>{BATCH_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+              {batchPreset === "weekly" && <select aria-label="Collect weekday" className="h-7 rounded-md border border-input bg-background px-1.5 text-caption text-foreground dark:bg-input/32" value={weekday} onChange={event => setWeekday(Number(event.target.value))}>{WEEKDAY_OPTIONS.map(day => <option key={day.value} value={day.value}>on {day.label}</option>)}</select>}
+              {batchPreset === "custom"
+                ? <Input aria-label="Collect cron" className="h-7 w-40 font-mono" placeholder="minute hour day month weekday" value={custom} onChange={event => setCustom(event.target.value)}/>
+                : <><span>{batchPreset === "hourly" ? "at minute" : "at"}</span>
+                  <Input aria-label="Collect at" type="time" className="h-7 w-28" value={time} onChange={event => setTime(event.target.value)}/></>}
+            </>}
+          </div>
+          <div aria-live="polite" className="rounded-lg bg-muted px-2.5 py-2 text-caption text-muted-foreground">
+            {!shown ? (previewing ? <span className="inline-flex items-center gap-1.5"><LoaderCircle className="animate-spin" size={11}/>Checking the last week…</span> : null)
+              : <>
+                <p className={shown.supported ? "text-foreground" : ""}>{previewSentence(shown, collect)}</p>
+                {shown.note && <p className="mt-0.5">{shown.note}</p>}
+                {shown.samples.length > 0 && <ul aria-label="Recent events" className="mt-1.5 space-y-0.5 contain-inline-size">{shown.samples.slice(0, 3).map(sample => <li key={sample.key} className="truncate">{sample.title}</li>)}</ul>}
+              </>}
+          </div>
+        </div>}
+        {preset !== "manual" && (preset !== "event" || collect) && <div className="grid gap-3 sm:grid-cols-3">
+          {preset === "event" ? null : preset === "custom"
             ? <label className={`${FIELD} sm:col-span-2`}>Cron (minute hour day month weekday)<Input aria-label="Cron expression" className="mt-1 font-mono" value={custom} onChange={event => setCustom(event.target.value)}/></label>
             : <>
               {preset === "weekly" && <label className={FIELD}>Day<select aria-label="Weekday" className={SELECT} value={weekday} onChange={event => setWeekday(Number(event.target.value))}>{WEEKDAY_OPTIONS.map(day => <option key={day.value} value={day.value}>{day.label}</option>)}</select></label>}
@@ -139,7 +268,7 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
         </div>
         <label className={FIELD}>Model
           {harness && harness.models.length > 0
-            ? <select aria-label="Workflow model" className={SELECT} value={step.model} onChange={event => updateStep({ model: event.target.value })}>{harness.models.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}</select>
+            ? <select aria-label="Workflow model" className={SELECT} value={step.model} onChange={event => updateStep({ model: event.target.value })}>{!harness.models.some(model => model.id === step.model) && <option value={step.model} disabled>{step.model || "Choose a model"}</option>}{harness.models.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}</select>
             : <Input aria-label="Workflow model" className="mt-1" value={step.model} onChange={event => updateStep({ model: event.target.value })}/>}
         </label>
 
@@ -151,13 +280,16 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
           Work in its own copy of the project (a worktree). Connectors are off for worktree jobs for now.
         </label>}
 
-        {definition.files === "none" && <div className={FIELD}>Can use
+        {definition.files === "none" && <div className={FIELD}><span className="flex items-center justify-between">Can use
+          {onRefreshConnectors && <button type="button" onClick={onRefreshConnectors} disabled={refreshing} className="inline-flex items-center gap-1 font-normal text-muted-foreground hover:text-foreground disabled:opacity-60"><RefreshCw size={11} className={refreshing ? "animate-spin" : ""}/>Refresh</button>}</span>
           <div className="mt-1 divide-y divide-border rounded-lg border border-border">
-            {(options?.servers ?? []).length === 0 && <p className="px-2.5 py-2 text-caption text-muted-foreground">No connectors found in Claude's configuration.</p>}
+            {options?.connectorsError
+              ? <p className="px-2.5 py-2 text-caption text-muted-foreground">Bridge could not list Claude's connectors just now ({options.connectorsError}). Use Refresh to ask again.</p>
+              : (options?.servers ?? []).length === 0 && <p className="px-2.5 py-2 text-caption text-muted-foreground">No connectors found in Claude's configuration.</p>}
             {(options?.servers ?? []).map(server => {
               const grant = grantFor(server.id);
               return <div key={server.id} className="flex min-w-0 flex-wrap items-center gap-3 px-2.5 py-1.5 text-meta text-foreground">
-                <span className="min-w-0 flex-1 break-all font-mono">{server.id}{server.connected === false && <span className="ml-2 font-sans text-caption text-muted-foreground">not connected</span>}</span>
+                <span className="min-w-0 flex-1 break-all font-mono">{server.id}{server.connected === false && <span className="ml-2 font-sans text-caption text-muted-foreground">needs sign-in in Claude</span>}</span>
                 <label className="flex items-center gap-1.5 text-muted-foreground"><input type="checkbox" aria-label={`Read ${server.id}`} checked={grant?.read ?? false} onChange={event => {
                   const read = event.target.checked;
                   const write = grant?.write ?? "never";
@@ -179,11 +311,14 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
           <label className="flex items-end gap-2 pb-1.5 text-caption text-muted-foreground"><input type="checkbox" aria-label="Notify on success" checked={definition.notify?.onSuccess ?? false} onChange={event => update({ notify: { onSuccess: event.target.checked } })} className="size-3.5 accent-foreground"/>Notify me on success too</label>
         </div>
         {refusal && <p className="text-caption text-muted-foreground">This agent cannot run this workflow: {refusal}.</p>}
+        {!options && <p className="inline-flex items-center gap-1.5 text-caption text-muted-foreground"><LoaderCircle className="animate-spin" size={11}/>Loading agents and connectors…</p>}
+        {missingRepo && <p className="text-caption text-muted-foreground">Choose the repository to watch, as owner/name.</p>}
+        {options && !step.model.trim() && <p className="text-caption text-muted-foreground">Choose a model.</p>}
         <ErrorNote message={error}/>
       </DialogPanel>
       <DialogFooter>
         <Button variant="ghost" disabled={busy} onClick={onCancel}>Cancel</Button>
-        <Button variant="secondary" disabled={busy || !ready} onClick={() => onSubmit({ definition: composed, approve: false, dryRun: true })}>Dry run first</Button>
+        <Button variant="secondary" disabled={busy || !ready || previewPending} title={tryOn ? `On: ${tryOn.title}` : undefined} onClick={() => onSubmit({ definition: composed, approve: false, dryRun: true, event: tryOn })}>{tryOn ? "Dry run on the latest event" : "Dry run first"}</Button>
         <Button disabled={busy || !ready} onClick={() => onSubmit({ definition: composed, approve: true, dryRun: false })}>{busy ? <LoaderCircle className="animate-spin" size={12}/> : <ShieldCheck size={12}/>}Approve and save</Button>
       </DialogFooter>
     </DialogContent>}

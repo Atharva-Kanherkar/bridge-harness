@@ -7,6 +7,154 @@
       "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
       "type": "string"
     },
+    "WorkflowBatch": {
+      "additionalProperties": false,
+      "description": "Run collected events at each slot of a schedule.",
+      "properties": {
+        "cron": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cron",
+        "timezone"
+      ],
+      "type": "object"
+    },
+    "WorkflowConnectorState": {
+      "description": "Whether a granted connector can be reached right now.",
+      "oneOf": [
+        {
+          "enum": [
+            "connected"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Configured, but Claude reports it needs the person to sign in again.",
+          "enum": [
+            "needs_sign_in"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Not in Claude's configuration any more.",
+          "enum": [
+            "missing"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Bridge has not been able to ask yet.",
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "WorkflowConnectorStatus": {
+      "properties": {
+        "server": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/WorkflowConnectorState"
+        }
+      },
+      "required": [
+        "server",
+        "state"
+      ],
+      "type": "object"
+    },
+    "WorkflowEventKind": {
+      "description": "The events a workflow can start on.",
+      "oneOf": [
+        {
+          "description": "Someone @-mentioned the account owner in Slack.",
+          "enum": [
+            "slack_mention"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A Slack direct message to the account owner.",
+          "enum": [
+            "slack_direct_message"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A reply in a Slack thread the account owner is part of.",
+          "enum": [
+            "slack_thread_reply"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A pull request was opened in `repo`.",
+          "enum": [
+            "github_pull_request_opened"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "An issue was opened in `repo`.",
+          "enum": [
+            "github_issue_opened"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The person's review was requested on a pull request (in `repo`, if set).",
+          "enum": [
+            "github_review_requested"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "WorkflowEventSample": {
+      "additionalProperties": false,
+      "description": "One event, as a run, a preview or a dry run carries it. `payload` is the source's own record and is untrusted: other people wrote it.",
+      "properties": {
+        "key": {
+          "description": "Stable across re-reads: how an event is recognised again.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/WorkflowEventKind"
+        },
+        "occurredAt": {
+          "type": "string"
+        },
+        "payload": {
+          "default": null
+        },
+        "title": {
+          "description": "A short line for a person: `#eng · Alex: can you look at…`.",
+          "type": "string"
+        },
+        "url": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "kind",
+        "occurredAt",
+        "title"
+      ],
+      "type": "object"
+    },
     "WorkflowFiles": {
       "description": "Which built-in file, shell and web tools a run gets.",
       "oneOf": [
@@ -41,6 +189,24 @@
         },
         "dryRun": {
           "type": "boolean"
+        },
+        "event": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WorkflowEventSample"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The event that started it (the first, for a batch)."
+        },
+        "eventCount": {
+          "default": 0,
+          "description": "How many events it carries: 1 for one event, more for a batch.",
+          "format": "int64",
+          "type": "integer"
         },
         "failureCode": {
           "type": [
@@ -163,6 +329,23 @@
         "approved": {
           "type": "boolean"
         },
+        "averageRunCostMicrousd": {
+          "default": null,
+          "description": "The mean cost of its last finished runs with a known cost.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "connectors": {
+          "default": [],
+          "description": "Each granted connector, and whether it can be reached.",
+          "items": {
+            "$ref": "#/definitions/WorkflowConnectorStatus"
+          },
+          "type": "array"
+        },
         "disabledReason": {
           "type": [
             "string",
@@ -193,6 +376,15 @@
         },
         "model": {
           "type": "string"
+        },
+        "monthlyCostEstimateMicrousd": {
+          "default": null,
+          "description": "That mean times its expected runs in 30 days.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "name": {
           "type": "string"
@@ -272,6 +464,58 @@
             "timezone"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Something happened in an app. Slack events come from the connector Inbox's ledger; GitHub events from `gh`. Neither costs a model turn.",
+          "properties": {
+            "batch": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/WorkflowBatch"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Collect events and run once at each slot of this schedule, instead of once per event."
+            },
+            "channel": {
+              "description": "Slack only: the channel's label must contain this, any case.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "event": {
+              "$ref": "#/definitions/WorkflowEventKind"
+            },
+            "from": {
+              "description": "Slack only: the author's name must contain this, any case.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "enum": [
+                "event"
+              ],
+              "type": "string"
+            },
+            "repo": {
+              "description": "`owner/name`. Needed by the GitHub pull-request and issue events, optional for review requests.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "event",
+            "kind"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -289,6 +533,13 @@
           "description": "The latest of one or more slots missed while Bridge was not running.",
           "enum": [
             "catch_up"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "One event, or a batch of them.",
+          "enum": [
+            "event"
           ],
           "type": "string"
         }

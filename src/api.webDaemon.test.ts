@@ -32,6 +32,17 @@ beforeEach(() => { invoke.mockReset(); listen.mockReset(); });
 afterEach(() => setActiveWebDaemon(undefined));
 
 describe("api.ts over a web daemon", () => {
+  it("counts an Inbox read as viewing only when the pane says so", async () => {
+    const daemon = fakeDaemon(() => ({ items: [], includeReadMentions: false, unreadCount: 0, poll: [] }));
+    daemon.pin();
+    await bridgeApi.connectorInbox();
+    await bridgeApi.connectorInbox(undefined, true);
+    expect(daemon.client.call.mock.calls).toEqual([
+      ["connectors/connector_inbox", { limit: null, viewing: false }],
+      ["connectors/connector_inbox", { limit: null, viewing: true }],
+    ]);
+  });
+
   it("routes calls to the daemon instead of mock data", async () => {
     const daemon = fakeDaemon(method => (method === "health/health" ? { ok: true, adapters: [], version: "daemon" } : null));
     daemon.pin();

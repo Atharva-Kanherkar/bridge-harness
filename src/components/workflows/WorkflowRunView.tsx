@@ -1,15 +1,25 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft, Bell, Check, LoaderCircle, MessageSquare, ShieldCheck, Square, X } from "lucide-react";
+import { ArrowLeft, Bell, Check, ExternalLink, LoaderCircle, MessageSquare, ShieldCheck, Square, X } from "lucide-react";
 import { bridgeApi } from "../../api";
+import { openExternalUrl } from "../../externalLinks";
 import type { AgentEvent } from "../../types";
 import { readWireKind } from "../../transcript/wire";
 import type { ForkSessionResult, Workflow, WorkflowRun } from "../../protocol/generated/protocol";
 import { Button } from "@/components/ui/button";
 import { ScreenHeading } from "../ui/screen";
-import { ACTIVE_RUN_STATUSES, RUN_STATUS_LABEL, relativeTime, runTone } from "./format";
+import { Markdown } from "../Markdown";
+import { ACTIVE_RUN_STATUSES, RUN_STATUS_LABEL, formatCost, ordinal, relativeTime, runTone } from "./format";
 import { Card, ErrorNote, StatusChip, errorText } from "./parts";
 
-const TRIGGER_LABEL: Record<WorkflowRun["triggerKind"], string> = { manual: "Run now", schedule: "schedule", catch_up: "catch-up" };
+const TRIGGER_LABEL: Record<WorkflowRun["triggerKind"], string> = { manual: "Run now", schedule: "schedule", catch_up: "catch-up", event: "event" };
+
+/** Where a person signs a claude.ai connector back in. */
+export const CLAUDE_CONNECTORS_URL = "https://claude.ai/settings/connectors";
+
+/** What a queued run is waiting for, in words. */
+export function queuedLine(position: number | null | undefined): string {
+  return position ? `Waiting for a free slot: ${ordinal(position)} in line.` : "Waiting for a free slot.";
+}
 
 type Step = { key: string; icon: "ok" | "denied" | "ask" | "say" | "wait"; title: string; detail: string; identity?: string; pending?: AgentEvent };
 
@@ -115,11 +125,13 @@ export async function allSessionEvents(sessionId: string): Promise<AgentEvent[]>
   return events;
 }
 
-export function WorkflowRunView({ workflow, run, onBack, onContinue }: {
+export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePosition = null }: {
   workflow: Workflow;
   run: WorkflowRun;
   onBack: () => void;
   onContinue: (result: ForkSessionResult) => void;
+  /** Its place in line, when it waits for a free slot. */
+  queuePosition?: number | null;
 }) {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [busy, setBusy] = useState(false);
@@ -166,9 +178,11 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue }: {
   const steps = runSteps(events, active);
   const when = run.startedAt ?? run.createdAt;
   const tokens = run.tokens ? `${run.tokens.toLocaleString()} tokens` : null;
-  const meta = [workflow.definition.projectId ? null : "No project", TRIGGER_LABEL[run.triggerKind], run.dryRun ? "dry run" : null,
+  const cost = formatCost(run.costMicrousd);
+  const eventCount = run.eventCount ?? 0;
+  const meta = [workflow.definition.projectId ? null : "No project", eventCount > 1 ? `${eventCount} events` : TRIGGER_LABEL[run.triggerKind], run.dryRun ? "dry run" : null,
     run.missedSlots > 0 ? `${run.missedSlots} missed slot${run.missedSlots === 1 ? "" : "s"}` : null, relativeTime(when, Date.now()), tokens,
-    run.quotaUnknown ? "quota unknown" : null].filter(Boolean).join(" · ");
+    cost ? `≈ ${cost}` : null, run.quotaUnknown ? "quota unknown" : null].filter(Boolean).join(" · ");
 
   return <div>
     <button type="button" onClick={onBack} className="mb-3 inline-flex items-center gap-1 text-caption text-muted-foreground hover:text-foreground"><ArrowLeft size={12}/>{workflow.definition.name}</button>
@@ -178,9 +192,15 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue }: {
         {active && <Button size="xs" variant="ghost" disabled={busy} onClick={() => void act(() => bridgeApi.cancelWorkflowRun(run.id))}><Square size={11}/>Stop</Button>}
         <Button size="xs" variant="secondary" disabled={busy || !run.sessionId} onClick={() => void continueInChat()}><MessageSquare size={11}/>Continue in chat</Button>
       </>}/>
-    {run.summary && <Card className="mb-3"><p className="text-ui leading-relaxed text-foreground">{run.summary}</p>{run.failureCode && <p className="mt-1 font-mono text-caption text-muted-foreground">{run.failureCode}</p>}</Card>}
+    {run.event && <Card className="mb-3"><p className="text-caption font-medium text-muted-foreground">{eventCount > 1 ? `Started by ${eventCount} events, first:` : "Started by"}</p>
+      <p className="mt-0.5 text-ui text-foreground">{run.event.url
+        ? <button type="button" className="inline-flex items-center gap-1 text-left hover:underline" onClick={() => void openExternalUrl(run.event!.url!)}>{run.event.title}<ExternalLink size={11}/></button>
+        : run.event.title}</p></Card>}
+    {run.status === "queued" && !run.sessionId && <Card className="mb-3"><p className="text-ui text-foreground">{queuedLine(queuePosition)}</p><p className="mt-0.5 text-caption text-muted-foreground">At most a few workflows run at once, so your plan is not spent in one burst. Change it in Workflow settings.</p></Card>}
+    {run.summary && <Card className="mb-3"><p className="text-ui leading-relaxed text-foreground">{run.summary}</p>{run.failureCode && <p className="mt-1 font-mono text-caption text-muted-foreground">{run.failureCode}</p>}
+      {run.failureCode === "connector_unavailable" && <Button size="xs" variant="secondary" className="mt-2" onClick={() => void openExternalUrl(CLAUDE_CONNECTORS_URL)}><ExternalLink size={11}/>Reconnect in Claude</Button>}</Card>}
     <div className="rounded-xl border border-border bg-card px-4 py-2">
-      {!run.sessionId && <p className="py-3 text-caption text-muted-foreground">{run.status === "skipped" ? "Skipped: another run of this workflow was still going." : "This run has not started a conversation."}</p>}
+      {!run.sessionId && <p className="py-3 text-caption text-muted-foreground">{run.status === "skipped" ? "Skipped: another run of this workflow was still going." : run.status === "queued" ? "It starts when a slot frees." : "This run has not started a conversation."}</p>}
       {run.sessionId && steps.length === 0 && <p className="flex items-center gap-2 py-3 text-caption text-muted-foreground">{active && <LoaderCircle className="animate-spin" size={12}/>}{active ? "Working…" : "Nothing was recorded for this run."}</p>}
       <div className="divide-y divide-border">{steps.map(step => <div key={step.key} className="flex items-start gap-3 py-2.5">
         <div className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border ${step.icon === "ask" ? "border-foreground text-foreground" : "border-border text-muted-foreground"}`}>
@@ -188,7 +208,11 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue }: {
         </div>
         <div className="min-w-0 flex-1">
           <p className={`${step.icon === "say" ? "font-sans" : "font-mono"} text-meta text-foreground`}>{step.title}</p>
-          <p className="mt-0.5 whitespace-pre-wrap break-words text-caption text-muted-foreground">{step.detail}</p>
+          {step.icon === "say"
+            // What the agent said reads as it would in a chat. It may quote
+            // event text written by others, so no rich fences.
+            ? <div className="mt-0.5 break-words text-caption text-muted-foreground [&_.md]:text-caption!"><Markdown text={step.detail} richFences={false}/></div>
+            : <p className="mt-0.5 whitespace-pre-wrap break-words text-caption text-muted-foreground">{step.detail}</p>}
           {step.pending && <div className="mt-2.5 flex flex-wrap gap-1.5">
             <Button size="xs" disabled={busy} onClick={() => void act(() => bridgeApi.resolveApproval(run.sessionId!, step.pending!.sequence, "accept"))}><Check size={10}/>Allow once</Button>
             <Button size="xs" variant="secondary" disabled={busy} onClick={() => void act(() => bridgeApi.alwaysAllowWorkflowTool(workflow.id, run.sessionId!, step.pending!.sequence, step.identity ?? step.title))}><ShieldCheck size={10}/>Always allow for this workflow</Button>

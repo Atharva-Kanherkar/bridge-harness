@@ -3,7 +3,7 @@
 // SDK; the replies are scripted from markers in the run's instructions, and
 // every write that actually executes is appended to `writes.log` in the run's
 // folder, so a test can count them.
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,6 +60,9 @@ const ACCOUNT_CONNECTORS = ["claude.ai Slack", "claude.ai Linear", "claude.ai Gm
 
 export function connectorStatus(options = {}, switchedOff = new Set()) {
   const denied = new Set((options.settings?.deniedMcpServers ?? []).map((entry) => entry?.serverName));
+  // Connectors the fake account has signed out of, as `claude mcp list` would
+  // report them: they load, and stay `needs-auth`.
+  const signedOut = new Set((process.env.FAKE_SDK_SIGNED_OUT ?? "").split(",").map((name) => name.trim()).filter(Boolean));
   const statuses = [];
   for (const name of Object.keys(options.mcpServers ?? {})) {
     if (denied.has(name) || switchedOff.has(name)) continue;
@@ -68,7 +71,7 @@ export function connectorStatus(options = {}, switchedOff = new Set()) {
   if (options.strictMcpConfig === false) {
     for (const name of ACCOUNT_CONNECTORS) {
       if (denied.has(name) || switchedOff.has(name) || statuses.some((entry) => entry.name === name)) continue;
-      statuses.push({ name, status: "connected" });
+      statuses.push({ name, status: signedOut.has(name) ? "needs-auth" : "connected" });
     }
   }
   return statuses;
@@ -157,6 +160,14 @@ export function query({ prompt, options = {} }) {
       yield* finish(known?.reply ?? "{}");
       return;
     }
+    if (brief.includes("```bridge-connector-inbox")) {
+      // Inbox ingress: whatever the journey wrote to $BRIDGE_E2E_INGRESS, or
+      // a quiet inbox. Bridge parses this exactly as it parses a real read.
+      const file = process.env.BRIDGE_E2E_INGRESS;
+      const items = file && existsSync(file) ? readFileSync(file, "utf8").trim() : '{"items":[]}';
+      yield* finish("```bridge-connector-inbox\n" + items + "\n```");
+      return;
+    }
     if (brief.includes("You review a pull request for Bridge")) {
       // The PR reviewer (src-tauri/bridged/tests/reviews.rs): read the
       // context, try to reach GitHub through a shell, which the read-only
@@ -231,6 +242,18 @@ export function query({ prompt, options = {} }) {
       });
       const summary = edited ? "Added CHANGELOG.md." : "Could not write CHANGELOG.md.";
       yield* finish(summary + resultBlock(edited ? "done" : "not_done", summary));
+      return;
+    }
+    if (brief.includes("E2E:slow")) {
+      // A run that takes a while, so a burst of runs overlaps and the queue
+      // has something to hold back.
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    const event = text.match(/```workflow-event\n([\s\S]*?)\n```/);
+    if (event) {
+      const records = JSON.parse(event[1]);
+      const summary = `Handled ${records.length} event${records.length === 1 ? "" : "s"}: ${records.map((record) => record.title + (record.details?.description ? ` [${record.details.description}]` : "")).join("; ")}`;
+      yield* finish(summary + resultBlock("done", summary));
       return;
     }
     yield* finish(`Nothing to do.${resultBlock("done", "Nothing to do.")}`);

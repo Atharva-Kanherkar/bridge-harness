@@ -555,6 +555,8 @@ mod tests {
             started_at: None,
             finished_at: None,
             created_at: "2026-10-29T09:00:01.000Z".into(),
+            event: None,
+            event_count: 0,
         }
     }
 

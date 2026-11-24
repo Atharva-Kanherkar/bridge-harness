@@ -156,6 +156,8 @@ pub struct ValidationContext {
     pub adapters: Vec<AdapterFacts>,
     /// Connector servers the harness's own configuration holds.
     pub servers: BTreeSet<String>,
+    /// Why `servers` cannot be trusted right now (the probe failed), if so.
+    pub servers_unknown: Option<String>,
 }
 
 /// Does this definition need an adapter that enforces exact tool identities?
@@ -217,6 +219,9 @@ pub fn validate(definition: &wire::WorkflowDefinition, context: &ValidationConte
     if let wire::WorkflowTrigger::Schedule { cron, timezone } = &definition.trigger {
         Schedule::parse(cron, timezone)?;
     }
+    if let Some(event) = crate::workflow_events::EventTrigger::of(&definition.trigger) {
+        crate::workflow_events::validate(&event)?;
+    }
     validate_budget(&definition.budget)?;
 
     let mut servers = BTreeSet::new();
@@ -231,6 +236,9 @@ pub fn validate(definition: &wire::WorkflowDefinition, context: &ValidationConte
         }
         if !grant.read && grant.write == wire::WorkflowWriteAccess::Never {
             return Err(format!("The grant for `{server}` allows nothing; remove it instead"));
+        }
+        if let Some(problem) = &context.servers_unknown {
+            return Err(format!("Bridge could not check Claude's connectors just now ({problem}). Try again in a moment."));
         }
         if !context.servers.contains(server) {
             return Err(format!("`{server}` is not a connector `{harness}` is configured with"));
@@ -335,6 +343,18 @@ pub fn widens(previous: &wire::WorkflowDefinition, next: &wire::WorkflowDefiniti
     if previous.files == wire::WorkflowFiles::None && next.files == wire::WorkflowFiles::Worktree {
         return true;
     }
+    // An event trigger starts runs from what other people write: turning one
+    // on, or pointing it at another event, repository, channel or sender,
+    // needs a person's approval. A batch schedule only changes when it runs.
+    let listens = |definition: &wire::WorkflowDefinition| {
+        crate::workflow_events::EventTrigger::of(&definition.trigger)
+            .map(|event| (event.event, event.repo.map(str::to_lowercase), event.channel.map(str::to_lowercase), event.from.map(str::to_lowercase)))
+    };
+    if let Some(next_listens) = listens(next) {
+        if listens(previous).as_ref() != Some(&next_listens) {
+            return true;
+        }
+    }
     let grant_widens = next.grants.iter().any(|grant| {
         match previous.grants.iter().find(|old| old.server == grant.server) {
             None => true,
@@ -345,6 +365,83 @@ pub fn widens(previous: &wire::WorkflowDefinition, next: &wire::WorkflowDefiniti
         }
     });
     grant_widens || next.always_allow.iter().any(|identity| !previous.always_allow.contains(identity))
+}
+
+// --- connectors and cost -------------------------------------------------------------
+
+/// Each granted connector's state, from Claude's cached configuration.
+/// `None` means Bridge has not been able to ask yet.
+pub fn connector_states(
+    definition: &wire::WorkflowDefinition,
+    configuration: Option<&crate::marketplace::ClaudeSdkConfiguration>,
+) -> Vec<wire::WorkflowConnectorStatus> {
+    // A probe that failed lists nothing: absent is not missing, it is unknown,
+    // and an unknown connector must not fail a run before it starts (R5).
+    let configuration = configuration.filter(|configuration| crate::marketplace::connector_answer_problem(configuration).is_none());
+    definition
+        .grants
+        .iter()
+        .map(|grant| wire::WorkflowConnectorStatus {
+            server: grant.server.clone(),
+            state: match configuration.map(|configuration| configuration.connector_health.get(&grant.server)) {
+                None => wire::WorkflowConnectorState::Unknown,
+                Some(None) => wire::WorkflowConnectorState::Missing,
+                Some(Some(Some(true))) => wire::WorkflowConnectorState::Connected,
+                Some(Some(Some(false))) => wire::WorkflowConnectorState::NeedsSignIn,
+                Some(Some(None)) => wire::WorkflowConnectorState::Unknown,
+            },
+        })
+        .collect()
+}
+
+/// The display name of a connector key: `claude.ai Slack` is `Slack`.
+pub fn connector_label(server: &str) -> &str {
+    server.strip_prefix("claude.ai ").unwrap_or(server)
+}
+
+/// Why a run cannot reach a granted connector, when Claude already says so.
+/// `None` lets the run start: connected, or not known yet.
+pub fn unavailable_summary(
+    definition: &wire::WorkflowDefinition,
+    configuration: Option<&crate::marketplace::ClaudeSdkConfiguration>,
+) -> Option<String> {
+    let blocked: Vec<String> = connector_states(definition, configuration)
+        .into_iter()
+        .filter_map(|status| match status.state {
+            wire::WorkflowConnectorState::NeedsSignIn => Some(format!("{} needs you to sign in again", connector_label(&status.server))),
+            wire::WorkflowConnectorState::Missing => Some(format!("{} is no longer connected", connector_label(&status.server))),
+            _ => None,
+        })
+        .collect();
+    (!blocked.is_empty()).then(|| format!("{} in Claude. Reconnect it, then run again.", blocked.join(", and ")))
+}
+
+/// How many recent runs the average cost is taken over.
+const COST_SAMPLE: i64 = 10;
+
+/// The mean cost of a workflow's last finished, non-dry runs with a known
+/// cost, and that mean times its expected runs in the next 30 days.
+pub fn cost_estimates(db: &Connection, workflow: &wire::Workflow, now: chrono::DateTime<Utc>) -> Result<(Option<i64>, Option<i64>), BridgeError> {
+    let average: Option<f64> = db.query_row(
+        "SELECT AVG(cost_microusd) FROM (SELECT cost_microusd FROM workflow_runs
+           WHERE workflow_id=?1 AND dry_run=0 AND cost_microusd IS NOT NULL
+             AND status IN ('succeeded','unverified','failed','cancelled')
+           ORDER BY created_at DESC LIMIT ?2)",
+        params![workflow.id, COST_SAMPLE],
+        |row| row.get(0),
+    )?;
+    let Some(average) = average else { return Ok((None, None)) };
+    let runs = match &workflow.definition.trigger {
+        wire::WorkflowTrigger::Schedule { cron, timezone } => Schedule::parse(cron, timezone)
+            .map(|schedule| schedule.fires_between(now, now + chrono::Duration::days(30), 10_000).len() as f64)
+            .unwrap_or(0.0),
+        _ => db.query_row(
+            "SELECT COUNT(*) FROM workflow_runs WHERE workflow_id=?1 AND dry_run=0 AND status<>'skipped' AND created_at >= ?2",
+            params![workflow.id, crate::workflow_trigger::stamp(now - chrono::Duration::days(30))],
+            |row| row.get::<_, i64>(0),
+        )? as f64,
+    };
+    Ok((Some(average.round() as i64), Some((average * runs).round() as i64)))
 }
 
 // --- store ---------------------------------------------------------------------
@@ -426,8 +523,12 @@ pub fn require(db: &Connection, workflow_id: &str) -> Result<wire::Workflow, Bri
     get(db, workflow_id)?.ok_or_else(|| BridgeError::Invalid(format!("workflow {workflow_id} does not exist")))
 }
 
-/// Every workflow, most recently changed first.
-pub fn list(db: &Connection) -> Result<Vec<wire::WorkflowSummary>, BridgeError> {
+/// Every workflow, most recently changed first. `configuration` is Claude's
+/// cached connector answer, when there is one.
+pub fn list(
+    db: &Connection,
+    configuration: Option<&crate::marketplace::ClaudeSdkConfiguration>,
+) -> Result<Vec<wire::WorkflowSummary>, BridgeError> {
     let now = Utc::now();
     let mut statement = db.prepare(&format!("{SELECT_WORKFLOW} ORDER BY w.updated_at DESC, w.id"))?;
     let rows = statement.query_map([], read_row)?.collect::<Result<Vec<_>, _>>()?;
@@ -436,6 +537,8 @@ pub fn list(db: &Connection) -> Result<Vec<wire::WorkflowSummary>, BridgeError> 
             let workflow = into_workflow(row)?;
             let next_run_at = crate::workflow_trigger::next_run_at(db, &workflow, now)?;
             let last_run = crate::workflow_trigger::latest_run(db, &workflow.id)?;
+            let connectors = connector_states(&workflow.definition, configuration);
+            let (average_run_cost_microusd, monthly_cost_estimate_microusd) = cost_estimates(db, &workflow, now)?;
             let step = workflow.definition.steps.first().cloned();
             Ok(wire::WorkflowSummary {
                 id: workflow.id,
@@ -454,6 +557,9 @@ pub fn list(db: &Connection) -> Result<Vec<wire::WorkflowSummary>, BridgeError> 
                 updated_at: workflow.updated_at,
                 next_run_at,
                 last_run,
+                connectors,
+                average_run_cost_microusd,
+                monthly_cost_estimate_microusd,
             })
         })
         .collect()
@@ -773,7 +879,20 @@ mod tests {
                 AdapterFacts { id: "opencode".into(), models: vec![] },
             ],
             servers: BTreeSet::from(["claude_ai_Slack".to_owned(), "claude_ai_Linear".to_owned()]),
+            servers_unknown: None,
         }
+    }
+
+    #[test]
+    fn a_failed_connector_probe_asks_to_try_again_rather_than_refusing_the_connector() {
+        let mut context = context();
+        context.servers.clear();
+        context.servers_unknown = Some("Claude mcp discovery timed-out".into());
+        let error = validate(&definition(), &context).unwrap_err();
+        assert!(error.contains("could not check Claude's connectors just now") && error.contains("Try again"), "{error}");
+        let mut none = definition();
+        none.grants.clear();
+        assert_eq!(validate(&none, &context), Ok(()), "a workflow with no connectors does not need the answer");
     }
 
     fn add_project(db: &Connection, dir: &Path) -> String {
@@ -811,7 +930,7 @@ mod tests {
         bound.project_id = Some(project.clone());
         let saved = save(&db, dir.path(), None, &bound, CreatedBy::User).unwrap();
         assert_eq!(saved.workflow.definition.project_id, Some(project));
-        assert_eq!(list(&db).unwrap().len(), 2);
+        assert_eq!(list(&db, None).unwrap().len(), 2);
     }
 
     #[test]
@@ -1066,9 +1185,83 @@ mod tests {
         for harness in &options {
             job.steps[0].harness = wire::HarnessId::parse(&harness.id).unwrap();
             job.steps[0].model = harness.models.first().map(|model| model.id.clone()).unwrap_or_else(|| "m".into());
-            let context = ValidationContext { adapters: vec![AdapterFacts { id: harness.id.clone(), models: vec![] }], servers: BTreeSet::new() };
+            let context = ValidationContext { adapters: vec![AdapterFacts { id: harness.id.clone(), models: vec![] }], servers: BTreeSet::new(), servers_unknown: None };
             assert_eq!(validate(&job, &context).is_ok(), harness.worktree_allowed, "{}", harness.id);
         }
+    }
+
+    fn health(entries: &[(&str, Option<bool>)]) -> crate::marketplace::ClaudeSdkConfiguration {
+        crate::marketplace::ClaudeSdkConfiguration {
+            connector_health: entries.iter().map(|(name, state)| ((*name).to_owned(), *state)).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn each_granted_connector_reports_its_state_and_a_blocked_one_names_itself() {
+        let mut two = definition();
+        two.grants.push(wire::WorkflowGrant { server: "claude_ai_Linear".into(), read: true, write: wire::WorkflowWriteAccess::Never });
+        use wire::WorkflowConnectorState as S;
+        let states = |configuration: Option<&crate::marketplace::ClaudeSdkConfiguration>| -> Vec<S> {
+            connector_states(&two, configuration).into_iter().map(|status| status.state).collect()
+        };
+        assert_eq!(states(None), vec![S::Unknown, S::Unknown], "not asked yet is unknown, never blocked");
+        assert_eq!(states(Some(&health(&[("claude_ai_Slack", Some(true)), ("claude_ai_Linear", Some(true))]))), vec![S::Connected, S::Connected]);
+        let signed_out = health(&[("claude_ai_Slack", Some(false))]);
+        assert_eq!(states(Some(&signed_out)), vec![S::NeedsSignIn, S::Missing]);
+        let summary = unavailable_summary(&two, Some(&signed_out)).unwrap();
+        assert!(summary.contains("claude_ai_Slack needs you to sign in again"), "{summary}");
+        assert!(summary.contains("claude_ai_Linear is no longer connected"), "{summary}");
+        assert_eq!(unavailable_summary(&two, None), None);
+        assert_eq!(unavailable_summary(&two, Some(&health(&[("claude_ai_Slack", None), ("claude_ai_Linear", Some(true))]))), None, "no verdict lets it start");
+        assert_eq!(connector_label("claude.ai Slack"), "Slack");
+    }
+
+    #[test]
+    fn cost_estimates_follow_the_last_runs_and_the_expected_runs() {
+        let (dir, db) = db();
+        let saved = save(&db, dir.path(), None, &definition(), CreatedBy::User).unwrap().workflow;
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-24T00:00:00Z").unwrap().with_timezone(&Utc);
+        assert_eq!(cost_estimates(&db, &saved, now).unwrap(), (None, None), "no runs, no estimate");
+        let insert = |id: &str, cost: Option<i64>, status: &str, dry: bool, created: &str| {
+            db.execute(
+                "INSERT INTO workflow_runs(id,workflow_id,revision_id,trigger_kind,occasion,idempotency_key,status,dry_run,cost_microusd,created_at)
+                 VALUES(?1,?2,?3,'manual',?1,?1,?4,?5,?6,?7)",
+                params![id, saved.id, saved.revision_id, status, dry, cost, created],
+            ).unwrap();
+        };
+        insert("a", Some(10_000), "succeeded", false, "2026-11-20T00:00:00Z");
+        insert("b", Some(20_000), "failed", false, "2026-11-21T00:00:00Z");
+        insert("c", Some(900_000), "succeeded", true, "2026-11-22T00:00:00Z");
+        insert("d", None, "succeeded", false, "2026-11-23T00:00:00Z");
+        let (average, monthly) = cost_estimates(&db, &saved, now).unwrap();
+        assert_eq!(average, Some(15_000), "dry runs and unknown costs are left out");
+        // Weekdays at 09:00 in Kolkata: 21 or 22 fires in the next 30 days.
+        let monthly = monthly.unwrap();
+        assert!((21 * 15_000..=22 * 15_000).contains(&monthly), "{monthly}");
+        let mut manual = definition();
+        manual.trigger = wire::WorkflowTrigger::Manual;
+        let manual = save(&db, dir.path(), Some(&saved.id), &manual, CreatedBy::User).unwrap().workflow;
+        assert_eq!(cost_estimates(&db, &manual, now).unwrap(), (Some(15_000), Some(3 * 15_000)), "on demand: the real runs of the last 30 days, not the dry one");
+    }
+
+    #[test]
+    fn listening_for_an_event_or_another_event_needs_approval_again() {
+        let event = |kind, repo: Option<&str>| wire::WorkflowTrigger::Event { event: kind, repo: repo.map(str::to_owned), channel: None, from: None, batch: None };
+        let mut scheduled = definition();
+        let mut listening = definition();
+        listening.trigger = event(wire::WorkflowEventKind::SlackMention, None);
+        assert!(widens(&scheduled, &listening), "turning an event trigger on");
+        let mut other = listening.clone();
+        other.trigger = event(wire::WorkflowEventKind::SlackDirectMessage, None);
+        assert!(widens(&listening, &other), "another event");
+        let mut batched = listening.clone();
+        if let wire::WorkflowTrigger::Event { batch, .. } = &mut batched.trigger {
+            *batch = Some(wire::WorkflowBatch { cron: "0 9 * * *".into(), timezone: "UTC".into() });
+        }
+        assert!(!widens(&listening, &batched), "batching only changes when it runs");
+        scheduled.trigger = wire::WorkflowTrigger::Manual;
+        assert!(!widens(&listening, &scheduled), "turning it off narrows");
     }
 
     #[test]

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FolderGit2, LoaderCircle, Play, Plus, Settings2, Sparkles, Workflow as WorkflowIcon } from "lucide-react";
+import { ExternalLink, FolderGit2, LoaderCircle, Play, Plus, Settings2, Sparkles, Workflow as WorkflowIcon } from "lucide-react";
 import { bridgeApi } from "../api";
-import type { ForkSessionResult, Project, Workflow, WorkflowDefinition, WorkflowDraft, WorkflowOptions, WorkflowRun, WorkflowSettingsSnapshot, WorkflowSummary } from "../protocol/generated/protocol";
+import type { ForkSessionResult, Project, Workflow, WorkflowDefinition, WorkflowDraft, WorkflowOptions, WorkflowRun, WorkflowSettingsSnapshot, WorkflowSummary, WorkflowTemplate } from "../protocol/generated/protocol";
+import { openExternalUrl } from "../externalLinks";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -9,16 +10,30 @@ import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
 import { AutomationsPanel } from "./AutomationsPanel";
 import { WorkflowDetail } from "./workflows/WorkflowDetail";
 import { WorkflowEditor, type EditorSubmit } from "./workflows/WorkflowEditor";
-import { WorkflowRunView } from "./workflows/WorkflowRunView";
-import { ACTIVE_RUN_STATUSES, RUN_STATUS_LABEL, relativeTime, runTone, triggerSummary } from "./workflows/format";
+import { CLAUDE_CONNECTORS_URL, WorkflowRunView } from "./workflows/WorkflowRunView";
+import { ACTIVE_RUN_STATUSES, RUN_STATUS_LABEL, costLine, relativeTime, runTone, triggerSummary } from "./workflows/format";
+import { WorkflowTemplates } from "./workflows/WorkflowTemplates";
 import { CHIP, Dot, ErrorNote, StatusChip, errorText } from "./workflows/parts";
 import { WorkflowInbox } from "./workflows/WorkflowInbox";
 import { needsYouCount } from "./workflows/notify";
 
-type Tab = "workflows" | "inbox" | "native";
+type Tab = "workflows" | "templates" | "inbox" | "native";
 type Editing = { workflow: Workflow | null; initial?: WorkflowDefinition | null; notes?: string[] } | null;
 
 const requestId = () => (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
+
+/** Granted connectors Claude says cannot be reached, as "Slack needs sign-in". */
+export function connectorTrouble(row: WorkflowSummary): string | null {
+  const blocked = (row.connectors ?? []).filter(status => status.state === "needs_sign_in" || status.state === "missing");
+  if (blocked.length === 0) return null;
+  return blocked.map(status => `${status.server.replace(/^claude\.ai /, "")} ${status.state === "missing" ? "is no longer connected" : "needs sign-in"}`).join(", ");
+}
+
+/** Each queued run's place in line, oldest first. */
+export function queuePositions(runs: WorkflowRun[]): Map<string, number> {
+  const queued = runs.filter(run => run.status === "queued" && !run.sessionId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return new Map(queued.map((run, index) => [run.id, index + 1]));
+}
 
 function summaryStatus(row: WorkflowSummary): { label: string; tone: "ok" | "warn" | "idle" } {
   if (!row.approved) return { label: "needs approval", tone: "warn" };
@@ -53,6 +68,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
   const [allRuns, setAllRuns] = useState<WorkflowRun[]>([]);
   const [describe, setDescribe] = useState("");
   const [drafting, setDrafting] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const selectedId = useRef<string | null>(null);
   selectedId.current = selected?.id ?? null;
   const now = Date.now();
@@ -171,7 +187,44 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
     setOpenRun(result.run);
   });
 
-  const submitEditor = async ({ definition, approve, dryRun }: EditorSubmit) => {
+  const refreshConnectors = async () => {
+    setRefreshing(true);
+    try {
+      setOptions(await bridgeApi.refreshWorkflowConnectors());
+    } catch (reason) {
+      setEditorError(errorText(reason));
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  // Try a template: save it unapproved (nothing runs on its own) and dry-run
+  // it, so the person sees what it would do before approving anything.
+  const tryTemplate = (template: WorkflowTemplate) => act(async () => {
+    const saved = await bridgeApi.saveWorkflow(null, template.definition);
+    let event = null;
+    if (template.definition.trigger.kind === "event") {
+      const preview = await bridgeApi.previewWorkflowTrigger(template.definition.trigger).catch(() => null);
+      event = preview?.samples[0] ?? null;
+    }
+    const result = await bridgeApi.runWorkflow(saved.workflow.id, requestId(), true, event);
+    await refreshList();
+    await refreshSelected(saved.workflow.id);
+    setTab("workflows");
+    setOpenRun(result.run);
+  });
+
+  const customizeTemplate = (template: WorkflowTemplate) => {
+    const notes = [
+      ...template.missing.map(app => `Connect ${app[0].toUpperCase()}${app.slice(1)} in Claude first; until then this workflow cannot reach it.`),
+      ...(template.needsProject ? ["Choose the project it works on."] : []),
+    ];
+    setEditorError(null);
+    setSelected(null);
+    setEditing({ workflow: null, initial: template.definition, notes });
+  };
+
+  const submitEditor = async ({ definition, approve, dryRun, event }: EditorSubmit) => {
     setBusy(true);
     setEditorError(null);
     try {
@@ -182,7 +235,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
       await refreshList();
       await refreshSelected(workflow.id);
       if (dryRun) {
-        const result = await bridgeApi.runWorkflow(workflow.id, requestId(), true);
+        const result = await bridgeApi.runWorkflow(workflow.id, requestId(), true, event ?? null);
         setOpenRun(result.run);
       }
     } catch (reason) {
@@ -200,7 +253,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
 
   let body;
   if (selected && openRun) {
-    body = <WorkflowRunView workflow={selected} run={openRun} onBack={() => setOpenRun(null)} onContinue={onContinueInChat}/>;
+    body = <WorkflowRunView workflow={selected} run={openRun} onBack={() => setOpenRun(null)} onContinue={onContinueInChat} queuePosition={queuePositions(allRuns).get(openRun.id) ?? null}/>;
   } else if (selected) {
     const summary = rows?.find(row => row.id === selected.id);
     body = <WorkflowDetail workflow={selected} runs={runs} projects={projects} nextRunAt={summary?.nextRunAt ?? null} busy={busy}
@@ -223,12 +276,14 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
       </form>
       <div className="u-segmented w-fit" role="tablist" aria-label="Workflows sections">
         <button type="button" role="tab" data-active={tab === "workflows"} aria-selected={tab === "workflows"} className="u-segmented-item" onClick={() => setTab("workflows")}>Workflows</button>
+        <button type="button" role="tab" data-active={tab === "templates"} aria-selected={tab === "templates"} className="u-segmented-item" onClick={() => setTab("templates")}>Templates</button>
         <button type="button" role="tab" data-active={tab === "inbox"} aria-selected={tab === "inbox"} className="u-segmented-item" onClick={() => setTab("inbox")}>
           <span className="inline-flex items-center gap-1.5">Inbox{needsYouCount(allRuns) > 0 && <span aria-label={`${needsYouCount(allRuns)} need you`} className="rounded-full bg-foreground px-1.5 text-micro font-semibold leading-4 text-background">{needsYouCount(allRuns)}</span>}</span>
         </button>
         <button type="button" role="tab" data-active={tab === "native"} aria-selected={tab === "native"} className="u-segmented-item" onClick={() => setTab("native")}>Native schedules</button>
       </div>
       {tab === "native" ? <div className="mt-4"><AutomationsPanel embedded/></div>
+        : tab === "templates" ? <WorkflowTemplates busy={busy} onTry={template => void tryTemplate(template)} onCustomize={customizeTemplate}/>
         : tab === "inbox" ? <WorkflowInbox runs={allRuns} names={new Map((rows ?? []).map(row => [row.id, row.name]))} onOpenRun={run => void act(() => openRunOf(run))} onChanged={() => void refreshList()}/>
         : rows === null
         ? <div className="flex min-h-56 items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="animate-spin" size={15}/>Loading workflows…</div>
@@ -242,7 +297,9 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
             const status = summaryStatus(row);
             const next = relativeTime(row.nextRunAt, now);
             const last = row.lastRun;
-            const needsYou = !row.approved || last?.status === "waiting_approval" || last?.status === "failed";
+            const trouble = connectorTrouble(row);
+            const cost = costLine(row.averageRunCostMicrousd, row.monthlyCostEstimateMicrousd);
+            const needsYou = !row.approved || last?.status === "waiting_approval" || last?.status === "failed" || Boolean(trouble);
             return <article key={row.id} className="flex items-start gap-3.5 px-4 py-3.5 hover:bg-accent">
               <button type="button" onClick={() => open(row.id)} className="flex min-w-0 flex-1 items-start gap-3.5 text-left">
                 <div className="relative mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border bg-accent text-muted-foreground">
@@ -256,10 +313,14 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
                     <span className={CHIP}>{row.harness} · {row.model}</span>
                     {next && <span>next {next}</span>}
                     {last && <span className="inline-flex items-center gap-1.5"><Dot tone={runTone(last.status)}/>{RUN_STATUS_LABEL[last.status]} {relativeTime(last.finishedAt ?? last.createdAt, now)}</span>}
+                    {cost && <span>{cost}</span>}
                   </div>
+                  {trouble && <p className="mt-1.5 text-caption text-foreground">{trouble} in Claude.</p>}
                 </div>
               </button>
-              <Button size="xs" variant="secondary" disabled={busy || !row.approved || !row.enabled} onClick={() => void runWorkflow(row.id, false)}><Play size={10}/>Run now</Button>
+              {trouble
+                ? <Button size="xs" variant="secondary" onClick={() => void openExternalUrl(CLAUDE_CONNECTORS_URL)}><ExternalLink size={10}/>Reconnect</Button>
+                : <Button size="xs" variant="secondary" disabled={busy || !row.approved || !row.enabled} onClick={() => void runWorkflow(row.id, false)}><Play size={10}/>Run now</Button>}
             </article>;
           })}</div>}
     </>;
@@ -269,7 +330,8 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
     {body}
     <ErrorNote message={error}/>
     <WorkflowEditor key={editing ? (editing.workflow?.revisionId ?? (editing.initial ? `draft-${editing.initial.name}` : "new")) : "closed"} open={!!editing} workflow={editing?.workflow ?? null} initial={editing?.initial ?? null} notes={editing?.notes ?? []}
-      options={options} projects={projects} busy={busy} error={editorError} onCancel={() => setEditing(null)} onSubmit={submit => void submitEditor(submit)}/>
+      options={options} projects={projects} busy={busy} error={editorError} onCancel={() => setEditing(null)} onSubmit={submit => void submitEditor(submit)}
+      onRefreshConnectors={() => void refreshConnectors()} refreshing={refreshing}/>
     <Dialog open={confirmDelete} onOpenChange={next => { if (!next && !busy) setConfirmDelete(false); }}>{confirmDelete && selected && <DialogContent showCloseButton={!busy}>
       <DialogHeader><DialogTitle>Delete this workflow?</DialogTitle><DialogDescription>Its runs and their record go too. Chats you continued from a run stay.</DialogDescription></DialogHeader>
       <DialogPanel><p className="rounded-xl border border-border bg-muted p-3 text-caption text-foreground">{selected.definition.name}</p></DialogPanel>
@@ -291,16 +353,18 @@ function WorkflowSettingsDialog({ open, snapshot, onClose, onSaved }: {
 }) {
   const [paused, setPaused] = useState(snapshot?.settings.paused ?? false);
   const [reserve, setReserve] = useState(snapshot?.settings.quotaReservePercent ?? 25);
+  const [concurrent, setConcurrent] = useState(snapshot?.settings.maxConcurrentRuns ?? 2);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (!open) return;
     setPaused(snapshot?.settings.paused ?? false);
     setReserve(snapshot?.settings.quotaReservePercent ?? 25);
+    setConcurrent(snapshot?.settings.maxConcurrentRuns ?? 2);
     setError(null);
   }, [open, snapshot]);
   const save = async () => {
     try {
-      onSaved(await bridgeApi.writeWorkflowSettings({ paused, quotaReservePercent: reserve }));
+      onSaved(await bridgeApi.writeWorkflowSettings({ paused, quotaReservePercent: reserve, maxConcurrentRuns: concurrent }));
       onClose();
     } catch (reason) {
       setError(errorText(reason));
@@ -314,6 +378,10 @@ function WorkflowSettingsDialog({ open, snapshot, onClose, onSaved }: {
         <Input aria-label="Quota reserve" type="number" min={0} max={90} className="mt-1 w-28" value={reserve} onChange={event => setReserve(Number(event.target.value))}/>
       </label>
       <p className="text-caption text-muted-foreground">Workflows wait while a provider is above {100 - reserve}% of any usage window.</p>
+      <label className="block text-caption font-medium text-muted-foreground">Run at most this many workflows at once
+        <Input aria-label="Workflows at once" type="number" min={1} max={5} className="mt-1 w-28" value={concurrent} onChange={event => setConcurrent(Number(event.target.value))}/>
+      </label>
+      <p className="text-caption text-muted-foreground">The rest wait in line and start as soon as one finishes.</p>
       <ErrorNote message={error}/>
     </DialogPanel>
     <DialogFooter><Button variant="ghost" onClick={onClose}>Cancel</Button><Button onClick={() => void save()}>Save</Button></DialogFooter>

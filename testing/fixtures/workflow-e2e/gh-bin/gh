@@ -1,0 +1,17 @@
+#!/bin/sh
+# Answers Bridge's GitHub event reads in place of the GitHub CLI. A list read
+# gets whatever JSON the journey wrote to $BRIDGE_E2E_GH_ANSWER, or an empty
+# list; a `pr view` or `issue view` gets $BRIDGE_E2E_GH_VIEW, or fails.
+if [ "$2" = "view" ]; then
+  if [ -n "$BRIDGE_E2E_GH_VIEW" ] && [ -f "$BRIDGE_E2E_GH_VIEW" ]; then
+    cat "$BRIDGE_E2E_GH_VIEW"
+    exit 0
+  fi
+  echo "no such pull request" >&2
+  exit 1
+fi
+if [ -n "$BRIDGE_E2E_GH_ANSWER" ] && [ -f "$BRIDGE_E2E_GH_ANSWER" ]; then
+  cat "$BRIDGE_E2E_GH_ANSWER"
+else
+  echo "[]"
+fi

@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 92;
+const LATEST_SCHEMA_VERSION: i64 = 93;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -826,10 +826,13 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // The reasons ledger is read by kind and entity under the core's
             // database lock, once a second by the worker pool alone.
             91 => migration_91_events_kind_entity_index(&transaction)?,
+            // Event triggers: event runs carry their events, and each event
+            // is recorded once per workflow. See `workflow_events`.
+            92 => crate::workflow_events::install_store(&transaction)?,
             // The commit a posted review is on: a re-review starts there. It
             // can be older than the job's own head when a retry found an
             // earlier attempt's review already on GitHub.
-            92 => migration_92_review_identity(&transaction)?,
+            93 => migration_93_review_identity(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -2373,7 +2376,7 @@ fn migration_1_current_schema(transaction: &Transaction<'_>) -> Result<(), Bridg
 /// another head, so a posted retry from before this stays unknown, and a
 /// re-review from it runs as a full review. A row from before this has no
 /// host and so matches no repository's history.
-pub(crate) fn migration_92_review_identity(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+pub(crate) fn migration_93_review_identity(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     add_column_if_missing(transaction, "review_jobs", "posted_head_sha", "TEXT")?;
     add_column_if_missing(transaction, "review_jobs", "repo_host", "TEXT")?;
     transaction.execute(

@@ -5,7 +5,7 @@ import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParam
 import type { AppPreferences, AppPreferenceValues } from "./protocol/generated/protocol";
 import type { ReviewFindingDecisionInput, ReviewFindingList, ReviewJob, ReviewJobDetail, ReviewJobList, ReviewJobResult, ReviewJobSettings, ReviewTrigger } from "./protocol/generated/protocol";
 import type { LimitRecoverySettings, LimitRecoveryStatus } from "./protocol/generated/protocol";
-import type { AlwaysAllowToolResult, RunWorkflowResult, WorkflowDraftResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary } from "./protocol/generated/protocol";
+import type { AlwaysAllowToolResult, RunWorkflowResult, WorkflowDraftResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowEventSample, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary, WorkflowTemplate, WorkflowTemplateList, WorkflowTrigger, WorkflowTriggerPreview } from "./protocol/generated/protocol";
 import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, MarkAttentionUnreadResult, ReportPresenceResult, UnreadSummary } from "./protocol/generated/protocol";
 import { mockListAttention, mockMarkAttentionSeen, mockMarkAttentionUnread, mockUnreadSummary, onMockAttentionChanged, pushMockAttention } from "./attentionMock";
 import { harnessLabel } from "./utils";
@@ -1782,7 +1782,7 @@ function mockBadgeCounts(): MockBadgeCounts {
   };
 }
 
-let mockWorkflowSettings: WorkflowSettingsSnapshot = { configured: false, settings: { paused: false, quotaReservePercent: 25 } };
+let mockWorkflowSettings: WorkflowSettingsSnapshot = { configured: false, settings: { paused: false, quotaReservePercent: 25, maxConcurrentRuns: 2 } };
 
 /** The mock's mirror of `workflows::widens`. */
 function mockWorkflowWidens(previous: WorkflowDefinition, next: WorkflowDefinition): boolean {
@@ -1805,7 +1805,47 @@ function mockWorkflowSummary(workflow: Workflow): WorkflowSummary {
     files: workflow.definition.files, updatedAt: workflow.updatedAt,
     nextRunAt: null,
     lastRun: mockWorkflowRuns.find(run => run.workflowId === workflow.id) ?? null,
+    connectors: (workflow.definition.grants ?? []).map(grant => {
+      const server = mockWorkflowOptions.servers.find(candidate => candidate.id === grant.server);
+      return { server: grant.server, state: !server ? "missing" as const : server.connected === false ? "needs_sign_in" as const : "connected" as const };
+    }),
+    averageRunCostMicrousd: workflow.id === "wf-morning-brief" ? 40000 : null,
+    monthlyCostEstimateMicrousd: workflow.id === "wf-morning-brief" ? 880000 : null,
   };
+}
+
+/** Mock mode's previews: a week of plausible events, so the editor can show them. */
+function mockTriggerPreview(trigger: WorkflowTrigger): WorkflowTriggerPreview {
+  if (trigger.kind !== "event") return { supported: false, reason: "Only an event trigger has a preview", windowDays: 7, matches: 0, samples: [], note: null };
+  const github = trigger.event.startsWith("github_");
+  if (github && trigger.event !== "github_review_requested" && !trigger.repo) return { supported: false, reason: "Choose the repository to watch, as owner/name", windowDays: 7, matches: 0, samples: [], note: null };
+  const now = Date.now();
+  const sample = (index: number): WorkflowEventSample => github
+    ? { key: `github:pr:${trigger.repo ?? "acme/app"}#${40 + index}`, kind: trigger.event, title: `${trigger.repo ?? "acme/app"}#${40 + index} · Tidy the retry logic`, url: `https://github.com/${trigger.repo ?? "acme/app"}/pull/${40 + index}`, occurredAt: new Date(now - index * 86_400_000).toISOString(), payload: { number: 40 + index } }
+    : { key: `slack:C1:${index}.0`, kind: trigger.event, title: `#eng · Priya: can you look at the deploy before 5?`, url: null, occurredAt: new Date(now - index * 43_200_000).toISOString(), payload: { channelLabel: "#eng", author: "Priya", text: "can you look at the deploy before 5?" } };
+  const matches = github ? 2 : 4;
+  return { supported: true, reason: null, windowDays: 7, matches, samples: Array.from({ length: Math.min(matches, 3) }, (_, index) => sample(index)), note: null };
+}
+
+/** Mock mode's templates, from the mock connectors. */
+function mockTemplates(): WorkflowTemplate[] {
+  const connected = (word: string) => mockWorkflowOptions.servers.find(server => server.id.toLowerCase().includes(word));
+  const make = (id: string, name: string, description: string, app: string | null, trigger: WorkflowTrigger, instructions: string, needsProject = false): WorkflowTemplate => {
+    const server = app ? connected(app) : undefined;
+    const missing = app && server?.connected !== true ? [app] : [];
+    return {
+      id, name, description, needs: app ? [app] : [], missing, needsProject, ready: missing.length === 0 && !needsProject,
+      definition: { ...structuredClone(mockWorkflowDefinition), name, trigger, grants: server ? [{ server: server.id, read: true, write: "never" }] : [],
+        files: needsProject ? "worktree" : "none", notify: { onSuccess: true }, steps: [{ harness: "claude", model: "haiku", instructions }] },
+    };
+  };
+  return [
+    make("slack-morning-digest", "Morning Slack catch-up", "Every weekday at 9:00, what needs you in Slack, most urgent first.", "slack", { kind: "schedule", cron: "0 9 * * 1-5", timezone: "Asia/Kolkata" }, "Find the Slack messages from the last 24 hours that need me."),
+    make("slack-mention-triage", "Triage each Slack mention", "When someone mentions you in Slack, what they need and how urgent it is.", "slack", { kind: "event", event: "slack_mention" }, "Tell me what the mention needs."),
+    make("linear-standup", "My Linear standup", "Every weekday at 9:00, your Linear issues that moved, and three lines for standup.", "linear", { kind: "schedule", cron: "0 9 * * 1-5", timezone: "Asia/Kolkata" }, "List my Linear issues that changed."),
+    make("gmail-needs-reply", "Email that needs a reply", "Every weekday at 8:30, the unread email that needs an answer from you.", "gmail", { kind: "schedule", cron: "30 8 * * 1-5", timezone: "Asia/Kolkata" }, "List the emails that need a reply."),
+    make("nightly-tests", "Nightly test run", "Every night at 2:00, run the project's tests in a fresh copy and report what failed.", null, { kind: "schedule", cron: "0 2 * * *", timezone: "Asia/Kolkata" }, "Run the tests.", true),
+  ].sort((a, b) => Number(b.ready) - Number(a.ready));
 }
 
 function mockRequireWorkflow(workflowId: string): Workflow {
@@ -2079,8 +2119,9 @@ export const bridgeApi = {
   },
   connectorList: (refresh = false): Promise<ConnectorListResult> =>
     hasBackend() ? call("connectors/connector_list", { refresh }) : Promise.resolve(mockConnectorList()),
-  connectorInbox: (limit?: number): Promise<ConnectorInboxResult> =>
-    hasBackend() ? call("connectors/connector_inbox", { limit: limit ?? null }) : Promise.resolve(mockConnectorInbox()),
+  /** `viewing` only from the open Inbox: it keeps ingress polling (paid). */
+  connectorInbox: (limit?: number, viewing = false): Promise<ConnectorInboxResult> =>
+    hasBackend() ? call("connectors/connector_inbox", { limit: limit ?? null, viewing }) : Promise.resolve(mockConnectorInbox()),
   connectorAct: (itemKey: string, action: ConnectorActionRequest, approved?: boolean): Promise<ConnectorActResult> =>
     hasBackend()
       ? call("connectors/connector_act", { itemKey, action, approved: approved ?? null })
@@ -2423,10 +2464,25 @@ export const bridgeApi = {
     if (hasBackend()) return call("workflows/workflow_options");
     return structuredClone(mockWorkflowOptions);
   },
-  // Run now. `requestId` makes a double click one run.
-  runWorkflow: async (workflowId: string, requestId: string, dryRun = false): Promise<RunWorkflowResult> => {
-    if (hasBackend()) return call("workflows/run_workflow", { workflowId, requestId, dryRun });
+  // Run now. `requestId` makes a double click one run. A dry run may be
+  // tried on a past event from `previewWorkflowTrigger`.
+  runWorkflow: async (workflowId: string, requestId: string, dryRun = false, event: WorkflowEventSample | null = null): Promise<RunWorkflowResult> => {
+    if (hasBackend()) return call("workflows/run_workflow", event ? { workflowId, requestId, dryRun, event } : { workflowId, requestId, dryRun });
     return mockWorkflowApi.run(workflowId, requestId, dryRun);
+  },
+  // What an event trigger would have done in the last week.
+  previewWorkflowTrigger: async (trigger: WorkflowTrigger): Promise<WorkflowTriggerPreview> => {
+    if (hasBackend()) return call("workflows/preview_workflow_trigger", { trigger });
+    return mockTriggerPreview(trigger);
+  },
+  listWorkflowTemplates: async (): Promise<WorkflowTemplateList> => {
+    if (hasBackend()) return call("workflows/list_workflow_templates");
+    return { templates: mockTemplates() };
+  },
+  // Ask Claude afresh which connectors it has, for the editor's Refresh.
+  refreshWorkflowConnectors: async (): Promise<WorkflowOptions> => {
+    if (hasBackend()) return call("workflows/refresh_workflow_connectors");
+    return structuredClone(mockWorkflowOptions);
   },
   cancelWorkflowRun: async (runId: string): Promise<WorkflowRunSnapshot> => {
     if (hasBackend()) return call("workflows/cancel_workflow_run", { runId });
@@ -2445,6 +2501,7 @@ export const bridgeApi = {
   writeWorkflowSettings: async (settings: WorkflowSettings): Promise<WorkflowSettingsSnapshot> => {
     if (hasBackend()) return call("workflows/write_workflow_settings", { settings });
     if (settings.quotaReservePercent < 0 || settings.quotaReservePercent > 90) throw new Error("The quota reserve is between 0 and 90 percent");
+    if ((settings.maxConcurrentRuns ?? 2) < 1 || (settings.maxConcurrentRuns ?? 2) > 5) throw new Error("Between 1 and 5 workflows can run at once");
     mockWorkflowSettings = { configured: true, settings: { ...settings } };
     return structuredClone(mockWorkflowSettings);
   },

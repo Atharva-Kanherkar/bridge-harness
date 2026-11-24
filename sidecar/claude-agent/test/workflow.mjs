@@ -1,12 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { makeWorkflowGate, briefingOptions } from "../briefing.mjs";
+import { makeWorkflowGate, briefingOptions, connectorsToAwait } from "../briefing.mjs";
 import { createAskRelay } from "../ask.mjs";
 import { buildOptions, WORKFLOW_ESCAPE_TOOLS } from "../options.mjs";
-import { settleWorkflowConnectors } from "../workflow-connectors.mjs";
+import { allConnected, connectorUnavailableFrame, settleWorkflowConnectors } from "../workflow-connectors.mjs";
 import { connectorStatus, permissionDecision, query } from "../../../testing/fixtures/workflow-e2e/fake-sdk.mjs";
 import { withChildPermissions, childPermissions } from "../subagents.mjs";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -287,4 +290,90 @@ test("workflow budgets reach the SDK and ordinary chats have no query ceilings",
   const ordinary = buildOptions({ writeMode: "Isolated" });
   assert.equal(ordinary.maxBudgetUsd, undefined);
   assert.equal(ordinary.maxTurns, undefined);
+});
+
+test("which launches wait for account connectors, and for which", () => {
+  assert.deepEqual(connectorsToAwait({ workflow: { servers } }), { granted: ["claude.ai Slack", "claude.ai Linear"], waitFor: ["claude.ai Slack", "claude.ai Linear"] });
+  assert.deepEqual(connectorsToAwait({ workflow: { servers, worktree: true } }).waitFor, [], "a worktree job reaches no connector");
+  const ingress = { nativeConnectors: true, allowedServers: ["claude.ai Slack"], readScopeServers: ["claude.ai Slack"] };
+  assert.deepEqual(connectorsToAwait(ingress), { granted: ["claude.ai Slack"], waitFor: ["claude.ai Slack"] });
+  assert.deepEqual(connectorsToAwait({ ...ingress, nativeConnectors: false }).waitFor, [], "an explicit copy is not waited for");
+  assert.deepEqual(connectorsToAwait({ ...ingress, directCall: true, exactAction: { tool: "t", arguments: {} } }).waitFor, [], "a direct call sends no turn");
+  assert.deepEqual(connectorsToAwait({ nativeConnectors: true, readScopeServers: ["Local Echo"] }).waitFor, [], "only account connectors load natively");
+  assert.deepEqual(connectorsToAwait(null).waitFor, []);
+});
+
+test("an unconnected connector becomes an error frame naming it and its state", () => {
+  const statuses = [{ name: "claude.ai Slack", status: "needs-auth" }, { name: "claude.ai Linear", status: "connected" }];
+  assert.equal(allConnected(["claude.ai Linear"], statuses), true);
+  assert.equal(allConnected(["claude.ai Slack", "claude.ai Linear"], statuses), false);
+  assert.equal(allConnected(["claude.ai Gmail"], statuses), false, "a connector that never loaded is not connected");
+  const frame = connectorUnavailableFrame(["claude.ai Slack", "claude.ai Linear", "claude.ai Gmail"], statuses, "s1");
+  assert.equal(frame.type, "result");
+  assert.equal(frame.subtype, "error_connector_unavailable");
+  assert.equal(frame.is_error, true);
+  assert.equal(frame.session_id, "s1");
+  assert.match(frame.result, /claude\.ai Slack \(needs-auth\)/);
+  assert.match(frame.result, /claude\.ai Gmail \(not loaded\)/);
+  assert.doesNotMatch(frame.result, /Linear/, "a connected one is not blamed");
+});
+
+test("an ephemeral briefing writes no transcript; nothing else changes", () => {
+  assert.equal(buildOptions({ briefing: { allowedTools: [], ephemeral: true } }).persistSession, false);
+  assert.equal(buildOptions({ briefing: { allowedTools: [] } }).persistSession, undefined);
+  assert.equal(buildOptions({ writeMode: "Isolated", ephemeral: true }).persistSession, undefined, "a chat is never ephemeral");
+});
+
+/** Spawn the real sidecar over the fake SDK; return its frames once a result arrives. */
+async function runSidecar(config, env = {}) {
+  const here = fileURLToPath(new URL(".", import.meta.url));
+  const child = spawn(process.execPath, [join(here, "../index.mjs"), JSON.stringify(config)], {
+    stdio: ["pipe", "pipe", "inherit"],
+    env: { ...process.env, BRIDGE_CLAUDE_SDK_ENTRY: join(here, "../../../testing/fixtures/workflow-e2e/fake-sdk.mjs"), ...env },
+  });
+  const frames = [];
+  const done = new Promise((resolve) => {
+    createInterface({ input: child.stdout }).on("line", (line) => {
+      try { frames.push(JSON.parse(line)); } catch { return; }
+      if (frames.at(-1).type === "result") resolve();
+    });
+    child.on("exit", resolve);
+  });
+  child.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: "Find what is new." }] } }) + "\n");
+  const timer = setTimeout(() => child.kill("SIGKILL"), 20_000);
+  await done;
+  clearTimeout(timer);
+  child.kill("SIGKILL");
+  return frames;
+}
+
+const ingressConfig = {
+  sessionId: "ingress-1", model: "haiku", cwd: tmpdir(),
+  mcpServers: {},
+  briefing: { allowedTools: [], allowedServers: ["claude.ai Slack"], readScopeServers: ["claude.ai Slack"], nativeConnectors: true, ephemeral: true, deniedBuiltins: [], maxArgumentBytes: 8192 },
+};
+
+test("a native briefing whose connector is signed out ends with an error frame and sends no turn", async () => {
+  const frames = await runSidecar(ingressConfig, { FAKE_SDK_SIGNED_OUT: "claude.ai Slack" });
+  const result = frames.find((frame) => frame.type === "result");
+  assert.equal(result?.subtype, "error_connector_unavailable", JSON.stringify(frames));
+  assert.match(result.result, /claude\.ai Slack \(needs-auth\)/);
+  assert.equal(frames.filter((frame) => frame.type === "assistant").length, 0, "no model turn ran");
+});
+
+test("a native briefing whose connector connects runs its turn", async () => {
+  const frames = await runSidecar(ingressConfig);
+  const result = frames.find((frame) => frame.type === "result");
+  assert.equal(result?.subtype, "success", JSON.stringify(frames));
+  assert.ok(frames.some((frame) => frame.type === "assistant"));
+});
+
+test("any briefing's turn and cost ceilings reach the SDK; a chat gets none", () => {
+  const ingress = buildOptions({ briefing: { allowedTools: [], budget: { maxTurns: 6, costCeilingMicrousd: 20_000 } } });
+  assert.equal(ingress.maxTurns, 6);
+  assert.equal(ingress.maxBudgetUsd, 0.02);
+  const workflow = buildOptions({ briefing: { workflow: { servers: [], budget: { maxTurns: 3 } }, budget: { maxTurns: 99 } } });
+  assert.equal(workflow.maxTurns, 3, "a workflow's own budget wins");
+  const chat = buildOptions({ writeMode: "Isolated", budget: { maxTurns: 1 } });
+  assert.equal(chat.maxTurns, undefined);
 });

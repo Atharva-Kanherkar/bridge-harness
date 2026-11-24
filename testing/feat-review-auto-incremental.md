@@ -169,10 +169,10 @@ Tests added for this review:
 
 ## Review on 56e69161 (amended before the fixes)
 
-- **Legacy posted rows.** Migration 92 also fills `posted_head_sha` for posted jobs that are
+- **Legacy posted rows.** Migration 93 also fills `posted_head_sha` for posted jobs that are
   not retries (only a retry can reconcile another attempt's review). A posted retry from before
   it stays unknown, and a re-review whose last posted review is unknown runs as a full review.
-- **The host is part of a PR's identity.** `review_jobs.repo_host` (migration 92), set from
+- **The host is part of a PR's identity.** `review_jobs.repo_host` (migration 93), set from
   the PR head lookup; every history query and the fix-mark guard match host, owner, name and
   number. A row from before it (no host) matches nothing.
 - **Only live workspaces are watched.** An archived workspace leaves the watch at once (its

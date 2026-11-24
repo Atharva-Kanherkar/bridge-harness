@@ -74,11 +74,20 @@ fn enum_from<T: for<'de> Deserialize<'de>>(text: String) -> rusqlite::Result<T> 
 struct StoredSettings {
     paused: bool,
     quota_reserve_percent: i64,
+    #[serde(default = "default_max_concurrent_runs")]
+    max_concurrent_runs: i64,
     /// When Workflows were last unpaused: a schedule anchor, so the paused
     /// stretch is never caught up.
     #[serde(default)]
     resumed_at: Option<String>,
 }
+
+fn default_max_concurrent_runs() -> i64 {
+    wire::DEFAULT_MAX_CONCURRENT_RUNS
+}
+
+/// The most runs that may work at once.
+pub const MAX_CONCURRENT_RUNS: i64 = 5;
 
 fn stored_settings(db: &Connection) -> Result<Option<StoredSettings>, BridgeError> {
     let payload: Option<String> = db
@@ -94,14 +103,18 @@ fn stored_settings(db: &Connection) -> Result<Option<StoredSettings>, BridgeErro
 }
 
 pub fn default_settings() -> wire::WorkflowSettings {
-    wire::WorkflowSettings { paused: false, quota_reserve_percent: DEFAULT_QUOTA_RESERVE_PERCENT }
+    wire::WorkflowSettings { paused: false, quota_reserve_percent: DEFAULT_QUOTA_RESERVE_PERCENT, max_concurrent_runs: wire::DEFAULT_MAX_CONCURRENT_RUNS }
 }
 
 pub fn read_settings(db: &Connection) -> Result<wire::WorkflowSettingsSnapshot, BridgeError> {
     Ok(match stored_settings(db)? {
         Some(stored) => wire::WorkflowSettingsSnapshot {
             configured: true,
-            settings: wire::WorkflowSettings { paused: stored.paused, quota_reserve_percent: stored.quota_reserve_percent },
+            settings: wire::WorkflowSettings {
+                paused: stored.paused,
+                quota_reserve_percent: stored.quota_reserve_percent,
+                max_concurrent_runs: stored.max_concurrent_runs,
+            },
         },
         None => wire::WorkflowSettingsSnapshot { configured: false, settings: default_settings() },
     })
@@ -117,6 +130,9 @@ pub fn write_settings(
             "The quota reserve is between 0 and {MAX_QUOTA_RESERVE_PERCENT} percent"
         )));
     }
+    if !(1..=MAX_CONCURRENT_RUNS).contains(&settings.max_concurrent_runs) {
+        return Err(BridgeError::Invalid(format!("Between 1 and {MAX_CONCURRENT_RUNS} workflows can run at once")));
+    }
     let previous = stored_settings(db)?;
     let was_paused = previous.as_ref().is_some_and(|stored| stored.paused);
     let resumed_at = if was_paused && !settings.paused {
@@ -124,7 +140,12 @@ pub fn write_settings(
     } else {
         previous.and_then(|stored| stored.resumed_at)
     };
-    let stored = StoredSettings { paused: settings.paused, quota_reserve_percent: settings.quota_reserve_percent, resumed_at };
+    let stored = StoredSettings {
+        paused: settings.paused,
+        quota_reserve_percent: settings.quota_reserve_percent,
+        max_concurrent_runs: settings.max_concurrent_runs,
+        resumed_at,
+    };
     let payload = serde_json::to_string(&stored).map_err(|error| BridgeError::Invalid(error.to_string()))?;
     db.execute(
         "INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES(?1,?2,?3,?4,?4)
@@ -134,7 +155,7 @@ pub fn write_settings(
     read_settings(db)
 }
 
-fn paused(db: &Connection) -> Result<bool, BridgeError> {
+pub(crate) fn paused(db: &Connection) -> Result<bool, BridgeError> {
     Ok(stored_settings(db)?.is_some_and(|stored| stored.paused))
 }
 
@@ -142,7 +163,7 @@ fn paused(db: &Connection) -> Result<bool, BridgeError> {
 
 const SELECT_RUN: &str = "SELECT id, workflow_id, revision_id, trigger_kind, missed_slots, dry_run, status,
         failure_code, summary, session_id, quota_unknown, cost_microusd, tokens, unread, scheduled_for,
-        started_at, finished_at, created_at
+        started_at, finished_at, created_at, trigger_event
      FROM workflow_runs";
 
 fn read_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<wire::WorkflowRun> {
@@ -165,7 +186,26 @@ fn read_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<wire::WorkflowRun> {
         started_at: row.get(15)?,
         finished_at: row.get(16)?,
         created_at: row.get(17)?,
+        event: None,
+        event_count: 0,
     })
+    .map(|mut run| {
+        let events = carried_events(row.get::<_, Option<String>>(18).ok().flatten().as_deref());
+        run.event_count = events.len() as i64;
+        run.event = events.into_iter().next();
+        run
+    })
+}
+
+/// The events a run carries, from its `trigger_event` column. Unreadable is none.
+pub fn carried_events(text: Option<&str>) -> Vec<wire::WorkflowEventSample> {
+    text.and_then(|text| serde_json::from_str(text).ok()).unwrap_or_default()
+}
+
+/// Every event a run carries, for its first turn.
+pub fn run_events(db: &Connection, run_id: &str) -> Result<Vec<wire::WorkflowEventSample>, BridgeError> {
+    let text: Option<String> = db.query_row("SELECT trigger_event FROM workflow_runs WHERE id=?1", params![run_id], |row| row.get(0))?;
+    Ok(carried_events(text.as_deref()))
 }
 
 pub fn get_run(db: &Connection, run_id: &str) -> Result<Option<wire::WorkflowRun>, BridgeError> {
@@ -187,7 +227,7 @@ pub fn latest_run(db: &Connection, workflow_id: &str) -> Result<Option<wire::Wor
         .optional()?)
 }
 
-fn active_run(db: &Connection, workflow_id: &str) -> Result<Option<wire::WorkflowRun>, BridgeError> {
+pub(crate) fn active_run(db: &Connection, workflow_id: &str) -> Result<Option<wire::WorkflowRun>, BridgeError> {
     Ok(db
         .query_row(&format!("{SELECT_RUN} WHERE workflow_id=?1 AND status IN {ACTIVE}"), params![workflow_id], read_run)
         .optional()?)
@@ -223,6 +263,9 @@ pub struct Occasion {
     pub key: String,
     pub scheduled_for: Option<DateTime<Utc>>,
     pub missed_slots: i64,
+    /// The events this occasion carries into its run (event triggers, or a
+    /// dry run tried on a past event).
+    pub events: Vec<wire::WorkflowEventSample>,
 }
 
 impl Occasion {
@@ -232,13 +275,31 @@ impl Occasion {
             key: format!("manual:{workflow_id}:{request_id}"),
             scheduled_for: None,
             missed_slots: 0,
+            events: Vec::new(),
+        }
+    }
+
+    /// One event. Its key is the event's own, so it runs once.
+    pub fn event(workflow_id: &str, events: Vec<wire::WorkflowEventSample>) -> Self {
+        let key = events.first().map(|event| event.key.clone()).unwrap_or_default();
+        Self { kind: wire::WorkflowTriggerKind::Event, key: format!("event:{workflow_id}:{key}"), scheduled_for: None, missed_slots: 0, events }
+    }
+
+    /// The events collected for one slot of a batch schedule.
+    pub fn batch(workflow_id: &str, slot: DateTime<Utc>, events: Vec<wire::WorkflowEventSample>) -> Self {
+        Self {
+            kind: wire::WorkflowTriggerKind::Event,
+            key: format!("batch:{workflow_id}:{}", stamp(slot)),
+            scheduled_for: Some(slot),
+            missed_slots: 0,
+            events,
         }
     }
 
     /// A schedule slot. Schedule and catch-up share one key per slot, so a slot
     /// is never run twice under two names.
     pub fn slot(workflow_id: &str, slot: DateTime<Utc>, kind: wire::WorkflowTriggerKind, missed_slots: i64) -> Self {
-        Self { kind, key: format!("schedule:{workflow_id}:{}", stamp(slot)), scheduled_for: Some(slot), missed_slots }
+        Self { kind, key: format!("schedule:{workflow_id}:{}", stamp(slot)), scheduled_for: Some(slot), missed_slots, events: Vec::new() }
     }
 }
 
@@ -317,7 +378,9 @@ fn claim_in(
     }
 
     if let Some(active) = active_run(db, workflow_id)? {
-        if manual {
+        // Run now gets the active run back; an event waits for it to finish.
+        // Only a schedule slot is recorded as skipped.
+        if manual || occasion.kind == wire::WorkflowTriggerKind::Event {
             return Ok(ClaimOutcome::Overlap { active, skipped: None });
         }
         let id = Uuid::new_v4().to_string();
@@ -341,10 +404,14 @@ fn claim_in(
 
     let id = Uuid::new_v4().to_string();
     let lease_owner = Uuid::new_v4().to_string();
+    let events = (!occasion.events.is_empty())
+        .then(|| serde_json::to_string(&occasion.events))
+        .transpose()
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
     db.execute(
         "INSERT INTO workflow_runs(id,workflow_id,revision_id,trigger_kind,occasion,idempotency_key,missed_slots,
-            dry_run,status,lease_owner,lease_expires_at,scheduled_for,created_at)
-         VALUES(?1,?2,?3,?4,?5,?5,?6,?7,'queued',?8,?9,?10,?11)",
+            dry_run,status,lease_owner,lease_expires_at,scheduled_for,created_at,trigger_event)
+         VALUES(?1,?2,?3,?4,?5,?5,?6,?7,'queued',?8,?9,?10,?11,?12)",
         params![
             id,
             workflow_id,
@@ -357,8 +424,14 @@ fn claim_in(
             stamp(now + Duration::minutes(LEASE_MINUTES)),
             occasion.scheduled_for.map(stamp),
             stamp(now),
+            events,
         ],
     )?;
+    // Only an event occasion delivers its events. A dry run tried on a past
+    // event carries a copy: the real event stays waiting for its own run (R6).
+    if occasion.kind == wire::WorkflowTriggerKind::Event {
+        crate::workflow_events::mark_claimed(db, workflow_id, &occasion.events, &id)?;
+    }
     Ok(ClaimOutcome::Claimed(ClaimedRun { run: require_run(db, &id)?, lease_owner, quota_verdict: None }))
 }
 
@@ -584,6 +657,123 @@ pub fn unpark_waiting(db: &Connection, now: DateTime<Utc>) -> Result<Vec<Claimed
     Ok(claimed)
 }
 
+// --- the queue -------------------------------------------------------------------
+
+/// The configured cap, falling back to the default on an unreadable setting.
+pub fn max_concurrent_runs(db: &Connection) -> i64 {
+    read_settings(db)
+        .map(|snapshot| snapshot.settings.max_concurrent_runs)
+        .unwrap_or(wire::DEFAULT_MAX_CONCURRENT_RUNS)
+        .clamp(1, MAX_CONCURRENT_RUNS)
+}
+
+/// Runs working right now. A run waiting for a person's answer holds no slot:
+/// approvals can take hours and must not stall every other workflow.
+pub fn running_count(db: &Connection) -> Result<i64, BridgeError> {
+    // A run waiting for an approval keeps its slot: the answer resumes its
+    // agent at once, with no chance to wait for a free slot first (R2).
+    Ok(db.query_row("SELECT COUNT(*) FROM workflow_runs WHERE status IN ('running','waiting_approval')", [], |row| row.get(0))?)
+}
+
+/// What [`reserve_slot`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Slot {
+    /// The run is now `running` and holds a slot.
+    Reserved,
+    /// Every slot is taken: the run waits as `queued`, holding no lease.
+    Queued,
+    /// The lease is gone (cancelled, deleted, reclaimed).
+    Lost,
+}
+
+/// Take a slot for a held run, or wait in line for one. The count and the move
+/// to `running` happen under the caller's store lock, so concurrent runners
+/// can never pass the cap together.
+pub fn reserve_slot(db: &Connection, run_id: &str, lease_owner: &str, now: DateTime<Utc>) -> Result<Slot, BridgeError> {
+    if !holds(db, run_id, lease_owner)? {
+        return Ok(Slot::Lost);
+    }
+    // First in, first out: a run claimed later never takes a slot ahead of
+    // one already waiting in line.
+    let older_waiting: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM workflow_runs w, workflow_runs me
+          WHERE me.id=?1 AND w.status='queued' AND w.id<>me.id
+            AND (w.created_at < me.created_at OR (w.created_at = me.created_at AND w.rowid < me.rowid)))",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    if older_waiting || running_count(db)? >= max_concurrent_runs(db) {
+        let parked = db.execute(
+            &format!(
+                "UPDATE workflow_runs SET status='queued', lease_owner=NULL, lease_expires_at=NULL
+                 WHERE id=?1 AND lease_owner=?2 AND status IN {ACTIVE}"
+            ),
+            params![run_id, lease_owner],
+        )?;
+        return Ok(if parked == 1 { Slot::Queued } else { Slot::Lost });
+    }
+    Ok(if transition(db, run_id, lease_owner, wire::WorkflowRunStatus::Running, None, now)? { Slot::Reserved } else { Slot::Lost })
+}
+
+/// Lease the oldest runs waiting in line, as many as there are free slots.
+pub fn unpark_queued(db: &Connection, now: DateTime<Utc>) -> Result<Vec<ClaimedRun>, BridgeError> {
+    if paused(db)? {
+        return Ok(Vec::new());
+    }
+    // A run already leased from the line is on its way to a slot: count it, or
+    // a newer run would be dispatched behind it, wait, and be dispatched again.
+    let starting: i64 = db.query_row(
+        "SELECT COUNT(*) FROM workflow_runs WHERE status='queued' AND lease_owner IS NOT NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    let free = (max_concurrent_runs(db) - running_count(db)? - starting).max(0);
+    if free == 0 {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<String> = db
+        .prepare("SELECT r.id FROM workflow_runs r JOIN workflows w ON w.id=r.workflow_id
+                  WHERE r.status='queued' AND r.lease_owner IS NULL
+                    AND w.enabled=1 AND w.disabled_reason IS NULL ORDER BY r.created_at, r.rowid LIMIT ?1")?
+        .query_map(params![free], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    let mut claimed = Vec::new();
+    for id in ids {
+        let lease_owner = Uuid::new_v4().to_string();
+        let changed = db.execute(
+            "UPDATE workflow_runs SET lease_owner=?2, lease_expires_at=?3
+             WHERE id=?1 AND status='queued' AND lease_owner IS NULL",
+            params![id, lease_owner, stamp(now + Duration::minutes(LEASE_MINUTES))],
+        )?;
+        if changed == 1 {
+            claimed.push(ClaimedRun { run: require_run(db, &id)?, lease_owner, quota_verdict: None });
+        }
+    }
+    Ok(claimed)
+}
+
+/// Start the runs waiting in line for any slot that is free now. Called when
+/// a run takes, leaves or gives up a slot, so the next in line starts at once
+/// rather than at the next maintenance tick.
+pub fn fill_slots(core: &Arc<BridgeCore>) {
+    let claimed = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        unpark_queued(&db, Utc::now()).unwrap_or_default()
+    };
+    for run in claimed {
+        dispatch(core.clone(), run);
+    }
+}
+
+/// Where each run waiting in line stands, first in line first.
+pub fn queue_positions(db: &Connection) -> Result<Vec<String>, BridgeError> {
+    let ids: Vec<String> = db
+        .prepare("SELECT id FROM workflow_runs WHERE status='queued' ORDER BY created_at, rowid")?
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    Ok(ids)
+}
+
 /// Cancel an active run. A queued or waiting run settles now; a running run's
 /// holder learns on its next heartbeat, which fails because the lease is gone.
 pub fn cancel(db: &Connection, run_id: &str, now: DateTime<Utc>) -> Result<wire::WorkflowRun, BridgeError> {
@@ -619,7 +809,8 @@ pub fn cancel_active(db: &Connection, workflow_id: &str, now: DateTime<Utc>) -> 
 pub(crate) fn cancel_disabled_waiting(db: &Connection, workflow_id: Option<&str>, now: DateTime<Utc>) -> Result<Vec<String>, BridgeError> {
     let waiting = db.prepare(
         "SELECT r.id,w.disabled_reason FROM workflow_runs r JOIN workflows w ON w.id=r.workflow_id
-         WHERE r.status='waiting_quota' AND (w.enabled=0 OR w.disabled_reason IS NOT NULL)
+         WHERE (r.status='waiting_quota' OR (r.status='queued' AND r.lease_owner IS NULL))
+           AND (w.enabled=0 OR w.disabled_reason IS NOT NULL)
            AND (?1 IS NULL OR w.id=?1)"
     )?.query_map(params![workflow_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)))?
         .collect::<Result<Vec<_>, _>>()?;
@@ -640,14 +831,22 @@ pub(crate) fn cancel_disabled_waiting(db: &Connection, workflow_id: Option<&str>
 // --- schedule ---------------------------------------------------------------------
 
 /// The latest instant a schedule counts slots from (F13a).
-fn anchor(db: &Connection, workflow: &wire::Workflow) -> Result<DateTime<Utc>, BridgeError> {
+pub(crate) fn anchor(db: &Connection, workflow: &wire::Workflow) -> Result<DateTime<Utc>, BridgeError> {
     let last_slot: Option<String> = db.query_row(
         "SELECT MAX(scheduled_for) FROM workflow_runs WHERE workflow_id=?1 AND scheduled_for IS NOT NULL",
         params![workflow.id],
         |row| row.get(0),
     )?;
+    let listener = listener_anchor(db, workflow)?;
+    Ok(last_slot.as_deref().and_then(parse_instant).map_or(listener, |slot| slot.max(listener)))
+}
+
+/// When the workflow's current listener began: its approval, its last change
+/// (a save, turning it on or off), or Workflows resuming. A run's slot does
+/// not move it, so a batch's overflow still waits for the next slot.
+pub(crate) fn listener_anchor(db: &Connection, workflow: &wire::Workflow) -> Result<DateTime<Utc>, BridgeError> {
     let resumed = stored_settings(db)?.and_then(|stored| stored.resumed_at);
-    Ok([last_slot.as_deref(), workflow.approved_at.as_deref(), Some(workflow.updated_at.as_str()), resumed.as_deref()]
+    Ok([workflow.approved_at.as_deref(), Some(workflow.updated_at.as_str()), resumed.as_deref()]
         .into_iter()
         .flatten()
         .filter_map(parse_instant)
@@ -658,7 +857,9 @@ fn anchor(db: &Connection, workflow: &wire::Workflow) -> Result<DateTime<Utc>, B
 fn schedule_of(workflow: &wire::Workflow) -> Option<Schedule> {
     match &workflow.definition.trigger {
         wire::WorkflowTrigger::Schedule { cron, timezone } => Schedule::parse(cron, timezone).ok(),
-        wire::WorkflowTrigger::Manual => None,
+        // An event trigger's batch schedule is read by `workflow_events`:
+        // its slots run only when events are waiting.
+        wire::WorkflowTrigger::Manual | wire::WorkflowTrigger::Event { .. } => None,
     }
 }
 
@@ -753,7 +954,10 @@ fn tick_with_provider_snapshots(
         // A quota recheck owns a lease, but remains visibly waiting until
         // the runner actually starts a session.
         claimed.extend(unpark_waiting(&db, now)?);
-        for (workflow_id, occasion) in due_occasions(&db, now)? {
+        claimed.extend(unpark_queued(&db, now)?);
+        let mut occasions = due_occasions(&db, now)?;
+        occasions.extend(crate::workflow_events::due_occasions(&db, now)?);
+        for (workflow_id, occasion) in occasions {
             match claim(&db, &workflow_id, &occasion, false, now)? {
                 ClaimOutcome::Claimed(run) => {
                     changed_runs.push(run.run.id.clone());
@@ -825,6 +1029,13 @@ pub fn start_workflow_maintenance(core: Arc<BridgeCore>) {
             if let Err(error) = settle_after_boot(&core, Utc::now()) {
                 eprintln!("[bridge] workflow boot settlement failed: {error}");
             }
+            // The first workflow save or list should not wait for `mcp list`.
+            let any = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                .query_row("SELECT EXISTS(SELECT 1 FROM workflows)", [], |row| row.get::<_, bool>(0))
+                .unwrap_or(false);
+            if any {
+                crate::marketplace::warm_connectors();
+            }
             maintenance_loop(core)
         })
         .expect("spawn workflow maintenance thread");
@@ -842,6 +1053,10 @@ fn maintenance_loop(core: Arc<BridgeCore>) {
 fn maintenance_pass(core: &Arc<BridgeCore>, now: DateTime<Utc>) -> bool {
     if core.is_retired() {
         return false;
+    }
+    // `gh` runs with the store unlocked; what it finds is claimed by the tick.
+    if let Err(error) = crate::workflow_events::poll_github(core, &crate::workflow_events::SystemGh, now) {
+        eprintln!("[bridge] workflow GitHub events failed: {error}");
     }
     match tick(core, now) {
         Ok(claimed) => {
@@ -1029,9 +1244,9 @@ mod tests {
         assert!(due_occasions(&db, at("2026-10-29T13:00:00Z")).unwrap().is_empty());
 
         // Unpausing is an anchor too.
-        write_settings(&db, wire::WorkflowSettings { paused: true, quota_reserve_percent: 25 }, at("2026-10-29T13:00:00Z")).unwrap();
+        write_settings(&db, wire::WorkflowSettings { paused: true, quota_reserve_percent: 25, max_concurrent_runs: 2 }, at("2026-10-29T13:00:00Z")).unwrap();
         assert!(due_occasions(&db, at("2026-10-30T10:00:00Z")).unwrap().is_empty(), "nothing is due while paused");
-        write_settings(&db, wire::WorkflowSettings { paused: false, quota_reserve_percent: 25 }, at("2026-10-31T12:00:00Z")).unwrap();
+        write_settings(&db, wire::WorkflowSettings { paused: false, quota_reserve_percent: 25, max_concurrent_runs: 2 }, at("2026-10-31T12:00:00Z")).unwrap();
         assert!(due_occasions(&db, at("2026-10-31T13:00:00Z")).unwrap().is_empty());
         assert_eq!(due_occasions(&db, at("2026-11-01T09:01:00Z")).unwrap().len(), 1);
     }
@@ -1042,9 +1257,9 @@ mod tests {
         let now = at("2026-10-29T10:00:00Z");
         let workflow = approved(&db, dir.path(), "2026-10-26T00:00:00Z", "0 9 * * *");
 
-        write_settings(&db, wire::WorkflowSettings { paused: true, quota_reserve_percent: 25 }, now).unwrap();
+        write_settings(&db, wire::WorkflowSettings { paused: true, quota_reserve_percent: 25, max_concurrent_runs: 2 }, now).unwrap();
         assert!(matches!(claim(&db, &workflow.id, &Occasion::manual(&workflow.id, "a"), false, now).unwrap(), ClaimOutcome::Refused(reason) if reason.contains("paused")));
-        write_settings(&db, wire::WorkflowSettings { paused: false, quota_reserve_percent: 25 }, now).unwrap();
+        write_settings(&db, wire::WorkflowSettings { paused: false, quota_reserve_percent: 25, max_concurrent_runs: 2 }, now).unwrap();
 
         workflows::set_enabled(&db, &workflow.id, false).unwrap();
         assert!(matches!(claim(&db, &workflow.id, &Occasion::manual(&workflow.id, "b"), false, now).unwrap(), ClaimOutcome::Refused(reason) if reason.contains("turned off")));
@@ -1152,11 +1367,11 @@ mod tests {
         let fresh = read_settings(&db).unwrap();
         assert!(!fresh.configured);
         assert_eq!(fresh.settings.quota_reserve_percent, DEFAULT_QUOTA_RESERVE_PERCENT);
-        let written = write_settings(&db, wire::WorkflowSettings { paused: true, quota_reserve_percent: 40 }, now).unwrap();
+        let written = write_settings(&db, wire::WorkflowSettings { paused: true, quota_reserve_percent: 40, max_concurrent_runs: 2 }, now).unwrap();
         assert!(written.configured);
-        assert_eq!(written.settings, wire::WorkflowSettings { paused: true, quota_reserve_percent: 40 });
+        assert_eq!(written.settings, wire::WorkflowSettings { paused: true, quota_reserve_percent: 40, max_concurrent_runs: 2 });
         for bad in [-1, 91] {
-            assert!(write_settings(&db, wire::WorkflowSettings { paused: false, quota_reserve_percent: bad }, now).is_err());
+            assert!(write_settings(&db, wire::WorkflowSettings { paused: false, quota_reserve_percent: bad, max_concurrent_runs: 2 }, now).is_err());
         }
     }
 
@@ -1448,6 +1663,168 @@ mod tests {
         assert!(list_runs(&core.db.lock().unwrap(), Some(&workflow.id), false, 10).unwrap().is_empty(), "the next owner claims it, not this core");
     }
 
+    fn cap(db: &Connection, runs: i64) {
+        write_settings(db, wire::WorkflowSettings { paused: false, quota_reserve_percent: 25, max_concurrent_runs: runs }, Utc::now()).unwrap();
+    }
+
+    fn lease_of(db: &Connection, run_id: &str) -> Option<String> {
+        db.query_row("SELECT lease_owner FROM workflow_runs WHERE id=?1", params![run_id], |row| row.get(0)).unwrap()
+    }
+
+    #[test]
+    fn the_queue_holds_the_cap_and_starts_the_oldest_waiting_run_first() {
+        let (dir, core) = test_support::core();
+        let now = Utc::now();
+        let [first, second, third] = ["one", "two", "three"].map(|name| manual_run(&core, dir.path(), name, now));
+        let db = core.db.lock().unwrap();
+        cap(&db, 1);
+        assert_eq!(reserve_slot(&db, &first.run.id, &first.lease_owner, now).unwrap(), Slot::Reserved);
+        assert_eq!(reserve_slot(&db, &second.run.id, &second.lease_owner, now).unwrap(), Slot::Queued);
+        assert_eq!(reserve_slot(&db, &third.run.id, &third.lease_owner, now).unwrap(), Slot::Queued);
+        assert_eq!(running_count(&db).unwrap(), 1);
+        for waiting in [&second, &third] {
+            let run = require_run(&db, &waiting.run.id).unwrap();
+            assert_eq!(run.status, wire::WorkflowRunStatus::Queued);
+            assert!(lease_of(&db, &waiting.run.id).is_none(), "a run waiting in line holds no lease");
+        }
+        assert!(reclaim_expired(&db, now + Duration::hours(1)).unwrap() == vec![first.run.id.clone()], "only the running run's lease can expire");
+        assert!(unpark_queued(&db, now).unwrap().iter().map(|run| run.run.id.clone()).eq([second.run.id.clone()]), "one free slot, the oldest waiting run");
+        assert!(unpark_queued(&db, now).unwrap().is_empty(), "a run on its way to a slot counts against the free slots");
+        assert_eq!(queue_positions(&db).unwrap(), vec![second.run.id.clone(), third.run.id.clone()]);
+        assert_eq!(reserve_slot(&db, &first.run.id, &first.lease_owner, now).unwrap(), Slot::Lost, "a reclaimed run has no lease to reserve with");
+    }
+
+    #[test]
+    fn a_run_waiting_for_an_approval_keeps_its_slot() {
+        let (dir, core) = test_support::core();
+        let now = Utc::now();
+        let [waiting, other] = ["waiting", "other"].map(|name| manual_run(&core, dir.path(), name, now));
+        let db = core.db.lock().unwrap();
+        cap(&db, 1);
+        assert_eq!(reserve_slot(&db, &waiting.run.id, &waiting.lease_owner, now).unwrap(), Slot::Reserved);
+        assert!(transition(&db, &waiting.run.id, &waiting.lease_owner, wire::WorkflowRunStatus::WaitingApproval, None, now).unwrap());
+        assert_eq!(reserve_slot(&db, &other.run.id, &other.lease_owner, now).unwrap(), Slot::Queued, "the waiting run still holds the only slot");
+        assert!(unpark_queued(&db, now).unwrap().is_empty());
+        // The approval is answered: the agent resumes, and still only one runs.
+        assert!(transition(&db, &waiting.run.id, &waiting.lease_owner, wire::WorkflowRunStatus::Running, None, now).unwrap());
+        assert_eq!(running_count(&db).unwrap(), 1);
+        let running: i64 = db.query_row("SELECT COUNT(*) FROM workflow_runs WHERE status='running'", [], |row| row.get(0)).unwrap();
+        assert_eq!(running, 1);
+    }
+
+    #[test]
+    fn the_cap_lets_that_many_run_side_by_side() {
+        let (dir, core) = test_support::core();
+        let now = Utc::now();
+        let runs = ["a", "b", "c"].map(|name| manual_run(&core, dir.path(), name, now));
+        let db = core.db.lock().unwrap();
+        // No settings written: the default of two.
+        let slots: Vec<Slot> = runs.iter().map(|run| reserve_slot(&db, &run.run.id, &run.lease_owner, now).unwrap()).collect();
+        assert_eq!(slots, vec![Slot::Reserved, Slot::Reserved, Slot::Queued]);
+        assert_eq!(running_count(&db).unwrap(), 2);
+    }
+
+    #[test]
+    fn only_the_free_slots_are_filled_from_the_line() {
+        let (dir, core) = test_support::core();
+        let now = Utc::now();
+        let [running, older, newer] = ["running", "older", "newer"].map(|name| manual_run(&core, dir.path(), name, now));
+        let db = core.db.lock().unwrap();
+        cap(&db, 1);
+        assert_eq!(reserve_slot(&db, &running.run.id, &running.lease_owner, now).unwrap(), Slot::Reserved);
+        for waiting in [&older, &newer] {
+            assert_eq!(reserve_slot(&db, &waiting.run.id, &waiting.lease_owner, now).unwrap(), Slot::Queued);
+        }
+        // One run still holds a slot: raising the cap to two frees exactly one.
+        cap(&db, 2);
+        let out: Vec<String> = unpark_queued(&db, now).unwrap().into_iter().map(|run| run.run.id).collect();
+        assert_eq!(out, vec![older.run.id.clone()]);
+    }
+
+    #[test]
+    fn a_newer_run_never_takes_a_slot_ahead_of_an_older_one_waiting() {
+        let (dir, core) = test_support::core();
+        let now = Utc::now();
+        let older = manual_run(&core, dir.path(), "older", now);
+        let newer = manual_run(&core, dir.path(), "newer", now + Duration::seconds(1));
+        let db = core.db.lock().unwrap();
+        cap(&db, 2);
+        // The older run is in line (for whatever reason) and a slot is free.
+        db.execute("UPDATE workflow_runs SET lease_owner=NULL, lease_expires_at=NULL WHERE id=?1", params![older.run.id]).unwrap();
+        assert_eq!(reserve_slot(&db, &newer.run.id, &newer.lease_owner, now).unwrap(), Slot::Queued);
+        let back = unpark_queued(&db, now).unwrap();
+        assert_eq!(back[0].run.id, older.run.id, "the older run is first out of the line");
+        assert_eq!(reserve_slot(&db, &older.run.id, &back[0].lease_owner, now).unwrap(), Slot::Reserved);
+    }
+
+    #[test]
+    fn turning_a_workflow_off_cancels_its_runs_waiting_in_line() {
+        let (dir, core) = test_support::core();
+        let now = Utc::now();
+        let running = manual_run(&core, dir.path(), "running", now);
+        let waiting = manual_run(&core, dir.path(), "waiting", now);
+        {
+            let db = core.db.lock().unwrap();
+            cap(&db, 1);
+            assert_eq!(reserve_slot(&db, &running.run.id, &running.lease_owner, now).unwrap(), Slot::Reserved);
+            assert_eq!(reserve_slot(&db, &waiting.run.id, &waiting.lease_owner, now).unwrap(), Slot::Queued);
+        }
+        crate::api::set_workflow_enabled(&core, &wire::SetWorkflowEnabledParams { workflow_id: waiting.run.workflow_id.clone(), enabled: false }).unwrap();
+        let db = core.db.lock().unwrap();
+        let cancelled = require_run(&db, &waiting.run.id).unwrap();
+        assert_eq!(cancelled.status, wire::WorkflowRunStatus::Cancelled);
+        assert_eq!(cancelled.failure_code.as_deref(), Some("workflow_disabled"));
+        assert_eq!(require_run(&db, &running.run.id).unwrap().status, wire::WorkflowRunStatus::Running, "a running run of another workflow is left alone");
+    }
+
+    #[test]
+    fn the_concurrency_setting_is_one_to_five() {
+        let (_dir, db) = db();
+        for bad in [0, 6, -1] {
+            assert!(write_settings(&db, wire::WorkflowSettings { paused: false, quota_reserve_percent: 25, max_concurrent_runs: bad }, Utc::now()).is_err());
+        }
+        assert_eq!(read_settings(&db).unwrap().settings.max_concurrent_runs, wire::DEFAULT_MAX_CONCURRENT_RUNS);
+        // A payload written before the setting existed reads the default.
+        db.execute("INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES('workflows','settings','{\"paused\":false,\"quotaReservePercent\":30}','t','t')", []).unwrap();
+        assert_eq!(read_settings(&db).unwrap().settings.max_concurrent_runs, 2);
+        assert_eq!(read_settings(&db).unwrap().settings.quota_reserve_percent, 30);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig { cases: 64, ..proptest::prelude::ProptestConfig::default() })]
+
+        /// Whatever order runs reserve, finish and are unparked in, no more
+        /// than the cap are ever running, and a waiting run holds no lease.
+        #[test]
+        fn the_queue_never_exceeds_its_cap(limit in 1i64..=3, script in proptest::collection::vec((0u8..3, 0usize..5), 1..60)) {
+            let (dir, core) = test_support::core();
+            let now = Utc::now();
+            let mut held: Vec<ClaimedRun> = (0..5).map(|index| manual_run(&core, dir.path(), &format!("w{index}"), now + Duration::seconds(index as i64))).collect();
+            let db = core.db.lock().unwrap();
+            cap(&db, limit);
+            for (step, index) in script {
+                let run = held[index].clone();
+                match step {
+                    0 => { let _ = reserve_slot(&db, &run.run.id, &run.lease_owner, now).unwrap(); }
+                    1 => {
+                        if finish(&db, &run.run.id, &run.lease_owner, wire::WorkflowRunStatus::Succeeded, &Outcome::default(), now).unwrap() {
+                            let next = claimed(claim(&db, &run.run.workflow_id, &Occasion::manual(&run.run.workflow_id, &uuid::Uuid::new_v4().to_string()), false, now).unwrap());
+                            held[index] = next;
+                        }
+                    }
+                    _ => {
+                        for back in unpark_queued(&db, now).unwrap() {
+                            if let Some(slot) = held.iter_mut().find(|candidate| candidate.run.id == back.run.id) { *slot = back; }
+                        }
+                    }
+                }
+                proptest::prop_assert!(running_count(&db).unwrap() <= limit);
+                let unleased_running: i64 = db.query_row("SELECT COUNT(*) FROM workflow_runs WHERE status='running' AND lease_owner IS NULL", [], |row| row.get(0)).unwrap();
+                proptest::prop_assert_eq!(unleased_running, 0);
+            }
+        }
+    }
+
     #[test]
     fn paused_rechecks_and_crashed_quota_waits_keep_lease_safety() {
         let (dir, core) = test_support::core();
@@ -1455,7 +1832,7 @@ mod tests {
         let initial = manual_run(&core, dir.path(), "wait", now);
         let db = core.db.lock().unwrap();
         assert!(park(&db, &initial.run.id, &initial.lease_owner).unwrap());
-        write_settings(&db, wire::WorkflowSettings { paused: true, quota_reserve_percent: 25 }, now).unwrap();
+        write_settings(&db, wire::WorkflowSettings { paused: true, quota_reserve_percent: 25, max_concurrent_runs: 2 }, now).unwrap();
         assert!(unpark_waiting(&db, now).unwrap().is_empty());
         write_settings(&db, default_settings(), now).unwrap();
         let runs = unpark_waiting(&db, now).unwrap();

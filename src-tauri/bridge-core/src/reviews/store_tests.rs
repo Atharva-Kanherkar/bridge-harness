@@ -797,10 +797,10 @@ fn queue_order_does_not_decide_which_fix_marks_stand() {
     assert_eq!(findings(&db, &older.id).unwrap()[0].fixed_in_sha.as_deref(), Some("h2"), "git's order, not the queue's");
 }
 
-/// Run migration 92's backfill again over rows written as before it.
+/// Run migration 93's backfill again over rows written as before it.
 fn migrate_92(db: &Connection) {
     let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate).unwrap();
-    crate::store::migration_92_review_identity(&transaction).unwrap();
+    crate::store::migration_93_review_identity(&transaction).unwrap();
     transaction.commit().unwrap();
 }
 
@@ -809,7 +809,7 @@ fn legacy_posted_rows_give_a_base_only_when_their_commit_is_known() {
     let (_scratch, db) = open();
     let pr = PrKey { host: "github.com", owner: "octo", name: "repo", number: 7 };
     let (own, _) = insert(&db, &new_job(7, "h1", &["claude"]), at(0)).unwrap();
-    // Posted before the commit was recorded, as migration 92 leaves it.
+    // Posted before the commit was recorded, as migration 93 leaves it.
     db.execute(&format!("UPDATE review_jobs SET status='posted', finished_at='{}' WHERE id='{}'", stamp(at(1)), own.id), []).unwrap();
     assert_eq!(latest_posted_head(&db, pr).unwrap(), None, "unknown: a full review, never a guess");
     // What the migration fills in for a job that posted its own review.

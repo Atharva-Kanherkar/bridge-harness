@@ -100,6 +100,23 @@
       ],
       "type": "object"
     },
+    "WorkflowBatch": {
+      "additionalProperties": false,
+      "description": "Run collected events at each slot of a schedule.",
+      "properties": {
+        "cron": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cron",
+        "timezone"
+      ],
+      "type": "object"
+    },
     "WorkflowDefinition": {
       "additionalProperties": false,
       "description": "Everything a person edits. Stored whole on every revision.",
@@ -168,6 +185,53 @@
         "trigger"
       ],
       "type": "object"
+    },
+    "WorkflowEventKind": {
+      "description": "The events a workflow can start on.",
+      "oneOf": [
+        {
+          "description": "Someone @-mentioned the account owner in Slack.",
+          "enum": [
+            "slack_mention"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A Slack direct message to the account owner.",
+          "enum": [
+            "slack_direct_message"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A reply in a Slack thread the account owner is part of.",
+          "enum": [
+            "slack_thread_reply"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A pull request was opened in `repo`.",
+          "enum": [
+            "github_pull_request_opened"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "An issue was opened in `repo`.",
+          "enum": [
+            "github_issue_opened"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The person's review was requested on a pull request (in `repo`, if set).",
+          "enum": [
+            "github_review_requested"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "WorkflowFiles": {
       "description": "Which built-in file, shell and web tools a run gets.",
@@ -289,6 +353,58 @@
             "cron",
             "kind",
             "timezone"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Something happened in an app. Slack events come from the connector Inbox's ledger; GitHub events from `gh`. Neither costs a model turn.",
+          "properties": {
+            "batch": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/WorkflowBatch"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Collect events and run once at each slot of this schedule, instead of once per event."
+            },
+            "channel": {
+              "description": "Slack only: the channel's label must contain this, any case.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "event": {
+              "$ref": "#/definitions/WorkflowEventKind"
+            },
+            "from": {
+              "description": "Slack only: the author's name must contain this, any case.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "enum": [
+                "event"
+              ],
+              "type": "string"
+            },
+            "repo": {
+              "description": "`owner/name`. Needed by the GitHub pull-request and issue events, optional for review requests.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "event",
+            "kind"
           ],
           "type": "object"
         }

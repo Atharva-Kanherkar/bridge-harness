@@ -476,3 +476,39 @@ describe("imported subagents in the rail", () => {
   });
 });
 
+
+describe("sidebar trail button", () => {
+  const trail = {
+    id: "trail-1", title: "Archive a chat", state: "needsYou", stage: 3, harnesses: [{ harness: "codex", chats: 1 }],
+    sessionIds: ["plain"], memberCount: 3, needsYouReason: "vitest is failing on #12",
+    createdAt: "2026-11-20T00:00:00Z", updatedAt: "2026-11-20T00:00:00Z",
+  } as const;
+
+  it("shows a trail button only on chats on a trail, revealed with the row", () => {
+    mount({ trails: [{ ...trail, sessionIds: [...trail.sessionIds], harnesses: [...trail.harnesses] }], onOpenTrail: vi.fn() });
+    const buttons = [...container.querySelectorAll<HTMLButtonElement>("[data-sidebar-trail]")];
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].getAttribute("aria-label")).toBe("Trail: Archive a chat");
+    // It belongs to the "Japan relocation" row, not the other chat.
+    expect(buttons[0].closest(".group\\/row")?.textContent).toContain("Japan relocation");
+    // Hidden at rest; the row's hover, focus inside it or an open card reveals it.
+    expect(buttons[0].className).toContain("hidden");
+    for (const reveal of ["group-hover/row:grid", "group-focus-within/row:grid", "data-popup-open:grid"]) expect(buttons[0].className).toContain(reveal);
+  });
+
+  it("opens the trail on click without opening the chat", () => {
+    const onOpenTrail = vi.fn();
+    const onOpenSession = vi.fn();
+    mount({ trails: [{ ...trail, sessionIds: [...trail.sessionIds], harnesses: [...trail.harnesses] }], onOpenTrail, onOpenSession });
+    click(container.querySelector("[data-sidebar-trail]")!);
+    expect(onOpenTrail).toHaveBeenCalledWith("trail-1");
+    expect(onOpenSession).not.toHaveBeenCalled();
+  });
+
+  it("draws no trail button without trails or a way to open one", () => {
+    mount({ onOpenTrail: vi.fn() });
+    expect(container.querySelector("[data-sidebar-trail]")).toBeNull();
+    mount({ trails: [{ ...trail, sessionIds: [...trail.sessionIds], harnesses: [...trail.harnesses] }] });
+    expect(container.querySelector("[data-sidebar-trail]")).toBeNull();
+  });
+});

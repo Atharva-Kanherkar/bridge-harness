@@ -241,7 +241,12 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
   // on it. Rust only sets this for a policy with an empty scope, and the
   // briefing gate still stands behind it.
   const toolless = isBriefing({ briefing }) && briefing.toolless === true;
-  const budget = briefing?.workflow?.budget;
+  // A hidden one-turn run (connector ingress and render, a workflow draft)
+  // is never resumed, so Claude Code writes no transcript for it. Without
+  // this every poll left a session folder behind.
+  const ephemeral = isBriefing({ briefing }) && briefing.ephemeral === true;
+  // A workflow's own budget, or any other briefing's ceilings.
+  const budget = briefing?.workflow?.budget ?? (isBriefing({ briefing }) ? briefing.budget : null);
   return {
     ...(resolvedEffort ? { effort: resolvedEffort } : {}),
     ...(model ? { model } : {}),
@@ -257,6 +262,7 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
     ...(budget?.maxTurns != null ? { maxTurns: budget.maxTurns } : {}),
     ...(budget?.costCeilingMicrousd != null ? { maxBudgetUsd: budget.costCeilingMicrousd / 1_000_000 } : {}),
     ...(toolless ? { tools: [] } : {}),
+    ...(ephemeral ? { persistSession: false } : {}),
     ...(flagSettings ? { settings: flagSettings } : {}),
   };
 }

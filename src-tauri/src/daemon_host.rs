@@ -48,6 +48,11 @@ const INPUT_LANES: usize = 2;
 const STOP_LANES: usize = 1;
 const POOL_SIZE: usize = GENERAL_LANES + GITHUB_LANES + INPUT_LANES + STOP_LANES;
 
+// A Claude marketplace action may spend 300 seconds in login, up to 50
+// discovering the auth target, and up to 40 finishing a pre-action probe
+// and refreshing its result after the action succeeds.
+const CLAUDE_MARKETPLACE_CALL_TIMEOUT: Duration = Duration::from_secs(400);
+
 /// One more connection than the pool, carrying only the notification stream.
 /// The daemon writes a connection's frames under one writer lock, a response
 /// as a single line, so a live stream sharing an invoke lane waited behind
@@ -413,7 +418,15 @@ impl DaemonProxy {
         let rotation = self.next.fetch_add(1, Ordering::Relaxed);
         let index = pick_lane(&lanes, rotation, |index| link.clients[index].busy());
         let client = link.clients[index].clone();
-        match client.call(method, params) {
+        let response = if method == MethodName::MarketplaceAction
+            && params.as_ref().and_then(|value| value.get("provider")).and_then(Value::as_str)
+                == Some("claude")
+        {
+            client.call_with_timeout(method, params, CLAUDE_MARKETPLACE_CALL_TIMEOUT)
+        } else {
+            client.call(method, params)
+        };
+        match response {
             Ok(value) => Ok(value),
             // The code is the whole point of the 3000-range contract, and this
             // path used to drop it — leaving daemon-mode clients string-matching

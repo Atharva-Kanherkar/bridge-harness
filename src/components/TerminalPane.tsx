@@ -213,7 +213,11 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
       });
     };
     const roster = rosterFor(workspaceId);
-    void bridgeApi.listTerminals(workspaceId).then(alive => {
+    // A list that fails still opens the pane on the roster alone: a live
+    // shell it missed is reattached by its id, not respawned. Before, the
+    // pane stayed empty and took no runs, so every Run in the chat spun
+    // until it timed out.
+    void bridgeApi.listTerminals(workspaceId).catch((): string[] => []).then(alive => {
       if (!live) return;
       for (const terminalId of alive) {
         if (!roster.ids.includes(terminalId)) roster.ids.push(terminalId);

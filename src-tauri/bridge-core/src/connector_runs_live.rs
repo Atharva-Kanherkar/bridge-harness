@@ -39,17 +39,22 @@ use crate::work_connectors::ConnectorFamily;
 /// Hidden session kind. No surface lists these.
 pub const CONNECTOR_SESSION_KIND: &str = "connector";
 
+/// The one working folder every connector run shares, under the chats folder.
+const CONNECTOR_RUNS_FOLDER: &str = "connector-runs";
+
 /// How often ingress runs.
 ///
 /// Slower than the GitHub poller's 15s on purpose: each cycle here is a model
-/// turn, not a `gh` call. A minute of latency on a DM is the price of a surface
-/// that costs almost nothing to leave on, and push ingress is the fix if it ever
-/// stops being an acceptable trade.
+/// turn, not a `gh` call, run whether or not anyone is looking. At 30 s that
+/// was 2,880 Sonnet turns a day per Slack account; two minutes on the fast
+/// model is the price of a surface (and of Slack workflow triggers) that is
+/// cheap to leave on. Push ingress is the fix if the latency stops being an
+/// acceptable trade.
 ///
 /// One cadence, not a focused/unfocused pair: `bridge-core` has no window-focus
 /// signal to switch on, and a constant naming a behaviour nothing implements is
 /// worse than no constant.
-pub const POLL_CADENCE: StdDuration = StdDuration::from_secs(30);
+pub const POLL_CADENCE: StdDuration = StdDuration::from_secs(120);
 
 /// How many cycles one claim will chain before handing the family back to the
 /// timer.
@@ -71,6 +76,9 @@ const MAX_CHAINED_CYCLES: usize = 3;
 #[derive(Default)]
 pub struct ConnectorPoller {
     claims: Mutex<PollClaims>,
+    /// When a person last looked at the Inbox (unix seconds), so background
+    /// ingress runs while someone is reading it and not otherwise.
+    viewed_at: std::sync::atomic::AtomicI64,
     /// Items with an action run in flight. Held for the duration of the send
     /// instead of resolving the item up front, so a concurrent click is refused
     /// while a failed send stays retryable.
@@ -238,6 +246,11 @@ fn poll_claimed(core: &Arc<BridgeCore>, family: ConnectorFamily) -> usize {
         let db = core.db.lock().unwrap();
         let fresh = connector_inbox::record_arrivals(&db, &reported).unwrap_or_default();
         let _ = connector_inbox::record_poll_success(&db, family, &now);
+        // Event workflows listen to the same arrivals (R1). The ledger
+        // records each once per workflow, so a replayed cycle adds nothing.
+        if let Err(error) = crate::workflow_events::observe_inbox(&db, &fresh, Utc::now()) {
+            eprintln!("bridge: workflow events from the inbox were not recorded: {error}");
+        }
         fresh
     };
 
@@ -408,7 +421,7 @@ pub fn discover_harness_connectors() -> Vec<HarnessConnectors> {
     // connecting to every server before this pane can paint. An action that
     // turns out to need a fresh answer reports its own failure.
     let claude = crate::marketplace::cached_claude_sdk_configuration(
-        crate::marketplace::ClaudeDiscovery::ALL,
+        crate::marketplace::ClaudeDiscovery::CONNECTORS,
     );
     vec![HarnessConnectors {
         harness: "claude".to_owned(),
@@ -455,23 +468,47 @@ pub(crate) fn bounded_turn_output(
     // write tool on this one. An action gets the same policy plus exactly one
     // approved mutation, because the read-only rule bans every mutation word and
     // would otherwise deny the very send the user just approved.
-    let mut policy = match kind {
-        RunKind::Ingress | RunKind::Render => {
-            BriefingRuntimePolicy::compile_scoped(vec![server.to_owned()], limits.clone())
-        }
-        RunKind::Action => BriefingRuntimePolicy::compile_action(
-            server.to_owned(),
-            action_intent.ok_or("an action run reached the executor with no approved intent")?,
-            limits.clone(),
-        ),
-    }
-    .map_err(|unsupported| format!("policy: {}", unsupported.reason()))?;
+    let mut policy = connector_policy(kind, server, action_intent, limits.clone())?;
 
     let exact = exact_call.is_some();
     if let Some((tool, arguments)) = exact_call {
         policy = BriefingRuntimePolicy::compile_exact_action(server.to_owned(), tool, arguments, limits).map_err(|e| e.reason())?;
     }
     turn_with_policy(core, connection, &policy, kind, prompt, exact)
+}
+
+/// The policy a connector run starts under.
+///
+/// Scoped to this one server. Ingress and render get the read-only policy —
+/// its verb rule is what keeps them from reaching a different connector or a
+/// write tool on this one. An action gets the same policy plus exactly one
+/// approved mutation, because the read-only rule bans every mutation word and
+/// would otherwise deny the very send the user just approved.
+///
+/// Every connector run loads the harness's own signed-in connector: an
+/// explicit copy of a `claude.ai` connector has no sign-in, so for months
+/// ingress reached nothing and recorded an empty answer as "caught up". The
+/// gate still decides every call. Ingress and render are one-turn runs nobody
+/// resumes, so they leave no transcript.
+pub(crate) fn connector_policy(
+    kind: RunKind,
+    server: &str,
+    action_intent: Option<ActionIntent>,
+    limits: bridge_protocol::messages::WorkBriefLimits,
+) -> Result<BriefingRuntimePolicy, String> {
+    let policy = match kind {
+        RunKind::Ingress | RunKind::Render => {
+            BriefingRuntimePolicy::compile_scoped(vec![server.to_owned()], limits)
+                .map(BriefingRuntimePolicy::with_ephemeral)
+        }
+        RunKind::Action => BriefingRuntimePolicy::compile_action(
+            server.to_owned(),
+            action_intent.ok_or("an action run reached the executor with no approved intent")?,
+            limits,
+        ),
+    }
+    .map_err(|unsupported| format!("policy: {}", unsupported.reason()))?;
+    Ok(policy.with_native_connectors())
 }
 
 /// The read-only run that resolves an Outgoing destination before any approval
@@ -664,7 +701,11 @@ fn launch_run(
     let harness_id = connection.harness.as_deref().unwrap_or_default();
     let (harness, model) = run_profile(core, harness_id)?;
     let session_id = Uuid::new_v4().to_string();
-    let scratch = core.chat_scratch_dir(&session_id);
+    // One folder for every connector run: Claude Code keeps per-folder state
+    // (a project entry, a memory folder), and a fresh folder per poll left a
+    // new one behind every cycle. These runs have no file tools, so sharing
+    // the folder shares nothing they can touch.
+    let scratch = core.chat_scratch_dir(CONNECTOR_RUNS_FOLDER);
     std::fs::create_dir_all(&scratch).map_err(|error| error.to_string())?;
     let cwd = scratch.to_string_lossy().to_string();
     {
@@ -1004,12 +1045,15 @@ fn collect_text(message: &Value, text: &mut String) {
 /// to rank here — there is exactly one eligible candidate and the connector
 /// names it.
 ///
-/// The model is taken from the Research profile when that profile is already on
-/// that harness — a connector run is a read-and-summarise job, which is what
-/// that profile is for — and otherwise from the harness's own default. Reading a
-/// DM is not worth a premium model, and the ceilings in
-/// `connector_runs::run_limits` assume it is not getting one.
+/// The model is the harness's fast tier: reading a DM is not worth a premium
+/// model, and the ceilings in `connector_runs::run_limits` assume it is not
+/// getting one. (It used to follow the Research profile, which is usually a
+/// standard-tier model: ingress then ran Sonnet every 30 seconds.) Without a
+/// fast tier, the Research profile on that harness, then its default.
 fn run_profile(core: &Arc<BridgeCore>, harness: &str) -> Result<(String, String), String> {
+    if let Ok(fast) = core.adapter_registry.resolve_model(harness, crate::model::CapabilityTier::Fast, None) {
+        return Ok((harness.to_owned(), fast.actual_model));
+    }
     let descriptors = core.adapter_registry.descriptors();
     let default_model = descriptors
         .iter()
@@ -1044,23 +1088,113 @@ fn settle_session(core: &Arc<BridgeCore>, session_id: &str, status: &str) {
 
 /// The ingress timer. Does nothing at all while no supported family is
 /// connected, so an install with no connectors pays nothing for this feature.
+/// How often ingress runs while only workflows listen for its events.
+pub const TRIGGER_POLL_CADENCE: StdDuration = StdDuration::from_secs(300);
+/// How long after the Inbox was last looked at its background polling goes on.
+pub const VIEWED_WINDOW: StdDuration = StdDuration::from_secs(30 * 60);
+
+impl ConnectorPoller {
+    /// A person read the Inbox: keep it fresh for a while.
+    pub fn viewed(&self, now: chrono::DateTime<Utc>) {
+        self.viewed_at.store(now.timestamp(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn viewed_since(&self, now: chrono::DateTime<Utc>) -> Option<StdDuration> {
+        let at = self.viewed_at.load(std::sync::atomic::Ordering::Relaxed);
+        (at > 0).then(|| StdDuration::from_secs(now.timestamp().saturating_sub(at).max(0) as u64))
+    }
+}
+
+/// How often a family's ingress should run now, or `None` when nothing reads
+/// it. Every cycle is a paid model turn, so it runs only for a reader: the
+/// Inbox viewed in the last half hour (every two minutes), or a workflow
+/// listening for this family's events (every five).
+pub fn poll_cadence(core: &Arc<BridgeCore>, family: ConnectorFamily, now: chrono::DateTime<Utc>) -> Option<StdDuration> {
+    if core.connector_poller.viewed_since(now).is_some_and(|since| since < VIEWED_WINDOW) {
+        return Some(POLL_CADENCE);
+    }
+    let listens = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::workflow_events::listens_for(&db, family).unwrap_or(false)
+    };
+    listens.then_some(TRIGGER_POLL_CADENCE)
+}
+
+/// Is a background cycle due for this family?
+fn poll_due(core: &Arc<BridgeCore>, family: ConnectorFamily, now: chrono::DateTime<Utc>) -> bool {
+    let Some(cadence) = poll_cadence(core, family, now) else { return false };
+    let last: Option<String> = core
+        .db
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .query_row("SELECT last_attempt_at FROM connector_poll_state WHERE family=?1", params![family.as_str()], |row| row.get(0))
+        .ok();
+    let last = last.and_then(|text| chrono::DateTime::parse_from_rfc3339(&text).ok()).map(|at| at.with_timezone(&Utc));
+    last.is_none_or(|at| (now - at).to_std().unwrap_or_default() >= cadence)
+}
+
 pub fn start_connector_poll_maintenance(core: Arc<BridgeCore>) {
+    crate::marketplace::warm_claude_discovery();
     std::thread::spawn(move || loop {
         for family in ConnectorFamily::ALL {
-            if !family.has_inbox_support() {
+            if !family.has_inbox_support() || core.is_retired() {
                 continue;
             }
-            if available_connection(family).is_some() {
+            if poll_due(&core, family, Utc::now()) && available_connection(family).is_some() {
                 poll_once(&core, family);
             }
         }
-        std::thread::sleep(POLL_CADENCE);
+        std::thread::sleep(StdDuration::from_secs(30));
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ingress_runs_only_while_something_reads_it() {
+        let (dir, core) = crate::workflows::test_support::core();
+        let now = Utc::now();
+        assert_eq!(poll_cadence(&core, ConnectorFamily::Slack, now), None, "nobody reads it: no paid turn every two minutes");
+        core.connector_poller.viewed(now - chrono::Duration::minutes(10));
+        assert_eq!(poll_cadence(&core, ConnectorFamily::Slack, now), Some(POLL_CADENCE), "the Inbox was just read");
+        core.connector_poller.viewed(now - chrono::Duration::minutes(31));
+        assert_eq!(poll_cadence(&core, ConnectorFamily::Slack, now), None, "read too long ago");
+        {
+            let db = core.db.lock().unwrap();
+            let mut definition = crate::workflows::test_support::definition();
+            definition.trigger = bridge_protocol::messages::WorkflowTrigger::Event {
+                event: bridge_protocol::messages::WorkflowEventKind::SlackMention, repo: None, channel: None, from: None, batch: None,
+            };
+            crate::workflows::test_support::save_approved(&db, dir.path(), &definition);
+        }
+        assert_eq!(poll_cadence(&core, ConnectorFamily::Slack, now), Some(TRIGGER_POLL_CADENCE), "a workflow listens for Slack events");
+        assert_eq!(poll_cadence(&core, ConnectorFamily::Gmail, now), None, "but not for Gmail ones");
+    }
+
+    #[test]
+    fn only_a_person_viewing_the_inbox_keeps_ingress_polling() {
+        let (_dir, core) = crate::workflows::test_support::core();
+        // The app's unread badge reads the Inbox on launch and on every change.
+        crate::api::connector_inbox(&core, None, false).unwrap();
+        assert_eq!(poll_cadence(&core, ConnectorFamily::Slack, Utc::now()), None, "a background read is not a reader");
+        crate::api::connector_inbox(&core, None, true).unwrap();
+        assert_eq!(poll_cadence(&core, ConnectorFamily::Slack, Utc::now()), Some(POLL_CADENCE));
+    }
+
+    #[test]
+    fn connector_runs_load_the_signed_in_connector_and_ingress_leaves_no_transcript() {
+        let limits = |kind| connector_runs::run_limits(kind);
+        let ingress = connector_policy(RunKind::Ingress, "claude.ai Slack", None, limits(RunKind::Ingress)).unwrap();
+        assert!(ingress.native_connectors() && ingress.ephemeral());
+        let render = connector_policy(RunKind::Render, "claude.ai Slack", None, limits(RunKind::Render)).unwrap();
+        assert!(render.native_connectors() && render.ephemeral());
+        let action = connector_policy(RunKind::Action, "claude.ai Slack", Some(ActionIntent::Reply), limits(RunKind::Action)).unwrap();
+        assert!(action.native_connectors());
+        assert!(connector_policy(RunKind::Action, "claude.ai Slack", None, limits(RunKind::Action)).is_err(), "an action needs its approved intent");
+        assert!(ingress.limits().max_turns >= 4 && ingress.limits().cost_ceiling_microusd.is_some(), "ingress is capped, and the cap reaches the SDK");
+    }
 
     #[test]
     fn ingress_is_slower_than_the_github_poller_because_a_cycle_is_a_model_turn() {
