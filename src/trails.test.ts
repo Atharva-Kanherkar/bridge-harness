@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TrailBriefItem, TrailEvent, TrailSummary } from "./protocol/generated/protocol";
-import { briefTotal, chosenInOrder, dayLabel, defaultBriefSelection, formatTokens, groupByDay, groupTrails, needsYouCount, stageLabel, trailForSession } from "./trails";
+import { briefKind, briefTotal, chosenInOrder, dayLabel, defaultBriefSelection, formatTokens, groupByDay, groupTrails, latestEvents, needsYouCount, stageLabel, trailForSession, trailsBySession } from "./trails";
 
 const trail = (id: string, state: TrailSummary["state"], extra: Partial<TrailSummary> = {}): TrailSummary => ({
   id, title: id, state, stage: 2, harnesses: [], sessionIds: [], memberCount: 0, createdAt: "2026-11-10T00:00:00Z", updatedAt: "2026-11-10T00:00:00Z", ...extra,
@@ -72,5 +72,31 @@ describe("mock issue references", () => {
     expect(() => mockIssueUrl("https://github.com/o/r/pull/12", true)).toThrow(/pull request, not an issue/);
     expect(() => mockIssueUrl("#41", false)).toThrow(/no project to read #41/);
     for (const raw of ["", "fix the bug", "o/r#x", "#0", "https://github.com/o/r/issues/abc"]) expect(() => mockIssueUrl(raw, true), raw).toThrow();
+  });
+
+  it("names a brief item's kind from its id prefix", () => {
+    expect(briefKind("issue:acme/bridge#1004")).toBe("issue");
+    expect(briefKind("note:note-plan")).toBe("note");
+    expect(briefKind("pr:https://github.com/acme/bridge/pull/1012")).toBe("pullRequest");
+    expect(briefKind("chat:session-1")).toBe("chat");
+    expect(briefKind("message:outgoing-1")).toBe("message");
+    expect(briefKind("something-else")).toBe("other");
+    expect(briefKind("future:thing")).toBe("other");
+  });
+
+  it("takes the newest events first and skips removal records", () => {
+    const events = [event("a", "2026-11-10T01:00:00Z"), event("b", "2026-11-10T02:00:00Z"), { ...event("gone", "2026-11-10T03:00:00Z"), kind: "removed" as const }, event("c", "2026-11-10T04:00:00Z")];
+    expect(latestEvents(events, 2).map(item => item.id)).toEqual(["c", "b"]);
+    expect(latestEvents(events, 9).map(item => item.id)).toEqual(["c", "b", "a"]);
+    expect(latestEvents([], 3)).toEqual([]);
+  });
+
+  it("maps each chat to its trail, the first one winning like trailForSession", () => {
+    const trails = [trail("t1", "needsYou", { sessionIds: ["s1", "s2"] }), trail("t2", "shipped", { sessionIds: ["s2", "s3"] })];
+    const bySession = trailsBySession(trails);
+    expect(bySession.get("s1")?.id).toBe("t1");
+    expect(bySession.get("s2")?.id).toBe(trailForSession(trails, "s2")?.id);
+    expect(bySession.get("s3")?.id).toBe("t2");
+    expect(bySession.has("s4")).toBe(false);
   });
 });

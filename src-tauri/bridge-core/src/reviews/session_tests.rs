@@ -243,15 +243,20 @@ fn errors_tell_the_runner_whether_to_retry_or_fall_back() {
 
 #[test]
 fn the_stable_prefix_holds_nothing_that_varies_per_pr() {
-    let checkout = tempfile::tempdir().unwrap();
-    std::fs::write(checkout.path().join("AGENTS.md"), "conventions").unwrap();
-    let stable = instructions(checkout.path(), "Only security.", true);
+    let stable = instructions(&["AGENTS.md"], "Only security.", true);
     assert!(stable.starts_with(crate::prompts::ATTRIBUTION_HIDING_RULE), "the hiding rule leads when it is on");
-    assert!(stable.contains("`AGENTS.md`") && !stable.contains("CLAUDE.md"), "only the convention files that exist");
+    assert!(stable.contains("`AGENTS.md`") && !stable.contains("`CLAUDE.md`"), "only the convention files that exist");
+    assert!(stable.contains("`conventions/`") && stable.contains("as its base branch has them"));
     assert!(stable.contains("Only security."));
     assert!(stable.ends_with(OUTPUT_CONTRACT), "the contract closes the stable prefix");
     assert!(stable.contains("do not run gh"));
-    assert!(!instructions(checkout.path(), "x", false).contains(crate::prompts::ATTRIBUTION_HIDING_RULE));
+    let bare = instructions(&[], "x", false);
+    assert!(!bare.contains(crate::prompts::ATTRIBUTION_HIDING_RULE));
+    assert!(!bare.contains("`conventions/`"), "no conventions, no pointer to them");
+    // The PR's own text never steers the review, conventions or not.
+    for prefix in [&stable, &bare] {
+        assert!(prefix.contains(PR_IS_DATA), "{prefix}");
+    }
 
     let pr = json!({"number": 42, "title": "Add retries", "changedFiles": 3, "omittedFiles": ["big.lock"]});
     let turn = prompt(&pr, ".bridge-review-0a1b2c3d4e5f");
@@ -350,14 +355,21 @@ fn a_pass_reads_the_context_and_keeps_inline_and_outside_findings_apart() {
 /// ```
 ///
 /// OpenCode runs in a scratch `XDG_DATA_HOME` so it never touches the
-/// person's own sessions; Claude and Codex use the signed-in account.
+/// person's own sessions; that leaves only OpenCode's free models. For a paid
+/// one, `BRIDGE_REVIEW_LIVE_OPENCODE_SIGNED_IN=1` uses their sign-in and saves
+/// the review in their OpenCode history. Claude and Codex use the signed-in
+/// account. `BRIDGE_REVIEW_LIVE_WAIT_SECS` lengthens the catalog wait.
 #[test]
 #[ignore = "live: runs a real harness; set BRIDGE_REVIEW_LIVE_HARNESS"]
 fn live_review_on_a_fixture_pr() {
     let Ok(harness) = std::env::var("BRIDGE_REVIEW_LIVE_HARNESS") else { return };
     let model = std::env::var("BRIDGE_REVIEW_LIVE_MODEL").ok();
     let scratch = tempfile::tempdir().unwrap();
-    if harness == "opencode" {
+    // OpenCode keeps its sign-ins in its own data folder, so a paid model
+    // needs the person's (`BRIDGE_REVIEW_LIVE_OPENCODE_SIGNED_IN=1`), and the
+    // review is then saved in their OpenCode history, as in the app. Without
+    // it, a scratch folder keeps their history untouched (free models only).
+    if harness == "opencode" && std::env::var_os("BRIDGE_REVIEW_LIVE_OPENCODE_SIGNED_IN").is_none() {
         std::env::set_var("XDG_DATA_HOME", scratch.path().join("xdg-data"));
     }
     let repo = std::fs::canonicalize(scratch.path()).unwrap().join("repo");
@@ -393,10 +405,17 @@ fn live_review_on_a_fixture_pr() {
     let (placed, context_name) = place_context(&context, &repo).unwrap();
 
     let registry = Arc::new(AdapterRegistry::built_in().unwrap());
-    // OpenCode discovers its catalog in the background.
-    std::thread::sleep(Duration::from_secs(8));
+    // OpenCode discovers its catalog in the background; a signed-in provider
+    // with many models can take longer than the default wait.
+    let wait = std::env::var("BRIDGE_REVIEW_LIVE_WAIT_SECS").ok().and_then(|secs| secs.parse().ok()).unwrap_or(8);
+    std::thread::sleep(Duration::from_secs(wait));
+    if let Some(descriptor) = registry.descriptor(&harness) {
+        let usable: Vec<&str> =
+            descriptor.models.iter().filter(|model| model.available).map(|model| model.id.as_str()).take(8).collect();
+        eprintln!("{harness} catalog: {} models, usable {usable:?}", descriptor.models.len());
+    }
     let transport = RegistryTransport { registry };
-    let instructions = instructions(&repo, REVIEW_INSTRUCTIONS, false);
+    let instructions = instructions(&conventions_in(&placed), REVIEW_INSTRUCTIONS, false);
     let start = SessionStart { cwd: &repo, model: model.as_deref(), effort: Some("medium"), instructions: &instructions };
     let pr = read_json(&placed.join("pr.json")).unwrap();
     let started = Instant::now();
@@ -442,6 +461,13 @@ fn a_planted_path_in_the_checkout_is_never_followed() {
     let (second, _) = place_context(&context, &checkout).unwrap();
     assert_ne!(first, second);
     assert!(std::fs::symlink_metadata(first.join("pr.json")).unwrap().file_type().is_file());
+    assert!(conventions_in(&first).is_empty(), "no conventions folder when the base branch has none");
+    // The base branch's conventions travel with the context.
+    std::fs::create_dir(context.join("conventions")).unwrap();
+    std::fs::write(context.join("conventions/AGENTS.md"), "base rules").unwrap();
+    let (third, _) = place_context(&context, &checkout).unwrap();
+    assert_eq!(std::fs::read_to_string(third.join("conventions/AGENTS.md")).unwrap(), "base rules");
+    assert_eq!(conventions_in(&third), ["AGENTS.md"]);
 }
 
 #[test]

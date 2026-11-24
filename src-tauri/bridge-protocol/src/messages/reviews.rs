@@ -367,6 +367,9 @@ pub struct ReviewJobSettings {
     /// Review checkouts that may exist at once, 1 to 32. A job waits in the
     /// queue while they are all in use.
     pub max_review_worktrees: u8,
+    /// Whether a review may run on two harnesses at once. Off (the default),
+    /// a review runs on one.
+    pub second_opinion: bool,
 }
 
 /// The default and the bounds of `ReviewJobSettings::max_concurrent_reviews`.
@@ -384,6 +387,7 @@ impl Default for ReviewJobSettings {
             max_concurrent_reviews: DEFAULT_MAX_CONCURRENT_REVIEWS,
             post_mode: ReviewPostMode::Draft,
             max_review_worktrees: DEFAULT_MAX_REVIEW_WORKTREES,
+            second_opinion: false,
         }
     }
 }

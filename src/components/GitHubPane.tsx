@@ -50,6 +50,7 @@ import { Avatar, AvatarScope, Monogram } from "./github/Avatar";
 import { Composer } from "./github/Composer";
 import { GithubMarkdown } from "./github/GithubMarkdown";
 import { GithubMediaScope } from "./github/Media";
+import { ReviewJobs } from "./github/ReviewJobs";
 import { ReviewThreads } from "./github/ReviewThreads";
 import { commentAnchor, parsePatch } from "./github/patch";
 import { ProviderLoginPane } from "./ProviderLoginPane";
@@ -82,6 +83,7 @@ import type {
   GithubStatusResult,
   MergeStrategy,
   ReviewDecision,
+  ReviewJob,
 } from "../protocol/generated/protocol";
 
 // The GitHub surface: a dock pane, not a popover. Lives beside the
@@ -1182,17 +1184,16 @@ type PendingAction = {
   destructive?: boolean;
 };
 
-/** The harnesses a subagent review can run under. Model, effort and
- * instructions come from Settings → Workers → Pull request reviewer, so the
- * user only picks the agent here. OpenCode cannot run read-only, so its
- * reviewer works from an isolated worktree behind an approval. Cursor Bugbot
- * is not a local worker: it posts `cursor review` on the PR. */
-const REVIEW_HARNESSES: ReadonlyArray<{ id: string; label: string; note?: string }> = [
+/** The harnesses a review job can run on. Model, effort and instructions come
+ * from Settings → Pull request reviewer, so the user only picks the agent
+ * here; with Second opinion on, they pick two. Cursor Bugbot is not a local
+ * job: it posts `cursor review` on the PR. */
+const REVIEW_HARNESSES: ReadonlyArray<{ id: string; label: string }> = [
   { id: "claude", label: "Claude" },
   { id: "codex", label: "Codex" },
-  { id: "opencode", label: "OpenCode", note: "isolated worktree, needs approval" },
-  { id: "bugbot", label: "Cursor Bugbot" },
+  { id: "opencode", label: "OpenCode" },
 ];
+const BUGBOT = { id: "bugbot", label: "Cursor Bugbot", note: "reviews on GitHub" };
 
 const ACTION_BUTTON = "inline-flex min-h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-meta font-medium text-foreground shadow-xs transition-colors hover:bg-accent active:scale-[0.98] disabled:opacity-50";
 /** The one action a PR is for. Ink on paper, like every other primary button
@@ -1374,6 +1375,22 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewNotice, setReviewNotice] = useState<{ tone: "success" | "error"; text: string }>();
+  // The job a start returned, so the Reviews section shows it at once (an
+  // idempotent start sends no `reviews/job_updated`).
+  const [startedJob, setStartedJob] = useState<ReviewJob>();
+  const [secondOpinion, setSecondOpinion] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
+  // Picks belong to one opening of the picker on one PR.
+  useEffect(() => { if (!reviewOpen) setPicked([]); }, [reviewOpen]);
+  useEffect(() => { setPicked([]); }, [number]);
+  useEffect(() => {
+    if (!reviewOpen) return;
+    let active = true;
+    void bridgeApi.getReviewJobSettings()
+      .then(settings => { if (active) setSecondOpinion(settings.secondOpinion === true); })
+      .catch(() => { if (active) setSecondOpinion(false); });
+    return () => { active = false; };
+  }, [reviewOpen]);
   const [pendingBody, setPendingBody] = useState("");
   // The merge flow's one state machine: idle | confirming | merging | merged
   // | failed, in a reducer rather than five booleans (issue #1028). A detail
@@ -1404,16 +1421,21 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   const repoLabel = repository ? `${repository.owner}/${repository.name}` : "this repository";
   const closeOverlays = () => { setPending(undefined); setPendingBody(""); setCheckoutOpen(false); setLabelsOpen(false); setReviewOpen(false); };
 
-  // Hand the PR to a read-only subagent that posts its review as a comment via
-  // `gh`. Non-blocking: the notice reports how the launch was routed and the
-  // worker runs on in the agent tree while the user stays in the pane.
-  const startReview = async (harness: string) => {
+  // Queue a review job: Bridge prepares the PR, the reviewer drafts findings,
+  // and the Reviews section below follows it live. Cursor Bugbot instead
+  // posts `cursor review` and reviews on GitHub.
+  const startReview = async (harnesses: string[]) => {
     setReviewBusy(true); setReviewNotice(undefined);
     try {
-      const result = await bridgeApi.githubReview(workspaceId, number, harness, sessionId);
+      if (harnesses[0] === BUGBOT.id) {
+        const result = await bridgeApi.githubReview(workspaceId, number, BUGBOT.id, sessionId);
+        setReviewNotice({ tone: result.status === "failed" ? "error" : "success", text: result.message });
+        if (result.status !== "failed") onActed();
+      } else {
+        const result = await bridgeApi.startReview({ workspaceId, number, harnesses });
+        setStartedJob(result.job);
+      }
       setReviewOpen(false);
-      setReviewNotice({ tone: result.status === "failed" ? "error" : "success", text: result.message });
-      if (harness === "bugbot" && result.status !== "failed") onActed();
     } catch (value) {
       setReviewNotice({ tone: "error", text: errorMessage(value) });
     } finally { setReviewBusy(false); }
@@ -1707,13 +1729,29 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
               build: () => ({ kind: "restoreBranch", number, branch: summary.headBranch }),
             })}
           />
-          {summary.state === "open" && reviewOpen && <div className="animate-page-mount mt-2 grid gap-1 rounded-lg border border-border bg-card p-1.5" role="menu" aria-label="Review harness">
+          {summary.state === "open" && reviewOpen && <div className="animate-page-mount mt-2 grid gap-1 rounded-lg border border-border bg-card p-1.5" role="group" aria-label="Review harness">
             <p className="px-2 pb-0.5 pt-1 text-caption font-semibold text-muted-foreground">RUN REVIEW WITH</p>
-            {REVIEW_HARNESSES.map(choice => <button key={choice.id} type="button" role="menuitem" disabled={reviewBusy} onClick={() => void startReview(choice.id)} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
+            {secondOpinion && <p className="px-2 pb-0.5 text-caption text-muted-foreground">Pick two for a second opinion.</p>}
+            {REVIEW_HARNESSES.map(choice => {
+              const checked = picked.includes(choice.id);
+              return secondOpinion
+                ? <button key={choice.id} type="button" role="checkbox" aria-checked={checked} disabled={reviewBusy || (!checked && picked.length >= 2)} onClick={() => setPicked(current => checked ? current.filter(id => id !== choice.id) : [...current, choice.id])} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
+                    <span aria-hidden="true" className={cn("grid size-3 place-items-center rounded-sm border border-border", checked && "border-primary bg-primary text-primary-foreground")}>{checked && <Check size={9} />}</span>
+                    <span className="min-w-0 flex-1 truncate">{choice.label}</span>
+                  </button>
+                : <button key={choice.id} type="button" disabled={reviewBusy} onClick={() => void startReview([choice.id])} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
+                    <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />
+                    <span className="min-w-0 flex-1 truncate">{choice.label}</span>
+                  </button>;
+            })}
+            {secondOpinion && <button type="button" disabled={reviewBusy || picked.length === 0} onClick={() => void startReview(picked)} className={cn(PRIMARY_ACTION, "mx-1 my-0.5 justify-center")}>
+              {picked.length === 0 ? "Pick a harness" : `Review with ${picked.map(id => REVIEW_HARNESSES.find(choice => choice.id === id)?.label ?? id).join(" and ")}`}
+            </button>}
+            <button type="button" disabled={reviewBusy} onClick={() => void startReview([BUGBOT.id])} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
               <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />
-              <span className="min-w-0 flex-1 truncate">{choice.label}</span>
-              {choice.note && <span className="shrink-0 text-micro text-muted-foreground">{choice.note}</span>}
-            </button>)}
+              <span className="min-w-0 flex-1 truncate">{BUGBOT.label}</span>
+              <span className="shrink-0 text-micro text-muted-foreground">{BUGBOT.note}</span>
+            </button>
           </div>}
           {summary.state === "open" && reviewNotice && <p role="status" className={cn("animate-page-mount mt-2 rounded-md border px-2.5 py-1.5 text-meta", reviewNotice.tone === "success" ? "border-success/25 bg-success/10 text-success" : "border-destructive/25 bg-destructive/10 text-destructive")}>{reviewNotice.text}</p>}
         </>}
@@ -1777,6 +1815,8 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
           <SectionLabel>Description</SectionLabel>
           {pullRequest.body ? <GithubMarkdown text={pullRequest.body} repositoryUrl={repositoryUrl} /> : <p className="text-meta italic text-muted-foreground">No description provided.</p>}
         </section>
+
+        <ReviewJobs workspaceId={workspaceId} number={number} repositoryUrl={repositoryUrl} started={startedJob} />
 
         <section aria-label="Conversation comments">
           <SectionLabel count={pullRequest.comments.length}>Conversation</SectionLabel>

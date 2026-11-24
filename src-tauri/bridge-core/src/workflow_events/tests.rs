@@ -865,6 +865,7 @@ fn a_poll_after_a_long_gap_pages_back_to_what_it_has_seen() {
     // Overnight, 31 PRs are opened: more than one page.
     prs.lock().unwrap().extend((2..=32).map(|number| pr(number, &format!("2026-11-23T{:02}:{:02}:00Z", number / 60, number % 60))));
     assert_eq!(poll_github(&core, &gh, at("2026-11-24T00:00:00Z")).unwrap(), 31, "none is lost");
+    assert_eq!(pending(&core.db.lock().unwrap(), &workflow.id).len(), 31);
     let limits: Vec<String> = gh.calls.lock().unwrap().iter().map(|args| args[args.iter().position(|arg| arg == "--limit").unwrap() + 1].clone()).collect();
     assert_eq!(limits, ["30", "30", "100"], "a baseline page, then a full page that never reached the last seen PR, then a larger read");
     // A quiet poll reads one page.

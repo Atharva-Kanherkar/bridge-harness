@@ -22,9 +22,16 @@ pub fn load(db: &Connection) -> Result<ReviewJobSettings, BridgeError> {
             |row| row.get(0),
         )
         .optional()?;
-    payload
+    let mut settings: ReviewJobSettings = payload
         .map(|payload| serde_json::from_str(&payload).map_err(|error| BridgeError::Invalid(error.to_string())))
-        .unwrap_or_else(|| Ok(ReviewJobSettings::default()))
+        .unwrap_or_else(|| Ok(ReviewJobSettings::default()))?;
+    // A pair of defaults stored before `second_opinion` existed was valid
+    // then and meant two reviewers. `save` refuses a new pair with it off, so
+    // only such a record has both: it loads as it ran.
+    if settings.default_harnesses.len() > 1 && !settings.second_opinion {
+        settings.second_opinion = true;
+    }
+    Ok(settings)
 }
 
 pub fn save(db: &Connection, settings: &ReviewJobSettings) -> Result<ReviewJobSettings, BridgeError> {
@@ -45,6 +52,11 @@ pub fn save(db: &Connection, settings: &ReviewJobSettings) -> Result<ReviewJobSe
     let default_harnesses = harnesses(&settings.default_harnesses, "default reviewer")?;
     if default_harnesses.len() > MAX_REVIEW_HARNESSES {
         return Err(BridgeError::Invalid(format!("A review runs on at most {MAX_REVIEW_HARNESSES} harnesses")));
+    }
+    if default_harnesses.len() > 1 && !settings.second_opinion {
+        return Err(BridgeError::Invalid(
+            "Turn on Second opinion to review with two harnesses by default".into(),
+        ));
     }
     let normalized = ReviewJobSettings {
         default_harnesses,
@@ -118,6 +130,7 @@ mod tests {
             max_concurrent_reviews: 4,
             post_mode: wire::ReviewPostMode::Auto,
             max_review_worktrees: 8,
+            second_opinion: true,
         };
         let stored = save(&db, &settings).unwrap();
         assert_eq!(stored.default_harnesses, ["claude", "codex"], "aliases fold and repeats drop");
@@ -125,13 +138,49 @@ mod tests {
         assert_eq!(stored.max_concurrent_reviews, 4);
         assert_eq!(stored.post_mode, wire::ReviewPostMode::Auto);
 
-        let three = ReviewJobSettings { default_harnesses: vec!["claude".into(), "codex".into(), "opencode".into()], ..Default::default() };
+        let three = ReviewJobSettings {
+            default_harnesses: vec!["claude".into(), "codex".into(), "opencode".into()],
+            second_opinion: true,
+            ..Default::default()
+        };
         assert!(save(&db, &three).unwrap_err().to_string().contains("at most 2"));
         let bugbot = ReviewJobSettings { fallback_harnesses: vec!["bugbot".into()], ..Default::default() };
         assert!(save(&db, &bugbot).unwrap_err().to_string().contains("Cursor Bugbot"));
         let unknown = ReviewJobSettings { default_harnesses: vec!["shell".into()], ..Default::default() };
         assert!(save(&db, &unknown).unwrap_err().to_string().contains("Unknown default reviewer harness"));
         assert_eq!(load(&db).unwrap(), stored, "a refused save stores nothing");
+    }
+
+    #[test]
+    fn two_default_harnesses_need_second_opinion() {
+        let (_scratch, db) = db();
+        let two = ReviewJobSettings { default_harnesses: vec!["claude".into(), "codex".into()], ..Default::default() };
+        assert!(save(&db, &two).unwrap_err().to_string().contains("Turn on Second opinion"));
+        assert_eq!(load(&db).unwrap(), ReviewJobSettings::default(), "nothing stored");
+        let on = save(&db, &ReviewJobSettings { second_opinion: true, ..two }).unwrap();
+        assert!(on.second_opinion);
+        assert_eq!(on.default_harnesses, ["claude", "codex"]);
+        let one = ReviewJobSettings { default_harnesses: vec!["codex".into()], ..Default::default() };
+        assert_eq!(save(&db, &one).unwrap().default_harnesses, ["codex"], "one default needs nothing");
+    }
+
+    #[test]
+    fn a_stored_pair_from_before_second_opinion_still_loads_and_saves() {
+        let (_scratch, db) = db();
+        save(&db, &ReviewJobSettings::default()).unwrap();
+        // Valid when it was stored: the field did not exist yet.
+        db.execute(
+            "UPDATE configuration_entries SET payload=?1 WHERE kind=?2",
+            params![r#"{"defaultHarnesses":["claude","codex"],"maxConcurrentReviews":2}"#, KIND],
+        )
+        .unwrap();
+        let loaded = load(&db).unwrap();
+        assert!(loaded.second_opinion, "the pair meant two reviewers");
+        assert_eq!(loaded.default_harnesses, ["claude", "codex"]);
+        // What the form sends when the person changes something unrelated.
+        let saved = save(&db, &ReviewJobSettings { max_concurrent_reviews: 3, ..loaded }).unwrap();
+        assert_eq!(saved.max_concurrent_reviews, 3);
+        assert!(saved.second_opinion);
     }
 
     #[test]
@@ -163,6 +212,7 @@ mod tests {
                 max_concurrent_reviews: 1,
                 post_mode: wire::ReviewPostMode::Auto,
                 max_review_worktrees: 3,
+                second_opinion: false,
             },
         )
         .unwrap();

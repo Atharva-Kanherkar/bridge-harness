@@ -10,20 +10,6 @@ const KIND: &str = "reviewer_settings";
 const ID: &str = "global";
 const MAX_PROMPT_CHARS: usize = 20_000;
 
-/// The instruction a custom reviewer prompt must never drop: the reviewer
-/// posts one comment and takes no other PR action. A custom prompt replaces
-/// the default wholesale, so `objective` re-appends this when it is missing.
-pub const SAFETY_GUARDRAIL: &str =
-    "Do NOT approve, merge, request-changes, or close the PR — only post a comment.";
-
-/// What the reviewer is told when the user has not written their own prompt.
-/// `{number}` is the pull request number.
-pub const DEFAULT_SYSTEM_PROMPT: &str = "Review pull request #{number} in this repository. Run `gh pr view {number}` and \
-`gh pr diff {number}` to read the change, then post a concise, constructive code \
-review as a comment using `gh pr comment {number} --body \"...\"`. Cite concrete \
-files and line numbers; call out correctness bugs, risky changes, and missing tests. \
-Do NOT approve, merge, request-changes, or close the PR — only post a comment.";
-
 pub fn load(db: &Connection) -> Result<ReviewerSettings, BridgeError> {
     let payload: Option<String> = db
         .query_row(
@@ -107,41 +93,12 @@ pub fn save(db: &Connection, settings: &ReviewerSettings) -> Result<ReviewerSett
     load(db)
 }
 
+/// The settings, with the instructions a reviewer gets when the person has
+/// written none (`reviews::session::REVIEW_INSTRUCTIONS`).
 pub fn view(settings: ReviewerSettings) -> wire::ReviewerSettingsResult {
     wire::ReviewerSettingsResult {
         settings,
-        default_system_prompt: DEFAULT_SYSTEM_PROMPT.into(),
-    }
-}
-
-/// The objective the review worker receives: the user's prompt when they
-/// wrote one, else the default, with the PR number filled in either way. A
-/// custom prompt replaces the default wholesale, so the mandatory
-/// no-approve/no-merge guardrail is re-appended when the custom text drops it.
-pub fn objective(settings: &ReviewerSettings, number: u64) -> String {
-    objective_with_hide(settings, number, false)
-}
-
-/// Same as `objective`, but prepends the strict no-attribution rule first when
-/// hiding is ON.
-pub fn objective_with_hide(settings: &ReviewerSettings, number: u64, hide: bool) -> String {
-    let template = if settings.system_prompt.trim().is_empty() {
-        DEFAULT_SYSTEM_PROMPT
-    } else {
-        settings.system_prompt.trim()
-    };
-    let expanded = template.replace("{number}", &number.to_string());
-    let guarded = if settings.system_prompt.trim().is_empty() {
-        expanded
-    } else if expanded.to_ascii_lowercase().contains("do not approve") {
-        expanded
-    } else {
-        format!("{expanded}\n\n{SAFETY_GUARDRAIL}")
-    };
-    if hide {
-        format!("{}\n\n{}", crate::prompts::ATTRIBUTION_HIDING_RULE, guarded)
-    } else {
-        guarded
+        default_system_prompt: crate::reviews::session::REVIEW_INSTRUCTIONS.into(),
     }
 }
 
@@ -216,32 +173,9 @@ mod tests {
     }
 
     #[test]
-    fn custom_objective_retains_the_safety_guardrail() {
-        let custom = ReviewerSettings { system_prompt: "Only check PR {number} for tests.".into(), ..Default::default() };
-        let rendered = objective(&custom, 7);
-        assert!(rendered.starts_with("Only check PR 7 for tests."));
-        assert!(rendered.contains("only post a comment"), "the no-approve/no-merge guardrail survives a custom prompt: {rendered}");
-        let already_safe = ReviewerSettings { system_prompt: "Check {number}. Do NOT approve anything.".into(), ..Default::default() };
-        assert_eq!(objective(&already_safe, 7).matches("Do NOT approve").count(), 1, "a prompt that already guards is not doubled");
-    }
-
-    #[test]
-    fn objective_uses_the_default_or_the_custom_prompt_with_the_number_expanded() {
-        let default = objective(&ReviewerSettings::default(), 42);
-        assert!(default.starts_with("Review pull request #42"));
-        assert!(default.contains("gh pr diff 42"));
-        assert!(!default.contains("{number}"));
-        let blank = ReviewerSettings { system_prompt: "   ".into(), ..Default::default() };
-        assert_eq!(objective(&blank, 42), default, "whitespace is not a prompt");
-    }
-
-    #[test]
-    fn objective_with_hide_prepends_strict_rule_first() {
-        let hidden = objective_with_hide(&ReviewerSettings::default(), 7, true);
-        assert!(hidden.starts_with(crate::prompts::ATTRIBUTION_HIDING_RULE));
-        assert!(hidden.contains("Review pull request #7"));
-        let shown = objective_with_hide(&ReviewerSettings::default(), 7, false);
-        assert_eq!(shown, objective(&ReviewerSettings::default(), 7));
-        assert!(!shown.starts_with(crate::prompts::ATTRIBUTION_HIDING_RULE));
+    fn the_default_instructions_shown_are_the_reviewers() {
+        let shown = view(ReviewerSettings::default());
+        assert_eq!(shown.default_system_prompt, crate::reviews::session::REVIEW_INSTRUCTIONS);
+        assert!(!shown.default_system_prompt.contains("gh pr"), "the reviewer never runs gh");
     }
 }

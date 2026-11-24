@@ -82,6 +82,8 @@ function mount(overrides: Partial<BridgeSidebarProps> = {}) {
 const group = () => container.querySelector<HTMLElement>("[data-sidebar-running]");
 const rows = () => [...container.querySelectorAll<HTMLButtonElement>("[data-running-row]")];
 const row = (id: string) => container.querySelector<HTMLButtonElement>(`[data-running-row="${id}"]`)!;
+/** The row's frame: the highlight, the trail button and the harness mark sit on it, beside the button. */
+const rowFrame = (id: string) => container.querySelector<HTMLElement>(`[data-running-row-frame="${id}"]`)!;
 
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -135,7 +137,7 @@ describe("sidebar Active group", () => {
     expect(row("retry").textContent).toBe("Add a retry budget0:13·Running cargo test");
     expect(row("deck").textContent).toBe("Polish the Deck shell1:12·1 worker needs you");
     expect(row("deck").querySelector('[data-running-detail="needsYou"]')?.className).toContain("text-warning");
-    expect(row("retry").lastElementChild?.getAttribute("data-harness")).toBe("codex");
+    expect(rowFrame("retry").lastElementChild?.getAttribute("data-harness")).toBe("codex");
   });
 
   it("names the chat in full on hover without taking the chat row's title", () => {
@@ -182,7 +184,7 @@ describe("sidebar Active group", () => {
     const onOpenSession = vi.fn();
     mount({ onOpenSession, activeSessionId: "retry" });
     expect(row("retry").dataset.active).toBe("true");
-    expect(row("retry").className).toContain("bg-selection");
+    expect(rowFrame("retry").className).toContain("bg-selection");
     expect(row("deck").dataset.active).toBeUndefined();
     act(() => { row("deck").dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     expect(onOpenSession).toHaveBeenCalledWith("deck");
@@ -236,5 +238,26 @@ describe("sidebar Active group", () => {
     mount({ onOpenApp, pinnedApps, chats: [daemon], liveAgents: new Map(), sessions: [daemon], liveEvents: [] });
     expect(group()).toBeNull();
     expect(container.querySelector('nav[aria-label="Main navigation"]')!.textContent).toContain("Mission Control");
+  });
+});
+
+describe("sidebar Active group trail button", () => {
+  it("shows a trail button on a running chat on a trail, and opens the trail", () => {
+    const onOpenTrail = vi.fn();
+    const onOpenSession = vi.fn();
+    const trail = {
+      id: "trail-9", title: "Retry budgets", state: "inProgress", stage: 2, harnesses: [], sessionIds: ["retry"], memberCount: 1,
+      createdAt: "2026-11-20T00:00:00Z", updatedAt: "2026-11-20T00:00:00Z",
+    } as const;
+    mount({ trails: [{ ...trail, harnesses: [], sessionIds: ["retry"] }], onOpenTrail, onOpenSession });
+    const buttons = [...container.querySelectorAll<HTMLButtonElement>("[data-sidebar-trail]")];
+    const inActive = buttons.filter(button => button.closest("[data-sidebar-running]"));
+    expect(inActive).toHaveLength(1);
+    expect(inActive[0].closest("[data-running-row-frame]")?.getAttribute("data-running-row-frame")).toBe("retry");
+    // Between the row's button and its harness mark.
+    expect(inActive[0].nextElementSibling?.getAttribute("data-harness")).toBe("codex");
+    act(() => { inActive[0].dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(onOpenTrail).toHaveBeenCalledWith("trail-9");
+    expect(onOpenSession).not.toHaveBeenCalled();
   });
 });

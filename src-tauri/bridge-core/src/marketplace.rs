@@ -13,6 +13,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod discovery;
+
 const CODEX_APP_CONNECTOR: &str = "app";
 const MCP_CONNECTOR: &str = "mcp";
 const CODEX_APP_SERVER_TIMEOUT: Duration = Duration::from_secs(75);
@@ -168,6 +170,9 @@ pub struct ClaudeDiscovery {
 }
 
 impl ClaudeDiscovery {
+    pub(crate) const PLUGINS: Self = Self { plugins: true, connectors: false };
+    pub(crate) const CONNECTORS: Self = Self { plugins: false, connectors: true };
+
     /// Everything: what the settings, workflow and connector surfaces show.
     pub const ALL: Self = Self {
         plugins: true,
@@ -179,75 +184,27 @@ pub fn claude_sdk_configuration() -> ClaudeSdkConfiguration {
     claude_sdk_configuration_for(ClaudeDiscovery::ALL)
 }
 
-/// How long a launch-path discovery answer is reused.
-///
-/// Long enough to cover a burst of cold launches (a model switch, a pool of
-/// workers, several chats opened at once), short enough that a plugin
-/// installed or a connector signed in through Claude Code takes effect without
-/// restarting Bridge. Anything that shows discovery state to a person
-/// (settings, workflow surfaces) asks for a fresh answer and does not use this
-/// path.
-const CLAUDE_DISCOVERY_TTL: Duration = Duration::from_secs(60);
-
-struct CachedDiscovery {
-    at: Instant,
-    configuration: ClaudeSdkConfiguration,
+/// Discovery for launches and the connector inventory. Each part can refresh
+/// independently. Settings use the uncached read; workflow surfaces use
+/// [`connectors_now`], which probes from a neutral folder.
+pub fn cached_claude_sdk_configuration(discovery: ClaudeDiscovery) -> ClaudeSdkConfiguration {
+    discovery_cache().get(discovery, claude_sdk_configuration_for)
 }
 
-/// Answers already discovered on the launch path, keyed by the parts asked
-/// for — a plugins-only answer can never be handed to a caller that asked for
-/// connectors, which would silently report "no connectors" instead of probing.
-#[derive(Default)]
-struct DiscoveryCache {
-    entries: std::collections::HashMap<(bool, bool), CachedDiscovery>,
+fn discovery_cache() -> &'static discovery::DiscoveryCache {
+    static CACHE: std::sync::OnceLock<discovery::DiscoveryCache> = std::sync::OnceLock::new();
+    CACHE.get_or_init(discovery::DiscoveryCache::default)
 }
 
-/// Read through `cache`, probing only on a miss or an expired entry.
-///
-/// The cache lock is held across the probe, so concurrent callers asking for
-/// the same parts are single-flight: the second waits for the first probe and
-/// reads its answer instead of starting a second subprocess.
-fn cached_in(
-    cache: &std::sync::Mutex<DiscoveryCache>,
-    discovery: ClaudeDiscovery,
-    ttl: Duration,
-    probe: impl FnOnce(ClaudeDiscovery) -> ClaudeSdkConfiguration,
-) -> ClaudeSdkConfiguration {
-    let key = (discovery.plugins, discovery.connectors);
-    let mut cache = cache
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(cached) = cache.entries.get(&key) {
-        if cached.at.elapsed() < ttl {
-            return cached.configuration.clone();
+pub(crate) fn warm_claude_discovery() {
+    for part in [ClaudeDiscovery::PLUGINS, ClaudeDiscovery::CONNECTORS] {
+        if let Err(error) = thread::Builder::new()
+            .name("claude-discovery-warmup".into())
+            .spawn(move || cached_claude_sdk_configuration(part))
+        {
+            eprintln!("bridge: could not start Claude discovery warm-up: {error}");
         }
     }
-    let configuration = probe(discovery);
-    cache.entries.insert(
-        key,
-        CachedDiscovery {
-            at: Instant::now(),
-            configuration: configuration.clone(),
-        },
-    );
-    configuration
-}
-
-/// The launch path's discovery: exactly the parts `discovery` asks for,
-/// reused for [`CLAUDE_DISCOVERY_TTL`].
-///
-/// For callers that can live with a minute of staleness: a launch, and the
-/// connector inventory a pane paints. Anything a person reads as current state
-/// and can act on — settings, workflow surfaces — asks
-/// [`claude_sdk_configuration`] instead.
-pub fn cached_claude_sdk_configuration(discovery: ClaudeDiscovery) -> ClaudeSdkConfiguration {
-    cached_in(discovery_cache(), discovery, CLAUDE_DISCOVERY_TTL, claude_sdk_configuration_for)
-}
-
-fn discovery_cache() -> &'static std::sync::Mutex<DiscoveryCache> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<DiscoveryCache>> =
-        std::sync::OnceLock::new();
-    CACHE.get_or_init(|| std::sync::Mutex::new(DiscoveryCache::default()))
 }
 
 /// How long a connector answer counts as fresh for the surfaces a person acts
@@ -403,25 +360,9 @@ pub fn warm_connectors() {
     }
 }
 
-/// The newest cached answer that holds connectors, at any age, with its age.
-/// It never probes. While a probe holds the cache it returns `None` and does
-/// not wait, so a read that must start no process stays fast.
+/// Return the last connector answer and its age without starting a probe.
 pub fn peek_claude_connectors() -> Option<(ClaudeSdkConfiguration, Duration)> {
-    peek_in(discovery_cache())
-}
-
-fn peek_in(cache: &std::sync::Mutex<DiscoveryCache>) -> Option<(ClaudeSdkConfiguration, Duration)> {
-    let cache = match cache.try_lock() {
-        Ok(cache) => cache,
-        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-        Err(std::sync::TryLockError::WouldBlock) => return None,
-    };
-    cache
-        .entries
-        .iter()
-        .filter(|((_, connectors), _)| *connectors)
-        .max_by_key(|(_, cached)| cached.at)
-        .map(|(_, cached)| (cached.configuration.clone(), cached.at.elapsed()))
+    discovery_cache().peek_connectors()
 }
 
 /// Discover only the parts of Claude's configuration `discovery` asks for.
@@ -468,12 +409,21 @@ fn claude_sdk_configuration_from(discovery: ClaudeDiscovery, mcp_timeout: Durati
     let Some(binary_path) = binary::resolve("claude") else {
         return claude_not_installed();
     };
+    claude_sdk_configuration_at(&binary_path, discovery, mcp_timeout, cwd)
+}
+
+fn claude_sdk_configuration_at(
+    binary_path: &Path,
+    discovery: ClaudeDiscovery,
+    mcp_timeout: Duration,
+    cwd: Option<&Path>,
+) -> ClaudeSdkConfiguration {
     let mut diagnostics = Vec::new();
     let plugins = if !discovery.plugins {
         Vec::new()
     } else {
         match bounded_output(
-            &binary_path,
+            binary_path,
             &["plugin", "list", "--json"],
             CLAUDE_MCP_STATUS_TIMEOUT,
         ) {
@@ -505,7 +455,7 @@ fn claude_sdk_configuration_from(discovery: ClaudeDiscovery, mcp_timeout: Durati
             ..Default::default()
         };
     }
-    let mcp_list = match bounded_output_in(&binary_path, &["mcp", "list"], mcp_timeout, cwd) {
+    let mcp_list = match bounded_output_in(binary_path, &["mcp", "list"], mcp_timeout, cwd) {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).into_owned();
             if !claude_mcp_output_is_recognized(&text) {
@@ -1121,7 +1071,14 @@ pub fn execute_action(
             })?;
             preferred_claude_connector(&binary_path, &variant.app_connector_ids)?
         };
-        return claude_connector_authenticate(&binary_path, plugin_id, &connector_id);
+        let result = claude_connector_authenticate(&binary_path, plugin_id, &connector_id)?;
+        if result.success {
+            discovery_cache().refresh_after_change(
+                ClaudeDiscovery::CONNECTORS,
+                claude_sdk_configuration_for,
+            );
+        }
+        return Ok(result);
     }
     let args = action_args(
         provider,
@@ -1135,6 +1092,9 @@ pub fn execute_action(
     let stdout = sanitize_error(String::from_utf8_lossy(&output.stdout).trim());
     let stderr = sanitize_error(String::from_utf8_lossy(&output.stderr).trim());
     let success = output.status.success();
+    if success && provider == MarketplaceProvider::Claude {
+        discovery_cache().refresh_after_change(ClaudeDiscovery::ALL, claude_sdk_configuration_for);
+    }
     Ok(MarketplaceActionResult {
         provider,
         plugin_id: plugin_id.into(),
@@ -2321,30 +2281,6 @@ mod tests {
         assert_eq!(redacted["nested"]["safe"], true);
     }
 
-    /// Discovery is two provider subprocesses. A launch path that asks the same
-    /// question twice inside the window must pay once.
-    #[test]
-    fn a_repeated_launch_reads_one_discovery() {
-        let cache = std::sync::Mutex::new(DiscoveryCache::default());
-        let probes = std::sync::atomic::AtomicUsize::new(0);
-        let probe = |discovery: ClaudeDiscovery| {
-            probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            plugins_only(discovery)
-        };
-        for _ in 0..3 {
-            let configuration = cached_in(
-                &cache,
-                ClaudeDiscovery { plugins: true, connectors: false },
-                CLAUDE_DISCOVERY_TTL,
-                probe,
-            );
-            assert_eq!(configuration.plugins, vec!["/plugins/one"]);
-        }
-        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 1);
-    }
-
-    /// Several cold launches at once (a switch, a worker pool, two chats opened
-    /// together) share one probe instead of starting one each.
     fn answer(servers: &[&str], diagnostics: &[&str]) -> ClaudeSdkConfiguration {
         ClaudeSdkConfiguration {
             mcp_servers: servers.iter().map(|name| ((*name).to_owned(), serde_json::json!({}))).collect(),
@@ -2426,102 +2362,31 @@ mod tests {
     }
 
     #[test]
-    fn discovery_cache_single_flight() {
-        let cache = std::sync::Arc::new(std::sync::Mutex::new(DiscoveryCache::default()));
-        let probes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let handles: Vec<_> = (0..8)
-            .map(|_| {
-                let cache = std::sync::Arc::clone(&cache);
-                let probes = std::sync::Arc::clone(&probes);
-                std::thread::spawn(move || {
-                    cached_in(
-                        &cache,
-                        ClaudeDiscovery { plugins: true, connectors: false },
-                        CLAUDE_DISCOVERY_TTL,
-                        |discovery| {
-                            probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                            std::thread::sleep(Duration::from_millis(30));
-                            plugins_only(discovery)
-                        },
-                    )
-                })
-            })
-            .collect();
-        for handle in handles {
-            assert_eq!(handle.join().unwrap().plugins, vec!["/plugins/one"]);
-        }
-        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 1);
-    }
+    #[cfg(unix)]
+    fn cached_discovery_matches_uncached_fixture_cli() -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    fn discovery_cache_expires() {
-        let cache = std::sync::Mutex::new(DiscoveryCache::default());
-        let probes = std::sync::atomic::AtomicUsize::new(0);
-        let ttl = Duration::from_millis(5);
-        for _ in 0..2 {
-            cached_in(
-                &cache,
-                ClaudeDiscovery { plugins: true, connectors: false },
-                ttl,
-                |discovery| {
-                    probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    plugins_only(discovery)
-                },
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 2);
-    }
+        let fixture = tempfile::tempdir()?;
+        let cli = fixture.path().join("claude");
+        let plugins = serde_json::json!([{"enabled": true, "installPath": fixture.path()}]);
+        fs::write(
+            &cli,
+            format!(
+                "#!/bin/sh\ncase \"$*\" in\n'plugin list --json') printf '%s\\n' '{plugins}';;\n'mcp list') printf '%s\\n' 'claude.ai Notion: https://mcp.example/notion - ✔ Connected' 'claude.ai Slack: https://mcp.example/slack - ! Needs authentication';;\n*) exit 1;;\nesac\n",
+            ),
+        )?;
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o700))?;
+        let fresh = claude_sdk_configuration_at(&cli, ClaudeDiscovery::ALL, CLAUDE_MCP_STATUS_TIMEOUT, None);
+        assert_eq!(fresh.plugins, [fixture.path().to_string_lossy().into_owned()]);
+        assert_eq!(fresh.mcp_servers["claude.ai Notion"]["url"], "https://mcp.example/notion");
+        assert_eq!(fresh.connector_health.get("claude.ai Slack"), Some(&Some(false)));
+        assert!(fresh.diagnostics.is_empty());
 
-    /// A plugins-only answer is not an answer about connectors: handing it to
-    /// a briefing would report "no connectors" without ever probing.
-    #[test]
-    fn a_cached_answer_only_answers_the_question_it_was_asked() {
-        let cache = std::sync::Mutex::new(DiscoveryCache::default());
-        cached_in(
-            &cache,
-            ClaudeDiscovery { plugins: true, connectors: false },
-            CLAUDE_DISCOVERY_TTL,
-            plugins_only,
-        );
-        let asked = std::sync::atomic::AtomicUsize::new(0);
-        cached_in(
-            &cache,
-            ClaudeDiscovery { plugins: true, connectors: true },
-            CLAUDE_DISCOVERY_TTL,
-            |discovery| {
-                asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let _ = discovery;
-                ClaudeSdkConfiguration::default()
-            },
-        );
-        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
-    }
-
-    /// The tools picker reads the cache and never probes. A plugins-only
-    /// answer is not a connector answer, and an expired answer still counts.
-    #[test]
-    fn a_peek_reads_only_a_cached_connector_answer_and_never_probes() {
-        let cache = std::sync::Mutex::new(DiscoveryCache::default());
-        assert!(peek_in(&cache).is_none());
-        cached_in(&cache, ClaudeDiscovery { plugins: true, connectors: false }, CLAUDE_DISCOVERY_TTL, plugins_only);
-        assert!(peek_in(&cache).is_none(), "a plugins-only answer holds no connectors");
-        cached_in(&cache, ClaudeDiscovery::ALL, Duration::ZERO, |_| ClaudeSdkConfiguration {
-            connector_health: BTreeMap::from([("claude.ai Gmail".to_owned(), Some(true))]),
-            ..Default::default()
+        let cache = discovery::DiscoveryCache::default();
+        let cached = cache.get(ClaudeDiscovery::ALL, move |part| {
+            claude_sdk_configuration_at(&cli, part, CLAUDE_MCP_STATUS_TIMEOUT, None)
         });
-        let (peeked, _age) = peek_in(&cache).unwrap();
-        assert_eq!(peeked.connector_health.get("claude.ai Gmail"), Some(&Some(true)));
-        let held = cache.lock().unwrap();
-        assert!(peek_in(&cache).is_none(), "a probe that holds the cache makes the peek return at once");
-        drop(held);
-    }
-
-    fn plugins_only(discovery: ClaudeDiscovery) -> ClaudeSdkConfiguration {
-        assert!(!discovery.connectors, "this stand-in answers plugins only");
-        ClaudeSdkConfiguration {
-            plugins: vec!["/plugins/one".into()],
-            ..Default::default()
-        }
+        assert_eq!(serde_json::to_value(cached).ok(), serde_json::to_value(fresh).ok());
+        Ok(())
     }
 }

@@ -420,9 +420,9 @@ pub fn discover_harness_connectors() -> Vec<HarnessConnectors> {
     // staleness costs nothing here, while a fresh probe is `mcp list`
     // connecting to every server before this pane can paint. An action that
     // turns out to need a fresh answer reports its own failure.
-    // The same cache the Workflows surfaces read: one `mcp list` serves both,
-    // refreshed in the background rather than on this poll's thread.
-    let claude = crate::marketplace::connectors_now();
+    let claude = crate::marketplace::cached_claude_sdk_configuration(
+        crate::marketplace::ClaudeDiscovery::CONNECTORS,
+    );
     vec![HarnessConnectors {
         harness: "claude".to_owned(),
         health: claude.connector_health,
@@ -1134,6 +1134,7 @@ fn poll_due(core: &Arc<BridgeCore>, family: ConnectorFamily, now: chrono::DateTi
 }
 
 pub fn start_connector_poll_maintenance(core: Arc<BridgeCore>) {
+    crate::marketplace::warm_claude_discovery();
     std::thread::spawn(move || loop {
         for family in ConnectorFamily::ALL {
             if !family.has_inbox_support() || core.is_retired() {
