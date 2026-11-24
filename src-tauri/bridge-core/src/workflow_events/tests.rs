@@ -772,3 +772,42 @@ fn a_dry_run_on_a_past_event_leaves_the_real_event_waiting() {
     assert!(matches!(claim(&db, &workflow.id, &occasion, true, at("2026-11-24T00:00:02Z")).unwrap(), ClaimOutcome::Claimed(_)));
     assert_eq!(pending(&db, &workflow.id).len(), 1, "the batch still gets it");
 }
+
+#[test]
+fn a_changed_listener_never_runs_what_the_old_one_recorded() {
+    let (dir, core) = test_support::core();
+    let db = core.db.lock().unwrap();
+    let issue_on = |repo: &str| wire::WorkflowTrigger::Event { event: wire::WorkflowEventKind::GithubIssueOpened, repo: Some(repo.into()), channel: None, from: None, batch: None };
+    let workflow = listening_workflow(&db, dir.path(), issue_on("acme/app"), "2026-11-20T00:00:00Z");
+    // An `acme/app` issue is waiting (its run never started)...
+    let stdout = format!("[{}]", pr(3, "2026-11-23T00:00:00Z"));
+    let mut issue = parse_github(wire::WorkflowEventKind::GithubIssueOpened, Some("acme/app"), &stdout).unwrap().remove(0);
+    issue.kind = wire::WorkflowEventKind::GithubIssueOpened;
+    assert_eq!(observe(&db, std::slice::from_ref(&issue), at("2026-11-23T00:00:01Z")).unwrap(), 1);
+    // ...when the person points the trigger at `acme/web` and approves it.
+    let mut definition = workflow.definition.clone();
+    definition.trigger = issue_on("acme/web");
+    let saved = workflows::save(&db, dir.path(), Some(&workflow.id), &definition, workflows::CreatedBy::User).unwrap().workflow;
+    workflows::approve(&db, &workflow.id, &saved.revision_id).unwrap();
+    assert!(due_occasions(&db, Utc::now()).unwrap().is_empty(), "the new listener gets nothing the old one recorded");
+    let state: String = db.query_row("SELECT state FROM workflow_events WHERE workflow_id=?1", params![workflow.id], |row| row.get(0)).unwrap();
+    assert_eq!(state, "baseline", "retired as seen, so it never runs later either");
+}
+
+#[test]
+fn a_batch_overflow_still_waits_for_the_next_slot() {
+    // The slot a batch ran at must not retire the events it had no room for.
+    let (dir, core) = test_support::core();
+    let db = core.db.lock().unwrap();
+    let batch = wire::WorkflowBatch { cron: "0 9 * * *".into(), timezone: "UTC".into() };
+    let trigger = wire::WorkflowTrigger::Event { event: wire::WorkflowEventKind::SlackMention, repo: None, channel: None, from: None, batch: Some(batch) };
+    let workflow = listening_workflow(&db, dir.path(), trigger, "2026-11-20T00:00:00Z");
+    let fresh: Vec<InboxItem> = (0..MAX_BATCH + 2).map(|index| slack(ItemKind::Mention, "#eng", "Priya", &format!("{index}.0"), "2026-11-23T08:00:00Z")).collect();
+    assert_eq!(observe_inbox(&db, &fresh, at("2026-11-23T08:00:01Z")).unwrap(), MAX_BATCH + 2);
+    let due = due_occasions(&db, at("2026-11-23T09:00:30Z")).unwrap();
+    assert_eq!(due[0].1.events.len(), MAX_BATCH);
+    let ClaimOutcome::Claimed(claimed) = claim(&db, &workflow.id, &due[0].1, false, at("2026-11-23T09:00:30Z")).unwrap() else { panic!("the slot was not claimed") };
+    assert!(crate::workflow_trigger::finish(&db, &claimed.run.id, &claimed.lease_owner, wire::WorkflowRunStatus::Succeeded, &crate::workflow_trigger::Outcome::default(), at("2026-11-23T09:01:00Z")).unwrap());
+    let next = due_occasions(&db, at("2026-11-24T09:00:30Z")).unwrap();
+    assert_eq!(next[0].1.events.len(), 2, "the two without room run at the next slot");
+}

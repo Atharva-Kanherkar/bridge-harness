@@ -837,8 +837,16 @@ pub(crate) fn anchor(db: &Connection, workflow: &wire::Workflow) -> Result<DateT
         params![workflow.id],
         |row| row.get(0),
     )?;
+    let listener = listener_anchor(db, workflow)?;
+    Ok(last_slot.as_deref().and_then(parse_instant).map_or(listener, |slot| slot.max(listener)))
+}
+
+/// When the workflow's current listener began: its approval, its last change
+/// (a save, turning it on or off), or Workflows resuming. A run's slot does
+/// not move it, so a batch's overflow still waits for the next slot.
+pub(crate) fn listener_anchor(db: &Connection, workflow: &wire::Workflow) -> Result<DateTime<Utc>, BridgeError> {
     let resumed = stored_settings(db)?.and_then(|stored| stored.resumed_at);
-    Ok([last_slot.as_deref(), workflow.approved_at.as_deref(), Some(workflow.updated_at.as_str()), resumed.as_deref()]
+    Ok([workflow.approved_at.as_deref(), Some(workflow.updated_at.as_str()), resumed.as_deref()]
         .into_iter()
         .flatten()
         .filter_map(parse_instant)

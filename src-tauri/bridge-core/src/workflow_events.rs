@@ -669,6 +669,30 @@ pub fn mark_claimed(db: &Connection, workflow_id: &str, events: &[wire::Workflow
     Ok(())
 }
 
+/// Retire, as seen, the waiting events an earlier listener recorded: one
+/// observed before the current listener began, or that no longer matches its
+/// event, repository, channel or sender, never runs (R7).
+fn retire_stale(db: &Connection, workflow: &wire::Workflow, trigger: &EventTrigger<'_>) -> Result<(), BridgeError> {
+    let since = workflow_trigger::listener_anchor(db, workflow)?;
+    let rows: Vec<(wire::WorkflowEventSample, String)> = db
+        .prepare(
+            "SELECT event_key, kind, title, url, occurred_at, payload, observed_at FROM workflow_events
+             WHERE workflow_id=?1 AND state='pending'",
+        )?
+        .query_map(params![workflow.id], |row| Ok((read_event(row)?, row.get(6)?)))?
+        .collect::<Result<_, _>>()?;
+    for (event, observed_at) in rows {
+        let current = instant(&observed_at).is_some_and(|observed| observed >= since) && matches(trigger, &event);
+        if !current {
+            db.execute(
+                "UPDATE workflow_events SET state='baseline' WHERE workflow_id=?1 AND event_key=?2 AND state='pending'",
+                params![workflow.id, event.key],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// The latest slot of a batch schedule since the workflow's anchor, if any.
 fn batch_slot(db: &Connection, workflow: &wire::Workflow, batch: &wire::WorkflowBatch, now: DateTime<Utc>) -> Result<Option<DateTime<Utc>>, BridgeError> {
     let Ok(schedule) = Schedule::parse(&batch.cron, &batch.timezone) else { return Ok(None) };
@@ -693,6 +717,7 @@ pub fn due_occasions(db: &Connection, now: DateTime<Utc>) -> Result<Vec<(String,
     let mut due = Vec::new();
     for workflow in listening(db)? {
         let Some(trigger) = EventTrigger::of(&workflow.definition.trigger) else { continue };
+        retire_stale(db, &workflow, &trigger)?;
         if workflow_trigger::active_run(db, &workflow.id)?.is_some() {
             continue;
         }
