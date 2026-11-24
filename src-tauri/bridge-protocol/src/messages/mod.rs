@@ -594,6 +594,9 @@ typed_methods![
     (DraftWorkflowFromText, DraftWorkflowFromTextParams, WorkflowDraftResult),
     (DraftWorkflowFromSession, DraftWorkflowFromSessionParams, WorkflowDraftResult),
     (MarkWorkflowRunsRead, MarkWorkflowRunsReadParams, UnitResult),
+    (PreviewWorkflowTrigger, PreviewWorkflowTriggerParams, WorkflowTriggerPreview),
+    (ListWorkflowTemplates, _, WorkflowTemplateList),
+    (RefreshWorkflowConnectors, _, WorkflowOptions),
     // reviews
     (StartReview, StartReviewParams, ReviewJobResult),
     (ListReviews, ListReviewsParams, ReviewJobList),

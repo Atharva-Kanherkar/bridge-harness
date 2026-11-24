@@ -7,6 +7,12 @@
       "additionalProperties": false,
       "description": "Settings for every workflow.",
       "properties": {
+        "maxConcurrentRuns": {
+          "default": 2,
+          "description": "At most this many runs work at once; the rest wait in line. 1 to 5.",
+          "format": "int64",
+          "type": "integer"
+        },
         "paused": {
           "description": "No workflow starts while paused; active runs finish.",
           "type": "boolean"

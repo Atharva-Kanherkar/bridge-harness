@@ -452,6 +452,9 @@ methods![
     (DraftWorkflowFromText, "workflows", "draft_workflow_from_text"),
     (DraftWorkflowFromSession, "workflows", "draft_workflow_from_session"),
     (MarkWorkflowRunsRead, "workflows", "mark_workflow_runs_read"),
+    (PreviewWorkflowTrigger, "workflows", "preview_workflow_trigger"),
+    (ListWorkflowTemplates, "workflows", "list_workflow_templates"),
+    (RefreshWorkflowConnectors, "workflows", "refresh_workflow_connectors"),
     // reviews: pull-request reviews as stored background jobs Bridge runs
     (StartReview, "reviews", "start_review"),
     (ListReviews, "reviews", "list_reviews"),

@@ -56,3 +56,27 @@ export async function settleWorkflowConnectors(run, {
     await sleep(pollMs);
   }
 }
+
+/** Did every awaited connector actually connect? */
+export function allConnected(waitFor, statuses) {
+  return waitFor.every((name) => statuses.some((server) => server?.name === name && server.status === "connected"));
+}
+
+/**
+ * The error frame a run ends with when a connector it waited for did not
+ * connect. A turn sent anyway would answer "I have no tools", which reads as
+ * an empty result: a poll would call that "nothing new", a workflow "done".
+ */
+export function connectorUnavailableFrame(waitFor, statuses, sessionId) {
+  const missing = waitFor
+    .map((name) => ({ name, status: statuses.find((server) => server?.name === name)?.status ?? "not loaded" }))
+    .filter((server) => server.status !== "connected")
+    .map((server) => `${server.name} (${server.status})`);
+  return {
+    type: "result",
+    subtype: "error_connector_unavailable",
+    is_error: true,
+    ...(sessionId ? { session_id: sessionId } : {}),
+    result: `Not connected: ${missing.join(", ")}. Reconnect it in Claude, then try again.`,
+  };
+}

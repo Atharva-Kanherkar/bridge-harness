@@ -81,7 +81,7 @@ export function WorkflowInbox({ runs, names, onOpenRun, onChanged }: {
         <span className="mt-[5px] flex shrink-0"><Dot tone={runTone(run.status)}/></span>
         <div className="min-w-0 flex-1">
           <p className={`text-ui ${run.unread ? "font-semibold" : "font-medium"} text-foreground`}>{name(run)} · {RUN_STATUS_LABEL[run.status]}{run.unread && <span className="ml-2 rounded-full bg-muted px-1.5 py-px text-caption font-medium text-muted-foreground">New</span>}</p>
-          <p className="mt-0.5 text-caption text-muted-foreground">{[run.triggerKind === "catch_up" ? `catch-up for ${run.missedSlots} missed slot${run.missedSlots === 1 ? "" : "s"}` : run.triggerKind === "manual" ? (run.dryRun ? "dry run" : "Run now") : "schedule", relativeTime(run.finishedAt ?? run.createdAt, now), run.tokens ? `${run.tokens.toLocaleString()} tokens` : null].filter(Boolean).join(" · ")}</p>
+          <p className="mt-0.5 text-caption text-muted-foreground">{[run.triggerKind === "catch_up" ? `catch-up for ${run.missedSlots} missed slot${run.missedSlots === 1 ? "" : "s"}` : run.triggerKind === "manual" ? (run.dryRun ? "dry run" : "Run now") : run.triggerKind === "event" ? ((run.eventCount ?? 0) > 1 ? `${run.eventCount} events` : run.event?.title ?? "event") : "schedule", relativeTime(run.finishedAt ?? run.createdAt, now), run.tokens ? `${run.tokens.toLocaleString()} tokens` : null].filter(Boolean).join(" · ")}</p>
           {run.summary && <p className="mt-1.5 line-clamp-2 text-meta leading-relaxed text-muted-foreground">{run.summary}</p>}
         </div>
       </button>)}</div>}

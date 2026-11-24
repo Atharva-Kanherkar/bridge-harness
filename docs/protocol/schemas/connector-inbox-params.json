@@ -12,6 +12,11 @@
         "integer",
         "null"
       ]
+    },
+    "viewing": {
+      "default": false,
+      "description": "True only when a person is looking at the Inbox. It keeps ingress polling for a while; a background read (the app's unread badge) must leave it false, or it would keep a paid poll alive with nobody reading.",
+      "type": "boolean"
     }
   },
   "title": "ConnectorInboxParams",

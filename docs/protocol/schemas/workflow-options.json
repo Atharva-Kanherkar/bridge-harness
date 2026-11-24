@@ -104,6 +104,14 @@
     }
   },
   "properties": {
+    "connectorsError": {
+      "default": null,
+      "description": "Why `servers` may be incomplete: Bridge could not ask Claude just now.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "harnesses": {
       "items": {
         "$ref": "#/definitions/WorkflowHarnessOption"

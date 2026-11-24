@@ -347,9 +347,11 @@ test("a toolless briefing sends no tools and replaces the coding preset", () => 
   assert.deepEqual(options.settingSources, []);
 });
 
-test("an ordinary briefing keeps the preset and the SDK's tool list", () => {
+test("an ordinary briefing keeps the preset but no built-in tool", () => {
+  // Built-ins such as SendMessage and RemoteTrigger run without asking
+  // canUseTool, so a briefing, which reads text other people wrote, gets none.
   const options = buildOptions({ ...base, briefing });
-  assert.equal(options.tools, undefined);
+  assert.deepEqual(options.tools, []);
   assert.equal(options.systemPrompt.preset, "claude_code");
 });
 

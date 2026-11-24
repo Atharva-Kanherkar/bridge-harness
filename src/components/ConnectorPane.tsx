@@ -1,5 +1,5 @@
 import { ConnectorApprovalSheet } from "./ConnectorApprovalSheet";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import {
   AtSign,
@@ -68,13 +68,16 @@ export function ConnectorPane({ visible = true, focusItemKey, onClose, onUnreadC
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
+  // Only a read while the pane shows counts as someone viewing the Inbox.
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
   const refresh = useCallback(async () => {
-    const [next, list] = await Promise.all([bridgeApi.connectorInbox(), bridgeApi.connectorList()]);
+    const [next, list] = await Promise.all([bridgeApi.connectorInbox(undefined, visibleRef.current), bridgeApi.connectorList()]);
     setInbox(next);
     setConnectors(list.connectors);
   }, []);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { void refresh(); }, [refresh, visible]);
   useEffect(() => {
     if (!visible) return;
     let unlisten: (() => void) | undefined;

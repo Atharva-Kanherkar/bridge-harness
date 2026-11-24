@@ -190,9 +190,9 @@ async fn connector_list(refresh: Option<bool>, state: State<'_, Arc<BridgeCore>>
 }
 
 #[tauri::command]
-async fn connector_inbox(limit: Option<u32>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorInboxResult, BridgeError> {
+async fn connector_inbox(limit: Option<u32>, viewing: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorInboxResult, BridgeError> {
     let core = state.inner().clone();
-    blocking("Connector inbox", move || api::connector_inbox(&core, limit)).await
+    blocking("Connector inbox", move || api::connector_inbox(&core, limit, viewing.unwrap_or(false))).await
 }
 
 #[tauri::command]
@@ -969,14 +969,43 @@ async fn run_workflow(
     workflow_id: String,
     request_id: String,
     dry_run: Option<bool>,
+    event: Option<bridge_protocol::messages::WorkflowEventSample>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::RunWorkflowResult, BridgeError> {
     let dry_run = dry_run.unwrap_or_default();
     let core = state.inner().clone();
     blocking("Workflow run", move || {
-        api::run_workflow(&core, &bridge_protocol::messages::RunWorkflowParams { workflow_id, request_id, dry_run })
+        api::run_workflow(&core, &bridge_protocol::messages::RunWorkflowParams { workflow_id, request_id, dry_run, event })
     })
     .await
+}
+
+#[tauri::command]
+async fn preview_workflow_trigger(
+    trigger: bridge_protocol::messages::WorkflowTrigger,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkflowTriggerPreview, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workflow trigger preview", move || {
+        api::preview_workflow_trigger(&core, &bridge_protocol::messages::PreviewWorkflowTriggerParams { trigger })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_workflow_templates(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkflowTemplateList, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workflow templates", move || api::list_workflow_templates(&core)).await
+}
+
+#[tauri::command]
+async fn refresh_workflow_connectors(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkflowOptions, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workflow connectors", move || Ok(api::refresh_workflow_connectors(&core))).await
 }
 
 #[tauri::command]
@@ -3961,6 +3990,9 @@ pub fn run() -> i32 {
             always_allow_tool,
             draft_workflow_from_text,
             draft_workflow_from_session,
+            preview_workflow_trigger,
+            list_workflow_templates,
+            refresh_workflow_connectors,
             mark_workflow_runs_read,
             start_review,
             list_reviews,

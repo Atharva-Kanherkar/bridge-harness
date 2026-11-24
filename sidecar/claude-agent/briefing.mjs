@@ -258,6 +258,11 @@ export function briefingOptions(briefing, mcpServers = {}, ask = null, projectTr
     // `default` rather than `dontAsk` or `bypassPermissions`: the gate below is
     // only consulted when the SDK actually asks, and asking is what we want.
     permissionMode: "default",
+    // No built-in tool at all. A briefing reads connectors and nothing else,
+    // and several built-ins (SendMessage, RemoteTrigger, CronCreate) run
+    // without asking `canUseTool`, so a deny-list cannot keep them out of a
+    // run that reads text other people wrote.
+    tools: [],
     // Deliberately no `allowedTools`. Anything pre-approved there would skip the
     // gate, and with it the argument-size check.
     disallowedTools: briefing?.deniedBuiltins ?? [],
@@ -354,6 +359,28 @@ function workflowOptions(briefing, mcpServers, ask) {
     settingSources: [],
     plugins: [],
   };
+}
+
+/**
+ * The account connectors a launch must wait for before its first turn, and
+ * every server it may reach. A workflow run waits for its granted account
+ * connectors; a briefing turn that loads connectors natively waits for the
+ * account connectors in its scope. A direct call and a personal-app runtime
+ * send no turn, so they wait for nothing here.
+ */
+export function connectorsToAwait(briefing) {
+  if (briefing?.workflow) {
+    return { granted: workflowGrantedServers(briefing), waitFor: workflowAccountServers(briefing) };
+  }
+  if (briefing?.nativeConnectors !== true || isDirectCall(briefing) || isAppRuntime(briefing)) {
+    return { granted: [], waitFor: [] };
+  }
+  const granted = [...new Set([
+    ...(briefing.allowedServers ?? []),
+    ...(briefing.readScopeServers ?? []),
+    ...(briefing.actionScope ? [briefing.actionScope.server] : []),
+  ])];
+  return { granted, waitFor: granted.filter(isAccountConnector) };
 }
 
 /** Is this config a briefing run? */

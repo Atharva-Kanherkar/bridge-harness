@@ -28,7 +28,10 @@ fn fake_model() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let e2e = fixtures().join("workflow-e2e");
-        let mut paths = vec![e2e.join("bin")];
+        // `gh-bin` holds a fake `gh` for the GitHub event journeys. It is a
+        // directory of its own: other suites put `bin` first on `PATH` for the
+        // fake `claude` and bring their own `gh`.
+        let mut paths = vec![e2e.join("bin"), e2e.join("gh-bin")];
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
         std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
         std::env::set_var("BRIDGE_CLAUDE_SIDECAR", e2e.join("sidecar.mjs"));
@@ -476,5 +479,159 @@ fn e3_a_daemon_killed_after_one_write_reclaims_the_run_without_repeating_it() {
     assert_eq!(writes(&home), vec!["slack_send_message".to_owned()], "the executed write is not repeated");
     assert_eq!(effects(&running.daemon, &run_id), vec![(SLACK_POST.to_owned(), "approved".to_owned())]);
 
+    running.stop();
+}
+
+fn save_and_approve(rpc: &mut Rpc, definition: Value) -> String {
+    let saved = rpc.call("workflows/save_workflow", json!({ "definition": definition }));
+    // A save without an id fails the approve call below, which says why.
+    let workflow_id = saved["workflow"]["id"].as_str().unwrap_or_default().to_owned();
+    rpc.call("workflows/approve_workflow", json!({ "workflowId": workflow_id, "revisionId": saved["workflow"]["revisionId"] }));
+    workflow_id
+}
+
+#[test]
+fn e5_a_slack_mention_starts_one_run_carrying_it_and_a_replay_starts_none() {
+    fake_model();
+    let fixture = tempfile::tempdir().unwrap();
+    seed_data_dir(fixture.path());
+    let running = RunningDaemon::start(fixture.path());
+    let mut rpc = running.rpc();
+    let model = claude_model(&mut rpc);
+    let workflow_id = save_and_approve(&mut rpc, json!({
+        "name": "Mentions",
+        "steps": [{ "harness": "claude", "model": model, "instructions": "Tell me what the mention needs." }],
+        "trigger": { "kind": "event", "event": "slack_mention", "channel": "eng" },
+        "files": "none",
+        "grants": [{ "server": "claude.ai Slack", "read": true, "write": "never" }],
+        "budget": budget(),
+    }));
+    let summary = rpc.call("workflows/list_workflows", Value::Null)["workflows"][0].clone();
+    assert_eq!(summary["trigger"]["kind"], json!("event"));
+
+    // Inbox ingress reads Slack (the fake model answers the real ingress
+    // prompt) and finds a mention that arrived after the approval. The
+    // production poll, not a test helper, must hand it to the workflow (R1).
+    let arrived = Utc::now() + ChronoDuration::seconds(1);
+    let ingress = fixture.path().join("ingress.json");
+    std::fs::write(&ingress, json!({ "items": [{
+        "channelId": "C-eng", "channelLabel": "#eng", "messageTs": "100.1", "author": "Priya", "kind": "mention",
+        "text": "can you look at this?", "permalink": "https://app.slack.com/x", "receivedAt": arrived.to_rfc3339(),
+    }] }).to_string()).unwrap();
+    std::env::set_var("BRIDGE_E2E_INGRESS", &ingress);
+    let refreshed = rpc.call("connectors/connector_refresh", json!({ "family": "slack" }));
+    assert_eq!(refreshed["announced"], json!(1), "{refreshed}");
+    let fired = tick_at(&running.daemon, arrived + ChronoDuration::seconds(1));
+    assert_eq!(fired.len(), 1, "one event, one run");
+    let run = rpc.wait_run(&workflow_id, &fired[0], "the event run to finish", |run| run["status"] == json!("succeeded") || run["status"] == json!("failed"));
+    assert_eq!(run["status"], json!("succeeded"), "{run}");
+    assert_eq!(run["triggerKind"], json!("event"));
+    assert_eq!(run["eventCount"], json!(1));
+    assert!(run["event"]["title"].as_str().unwrap().contains("#eng · Priya"), "{run}");
+    assert!(run["summary"].as_str().unwrap().starts_with("Handled 1 event: #eng · Priya"), "the run's first turn carried the event: {run}");
+
+    // The same ingress cycle replayed, and another tick: nothing new.
+    let replayed = rpc.call("connectors/connector_refresh", json!({ "family": "slack" }));
+    assert_eq!(replayed["announced"], json!(0), "{replayed}");
+    std::env::remove_var("BRIDGE_E2E_INGRESS");
+    assert!(tick_at(&running.daemon, arrived + ChronoDuration::seconds(5)).is_empty());
+
+    // The preview reads the same ledger.
+    let preview = rpc.call("workflows/preview_workflow_trigger", json!({ "trigger": { "kind": "event", "event": "slack_mention" } }));
+    assert_eq!(preview["supported"], json!(true), "{preview}");
+    assert_eq!(preview["matches"], json!(1), "the preview reads what Inbox ingress recorded: {preview}");
+    running.stop();
+}
+
+#[test]
+fn e6_a_github_source_baselines_then_fires_once_per_new_pull_request() {
+    fake_model();
+    let fixture = tempfile::tempdir().unwrap();
+    seed_data_dir(fixture.path());
+    let answer = fixture.path().join("gh-answer.json");
+    std::env::set_var("BRIDGE_E2E_GH_ANSWER", &answer);
+    // The run reads the new PR in full before it starts.
+    let view = fixture.path().join("gh-view.json");
+    let details = json!({ "body": "Adds retries to the uploader.", "labels": [{ "name": "infra" }], "additions": 12, "deletions": 3, "files": [{ "path": "src/upload.rs", "additions": 12, "deletions": 3 }] });
+    std::env::set_var("BRIDGE_E2E_GH_VIEW", &view);
+    let pr = |number: i64, created: DateTime<Utc>| json!({
+        "number": number, "title": format!("PR {number}"), "url": format!("https://github.com/acme/app/pull/{number}"),
+        "author": { "login": "sam" }, "createdAt": created.to_rfc3339(),
+    });
+    let start = Utc::now();
+    for (path, body) in [(&answer, json!([pr(1, start - ChronoDuration::days(2))])), (&view, details)] {
+        std::fs::write(path, body.to_string()).unwrap();
+    }
+    let running = RunningDaemon::start(fixture.path());
+    let mut rpc = running.rpc();
+    let model = claude_model(&mut rpc);
+    let workflow_id = save_and_approve(&mut rpc, json!({
+        "name": "New PRs",
+        "steps": [{ "harness": "claude", "model": model, "instructions": "Summarise the pull request." }],
+        "trigger": { "kind": "event", "event": "github_pull_request_opened", "repo": "acme/app" },
+        "files": "none",
+        "budget": budget(),
+    }));
+    let gh = bridge_core::workflow_events::SystemGh;
+    assert_eq!(bridge_core::workflow_events::poll_github(&running.daemon.core, &gh, start).unwrap(), 0, "the first read is a baseline");
+    assert!(tick_at(&running.daemon, start).is_empty());
+
+    std::fs::write(&answer, json!([pr(2, Utc::now() + ChronoDuration::seconds(1)), pr(1, start - ChronoDuration::days(2))]).to_string()).unwrap();
+    let later = Utc::now() + ChronoDuration::minutes(2);
+    assert_eq!(bridge_core::workflow_events::poll_github(&running.daemon.core, &gh, later).unwrap(), 1);
+    let fired = tick_at(&running.daemon, later);
+    assert_eq!(fired.len(), 1);
+    let run = rpc.wait_run(&workflow_id, &fired[0], "the PR run to finish", |run| run["status"] == json!("succeeded") || run["status"] == json!("failed"));
+    assert_eq!(run["status"], json!("succeeded"), "{run}");
+    assert_eq!(run["event"]["url"], json!("https://github.com/acme/app/pull/2"));
+    assert!(run["summary"].as_str().unwrap_or_default().contains("[Adds retries to the uploader.]"), "the run saw the PR's description: {run}");
+    assert_eq!(bridge_core::workflow_events::poll_github(&running.daemon.core, &gh, later + ChronoDuration::minutes(2)).unwrap(), 0, "a re-read repeats nothing");
+
+    let preview = rpc.call("workflows/preview_workflow_trigger", json!({ "trigger": { "kind": "event", "event": "github_pull_request_opened", "repo": "acme/app" } }));
+    assert_eq!(preview["matches"], json!(2), "both PRs were opened this week: {preview}");
+    std::env::remove_var("BRIDGE_E2E_GH_ANSWER");
+    std::env::remove_var("BRIDGE_E2E_GH_VIEW");
+    running.stop();
+}
+
+#[test]
+fn e7_a_burst_of_runs_never_exceeds_the_cap_and_every_run_finishes() {
+    fake_model();
+    let fixture = tempfile::tempdir().unwrap();
+    seed_data_dir(fixture.path());
+    let running = RunningDaemon::start(fixture.path());
+    let mut rpc = running.rpc();
+    let model = claude_model(&mut rpc);
+    rpc.call("workflows/write_workflow_settings", json!({ "settings": { "paused": false, "quotaReservePercent": 0, "maxConcurrentRuns": 2 } }));
+    let mut runs = Vec::new();
+    for index in 0..5 {
+        let workflow_id = save_and_approve(&mut rpc, json!({
+            "name": format!("Slow {index}"),
+            "steps": [{ "harness": "claude", "model": model, "instructions": "Take a moment. E2E:slow" }],
+            "trigger": { "kind": "manual" },
+            "files": "none",
+            "budget": budget(),
+        }));
+        let started = rpc.call("workflows/run_workflow", json!({ "workflowId": workflow_id, "requestId": "burst" }));
+        runs.push(started["run"]["id"].as_str().unwrap().to_owned());
+    }
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut most_running = 0;
+    let mut saw_queue = false;
+    loop {
+        let all = rpc.call("workflows/list_workflow_runs", json!({ "limit": 50 }))["runs"].as_array().unwrap().clone();
+        let ours: Vec<&Value> = all.iter().filter(|run| runs.contains(&run["id"].as_str().unwrap().to_owned())).collect();
+        let running_now = ours.iter().filter(|run| run["status"] == json!("running")).count();
+        most_running = most_running.max(running_now);
+        saw_queue |= ours.iter().any(|run| run["status"] == json!("queued") && run["sessionId"].is_null());
+        if ours.iter().all(|run| run["status"] == json!("succeeded")) {
+            break;
+        }
+        assert!(ours.iter().all(|run| run["status"] != json!("failed")), "{ours:?}");
+        assert!(Instant::now() < deadline, "the burst never finished: {ours:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(most_running <= 2, "at most two ran at once, saw {most_running}");
+    assert!(saw_queue, "the burst waited in line");
     running.stop();
 }
