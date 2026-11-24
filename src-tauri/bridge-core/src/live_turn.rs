@@ -1341,6 +1341,7 @@ pub fn start_session(
     let root_write_mode = crate::chat_defaults::root_write_mode(&state.db.lock().unwrap(), &session_id)?;
     // A new session has no row yet. The insert below writes it with no parent
     // and no worker runtime, so it is a top-level chat.
+    // For an existing row, read its current state again for the launch settings.
     let interactive = existing.is_none() || crate::chat_defaults::is_top_level_chat(&state.db.lock().unwrap(), &session_id)?;
     let path = path.filter(|value| !value.is_empty()).unwrap_or_else(|| {
         state
@@ -1922,6 +1923,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<(), 
     } else {
         crate::chat_defaults::root_write_mode(&state.db.lock().unwrap(), &session_id)?
     };
+    // Read the current row again for the launch settings after the workspace lock.
     let interactive = !is_workflow && crate::chat_defaults::is_top_level_chat(&state.db.lock().unwrap(), &session_id)?;
     let scoped_settings = crate::chat_defaults::validate_launch(&state.db.lock().unwrap(), &state.adapter_registry, &session_id, adapter_id, model.as_deref(), effort.as_deref())?;
     let tier = if is_orchestrator {

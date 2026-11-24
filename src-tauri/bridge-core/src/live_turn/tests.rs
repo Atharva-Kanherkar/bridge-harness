@@ -1586,10 +1586,8 @@ fn start_session_reuse_skips_workers_and_harness_subagents() {
     assert!(warm_thread(&core, "subagent").is_none());
     assert_eq!(lineage(&core, "subagent"), (1, Some(chat.clone()), crate::harness_subagents::KIND.to_owned()));
 
-    // A Codex orchestrator with a Claude worker: the workspace has no
-    // reusable Claude session. This phase does not assert the start result:
-    // the path for a new session fails at is_top_level_chat, before a launch.
-    // The worker must stay as it was.
+    // This workspace has a Claude worker and no reusable Claude chat.
+    // Starting Claude makes a new session and leaves the worker as it was.
     {
         let db = core.db.lock().unwrap();
         db.execute(
