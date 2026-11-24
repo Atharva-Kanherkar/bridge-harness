@@ -221,6 +221,32 @@
             "null"
           ]
         },
+        "prAuthor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prTitle": {
+          "description": "The PR's title and author, once the job has prepared.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repoName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repoOwner": {
+          "description": "The repository, for views that list reviews across repositories.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "retryOf": {
           "description": "The job this one retried.",
           "type": [
@@ -460,6 +486,13 @@
         "$ref": "#/definitions/ReviewPass"
       },
       "type": "array"
+    },
+    "summary": {
+      "description": "What the reviewers said overall, reviewers named. Absent until the review drafted.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [
