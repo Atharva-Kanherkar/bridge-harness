@@ -811,3 +811,26 @@ fn a_batch_overflow_still_waits_for_the_next_slot() {
     let next = due_occasions(&db, at("2026-11-24T09:00:30Z")).unwrap();
     assert_eq!(next[0].1.events.len(), 2, "the two without room run at the next slot");
 }
+
+#[test]
+fn a_review_request_that_arrived_while_paused_never_runs() {
+    let (dir, core) = test_support::core();
+    let workflow = {
+        let db = core.db.lock().unwrap();
+        listening_workflow(&db, dir.path(), event_trigger(wire::WorkflowEventKind::GithubReviewRequested), "2026-11-20T00:00:00Z")
+    };
+    let request = |number: i64| format!(r#"{{"number": {number}, "title": "R", "url": "https://github.com/acme/app/pull/{number}", "repository": {{"nameWithOwner": "acme/app"}}, "createdAt": "2026-11-01T00:00:00Z"}}"#);
+    let gh = FakeGh::answering(&format!("[{}]", request(7)));
+    assert_eq!(poll_github(&core, &gh, at("2026-11-24T00:00:00Z")).unwrap(), 0, "the baseline");
+    let settings = |paused| wire::WorkflowSettings { paused, quota_reserve_percent: 25, max_concurrent_runs: 2 };
+    crate::workflow_trigger::write_settings(&core.db.lock().unwrap(), settings(true), at("2026-11-24T01:00:00Z")).unwrap();
+    // While paused, #8 asks for a review. Workflows resume an hour later.
+    gh.set(Ok(&format!("[{}, {}]", request(8), request(7))));
+    crate::workflow_trigger::write_settings(&core.db.lock().unwrap(), settings(false), at("2026-11-24T02:00:00Z")).unwrap();
+    assert_eq!(poll_github(&core, &gh, at("2026-11-24T02:00:30Z")).unwrap(), 0, "the resumed listener reads a new baseline");
+    assert!(pending(&core.db.lock().unwrap(), &workflow.id).is_empty());
+    // A request after the resume runs.
+    gh.set(Ok(&format!("[{}, {}, {}]", request(9), request(8), request(7))));
+    assert_eq!(poll_github(&core, &gh, at("2026-11-24T02:02:00Z")).unwrap(), 1);
+    assert_eq!(pending(&core.db.lock().unwrap(), &workflow.id), vec!["github:review:acme/app#9"]);
+}

@@ -535,9 +535,12 @@ pub fn observe_inbox(db: &Connection, fresh: &[InboxItem], now: DateTime<Utc>) -
     observe(db, &samples, now)
 }
 
-/// What identifies a GitHub source: a changed event or repository re-baselines.
-fn source_digest(trigger: &EventTrigger<'_>) -> String {
-    format!("{:?}|{}", trigger.event, trigger.repo.unwrap_or_default().to_lowercase())
+/// What identifies a GitHub source: a changed event or repository, or a new
+/// listener (approval, a change, turning it back on, Workflows resuming),
+/// re-baselines. A review request has no time of its own, so only a fresh
+/// baseline keeps one that arrived while nothing listened from running (R8).
+fn source_digest(trigger: &EventTrigger<'_>, listener: DateTime<Utc>) -> String {
+    format!("{:?}|{}|{}", trigger.event, trigger.repo.unwrap_or_default().to_lowercase(), workflow_trigger::stamp(listener))
 }
 
 /// Read each GitHub source that is due and record what is new. `gh` runs with
@@ -551,7 +554,7 @@ pub fn poll_github(core: &Arc<BridgeCore>, gh: &dyn GhRunner, now: DateTime<Utc>
             if is_slack(trigger.event) {
                 continue;
             }
-            let digest = source_digest(&trigger);
+            let digest = source_digest(&trigger, workflow_trigger::listener_anchor(&db, &workflow)?);
             let source: Option<(String, Option<String>, Option<String>)> = db
                 .query_row(
                     "SELECT trigger_digest, baseline_at, last_polled_at FROM workflow_event_sources WHERE workflow_id=?1",
