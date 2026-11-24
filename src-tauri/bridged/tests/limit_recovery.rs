@@ -173,15 +173,11 @@ fn supported_efforts(daemon: &Daemon, model: &str) -> Vec<String> {
         .supported_effort_levels
 }
 
+/// The chat this journey made, by the id its creation returns: never the
+/// first new id in a session list, which another session could win.
 fn create_chat(rpc: &mut Rpc, model: &str) -> String {
-    let before: Vec<String> = sessions(rpc);
-    rpc.call("sessions/create_chat", json!({ "harness": "claude", "model": model }));
-    sessions(rpc).into_iter().find(|id| !before.contains(id)).expect("a new chat")
-}
-
-fn sessions(rpc: &mut Rpc) -> Vec<String> {
-    let state = rpc.call("state/get_state", Value::Null);
-    state["sessions"].as_array().map(|sessions| sessions.iter().map(|session| session["id"].as_str().unwrap().to_owned()).collect()).unwrap_or_default()
+    let created = rpc.call("sessions/create_chat_id", json!({ "harness": "claude", "model": model }));
+    created["sessionId"].as_str().expect("a new chat").to_owned()
 }
 
 fn send(rpc: &mut Rpc, session_id: &str, text: &str) {
@@ -204,7 +200,19 @@ fn wait_log(daemon: &Daemon, session_id: &str, what: &str, until: impl Fn(&[(Str
         if until(&log) {
             return log;
         }
-        assert!(Instant::now() < deadline, "timed out waiting for {what}: {log:?}");
+        if Instant::now() >= deadline {
+            // Say why: the recovery row and whether the chat looks busy.
+            let db = daemon.core.db.lock().unwrap();
+            let recovery: Option<String> = db.query_row(
+                "SELECT state || ' | ' || COALESCE(outcome,'') || ' | due ' || due_at FROM limit_recoveries WHERE session_id=?1",
+                [session_id], |row| row.get(0),
+            ).ok();
+            let chat: Option<String> = db.query_row(
+                "SELECT COALESCE(status,'') || ' | turn ' || COALESCE(active_turn_id,'none') FROM sessions WHERE id=?1",
+                [session_id], |row| row.get(0),
+            ).ok();
+            panic!("timed out waiting for {what}: {log:?}; recovery: {recovery:?}; chat: {chat:?}");
+        }
         std::thread::sleep(Duration::from_millis(100));
     }
 }
