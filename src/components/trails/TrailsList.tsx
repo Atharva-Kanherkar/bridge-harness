@@ -5,8 +5,8 @@ import { groupTrails, stageLabel } from "@/trails";
 import { HarnessMark } from "@/components/harnessMarks";
 import { Button } from "@/components/ui/button";
 import { ScreenHeading } from "@/components/ui/screen";
-import { SkeletonRows } from "@/components/ui/skeleton";
 import { StageBar, StateWord } from "./TrailParts";
+import { TrailListSkeleton } from "./TrailSkeletons";
 import { clsx as cn } from "clsx";
 
 export type TrailWorkspace = { id: string; title: string };
@@ -129,7 +129,7 @@ export function TrailsList({ trails, loading, error, workspaces, defaultWorkspac
         />
       )}
       {error && <p role="alert" className="mb-4 rounded-lg bg-destructive/8 px-3 py-2 text-ui text-destructive">{error}</p>}
-      {!trails && loading && <SkeletonRows label="Loading trails" rows={4} />}
+      {!trails && loading && <TrailListSkeleton />}
       {trails && sections.length === 0 && !creating && (
         <div className="flex flex-col items-center gap-3 rounded-xl bg-card px-6 py-12 text-center">
           <Route className="size-5 text-muted-foreground" aria-hidden="true" />

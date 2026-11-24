@@ -77,6 +77,7 @@ import { ImportToast } from "./components/ImportToast";
 import { importNotice } from "./moveToBridge";
 import { TrailToasts, trailToastKey, type TrailToast } from "./components/trails/TrailToasts";
 import { AddToTrailDialog } from "./components/trails/AddToTrailDialog";
+import { TrailsScreenSkeleton } from "./components/trails/TrailSkeletons";
 import type { TrailStartRequest } from "./components/TrailsScreen";
 import type { TrailMemberRef, TrailSummary } from "./protocol/generated/protocol";
 import { noteDisplayTitle } from "./notesDraft";
@@ -3931,8 +3932,9 @@ function AppContent() {
         onNewWorkspace={() => setNewProjectOpen(true)}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "trails" ? <Suspense fallback={null}><TrailsScreen
+      /> : view === "trails" ? <Suspense fallback={<TrailsScreenSkeleton trailOpen={!!trailId} />}><TrailsScreen
         trailId={trailId}
+        knownTrails={trailSummaries}
         onSelectTrail={id => setTrailId(id)}
         workspaces={state.workspaces.map(item => ({ id: item.id, title: item.title }))}
         defaultWorkspaceId={workspace?.id ?? null}

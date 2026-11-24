@@ -13,8 +13,10 @@ function message(cause: unknown): string {
 }
 
 /** The Trails destination: the list, or one trail's page when `trailId` is set. */
-export function TrailsScreen({ trailId, onSelectTrail, workspaces, defaultWorkspaceId, harnesses, defaultHarness, onOpenSession, onOpenNote, onOpenUrl, onStart }: {
+export function TrailsScreen({ trailId, knownTrails, onSelectTrail, workspaces, defaultWorkspaceId, harnesses, defaultHarness, onOpenSession, onOpenNote, onOpenUrl, onStart }: {
   trailId: string | null;
+  /** Summaries the host already holds: a trail opened from elsewhere paints its header from them at once. */
+  knownTrails?: readonly TrailSummary[];
   onSelectTrail: (trailId: string | null) => void;
   workspaces: TrailWorkspace[];
   defaultWorkspaceId?: string | null;
@@ -33,6 +35,8 @@ export function TrailsScreen({ trailId, onSelectTrail, workspaces, defaultWorksp
   const [detailError, setDetailError] = useState<string>();
   const [starting, setStarting] = useState(false);
   const [adding, setAdding] = useState(false);
+  // A GitHub re-read in flight for the trail on screen: Refresh spins.
+  const [refreshing, setRefreshing] = useState(false);
 
   const loadList = useCallback(() => {
     bridgeApi.listTrails(true)
@@ -46,20 +50,37 @@ export function TrailsScreen({ trailId, onSelectTrail, workspaces, defaultWorksp
   const selectedRef = useRef(trailId);
   selectedRef.current = trailId;
   const requestRef = useRef(0);
-  const loadDetail = useCallback((id: string, refresh = false) => {
+  // The newest GitHub re-read: only its settling stops the spinner.
+  const refreshRef = useRef(0);
+  const loadDetail = useCallback((id: string, refresh = false): Promise<void> => {
     const request = ++requestRef.current;
     const current = () => request === requestRef.current && selectedRef.current === id;
-    bridgeApi.readTrail(id, refresh)
-      .then(result => { if (current()) { setDetail(result.trail); setDetailError(undefined); } })
-      .catch(cause => { if (current()) setDetailError(message(cause)); });
+    if (refresh) { refreshRef.current = request; setRefreshing(true); }
+    return bridgeApi.readTrail(id, refresh)
+      .then(result => {
+        if (current()) { setDetail(result.trail); setDetailError(undefined); }
+        // GitHub's answer lost to a newer local read, which may have run
+        // before the refresh stored what it found: read once more so that
+        // reaches the screen. A newer refresh carries it anyway.
+        else if (refresh && refreshRef.current === request && selectedRef.current === id) void loadDetail(id);
+      })
+      .catch(cause => { if (current()) setDetailError(message(cause)); })
+      .finally(() => { if (refresh && refreshRef.current === request) setRefreshing(false); });
   }, []);
 
   useEffect(() => { loadList(); }, [loadList]);
   useEffect(() => {
     setDetail(current => current?.summary.id === trailId ? current : null);
     setDetailError(undefined);
-    // Opening a page re-reads its pull requests from GitHub once.
-    if (trailId) loadDetail(trailId, true);
+    refreshRef.current = 0;
+    setRefreshing(false);
+    if (!trailId) return;
+    // Paint from what Bridge has stored, then re-read the trail's pull
+    // requests and issues from GitHub once, behind the page: that read runs
+    // `gh` per pull request and can take seconds.
+    let live = true;
+    void loadDetail(trailId).then(() => { if (live) void loadDetail(trailId, true); });
+    return () => { live = false; };
   }, [trailId, loadDetail]);
 
   useEffect(() => {
@@ -92,12 +113,17 @@ export function TrailsScreen({ trailId, onSelectTrail, workspaces, defaultWorksp
 
   if (trailId) {
     const shown = detail?.summary.id === trailId ? detail : null;
+    // What the page can say before its detail arrives.
+    const summary = shown?.summary ?? trails?.find(trail => trail.id === trailId) ?? knownTrails?.find(trail => trail.id === trailId) ?? null;
     return <>
       <TrailPage
         trail={shown}
-        workspaceTitle={titleOf(shown?.summary.workspaceId)}
+        summary={summary}
+        workspaceTitle={titleOf(summary?.workspaceId)}
         loading={!shown && !detailError}
+        refreshing={refreshing}
         error={detailError}
+        onRetry={() => void loadDetail(trailId)}
         onBack={() => onSelectTrail(null)}
         onContinue={() => setStarting(true)}
         onOpenEvent={openEvent}
@@ -114,9 +140,9 @@ export function TrailsScreen({ trailId, onSelectTrail, workspaces, defaultWorksp
         onRefresh={() => loadDetail(trailId, true)}
         onAdd={() => setAdding(true)}
       />
-      {adding && shown && (
+      {adding && summary && (
         <TrailAddDialog
-          trail={shown.summary}
+          trail={summary}
           onClose={() => setAdding(false)}
           onAdd={async member => {
             await bridgeApi.addTrailMember(trailId, member);
@@ -127,16 +153,16 @@ export function TrailsScreen({ trailId, onSelectTrail, workspaces, defaultWorksp
             loadDetail(trailId);
           }}
           onCreateNote={async title => {
-            const note = await bridgeApi.createNotePage({ title, workspaceId: shown.summary.workspaceId ?? undefined });
+            const note = await bridgeApi.createNotePage({ title, workspaceId: summary.workspaceId ?? undefined });
             await bridgeApi.addTrailMember(trailId, { kind: "note", ref: note.id });
             setAdding(false);
             onOpenNote(note.id);
           }}
         />
       )}
-      {starting && shown && (
+      {starting && summary && (
         <TrailStartDialog
-          trail={shown.summary}
+          trail={summary}
           harnesses={harnesses}
           defaultHarness={defaultHarness}
           onClose={() => setStarting(false)}
