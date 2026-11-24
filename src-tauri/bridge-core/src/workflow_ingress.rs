@@ -113,8 +113,10 @@ pub fn prompt(family: ConnectorFamily, scope: &str) -> String {
             ", \"team\": \"the team's name\"",
         ),
         ConnectorFamily::Notion => (
-            "Find the Notion database the owner calls the one named below, then list its 30 newest pages by \
-             creation time. Do not open each page. Three or four tool calls are enough.",
+            "Find the Notion database named below and list its 30 newest pages by creation time. Search for the \
+             database by name; fetch it once to read its data source, the `collection://…` URL in its \
+             `<data-source>` tag (the database's own id is not that URL); then query that data source for its \
+             newest pages. Do not open each page. Three or four tool calls are enough.",
             "the page id",
             "the page title",
             "who created the page",
