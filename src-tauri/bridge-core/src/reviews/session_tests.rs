@@ -436,6 +436,108 @@ fn live_review_on_a_fixture_pr() {
     }
 }
 
+/// A real harness re-reviews a fixture PR (#1122's acceptance, by hand). The
+/// first commit was reviewed: its divide-by-zero finding was kept and posted,
+/// its integer-division finding dropped. The new commit fixes the first and
+/// adds a slice that panics. Expect one new finding, the posted one in
+/// `fixed`, and the dropped one not raised again. Same environment as
+/// [`live_review_on_a_fixture_pr`]:
+///
+/// ```text
+/// BRIDGE_REVIEW_LIVE_HARNESS=claude \
+///   cargo test -p bridge-core --lib reviews::session::tests::live_incremental_review_on_a_fixture_pr -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "live: runs a real harness; set BRIDGE_REVIEW_LIVE_HARNESS"]
+fn live_incremental_review_on_a_fixture_pr() {
+    let Ok(harness) = std::env::var("BRIDGE_REVIEW_LIVE_HARNESS") else { return };
+    let model = std::env::var("BRIDGE_REVIEW_LIVE_MODEL").ok();
+    let scratch = tempfile::tempdir().unwrap();
+    if harness == "opencode" && std::env::var_os("BRIDGE_REVIEW_LIVE_OPENCODE_SIGNED_IN").is_none() {
+        std::env::set_var("XDG_DATA_HOME", scratch.path().join("xdg-data"));
+    }
+    let repo = std::fs::canonicalize(scratch.path()).unwrap().join("repo");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    let git = |args: &[&str]| {
+        let output = crate::git::git_command(&repo).args(args).output().unwrap();
+        assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "t@example.invalid"]);
+    git(&["config", "user.name", "T"]);
+    let last = "/// The last `n` items, or all of them when there are fewer.\npub fn last(items: &[i32], n: usize) -> &[i32] {\n    &items[items.len().saturating_sub(n)..]\n}\n";
+    std::fs::write(repo.join("src/lib.rs"), last).unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "base"]);
+    let base = git(&["rev-parse", "HEAD"]);
+    // Reviewed and posted: `average` divides by zero on an empty slice.
+    let average = "\n/// The average of the items.\npub fn average(items: &[i32]) -> i32 {\n    items.iter().sum::<i32>() / items.len() as i32\n}\n";
+    std::fs::write(repo.join("src/lib.rs"), format!("{last}{average}")).unwrap();
+    git(&["commit", "-q", "-am", "Add average"]);
+    let reviewed = git(&["rev-parse", "HEAD"]);
+    // The new commit: the empty case is handled, and `first` panics when
+    // n is larger than the slice.
+    let fixed = "\n/// The average of the items, or 0 for none.\npub fn average(items: &[i32]) -> i32 {\n    if items.is_empty() {\n        return 0;\n    }\n    items.iter().sum::<i32>() / items.len() as i32\n}\n\n/// The first `n` items.\npub fn first(items: &[i32], n: usize) -> &[i32] {\n    &items[..n]\n}\n";
+    std::fs::write(repo.join("src/lib.rs"), format!("{last}{fixed}")).unwrap();
+    git(&["commit", "-q", "-am", "Handle no items, add first"]);
+    let head = git(&["rev-parse", "HEAD"]);
+
+    let context = scratch.path().join("context");
+    std::fs::create_dir_all(&context).unwrap();
+    let patch = git(&["diff", "-M", &base, &head]) + "\n";
+    std::fs::write(context.join("diff.patch"), &patch).unwrap();
+    std::fs::write(context.join(INCREMENTAL_PATCH), git(&["diff", "-M", &reviewed, &head]) + "\n").unwrap();
+    std::fs::write(context.join("files.json"), json!([{"path": "src/lib.rs", "status": "modified", "additions": 13, "deletions": 0}]).to_string()).unwrap();
+    std::fs::write(
+        context.join("pr.json"),
+        json!({"number": 1, "title": "Add average and first", "body": "", "changedFiles": 1, "omittedFiles": [],
+            "incremental": {"from": reviewed, "to": head, "fellBack": false}})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(context.join("threads.json"), "[]").unwrap();
+    std::fs::write(
+        context.join(PRIOR_FINDINGS),
+        json!([
+            {"id": "f-divide-by-zero", "reviewedHead": reviewed, "path": "src/lib.rs", "line": 8, "startLine": null, "side": "RIGHT",
+             "severity": "major", "title": "average divides by zero on an empty slice",
+             "body": "`items.len()` is 0 for an empty slice, so this panics. Return early or return an Option.",
+             "fingerprint": "f1", "decision": "kept", "posted": true, "fixedInSha": null,
+             "thread": {"resolved": false, "outdated": false, "replies": []}},
+            {"id": "f-integer-division", "reviewedHead": reviewed, "path": "src/lib.rs", "line": 8, "startLine": null, "side": "RIGHT",
+             "severity": "minor", "title": "Integer division truncates the average",
+             "body": "The average of [1, 2] is 1, not 1.5. Consider returning f64.",
+             "fingerprint": "f2", "decision": "dropped", "posted": false, "fixedInSha": null, "thread": null},
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let (placed, context_name) = place_context(&context, &repo).unwrap();
+
+    let registry = Arc::new(AdapterRegistry::built_in().unwrap());
+    let wait = std::env::var("BRIDGE_REVIEW_LIVE_WAIT_SECS").ok().and_then(|secs| secs.parse().ok()).unwrap_or(8);
+    std::thread::sleep(Duration::from_secs(wait));
+    let transport = RegistryTransport { registry };
+    let instructions = instructions(&conventions_in(&placed), REVIEW_INSTRUCTIONS, false);
+    let start = SessionStart { cwd: &repo, model: model.as_deref(), effort: Some("medium"), instructions: &instructions };
+    let pr = read_json(&placed.join("pr.json")).unwrap();
+    let started = Instant::now();
+    let (result, usage) = run(&transport, &harness, &start, &prompt(&pr, &context_name), &CancelToken::new(), Limits::default());
+    eprintln!("{harness}: {:?} in {:?}\nusage: {usage:#?}", result.as_ref().map(|review| review.findings.len()), started.elapsed());
+    let review = result.expect("a valid findings set");
+    eprintln!("summary: {}\nfixed: {:?}", review.summary, review.fixed);
+    let changed = ["src/lib.rs".to_owned()].into_iter().collect();
+    let validated = contract::validate(review, &changed, &contract::hunks(&patch));
+    let prior = read_prior(&placed).unwrap();
+    let raised = validated.findings.len();
+    let findings = without_repeats(validated.findings, &prior);
+    let fixed = known_fixed(&validated.fixed, &prior);
+    eprintln!("raised {raised}, kept after repeats {}, fixed {fixed:?}\n{findings:#?}", findings.len());
+    assert!(fixed.contains(&"f-divide-by-zero".to_owned()), "the posted finding the new commit fixed");
+    assert!(findings.iter().any(|finding| finding.title.to_lowercase().contains("first") || finding.body.contains("first")), "the new bug in `first`");
+}
+
 #[test]
 fn a_planted_path_in_the_checkout_is_never_followed() {
     let scratch = tempfile::tempdir().unwrap();

@@ -156,6 +156,20 @@ export function query({ prompt, options = {} }) {
           confidence: 0.6,
         }],
       };
+      // A re-review (scripts/e2e-review-auto-incremental.mjs): the new commit
+      // fixes what was posted and adds a third line. The second-line finding
+      // above is raised again on purpose: Bridge must leave the repeat out.
+      const prior = text.match(/`([^`]*prior_findings\.json)`/);
+      if (prior) {
+        const earlier = JSON.parse(readFileSync(join(cwd, prior[1]), "utf8"));
+        review.summary = "The new commit adds a third line.";
+        review.fixed = earlier.filter((finding) => finding.posted).map((finding) => finding.id);
+        review.findings.push({
+          path: "README.md", line: 3, side: "RIGHT", severity: "major",
+          title: "The third line repeats the second",
+          body: "Drop it or say something new.", confidence: 0.7,
+        });
+      }
       yield* finish(`I read the diff.\n\n\`\`\`json\n${JSON.stringify(review)}\n\`\`\``);
       return;
     }
