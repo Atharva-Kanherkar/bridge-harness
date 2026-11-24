@@ -1,7 +1,31 @@
-import type { ReactNode } from "react";
-import type { TrailState } from "@/protocol/generated/protocol";
+import type { ComponentType, ReactNode } from "react";
+import { CircleDot, FileText, GitPullRequest, ListChecks, MessagesSquare, Send, Trash2 } from "lucide-react";
+import type { TrailEventKind, TrailState } from "@/protocol/generated/protocol";
 import { TRAIL_STAGES, TRAIL_STATE_LABEL, stageLabel } from "@/trails";
 import { clsx as cn } from "clsx";
+
+export const KIND_LABEL: Record<TrailEventKind, string> = {
+  issue: "Issue",
+  note: "Note",
+  chat: "Chat",
+  pullRequest: "Pull request",
+  checks: "Checks",
+  message: "Message",
+  removed: "Removed",
+};
+
+export const KIND_ICON: Record<TrailEventKind, ComponentType<{ className?: string }>> = {
+  issue: CircleDot,
+  note: FileText,
+  chat: MessagesSquare,
+  pullRequest: GitPullRequest,
+  checks: ListChecks,
+  message: Send,
+  removed: Trash2,
+};
+
+/** Ink for an event's tone; `plain` stays quiet. */
+export const TONE_INK = { plain: "text-muted-foreground", success: "text-success", warning: "text-warning", danger: "text-destructive" } as const;
 
 /** Four segments: Plan, Chats, Pull request, Shipped. The reached ones fill;
  * when the trail needs the person, the current segment turns amber. */

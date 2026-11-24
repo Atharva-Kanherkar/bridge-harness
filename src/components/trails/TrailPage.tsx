@@ -1,39 +1,17 @@
 import { useEffect, useState, type ComponentType } from "react";
 import {
-  Archive, ArchiveRestore, CircleAlert, CircleDot, FileText, GitBranch, GitPullRequest, ListChecks, MessageSquare,
-  MessagesSquare, Plus, RefreshCw, Route, Send, Trash2, X,
+  Archive, ArchiveRestore, CircleAlert, CircleDot, FileText, GitBranch, GitPullRequest, MessageSquare,
+  MessagesSquare, Plus, RefreshCw, Route, Send, X,
 } from "lucide-react";
-import type { PreviewTrailBriefResult, TrailDetail, TrailEvent, TrailEventKind, TrailSummary } from "@/protocol/generated/protocol";
+import type { PreviewTrailBriefResult, TrailDetail, TrailEvent, TrailSummary } from "@/protocol/generated/protocol";
 import { bridgeApi } from "@/api";
 import { TRAIL_STATE_LABEL, briefKind, formatTokens, groupByDay, memberNoun, stageLabel, timeLabel, type BriefKind } from "@/trails";
 import { HarnessMark } from "@/components/harnessMarks";
 import { harnessLabel } from "@/utils";
 import { Button } from "@/components/ui/button";
-import { Chip, RailSection, StageBar } from "./TrailParts";
+import { Chip, KIND_ICON, KIND_LABEL, RailSection, StageBar, TONE_INK } from "./TrailParts";
 import { TrailBriefSkeleton, TrailHeaderSkeleton, TrailRailSkeleton, TrailTimelineSkeleton } from "./TrailSkeletons";
 import { clsx as cn } from "clsx";
-
-export const KIND_LABEL: Record<TrailEventKind, string> = {
-  issue: "Issue",
-  note: "Note",
-  chat: "Chat",
-  pullRequest: "Pull request",
-  checks: "Checks",
-  message: "Message",
-  removed: "Removed",
-};
-
-export const KIND_ICON: Record<TrailEventKind, ComponentType<{ className?: string }>> = {
-  issue: CircleDot,
-  note: FileText,
-  chat: MessagesSquare,
-  pullRequest: GitPullRequest,
-  checks: ListChecks,
-  message: Send,
-  removed: Trash2,
-};
-
-export const TONE_INK = { plain: "text-muted-foreground", success: "text-success", warning: "text-warning", danger: "text-destructive" } as const;
 
 const BRIEF_ICON: Record<BriefKind, ComponentType<{ className?: string }>> = {
   issue: CircleDot,
