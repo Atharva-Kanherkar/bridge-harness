@@ -2742,8 +2742,10 @@ async fn close_terminal(
 async fn list_terminals(
     workspace_id: String,
     state: State<'_, Arc<BridgeCore>>,
-) -> Result<Vec<String>, BridgeError> {
-    Ok(api::list_terminals(state.inner(), &workspace_id))
+) -> Result<wire::ListTerminalsResult, BridgeError> {
+    // The contracted object, as bridged replies. A bare array here made the
+    // dock terminal unable to take a chat's Run in the embedded host.
+    Ok(wire::ListTerminalsResult { terminal_ids: api::list_terminals(state.inner(), &workspace_id) })
 }
 
 // An owned future, like the personal-app commands: Tauri's expansion of an
@@ -4713,6 +4715,203 @@ mod tests {
                     method.as_str()
                 ),
             }
+        }
+    }
+
+    #[test]
+    fn every_command_returns_its_contracted_result_shape() {
+        // The embedded host hands the webview whatever a command returns,
+        // while bridged replies with the contract's result type. A command
+        // returning a bare list where the contract has an object worked over
+        // the daemon and broke only the embedded app: list_terminals answered
+        // `["t1"]` instead of `{ terminalIds: ["t1"] }`, the dock terminal
+        // threw reading it, and no Run from the chat ever reached a shell.
+        let source = include_str!("lib.rs");
+        let schemas = bridge_protocol::messages::payload_schemas();
+        let mut checked = 0;
+        let mut drifted = Vec::new();
+        for method in bridge_protocol::MethodName::ALL.iter().copied() {
+            let Some(result) = bridge_protocol::TypedMethod::for_method(method).result else { continue };
+            let Some(native) = command_result_type(source, method.command_name()) else { continue };
+            let (_, schema) = schemas
+                .iter()
+                .find(|(name, _)| *name == result)
+                .unwrap_or_else(|| panic!("{result} has no schema"));
+            checked += 1;
+            let native = rust_result_kind(&native);
+            let contract = schema_result_kind(schema, schema);
+            if !result_kinds_agree(&native, &contract) {
+                drifted.push(format!("{} returns {native:?}, its contract {result} is {contract:?}", method.as_str()));
+            }
+        }
+        assert!(checked > 100, "the commands have contracted results to check");
+        assert!(drifted.is_empty(), "these commands answer the embedded app in a different shape than bridged: {drifted:#?}");
+    }
+
+    #[test]
+    fn result_shape_comparison_tells_a_list_from_an_object() {
+        let object = serde_json::json!({
+            "type": "object",
+            "properties": { "terminalIds": { "type": "array", "items": { "type": "string" } } },
+        });
+        assert!(!result_kinds_agree(&rust_result_kind("Vec<String>"), &schema_result_kind(&object, &object)));
+        assert!(result_kinds_agree(&rust_result_kind("wire::ListTerminalsResult"), &schema_result_kind(&object, &object)));
+        let list = serde_json::json!({ "type": "array", "items": { "type": "string" } });
+        assert!(result_kinds_agree(&rust_result_kind("Vec<String>"), &schema_result_kind(&list, &list)));
+        let nullable = serde_json::json!({
+            "anyOf": [{ "$ref": "#/definitions/Frame" }, { "type": "null" }],
+            "definitions": { "Frame": { "type": "object", "properties": {} } },
+        });
+        assert!(result_kinds_agree(&rust_result_kind("Option<browser_bridge::BrowserFrame>"), &schema_result_kind(&nullable, &nullable)));
+        assert!(!result_kinds_agree(&rust_result_kind("browser_bridge::BrowserFrame"), &schema_result_kind(&nullable, &nullable)));
+        let unit = serde_json::json!({ "type": "null" });
+        assert!(result_kinds_agree(&rust_result_kind("()"), &schema_result_kind(&unit, &unit)));
+        assert!(result_kinds_agree(&rust_result_kind("bridge_protocol::messages::UnitResult"), &schema_result_kind(&unit, &unit)));
+        let source = "async fn sample(\n    id: String,\n    state: State<'_, Arc<BridgeCore>>,\n) -> Result<Vec<String>, BridgeError> {\n";
+        assert_eq!(command_result_type(source, "sample").as_deref(), Some("Vec<String>"));
+        let future = "fn sample(state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::Thing, BridgeError>> {\n";
+        assert_eq!(command_result_type(source, "missing"), None);
+        assert_eq!(command_result_type(future, "sample").as_deref(), Some("wire::Thing"));
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum ResultKind {
+        Any,
+        Null,
+        Boolean,
+        Number,
+        String,
+        Array,
+        Object,
+        Nullable(Box<ResultKind>),
+    }
+
+    /// The success type a command returns, whitespace removed, or `None` when
+    /// the shell has no such command.
+    fn command_result_type(source: &str, command: &str) -> Option<String> {
+        let needle = format!("fn {command}(");
+        let start = source.find(&needle)? + needle.len();
+        let mut depth = 0usize;
+        let mut end = start;
+        for (offset, character) in source[start..].char_indices() {
+            match character {
+                '(' | '<' => depth += 1,
+                ')' if depth == 0 => { end = start + offset + 1; break; }
+                ')' | '>' => depth -= 1,
+                _ => {}
+            }
+        }
+        let signature = &source[end..];
+        let body = signature.find('{').unwrap_or(signature.len());
+        let returned: String = signature[..body]
+            .trim()
+            .strip_prefix("->")?
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+        let returned = returned
+            .strip_prefix("implstd::future::Future<Output=")
+            .and_then(|inner| inner.strip_suffix('>'))
+            .unwrap_or(&returned)
+            .to_owned();
+        let Some(inner) = generic_inner(&returned, "Result") else { return Some(returned) };
+        Some(top_level_split(inner).0.to_owned())
+    }
+
+    /// `A,B` split on the first comma outside angle brackets.
+    fn top_level_split(text: &str) -> (&str, &str) {
+        let mut depth = 0usize;
+        for (index, character) in text.char_indices() {
+            match character {
+                '<' | '(' => depth += 1,
+                '>' | ')' => depth -= 1,
+                ',' if depth == 0 => return (&text[..index], &text[index + 1..]),
+                _ => {}
+            }
+        }
+        (text, "")
+    }
+
+    fn rust_result_kind(kind: &str) -> ResultKind {
+        let kind: String = kind.chars().filter(|character| !character.is_whitespace()).collect();
+        if let Some(inner) = generic_inner(&kind, "Option") {
+            return ResultKind::Nullable(Box::new(rust_result_kind(inner)));
+        }
+        if generic_inner(&kind, "Vec").is_some() {
+            return ResultKind::Array;
+        }
+        // The contract's own unit result serializes as `null`, like `()`.
+        match kind.rsplit("::").next().unwrap_or_default() {
+            "()" | "UnitResult" => ResultKind::Null,
+            "bool" => ResultKind::Boolean,
+            "String" => ResultKind::String,
+            "Value" => ResultKind::Any,
+            "u8" | "u16" | "u32" | "u64" | "usize" | "i8" | "i16" | "i32" | "i64" | "isize" | "f32" | "f64" => ResultKind::Number,
+            _ => ResultKind::Object,
+        }
+    }
+
+    fn schema_result_kind(schema: &serde_json::Value, root: &serde_json::Value) -> ResultKind {
+        if schema == &serde_json::Value::Bool(true) {
+            return ResultKind::Any;
+        }
+        if let Some(reference) = schema.get("$ref").and_then(serde_json::Value::as_str) {
+            let name = reference.rsplit('/').next().unwrap_or_default();
+            let target = root
+                .get("definitions")
+                .or_else(|| root.get("$defs"))
+                .and_then(|definitions| definitions.get(name))
+                .unwrap_or_else(|| panic!("unresolved schema reference {reference}"));
+            return schema_result_kind(target, root);
+        }
+        let primitive = |name: &str| match name {
+            "null" => ResultKind::Null,
+            "boolean" => ResultKind::Boolean,
+            "integer" | "number" => ResultKind::Number,
+            "string" => ResultKind::String,
+            "array" => ResultKind::Array,
+            "object" => ResultKind::Object,
+            _ => ResultKind::Any,
+        };
+        match schema.get("type") {
+            Some(serde_json::Value::String(name)) => return primitive(name),
+            Some(serde_json::Value::Array(names)) => {
+                let names: Vec<&str> = names.iter().filter_map(serde_json::Value::as_str).collect();
+                return match names.as_slice() {
+                    [only] => primitive(only),
+                    [a, b] if *a == "null" => ResultKind::Nullable(Box::new(primitive(b))),
+                    [a, b] if *b == "null" => ResultKind::Nullable(Box::new(primitive(a))),
+                    _ => ResultKind::Any,
+                };
+            }
+            _ => {}
+        }
+        for combinator in ["anyOf", "oneOf", "allOf"] {
+            let Some(variants) = schema.get(combinator).and_then(serde_json::Value::as_array) else { continue };
+            let kinds: Vec<ResultKind> = variants.iter().map(|variant| schema_result_kind(variant, root)).collect();
+            let (nulls, rest): (Vec<&ResultKind>, Vec<&ResultKind>) = kinds.iter().partition(|kind| **kind == ResultKind::Null);
+            let Some(first) = rest.first() else { return ResultKind::Null };
+            let joined = if rest.iter().all(|kind| kind == first) { (*first).clone() } else { ResultKind::Any };
+            return if nulls.is_empty() { joined } else { ResultKind::Nullable(Box::new(joined)) };
+        }
+        if schema.get("enum").is_some() || schema.get("const").is_some_and(serde_json::Value::is_string) {
+            return ResultKind::String;
+        }
+        if schema.get("properties").is_some() {
+            return ResultKind::Object;
+        }
+        ResultKind::Any
+    }
+
+    fn result_kinds_agree(native: &ResultKind, contract: &ResultKind) -> bool {
+        match (native, contract) {
+            (ResultKind::Any, _) | (_, ResultKind::Any) => true,
+            (ResultKind::Nullable(native), ResultKind::Nullable(contract)) => result_kinds_agree(native, contract),
+            // A Rust type the source names (struct or enum) may serialize as
+            // a string enum; only its schema knows, and either is an object
+            // or a string, never a list.
+            (ResultKind::Object, ResultKind::String) => true,
+            (native, contract) => native == contract,
         }
     }
 
