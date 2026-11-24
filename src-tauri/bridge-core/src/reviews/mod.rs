@@ -6,6 +6,7 @@
 //! the durable guarantees, `runner` for slots, leases, retries and fallback,
 //! and `steps` for the work a job does.
 
+pub mod auto;
 pub mod contract;
 pub mod post;
 pub mod prepare;
@@ -119,9 +120,18 @@ pub fn start(core: &Arc<BridgeCore>, params: &wire::StartReviewParams) -> Result
 pub fn start_with(core: &Arc<BridgeCore>, params: &wire::StartReviewParams, head: PrHead) -> Result<wire::ReviewJob, BridgeError> {
     core.workspace_path(&params.workspace_id)?;
     let harnesses = resolve_harnesses(core, params.harnesses.as_deref())?;
-    let (job, created) = {
+    let trigger = params.trigger.unwrap_or_default();
+    let (job, created, superseded) = {
         let db = lock_db(core);
-        let post_mode = settings::load(&db)?.post_mode;
+        let settings = settings::load(&db)?;
+        // A re-review starts at the PR's last posted review, when there is
+        // one and the PR has moved since.
+        let incremental_from_sha = if settings.incremental {
+            store::latest_posted_head(&db, &params.workspace_id, params.number)?.filter(|from| *from != head.head_sha)
+        } else {
+            None
+        };
+        let head_sha = head.head_sha.clone();
         let (job, created) = store::insert(
             &db,
             &store::NewJob {
@@ -131,17 +141,27 @@ pub fn start_with(core: &Arc<BridgeCore>, params: &wire::StartReviewParams, head
                 number: params.number,
                 head_sha: head.head_sha,
                 base_sha: head.base_sha,
-                incremental_from_sha: None,
-                trigger: params.trigger.unwrap_or_default(),
-                post_mode,
+                incremental_from_sha,
+                trigger,
+                post_mode: settings.post_mode,
                 harnesses,
                 retry_of: None,
                 publication_key: None,
             },
             Utc::now(),
         )?;
-        (store::to_wire(&db, &job)?, created)
+        // A push review replaces the queued push reviews of older heads.
+        let superseded = if trigger == wire::ReviewTrigger::Push {
+            store::supersede_queued_pushes(&db, &params.workspace_id, params.number, &head_sha, Utc::now())?
+        } else {
+            Vec::new()
+        };
+        (store::to_wire(&db, &job)?, created, superseded)
     };
+    for id in &superseded {
+        core.reviews.steps().cleanup(id);
+        publish(core, id);
+    }
     if created {
         core.events.publish(CoreEvent::ReviewJobUpdated { job: job.clone() });
         core.reviews.wake();
@@ -259,6 +279,34 @@ mod tests {
         let mut next = job_settings(core).unwrap();
         edit(&mut next);
         save_job_settings(core, &next).unwrap();
+    }
+
+    #[test]
+    fn a_re_review_starts_at_the_last_posted_head_only_when_incremental_is_on() {
+        let (_scratch, core) = core();
+        let at = |sha: &str| PrHead { repo_owner: "o".into(), repo_name: "r".into(), head_sha: sha.into(), base_sha: None };
+        let request = wire::StartReviewParams { workspace_id: "w".into(), number: 3, harnesses: Some(vec!["claude".into()]), trigger: None };
+        let first = start_with(&core, &request, at("aaa")).unwrap();
+        assert_eq!(first.incremental_from_sha, None, "nothing posted yet");
+        lock_db(&core)
+            .execute("UPDATE review_jobs SET status='posted', finished_at='2026-11-24T10:00:00.000Z' WHERE id=?1", params![first.id])
+            .unwrap();
+
+        let off = start_with(&core, &request, at("bbb")).unwrap();
+        assert_eq!(off.incremental_from_sha, None, "off: a full review");
+        cancel(&core, &off.id).unwrap();
+
+        change(&core, |settings| settings.incremental = true);
+        let on = start_with(&core, &request, at("ccc")).unwrap();
+        assert_eq!(on.incremental_from_sha.as_deref(), Some("aaa"), "since the last posted head");
+        let retried = {
+            cancel(&core, &on.id).unwrap();
+            retry(&core, &on.id).unwrap()
+        };
+        assert_eq!(retried.incremental_from_sha.as_deref(), Some("aaa"), "a retry keeps it");
+        cancel(&core, &retried.id).unwrap();
+        let same = start_with(&core, &request, at("aaa")).unwrap();
+        assert_eq!(same.incremental_from_sha, None, "the posted head itself has nothing new");
     }
 
     #[test]

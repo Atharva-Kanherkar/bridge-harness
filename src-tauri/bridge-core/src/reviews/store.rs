@@ -858,6 +858,7 @@ pub fn complete_pass(
     }
     finish_pass(&transaction, pass_id, ReviewPassStatus::Done, None, Some(outcome), now)?;
     insert_findings(&transaction, job_id, pass_id, &outcome.findings, now)?;
+    mark_fixed(&transaction, job_id, &outcome.fixed)?;
     transaction.commit()?;
     Ok(true)
 }
@@ -1028,7 +1029,7 @@ const SEVERITY_RANK: &str =
 pub fn findings(db: &Connection, job_id: &str) -> Result<Vec<wire::ReviewFinding>, BridgeError> {
     let mut statement = db.prepare(&format!(
         "SELECT id, job_id, pass_id, path, line, start_line, side, severity, title, body, confidence, fingerprint,
-            agreed_by, outside_diff, decision, edited_body, github_comment_id, posted_at, decided_at
+            agreed_by, outside_diff, decision, edited_body, github_comment_id, posted_at, decided_at, fixed_in_sha
          FROM review_findings WHERE job_id=?1
          ORDER BY agreed_by DESC, {SEVERITY_RANK}, confidence DESC, rowid"
     ))?;
@@ -1057,6 +1058,7 @@ pub fn findings(db: &Connection, job_id: &str) -> Result<Vec<wire::ReviewFinding
                 decided_at: row.get(18)?,
                 github_comment_id: row.get(16)?,
                 posted_at: row.get(17)?,
+                fixed_in_sha: row.get(19)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -1119,6 +1121,173 @@ fn slot_harnesses(db: &Connection, job: &JobRow) -> Result<Vec<String>, BridgeEr
     Ok(harnesses)
 }
 
+/// The head of the PR's latest posted review: where a re-review starts.
+pub fn latest_posted_head(db: &Connection, workspace_id: &str, number: u64) -> Result<Option<String>, BridgeError> {
+    Ok(db
+        .query_row(
+            "SELECT head_sha FROM review_jobs WHERE workspace_id=?1 AND pr_number=?2 AND status='posted'
+             ORDER BY COALESCE(finished_at, created_at) DESC, rowid DESC LIMIT 1",
+            params![workspace_id, number as i64],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+/// Workspaces that have review jobs: auto-review may watch them.
+pub fn reviewed_workspaces(db: &Connection) -> Result<Vec<String>, BridgeError> {
+    Ok(db
+        .prepare("SELECT DISTINCT workspace_id FROM review_jobs ORDER BY workspace_id")?
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?)
+}
+
+/// Each PR's latest review in a workspace: what started it and the head it
+/// covered.
+pub fn latest_jobs(db: &Connection, workspace_id: &str) -> Result<std::collections::HashMap<u64, (ReviewTrigger, String)>, BridgeError> {
+    let mut latest = std::collections::HashMap::new();
+    let mut statement = db.prepare(
+        "SELECT pr_number, trigger_kind, head_sha FROM review_jobs WHERE workspace_id=?1 ORDER BY created_at, rowid",
+    )?;
+    let rows = statement.query_map(params![workspace_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+    })?;
+    for row in rows {
+        let (number, trigger, head) = row?;
+        if let Some(trigger) = ReviewTrigger::parse(&trigger) {
+            latest.insert(number.max(0) as u64, (trigger, head));
+        }
+    }
+    Ok(latest)
+}
+
+/// Whether the PR already has a review of `head_sha` that did not fail or
+/// get cancelled: a push review of it would say the same again.
+pub fn has_review_of_head(db: &Connection, workspace_id: &str, number: u64, head_sha: &str) -> Result<bool, BridgeError> {
+    Ok(db
+        .query_row(
+            "SELECT 1 FROM review_jobs WHERE workspace_id=?1 AND pr_number=?2 AND head_sha=?3
+             AND status NOT IN ('failed','cancelled','interrupted') LIMIT 1",
+            params![workspace_id, number as i64, head_sha],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+/// Why a queued push review was cancelled.
+pub const SUPERSEDED_BY_PUSH: &str = "Superseded by a newer push";
+
+/// Cancel the PR's queued push reviews of other heads: a newer push replaced
+/// them. A person's own reviews are theirs and stay. Returns the ids
+/// cancelled.
+pub fn supersede_queued_pushes(
+    db: &Connection,
+    workspace_id: &str,
+    number: u64,
+    head_sha: &str,
+    now: DateTime<Utc>,
+) -> Result<Vec<String>, BridgeError> {
+    let queued: Vec<String> = db
+        .prepare(
+            "SELECT id FROM review_jobs WHERE workspace_id=?1 AND pr_number=?2 AND trigger_kind='push'
+             AND status='queued' AND head_sha<>?3",
+        )?
+        .query_map(params![workspace_id, number as i64, head_sha], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    let mut cancelled = Vec::new();
+    for id in queued {
+        // A runner may claim it meanwhile; then it is no longer queued and
+        // runs to its end like any other review.
+        if finish(db, &id, None, Status::Cancelled, Some(SUPERSEDED_BY_PUSH), now)? {
+            cancelled.push(id);
+        }
+    }
+    Ok(cancelled)
+}
+
+/// A finding of an earlier review of the same PR, with what became of it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PriorFinding {
+    pub id: String,
+    pub job_id: String,
+    /// The head that review looked at.
+    pub head_sha: String,
+    pub path: String,
+    pub line: u32,
+    pub start_line: Option<u32>,
+    pub side: ReviewSide,
+    pub severity: ReviewSeverity,
+    pub title: String,
+    /// What was said: the person's edit when they edited it.
+    pub body: String,
+    pub fingerprint: String,
+    pub decision: ReviewFindingDecision,
+    pub posted: bool,
+    pub github_comment_id: Option<String>,
+    pub fixed_in_sha: Option<String>,
+}
+
+/// Most earlier findings a re-review is shown, the newest kept.
+pub const MAX_PRIOR_FINDINGS: usize = 300;
+
+/// Every finding of the PR's earlier reviews that reached a draft, oldest
+/// first, leaving out `job_id` itself.
+pub fn prior_findings(db: &Connection, workspace_id: &str, number: u64, job_id: &str) -> Result<Vec<PriorFinding>, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT * FROM (
+            SELECT f.id, f.job_id, j.head_sha, f.path, f.line, f.start_line, f.side, f.severity, f.title,
+                COALESCE(f.edited_body, f.body), f.fingerprint, f.decision, f.posted_at IS NOT NULL,
+                f.github_comment_id, f.fixed_in_sha, j.created_at AS job_created, f.rowid AS finding_row
+            FROM review_findings f JOIN review_jobs j ON j.id=f.job_id
+            WHERE j.workspace_id=?1 AND j.pr_number=?2 AND j.id<>?3 AND j.status IN ('drafted','posting','posted')
+            ORDER BY j.created_at DESC, f.rowid DESC LIMIT ?4
+         ) ORDER BY job_created, finding_row",
+    )?;
+    let rows = statement
+        .query_map(params![workspace_id, number as i64, job_id, MAX_PRIOR_FINDINGS as i64], |row| {
+            let side: String = row.get(6)?;
+            let severity: String = row.get(7)?;
+            let decision: String = row.get(11)?;
+            Ok(PriorFinding {
+                id: row.get(0)?,
+                job_id: row.get(1)?,
+                head_sha: row.get(2)?,
+                path: row.get(3)?,
+                line: row.get::<_, i64>(4)?.max(0) as u32,
+                start_line: row.get::<_, Option<i64>>(5)?.map(|line| line.max(0) as u32),
+                side: ReviewSide::parse(&side).ok_or_else(|| invalid_column(6, &side))?,
+                severity: ReviewSeverity::parse(&severity).ok_or_else(|| invalid_column(7, &severity))?,
+                title: row.get(8)?,
+                body: row.get(9)?,
+                fingerprint: row.get(10)?,
+                decision: ReviewFindingDecision::parse(&decision).ok_or_else(|| invalid_column(11, &decision))?,
+                posted: row.get(12)?,
+                github_comment_id: row.get(13)?,
+                fixed_in_sha: row.get(14)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Mark earlier findings of the same PR fixed at `job_id`'s head. Only one
+/// that was kept, edited or posted, and not already marked, is marked: a
+/// dropped finding was never a problem to fix.
+fn mark_fixed(db: &Connection, job_id: &str, finding_ids: &[String]) -> Result<usize, BridgeError> {
+    let mut marked = 0;
+    for id in finding_ids {
+        marked += db.execute(
+            "UPDATE review_findings SET fixed_in_sha=(SELECT head_sha FROM review_jobs WHERE id=?2)
+             WHERE id=?1 AND job_id<>?2 AND fixed_in_sha IS NULL
+               AND (decision IN ('kept','edited') OR posted_at IS NOT NULL)
+               AND job_id IN (SELECT other.id FROM review_jobs other, review_jobs this
+                   WHERE this.id=?2 AND other.workspace_id=this.workspace_id AND other.pr_number=this.pr_number)",
+            params![id, job_id],
+        )?;
+    }
+    Ok(marked)
+}
+
 pub fn to_wire(db: &Connection, job: &JobRow) -> Result<wire::ReviewJob, BridgeError> {
     Ok(wire::ReviewJob {
         id: job.id.clone(),
@@ -1130,6 +1299,7 @@ pub fn to_wire(db: &Connection, job: &JobRow) -> Result<wire::ReviewJob, BridgeE
         post_mode: job.post_mode,
         harnesses: slot_harnesses(db, job)?,
         finding_counts: finding_counts(db, job.id.as_str())?,
+        incremental_from_sha: job.incremental_from_sha.clone(),
         error: job.error.clone(),
         posted_review_url: job.posted_review_url.clone(),
         retry_of: job.retry_of.clone(),

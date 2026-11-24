@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use serde_json::json;
 
 use crate::reviews::steps::Prepared;
+use bridge_protocol::messages::{ReviewSeverity, ReviewSide};
 
 /// One thing a scripted session yields when read.
 enum Step {
@@ -318,7 +319,7 @@ fn a_pass_reads_the_context_and_keeps_inline_and_outside_findings_apart() {
     std::fs::write(context.join("diff.patch"), PATCH).unwrap();
     std::fs::write(context.join("threads.json"), "[]").unwrap();
     let job = job(&core);
-    let prepared = Prepared { worktree: Some(checkout.clone()), context: Some(context), head_sha: "h".into(), guard: None };
+    let prepared = Prepared { worktree: Some(checkout.clone()), context: Some(context), head_sha: "h".into(), ..Prepared::default() };
 
     let findings = json!([
         {"path": "src/a.rs", "line": 2, "side": "RIGHT", "severity": "major", "title": "Unwrap on user input", "body": "Panics on bad input.", "confidence": 0.9},
@@ -510,7 +511,7 @@ fn a_failed_pass_still_records_what_it_spent() {
     std::fs::write(context.join("diff.patch"), "").unwrap();
     std::fs::write(context.join("threads.json"), "[]").unwrap();
     let job = job(&core);
-    let prepared = Prepared { worktree: Some(checkout), context: Some(context), head_sha: "h".into(), guard: None };
+    let prepared = Prepared { worktree: Some(checkout), context: Some(context), head_sha: "h".into(), ..Prepared::default() };
     let broken = || {
         vec![Step::Events(vec![
             event("turn.started"),
@@ -529,4 +530,137 @@ fn a_failed_pass_still_records_what_it_spent() {
         PassUsage { tokens_in: 200, tokens_out: 20, cost_microusd: 4_000, denied_requests: 0 },
         "both turns of a failed pass are on its meter"
     );
+}
+
+// --- re-reviews ------------------------------------------------------------------
+
+fn prior(id: &str, title: &str, decision: &str, posted: bool, resolved: Option<bool>) -> Prior {
+    serde_json::from_value(json!({
+        "id": id, "path": "src/a.rs", "title": title, "severity": "major", "fingerprint": format!("fp-{id}"),
+        "decision": decision, "posted": posted, "fixedInSha": null,
+        "thread": resolved.map(|resolved| json!({"resolved": resolved, "outdated": false, "replies": []})),
+    }))
+    .unwrap()
+}
+
+fn draft(path: &str, title: &str, fingerprint: &str, severity: ReviewSeverity) -> DraftFinding {
+    DraftFinding {
+        path: path.into(),
+        line: 2,
+        start_line: None,
+        side: ReviewSide::Right,
+        severity,
+        title: title.into(),
+        body: "b".into(),
+        confidence: 0.8,
+        fingerprint: fingerprint.into(),
+        outside_diff: false,
+    }
+}
+
+#[test]
+fn a_re_review_leaves_out_what_was_settled_unless_it_got_worse() {
+    use ReviewSeverity::{Critical, Major, Nit};
+    let priors = [
+        prior("dropped", "Dropped thing", "dropped", false, None),
+        prior("posted", "Posted thing", "kept", true, Some(false)),
+        prior("resolved", "Resolved thing", "edited", true, Some(true)),
+        prior("drafted", "Waiting thing", "kept", false, None),
+    ];
+    // (finding, kept)
+    let cases = [
+        (draft("src/a.rs", "Other words", "fp-dropped", Major), false),
+        (draft("src/a.rs", "Dropped  thing!", "fp-new", Major), false),
+        (draft("src/b.rs", "Dropped thing", "fp-new", Major), true),
+        (draft("src/a.rs", "Posted thing", "fp-new", Major), false),
+        (draft("src/a.rs", "Posted thing", "fp-new", Nit), false),
+        (draft("src/a.rs", "Posted thing", "fp-new", Critical), true),
+        (draft("src/a.rs", "Resolved thing", "fp-resolved", Major), false),
+        (draft("src/a.rs", "Waiting thing", "fp-drafted", Major), true),
+        (draft("src/a.rs", "Brand new", "fp-brand-new", Major), true),
+    ];
+    for (index, (finding, kept)) in cases.into_iter().enumerate() {
+        let left = without_repeats(vec![finding.clone()], &priors);
+        assert_eq!(left.len() == 1, kept, "case {index}: {finding:?}");
+    }
+    assert_eq!(without_repeats(vec![draft("src/a.rs", "Brand new", "fp-x", Major)], &[]).len(), 1, "a full review has no memory");
+}
+
+#[test]
+fn only_earlier_findings_that_could_be_fixed_are_marked_fixed() {
+    let mut fixed_already = prior("old", "Old", "kept", true, None);
+    fixed_already.fixed_in_sha = Some("abc".into());
+    let priors = [
+        prior("kept", "Kept", "kept", false, None),
+        prior("edited", "Edited", "edited", false, None),
+        prior("posted", "Posted", "pending", true, Some(false)),
+        prior("dropped", "Dropped", "dropped", false, None),
+        prior("pending", "Pending", "pending", false, None),
+        fixed_already,
+    ];
+    let said = ["kept", "dropped", "unknown", "kept", "posted", "pending", "old", "edited"].map(String::from);
+    assert_eq!(known_fixed(&said, &priors), ["kept", "posted", "edited"]);
+}
+
+#[test]
+fn a_re_review_turn_keeps_the_stable_prefix_and_adds_its_files_last() {
+    let full = json!({"number": 42, "title": "Parse input", "changedFiles": 2, "omittedFiles": []});
+    let mut incremental = full.clone();
+    incremental["incremental"] = json!({"from": "aaaaaaaaaaaaaaaa", "to": "bbbbbbbbbbbbbbbb", "fellBack": false});
+    let turn = prompt(&incremental, ".bridge-review-0a1b2c3d4e5f");
+    assert!(turn.starts_with(&prompt(&full, ".bridge-review-0a1b2c3d4e5f")), "what a full review says comes first, unchanged");
+    assert!(turn.contains(".bridge-review-0a1b2c3d4e5f/incremental.patch") && turn.contains("`aaaaaaaaaaaa..bbbbbbbbbbbb`"));
+    assert!(turn.contains(".bridge-review-0a1b2c3d4e5f/prior_findings.json") && turn.contains("`fixed`"));
+    let mut fell_back = full.clone();
+    fell_back["incremental"] = json!({"from": "aaaaaaaaaaaaaaaa", "to": "bbbbbbbbbbbbbbbb", "fellBack": true});
+    let turn = prompt(&fell_back, "ctx");
+    assert!(turn.contains("no longer in the pull request's history") && !turn.contains("incremental.patch"));
+    assert!(turn.contains("ctx/prior_findings.json"), "the memory stays after a force-push");
+    // The cached prefix never mentions a re-review: it is the same for both.
+    assert!(OUTPUT_CONTRACT.contains("\"fixed\""));
+}
+
+#[test]
+fn a_re_review_pass_drops_repeats_and_reports_what_the_new_commits_fixed() {
+    let scratch = tempfile::tempdir().unwrap();
+    let core = BridgeCore::for_tests(scratch.path());
+    let checkout = scratch.path().join("checkout");
+    let context = scratch.path().join("context");
+    std::fs::create_dir_all(&checkout).unwrap();
+    std::fs::create_dir_all(&context).unwrap();
+    let pr = json!({"number": 42, "title": "Parse input", "changedFiles": 1, "omittedFiles": [],
+        "incremental": {"from": "aaaaaaaaaaaaaaaa", "to": "bbbbbbbbbbbbbbbb", "fellBack": false}});
+    std::fs::write(context.join("pr.json"), pr.to_string()).unwrap();
+    std::fs::write(context.join("files.json"), json!([{"path": "src/a.rs", "status": "modified"}]).to_string()).unwrap();
+    std::fs::write(context.join("diff.patch"), PATCH).unwrap();
+    std::fs::write(context.join("incremental.patch"), PATCH).unwrap();
+    std::fs::write(context.join("threads.json"), "[]").unwrap();
+    std::fs::write(
+        context.join("prior_findings.json"),
+        json!([
+            {"id": "f-kept", "path": "src/a.rs", "title": "Missing check", "severity": "major", "fingerprint": "x1", "decision": "kept", "posted": true, "thread": null},
+            {"id": "f-dropped", "path": "src/a.rs", "title": "Style nit", "severity": "nit", "fingerprint": "x2", "decision": "dropped", "posted": false, "thread": null},
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let job = job(&core);
+    let prepared = Prepared { worktree: Some(checkout.clone()), context: Some(context), head_sha: "h".into(), ..Prepared::default() };
+    let reply = format!(
+        "```json\n{}\n```",
+        json!({"summary": "The new commit fixes the missing check.", "fixed": ["f-kept", "f-dropped", "made-up"], "findings": [
+            {"path": "src/a.rs", "line": 2, "side": "RIGHT", "severity": "nit", "title": "Style nit", "body": "Again.", "confidence": 0.4},
+            {"path": "src/a.rs", "line": 2, "side": "RIGHT", "severity": "major", "title": "Unwrap on user input", "body": "New.", "confidence": 0.9},
+        ]})
+    );
+    let script = script(vec![vec![Step::Events(vec![event("turn.started"), said("m", &reply), event("turn.completed")])]]);
+    let meter = crate::reviews::steps::UsageMeter::default();
+    let request = PassRequest { job: &job, prepared: &prepared, pass_id: "p", harness: "claude", usage: &meter };
+    let outcome = review_pass_with(&core, &ScriptedTransport(script.clone()), request, &CancelToken::new(), Limits::default()).unwrap();
+    let titles: Vec<&str> = outcome.findings.iter().map(|finding| finding.title.as_str()).collect();
+    assert_eq!(titles, ["Unwrap on user input"], "the dropped nit is not raised again");
+    assert_eq!(outcome.fixed, ["f-kept"], "only a known finding that could be fixed");
+    let placed: Vec<_> = std::fs::read_dir(&checkout).unwrap().filter_map(Result::ok).map(|entry| entry.path()).collect();
+    assert!(placed[0].join("incremental.patch").is_file() && placed[0].join("prior_findings.json").is_file(), "the re-review files reach the reviewer");
+    assert!(script.sent.lock().unwrap()[0].contains("This is a re-review."));
 }

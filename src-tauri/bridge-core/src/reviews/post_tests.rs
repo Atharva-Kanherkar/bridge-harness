@@ -57,6 +57,7 @@ fn finding(id: &str, decision: ReviewFindingDecision) -> wire::ReviewFinding {
         decided_at: None,
         github_comment_id: None,
         posted_at: None,
+        fixed_in_sha: None,
     }
 }
 

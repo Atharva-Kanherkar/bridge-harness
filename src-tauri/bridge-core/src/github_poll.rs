@@ -294,6 +294,9 @@ fn rollup_changed(previous: Option<&[PullRequestCheck]>, next: &[PullRequestChec
 pub fn start_github_poll_maintenance(core: Arc<BridgeCore>) {
     std::thread::spawn(move || loop {
         core.github_poller.poll_once(&core);
+        // Auto-review rides the same loop: it reads only repositories the
+        // pane has listed (or that have reviews), and only while it is on.
+        crate::reviews::auto::tick(&core, Instant::now());
         std::thread::sleep(FOCUSED_CADENCE);
     });
 }

@@ -5,7 +5,7 @@ use std::time::Instant;
 use bridge_protocol::messages::{self as wire, ReviewSeverity, ReviewSide};
 use rusqlite::params;
 
-use crate::reviews::steps::{post_marker, DraftFinding, PassOutcome, PostedReview};
+use crate::reviews::steps::{post_marker, DraftFinding, Incremental, PassOutcome, PostedReview};
 use crate::reviews::PrHead;
 
 /// What a scripted post does.
@@ -373,6 +373,26 @@ fn draft_mode_stops_at_drafted_and_releases_the_lease() {
     let detail = crate::reviews::get(&core, &id).unwrap();
     assert_eq!(detail.job.finding_counts.major, 1);
     assert_eq!(detail.findings[0].decision, wire::ReviewFindingDecision::Pending);
+}
+
+#[test]
+fn a_re_review_summary_says_what_it_covers_or_why_it_reviewed_everything() {
+    let (_scratch, core, script) = fixture();
+    let head = "b".repeat(40);
+    script.prepare.lock().unwrap().extend([
+        Ok(Prepared { head_sha: head.clone(), incremental: Incremental::Since("a".repeat(40)), ..Prepared::default() }),
+        Ok(Prepared { head_sha: head.clone(), incremental: Incremental::FellBack("c".repeat(40)), ..Prepared::default() }),
+    ]);
+    let first = queue(&core, 1, &["claude"]);
+    let second = queue(&core, 2, &["claude"]);
+    drain(&Runner::with(core.clone(), fast(), Arc::new(Utc::now)));
+    assert_eq!(
+        job(&core, &first).summary.as_deref(),
+        Some(format!("Re-review of {}..{}\n\nLooks mostly fine.", "a".repeat(12), "b".repeat(12)).as_str())
+    );
+    let fell_back = job(&core, &second).summary.unwrap();
+    assert!(fell_back.starts_with(&format!("Full review: {} is no longer in this PR's history", "c".repeat(12))), "{fell_back}");
+    assert!(fell_back.ends_with("Looks mostly fine."));
 }
 
 #[test]

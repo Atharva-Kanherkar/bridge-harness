@@ -687,3 +687,50 @@ fn a_draft_post_interrupted_by_restart_returns_to_the_draft() {
     let auto = require_job(&db, &auto.id).unwrap();
     assert_eq!((auto.status, auto.error.as_deref()), (Status::Interrupted, Some(RESTARTED)));
 }
+
+#[test]
+fn a_re_review_marks_fixed_only_findings_of_the_same_pr_that_were_kept_edited_or_posted() {
+    let (_scratch, db) = open();
+    // The earlier review of #7, and a review of another PR.
+    let (earlier, _) = insert(&db, &new_job(7, "old-head", &["claude"]), at(0)).unwrap();
+    let (other_pr, _) = insert(&db, &new_job(8, "x", &["claude"]), at(0)).unwrap();
+    for job in [&earlier, &other_pr] {
+        let pass = insert_pass(&db, &job.id, 0, 1, "claude", at(0)).unwrap();
+        insert_findings(&db, &job.id, &pass, &[draft("src/kept.rs"), draft("src/edited.rs"), draft("src/posted.rs"), draft("src/dropped.rs"), draft("src/pending.rs")], at(0)).unwrap();
+    }
+    db.execute_batch(
+        "UPDATE review_jobs SET status='posted' WHERE pr_number IN (7, 8);
+         UPDATE review_findings SET decision='kept' WHERE path='src/kept.rs';
+         UPDATE review_findings SET decision='edited', edited_body='e' WHERE path='src/edited.rs';
+         UPDATE review_findings SET posted_at='2026-11-23T10:00:00Z' WHERE path='src/posted.rs';
+         UPDATE review_findings SET decision='dropped' WHERE path='src/dropped.rs';",
+    )
+    .unwrap();
+    let id_of = |job: &JobRow, path: &str| findings(&db, &job.id).unwrap().into_iter().find(|finding| finding.path == path).unwrap().id;
+    let said: Vec<String> = ["src/kept.rs", "src/edited.rs", "src/posted.rs", "src/dropped.rs", "src/pending.rs"]
+        .iter()
+        .map(|path| id_of(&earlier, path))
+        .chain([id_of(&other_pr, "src/kept.rs")])
+        .collect();
+
+    let (_, _) = insert(&db, &NewJob { incremental_from_sha: Some("old-head".into()), ..new_job(7, "new-head", &["claude"]) }, at(1)).unwrap();
+    let (job, token) = claim(&db, "runner", at(2));
+    assert!(advance(&db, &job.id, &token, Status::Preparing, Status::Reviewing, false).unwrap());
+    let pass = begin_pass(&db, &job.id, &token, 0, "claude", at(3)).unwrap().unwrap();
+    let outcome = PassOutcome { fixed: said, ..Default::default() };
+    assert!(complete_pass(&db, &job.id, &token, &pass, &outcome, at(4)).unwrap());
+
+    let fixed_in = |job: &JobRow, path: &str| {
+        findings(&db, &job.id).unwrap().into_iter().find(|finding| finding.path == path).unwrap().fixed_in_sha
+    };
+    for path in ["src/kept.rs", "src/edited.rs", "src/posted.rs"] {
+        assert_eq!(fixed_in(&earlier, path).as_deref(), Some("new-head"), "{path}");
+    }
+    for path in ["src/dropped.rs", "src/pending.rs"] {
+        assert_eq!(fixed_in(&earlier, path), None, "{path} was never a problem to fix");
+    }
+    assert_eq!(fixed_in(&other_pr, "src/kept.rs"), None, "another PR's finding is not this re-review's to mark");
+    let prior = prior_findings(&db, "w1", 7, &job.id).unwrap();
+    assert_eq!(prior.len(), 5, "the re-review's own findings are not prior ones");
+    assert_eq!(prior.iter().find(|finding| finding.path == "src/edited.rs").unwrap().body, "e", "the edited body is what was said");
+}

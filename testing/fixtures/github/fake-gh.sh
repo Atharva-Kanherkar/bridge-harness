@@ -115,6 +115,10 @@ if [ "$1" = "api" ] && [ "$2" = "--hostname" ] && [ "$4" = "--method" ]; then
     exit 0
 fi
 if [ "$1" = "api" ] && [ "$2" = "--method" ]; then exit 0; fi
+if [ "$1 $2" = "api user" ]; then
+    if [ -f "$root/viewer" ]; then cat "$root/viewer"; else printf '%s\n' '{"login":"fixture-user"}'; fi
+    exit 0
+fi
 if [ "$1" = "api" ]; then
     case "$4" in repos/*/pulls/*/files*) cat "$fixtures/pr-files.json"; exit 0 ;; esac
     case "$2" in repos/*) cat "$fixtures/repos-settings.json"; exit 0 ;; esac

@@ -27,7 +27,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::contract::{self, RawReview, OUTPUT_CONTRACT};
-use super::steps::{CancelToken, PassOutcome, PassRequest, PassUsage, StepError};
+use super::prepare::{INCREMENTAL_PATCH, PRIOR_FINDINGS};
+use super::steps::{CancelToken, DraftFinding, PassOutcome, PassRequest, PassUsage, StepError};
 use crate::adapters::{AdapterRegistry, AdapterRuntime, ShutdownReason, StartRequest};
 use crate::agent::NormalizedEvent;
 use crate::delegation::WriteMode;
@@ -498,6 +499,30 @@ them in the checkout if they matter: {}.",
             omitted.join(", ")
         ));
     }
+    if let Some(incremental) = pr["incremental"].as_object() {
+        let short = |key: &str| incremental.get(key).and_then(Value::as_str).unwrap_or("").chars().take(12).collect::<String>();
+        let (from, to) = (short("from"), short("to"));
+        if incremental.get("fellBack").and_then(Value::as_bool).unwrap_or(false) {
+            text.push_str(&format!(
+                "\n\nThis was meant as a re-review since `{from}`, but that commit is no longer in the pull request's \
+history (it was force-pushed), so review the whole change."
+            ));
+        } else {
+            text.push_str(&format!(
+                "\n\nThis is a re-review. The last posted review looked at `{from}`; the pull request has new commits since.\n\
+- `{context}/{INCREMENTAL_PATCH}`: the new commits, `{from}..{to}`. Review these. diff.patch is still the whole change, for \
+context, and inline comments still go on its lines."
+            ));
+        }
+        text.push_str(&format!(
+            "\n- `{context}/{PRIOR_FINDINGS}`: what earlier reviews of this pull request found, each with its `id`, the \
+`decision` a person made (pending, kept, dropped, edited), whether it was `posted`, and its GitHub `thread` (resolved, \
+outdated, replies).\n\n\
+Do not raise again a finding that was dropped, posted, or whose thread is resolved, unless the new commits made it \
+worse; then say what got worse. Put the `id` of each earlier finding the new commits fixed in `fixed`, and say in the \
+summary which ones they fixed."
+        ));
+    }
     text
 }
 
@@ -533,6 +558,12 @@ fn place_context_as(context: &Path, checkout: &Path, name: &str) -> Result<PathB
     };
     for file in ["pr.json", "diff.patch", "files.json", "threads.json"] {
         copy_file(&context.join(file), &target.join(file), file)?;
+    }
+    // A re-review's extra files, when it has them.
+    for file in [INCREMENTAL_PATCH, PRIOR_FINDINGS] {
+        if context.join(file).is_file() {
+            copy_file(&context.join(file), &target.join(file), file)?;
+        }
     }
     // The base branch's conventions, when it has any. `target` is a folder
     // this call just made, so nothing under it can be a planted link.
@@ -613,6 +644,9 @@ pub fn review_pass_with(
         .filter_map(|file| file["path"].as_str().map(str::to_owned))
         .collect();
     let validated = contract::validate(review, &changed, &contract::hunks(&patch));
+    let prior = read_prior(&placed)?;
+    let findings = without_repeats(validated.findings, &prior);
+    let fixed = known_fixed(&validated.fixed, &prior);
     let mut summary = validated.summary;
     let omitted: Vec<&str> = pr["omittedFiles"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
     if !omitted.is_empty() {
@@ -620,13 +654,92 @@ pub fn review_pass_with(
     }
     Ok(PassOutcome {
         summary,
-        findings: validated.findings,
+        findings,
+        fixed,
         session_id: None,
         model,
         effort: Some(effort),
         // Already on the pass's meter, with every earlier attempt.
         ..PassOutcome::default()
     })
+}
+
+/// An earlier finding, as `prior_findings.json` holds it.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Prior {
+    pub id: String,
+    pub path: String,
+    pub title: String,
+    pub severity: bridge_protocol::messages::ReviewSeverity,
+    pub fingerprint: String,
+    pub decision: bridge_protocol::messages::ReviewFindingDecision,
+    pub posted: bool,
+    #[serde(default)]
+    pub fixed_in_sha: Option<String>,
+    #[serde(default)]
+    pub thread: Option<PriorThread>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct PriorThread {
+    pub resolved: bool,
+}
+
+impl Prior {
+    /// Settled: dropped by a person, posted, or its thread resolved. Raising
+    /// it again is a repeat.
+    fn settled(&self) -> bool {
+        use bridge_protocol::messages::ReviewFindingDecision as Decision;
+        self.decision == Decision::Dropped || self.posted || self.thread.as_ref().is_some_and(|thread| thread.resolved)
+    }
+
+    /// Kept, edited or posted, and not already marked fixed: something a
+    /// later commit can fix.
+    fn fixable(&self) -> bool {
+        use bridge_protocol::messages::ReviewFindingDecision as Decision;
+        self.fixed_in_sha.is_none() && (matches!(self.decision, Decision::Kept | Decision::Edited) || self.posted)
+    }
+}
+
+/// The earlier findings a re-review was shown, or none for a full review.
+fn read_prior(placed: &Path) -> Result<Vec<Prior>, StepError> {
+    let path = placed.join(PRIOR_FINDINGS);
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read(&path).map_err(|error| StepError::Fatal(format!("Could not read {PRIOR_FINDINGS}: {error}")))?;
+    serde_json::from_slice(&text).map_err(|error| StepError::Fatal(format!("Could not read {PRIOR_FINDINGS}: {error}")))
+}
+
+/// Leave out what a settled earlier finding already said: the same
+/// fingerprint, or the same file and title. A repeat that is more severe
+/// than before stays: the new commits made it worse.
+pub fn without_repeats(findings: Vec<DraftFinding>, prior: &[Prior]) -> Vec<DraftFinding> {
+    findings
+        .into_iter()
+        .filter(|finding| {
+            let title = contract::normalized(&finding.title);
+            !prior.iter().any(|earlier| {
+                earlier.settled()
+                    && (earlier.fingerprint == finding.fingerprint
+                        || (earlier.path == finding.path && contract::normalized(&earlier.title) == title))
+                    && contract::severity_rank(finding.severity) >= contract::severity_rank(earlier.severity)
+            })
+        })
+        .collect()
+}
+
+/// The `fixed` ids that name an earlier finding something could fix, each
+/// once, in the order given.
+pub fn known_fixed(fixed: &[String], prior: &[Prior]) -> Vec<String> {
+    let mut known = Vec::new();
+    for id in fixed {
+        if !known.contains(id) && prior.iter().any(|earlier| &earlier.id == id && earlier.fixable()) {
+            known.push(id.clone());
+        }
+    }
+    known
 }
 
 #[cfg(test)]

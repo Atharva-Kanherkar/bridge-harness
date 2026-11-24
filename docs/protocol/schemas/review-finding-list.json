@@ -36,6 +36,13 @@
         "fingerprint": {
           "type": "string"
         },
+        "fixedInSha": {
+          "description": "The head of a later re-review that found this fixed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "githubCommentId": {
           "type": [
             "string",
