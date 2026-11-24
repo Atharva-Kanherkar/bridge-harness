@@ -17,7 +17,8 @@
 
 use crate::entry_tokens::{self, ESTIMATED_KINDS};
 use crate::BridgeError;
-use chrono::{DateTime, Days, NaiveDate, NaiveTime, SecondsFormat, Utc};
+pub use chrono::NaiveDate;
+use chrono::{DateTime, Days, NaiveTime, SecondsFormat, Utc};
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{params, params_from_iter, Connection, OpenFlags, OptionalExtension, Row};
 use serde::Serialize;

@@ -22,7 +22,7 @@
 //! `--timeout` budget covers the whole command, setup calls included.
 
 use bridge_client::{ClientError, DaemonClient, Endpoint, SessionEventStream};
-use bridge_core::token_report::{self, Cohort, ReportOptions};
+use bridge_core::token_report::{self, Cohort, NaiveDate, ReportOptions};
 use bridge_protocol::MethodName;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -785,11 +785,11 @@ fn flag_value<'a>(iter: &mut std::slice::Iter<'a, String>, flag: &str) -> Result
 }
 
 /// Parses the flags of `bridge tokens`. Each error is a usage error.
-fn parse_tokens_flags(args: &[String]) -> Result<TokensFlags, String> {
+fn parse_tokens_flags(args: &[String], today: NaiveDate) -> Result<TokensFlags, String> {
     let mut database: Option<PathBuf> = None;
     let mut options = ReportOptions {
         cohort: Cohort::Orchestrator,
-        since: token_report::default_since(token_report::utc_today()),
+        since: token_report::default_since(today),
         top: 10,
         session: None,
     };
@@ -837,7 +837,7 @@ fn parse_tokens_flags(args: &[String]) -> Result<TokensFlags, String> {
 
 /// The output of `bridge tokens`, or an exit code and a message for stderr.
 fn run_tokens(args: &[String]) -> Result<String, (u8, String)> {
-    let flags = parse_tokens_flags(args)
+    let flags = parse_tokens_flags(args, token_report::utc_today())
         .map_err(|error| (2, format!("bridge tokens: {error}\nusage:\n  {TOKENS_USAGE}")))?;
     let failed = |error: bridge_core::BridgeError| (1, format!("bridge tokens: {error}"));
     let db = token_report::open_read_only(&flags.database).map_err(failed)?;
@@ -870,6 +870,11 @@ mod tests {
         list.iter().map(|value| value.to_string()).collect()
     }
 
+    fn parse_test_flags(list: &[&str]) -> Result<TokensFlags, String> {
+        let today = NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
+        parse_tokens_flags(&strings(list), today)
+    }
+
     /// A migrated store with one recent orchestrator chat and one worker.
     fn seeded_database() -> (tempfile::TempDir, String) {
         let dir = tempfile::tempdir().unwrap();
@@ -897,10 +902,10 @@ mod tests {
 
     #[test]
     fn tokens_flags_have_defaults() {
-        let flags = parse_tokens_flags(&[]).unwrap();
+        let flags = parse_test_flags(&[]).unwrap();
         assert_eq!(flags.database, default_data_dir().unwrap().join("bridge.db"));
         assert_eq!(flags.options.cohort, Cohort::Orchestrator);
-        assert_eq!(flags.options.since, token_report::default_since(token_report::utc_today()));
+        assert_eq!(flags.options.since, NaiveDate::from_ymd_opt(2026, 1, 1).unwrap());
         assert_eq!(flags.options.top, 10);
         assert_eq!(flags.options.session, None);
         assert!(!flags.json);
@@ -908,9 +913,9 @@ mod tests {
 
     #[test]
     fn tokens_flags_accept_every_option() {
-        let flags = parse_tokens_flags(&strings(&[
+        let flags = parse_test_flags(&[
             "--data-dir", "/tmp/b", "--cohort", "direct", "--since", "2026-05-01", "--top", "3", "--session", "s1", "--json",
-        ]))
+        ])
         .unwrap();
         let options = ReportOptions {
             cohort: Cohort::Direct,
@@ -919,14 +924,14 @@ mod tests {
             session: Some("s1".into()),
         };
         assert_eq!(flags, TokensFlags { database: PathBuf::from("/tmp/b/bridge.db"), options, json: true });
-        let flags = parse_tokens_flags(&strings(&["--database", "/tmp/copy.db", "--cohort", "orchestrator"])).unwrap();
+        let flags = parse_test_flags(&["--database", "/tmp/copy.db", "--cohort", "orchestrator"]).unwrap();
         assert_eq!(flags.database, PathBuf::from("/tmp/copy.db"));
         assert_eq!(flags.options.cohort, Cohort::Orchestrator);
     }
 
     #[test]
     fn tokens_rejects_an_unknown_cohort() {
-        let error = parse_tokens_flags(&strings(&["--cohort", "worker"])).unwrap_err();
+        let error = parse_test_flags(&["--cohort", "worker"]).unwrap_err();
         assert!(error.contains("worker"), "{error}");
         let (code, message) = run_tokens(&strings(&["--cohort", "worker"])).unwrap_err();
         assert_eq!(code, 2);
@@ -942,7 +947,7 @@ mod tests {
     #[test]
     fn tokens_rejects_a_bad_since_date() {
         for date in ["2026-02-30", "2026/05/01", "2026-5-1", "yesterday"] {
-            let error = parse_tokens_flags(&strings(&["--since", date])).unwrap_err();
+            let error = parse_test_flags(&["--since", date]).unwrap_err();
             assert!(error.contains(date), "{error}");
             let (code, message) = run_tokens(&strings(&["--since", date])).unwrap_err();
             assert_eq!(code, 2, "{date}");
@@ -957,7 +962,7 @@ mod tests {
             &["--data-dir", "/tmp/b", "--database", "/tmp/a.db"],
             &["--database", "/tmp/a.db", "--database", "/tmp/c.db"],
         ] {
-            let error = parse_tokens_flags(&strings(args)).unwrap_err();
+            let error = parse_test_flags(args).unwrap_err();
             assert!(error.contains("one database flag"), "{error}");
             assert_eq!(run_tokens(&strings(args)).unwrap_err().0, 2);
         }
