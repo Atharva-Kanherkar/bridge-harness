@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { SkeletonRows } from "@/components/ui/skeleton";
+import { Skeleton, SkeletonRegion, SkeletonRows } from "@/components/ui/skeleton";
 import { AlertCircle, ExternalLink, RefreshCw } from "lucide-react";
 import type { WorkBoard, WorkFactAction, WorkTask } from "../protocol/generated/protocol";
 import { hasOpenableEvidence, sourceLabel, type TaskAction } from "./workTasks";
@@ -43,13 +43,13 @@ export function WorkView({ board, error, refreshError, onRefresh, now, onOpenEvi
       <header className="flex flex-wrap items-start gap-3 px-5 pb-5 pt-6 sm:px-8" data-tauri-drag-region="deep">
         <div className="min-w-0">
           <h2 className="font-display text-title font-semibold tracking-tight">Past 24 hours</h2>
-          <p aria-live="polite" className="mt-1 text-xs text-muted-foreground">
-            {board ? "Activity from your connected integrations." : error ? "Activity could not be loaded." : "Loading your activity…"}
-          </p>
+          {board || error
+            ? <p aria-live="polite" className="mt-1 text-xs text-muted-foreground">{board ? "Activity from your connected integrations." : "Activity could not be loaded."}</p>
+            : <Skeleton className="mt-2 h-2.5 w-56" />}
         </div>
-        <Button variant="outline" size="sm" disabled={running} onClick={refresh} className="ml-auto">
+        <Button variant="outline" size="sm" disabled={running} loading={running} onClick={refresh} className="ml-auto">
           <RefreshCw size={13} aria-hidden="true" />
-          {running ? "Refreshing…" : "Refresh"}
+          Refresh
         </Button>
       </header>
 
@@ -62,9 +62,10 @@ export function WorkView({ board, error, refreshError, onRefresh, now, onOpenEvi
           </div>
         )}
 
-        {board && (board.latestRun || running) && (
+        {board && running && <SkeletonRegion label="Reading your connected integrations"><Skeleton className="h-2.5 w-72 max-w-full" /></SkeletonRegion>}
+        {board && board.latestRun && !running && (
           <div aria-label="Briefing status" className="text-xs leading-relaxed text-muted-foreground">
-            {running ? "Reading your connected integrations…" : lastRunLine(board.latestRun, currentTime)} {toolsReadLine(board.sources)}
+            {lastRunLine(board.latestRun, currentTime)} {toolsReadLine(board.sources)}
           </div>
         )}
         {(refreshError || board?.suggestions.state === "degraded") && (
@@ -80,13 +81,13 @@ export function WorkView({ board, error, refreshError, onRefresh, now, onOpenEvi
             <p className="mt-1 text-xs text-muted-foreground">{error}</p>
             <Button variant="outline" size="sm" onClick={onRefresh} className="mt-3">Try again</Button>
           </div>
-        ) : !board ? (
+        ) : !board || (running && items.length === 0) ? (
           <SkeletonRows label="Loading activity" rows={3} lead="dot" />
         ) : items.length === 0 ? (
           <div className="rounded-xl border border-border p-6 text-center">
             <h3 className="text-sm font-medium">No recent activity to show</h3>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              {running ? "Your integrations are being read." : configured ? "Refresh to check your connected tools for updates from the past 24 hours." : "Recent activity will appear after you set up and refresh your integrations."}
+              {configured ? "Refresh to check your connected tools for updates from the past 24 hours." : "Recent activity will appear after you set up and refresh your integrations."}
             </p>
           </div>
         ) : (

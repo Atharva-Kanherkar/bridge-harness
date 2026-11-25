@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SkeletonRows } from "@/components/ui/skeleton";
-import { ArrowLeft, ArrowRight, Bot, CheckCircle2, LoaderCircle, RefreshCw } from "lucide-react";
+import { SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
+import { ArrowLeft, ArrowRight, Bot, CheckCircle2, RefreshCw } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { AdapterDescriptor, ModelSetupState } from "../types";
 import type { UsageProvider } from "../usage";
@@ -49,7 +49,7 @@ function AgentConnection({ agent, adapter, busy, error, loginOpen, onInstall, on
       {ready && <CheckCircle2 size={18} className="shrink-0 text-success" aria-label="Sign-in found" />}
     </div>
     <div className="mt-4 space-y-2 border-t border-border pt-3">
-      {busy ? <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle size={14} className="animate-spin" />{busy}…</p>
+      {busy ? <SkeletonRegion label={busy}><SkeletonText lines={2} /></SkeletonRegion>
       : missing ? supportedInstall ? <><p className="text-xs text-muted-foreground">Bridge will download and manage a separate copy for you.</p><Button variant="default" size="sm" onClick={onInstall}>Install with Bridge</Button></>
         : <><p className="text-xs text-warning">Bridge cannot install this agent on this computer. Install it using the vendor's instructions, then check again, or go back and choose another agent.</p>{adapter?.unavailableReason && <p className="text-xs text-muted-foreground">{adapter.unavailableReason}</p>}</>
       : broken ? supportedInstall ? <Button variant="outline" size="sm" onClick={onRepair}>Repair installation</Button>
@@ -163,9 +163,9 @@ export function ModelSetupWizard({ adapters, onComplete, onHealthChange = NOOP, 
         {error && <p role="alert" className="mt-4 text-sm text-destructive">{error}</p>}
         <footer className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
           <div className="flex gap-2">{stage === "connect" && <Button variant="quiet" size="sm" disabled={saving || operating} onClick={() => { if (login) void bridgeApi.cancelProviderLogin(login); setLogin(null); setStage("choose"); }}><ArrowLeft size={13} />Change agents</Button>}
-            <Button variant="quiet" size="sm" disabled={refreshing || saving || operating} onClick={checkAgain}><RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />{refreshing ? "Checking…" : "Check again"}</Button></div>
+            <Button variant="quiet" size="sm" disabled={refreshing || saving || operating} loading={refreshing} onClick={checkAgain}><RefreshCw size={13} />Check again</Button></div>
           {stage === "choose" ? <Button variant="default" size="default" disabled={((!managed.agents || !!managed.listError) && !useDetectedAgents) || selected.length === 0 || refreshing} onClick={() => { setStage("connect"); refresh(selected); }}>Continue<ArrowRight size={14} /></Button>
-            : <Button variant="default" size="default" disabled={!ready || saving || refreshing || operating || !!login || (!!managed.listError && !useDetectedAgents)} onClick={() => void finish()}>{saving && <LoaderCircle size={14} className="animate-spin" />}{saving ? "Finishing setup…" : "Start using Bridge"}</Button>}
+            : <Button variant="default" size="default" disabled={!ready || saving || refreshing || operating || !!login || (!!managed.listError && !useDetectedAgents)} loading={saving} onClick={() => void finish()}>Start using Bridge</Button>}
         </footer>
         {stage === "connect" && <p className="mt-3 text-xs leading-relaxed text-muted-foreground">Bridge checks local sign-in information, not your subscription or remaining credits. Model defaults are chosen automatically; you can change them later in Settings.</p>}
         {selected.some(id => SESSION_SETUP_AGENTS.has(id)) && <p className="mt-3 text-xs leading-relaxed text-muted-foreground">For Cursor and Grok, checking opens a temporary agent session to confirm sign-in and models, then closes it without sending a chat message. It may start tools already configured in that agent.</p>}

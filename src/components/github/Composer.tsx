@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { LoaderCircle, Send } from "lucide-react";
+import { Send } from "lucide-react";
 import { modKey } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { Kbd } from "@/components/ui/kbd";
@@ -105,9 +105,10 @@ export function Composer({ label, placeholder, submitLabel, onSubmit, onCancel, 
       {(collapsed || onCancel) && <Button variant="quiet" size="xs" disabled={busy} onClick={dismiss}>Cancel</Button>}
       <Button variant="default" size="xs"
         disabled={!ready}
+        loading={busy}
         onClick={() => void send()}
       >
-        {busy ? <LoaderCircle size={11} className="animate-spin" aria-hidden="true" /> : <Send size={11} aria-hidden="true" />}
+        <Send size={11} aria-hidden="true" />
         {submitLabel}
       </Button>
     </div>

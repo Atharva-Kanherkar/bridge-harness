@@ -5,13 +5,14 @@
 // opens the chat. The footer says what Enter will do, so the deep stage is
 // discoverable without knowing it exists.
 
-import { LoaderCircle, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { RowButton } from "@/components/ui/row";
 import { Tip } from "@/components/ui/tooltip";
 import type { ChatSearchHit, SearchChatsResult } from "../protocol/generated/protocol";
 import { HarnessMark } from "./harnessMarks";
 import { chatListTime } from "./sidebarChats";
+import { SkeletonRows } from "@/components/ui/skeleton";
 
 function hitTime(hit: ChatSearchHit, now: number): string | null {
   const at = Date.parse(hit.lastActiveAt);
@@ -19,8 +20,7 @@ function hitTime(hit: ChatSearchHit, now: number): string | null {
 }
 
 function footer(result: SearchChatsResult | undefined, deepRunning: boolean, loading: boolean): string | null {
-  if (deepRunning) return "Searching deeper…";
-  if (loading || !result) return null;
+  if (deepRunning || loading || !result) return null;
   if (result.stage === "index_fallback") return result.detail ?? "Showing the index's matches.";
   if (result.stage === "model") return result.hits.length ? "Enter opens the first match." : null;
   if (!result.hits.length) {
@@ -56,7 +56,6 @@ export function ChatSearchResults({
       <div className="flex h-7 items-center gap-1.5 px-2">
         <Search size={13} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
         <span className="text-meta font-medium tracking-snug text-muted-foreground">In conversations</span>
-        {(loading || deepRunning) && <LoaderCircle size={12} strokeWidth={1.7} className="ml-auto animate-spin text-muted-foreground" aria-hidden="true" />}
       </div>
       <ul className={cn("flex flex-col gap-0.5 transition-opacity", deepRunning && "opacity-60")}>
         {hits.map(hit => {
@@ -86,6 +85,7 @@ export function ChatSearchResults({
           );
         })}
       </ul>
+      {(deepRunning || (loading && hits.length === 0)) && <SkeletonRows label="Searching conversations" rows={hits.length ? 1 : 3} framed={false} density="menu" />}
       {note && <p role="status" className="px-2 py-1 text-caption leading-relaxed text-muted-foreground/70">{note}</p>}
     </section>
   );

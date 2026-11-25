@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronDown, Gauge, LoaderCircle, RefreshCw, RotateCcw } from "lucide-react";
+import { ChevronDown, Gauge, RefreshCw, RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,7 +20,7 @@ import { UsageMosaic } from "./UsageMosaic";
 import { UsageCalendar } from "./UsageCalendar";
 import type { UsageLayoutProps } from "./UsageLayoutParts";
 import { UsageLoadingState } from "./UsageLayoutParts";
-import { Skeleton } from "./ui/skeleton";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useProviderUsageOverviews } from "./UsageDot";
 import { UsageResetRow } from "./UsageResetRow";
 import {
@@ -296,7 +296,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         action={<span className="inline-flex shrink-0 items-center gap-2">
           <Segmented<UsageTab> label="View" value={tab} options={[{ value: "usage", label: "Usage" }, { value: "insights", label: "Insights" }, { value: "time", label: "Time" }]} onChange={setTab} />
           {onOpenMeter && <Button variant="quiet" size="icon-sm" onClick={onOpenMeter} aria-label="Open usage meter" tooltip="Usage meter"><Gauge aria-hidden="true" /></Button>}
-          <Button variant="quiet" size="icon-sm" onClick={() => { setRefreshTick(tick => tick + 1); providerUsage.refresh(); }} disabled={loading || scanning} aria-label="Refresh usage" tooltip="Refresh usage" aria-busy={loading || scanning}><RefreshCw className={loading || scanning ? "animate-spin" : undefined} aria-hidden="true" /></Button>
+          <Button variant="quiet" size="icon-sm" onClick={() => { setRefreshTick(tick => tick + 1); providerUsage.refresh(); }} disabled={loading || scanning} loading={loading || scanning} aria-label="Refresh usage" tooltip="Refresh usage"><RefreshCw aria-hidden="true" /></Button>
         </span>}
       />
 
@@ -336,8 +336,8 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
             <div>
               <h2 className="text-ui font-medium text-foreground">History sources</h2>
             </div>
-            <Button variant="outline" size="sm" onClick={() => void scan()} disabled={scanning}>
-              {scanning ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}Scan history
+            <Button variant="outline" size="sm" onClick={() => void scan()} disabled={scanning} loading={scanning}>
+              <RefreshCw aria-hidden="true" />Scan history
             </Button>
           </div>
           {scanNote && <p role="status" className="mb-3 text-caption text-muted-foreground">{scanNote}</p>}
@@ -464,8 +464,8 @@ function PriceSection({ report, summary, overrides, refreshing, onRefreshRates, 
         <span className="truncate text-caption tabular-nums text-muted-foreground">{formatCount(rows.length)} {rows.length === 1 ? "model" : "models"} in this window · snapshot {summary.pricing.snapshotDate}{summary.pricing.overrides > 0 ? ` · ${formatCount(summary.pricing.overrides)} overrides` : ""}</span>
         <ChevronDown size={14} className={cn("ml-auto shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} aria-hidden="true" />
       </RowButton>
-      <Button variant="quiet" size="icon-sm" onClick={onRefreshRates} disabled={refreshing} aria-label="Refresh rates" aria-busy={refreshing} tooltip={`Refresh rates from ${summary.pricing.source}`}>
-        <RefreshCw className={refreshing ? "animate-spin" : undefined} aria-hidden="true" />
+      <Button variant="quiet" size="icon-sm" onClick={onRefreshRates} disabled={refreshing} loading={refreshing} aria-label="Refresh rates" tooltip={`Refresh rates from ${summary.pricing.source}`}>
+        <RefreshCw aria-hidden="true" />
       </Button>
     </div>
     {open && <div id="usage-model-prices" className="mt-3">

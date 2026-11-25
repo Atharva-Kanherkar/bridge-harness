@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Skeleton, SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
-import { LoaderCircle, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
 import { harnessLabel } from "../utils";
@@ -38,8 +38,8 @@ export function MemoryInsights({ onError }: { onError: (message: string) => void
   useEffect(() => { load(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const report = result?.report ?? null;
-  const analyseButton = <Button variant="outline" size="sm" className="shrink-0" onClick={() => load(true)} disabled={loading}>
-    {loading ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <Sparkles size={13} aria-hidden="true" />}{report ? "Analyse again" : "Analyse my memory"}
+  const analyseButton = <Button variant="outline" size="sm" className="shrink-0" onClick={() => load(true)} disabled={loading} loading={loading}>
+    <Sparkles size={13} aria-hidden="true" />{report ? "Analyse again" : "Analyse my memory"}
   </Button>;
 
   if (loading && !report) {

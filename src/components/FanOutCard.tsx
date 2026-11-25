@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { ChevronRight, LoaderCircle } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { HarnessMark } from "./harnessMarks";
 import { dockPaneChord } from "../dockLayout";
 import { formatShortcut } from "@/lib/platform";
@@ -14,6 +14,7 @@ import {
 } from "./workerFanOut";
 import { Tip } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
+import { SkeletonDot } from "@/components/ui/skeleton";
 
 // One card per delegation: who the orchestrator handed work to, how each of
 // them is doing, and how long it has taken. The worker rows themselves are the
@@ -78,7 +79,7 @@ export function FanOutCard({ summary, rows, readOnly = false, onOpenAgents, onSt
     {rows && <div className="border-t border-border px-3.5 py-1">{rows}</div>}
     {live && summary.waiting.length > 0 && <div data-fan-out-waiting className="flex min-w-0 items-center gap-3 border-t border-border px-3.5 py-2 text-meta text-muted-foreground">
       <span className="inline-flex min-w-0 items-center gap-1.5">
-        <LoaderCircle size={12} className="shrink-0 animate-spin" aria-hidden="true"/>
+        <SkeletonDot />
         <span className="min-w-0 truncate">Waiting on {summary.waiting.map((worker, index) => <span key={worker.childSessionId}>
           {index > 0 && ", "}
           <span className="text-foreground">{worker.name}</span>
@@ -86,8 +87,9 @@ export function FanOutCard({ summary, rows, readOnly = false, onOpenAgents, onSt
       </span>
       {onStopWorkers && <Button variant="quiet" size="2xs" className="shrink-0" tooltip={summary.waiting.length === 1 ? "Stop this worker" : `Stop these ${summary.waiting.length} workers`}
         disabled={stopping}
+        loading={stopping}
         onClick={stop}
-      >{stopping ? "Stopping…" : "Stop"}</Button>}
+      >Stop</Button>}
     </div>}
     {error && <p role="alert" className="border-t border-border px-3.5 py-2 text-meta text-destructive">{error}</p>}
   </div>;

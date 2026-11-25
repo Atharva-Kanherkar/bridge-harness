@@ -75,13 +75,13 @@ export function Option({ selected, onSelect, leading, hint, children }: {
 }
 
 /** A quiet text action. `active` keeps it lit while its popover is open. */
-export function Pill({ children, active = false, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { active?: boolean }) {
+export function Pill({ children, active = false, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { active?: boolean; loading?: boolean }) {
   return <Button variant="quiet" size="sm" shape="round" data-pressed={active ? "" : undefined} {...props}>{children}</Button>;
 }
 
 /** The one filled action in a popover: ink on paper, paper on ink. */
-export function PrimaryButton({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
-  return <Button variant="default" size="sm" shape="round" {...props}>{children}</Button>;
+export function PrimaryButton({ children, busy, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { busy?: boolean }) {
+  return <Button variant="default" size="sm" shape="round" loading={busy} {...props}>{children}</Button>;
 }
 
 /** Open is a ring, doing is half full, done is a check; inbox and archived are dashed. */

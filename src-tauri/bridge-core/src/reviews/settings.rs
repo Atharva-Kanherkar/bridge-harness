@@ -234,6 +234,7 @@ mod tests {
                 auto_review: wire::ReviewAutoMode::Mine,
                 skip_draft_prs: false,
                 incremental: true,
+                handoff: wire::ReviewHandoff::Posted,
             },
         )
         .unwrap();

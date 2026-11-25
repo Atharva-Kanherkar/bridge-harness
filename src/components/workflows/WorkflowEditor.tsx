@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { LoaderCircle, RefreshCw, ShieldCheck } from "lucide-react";
+import { RefreshCw, ShieldCheck } from "lucide-react";
 import { bridgeApi } from "../../api";
 import type { Project, Workflow, WorkflowDefinition, WorkflowEventKind, WorkflowEventSample, WorkflowGrant, WorkflowOptions, WorkflowTrigger, WorkflowTriggerPreview } from "../../protocol/generated/protocol";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { ErrorNote } from "./parts";
 import { EVENT_APPS, EVENT_OPTIONS, eventFilters, localTimezone, presetCron, presetFor, presetForCron, WEEKDAY_OPTIONS, type SchedulePreset } from "./format";
+import { SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
 
 const FIELD = "block text-caption font-medium text-muted-foreground";
 
@@ -241,7 +242,7 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
             </>}
           </div></RadioGroup>
           <div aria-live="polite" className="rounded-lg bg-muted px-2.5 py-2 text-caption text-muted-foreground">
-            {!shown ? (previewing ? <span className="inline-flex items-center gap-1.5"><LoaderCircle className="animate-spin" size={11}/>Checking the last week…</span> : null)
+            {!shown ? (previewing ? <SkeletonRegion label="Checking the last week"><SkeletonText lines={2} /></SkeletonRegion> : null)
               : <>
                 <p className={shown.supported ? "text-foreground" : ""}>{previewSentence(shown, collect)}</p>
                 {shown.note && <p className="mt-0.5">{shown.note}</p>}
@@ -287,7 +288,7 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
         </label>}
 
         {definition.files === "none" && <div className={FIELD}><span className="flex items-center justify-between">Can use
-          {onRefreshConnectors && <Button variant="text" size="inline" onClick={onRefreshConnectors} disabled={refreshing}><RefreshCw size={11} className={refreshing ? "animate-spin" : ""}/>Refresh</Button>}</span>
+          {onRefreshConnectors && <Button variant="text" size="inline" onClick={onRefreshConnectors} disabled={refreshing} loading={refreshing}><RefreshCw size={11}/>Refresh</Button>}</span>
           <div className="mt-1 divide-y divide-border rounded-lg border border-border">
             {options?.connectorsError
               ? <p className="px-2.5 py-2 text-caption text-muted-foreground">Bridge could not list Claude's connectors just now ({options.connectorsError}). Use Refresh to ask again.</p>
@@ -316,7 +317,7 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
           <label className="flex items-end gap-2 pb-1.5 text-caption text-muted-foreground"><Checkbox aria-label="Notify on success" checked={definition.notify?.onSuccess ?? false} onCheckedChange={onSuccess => update({ notify: { onSuccess } })}/>Notify me on success too</label>
         </div>
         {refusal && <p className="text-caption text-muted-foreground">This agent cannot run this workflow: {refusal}.</p>}
-        {!options && <p className="inline-flex items-center gap-1.5 text-caption text-muted-foreground"><LoaderCircle className="animate-spin" size={11}/>Loading agents and connectors…</p>}
+        {!options && <SkeletonRows label="Loading agents and connectors" rows={3} lead="dot" meta={false} framed={false} density="menu" />}
         {missingRepo && <p className="text-caption text-muted-foreground">Choose the repository to watch, as owner/name.</p>}
         {missingChannel && <p className="text-caption text-muted-foreground">Choose the Notion database to watch, by name or link.</p>}
         {options && !step.model.trim() && <p className="text-caption text-muted-foreground">Choose a model.</p>}
@@ -325,7 +326,7 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
       <DialogFooter>
         <Button variant="ghost" disabled={busy} onClick={onCancel}>Cancel</Button>
         <Button tooltip={tryOn ? `On: ${tryOn.title}` : undefined} variant="secondary" disabled={busy || !ready || previewPending} onClick={() => onSubmit({ definition: composed, approve: false, dryRun: true, event: tryOn })}>{tryOn ? "Dry run on the latest event" : "Dry run first"}</Button>
-        <Button disabled={busy || !ready} onClick={() => onSubmit({ definition: composed, approve: true, dryRun: false })}>{busy ? <LoaderCircle className="animate-spin" size={12}/> : <ShieldCheck size={12}/>}Approve and save</Button>
+        <Button loading={busy} disabled={!ready} onClick={() => onSubmit({ definition: composed, approve: true, dryRun: false })}><ShieldCheck size={12}/>Approve and save</Button>
       </DialogFooter>
     </DialogContent>}
   </Dialog>;

@@ -7,7 +7,6 @@ import {
   CornerUpLeft,
   ExternalLink,
   Inbox,
-  LoaderCircle,
   MailOpen,
   MessageSquare,
   PlugZap,
@@ -16,7 +15,7 @@ import {
   ShieldAlert,
   Sparkles,
   TriangleAlert,
-  } from "lucide-react";
+} from "lucide-react";
 import { bridgeApi } from "../api";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -233,13 +232,15 @@ function ConnectorHint({ connector }: { connector: ConnectorDescriptor }) {
 }
 
 function EmptyState({ state }: { state: NonNullable<ReturnType<typeof emptyStateFor>> }) {
-  const Icon = state.tone === "degraded" ? TriangleAlert : state.tone === "waiting" ? LoaderCircle : Inbox;
+  // Not checked yet is a first load: draw the rows it is about to show.
+  if (state.tone === "waiting") return <SkeletonRows label={state.title} rows={5} lead="icon" framed={false} className="flex-1" />;
+  const Icon = state.tone === "degraded" ? TriangleAlert : Inbox;
   return <div className="grid flex-1 place-items-center p-6 text-center">
     <div className="max-w-xs">
       <Icon
         size={22}
         aria-hidden="true"
-        className={cn("mx-auto", state.tone === "degraded" ? "text-warning" : "text-muted-foreground", state.tone === "waiting" && "animate-spin")}
+        className={cn("mx-auto", state.tone === "degraded" ? "text-warning" : "text-muted-foreground")}
       />
       <h2 className="mt-3 font-display text-sm font-semibold text-foreground">{state.title}</h2>
       <p className="mt-1.5 text-caption leading-5 text-muted-foreground">{state.detail}</p>
@@ -435,7 +436,7 @@ function Composer({ item, draft, busy, error, onDraft, onSend, onReact, onDismis
         }}
         rows={2}
         aria-label={`Reply to ${item.author}`}
-        placeholder={ready ? `Reply to ${item.author}…` : "Waiting for the card…"}
+        placeholder={`Reply to ${item.author}…`}
       />
       <div className="flex shrink-0 flex-col gap-1.5">
         <Button size="icon-xs" disabled={!ready || !draft.trim()} loading={busy} onClick={onSend} aria-label="Send reply">

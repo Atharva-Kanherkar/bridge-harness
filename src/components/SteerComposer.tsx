@@ -1,8 +1,9 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { LoaderCircle, Navigation } from "lucide-react";
+import { Navigation } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 /// Guidance into a running worker, from the surface where you can see it going
 /// wrong.
@@ -53,9 +54,8 @@ function SteerBox({ sessionId, steerable, starting = false, onSteer, label = "St
     box.style.overflowY = box.scrollHeight > MAX_FIELD_HEIGHT ? "auto" : "hidden";
   }, [draft, steerable]);
   if (!steerable && starting) {
-    return <div className={cn(className, "flex items-center gap-2")} role="status">
-      <LoaderCircle size={12} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
-      <span className="flex-1 text-caption text-muted-foreground">Starting up. You can steer this worker once it is running.</span>
+    return <div className={cn(className, "flex items-center gap-2")}>
+      <SkeletonRegion label="Starting up. You can steer this worker once it is running." className="flex-1"><Skeleton className="h-7 w-full rounded-md" /></SkeletonRegion>
       {trailing}
     </div>;
   }
@@ -95,14 +95,14 @@ function SteerBox({ sessionId, steerable, starting = false, onSteer, label = "St
         />
         {/* Quiet until there is something to send: a disabled primary button
             is a bright block in the dark theme. */}
-        <Button type="submit" size="xs" variant={draft.trim() || busy ? "default" : "ghost"} disabled={busy || !draft.trim()} className="shrink-0">
-          {busy ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true"/> : <Navigation size={12} aria-hidden="true"/>}
-          {busy ? "Sending…" : "Steer"}
+        <Button type="submit" size="xs" variant={draft.trim() || busy ? "default" : "ghost"} loading={busy} disabled={!draft.trim()} className="shrink-0">
+          <Navigation size={12} aria-hidden="true"/>
+          Steer
         </Button>
       </div>
       {trailing}
     </div>
-    <p role={busy ? "status" : undefined} className="mt-1.5 px-1 text-caption text-faint">{busy ? "Sending guidance…" : "Amends its task, mid-turn where supported, otherwise next turn."}</p>
+    <p className="mt-1.5 px-1 text-caption text-faint">Amends its task, mid-turn where supported, otherwise next turn.</p>
     {failure && <p role="alert" className="mt-1 px-1 text-caption text-destructive">{failure}</p>}
   </form>;
 }

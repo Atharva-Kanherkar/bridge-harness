@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft, Bell, Check, ExternalLink, LoaderCircle, MessageSquare, ShieldCheck, Square, X } from "lucide-react";
+import { ArrowLeft, Bell, Check, Circle, ExternalLink, MessageSquare, ShieldCheck, Square, X } from "lucide-react";
 import { bridgeApi } from "../../api";
 import { openExternalUrl } from "../../externalLinks";
 import type { AgentEvent } from "../../types";
@@ -10,6 +10,7 @@ import { ScreenHeading } from "../ui/screen";
 import { Markdown } from "../Markdown";
 import { ACTIVE_RUN_STATUSES, RUN_STATUS_LABEL, formatCost, ordinal, relativeTime, runTone } from "./format";
 import { Card, ErrorNote, StatusChip, errorText } from "./parts";
+import { SkeletonDot, SkeletonRows } from "@/components/ui/skeleton";
 
 const TRIGGER_LABEL: Record<WorkflowRun["triggerKind"], string> = { manual: "Run now", schedule: "schedule", catch_up: "catch-up", event: "event" };
 
@@ -201,10 +202,12 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
       {run.failureCode === "connector_unavailable" && <Button size="xs" variant="secondary" className="mt-2" onClick={() => void openExternalUrl(CLAUDE_CONNECTORS_URL)}><ExternalLink size={11}/>Reconnect in Claude</Button>}</Card>}
     <div className="rounded-xl border border-border bg-card px-4 py-2">
       {!run.sessionId && <p className="py-3 text-caption text-muted-foreground">{run.status === "skipped" ? "Skipped: another run of this workflow was still going." : run.status === "queued" ? "It starts when a slot frees." : "This run has not started a conversation."}</p>}
-      {run.sessionId && steps.length === 0 && <p className="flex items-center gap-2 py-3 text-caption text-muted-foreground">{active && <LoaderCircle className="animate-spin" size={12}/>}{active ? "Working…" : "Nothing was recorded for this run."}</p>}
+      {run.sessionId && steps.length === 0 && (active
+        ? <SkeletonRows label="Working" rows={3} lead="dot" framed={false} density="menu" />
+        : <p className="py-3 text-caption text-muted-foreground">Nothing was recorded for this run.</p>)}
       <div className="divide-y divide-border">{steps.map(step => <div key={step.key} className="flex items-start gap-3 py-2.5">
         <div className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border ${step.icon === "ask" ? "border-foreground text-foreground" : "border-border text-muted-foreground"}`}>
-          {step.icon === "ok" ? <Check size={12}/> : step.icon === "denied" ? <X size={12}/> : step.icon === "ask" ? <Bell size={12}/> : step.icon === "wait" ? <LoaderCircle size={12} className={active ? "animate-spin" : ""}/> : <MessageSquare size={12}/>}
+          {step.icon === "ok" ? <Check size={12}/> : step.icon === "denied" ? <X size={12}/> : step.icon === "ask" ? <Bell size={12}/> : step.icon === "wait" ? (active ? <SkeletonDot /> : <Circle size={12}/>) : <MessageSquare size={12}/>}
         </div>
         <div className="min-w-0 flex-1">
           <p className={`${step.icon === "say" ? "font-sans" : "font-mono"} text-meta text-foreground`}>{step.title}</p>

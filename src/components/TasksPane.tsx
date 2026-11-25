@@ -5,7 +5,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
 import { formatShortcut } from "@/lib/platform";
-import { ArrowUpRight, Check, ChevronLeft, ChevronRight, Clock3, Hand, ListTree, LoaderCircle, Pin, Square, TerminalSquare, X, type LucideIcon } from "lucide-react";
+import { ArrowUpRight, Check, ChevronLeft, ChevronRight, Clock3, Hand, ListTree, Circle, Pin, Square, TerminalSquare, X, type LucideIcon } from "lucide-react";
 import type { AgentEvent, BridgeEvent, Session, WorkerRuntimeRecord } from "../types";
 import type { QueuedWorkerRequest } from "../protocol/generated/protocol";
 import { cn } from "@/lib/utils";
@@ -19,6 +19,7 @@ import { HarnessMark } from "./harnessMarks";
 import { dockPaneChord } from "../dockLayout";
 import { WORKER_STATE_TEXT, formatWorkerClock, sentenceCase, stateOfTone, useTickingNow, type WorkerState } from "./workerFanOut";
 import { RowButton } from "@/components/ui/row";
+import { SkeletonDot } from "@/components/ui/skeleton";
 
 // The Agents pane: the agents this chat has running right now, and nothing
 // else, drawn as the agent tree they form: the orchestrator on top, each
@@ -132,7 +133,7 @@ export function worktreeLabel(path: string | null | undefined): string | undefin
 }
 
 const STATE_ICON: Record<WorkerState, LucideIcon> = {
-  working: LoaderCircle,
+  working: Circle,
   "needs-you": Hand,
   done: Check,
   failed: X,
@@ -234,7 +235,7 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
           {topic && <Tip label={topic}><span className="mt-0.5 block truncate text-meta text-foreground/80">{topic}</span></Tip>}
           <span className="mt-1 flex min-w-0 items-center gap-1 text-caption">
             <span data-agent-state={state} className={clsx("inline-flex shrink-0 items-center gap-1", WORKER_STATE_TEXT[state])}>
-              <StateIcon size={11} className={clsx("shrink-0", state === "working" && "animate-spin")} aria-hidden="true"/>{sentenceCase(status.label)}
+              {state === "working" ? <SkeletonDot className="size-[11px]" /> : <StateIcon size={11} className="shrink-0" aria-hidden="true"/>}{sentenceCase(status.label)}
             </span>
             {meta && <span className="min-w-0 truncate text-faint"><span aria-hidden="true">· </span>{meta}</span>}
             {/* The clock is the one fact that changes: it never truncates. */}
@@ -337,7 +338,7 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
                   </span>
                   <span className="shrink-0 text-right">
                     <span data-agent-state={state} className={clsx("inline-flex items-center gap-1 text-caption", WORKER_STATE_TEXT[state])}>
-                      <StateIcon size={11} className={clsx("shrink-0", state === "working" && "animate-spin")} aria-hidden="true"/>{label}
+                      {state === "working" ? <SkeletonDot className="size-[11px]" /> : <StateIcon size={11} className="shrink-0" aria-hidden="true"/>}{label}
                     </span>
                     {Number.isFinite(started) && <span className="block text-caption tabular-nums text-faint">{formatWorkerClock(workerClock(session, runtime, now) - started)}</span>}
                   </span>

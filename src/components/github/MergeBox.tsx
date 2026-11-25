@@ -12,7 +12,6 @@ import {
   GitCommitHorizontal,
   GitMerge,
   GitPullRequestDraft,
-  LoaderCircle,
   MessageSquare,
   RotateCcw,
   Sparkles,
@@ -361,11 +360,9 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
             <Button variant="ghost" size="xs" onClick={onApprove} disabled={busy}>
               <ThumbsUp className="size-3" aria-hidden="true" /> Approve
             </Button>
-            <Button variant="ghost" size="xs" onClick={onToggleReview} disabled={busy || reviewBusy} aria-expanded={reviewOpen} data-pressed={reviewOpen ? "" : undefined} aria-busy={reviewBusy || reviewing > 0}>
-              {reviewBusy || reviewing > 0
-                ? <LoaderCircle aria-hidden="true" className="size-3 animate-spin motion-reduce:animate-none" />
-                : <Sparkles className="size-3" aria-hidden="true" />}
-              {reviewBusy ? "Starting review…" : reviewing > 0 ? "Reviewing" : "Review"}
+            <Button variant="ghost" size="xs" onClick={onToggleReview} disabled={busy || reviewBusy} loading={reviewBusy} aria-busy={reviewBusy || reviewing > 0 || undefined} aria-expanded={reviewOpen} data-pressed={reviewOpen ? "" : undefined}>
+              <Sparkles className="size-3" aria-hidden="true" />
+              {reviewing > 0 && !reviewBusy ? "Reviewing" : "Review"}
             </Button>
             {overflow.length > 0 && <>
               <Button

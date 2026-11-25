@@ -290,7 +290,8 @@ it("keeps the confirmation open and working until the delete answers", async () 
   await act(async () => { button("Move npm cache to the Trash")!.click(); });
   expect(dialog()?.textContent).toContain("Move npm cache to the Trash?");
   await act(async () => { dialogButton("Move to Trash")!.click(); });
-  expect(dialogButton("Moving…")?.disabled).toBe(true);
+  expect(dialogButton("Move to Trash")?.disabled).toBe(true);
+  expect(dialogButton("Move to Trash")?.getAttribute("aria-busy")).toBe("true");
   expect(dialogButton("Cancel")?.disabled).toBe(true);
   await act(async () => { answer({ deleted: ["/Users/demo/.npm"], failed: [], bytesFreed: 3_300_000_000, trashed: true }); });
   await settle();

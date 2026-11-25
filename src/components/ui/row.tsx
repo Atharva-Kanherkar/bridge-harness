@@ -3,6 +3,7 @@ import { useRender } from "@base-ui/react/use-render";
 import { cva, type VariantProps } from "class-variance-authority";
 import * as React from "react";
 import { cn } from "@/lib/utils";
+import { pendingClass } from "@/components/ui/skeleton";
 
 /**
  * A pressable row: list items, menu-like choices, tree nodes, anything that
@@ -63,16 +64,20 @@ export interface RowButtonProps extends useRender.ComponentProps<"button"> {
   shape?: VariantProps<typeof rowVariants>["shape"];
   /** The row is the current or selected one. */
   active?: boolean;
+  /** Its action is in flight: disabled, and wearing the skeleton's sweep. */
+  loading?: boolean;
 }
 
 export const RowButton = React.forwardRef<HTMLButtonElement, RowButtonProps>(
   function RowButton(
-    { className, size, tone, shape, active, render, ...props },
+    { className, size, tone, shape, active, loading = false, render, disabled, ...props },
     forwardedRef,
   ): React.ReactElement {
     const defaultProps = {
-      className: cn(rowVariants({ className, size, tone, shape })),
+      className: cn(rowVariants({ className, size, tone, shape }), pendingClass(loading)),
       "data-active": active ? "true" : undefined,
+      "aria-busy": loading || undefined,
+      disabled: Boolean(loading || disabled),
       "data-slot": "row",
       type: render ? undefined : ("button" as const),
     };

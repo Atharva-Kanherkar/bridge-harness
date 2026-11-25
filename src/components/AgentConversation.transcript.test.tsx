@@ -223,7 +223,7 @@ describe("observable background work", () => {
     expect(host.querySelector("[data-conversation-content] [data-thinking-row]")?.textContent).toContain("Thinking");
     show(<AgentConversation session={session} working stopping events={events} onResolve={() => {}} />);
     expect(taskRows()).toHaveLength(0);
-    expect(host.textContent?.match(/Stopping…/g)).toHaveLength(1);
+    expect(host.querySelectorAll('[role="status"][aria-label="Stopping"]')).toHaveLength(1);
   });
 
   it("counts a launcher and its tracked process as one command", () => {
@@ -918,7 +918,7 @@ describe("check rows", () => {
     expect(rows[0].textContent).toContain("Failed");
     expect(rows[0].textContent).toContain("2 failed · 214 passed");
     expect(rows[1].textContent).toContain("Running");
-    expect(rows[1].querySelector(".animate-spin.text-warning")).not.toBeNull();
+    expect(rows[1].querySelector("[data-skeleton-dot]")).not.toBeNull();
   });
 
   it("fails a zero-exit run whose test file failed to collect, and flags the group for the agent", () => {

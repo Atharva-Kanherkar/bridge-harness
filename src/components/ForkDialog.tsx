@@ -120,9 +120,9 @@ export function ForkDialog({
 
       <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-border pt-4">
         <Button variant="quiet" size="sm" className="mr-auto" disabled={busy} onClick={onClose}>Cancel</Button>
-        <Button variant="default" size="sm" ref={submitRef} disabled={busy} onClick={submit}>
+        <Button variant="default" size="sm" ref={submitRef} disabled={busy} loading={busy} onClick={submit}>
           <GitFork className="h-4 w-4" aria-hidden="true" />
-          {busy ? "Forking…" : "Create fork"}
+          Create fork
         </Button>
       </div>
     </CreateDialogShell>

@@ -1,11 +1,10 @@
 import { useState } from "react";
-import { RefreshCw as ArrowsClockwise, LoaderCircle as CircleNotch, Key, Plug as Plugs } from "lucide-react";
+import { RefreshCw as ArrowsClockwise, Key, Plug as Plugs } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { OpenCodeCatalog } from "../types";
 import {
   GhostButton, PrimaryButton, SettingsGroup, SettingsRow, StatusPill, Switch, TextButton,
 } from "./settings/kit";
-import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 
 // The two groups only OpenCode's harness detail page shows: which providers it
@@ -86,8 +85,8 @@ export function OpenCodeHarnessSettings({
       <SettingsRow
         label="Provider credentials"
         description="Uses OpenCode's own credential store, environment, and config. Keys are sent directly to OpenCode and are never saved by Bridge."
-        control={<GhostButton disabled={disabled || refreshing} onClick={() => void refresh()}>
-          <ArrowsClockwise size={12} strokeWidth={1.7} aria-hidden="true" className={cn(refreshing && "animate-spin")} />Refresh
+        control={<GhostButton busy={refreshing} disabled={disabled} onClick={() => void refresh()}>
+          <ArrowsClockwise size={12} strokeWidth={1.7} aria-hidden="true" />Refresh
         </GhostButton>}
       />
       {discoveryError && <SettingsRow label={<span role="alert" className="text-destructive">{discoveryError}</span>} />}
@@ -102,12 +101,11 @@ export function OpenCodeHarnessSettings({
               <StatusPill tone="success">Connected</StatusPill>
               <TextButton
                 tone="destructive"
-                disabled={disabled || workingProvider === provider.id}
+                busy={workingProvider === provider.id}
+                disabled={disabled}
                 onClick={() => void disconnect(provider.id)}
               >
-                {workingProvider === provider.id
-                  ? <CircleNotch size={12} strokeWidth={1.7} className="animate-spin" aria-hidden="true" />
-                  : <Plugs size={12} strokeWidth={1.7} aria-hidden="true" />}
+                <Plugs size={12} strokeWidth={1.7} aria-hidden="true" />
                 Disconnect
               </TextButton>
             </>
@@ -126,12 +124,11 @@ export function OpenCodeHarnessSettings({
                   className="w-44 shrink-0"
                 />
                 <PrimaryButton
-                  disabled={disabled || workingProvider === provider.id || !(providerKeys[provider.id]?.trim())}
+                  busy={workingProvider === provider.id}
+                  disabled={disabled || !(providerKeys[provider.id]?.trim())}
                   onClick={() => void connect(provider.id)}
                 >
-                  {workingProvider === provider.id
-                    ? <CircleNotch size={12} strokeWidth={1.7} className="animate-spin" aria-hidden="true" />
-                    : <Key size={12} strokeWidth={1.7} aria-hidden="true" />}
+                  <Key size={12} strokeWidth={1.7} aria-hidden="true" />
                   Connect
                 </PrimaryButton>
               </>

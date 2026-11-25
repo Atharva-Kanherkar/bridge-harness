@@ -24,6 +24,7 @@ import { outgoingCallState, outgoingDraftId, outgoingRefusal } from "../transcri
 import { Tip } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
 import { RowButton } from "@/components/ui/row";
+import { Skeleton, SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 
 function DestinationIcon({ destination }: { destination: OutgoingDestination }) {
   const Icon = destination.kind === "slackDm" ? AtSign
@@ -54,8 +55,11 @@ function Finding({ finding }: { finding: OutgoingLintFinding }) {
 
 function Placeholder() {
   return (
-    <div data-outgoing-state="drafting" className="rounded-2xl border border-dashed border-border px-4 py-3 text-meta text-muted-foreground">
-      <span className="animate-pulse">Drafting a message…</span>
+    <div data-outgoing-state="drafting" className="rounded-2xl border border-border">
+      <SkeletonRegion label="Drafting a message" className="flex flex-col gap-3 px-4 py-3">
+        <Skeleton className="h-3 w-1/3" />
+        <SkeletonText lines={3} />
+      </SkeletonRegion>
     </div>
   );
 }
@@ -230,7 +234,7 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
     >
       <div hidden={!!currentApproval && !readOnly} className="px-4 pb-3.5 pt-3.5 sm:px-5">
         <p className="flex flex-wrap items-center gap-1.5 text-caption font-medium text-muted-foreground">
-          <span>{draft.state === "sent" ? "Message sent" : draft.state === "sending" ? "Sending message…" : draft.state === "failed" ? "Message failed" : "Draft message"}</span>
+          <span>{draft.state === "sent" ? "Message sent" : draft.state === "sending" ? "Sending message" : draft.state === "failed" ? "Message failed" : "Draft message"}</span>
           {draft.state === "copied" && <>
             <span aria-hidden="true" className="text-muted-foreground/50">·</span>
             <span className="normal-case tracking-normal">copied</span>

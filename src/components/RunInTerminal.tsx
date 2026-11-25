@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import { AlertCircle, Check, Loader2, Play } from "lucide-react";
+import { AlertCircle, Check, Play } from "lucide-react";
 import { commandFromFence } from "../terminal/runCommand";
 import type { TerminalRunResult } from "../terminal/runQueue";
 import { Button } from "@/components/ui/button";
@@ -50,7 +50,7 @@ export function RunButton({ lang, body, closed }: { lang: string; body: string; 
   };
 
   const lines = command.split("\n").length;
-  const label = state.kind === "running" ? "Running…" : state.kind === "sent" ? `Sent to ${state.shell}` : state.kind === "failed" ? "Couldn't run" : "Run";
+  const label = state.kind === "running" ? "Run" : state.kind === "sent" ? `Sent to ${state.shell}` : state.kind === "failed" ? "Couldn't run" : "Run";
   const name = state.kind === "idle" ? "Run in terminal" : state.kind === "failed" ? `Couldn't run: ${state.message}` : label;
   const title = state.kind === "failed" ? state.message : state.kind === "idle" ? (lines > 1 ? `Run these ${lines} lines in the terminal` : "Run in the terminal") : label;
 
@@ -60,6 +60,7 @@ export function RunButton({ lang, body, closed }: { lang: string; body: string; 
       size="xs"
       onClick={start}
       disabled={state.kind === "running"}
+      loading={state.kind === "running"}
       aria-label={name}
       tooltip={title}
       data-run-state={state.kind}
@@ -70,7 +71,6 @@ export function RunButton({ lang, body, closed }: { lang: string; body: string; 
           <Play size={8} fill="currentColor" strokeWidth={0} className="translate-x-px" />
         </span>
       )}
-      {state.kind === "running" && <Loader2 size={12} aria-hidden="true" className="animate-spin" />}
       {state.kind === "sent" && <Check size={12} aria-hidden="true" />}
       {state.kind === "failed" && <AlertCircle size={12} aria-hidden="true" />}
       <span aria-live="polite" className={state.kind === "running" || state.kind === "sent" ? "text-muted-foreground" : undefined}>{label}</span>

@@ -83,8 +83,8 @@ export function PromptMutationApprovalCard({ item, onResolve }: {
       </div>
     </div>
     {pending ? <div className="flex flex-wrap justify-end gap-2 px-3.5 py-3 sm:px-4" aria-busy={busy !== null}>
-      <Button variant="outline" size="sm" disabled={busy !== null} onClick={() => void resolve("decline")}><X size={12} aria-hidden="true" />{busy === "decline" ? "Declining…" : "Decline"}</Button>
-      <Button size="sm" disabled={busy !== null} onClick={() => void resolve("accept")}><Check size={12} aria-hidden="true" />{busy === "accept" ? "Approving…" : "Approve change"}</Button>
+      <Button variant="outline" size="sm" disabled={busy !== null} loading={busy === "decline"} onClick={() => void resolve("decline")}><X size={12} aria-hidden="true" />Decline</Button>
+      <Button size="sm" disabled={busy !== null} loading={busy === "accept"} onClick={() => void resolve("accept")}><Check size={12} aria-hidden="true" />Approve change</Button>
     </div> : <div role="status" className="space-y-1 px-3.5 py-3 text-meta text-muted-foreground sm:px-4">
       <p className="flex items-start gap-1.5">{accepted ? <Check size={12} className="mt-0.5 shrink-0" aria-hidden="true" /> : <X size={12} className="mt-0.5 shrink-0" aria-hidden="true" />}{outcomeCopy(status)}</p>
       {result?.disposition === "alreadyResolved" && <p>This request was already resolved.</p>}

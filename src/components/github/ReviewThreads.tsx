@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { Check, ChevronRight, CircleCheck, LoaderCircle, MessagesSquare, RotateCcw, SquareArrowOutUpRight } from "lucide-react";
+import { Check, ChevronRight, CircleCheck, MessagesSquare, RotateCcw, SquareArrowOutUpRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { relativeTime } from "../workDashboard";
@@ -127,10 +127,10 @@ function ThreadCard({ thread, index, number, repositoryUrl, headBranch, checkedO
           ><Badge variant="success" size="sm"><Check size={10} aria-hidden="true" />Resolved</Badge></motion.span>}
         </AnimatePresence>
         {canToggle && <Button variant="outline" size="2xs"
-          disabled={busy}
+          loading={busy}
           onClick={() => void toggle()}
         >
-          {busy ? <LoaderCircle size={11} className="animate-spin" aria-hidden="true" /> : resolved ? <RotateCcw size={11} aria-hidden="true" /> : <CircleCheck size={11} aria-hidden="true" />}
+          {resolved ? <RotateCcw size={11} aria-hidden="true" /> : <CircleCheck size={11} aria-hidden="true" />}
           {resolved ? "Unresolve" : "Resolve"}
         </Button>}
       </span>

@@ -130,7 +130,7 @@ describe("TrailsScreen selection", () => {
     expect(host.textContent).not.toContain("GitHub timed out");
     expect(host.querySelector("h1")?.textContent).toBe("Archive a chat from the sidebar");
     // The refresh settled, so Refresh stops spinning.
-    expect(button(/^Refresh from GitHub$/)!.getAttribute("aria-busy")).toBe("false");
+    expect(button(/^Refresh from GitHub$/)!.getAttribute("aria-busy")).not.toBe("true");
   });
 });
 
@@ -174,13 +174,13 @@ describe("TrailsScreen loading", () => {
     await settle();
     expect(refreshButton().getAttribute("aria-busy")).toBe("true");
     expect(refreshButton().disabled).toBe(true);
-    expect(refreshButton().querySelector("svg")?.getAttribute("class")).toContain("animate-spin");
+    expect(refreshButton().querySelector(".animate-spin")).toBeNull();
     // The page stays: no skeleton while GitHub answers.
     expect(host.querySelector("ol[aria-label=Timeline]")).not.toBeNull();
     expect(host.querySelector("[role=status]")).toBeNull();
     await act(async () => { calls[1].reject(new Error("gh: rate limited")); });
     await settle();
-    expect(refreshButton().getAttribute("aria-busy")).toBe("false");
+    expect(refreshButton().getAttribute("aria-busy")).not.toBe("true");
     expect(refreshButton().disabled).toBe(false);
     expect(host.querySelector("ol[aria-label=Timeline]")).not.toBeNull();
     expect(host.textContent).toContain("gh: rate limited");

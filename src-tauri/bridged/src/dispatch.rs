@@ -491,7 +491,13 @@ pub fn dispatch(
         }
         MethodName::ListMemoryRecords => {
             let p: wire::ListMemoryRecordsParams = decode(method, params)?;
-            reply(api::list_memory_records(core, &p.scope_key, p.status.as_deref()))
+            reply(api::list_memory_records(
+                core,
+                &p.scope_key,
+                p.status.as_deref(),
+                p.cursor.as_deref(),
+                p.limit,
+            ))
         }
         MethodName::DeleteMemoryRecord => {
             let p: wire::DeleteMemoryRecordParams = decode(method, params)?;
@@ -514,6 +520,10 @@ pub fn dispatch(
         MethodName::RejectMemoryRecord => {
             let p: wire::RejectMemoryRecordParams = decode(method, params)?;
             reply(api::reject_memory_record(core, &p.record_id))
+        }
+        MethodName::ReviewMemoryRecords => {
+            let p: wire::ReviewMemoryRecordsParams = decode(method, params)?;
+            reply(api::review_memory_records(core, &p.scope_key, &p.approve, &p.reject))
         }
         MethodName::GetExtractionSettings => reply(api::get_extraction_settings(core)),
         MethodName::GetMemoryInjection => reply(api::get_memory_injection(core)),
@@ -1440,6 +1450,10 @@ pub fn dispatch(
         MethodName::ListReviews => {
             let p: wire::ListReviewsParams = decode(method, params)?;
             reply(api::list_reviews(core, &p))
+        }
+        MethodName::ReviewActivity => {
+            let p: wire::ReviewActivityParams = decode(method, params)?;
+            reply(api::review_activity(core, &p))
         }
         MethodName::ReviewOverview => {
             let p: wire::ReviewOverviewParams = decode(method, params)?;

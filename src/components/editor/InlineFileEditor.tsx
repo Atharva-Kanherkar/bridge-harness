@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
-import { LoaderCircle } from "lucide-react";
+import { SkeletonDot, SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { CodeEditor } from "./CodeEditor";
 import { isDirty, isReadOnly, loadBuffer, saveBuffer, settleSave, stateAfterEdit, statusLabel, type FileBuffer } from "./fileBuffer";
@@ -104,7 +103,7 @@ export function InlineFileEditor({ workspaceId, path, onDirtyChange, onSaved }: 
       />
     </div>
     <div className="flex min-h-9 flex-wrap items-center gap-2 py-1 border-t border-border px-3 font-mono text-caption text-muted-foreground">
-      {buffer.state === "saving" && <LoaderCircle size={11} className="animate-spin" aria-hidden="true" />}
+      {buffer.state === "saving" && <SkeletonDot className="size-[11px]" />}
       <span className={cn(
         buffer.state === "conflict" && "text-warning",
         buffer.state === "error" && "text-destructive",

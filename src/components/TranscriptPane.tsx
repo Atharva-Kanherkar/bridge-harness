@@ -161,6 +161,7 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
         variant="quiet"
         size="sm"
         className="shrink-0"
+        loading={exportState.status === "running"}
         disabled={exportState.status === "running"}
         onClick={() => {
           setExportState({ status: "running" });
@@ -171,7 +172,7 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
         tooltip="Write the whole durable record to a JSONL file"
       >
         <Download className="size-2.5" aria-hidden="true" />
-        {exportState.status === "running" ? "Exporting…" : "Export JSONL"}
+        Export JSONL
       </Button>
     </div>
 
@@ -220,7 +221,8 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
             .then(page => setLoaded(current => mergeRaw(current, page)))
             .finally(() => setLoading(false));
         }}
-      >{loading ? "Loading…" : "Load earlier events"}</RowButton></div>}
+        loading={loading}
+      >Load earlier events</RowButton></div>}
       {visible.length === 0 && !loading && <p className="px-2 py-4 text-muted-foreground">
         {stream.length === 0 ? "No events recorded for this session yet." : "Nothing matches the filter."}
       </p>}

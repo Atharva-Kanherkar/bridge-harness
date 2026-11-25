@@ -46,8 +46,8 @@ function PullRequestDetail({ pr, now, onFix, onOpenGithub, onRetry, retrying }: 
     {pr.stale && <div role="status" className="my-1.5 flex items-center gap-2 rounded-lg border border-border px-2.5 py-1.5 text-caption text-muted-foreground">
       <CloudOff size={12} className="shrink-0" aria-hidden="true" />
       <span className="min-w-0 flex-1">GitHub didn’t answer, so this is the last state Bridge saw{pr.error ? <Tip label={pr.error}><span className="block truncate text-micro text-faint">{pr.error}</span></Tip> : null}</span>
-      <Button variant="outline" size="2xs" onClick={onRetry} disabled={retrying}>
-        <RotateCw size={11} className={cn(retrying && "animate-spin")} aria-hidden="true" /> Retry
+      <Button variant="outline" size="2xs" onClick={onRetry} disabled={retrying} loading={retrying}>
+        <RotateCw size={11} aria-hidden="true" /> Retry
       </Button>
     </div>}
     {ordered.length > 0

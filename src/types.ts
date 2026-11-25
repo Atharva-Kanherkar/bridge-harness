@@ -133,6 +133,8 @@ export type {
   TranscriptExportScope,
   MemoryRecord,
   ListMemoryRecordsResult,
+  ReviewMemoryRecordsResult,
+  MemoryReviewRefusal,
   MemoryCapabilities,
   ProviderMemoryCommand,
   MemoryExtractionSettings,

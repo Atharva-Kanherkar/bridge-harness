@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, CornerDownLeft, FileSearch, Folder, FolderOpen, LoaderCircle, PanelLeft, RefreshCw, X } from "lucide-react";
+import { ChevronRight, CornerDownLeft, FileSearch, Folder, FolderOpen, PanelLeft, RefreshCw, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import { errorMessage } from "../errors";
 import { ancestorPaths, buildFileTree, collapseChains, rankPaths, type TreeNode } from "../fileTree";
@@ -16,6 +16,7 @@ import { CodeEditor } from "./editor/CodeEditor";
 import { isDirty, isReadOnly, loadBuffer, saveBuffer, settleSave, stateAfterEdit, statusLabel, type FileBuffer } from "./editor/fileBuffer";
 import { STATS_REFRESH_DEBOUNCE_MS } from "./ChangesPanel";
 import { modKey } from "@/lib/platform";
+import { SkeletonDot } from "@/components/ui/skeleton";
 
 /** Rows the tree actually paints. Deep repositories stay responsive because
  *  only expanded directories contribute. */
@@ -467,8 +468,8 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
         <Button variant="quiet" size="icon-sm" onClick={() => setPaletteOpen(true)} aria-label="Go to file" tooltip="Go to file">
           <FileSearch size={13} aria-hidden="true" />
         </Button>
-        <Button variant="quiet" size="icon-sm" onClick={() => void loadTree()} aria-label="Refresh file list" tooltip="Refresh">
-          <RefreshCw size={12} className={cn(loadingTree && "animate-spin")} aria-hidden="true" />
+        <Button variant="quiet" size="icon-sm" loading={loadingTree} onClick={() => void loadTree()} aria-label="Refresh file list" tooltip="Refresh">
+          <RefreshCw size={12} aria-hidden="true" />
         </Button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-1">
@@ -575,7 +576,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
       {active && <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-2 border-t border-border px-3 font-mono text-caption text-muted-foreground">
         <span className="truncate">{active.path}</span>
         <span className="ml-auto flex shrink-0 items-center gap-2">
-          {active.state === "saving" && <LoaderCircle size={11} className="animate-spin" aria-hidden="true" />}
+          {active.state === "saving" && <SkeletonDot className="size-[11px]" />}
           <span className={cn(
             active.state === "conflict" && "text-warning",
             active.state === "error" && "text-destructive",

@@ -274,8 +274,8 @@ export function AttachPullRequest({ onAttach, variant = "inline" }: { onAttach: 
         aria-describedby={error ? `${inputId}-error` : undefined}
         disabled={busy}
       />
-      <Button variant="default" size="xs" type="submit" disabled={busy || !value.trim()}>
-        {busy ? "Verifying…" : "Attach"}
+      <Button variant="default" size="xs" type="submit" disabled={busy || !value.trim()} loading={busy}>
+        Attach
       </Button>
       <Button variant="quiet" size="xs" onClick={() => { setOpen(false); setError(undefined); }}>Cancel</Button>
     </div>

@@ -6,7 +6,6 @@ import type { WorkerSettings } from "../../protocol/generated/protocol";
 import { RouterSettingsDialog } from "../RouterSettingsDialog";
 import { GhostButton, NumberField, Select, SettingsGroup, SettingsPage, SettingsRow, Switch, useSavedFlash } from "./kit";
 import { DelegationNotifySetting } from "./DelegationNotifySetting";
-import { ReviewerSettingsSection } from "./ReviewerSettingsSection";
 import { PAGES } from "./sections";
 
 const LIMITS = [
@@ -86,6 +85,5 @@ export function WorkersPage({ adapters }: { adapters: AdapterDescriptor[] }) {
     </>}
     {router && <RouterSettingsDialog open workspaceId={workspace} adapters={adapters} onClose={() => setRouter(false)} onError={setError} />}
     <DelegationNotifySetting />
-    <ReviewerSettingsSection adapters={adapters} />
   </SettingsPage>;
 }

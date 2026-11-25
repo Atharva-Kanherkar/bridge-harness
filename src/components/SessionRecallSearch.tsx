@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { LoaderCircle, Search, X } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { SearchSessionEntriesResult, SessionRecallHit } from "../types";
 import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
 import { Input } from "@/components/ui/input";
+import { SkeletonRows } from "@/components/ui/skeleton";
 
 export type SessionRecallSearchProps = {
   sessionId: string;
@@ -95,7 +96,6 @@ export function SessionRecallSearch({
               aria-label="Search this chat"
               className="min-w-0 flex-1"
             />
-            {status === "loading" && <LoaderCircle size={13} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />}
           </label>
           <Button variant="quiet" size="icon-sm" className="shrink-0"
             onClick={onClose}
@@ -106,6 +106,7 @@ export function SessionRecallSearch({
         </div>
         <p className="text-caption text-muted-foreground">This search stays in this chat. It does not look at other sessions or account memory.</p>
         {status === "error" && error && <p className="text-meta text-destructive">{error}</p>}
+        {status === "loading" && hits.length === 0 && <SkeletonRows label="Searching this chat" rows={3} framed={false} density="menu" />}
         {status === "ready" && hits.length === 0 && (
           <p className="text-meta text-muted-foreground">No matches in this chat.</p>
         )}
@@ -125,6 +126,7 @@ export function SessionRecallSearch({
         {hasMore && (
           <Button variant="quiet" size="xs" className="self-start"
             disabled={loadingMore}
+            loading={loadingMore}
             onClick={() => {
               const requested = generation.current;
               setLoadingMore(true);
@@ -146,7 +148,7 @@ export function SessionRecallSearch({
                 // would strand it.
                 .finally(() => setLoadingMore(false));
             }}
-          >{loadingMore ? "Loading…" : "Show more"}</Button>
+          >Show more</Button>
         )}
       </div>
     </div>

@@ -1,11 +1,12 @@
 import { useRef, useState } from "react";
-import { CircleAlert, CircleCheck, CircleHelp, LoaderCircle } from "lucide-react";
+import { CircleAlert, CircleCheck, CircleHelp } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { UsageProvider } from "../usage";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogTitle } from "./ui/dialog";
 import { HarnessMark } from "./harnessMarks";
 import { ProviderLoginPane } from "./ProviderLoginPane";
+import { SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 
 type Phase = "signing-in" | "checking" | "signed-in" | "failed" | "unconfirmed";
 type Outcome = "signed-in" | "failed" | "unconfirmed";
@@ -89,9 +90,7 @@ export function ProviderSignInDialog({ provider, label, onRetry, onAuthChanged, 
       </DialogHeader>
       {(phase === "signing-in" || phase === "checking") && provider && <DialogPanel scrollFade={false}>
         {phase === "checking"
-          ? <p className="flex items-center gap-2 text-meta text-muted-foreground" role="status">
-            <LoaderCircle size={14} className="animate-spin" aria-hidden="true" /> Checking your {label} sign-in…
-          </p>
+          ? <SkeletonRegion label={`Checking your ${label} sign-in`}><SkeletonText lines={2} /></SkeletonRegion>
           : <ProviderLoginPane key={attempt} bare provider={provider} label={label} onClose={close} onExited={output => check(output, true)} />}
       </DialogPanel>}
       <DialogFooter variant="bare">

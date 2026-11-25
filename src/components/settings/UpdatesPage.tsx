@@ -43,7 +43,7 @@ export function UpdatesPage({ availableUpdate, onUpdate }: { availableUpdate?: U
       <SettingsRow anchor="check-updates" label="Check for updates" description={availableUpdate?.channel === channel
         ? `Bridge ${availableUpdate.version} is available on this channel.`
         : message ?? `Current channel: ${channel === "beta" ? "beta nightly" : "stable"}. Bridge also checks when it opens.`}
-        control={<GhostButton disabled={checking} onClick={() => void check()}>{checking ? "Checking…" : "Check now"}</GhostButton>} />
+        control={<GhostButton busy={checking} disabled={checking} onClick={() => void check()}>Check now</GhostButton>} />
     </SettingsGroup>
   </SettingsPage>;
 }

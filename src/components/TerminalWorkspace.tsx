@@ -11,6 +11,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { RowButton } from "./ui/row";
 import { Tip } from "./ui/tooltip";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 const PANE_DRAG = "application/x-bridge-terminal-pane";
 const TAB_DRAG = "application/x-bridge-terminal-tab";
@@ -284,7 +285,7 @@ export function TerminalWorkspace({ workspaceId, branch, onError }: { workspaceI
           <Tip label={terminalChord("new-tab")}><RowButton size="sm" tone="muted" className="justify-between" onClick={() => { void launch(undefined, { newTab: true }); }}>New tab<kbd className="font-mono text-micro">{terminalChord("new-tab")}</kbd></RowButton></Tip>
         </div>}
       </div>
-      {busy && <span role="status" className="text-xs text-muted-foreground">Opening terminal…</span>}
+      {busy && <SkeletonRegion label="Opening terminal"><Skeleton className="h-2.5 w-20" /></SkeletonRegion>}
       <div className="ml-auto flex items-center gap-1">
         {layout.activeLeafId && <IconButton title="Move focused pane to a new tab" onClick={() => detachToTab(layout.activeLeafId!)}><ExternalLink size={14} /></IconButton>}
         <IconButton title={`Search scrollback (${terminalChord("search")})`} onClick={() => command("search")}><Search size={14} /></IconButton>
@@ -307,7 +308,7 @@ export function TerminalWorkspace({ workspaceId, branch, onError }: { workspaceI
       onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setBackgroundDrop(false); }}
       onDrop={dropOnBackground}>
       {backgroundDrop && <div aria-hidden="true" className="pointer-events-none absolute inset-2 z-10 grid place-items-center rounded-md border-2 border-dashed border-ring text-xs text-muted-foreground">Drop to add beside the last pane</div>}
-      {!state ? <div role="status" className="grid h-full place-items-center text-xs text-muted-foreground">{error ? "Terminal workspace could not be opened." : "Restoring workspace…"}</div> : root ? <div role="tabpanel" className="h-full w-full" style={minimum ? { minWidth: minimum.width, minHeight: minimum.height } : undefined}><SplitTree node={root} actions={actions} /></div> : <div className="flex h-full min-h-60 flex-col items-center justify-center gap-3 px-8 text-center"><TerminalSquare size={30} strokeWidth={1.2} className="text-muted-foreground" /><Button variant="outline" size="sm" disabled={busy} onClick={() => { void launch(); }} className="mt-2">Open a terminal</Button></div>}
+      {!state ? error ? <div role="alert" className="grid h-full place-items-center text-xs text-muted-foreground">Terminal workspace could not be opened.</div> : <SkeletonRegion label="Restoring workspace" className="flex h-full flex-col gap-2 p-1"><Skeleton className="h-3 w-2/5" /><Skeleton className="h-3 w-1/4" /></SkeletonRegion> : root ? <div role="tabpanel" className="h-full w-full" style={minimum ? { minWidth: minimum.width, minHeight: minimum.height } : undefined}><SplitTree node={root} actions={actions} /></div> : <div className="flex h-full min-h-60 flex-col items-center justify-center gap-3 px-8 text-center"><TerminalSquare size={30} strokeWidth={1.2} className="text-muted-foreground" /><Button variant="outline" size="sm" disabled={busy} onClick={() => { void launch(); }} className="mt-2">Open a terminal</Button></div>}
     </div>
   </div>;
 }

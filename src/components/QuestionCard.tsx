@@ -132,8 +132,8 @@ export function QuestionCard({ item, onResolve, resolvedCopy }: { item: Conversa
                 {fields.length > 1 && <span aria-hidden="true">·</span>}
                 <kbd className="rounded border border-border px-1 font-sans text-micro">{modKey("↵")}</kbd> to send
               </span>
-              <Button variant="outline" size="sm" disabled={!!busy} onClick={() => void act("decline")}><X size={12} aria-hidden="true" />{busy === "decline" ? "Skipping…" : "Skip"}</Button>
-              <Button variant="default" size="sm" disabled={!!busy || !ready} onClick={() => void act("answer")}><Check size={12} aria-hidden="true" />{busy === "answer" ? "Sending…" : fields.length > 1 ? "Send answers" : "Send answer"}</Button>
+              <Button variant="outline" size="sm" disabled={!!busy} loading={busy === "decline"} onClick={() => void act("decline")}><X size={12} aria-hidden="true" />Skip</Button>
+              <Button variant="default" size="sm" disabled={!!busy || !ready} loading={busy === "answer"} onClick={() => void act("answer")}><Check size={12} aria-hidden="true" />{fields.length > 1 ? "Send answers" : "Send answer"}</Button>
             </footer>
           </div>
         // The settled card fades in where the form was, so it reads as the

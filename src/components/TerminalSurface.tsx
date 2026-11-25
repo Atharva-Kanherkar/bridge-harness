@@ -6,6 +6,7 @@ import { acquireTerminalEngine, releaseTerminalEngine, type TerminalEngine, type
 import type { TerminalRecord } from "../terminal/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 /** One terminal on screen. The xterm, its checkpoint replay, and its input
  *  live in a `TerminalEngine`; this view gives it a host, a size, and the
@@ -75,7 +76,7 @@ export function TerminalSurface({ record, focused, onRecord, onSearchHandled = (
     <div className="min-h-0 flex-1 overflow-hidden p-2">
       <div ref={host} aria-label={`${record.title} terminal`} className="h-full w-full overflow-hidden [&_.xterm]:h-full [&_.xterm-viewport]:bg-transparent! [&_.xterm-viewport]:scrollbar-thin" />
     </div>
-    {view.restoring && <div role="status" className="pointer-events-none absolute bottom-2 right-3 rounded bg-background px-2 py-1 text-micro text-muted-foreground">Restoring terminal…</div>}
+    {view.restoring && <SkeletonRegion label="Restoring terminal" className="pointer-events-none absolute bottom-2 right-3"><Skeleton className="h-2.5 w-16" /></SkeletonRegion>}
     {view.error && <div role="alert" className="flex items-center gap-2 border-t border-border bg-background px-3 py-2 text-xs text-destructive"><span className="min-w-0 flex-1">{view.error}</span><Button variant="link" size="inline" className="shrink-0" onClick={() => engineRef.current?.retry()}>Reconnect</Button></div>}
   </div>;
 }

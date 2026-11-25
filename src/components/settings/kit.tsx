@@ -425,24 +425,28 @@ export function TextArea({ value, onChange, disabled, label, placeholder, rows =
 /* ── buttons ──────────────────────────────────────────────────────────────── */
 
 /** Foreground fill. Reserved for Save and Connect, and nothing else. */
-export function PrimaryButton({ children, onClick, disabled, type = "button" }: {
+export function PrimaryButton({ children, onClick, disabled, busy, type = "button" }: {
   children: ReactNode; onClick?: () => void; disabled?: boolean; type?: "button" | "submit";
+  /** The action is in flight: disabled, and the label wears the skeleton sweep. */
+  busy?: boolean;
 }) {
-  return <Button size="xs" type={type} disabled={disabled} onClick={onClick}>{children}</Button>;
+  return <Button size="xs" type={type} disabled={disabled} loading={busy} onClick={onClick}>{children}</Button>;
 }
 
 /** Bordered. Install, Repair, Retry, and the wizard's step actions. */
-export function GhostButton({ children, onClick, disabled, ariaLabel }: {
+export function GhostButton({ children, onClick, disabled, busy, ariaLabel }: {
   children: ReactNode; onClick?: () => void; disabled?: boolean; ariaLabel?: string;
+  /** The action is in flight: disabled, and the label wears the skeleton sweep. */
+  busy?: boolean;
 }) {
-  return <Button size="xs" variant="outline" aria-label={ariaLabel} disabled={disabled} onClick={onClick}>{children}</Button>;
+  return <Button size="xs" variant="outline" aria-label={ariaLabel} disabled={disabled} loading={busy} onClick={onClick}>{children}</Button>;
 }
 
 /** Text only. `tone="destructive"` is Remove; the default muted tone is Reset. */
-export function TextButton({ children, onClick, disabled, tone = "muted", ariaLabel }: {
-  children: ReactNode; onClick?: () => void; disabled?: boolean; tone?: "muted" | "destructive"; ariaLabel?: string;
+export function TextButton({ children, onClick, disabled, busy, tone = "muted", ariaLabel }: {
+  children: ReactNode; onClick?: () => void; disabled?: boolean; busy?: boolean; tone?: "muted" | "destructive"; ariaLabel?: string;
 }) {
-  return <Button size="xs" variant={tone === "destructive" ? "destructive-ghost" : "quiet"} aria-label={ariaLabel} disabled={disabled} onClick={onClick}>{children}</Button>;
+  return <Button size="xs" variant={tone === "destructive" ? "destructive-ghost" : "quiet"} aria-label={ariaLabel} disabled={disabled} loading={busy} onClick={onClick}>{children}</Button>;
 }
 
 /* ── pills ────────────────────────────────────────────────────────────────── */
@@ -486,6 +490,6 @@ export function SaveBar({ dirty, saving, canSave = true, onSave, onDiscard, labe
   return <div className="sticky bottom-0 z-20 -mx-1 mt-[26px] flex flex-wrap items-center gap-3 rounded-xl border border-border-card bg-card px-3.5 py-2.5">
     <span className="min-w-0 flex-1 text-ui text-foreground">{label}</span>
     <TextButton onClick={onDiscard} disabled={saving}>Discard</TextButton>
-    <PrimaryButton onClick={onSave} disabled={saving || !canSave}>{saving ? "Saving…" : saveLabel}</PrimaryButton>
+    <PrimaryButton busy={saving} onClick={onSave} disabled={saving || !canSave}>{saveLabel}</PrimaryButton>
   </div>;
 }

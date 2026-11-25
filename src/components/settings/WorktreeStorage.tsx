@@ -229,8 +229,8 @@ export function WorktreeStorage({ onError }: { onError?: (message: string) => vo
       {overBudget && <StatusPill tone="warning">Over the limit</StatusPill>}
       <span className="ml-auto flex items-center gap-1">
         <TextButton disabled={loading || busy !== null} onClick={() => void load()} ariaLabel="Refresh inventory">Refresh</TextButton>
-        <TextButton onClick={() => setConfirming("sweep")} disabled={busy !== null || loading} ariaLabel="Review safe cleanup">
-          {busy === "sweep" ? "Checking…" : "Check for cleanup"}
+        <TextButton busy={busy === "sweep"} onClick={() => setConfirming("sweep")} disabled={busy !== null || loading} ariaLabel="Review safe cleanup">
+          Check for cleanup
         </TextButton>
       </span>
     </header>
@@ -288,11 +288,11 @@ export function WorktreeStorage({ onError }: { onError?: (message: string) => vo
           {disposition && <StatusPill tone={DISPOSITION_TONE[disposition] ?? "neutral"}>{DISPOSITION_LABEL[disposition] ?? disposition}</StatusPill>}
           <span className="w-20 shrink-0 text-right text-ui tabular-nums text-foreground">{bytes(entry.sizeBytes)}</span>
           <span className="flex w-24 shrink-0 justify-end">
-            {actionable && <TextButton onClick={() => setConfirming({ entry, force: false })} disabled={busy !== null} ariaLabel={`Reclaim ${entry.branch ?? entry.path}`}>
-              {busy === entry.id ? "Reclaiming…" : "Reclaim"}
+            {actionable && <TextButton busy={busy === entry.id} onClick={() => setConfirming({ entry, force: false })} disabled={busy !== null} ariaLabel={`Reclaim ${entry.branch ?? entry.path}`}>
+              Reclaim
             </TextButton>}
-            {forcible && <TextButton tone="destructive" onClick={() => setConfirming({ entry, force: true })} disabled={busy !== null} ariaLabel={`Delete ${entry.branch ?? entry.path}`}>
-              {busy === entry.id ? "Deleting…" : "Delete"}
+            {forcible && <TextButton busy={busy === entry.id} tone="destructive" onClick={() => setConfirming({ entry, force: true })} disabled={busy !== null} ariaLabel={`Delete ${entry.branch ?? entry.path}`}>
+              Delete
             </TextButton>}
           </span>
         </li>;

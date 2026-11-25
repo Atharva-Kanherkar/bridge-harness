@@ -403,13 +403,13 @@ describe("AgentConversation", () => {
 
     it("says so, with the compacting harness's mark, instead of claiming to think", () => {
       const html = render([compacting]);
-      expect(html).toContain("Compacting context…");
+      expect(html).toContain("Compacting context");
       expect(html).toContain('data-harness="claude"');
       expect(html).not.toContain(">Thinking<");
     });
 
     it("says so after the harness has opened a turn around it", () => {
-      expect(render([compacting, event(1, "turn.started")])).toContain("Compacting context…");
+      expect(render([compacting, event(1, "turn.started")])).toContain("Compacting context");
     });
 
     it("keeps compaction visible while a background process is still running", () => {
@@ -418,31 +418,31 @@ describe("AgentConversation", () => {
         data: { background: true, command: "cargo test" },
       });
       const html = render([background, compacting]);
-      expect(html).toContain("Compacting context…");
+      expect(html).toContain("Compacting context");
       expect(html).toContain("cargo test");
       expect(html.slice(html.indexOf("data-current-activity"))).not.toContain(">Working<");
     });
 
     it("stops saying so once the boundary lands", () => {
       const html = render([compacting, event(2, "context.compacted", { status: "completed", data: { harness: "claude" } })]);
-      expect(html).not.toContain("Compacting context…");
+      expect(html).not.toContain("Compacting context");
       expect(html).toContain("Context compacted");
     });
 
     it("stops saying so once the turn is over, however it ended", () => {
-      expect(render([compacting, event(2, "turn.completed")])).not.toContain("Compacting context…");
+      expect(render([compacting, event(2, "turn.completed")])).not.toContain("Compacting context");
     });
 
     it("never claims a compaction for a session that has no turn", () => {
       const idle: Session = { ...session, status: "idle" };
       const html = renderToStaticMarkup(<AgentConversation session={idle} onResolve={() => undefined} events={[compacting]} working={false} />);
-      expect(html).not.toContain("Compacting context…");
+      expect(html).not.toContain("Compacting context");
     });
   });
 
   it("narrates a model switch with the incoming harness's mark, and no first-launch note anywhere", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} modelSwitch={{ harness: "claude", label: "Opus" }} />);
-    expect(html).toContain("Switching to Opus…");
+    expect(html).toContain("Switching to Opus");
     expect(html).toContain('data-harness="claude"');
     expect(html).not.toContain('data-harness="codex"');
     expect(html).not.toContain("First time opening this chat");
@@ -616,7 +616,9 @@ describe("AgentConversation", () => {
     await act(async () => allow.dispatchEvent(new MouseEvent("click", { bubbles:true })));
     expect(onResolve).toHaveBeenCalledWith(43, "accept", "once");
     expect([...container.querySelectorAll("button")].every(button => button.disabled)).toBe(true);
-    expect(container.textContent).toContain("Applying…");
+    const pressed = [...container.querySelectorAll("button")].find(button => button.textContent === "Allow once")!;
+    expect(pressed.getAttribute("aria-busy")).toBe("true");
+    expect(container.textContent).not.toMatch(/Applying/);
     await act(async () => release());
     await act(async () => root.unmount());
     container.remove();
@@ -702,7 +704,7 @@ describe("AgentConversation", () => {
   it("disables the adoption choice while a decision is already settling", () => {
     const binding = { sessionId: "child", parentSessionId: "s", workspaceId: "w", worktreePath: "/tmp/workers/child", worktreeBranch: "b", taskWorktreePath: "/tmp/task", state: "settling", head: null, baseCommit: null, baseBranch: null, baselineDirtyPaths: [], changedPaths: [], diffstat: null, dirty: true, detail: "adopt in progress", createdAt: "now", updatedAt: "now" };
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} pendingAdoptions={[binding]} onResolveAdoption={async () => undefined}/>);
-    expect(html).toContain("Finishing…");
+    expect(html).toContain('aria-label="Finishing"');
     expect(html).toContain("disabled");
   });
   it("shows the routing reason, remediation, and write scope on a delegation approval", () => {

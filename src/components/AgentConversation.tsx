@@ -1,7 +1,7 @@
 import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
 import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { AlertTriangle, ArrowDown, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FileText, Gauge, GitFork, LoaderCircle, MessageSquarePlus, Navigation, PanelRight, PenLine, RotateCcw, SquareTerminal, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FileText, Gauge, GitFork, MessageSquarePlus, Navigation, PanelRight, PenLine, RotateCcw, SquareTerminal, X } from "lucide-react";
 import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, deliveryNotes, delegationFacet, foldWorkerDelegations, foldHarnessSubagents, groupItems, isToolItem, mergeConversationProjections, projectActiveProcesses, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type DeliveryNote, type PendingMessage, type Rendered, type ToolVerb } from "../conversation";
 import { isToolLive } from "../transcript/toolCall";
 import { LAUNCH_STEPS, humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeLaunchFailure, humanizeResolution, launchFailureStep } from "../humanize";
@@ -27,7 +27,7 @@ import { harnessLabel, modelLabel } from "../utils";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
-import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
+import { Skeleton, SkeletonRegion, SkeletonDot } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { MOTION_DURATION, useMotionStagger, useMotionTransition } from "../motion";
@@ -186,7 +186,7 @@ function StatusGlyph({ live, failed, succeeded }: { live: boolean; failed: boole
           exit={{ opacity: 0, scale: 0.7 }}
           transition={transition}
         >
-          {state === "live" && <LoaderCircle size={12} className="animate-spin text-muted-foreground" aria-hidden="true"/>}
+          {state === "live" && <SkeletonDot />}
           {state === "ok" && <Check size={12} className="text-success" aria-hidden="true"/>}
           {state === "failed" && <X size={12} className="text-destructive" aria-hidden="true"/>}
         </motion.span>
@@ -235,10 +235,9 @@ function summarize(items: ConversationItem[], live: boolean): string {
   if (code) parts.push(live ? "searching code" : "searched code");
   if (web) parts.push(live ? "searching the web" : "searched the web");
   if (counts.tool) parts.push(live ? `using ${noun(counts.tool, "tool", "tools")}` : `used ${noun(counts.tool, "tool", "tools")}`);
-  if (!parts.length) return live ? "Working…" : "Done";
+  if (!parts.length) return live ? "Working" : "Done";
   const text = parts.join(", ");
-  const sentence = text.charAt(0).toUpperCase() + text.slice(1);
-  return live ? `${sentence}…` : sentence;
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function formatThoughtDuration(ms: number): string {
@@ -351,7 +350,7 @@ function CheckGlyph({ state }: { state: CheckState }) {
   const transition = useMotionTransition(MOTION_DURATION.tick);
   return <AnimatePresence mode="wait" initial={false}>
     <motion.span key={state} className="flex size-3 shrink-0 items-center justify-center" initial={{ opacity: 0, scale: 0.7 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.7 }} transition={transition} aria-hidden="true">
-      {state === "running" && <LoaderCircle size={12} className="animate-spin text-warning"/>}
+      {state === "running" && <SkeletonDot />}
       {state === "passed" && <Check size={12} className="text-success"/>}
       {state === "failed" && <X size={12} className="text-destructive"/>}
       {state === "pending" && <Circle size={10} className="text-muted-foreground"/>}
@@ -689,7 +688,7 @@ function NowCard({ item, items }: { item: ConversationItem; items: ConversationI
   return (
     <div data-now-card className="my-1 min-w-0 rounded-xl border border-border bg-card px-3 py-2.5">
       <div className="flex min-w-0 items-center gap-2 text-ui">
-        <LoaderCircle size={13} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true"/>
+        <SkeletonDot className="size-[13px]" />
         <span className="min-w-0 truncate font-medium text-foreground">{title}</span>
         {call.effect && <EffectChip effect={call.effect} className="hidden sm:inline-flex"/>}
         {Number.isFinite(started) && <Elapsed since={started} className="ml-auto shrink-0 text-caption tabular-nums text-muted-foreground"/>}
@@ -709,7 +708,7 @@ function NowCard({ item, items }: { item: ConversationItem; items: ConversationI
           )}
         >
           {step.state === "done" && <Check size={11} className="shrink-0 text-success" aria-hidden="true"/>}
-          {step.state === "active" && <LoaderCircle size={11} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true"/>}
+          {step.state === "active" && <SkeletonDot className="size-[11px]" />}
           <span className="truncate">{step.step}</span>
         </li>)}
         {plan.length > SHOWN_PLAN_STEPS && <li className="inline-flex items-center px-1 text-caption text-muted-foreground">+{plan.length - SHOWN_PLAN_STEPS} more</li>}
@@ -1204,7 +1203,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
         </div>
         </TranscriptRow>)}
         {startupNarration.mounted && <TranscriptRow key="working"><div className="flex justify-start"><StartupStatusRow view={startupNarration} harness={modelSwitch?.harness ?? compaction?.harness ?? session?.harness}/></div></TranscriptRow>}
-        {stopping && <TranscriptRow key="stopping"><p role="status" className={NOTICE}>Stopping…</p></TranscriptRow>}
+        {stopping && <TranscriptRow key="stopping"><SkeletonRegion label="Stopping" className="py-1"><Skeleton className="h-3 w-28" /></SkeletonRegion></TranscriptRow>}
         {stalled && <TranscriptRow key="stalled"><StallNotice onStop={onInterrupt}/></TranscriptRow>}
       </AnimatePresence>
       {trailing}
@@ -1313,7 +1312,7 @@ function AdoptionCard({ binding, onResolve }: { binding: WorkerRepositoryBinding
   return <div role="alert" className={PANEL}>
     <header className="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 pt-3">
       <b className="text-ui font-semibold text-foreground">Worker changes are ready to review</b>
-      {settling && <small className="text-caption text-warning">Finishing…</small>}
+      {settling && <SkeletonDot label="Finishing" />}
     </header>
     <p className="mt-1 px-4 text-ui leading-relaxed text-muted-foreground">
       Adopt merges this worker’s changes into your workspace. Discard deletes them. Choose to finish this session.
@@ -1329,11 +1328,11 @@ function AdoptionCard({ binding, onResolve }: { binding: WorkerRepositoryBinding
     </details>
 
     <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-      <Button disabled={!!busy || settling || !onResolve} variant="outline" size="sm" onClick={() => act("discard")}>
-        <X className="size-3" aria-hidden="true" /> {busy === "discard" ? "Discarding…" : "Discard"}
+      <Button disabled={!!busy || settling || !onResolve} loading={busy === "discard"} variant="outline" size="sm" onClick={() => act("discard")}>
+        <X className="size-3" aria-hidden="true" /> Discard
       </Button>
-      <Button disabled={!!busy || settling || !onResolve} size="sm" onClick={() => act("adopt")}>
-        <Check className="size-3" aria-hidden="true" /> {busy === "adopt" ? "Adopting…" : "Adopt changes"}
+      <Button disabled={!!busy || settling || !onResolve} loading={busy === "adopt"} size="sm" onClick={() => act("adopt")}>
+        <Check className="size-3" aria-hidden="true" /> Adopt changes
       </Button>
     </div>
     </div>
@@ -1371,7 +1370,7 @@ function VerificationCard({ summary, onWaive }: { summary: CompletionSummary; on
             <p className="text-xs text-warning">This records human-approved risk for: {unresolved.map(check => check.command || check.checkId).join(", ")}. It remains distinct from Verified.</p>
             <Textarea autoFocus size="sm" value={waiverReason} onChange={event => setWaiverReason(event.target.value)} rows={2} placeholder="Reason for waiver" aria-label="Waiver reason"/>
             {waiverError && <p role="alert" className="text-xs text-destructive">{waiverError}</p>}
-            <div className="flex flex-wrap gap-2"><Button variant="quiet" size="sm" type="submit" disabled={waiving}>{waiving ? "Recording…" : `Waive ${unresolved.length} check${unresolved.length === 1 ? "" : "s"}`}</Button><Button variant="outline" size="sm" disabled={waiving} onClick={() => { setWaiverOpen(false); setWaiverError(undefined); }}>Cancel</Button></div>
+            <div className="flex flex-wrap gap-2"><Button variant="quiet" size="sm" type="submit" disabled={waiving} loading={waiving}>{`Waive ${unresolved.length} check${unresolved.length === 1 ? "" : "s"}`}</Button><Button variant="outline" size="sm" disabled={waiving} onClick={() => { setWaiverOpen(false); setWaiverError(undefined); }}>Cancel</Button></div>
           </form>}
         </div>}
       </div>
@@ -1648,7 +1647,7 @@ function Empty({ title, copy, parts, lines }: { title: string; copy?: string; pa
 
 /// The host writes these as italic stand-ins when a turn is only a worker
 /// directive. They are status, not prose, so they go through ThinkingRow.
-const WORKER_STATUS = /^_(Delegating to a worker|Checking on workers|Steering a worker|Stopping a worker)…_$/;
+const WORKER_STATUS = /^_(Delegating to a worker|Checking on workers|Steering a worker|Stopping a worker)\u2026_$/;
 
 /** The chat's terminal, held back from every Markdown surface but the
  *  agent's own reply: a shell line in a tool result, a thought or a draft for
@@ -1871,8 +1870,8 @@ function ErrorCard({ item, errorContext, retryPrompt, onRetryTurn, onEditTurn }:
       <div className="flex min-w-0 items-start gap-2">
         <b className="min-w-0 flex-1 text-meta">{degraded ? item.title ?? "Unavailable history entry" : described.title}</b>
         {retryPrompt && (onRetryTurn || onEditTurn) && <div className="-my-1 -mr-1 flex shrink-0 items-center gap-0.5">
-          {onRetryTurn && <Button disabled={retrying} variant="quiet" size="2xs" aria-label="Retry the same message" tooltip="Send the same message again" onClick={retry}>
-            {retrying ? <LoaderCircle className="size-2.75 animate-spin" aria-hidden="true"/> : <RotateCcw className="size-2.75" aria-hidden="true"/>}
+          {onRetryTurn && <Button disabled={retrying} loading={retrying} variant="quiet" size="2xs" aria-label="Retry the same message" tooltip="Send the same message again" onClick={retry}>
+            <RotateCcw className="size-2.75" aria-hidden="true"/>
             Retry
           </Button>}
           {onEditTurn && <Button disabled={retrying} variant="quiet" size="2xs" aria-label="Edit in composer" tooltip="Put the message back in the composer to add to it" onClick={() => onEditTurn(retryPrompt)}>
@@ -2011,9 +2010,9 @@ function ForestCard({ item, onRetryCompaction }: { item: ConversationItem; onRet
     {recoveryAction && <p className="mt-1.5 text-muted-foreground text-caption leading-relaxed">{recoveryAction}</p>}
     {retryError && <p className="mt-1.5 text-destructive text-caption leading-relaxed">{retryError}</p>}
     {retryable && <div className="mt-2.5 flex justify-end">
-      <Button disabled={retrying || retryAccepted} variant="outline" size="sm" onClick={() => void retry()}>
-        {retrying ? <LoaderCircle className="size-3 animate-spin" aria-hidden="true"/> : retryAccepted ? <Check className="size-3" aria-hidden="true"/> : <RotateCcw className="size-3" aria-hidden="true"/>}
-        {retrying ? "Retrying…" : retryAccepted ? "Retry requested" : "Retry compaction"}
+      <Button disabled={retrying || retryAccepted} loading={retrying} variant="outline" size="sm" onClick={() => void retry()}>
+        {retryAccepted ? <Check className="size-3" aria-hidden="true"/> : <RotateCcw className="size-3" aria-hidden="true"/>}
+        {retryAccepted ? "Retry requested" : "Retry compaction"}
       </Button>
     </div>}
   </div>;
@@ -2117,7 +2116,7 @@ function resolutionCopy(item: ConversationItem): string {
   const actor = typeof item.data.resolvedBy === "string" ? item.data.resolvedBy : "";
   const reason = typeof item.data.reason === "string" ? item.data.reason : "";
   const labels: Record<string, string> = {
-    settling: "Applying decision…",
+    settling: "Applying decision",
     allowed_once: "Allowed once",
     allowed_for_session: "Allowed for this session",
     accept: "Allowed once",
@@ -2154,7 +2153,7 @@ function PermissionCard({ item, onResolve }: { item: ConversationItem; onResolve
     <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-3.5 pt-3 sm:px-4">
       <b className="text-ui font-semibold text-foreground">{item.title || "Permission needed"}</b>
       {pending && <small className="text-caption text-warning">waiting for you</small>}
-      {settling && <small className="text-caption text-warning">settling…</small>}
+      {settling && <SkeletonDot label="Settling" />}
     </header>
     {detail && <p className="mt-1.5 px-3.5 text-ui leading-relaxed text-muted-foreground sm:px-4">{detail}</p>}
     {command ? <code className={`mx-3.5 mt-2.5 sm:mx-4 ${WELL}`}>{command}</code> : null}
@@ -2163,8 +2162,9 @@ function PermissionCard({ item, onResolve }: { item: ConversationItem; onResolve
         key={`${action.optionId ?? "bridge"}:${action.decision}`}
         disabled={!!busy}
         variant={action.decision === "accept" ? "default" : "outline"} size="sm"
+        loading={busy === (action.optionId ?? action.decision)}
         onClick={() => void act(action)}
-      >{action.decision === "decline" ? <X className="size-3" aria-hidden="true" /> : action.decision === "accept" ? <Check className="size-3" aria-hidden="true" /> : null}{busy === (action.optionId ?? action.decision) ? "Applying…" : action.label}</Button>)}
+      >{action.decision === "decline" ? <X className="size-3" aria-hidden="true" /> : action.decision === "accept" ? <Check className="size-3" aria-hidden="true" /> : null}{action.label}</Button>)}
     </div>}
     {pending && actions.length === 0 && <p className="px-3.5 py-3 text-meta text-muted-foreground sm:px-4">The provider offered no supported action.</p>}
     {!pending && <p className={`px-3.5 py-3 text-meta sm:px-4 ${item.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{resolutionCopy(item)}</p>}
@@ -2214,7 +2214,7 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
           >
             <Button disabled={!!busy} variant="outline" size="sm" onClick={() => { setBusy("decline"); setError(null); void Promise.resolve(onResolve(item.eventId, "decline")).catch(cause => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(null)); }}><X className="size-3" aria-hidden="true" /> Decline</Button>
             {item.data.approvalType !== "delegation_path_scope" && <Button disabled={!!busy} variant="outline" size="sm" onClick={() => { setBusy("acceptForSession"); setError(null); void Promise.resolve(onResolve(item.eventId, "acceptForSession")).catch(cause => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(null)); }}>Allow for session</Button>}
-            <Button disabled={!!busy} size="sm" onClick={() => { setBusy("accept"); setError(null); void Promise.resolve(onResolve(item.eventId, "accept")).catch(cause => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(null)); }}><Check className="size-3" aria-hidden="true" /> {busy === "accept" ? "Allowing…" : "Allow once"}</Button>
+            <Button disabled={!!busy} loading={busy === "accept"} size="sm" onClick={() => { setBusy("accept"); setError(null); void Promise.resolve(onResolve(item.eventId, "accept")).catch(cause => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(null)); }}><Check className="size-3" aria-hidden="true" /> Allow once</Button>
           </motion.div>
         : <motion.div
             key="resolved"
@@ -2281,7 +2281,7 @@ function StaleBaseCard({ item, onRefresh }: { item: ConversationItem; onRefresh?
         ? <div className="px-3.5 pb-3 pt-2.5 text-meta leading-relaxed text-muted-foreground sm:px-4">{blocker}</div>
         : <div className="flex flex-wrap items-center justify-end gap-1.75 px-3.5 py-3 sm:px-4">
             <span className="mr-auto text-meta text-muted-foreground">Or continue on the current revision.</span>
-            <Button disabled={busy || !onRefresh} size="sm" onClick={refresh}>{busy ? "Refreshing…" : "Refresh workspace"}</Button>
+            <Button disabled={busy || !onRefresh} loading={busy} size="sm" onClick={refresh}>Refresh workspace</Button>
           </div>}
   </div>;
 }
@@ -2534,9 +2534,10 @@ function WorkerFailureRow({ title, summary, cause, failureClass, childSessionId,
     <div className="mt-2 flex flex-wrap items-center gap-2">
       {childSessionId && onRetryWorker && <Button
         disabled={busy}
+        loading={busy}
         onClick={() => { setBusy(true); setError(undefined); void onRetryWorker(childSessionId).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(false)); }}
         size="sm"
-      ><RotateCcw className="size-3" aria-hidden="true" /> {busy ? "Retrying…" : "Retry this task"}</Button>}
+      ><RotateCcw className="size-3" aria-hidden="true" /> Retry this task</Button>}
       {childSessionId && onOpenSession && <Button onClick={() => onOpenSession(childSessionId)} variant="outline" size="xs"><CornerDownRight className="size-3" aria-hidden="true" /> Open the worker</Button>}
     </div>
     {error && <p className="mt-1.5 text-destructive">{error}</p>}

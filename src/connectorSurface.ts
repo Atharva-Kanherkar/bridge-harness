@@ -132,7 +132,7 @@ export function emptyStateFor(result: Pick<ConnectorInboxResult, "items" | "poll
     };
   }
   if (!result.poll.some(status => status.lastSuccessAt)) {
-    return { tone: "waiting", title: "Checking…", detail: "Bridge hasn’t completed a check yet." };
+    return { tone: "waiting", title: "Checking your inbox", detail: "Bridge hasn’t completed a check yet." };
   }
   return { tone: "caught-up", title: "You’re all caught up", detail: "Nothing new since the last check." };
 }

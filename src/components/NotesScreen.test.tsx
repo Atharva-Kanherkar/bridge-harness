@@ -115,7 +115,7 @@ describe("capture", () => {
     await typeInto(box, typed);
     expect(await press(box, "Enter")).toBe(true);
     expect(box.value).toBe("");
-    expect(host.querySelector("ul[aria-label='Notes'] li[aria-busy='true']")?.textContent).toContain("Saving…");
+    expect(host.querySelector("ul[aria-label='Notes'] li[aria-busy='true'] [role='status'][aria-label='Saving']")).not.toBeNull();
     await act(async () => { release(); });
     await settle();
     expect(bridgeApi.captureNote).toHaveBeenCalledWith(typed);
@@ -655,14 +655,14 @@ describe("notes list", () => {
 });
 
 describe("streaming passes", () => {
-  it("says it is reading, then fills the Structured tab while Structure runs", async () => {
+  it("draws the structure it is writing, then fills the Structured tab while Structure runs", async () => {
     setMockNotesPassDelay(300);
     await render();
     await openNote(ONBOARDING);
     await click(button("Structure"));
     await click(button("Structure", host.querySelector("[aria-label='Structure options']")!));
     await settle(30);
-    expect(host.textContent).toContain("Reading your words…");
+    expect(host.querySelector("[role='status'][aria-label='Structuring your words']")).not.toBeNull();
     expect(host.textContent).not.toContain("Structure is opt-in");
     await settle(150);
     const live = host.querySelector("section[aria-label='Structured view'][aria-busy='true']");
@@ -683,7 +683,7 @@ describe("streaming passes", () => {
     const drafts = [...host.querySelectorAll("section[aria-label='Tasks'] li[data-draft]")].map(item => item.getAttribute("aria-label"));
     expect(drafts.length).toBeGreaterThan(0);
     expect(drafts[0]).toContain("need to fix the onbaording flow");
-    expect(host.querySelector("section[aria-label='Tasks']")?.textContent).toContain("Finding tasks…");
+    expect(host.querySelector("section[aria-label='Tasks'] [role='status'][aria-label='Finding tasks']")).not.toBeNull();
     await settle(300);
     expect(host.querySelectorAll("li[data-draft]")).toHaveLength(0);
     expect(host.querySelector("section[aria-label='Tasks']")?.textContent).toContain("add a skip button");
@@ -879,7 +879,8 @@ describe("tasks and Start", () => {
     });
     await settle();
     expect(onStartChat).toHaveBeenCalledTimes(1);
-    expect(host.querySelector("li[aria-label='add a skip button'] [role='status']")?.textContent).toBe("Starting…");
+    expect(start.getAttribute("aria-busy")).toBe("true");
+    expect(host.querySelector("li[aria-label='add a skip button'] button[aria-label='Start add a skip button']")?.getAttribute("aria-busy")).toBe("true");
     await act(async () => { finish(undefined); });
     await settle();
     expect(mockReadPage(mockIdOf(ONBOARDING)).tasks.find(task => task.title === "add a skip button")?.sessionIds).toEqual([]);

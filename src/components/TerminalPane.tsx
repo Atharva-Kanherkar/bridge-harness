@@ -12,6 +12,7 @@ import { terminalRunInput } from "../terminal/runCommand";
 import { onTerminalRun, type TerminalRun } from "../terminal/runQueue";
 import { TERMINAL_SCROLLBACK, type TerminalRecord } from "../terminal/types";
 import { TerminalSurface } from "./TerminalSurface";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 // The terminal pane: several real shells per workspace, each a PTY in the
 // workspace's worktree. A dev server, a test watcher, and an ad-hoc prompt
@@ -373,7 +374,7 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
                   <span>{failure}</span>
                   <Button variant="outline" size="xs" onClick={() => restartShell(terminalId)}>Try again</Button>
                 </div>
-              : <div role="status" className="grid flex-1 place-items-center text-xs text-muted-foreground">Starting shell…</div>}
+              : <SkeletonRegion label="Starting shell" className="flex flex-1 flex-col gap-2 p-3"><Skeleton className="h-3 w-2/5" /><Skeleton className="h-3 w-1/4" /></SkeletonRegion>}
           {ended && <div className="flex shrink-0 items-center gap-2 border-t border-border bg-background px-2.5 py-1.5 text-caption text-muted-foreground">
             <span className="min-w-0 flex-1 truncate">Shell ended{record?.exitCode != null ? ` · exit ${record.exitCode}` : ""}.</span>
             <Button variant="ghost" size="2xs" onClick={() => restartShell(terminalId)}><RotateCcw aria-hidden="true" />Restart</Button>

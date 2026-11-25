@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { Brain, Check, FilePlus2, FileText, Folder, GitFork, Globe, ListChecks, LoaderCircle, Navigation, Pencil, Search, SquareTerminal, Wrench, X } from "lucide-react";
+import { Brain, Check, FilePlus2, FileText, Folder, GitFork, Globe, ListChecks, Navigation, Pencil, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import type { ToolCallDisplay, ToolGlyph } from "../conversation";
 import { EFFECT_LABEL, type CommandEffect, type CommandStep } from "../transcript/command";
 import { detectStructuredOutput, ghSummary, listRows, runSummary, type GhSummary, type StructuredOutput } from "../transcript/outputRender";
@@ -10,6 +10,7 @@ import { CONNECTOR_LOGOS, GitMark, logoForMcpServer } from "./connectorLogos";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
+import { SkeletonDot } from "@/components/ui/skeleton";
 
 // A shell call, opened: the steps it chained, its output drawn when Bridge
 // knows the shape, and the command and raw output exactly as they ran. The
@@ -238,7 +239,7 @@ function JobGlyph({ status, conclusion }: { status?: string; conclusion?: string
   const outcome = (conclusion || status || "").toLowerCase();
   if (outcome === "success") return <Check size={12} className="text-success" aria-hidden="true"/>;
   if (/failure|cancelled|timed_out|startup_failure/.test(outcome)) return <X size={12} className="text-destructive" aria-hidden="true"/>;
-  if (/in_progress|queued|pending|waiting/.test(outcome)) return <LoaderCircle size={12} className="text-muted-foreground" aria-hidden="true"/>;
+  if (/in_progress|queued|pending|waiting/.test(outcome)) return <SkeletonDot />;
   return <span className="size-1.5 rounded-full bg-muted-foreground" aria-hidden="true"/>;
 }
 

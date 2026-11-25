@@ -410,7 +410,8 @@ export function ComposerPill({
                   onClick={onStop}
                   disabled={stopping}
                   tooltip={!working && agentsWorking ? "Stop the agents this chat started" : undefined}
-                  aria-label={stopping ? "Stopping…" : "Stop"}
+                  loading={stopping}
+                  aria-label={stopping ? "Stopping" : "Stop"}
                 >
                   <Square className="size-3.5 fill-current" aria-hidden="true" />
                 </Button>

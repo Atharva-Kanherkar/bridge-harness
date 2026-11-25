@@ -1,7 +1,19 @@
 import { useEffect, useState, type ComponentType } from "react";
 import {
-  Archive, ArchiveRestore, CircleAlert, CircleDot, FileText, GitBranch, GitPullRequest, MessageSquare,
-  MessagesSquare, Plus, RefreshCw, Route, Send, X,
+  Archive,
+  ArchiveRestore,
+  CircleAlert,
+  CircleDot,
+  FileText,
+  GitBranch,
+  GitPullRequest,
+  MessageSquare,
+  MessagesSquare,
+  Plus,
+  RefreshCw,
+  Route,
+  Send,
+  X,
 } from "lucide-react";
 import type { PreviewTrailBriefResult, TrailDetail, TrailEvent, TrailSummary } from "@/protocol/generated/protocol";
 import { bridgeApi } from "@/api";
@@ -177,15 +189,13 @@ export function TrailPage({ trail, summary: knownSummary, workspaceTitle, loadin
             )}
             <div className="flex shrink-0 items-center gap-1">
               <Button tooltip="Add a note, chat, pull request, draft or issue" variant="ghost" size="sm" onClick={onAdd} aria-haspopup="dialog"><Plus aria-hidden="true" />Add</Button>
-              <Button tooltip={refreshing ? "Refreshing from GitHub" : "Refresh from GitHub"}
+              <Button tooltip="Refresh from GitHub" loading={refreshing}
                 variant="ghost"
                 size="icon-sm"
                 onClick={onRefresh}
-                disabled={refreshing}
-                aria-busy={refreshing}
                 aria-label="Refresh from GitHub"
               >
-                <RefreshCw aria-hidden="true" className={cn(refreshing && "animate-spin")} />
+                <RefreshCw aria-hidden="true" />
               </Button>
               <Button tooltip={summary.archivedAt ? "Unarchive" : "Archive"} variant="ghost" size="icon-sm" onClick={() => onArchive(!summary.archivedAt)} aria-label={summary.archivedAt ? "Unarchive trail" : "Archive trail"}>
                 {summary.archivedAt ? <ArchiveRestore aria-hidden="true" /> : <Archive aria-hidden="true" />}

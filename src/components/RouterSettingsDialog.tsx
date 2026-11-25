@@ -6,7 +6,7 @@ import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "@/
 import { SelectField } from "@/components/ui/select";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "@tanstack/react-form";
-import { BrainCircuit, CalendarClock, CircleCheck, Copy, ExternalLink, LoaderCircle, Play, RotateCcw, ShieldCheck, Undo2, X } from "lucide-react";
+import { BrainCircuit, CalendarClock, CircleCheck, Copy, ExternalLink, Play, RotateCcw, ShieldCheck, Undo2, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import { openExternalUrl } from "../externalLinks";
 import type { AdapterDescriptor, ExternalLearningTriggerKind, LearningReport, LearningSchedule, LearningState, ModelProfileDraft, ModelSetupState, RouterMode, RouterPreferences } from "../types";
@@ -390,7 +390,7 @@ export function RouterSettingsDialog({
         </section>
 
         <section className="border-t border-border pt-5">
-          <div className="flex flex-wrap items-start justify-between gap-4"><div><h3 className="font-display text-base font-semibold text-foreground">Adaptive learning</h3><p className="mt-1 text-xs leading-relaxed text-muted-foreground">One local runner freezes typed evidence, replays held-out outcomes, and manages immutable policy versions. Active policy v{learning?.activePolicyVersion ?? "—"}{learning?.canaryPolicyVersion ? ` · canary v${learning.canaryPolicyVersion}` : ""}.</p></div><Button size="sm" disabled={running || busy} onClick={() => void runNow()}>{running ? <LoaderCircle className="animate-spin" size={14} aria-hidden="true" /> : <Play size={14} aria-hidden="true" />}Run learning now</Button></div>
+          <div className="flex flex-wrap items-start justify-between gap-4"><div><h3 className="font-display text-base font-semibold text-foreground">Adaptive learning</h3><p className="mt-1 text-xs leading-relaxed text-muted-foreground">One local runner freezes typed evidence, replays held-out outcomes, and manages immutable policy versions. Active policy v{learning?.activePolicyVersion ?? "—"}{learning?.canaryPolicyVersion ? ` · canary v${learning.canaryPolicyVersion}` : ""}.</p></div><Button size="sm" disabled={running || busy} loading={running} onClick={() => void runNow()}><Play size={14} aria-hidden="true" />Run learning now</Button></div>
           {learning && <LearningRunSummary learning={learning} running={running} onApprove={() => void approveCandidate()} onCancel={() => void cancelCandidate()} onRollback={() => void rollbackPolicy()} />}
 
           {learning && <div className="mt-4 grid gap-3 rounded-xl border border-border p-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -427,7 +427,7 @@ export function RouterSettingsDialog({
         </section>
       </div>
       <footer className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-border px-5 py-4"><Button variant="quiet" disabled={busy} onClick={onClose}>Cancel</Button><form.Subscribe selector={state => state.canSubmit}>{canSubmit => (
-        <Button className="min-w-24" disabled={busy || !canSubmit} onClick={() => void form.handleSubmit()}>{busy && <LoaderCircle className="animate-spin" size={14} aria-hidden="true" />}Save</Button>
+        <Button className="min-w-24" loading={busy} disabled={!canSubmit} onClick={() => void form.handleSubmit()}>Save</Button>
       )}</form.Subscribe></footer>
     </DialogPopup>
   </Dialog>;

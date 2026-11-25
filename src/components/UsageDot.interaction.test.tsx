@@ -162,7 +162,8 @@ describe("ChatUsageDot", () => {
     await act(async () => { inline.click(); });
     expect(bridgeApi.refreshProviderUsageOverviews).toHaveBeenCalledTimes(1);
     expect(inline.disabled).toBe(true);
-    expect(inline.textContent).toBe("Refreshing");
+    expect(inline.textContent).toBe("Refresh");
+    expect(inline.getAttribute("aria-busy")).toBe("true");
     await act(async () => { finish(overviews(71, now + 5)); });
     expect(panel().querySelector('section[aria-label="OpenCode usage"]')).toBeNull();
   });

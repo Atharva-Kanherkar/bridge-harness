@@ -26,12 +26,13 @@ import { useNoteDraft, type DraftStatus } from "./useNoteDraft";
 import { DatabaseView } from "./database/DatabaseView";
 import { RowProperties } from "./database/RowProperties";
 import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
+import { Skeleton, SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 
 export const NOTE_KINDS = ["note", "idea", "task", "question"];
 export const NOTE_STATES = ["inbox", "open", "doing", "done", "archived"];
 
 const capital = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
-const STATUS_COPY: Record<DraftStatus, string> = { saved: "Saved", unsaved: "Unsaved", saving: "Saving…" };
+const STATUS_COPY: Record<DraftStatus, string> = { saved: "Saved", unsaved: "Unsaved", saving: "Saving" };
 /** "Edited just now", "Edited 5m ago", "Edited Oct 3". */
 function editedLabel(iso: string): string {
   const age = relativeTime(iso);
@@ -39,8 +40,8 @@ function editedLabel(iso: string): string {
   return /^\d+[mhd]$/.test(age) ? `Edited ${age} ago` : `Edited ${age}`;
 }
 const PASS_COPY = {
-  structure: { busy: "Structuring…", failed: "Structure couldn't run" },
-  tasks: { busy: "Finding tasks…", failed: "Turn into tasks couldn't run" },
+  structure: { failed: "Structure couldn't run" },
+  tasks: { failed: "Turn into tasks couldn't run" },
 } as const;
 
 function latest(jobs: NoteJob[], kind: string): NoteJob | undefined {
@@ -257,14 +258,14 @@ export function NotePageView(props: NotePageViewProps) {
               {label}{id === "structured" && page.structured?.stale && <span aria-label="stale" className="size-1.5 rounded-full bg-warning" />}
             </SegmentedItem>)}
         </SegmentedGroup>
-        <PopoverAction label={page.structured ? "Re-structure" : "Structure"} triggerLabel="Structure" busy={busy(structureJob)} busyLabel={PASS_COPY.structure.busy} panelLabel="Structure options" align="end">
+        <PopoverAction label={page.structured ? "Re-structure" : "Structure"} triggerLabel="Structure" busy={busy(structureJob)} panelLabel="Structure options" align="end">
           {close => <PassPicker label="Structure" what="A second view beside your words: a title, kind, tags, a summary and the separate ideas, each quoting you. Your words stay exactly as they are." adapters={adapters} defaultHarness={defaultHarness} onRun={harness => { close(); void run("structure", harness); }} />}
         </PopoverAction>
-        <PopoverAction label="Turn into tasks" busy={busy(tasksJob)} busyLabel={PASS_COPY.tasks.busy} panelLabel="Turn into tasks options" align="end">
+        <PopoverAction label="Turn into tasks" busy={busy(tasksJob)} panelLabel="Turn into tasks options" align="end">
           {close => <PassPicker label="Turn into tasks" what="Finds the work this page asks for and adds each piece as a task below, quoting the words it came from. Existing tasks are kept." adapters={adapters} defaultHarness={defaultHarness} onRun={harness => { close(); void run("tasks", harness); }} />}
         </PopoverAction>
         {note.kind === "task" && <span role="status" className="px-2 text-meta text-muted-foreground">{noteTaskStatus(note, sessions.find(session => session.id === note.sessionIds.at(-1)))}</span>}
-        {(note.kind !== "task" || (note.state !== "done" && note.state !== "archived")) && <PopoverAction label={note.sessionIds.length ? "New chat" : "Start a chat"} panelLabel="Start a chat" align="end" busy={startingId === note.id} busyLabel="Starting…">
+        {(note.kind !== "task" || (note.state !== "done" && note.state !== "archived")) && <PopoverAction label={note.sessionIds.length ? "New chat" : "Start a chat"} panelLabel="Start a chat" align="end" busy={startingId === note.id}>
           {close => <StartPicker subject="note" adapters={adapters} workspaces={workspaces} defaultHarness={defaultHarness} suggestedWorkspaceId={note.workspaceId ?? startersParent?.workspaceId ?? null} busy={startingId === note.id} onStart={choice => void startSaved(note, choice).then(started => { if (started) close(); })} />}
         </PopoverAction>}
         {note.sessionIds.length > 0 && <Pill onClick={() => onOpenChat(note.sessionIds[note.sessionIds.length - 1])}>Open chat</Pill>}
@@ -480,10 +481,11 @@ function MenuButton({ destructive = false, onClick, children }: { destructive?: 
 function StructuredPanel({ view, busy, streaming, onSplit }: { view: StructuredView | null; busy: boolean; streaming: StreamingStructure | null; onSplit: (index: number) => void }) {
   if (streaming?.title || streaming?.summary) return <StreamingPanel view={streaming} />;
   if (busy) {
-    return <div role="status" className="mt-10 text-center">
-      <p className="m-0 inline-flex items-center gap-2 text-message font-medium text-foreground"><span aria-hidden="true" className="size-1.5 animate-pulse rounded-full bg-foreground" />Reading your words…</p>
-      <p className="mx-auto mt-1.5 max-w-sm text-ui leading-relaxed text-muted-foreground">The structured view fills in here as it is written. Your words stay exactly as they are.</p>
-    </div>;
+    return <SkeletonRegion label="Structuring your words" className="mt-10 flex flex-col gap-5">
+      <Skeleton className="h-5 w-2/5" />
+      <SkeletonText lines={3} />
+      <SkeletonText lines={2} index={1} />
+    </SkeletonRegion>;
   }
   if (!view) {
     return <div className="mt-10 text-center">
@@ -520,7 +522,7 @@ function StreamingPanel({ view }: { view: StreamingStructure }) {
   const caret = <span aria-hidden="true" className="ml-0.5 inline-block h-[1em] w-[2px] translate-y-[2px] animate-pulse bg-foreground" />;
   const writing = !view.items.length;
   return <section aria-label="Structured view" aria-busy="true" className="mt-6">
-    <p role="status" className="m-0 mb-4 inline-flex items-center gap-2 text-meta text-muted-foreground"><span aria-hidden="true" className="size-1.5 animate-pulse rounded-full bg-foreground" />Structuring…</p>
+    <span role="status" className="sr-only">Structuring</span>
     {view.title && <h2 className="m-0 text-xl font-semibold leading-snug tracking-tight text-foreground">{view.title}{!view.summary && caret}</h2>}
     {(view.kind || view.tags.length > 0) && <p className="m-0 mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-meta text-muted-foreground">
       {view.kind && <span className="text-foreground">{capital(view.kind)}</span>}

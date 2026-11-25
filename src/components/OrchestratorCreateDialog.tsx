@@ -62,9 +62,9 @@ export function OrchestratorCreateDialog({
           <GitBranch className="h-4 w-4" aria-hidden="true" />
           Use current folder
         </Button>
-        <Button variant="default" size="sm" ref={primaryRef} disabled={busy || !canCreateWorktree} onClick={onCreateWorktree}>
+        <Button variant="default" size="sm" ref={primaryRef} disabled={busy || !canCreateWorktree} loading={busy} onClick={onCreateWorktree}>
           <GitFork className="h-4 w-4" aria-hidden="true" />
-          {busy ? "Creating…" : "Create worktree"}
+          Create worktree
         </Button>
       </div>
       <p className="mt-3 text-meta leading-4 text-muted-foreground">The worktree starts from the repository’s current HEAD. Uncommitted changes are not copied.</p>

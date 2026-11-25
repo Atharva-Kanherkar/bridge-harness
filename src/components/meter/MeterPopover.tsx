@@ -43,8 +43,8 @@ export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose, 
       <span className="truncate text-caption tabular-nums text-muted-foreground">{worst == null ? "no limits" : `${Math.round(worst)}% worst`}</span>
       <span className="ml-auto flex shrink-0 items-center gap-1">
         {onOpenBridge && <Button variant="quiet" size="xs" onClick={onOpenBridge}>Open Bridge</Button>}
-        <Button variant="quiet" size="icon-xs" onClick={onRefresh} disabled={refreshing} aria-label="Refresh meter">
-          <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
+        <Button variant="quiet" size="icon-xs" onClick={onRefresh} disabled={refreshing} loading={refreshing} aria-label="Refresh meter">
+          <RefreshCw size={13} aria-hidden="true" />
         </Button>
         <Button variant="quiet" size="icon-xs" onClick={onClose} aria-label="Close meter">
           <X size={13} aria-hidden="true" />

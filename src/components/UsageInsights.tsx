@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SkeletonCards } from "@/components/ui/skeleton";
-import { LoaderCircle, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
 import { harnessLabel } from "../utils";
@@ -181,8 +181,8 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
   useEffect(() => { load(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const report = result?.report ?? null;
-  const analyseButton = <Button variant="outline" size="sm" onClick={() => load(true)} disabled={loading}>
-    {loading ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <Sparkles size={13} aria-hidden="true" />}{report ? "Analyse again" : "Analyse my usage"}
+  const analyseButton = <Button variant="outline" size="sm" onClick={() => load(true)} disabled={loading} loading={loading}>
+    <Sparkles size={13} aria-hidden="true" />{report ? "Analyse again" : "Analyse my usage"}
   </Button>;
 
   if (loading && !report) return <InsightsSkeleton step={step} />;

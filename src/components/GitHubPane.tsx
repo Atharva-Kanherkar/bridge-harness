@@ -23,7 +23,6 @@ import {
   GitPullRequestDraft,
   Info,
   ListTodo,
-  LoaderCircle,
   MessageSquare,
   RefreshCw,
   RotateCcw,
@@ -50,7 +49,7 @@ import { Input } from "@/components/ui/input";
 import { RowButton } from "@/components/ui/row";
 import { Segmented } from "@/components/ui/segmented";
 import { Tip } from "@/components/ui/tooltip";
-import { Skeleton, SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
+import { Skeleton, SkeletonRegion, SkeletonRows, SkeletonText, SkeletonDot } from "@/components/ui/skeleton";
 import { Avatar, AvatarScope, Monogram } from "./github/Avatar";
 import { Composer } from "./github/Composer";
 import { GithubMarkdown } from "./github/GithubMarkdown";
@@ -720,8 +719,9 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   ] as const;
   const pickSurface = (id: SurfaceTab) => { setPushDirection("back"); setSurfaceTab(id); setSelected(undefined); setSelectedIssue(undefined); setQuery(""); };
   const refresh = () => { void loadSurface(true); if (selected !== undefined) void openDetail(selected, true); if (selectedIssue !== undefined) void openIssue(selectedIssue, true); };
-  const refreshButton = <Button variant="quiet" size="icon-xs" onClick={refresh} aria-label="Refresh GitHub" tooltip="Refresh">
-    <RefreshCw size={13} strokeWidth={1.7} className={cn(refreshing && "animate-spin")} aria-hidden="true" />
+  // Stays pressable while a read is in flight: a second press restarts it.
+  const refreshButton = <Button variant="quiet" size="icon-xs" onClick={refresh} aria-busy={refreshing || undefined} aria-label="Refresh GitHub" tooltip="Refresh">
+    <RefreshCw size={13} strokeWidth={1.7} aria-hidden="true" />
   </Button>;
   const facetOptions = PULL_REQUEST_FACETS.map(choice => ({ value: choice.id, label: choice.label }));
 
@@ -1347,14 +1347,23 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   // Picks belong to one opening of the picker on one PR.
   useEffect(() => { if (!reviewOpen) setPicked([]); }, [reviewOpen]);
   useEffect(() => { setPicked([]); }, [number]);
+  // What each harness reviews with, set in the Reviews app's Settings.
+  const [reviewerModels, setReviewerModels] = useState<Record<string, { model?: string | null; effort?: string | null }>>({});
   useEffect(() => {
     if (!reviewOpen) return;
     let active = true;
     void bridgeApi.getReviewJobSettings()
       .then(settings => { if (active) setSecondOpinion(settings.secondOpinion === true); })
       .catch(() => { if (active) setSecondOpinion(false); });
+    void bridgeApi.reviewerSettings()
+      .then(result => { if (active) setReviewerModels(result.settings.harnesses ?? {}); })
+      .catch(() => { if (active) setReviewerModels({}); });
     return () => { active = false; };
   }, [reviewOpen]);
+  const modelLine = (harness: string) => {
+    const entry = reviewerModels[harness];
+    return [entry?.model ?? "default model", entry?.effort ?? "default effort"].join(" · ");
+  };
   const [pendingBody, setPendingBody] = useState("");
   // The merge flow's one state machine: idle | confirming | merging | merged
   // | failed, in a reducer rather than five booleans (issue #1028). A detail
@@ -1710,15 +1719,15 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
               return secondOpinion
                 ? <RowButton key={choice.id} role="checkbox" aria-checked={checked} disabled={reviewBusy || (!checked && picked.length >= 2)} onClick={() => setPicked(current => checked ? current.filter(id => id !== choice.id) : [...current, choice.id])}>
                     <span aria-hidden="true" className={cn("grid size-3 place-items-center rounded-sm border border-border", checked && "border-primary bg-primary text-primary-foreground")}>{checked && <Check size={9} />}</span>
-                    <span className="min-w-0 flex-1 truncate">{choice.label}</span>
+                    <span className="min-w-0 flex-1 truncate">{choice.label} <span className="font-mono text-micro text-muted-foreground" data-reviewer-model={choice.id}>{modelLine(choice.id)}</span></span>
                   </RowButton>
                 : (() => {
                     const inUse = activeJobFor(reviews.jobs, [choice.id]);
                     return <RowButton key={choice.id} disabled={reviewBusy || !!inUse} onClick={() => void startReview([choice.id])}>
                       {inUse && inUse.status !== "drafted"
-                        ? <LoaderCircle size={11} className="animate-spin text-muted-foreground motion-reduce:animate-none" aria-hidden="true" />
+                        ? <SkeletonDot className="size-[11px]" />
                         : <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />}
-                      <span className="min-w-0 flex-1 truncate">{choice.label}</span>
+                      <span className="min-w-0 flex-1 truncate">{choice.label} <span className="font-mono text-micro text-muted-foreground" data-reviewer-model={choice.id}>{modelLine(choice.id)}</span></span>
                       {inUse && <span className="shrink-0 text-micro text-muted-foreground">{inUse.status === "drafted" ? "Draft waiting" : "Reviewing"}</span>}
                     </RowButton>;
                   })();
@@ -1726,8 +1735,8 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
             {secondOpinion && (() => {
               const inUse = picked.length > 0 ? activeJobFor(reviews.jobs, picked) : undefined;
               const names = picked.map(id => REVIEW_HARNESSES.find(choice => choice.id === id)?.label ?? id).join(" and ");
-              return <Button size="xs" disabled={reviewBusy || picked.length === 0 || !!inUse} onClick={() => void startReview(picked)} className="mx-1 my-0.5">
-                {reviewBusy ? "Starting review…" : picked.length === 0 ? "Pick a harness" : inUse ? (inUse.status === "drafted" ? `A draft from ${names} is waiting` : `${names} already reviewing`) : `Review with ${names}`}
+              return <Button size="xs" disabled={reviewBusy || picked.length === 0 || !!inUse} loading={reviewBusy} onClick={() => void startReview(picked)} className="mx-1 my-0.5">
+                {picked.length === 0 ? "Pick a harness" : inUse ? (inUse.status === "drafted" ? `A draft from ${names} is waiting` : `${names} already reviewing`) : `Review with ${names}`}
               </Button>;
             })()}
             <RowButton disabled={reviewBusy} onClick={() => void startReview([BUGBOT.id])}>
@@ -2068,7 +2077,9 @@ function ConnectRepositoryDialog({ workspaceId, onCancel, onConnected }: {
       />
       {!pastedUrl && candidates !== undefined && <ul className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-border" aria-label="Matching repositories">
         {candidates.length === 0
-          ? <li className="px-3 py-2.5 text-meta text-muted-foreground">{searching ? "Searching…" : "No repository matches that. Paste its URL instead."}</li>
+          ? searching
+            ? <li><SkeletonRows label="Searching repositories" rows={3} meta={false} framed={false} /></li>
+            : <li className="px-3 py-2.5 text-meta text-muted-foreground">No repository matches that. Paste its URL instead.</li>
           : candidates.map(candidate => <li key={candidate.nameWithOwner}>
             <RowButton size="lg" shape="flush" disabled={busy} onClick={() => void connect(candidate.url)}>
               <FolderGit2 size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />

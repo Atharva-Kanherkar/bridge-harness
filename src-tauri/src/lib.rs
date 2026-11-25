@@ -1085,6 +1085,12 @@ async fn start_review(
 }
 
 #[tauri::command]
+async fn review_activity(job_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReviewActivityList, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Reviews", move || api::review_activity(&core, &bridge_protocol::messages::ReviewActivityParams { job_id })).await
+}
+
+#[tauri::command]
 async fn review_overview(
     days: Option<u32>,
     repository: Option<String>,
@@ -3040,11 +3046,13 @@ async fn save_memory_record(
 async fn list_memory_records(
     scope_key: String,
     status: Option<String>,
+    cursor: Option<String>,
+    limit: Option<u32>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::ListMemoryRecordsResult, BridgeError> {
     let core = state.inner().clone();
     blocking("List memory records", move || {
-        api::list_memory_records(&core, &scope_key, status.as_deref())
+        api::list_memory_records(&core, &scope_key, status.as_deref(), cursor.as_deref(), limit)
     })
     .await
 }
@@ -3138,6 +3146,25 @@ async fn reject_memory_record(
     let core = state.inner().clone();
     blocking("Reject memory record", move || {
         api::reject_memory_record(&core, &record_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn review_memory_records(
+    scope_key: String,
+    approve: Option<Vec<String>>,
+    reject: Option<Vec<String>>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ReviewMemoryRecordsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Review memory records", move || {
+        api::review_memory_records(
+            &core,
+            &scope_key,
+            &approve.unwrap_or_default(),
+            &reject.unwrap_or_default(),
+        )
     })
     .await
 }
@@ -4007,6 +4034,7 @@ pub fn run() -> i32 {
             start_review,
             list_reviews,
             review_overview,
+            review_activity,
             get_review,
             cancel_review,
             retry_review,
@@ -4220,6 +4248,7 @@ pub fn run() -> i32 {
             supersede_memory_record,
             approve_memory_record,
             reject_memory_record,
+            review_memory_records,
             get_extraction_settings,
             update_extraction_settings,
             get_memory_injection,

@@ -11,6 +11,7 @@ import { Textarea } from "./ui/textarea";
 import { cn } from "../lib/utils";
 import { formatShortcut, modKey } from "../lib/platform";
 import { Input } from "@/components/ui/input";
+import { SkeletonDot } from "@/components/ui/skeleton";
 
 export type SimpleBrowserProps = {
   sessionId?: string;
@@ -236,7 +237,7 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
               else return;
               event.preventDefault(); selectTab(workspace.tabs[target].id);
               document.getElementById(`browser-tab-${workspace.tabs[target].id}`)?.focus();
-            }}>{snapshots[tab.id]?.loading ? <RotateCw size={12} className="shrink-0 animate-spin" aria-label="Loading page" /> : <Globe size={12} className="shrink-0" aria-hidden="true" />}<span className="truncate">{tab.title || (tab.url ? new URL(tab.url).hostname : "New tab")}</span></Button>
+            }}>{snapshots[tab.id]?.loading ? <SkeletonDot label="Loading page" /> : <Globe size={12} className="shrink-0" aria-hidden="true" />}<span className="truncate">{tab.title || (tab.url ? new URL(tab.url).hostname : "New tab")}</span></Button>
             <span className={cn("mr-0.5 flex transition-opacity", !selected && "opacity-0 group-focus-within/tab:opacity-100 group-hover/tab:opacity-100")}><Button variant="quiet" size="icon-2xs" aria-label={`Close ${tab.title || "browser tab"}`} tooltip="Close tab" onClick={() => closeTab(tab.id)}><X /></Button></span>
           </div>;
         })}
@@ -269,7 +270,7 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
         <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted px-2.5 py-2 font-mono text-caption leading-4">{selection.snippet}</pre>
         <p className="text-xs leading-4 text-muted-foreground">Describe the change in the composer.</p>
         <label className="flex flex-col gap-1.5 text-xs">Annotation<Textarea size="sm" aria-label="Selection annotation" maxLength={1000} value={annotation} onChange={event => setAnnotation(event.target.value)} placeholder="Describe the area or mark what should change…" className="min-h-24" /></label>
-        <div className="flex gap-2"><Button size="sm" disabled={!onAttachSelection || attaching} onClick={() => void attach()}>{attaching ? "Attaching…" : "Attach to prompt"}</Button><Button variant="outline" size="sm" onClick={cancelSelection}>Cancel</Button></div>
+        <div className="flex gap-2"><Button size="sm" disabled={!onAttachSelection || attaching} loading={attaching} onClick={() => void attach()}>Attach to prompt</Button><Button variant="outline" size="sm" onClick={cancelSelection}>Cancel</Button></div>
         <p className="text-caption text-muted-foreground">Select the element again after navigating to a different page.</p>
       </section>}
     </div>

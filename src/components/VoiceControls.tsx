@@ -1,9 +1,10 @@
 import { useEffect, useRef } from "react";
-import { LoaderCircle, Mic, Square, X } from "lucide-react";
+import { Mic, Square, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { VoiceState, VoiceView } from "@/voiceDictation";
 import type { VoiceRecoveryAction } from "@/protocol/generated/protocol";
 import { Button } from "@/components/ui/button";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 export function voiceIsBusy(state: VoiceState): boolean {
   return state === "starting" || state === "recording" || state === "stopping";
@@ -58,7 +59,7 @@ export function VoiceControls({ state, available, disabled, unavailableReason, p
     {!busy && recover && <Button variant="quiet" size="xs" tooltip={unavailableReason} onClick={recover.run} disabled={disabled}
      >{recover.label}</Button>}
     <Button variant="quiet" size="icon-sm" data-voice-control disabled={disabled || (!available && !busy) || state === "stopping"}
-      aria-label={busy ? "Stop dictating" : "Hold to dictate"} aria-pressed={busy} aria-busy={pending}
+      aria-label={busy ? "Stop dictating" : "Hold to dictate"} aria-pressed={busy} loading={pending}
       aria-description={!available && !busy ? unavailableReason : providerLabel}
       tooltip={!available && !busy ? unavailableReason ?? "Dictation unavailable" : [providerLabel, busy ? "Finish dictation" : "Click to dictate, or hold to talk"].filter(Boolean).join(". ")}
       onPointerDown={event => {
@@ -89,8 +90,7 @@ export function VoiceControls({ state, available, disabled, unavailableReason, p
           if (heldKey.current) { heldKey.current = false; onStop(); }
         }
       }}
-    >{pending ? <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" />
-      : state === "recording" ? <Square className="h-3 w-3 fill-current" aria-hidden="true" /> : <Mic className="h-4 w-4" aria-hidden="true" />}</Button>
+    >{state === "recording" ? <Square className="h-3 w-3 fill-current" aria-hidden="true" /> : <Mic className="h-4 w-4" aria-hidden="true" />}</Button>
     {busy && onCancel && <Button variant="quiet" size="icon-sm" tooltip="Cancel dictation (Esc)" data-voice-control onClick={onCancel} aria-label="Cancel dictation"
      ><X className="h-4 w-4" aria-hidden="true" /></Button>}
   </>;
@@ -106,7 +106,9 @@ export function VoiceStatus({ state, startingPhase, audioLevel = 0, error, notic
             className={cn("w-0.5 rounded-full transition-opacity motion-reduce:transition-none", height,
               state !== "stopping" && audioLevel > index / 5 ? "bg-foreground opacity-100" : "bg-muted-foreground opacity-25")} />)}
         </span>
-        <span role="status">{state === "starting" ? startingPhase === "microphone" ? "Allow microphone access…" : "Loading speech model…" : state === "stopping" ? "Finishing…" : "Listening"}</span>
+        {state === "starting" && startingPhase !== "microphone" || state === "stopping"
+          ? <SkeletonRegion label={state === "stopping" ? "Finishing" : "Loading speech model"}><Skeleton className="h-2.5 w-24" /></SkeletonRegion>
+          : <span role="status">{state === "starting" ? "Allow microphone access" : "Listening"}</span>}
       </span>
       <span className="text-caption">{state === "stopping" ? "Esc to cancel" : "Enter to finish · Esc to cancel"}</span>
     </div>}

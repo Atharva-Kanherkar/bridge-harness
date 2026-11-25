@@ -16,6 +16,7 @@ import { NOTES_CONTEXT_FENCE, splitNotesContext } from "../notesBrief";
 import { placeholderReference, SECRET_PLACEHOLDER } from "../apiKeys";
 import { RunButton } from "./RunInTerminal";
 import { BlockAction } from "@/components/ui/block-action";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 type Block =
   /** `closed` is false while a streaming fence still lacks its closing line. */
@@ -495,7 +496,7 @@ function MermaidBlock({ code }: { code: string }) {
     </div>;
   }
   if (rendered?.code !== code || rendered.dark !== dark) {
-    return <div className="my-[0.9em] rounded-2xl border border-dashed border-border px-3 py-2.5 text-xs text-muted-foreground">Rendering diagram…</div>;
+    return <SkeletonRegion label="Rendering diagram" className="my-[0.9em]"><Skeleton className="h-40 rounded-2xl" /></SkeletonRegion>;
   }
   const viewBoxWidth = Number(/viewBox="0 0 ([\d.]+) /.exec(rendered.svg)?.[1]);
   const { width: clampedWidth, clamped } = mermaidClamp(containerWidth, viewBoxWidth);

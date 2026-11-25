@@ -19,10 +19,10 @@ describe("computeNarration", () => {
     expect(view.mounted).toBe(false);
   });
 
-  it("labels each observed phase without naming the harness", () => {
-    expect(computeNarration({ ...base, latestPhase: "spawning" }).label).toBe("Starting…");
-    expect(computeNarration({ ...base, latestPhase: "handshake" }).label).toBe("Connecting…");
-    expect(computeNarration({ ...base, latestPhase: "session_open" }).label).toBe("Opening session…");
+  it("says Thinking through every cold-start phase, never narrating Bridge's plumbing", () => {
+    for (const latestPhase of ["spawning", "handshake", "session_open"] as const) {
+      expect(computeNarration({ ...base, latestPhase }).label).toBe("Thinking");
+    }
   });
 
   it("defaults to Thinking once no cold-start phase is in flight", () => {
@@ -49,12 +49,12 @@ describe("computeNarration", () => {
   it("narrates a model switch even with no pending work", () => {
     const view = computeNarration({ ...base, hasPendingWork: false, switchingToLabel: "Opus" });
     expect(view.mounted).toBe(true);
-    expect(view.label).toBe("Switching to Opus…");
+    expect(view.label).toBe("Switching to Opus");
   });
 
   it("lets the switch outrank a cold-start phase and the reading label", () => {
     const view = computeNarration({ ...base, latestPhase: "handshake", switchingToLabel: "GPT Luna" });
-    expect(view.label).toBe("Switching to GPT Luna…");
+    expect(view.label).toBe("Switching to GPT Luna");
   });
 
   it("shows the switch's elapsed counter from 10s, like every other wait", () => {
@@ -70,18 +70,18 @@ describe("computeNarration", () => {
     const view = computeNarration({ ...base, compactingSince: 0, latestPhase: "session_open" });
     expect(view.mounted).toBe(true);
     expect(view.collapsed).toBe(false);
-    expect(view.label).toBe("Compacting context…");
+    expect(view.label).toBe("Compacting context");
   });
 
   it("keeps the compaction row up past the first-token handoff", () => {
     const view = computeNarration({ ...base, compactingSince: 0, streaming: true, streamStartedAt: 0, now: 60_000 });
     expect(view.mounted).toBe(true);
-    expect(view.label).toBe("Compacting context…");
+    expect(view.label).toBe("Compacting context");
   });
 
   it("lets a model switch outrank a compaction", () => {
     const view = computeNarration({ ...base, compactingSince: 0, switchingToLabel: "Opus" });
-    expect(view.label).toBe("Switching to Opus…");
+    expect(view.label).toBe("Switching to Opus");
   });
 
   it("counts a compaction from its own start, not the turn's", () => {

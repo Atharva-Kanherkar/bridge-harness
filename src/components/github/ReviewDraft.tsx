@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, LoaderCircle, Pencil, Send, X } from "lucide-react";
+import { Check, Pencil, Send, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -7,6 +7,7 @@ import { bridgeApi } from "../../api";
 import type { ReviewFinding, ReviewFindingDecisionInput, ReviewJob, ReviewPass, ReviewSeverity } from "../../protocol/generated/protocol";
 import { GithubMarkdown } from "./GithubMarkdown";
 import { harnessLabel, SEVERITY_TEXT } from "./reviewLabels";
+import { SkeletonRows } from "@/components/ui/skeleton";
 
 // A drafted review, for a person to triage: keep, drop or edit each finding,
 // then post the kept ones as one comment review. Nothing reaches GitHub until
@@ -183,7 +184,7 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
   };
 
   if (!findings) return <div className="border-t border-border/70 px-3 py-2">
-    {error ? <p role="alert" className="text-meta text-destructive">{error}</p> : <p className="text-meta text-muted-foreground">Loading the draft…</p>}
+    {error ? <p role="alert" className="text-meta text-destructive">{error}</p> : <SkeletonRows label="Loading the draft" rows={2} framed={false} density="menu" />}
   </div>;
   // Keep all and Drop all pass over a finding being edited.
   const settled = findings.filter(finding => !drafts.has(finding.id));
@@ -192,7 +193,7 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
   const unsaved = findings.some(finding => drafts.has(finding.id) && drafts.get(finding.id) !== savedBody(finding));
   const blocked = unsaved || (findings.length > 0 && count === 0);
   const reason = unsaved ? "Save or cancel your edit to post." : blocked ? "Keep or edit at least one finding to post." : undefined;
-  const label = posting ? "Posting…" : findings.length === 0 ? "Post summary" : count === 0 ? "Post" : `Post ${count} ${count === 1 ? "finding" : "findings"}`;
+  const label = findings.length === 0 ? "Post summary" : count === 0 ? "Post" : `Post ${count} ${count === 1 ? "finding" : "findings"}`;
   return <div data-review-draft={job.id} className="border-t border-border/70 bg-muted/20 px-3 py-2.5">
     {findings.length > 0 && <div className="mb-2 flex flex-wrap items-center gap-1.5">
       <Button variant="outline" size="2xs" disabled={busy} onClick={() => void decide(settled.map(finding => ({ findingId: finding.id, decision: "kept" })))}>Keep all</Button>
@@ -223,8 +224,8 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
     <div className="flex items-center justify-end gap-2">
       {reason && <span className="text-caption text-muted-foreground">{reason}</span>}
       {!reason && undecided > 0 && <span className="text-caption text-muted-foreground">{count} kept, {undecided} not decided</span>}
-      <Button size="xs" disabled={busy || blocked} aria-busy={posting} onClick={() => void post()}>
-        {posting ? <LoaderCircle aria-hidden="true" className="size-3 animate-spin motion-reduce:animate-none" /> : <Send className="size-3" aria-hidden="true" />} {label}
+      <Button size="xs" disabled={busy || blocked} loading={posting} onClick={() => void post()}>
+        <Send className="size-3" aria-hidden="true" /> {label}
       </Button>
     </div>
   </div>;

@@ -189,8 +189,8 @@ function adapterState(adapter?: AdapterDescriptor): "not_installed" | "signed_ou
 function ProviderError({ message, refreshing, onRefresh }: { message: string; refreshing: boolean; onRefresh?: () => void }) {
   return <div className="mt-1 flex items-start gap-2">
     <p className="min-w-0 flex-1 text-caption leading-relaxed text-muted-foreground">{message}</p>
-    {onRefresh && <Button variant="outline" size="2xs" onClick={onRefresh} disabled={refreshing}>
-      <RefreshCw size={11} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />{refreshing ? "Refreshing" : "Refresh"}
+    {onRefresh && <Button variant="outline" size="2xs" onClick={onRefresh} disabled={refreshing} loading={refreshing}>
+      <RefreshCw size={11} aria-hidden="true" />Refresh
     </Button>}
   </div>;
 }
@@ -340,7 +340,7 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
           <span className="truncate text-caption tabular-nums text-muted-foreground">{worst == null ? "no live limits" : `${percentLabel(worst.used)} · ${worstName} ${worst.window.label}`}</span>
           <span className="ml-auto flex shrink-0 items-center gap-1">
             {onOpenUsage && <Button variant="quiet" size="xs" onClick={() => { setOpen(false); onOpenUsage(); }}><BarChart3 size={11} aria-hidden="true" />Open Usage</Button>}
-            {onRefresh && <Button variant="quiet" size="icon-xs" onClick={onRefresh} disabled={refreshing} aria-label="Refresh usage"><RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" /></Button>}
+            {onRefresh && <Button variant="quiet" size="icon-xs" onClick={onRefresh} disabled={refreshing} loading={refreshing} aria-label="Refresh usage"><RefreshCw size={13} aria-hidden="true" /></Button>}
             <Button variant="quiet" size="icon-xs" onClick={() => setOpen(false)} aria-label="Close usage"><X size={13} aria-hidden="true" /></Button>
           </span>
         </div>

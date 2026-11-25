@@ -3,8 +3,7 @@ import { ChevronDown, Lock, RotateCw, ToggleRight, Wrench, X } from "lucide-reac
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
-import { Skeleton, SkeletonRows } from "@/components/ui/skeleton";
-import { Spinner } from "@/components/ui/spinner";
+import { Skeleton, SkeletonRows, pendingClass } from "@/components/ui/skeleton";
 import { Tip } from "@/components/ui/tooltip";
 import { bridgeApi } from "../api";
 import { allOn, baseChoice, fits, leavesOut, overlay, removed, switched, type Choice } from "../chatToolChoice";
@@ -279,8 +278,9 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
           tabIndex={-1}
           disabled={!!pending || disabled}
           onClick={turnAllOn}
+          loading={turningAllOn}
           className="-ml-2 mt-1"
-        >{turningAllOn ? <Spinner className="size-3" /> : <ToggleRight className="size-3" aria-hidden="true" />}Turn all on</Button>}
+        ><ToggleRight className="size-3" aria-hidden="true" />Turn all on</Button>}
       </div>
       {notApplied && <div className="mx-1 mb-1 rounded-md bg-accent px-2 py-1.5">
         <p role="note" className="text-caption leading-4 text-warning">{notApplied}</p>
@@ -368,7 +368,8 @@ function ToolRow({ item, pending, busy, onSwitch, onRemove }: {
     onClick={onRemove}
     aria-label={`Remove ${item.label} from the choice`}
     tooltip="Remove from the choice"
-  >{pending?.on === null ? <Spinner className="size-3.5" /> : <X aria-hidden="true" />}</Button>;
+    loading={pending?.on === null}
+  ><X aria-hidden="true" /></Button>;
   const meta = <>
     {item.fixedReason && <span className="block text-caption leading-4 text-muted-foreground">{item.fixedReason}</span>}
     {figure && <Tip label={figure}><span className="block truncate text-caption leading-4 text-muted-foreground">{figure}</span></Tip>}
@@ -391,12 +392,13 @@ function ToolRow({ item, pending, busy, onSwitch, onRemove }: {
       tabIndex={-1}
       aria-checked={on}
       disabled={busy}
-      onClick={() => onSwitch(!on)}><span className="flex min-h-7 min-w-0 flex-1 items-center gap-2 px-2 py-1">
+      onClick={() => onSwitch(!on)}
+      aria-busy={pending?.on != null || undefined}><span className={cn("flex min-h-7 min-w-0 flex-1 items-center gap-2 px-2 py-1", pendingClass(pending?.on != null))}>
       <span className="min-w-0 flex-1">
         <span className={cn("block truncate text-ui", on ? "text-foreground" : "text-muted-foreground")}>{item.label}</span>
         {meta}
       </span>
-      {pending?.on != null && <span className="flex shrink-0 text-muted-foreground"><Spinner className="size-3.5" /></span>}
+
       <span aria-hidden="true" className={cn("relative h-[18px] w-8 shrink-0 rounded-full transition-colors", on ? "bg-foreground" : "bg-foreground/15", busy && "opacity-60")}>
         <span className={cn("absolute top-[2px] size-[14px] rounded-full bg-background transition-[left] duration-150", on ? "left-4" : "left-[2px]")} />
       </span>

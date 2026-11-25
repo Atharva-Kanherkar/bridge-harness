@@ -52,7 +52,7 @@ function AddIssueForm({ hasProject, onAdd }: { hasProject: boolean; onAdd: (refe
           placeholder={hasProject ? "Issue link, owner/repo#12, or #12" : "Issue link or owner/repo#12"}
           aria-label="Issue"
         />
-        <Button type="submit" size="sm" disabled={!reference.trim() || busy}>{busy ? "Reading…" : "Add"}</Button>
+        <Button loading={busy} type="submit" size="sm" disabled={!reference.trim() || busy}>Add</Button>
       </div>
       <p className="mt-2 text-caption text-muted-foreground">Bridge reads the issue from GitHub, and keeps its pull requests in step.</p>
       {error && <p role="alert" className="mt-2 text-caption text-destructive">{error}</p>}
