@@ -152,6 +152,10 @@ notifications![
     // `{"job": ReviewJob}`. Transient: a client that missed it rereads
     // `reviews/list_reviews`, whose rows are the truth.
     (ReviewJobUpdated, "reviews/job_updated", Transient),
+    // A reviewer pass did something: said something, used a tool, was
+    // refused. Payload `{"jobId": "...", "entry": ReviewActivityEntry}`.
+    // Transient: a client that missed it rereads `reviews/review_activity`.
+    (ReviewActivity, "reviews/activity", Transient),
     // Host-synthesized: the live channel dropped events for this connection.
     // Durable history is intact — replay every watched session from its last
     // cursor via `sessions/replay_session_events`; refetch hints are resent
@@ -214,6 +218,7 @@ mod tests {
             NotificationName::AttentionChanged,
             NotificationName::AppsChanged,
             NotificationName::ReviewJobUpdated,
+            NotificationName::ReviewActivity,
         ] {
             assert_eq!(
                 transient.delivery(),

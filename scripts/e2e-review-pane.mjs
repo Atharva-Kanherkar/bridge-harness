@@ -158,13 +158,10 @@ try {
     // The whole window: the review's toasts reach the person wherever they are.
     await page.screenshot({ path: path.join(out, `${scheme}-4-window.png`) });
     if (scheme === "light") {
-      // Settings → Background tasks: the Review jobs group, every behaviour a visible control.
-      await page.getByText("Settings", { exact: true }).first().click();
-      // Background tasks sits in the rail's Advanced group, folded at first.
-      const advanced = page.getByRole("button", { name: "Advanced" }).first();
-      await advanced.waitFor({ timeout: 15_000 });
-      if (!(await page.getByText("Background tasks", { exact: true }).first().isVisible())) await advanced.click();
-      await page.getByText("Background tasks", { exact: true }).first().click({ timeout: 15_000 });
+      // Reviews → Settings: the Review jobs group, every behaviour a visible control.
+      await page.getByText("Apps", { exact: true }).first().click();
+      await page.getByText("Reviews", { exact: true }).first().click({ timeout: 15_000 });
+      await page.getByRole("radio", { name: "Settings", exact: true }).click({ timeout: 15_000 });
       // The group itself, or the run fails: no silent fallback to a wider shot.
       const group = page.locator('[data-settings-row="review-jobs"]');
       await group.waitFor({ timeout: 15_000 });

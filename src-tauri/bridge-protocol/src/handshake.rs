@@ -232,9 +232,13 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// `memory/review_memory_records` approves and rejects a batch. Additive: a
 /// 1.57 daemon serves older clients, which read the first page as before; a
 /// 1.57 client cannot pair with a 1.56 daemon, which lacks the batch method.
+///
+/// **1.58 adds reviewer activity**: `reviews/review_activity` and the
+/// `reviews/activity` notification. A 1.57 client still pairs: it never calls
+/// the method and ignores the notification.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 57,
+    minor: 58,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -641,6 +645,15 @@ mod tests {
     }
 
     #[test]
+    fn a_1_57_client_pairs_with_a_reviewer_activity_daemon() {
+        let before = ProtocolVersion { major: 1, minor: 57 };
+        let activity = ProtocolVersion { major: 1, minor: 58 };
+        assert_eq!(PROTOCOL_VERSION, activity);
+        assert!(activity.accepts(before), "a 1.57 client never asks for activity");
+        assert!(!before.accepts(activity), "a 1.58 client needs reviews/review_activity");
+    }
+
+    #[test]
     fn a_1_55_client_pairs_with_a_reviews_dashboard_daemon() {
         let before = ProtocolVersion { major: 1, minor: 55 };
         let dashboard = ProtocolVersion { major: 1, minor: 56 };
@@ -652,7 +665,6 @@ mod tests {
     fn memory_paging_is_additive_for_older_clients() {
         let before = ProtocolVersion { major: 1, minor: 56 };
         let paging = ProtocolVersion { major: 1, minor: 57 };
-        assert_eq!(PROTOCOL_VERSION, paging);
         assert!(paging.accepts(before), "a 1.56 client reads the first page as before");
         assert!(!before.accepts(paging), "a 1.57 client needs memory/review_memory_records");
         assert!(paging.accepts(paging));
