@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Skeleton, SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
-import { LoaderCircle, Sparkles } from "lucide-react";
+import { Skeleton, SkeletonRegion, SkeletonText, pendingClass } from "@/components/ui/skeleton";
+import { Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
 import { harnessLabel } from "../utils";
@@ -37,8 +37,8 @@ export function MemoryInsights({ onError }: { onError: (message: string) => void
   useEffect(() => { load(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const report = result?.report ?? null;
-  const analyseButton = <button type="button" onClick={() => load(true)} disabled={loading} className="inline-flex h-8 shrink-0 items-center gap-2 rounded-lg border border-border px-3 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-40">
-    {loading ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <Sparkles size={13} aria-hidden="true" />}{report ? "Analyse again" : "Analyse my memory"}
+  const analyseButton = <button type="button" onClick={() => load(true)} disabled={loading} aria-busy={loading || undefined} className={cn("inline-flex h-8 shrink-0 items-center gap-2 rounded-lg border border-border px-3 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-40", pendingClass(loading))}>
+    <Sparkles size={13} aria-hidden="true" />{report ? "Analyse again" : "Analyse my memory"}
   </button>;
 
   if (loading && !report) {

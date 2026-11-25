@@ -7,8 +7,13 @@ import { cn } from "@/lib/utils";
 // The look lives in `.skeleton-shimmer` and `.animate-skeleton-in` in
 // `src/index.css`; reduced motion leaves static bars.
 //
-// Skeletons are for a first load only. An action in flight spins inside the
-// control that started it, and a reload keeps the last data on screen.
+// This is the only loading state Bridge has. There is no spinner and no
+// "Loading" copy anywhere (the design-system test enforces both):
+//   - a first load draws placeholders shaped like what replaces them;
+//   - a control whose action is in flight keeps its label and wears the same
+//     travelling highlight (`pendingClass`);
+//   - a row whose work is still live swaps its glyph for a `SkeletonDot`;
+//   - a reload keeps the last data on screen.
 
 // Literal classes so Tailwind generates them: 90ms per row, capped so a long
 // list does not leave its last rows waiting.
@@ -41,6 +46,31 @@ const LEAD = {
 /** One placeholder shape. Decorative: the region around it carries the label. */
 export function Skeleton({ className, index }: { className?: string; index?: number }): React.ReactElement {
   return <span aria-hidden="true" className={cn("skeleton-shimmer block h-3 rounded", skeletonDelay(index), className)} />;
+}
+
+/**
+ * The class a busy control wears: the skeleton's travelling highlight, drawn
+ * over the control in its own text colour so it reads on any surface. Pair it
+ * with `disabled` and `aria-busy`; keep the idle label, never a "Saving" variant.
+ */
+export function pendingClass(busy: unknown): string | false {
+  return !!busy && "skeleton-pending";
+}
+
+/** A shimmering dot that stands in for a status glyph while the work behind it is live. */
+export function SkeletonDot({ className, label }: { className?: string; label?: string }): React.ReactElement {
+  const dot = cn("skeleton-shimmer inline-block size-3 shrink-0 rounded-full", className);
+  return label === undefined
+    ? <span aria-hidden="true" data-skeleton-dot="" className={dot} />
+    : <span role="status" aria-label={label} data-skeleton-dot="" className={dot} />;
+}
+
+/** A whole surface that has not arrived: a heading bar, then rows. Fills its parent. */
+export function SkeletonPanel({ label, rows = 5, className }: { label: string; rows?: number; className?: string }): React.ReactElement {
+  return <SkeletonRegion label={label} className={cn("flex min-h-0 w-full flex-1 flex-col gap-4 p-5", className)}>
+    <Skeleton className="h-4 w-40" />
+    <SkeletonRows rows={rows} lead="icon" />
+  </SkeletonRegion>;
 }
 
 /** The status region every skeleton sits in: named for assistive tech, busy, and faded in after a beat. */

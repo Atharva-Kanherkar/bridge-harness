@@ -297,6 +297,32 @@ describe("suggested-task actions", () => {
     expect(forgotten.status).toBe("deleted");
     expect((await bridgeApi.listMemoryRecords("account:local")).records.some(record => record.id === saved.id)).toBe(false);
   });
+
+  it("pages the mock review queue with a true total and decides proposals in bulk", async () => {
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    const sizes: number[] = [];
+    do {
+      const page = await bridgeApi.listMemoryRecords("account:local", "proposed", cursor ? { cursor } : {});
+      expect(page.total).toBeGreaterThan(50);
+      sizes.push(page.records.length);
+      seen.push(...page.records.map(record => record.id));
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    expect(sizes[0]).toBe(50);
+    expect(new Set(seen).size).toBe(seen.length);
+    await expect(bridgeApi.listMemoryRecords("account:local", "proposed", { limit: 51 })).rejects.toThrow("1 to 50");
+    await expect(bridgeApi.listMemoryRecords("account:local", "proposed", { cursor: "nope" })).rejects.toThrow("cursor");
+
+    const [first, second] = seen;
+    const decided = await bridgeApi.reviewMemoryRecords([first], [second, "missing"]);
+    expect(decided.approved).toEqual([first]);
+    expect(decided.rejected).toEqual([second]);
+    expect(decided.refused.map(refusal => refusal.id)).toEqual(["missing"]);
+    const again = await bridgeApi.reviewMemoryRecords([first], []);
+    expect(again.refused[0].reason).toContain("already active");
+    await expect(bridgeApi.reviewMemoryRecords(["x"], ["x"])).rejects.toThrow("approved and rejected");
+  });
 });
 
 describe("Context breakdown (issue #245)", () => {

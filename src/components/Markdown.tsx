@@ -13,6 +13,7 @@ import { SNAPSHOT_FENCE, splitSnapshot } from "../diskSpace";
 import { NOTES_CONTEXT_FENCE, splitNotesContext } from "../notesBrief";
 import { placeholderReference, SECRET_PLACEHOLDER } from "../apiKeys";
 import { RunButton } from "./RunInTerminal";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 type Block =
   /** `closed` is false while a streaming fence still lacks its closing line. */
@@ -495,7 +496,7 @@ function MermaidBlock({ code }: { code: string }) {
     </div>;
   }
   if (rendered?.code !== code || rendered.dark !== dark) {
-    return <div className="my-[0.9em] rounded-[0.9rem] border border-dashed border-border p-[0.9em_1em] text-xs text-muted-foreground">Rendering diagram…</div>;
+    return <SkeletonRegion label="Rendering diagram" className="my-[0.9em]"><Skeleton className="h-40 rounded-[0.9rem]" /></SkeletonRegion>;
   }
   const viewBoxWidth = Number(/viewBox="0 0 ([\d.]+) /.exec(rendered.svg)?.[1]);
   const { width: clampedWidth, clamped } = mermaidClamp(containerWidth, viewBoxWidth);

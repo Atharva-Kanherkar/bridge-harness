@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { SkeletonRows } from "@/components/ui/skeleton";
+import { Skeleton, SkeletonRegion, SkeletonRows } from "@/components/ui/skeleton";
 import { AlertTriangle, Camera, ChevronRight, Chrome, ExternalLink, Eye, Hand, MousePointer2, Plug, RefreshCw, ScrollText, ShieldAlert, TerminalSquare, Unplug } from "lucide-react";
 import { bridgeApi } from "../api";
 import { startSerialPoll } from "../polling";
@@ -169,7 +169,9 @@ function TabPicker({ snapshot, busy, onRefresh, onAttach }: { snapshot: BrowserB
 }
 
 function PageMirror({ snapshot, busy, onPoint }: { snapshot: BrowserBridgeSnapshot; busy: boolean; onPoint: (x: number, y: number) => void }) {
-  if (!snapshot.screenshot) return <div className="grid min-h-full place-items-center p-6 text-center"><div><Camera size={24} className="mx-auto text-muted-foreground" /><p className="mt-2 max-w-sm text-caption leading-5 text-muted-foreground">{snapshot.captureError ? "Open the attached Chrome tab, click the Bridge extension icon, and choose Attach this tab to grant the live mirror." : snapshot.captureActive ? "Waiting for the first redacted mirror frame…" : "Attaching the live mirror…"}</p></div></div>;
+  if (!snapshot.screenshot) return snapshot.captureError
+    ? <div className="grid min-h-full place-items-center p-6 text-center"><div><Camera size={24} className="mx-auto text-muted-foreground" /><p className="mt-2 max-w-sm text-caption leading-5 text-muted-foreground">Open the attached Chrome tab, click the Bridge extension icon, and choose Attach this tab to grant the live mirror.</p></div></div>
+    : <SkeletonRegion label={snapshot.captureActive ? "Waiting for the first redacted mirror frame" : "Attaching the live mirror"} className="min-h-full p-4"><Skeleton className="h-full min-h-64 w-full rounded-lg" /></SkeletonRegion>;
   return <button type="button" disabled={busy || snapshot.lease?.permission !== "interact"} className="relative block w-full cursor-crosshair disabled:cursor-default" onClick={event => {
     const rect = event.currentTarget.getBoundingClientRect();
     const width = snapshot.viewport?.width ?? rect.width; const height = snapshot.viewport?.height ?? rect.height;

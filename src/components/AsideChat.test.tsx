@@ -165,7 +165,7 @@ describe("AsideChat", () => {
 
   it("narrates a model switch in flight and locks the picker for its duration", async () => {
     await mount({ working: false, modelSwitch: { harness: "claude", label: "Opus" } });
-    expect(dialog().textContent).toContain("Switching to Opus…");
+    expect(dialog().textContent).toContain("Switching to Opus");
     const pill = dialog().querySelector<HTMLButtonElement>('[aria-label="Aside model: Claude Sonnet"]')!;
     expect(pill.disabled).toBe(true);
   });
@@ -263,7 +263,7 @@ describe("AsideChat", () => {
       box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     });
     expect(onSend).toHaveBeenCalledTimes(1);
-    expect(dialog().textContent).toContain("Sending…");
+    expect(dialog().querySelector('[role="status"][aria-label="Sending"]')).not.toBeNull();
     await act(async () => {
       setter.call(box, "queued follow-up");
       box.dispatchEvent(new Event("input", { bubbles: true }));

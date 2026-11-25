@@ -31,7 +31,7 @@ export function useVoiceDictation(options: Options) {
   const latest = useRef(options);
   latest.current = options;
   const [view, setView] = useState<VoiceView>({ state: "idle", preview: "" });
-  const [capability, setCapability] = useState<Capability>({ scope: "", available: false, reason: "Checking dictation availability…" });
+  const [capability, setCapability] = useState<Capability>({ scope: "", available: false, reason: "Checking dictation availability" });
   const [listening, setListening] = useState(false);
   const [subscriptionError, setSubscriptionError] = useState<string>();
   const [refresh, setRefresh] = useState(0);
@@ -80,7 +80,7 @@ export function useVoiceDictation(options: Options) {
 
   useEffect(() => {
     let current = true;
-    setCapability({ scope, available: false, reason: "Checking dictation availability…" });
+    setCapability({ scope, available: false, reason: "Checking dictation availability" });
     if (bound && options.working) {
       setCapability({ scope, available: false, reason: "Wait for the current turn to finish before dictating." });
       return;
@@ -109,7 +109,7 @@ export function useVoiceDictation(options: Options) {
   return {
     ...view,
     available,
-    unavailableReason: subscriptionError ?? (!currentCapability ? "Checking dictation availability…" : capability.available && !listening ? "Connecting to dictation events…" : capability.reason),
+    unavailableReason: subscriptionError ?? (!currentCapability ? "Checking dictation availability" : capability.available && !listening ? "Connecting to dictation events" : capability.reason),
     recovery: subscriptionError ? "retry" as const : currentCapability ? capability.recovery : undefined,
     active: view.state === "starting" || view.state === "recording" || view.state === "stopping",
     start: () => available ? controller.start(options.provider) : Promise.resolve(),

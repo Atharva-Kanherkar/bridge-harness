@@ -9,6 +9,7 @@ import type { AdapterDescriptor, Note, Session, Workspace } from "../../types";
 import { HarnessMark } from "../harnessMarks";
 import { PopoverAction, StartPicker, type StartChoice } from "./NotePickers";
 import { StatusGlyph } from "./NotesUi";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 export function NoteTasks({ tasks, drafts = [], adapters, workspaces, sessions, defaultHarness, pageWorkspaceId, startingId, onStart, onOpenChat, onSetState, onOpen }: {
   tasks: Note[];
@@ -33,14 +34,14 @@ export function NoteTasks({ tasks, drafts = [], adapters, workspaces, sessions, 
   return <section aria-label="Tasks" className="mt-12">
     <div className="flex items-baseline gap-2 border-b border-border pb-2">
       <h3 className="m-0 text-ui font-semibold text-foreground">Tasks</h3>
-      <span className="text-meta text-muted-foreground">{fresh.length ? "Finding tasks…" : open ? `${open} of ${tasks.length} open` : tasks.every(task => task.state === "done") ? "All done" : "No open tasks"}</span>
+      {fresh.length ? <SkeletonRegion label="Finding tasks"><Skeleton className="h-2.5 w-20" /></SkeletonRegion> : <span className="text-meta text-muted-foreground">{open ? `${open} of ${tasks.length} open` : tasks.every(task => task.state === "done") ? "All done" : "No open tasks"}</span>}
     </div>
     <ul className="m-0 list-none divide-y divide-border p-0">
       {tasks.map(task => {
         const title = noteDisplayTitle(task);
         const done = task.state === "done";
         const { id: lastChat, session } = latestTaskChat(task, chats);
-        const status = startingId === task.id ? "Starting…" : noteTaskStatus(task, session);
+        const status = noteTaskStatus(task, session);
         return <li key={task.id} aria-label={title} className="group flex items-start gap-3 py-2.5">
           <button
             type="button"
@@ -60,7 +61,7 @@ export function NoteTasks({ tasks, drafts = [], adapters, workspaces, sessions, 
             {lastChat && <button type="button" onClick={() => onOpenChat(lastChat)} className="inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-meta text-foreground transition-colors hover:bg-accent">
               {session && <HarnessMark harness={session.harness} size={12} />}Open chat
             </button>}
-            {!lastChat && !done && task.state !== "archived" && <PopoverAction label="Start" triggerLabel={`Start ${title}`} panelLabel="Start a chat" align="end" busy={startingId === task.id} busyLabel="Starting…">
+            {!lastChat && !done && task.state !== "archived" && <PopoverAction label="Start" triggerLabel={`Start ${title}`} panelLabel="Start a chat" align="end" busy={startingId === task.id}>
               {close => <StartPicker
                 adapters={adapters}
                 workspaces={workspaces}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SkeletonRows } from "@/components/ui/skeleton";
-import { ArrowLeft, ArrowRight, Bot, CheckCircle2, LoaderCircle, RefreshCw } from "lucide-react";
+import { SkeletonRegion, SkeletonRows, SkeletonText, pendingClass } from "@/components/ui/skeleton";
+import { ArrowLeft, ArrowRight, Bot, CheckCircle2, RefreshCw } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { AdapterDescriptor, ModelSetupState } from "../types";
 import type { UsageProvider } from "../usage";
@@ -9,6 +9,7 @@ import { recommendedProfileDrafts } from "../modelProfiles";
 import { sourceLine, useManagedAgents } from "./ManagedAgentsPanel";
 import { HarnessMark } from "./harnessMarks";
 import { ProviderLoginPane } from "./ProviderLoginPane";
+import { cn } from "@/lib/utils";
 
 const NOOP = () => undefined;
 const LOGIN_AGENTS = new Set(["claude", "codex", "opencode", "cursor", "grok"]);
@@ -47,7 +48,7 @@ function AgentConnection({ agent, adapter, busy, error, loginOpen, onInstall, on
       {ready && <CheckCircle2 size={18} className="shrink-0 text-success" aria-label="Sign-in found" />}
     </div>
     <div className="mt-4 space-y-2 border-t border-border pt-3">
-      {busy ? <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle size={14} className="animate-spin" />{busy}…</p>
+      {busy ? <SkeletonRegion label={busy}><SkeletonText lines={2} /></SkeletonRegion>
       : missing ? supportedInstall ? <><p className="text-xs text-muted-foreground">Bridge will download and manage a separate copy for you.</p><button type="button" onClick={onInstall} className="min-h-9 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground">Install with Bridge</button></>
         : <><p className="text-xs text-warning">Bridge cannot install this agent on this computer. Install it using the vendor's instructions, then check again, or go back and choose another agent.</p>{adapter?.unavailableReason && <p className="text-xs text-muted-foreground">{adapter.unavailableReason}</p>}</>
       : broken ? supportedInstall ? <button type="button" onClick={onRepair} className="min-h-9 rounded-lg border border-border px-3 text-xs">Repair installation</button>
@@ -161,9 +162,9 @@ export function ModelSetupWizard({ adapters, onComplete, onHealthChange = NOOP, 
         {error && <p role="alert" className="mt-4 text-sm text-destructive">{error}</p>}
         <footer className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
           <div className="flex gap-2">{stage === "connect" && <button type="button" disabled={saving || operating} onClick={() => { if (login) void bridgeApi.cancelProviderLogin(login); setLogin(null); setStage("choose"); }} className="inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-xs text-muted-foreground disabled:opacity-40"><ArrowLeft size={13} />Change agents</button>}
-            <button type="button" disabled={refreshing || saving || operating} onClick={checkAgain} className="inline-flex min-h-9 items-center gap-2 rounded-lg px-2 text-xs text-muted-foreground disabled:opacity-40"><RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />{refreshing ? "Checking…" : "Check again"}</button></div>
+            <button type="button" disabled={refreshing || saving || operating} onClick={checkAgain} aria-busy={refreshing || undefined} className={cn("inline-flex min-h-9 items-center gap-2 rounded-lg px-2 text-xs text-muted-foreground disabled:opacity-40", pendingClass(refreshing))}><RefreshCw size={13} />Check again</button></div>
           {stage === "choose" ? <button type="button" disabled={((!managed.agents || !!managed.listError) && !useDetectedAgents) || selected.length === 0 || refreshing} onClick={() => { setStage("connect"); refresh(selected); }} className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-40">Continue<ArrowRight size={14} /></button>
-            : <button type="button" disabled={!ready || saving || refreshing || operating || !!login || (!!managed.listError && !useDetectedAgents)} onClick={() => void finish()} className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-40">{saving && <LoaderCircle size={14} className="animate-spin" />}{saving ? "Finishing setup…" : "Start using Bridge"}</button>}
+            : <button type="button" disabled={!ready || saving || refreshing || operating || !!login || (!!managed.listError && !useDetectedAgents)} onClick={() => void finish()} aria-busy={saving || undefined} className={cn("inline-flex min-h-9 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-40", pendingClass(saving))}>Start using Bridge</button>}
         </footer>
         {stage === "connect" && <p className="mt-3 text-xs leading-relaxed text-muted-foreground">Bridge checks local sign-in information, not your subscription or remaining credits. Model defaults are chosen automatically; you can change them later in Settings.</p>}
         {selected.some(id => SESSION_SETUP_AGENTS.has(id)) && <p className="mt-3 text-xs leading-relaxed text-muted-foreground">For Cursor and Grok, checking opens a temporary agent session to confirm sign-in and models, then closes it without sending a chat message. It may start tools already configured in that agent.</p>}

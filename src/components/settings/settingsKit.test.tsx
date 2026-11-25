@@ -171,8 +171,9 @@ describe("SaveBar", () => {
     const { container, unmount } = await mount(
       <SaveBar dirty saving onSave={onSave} onDiscard={() => undefined} />,
     );
-    const save = [...container.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent?.includes("Saving"))!;
+    const save = [...container.querySelectorAll<HTMLButtonElement>("button")].find(item => item.getAttribute("aria-busy") === "true")!;
     expect(save.disabled).toBe(true);
+    expect(save.textContent).not.toMatch(/Saving/);
     await act(async () => save.click());
     expect(onSave).not.toHaveBeenCalled();
     await unmount();

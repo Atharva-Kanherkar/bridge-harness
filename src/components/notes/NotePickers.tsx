@@ -3,11 +3,11 @@
 // from a note goes. Each is a popover on the action that needs it.
 
 import { useState, type ReactNode } from "react";
-import { Spinner } from "@/components/ui/spinner";
 import type { AdapterDescriptor, Workspace } from "../../types";
 import { harnessLabel } from "../../utils";
 import { HarnessMark } from "../harnessMarks";
 import { MenuDivider, MenuLabel, Option, OptionList, Pill, Popover, PrimaryButton } from "./NotesUi";
+import { pendingClass } from "@/components/ui/skeleton";
 
 /** Harnesses that can run a note pass: hidden, tool-less generations. */
 export const PASS_HARNESSES = ["claude", "codex", "opencode"];
@@ -37,11 +37,10 @@ function HarnessOptions({ label, choices, value, defaultHarness, onChange }: { l
 }
 
 /** A pill that opens a popover; `children` renders inside it with a close. */
-export function PopoverAction({ label, triggerLabel, busyLabel, busy = false, panelLabel, align, width, children }: {
+export function PopoverAction({ label, triggerLabel, busy = false, panelLabel, align, width, children }: {
   label: ReactNode;
   /** The trigger's accessible name, when its text alone is ambiguous. */
   triggerLabel?: string;
-  busyLabel?: string;
   busy?: boolean;
   panelLabel: string;
   align?: "start" | "end";
@@ -51,8 +50,8 @@ export function PopoverAction({ label, triggerLabel, busyLabel, busy = false, pa
   const [open, setOpen] = useState(false);
   const close = () => setOpen(false);
   return <div className="relative">
-    <Pill aria-label={triggerLabel} aria-expanded={open} aria-haspopup="dialog" active={open} disabled={busy} onClick={() => setOpen(current => !current)}>
-      {busy && <Spinner className="size-3.5" />}{busy ? busyLabel : label}
+    <Pill aria-label={triggerLabel} aria-expanded={open} aria-haspopup="dialog" aria-busy={busy || undefined} active={open} disabled={busy} className={pendingClass(busy) || undefined} onClick={() => setOpen(current => !current)}>
+      {label}
     </Pill>
     <Popover open={open} onClose={close} label={panelLabel} align={align} width={width}>{children(close)}</Popover>
   </div>;
@@ -112,7 +111,7 @@ export function StartPicker({ subject = "task", adapters, workspaces, defaultHar
       : <p role="status" className="m-0 px-2.5 pb-1 text-ui text-foreground">No harness can start a chat: sign in to one in Settings.</p>}
     <div className="flex items-center gap-2 px-2.5 pb-0.5 pt-2.5">
       <p className="m-0 min-w-0 flex-1 text-caption leading-snug text-muted-foreground">The {subject} goes with it as the first message.</p>
-      <PrimaryButton disabled={busy || !harness} onClick={() => onStart({ workspaceId, harness })}>{busy ? "Starting…" : "Start"}</PrimaryButton>
+      <PrimaryButton busy={busy} disabled={!harness} onClick={() => onStart({ workspaceId, harness })}>Start</PrimaryButton>
     </div>
   </>;
 }

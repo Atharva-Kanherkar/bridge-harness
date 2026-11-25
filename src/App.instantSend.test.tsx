@@ -44,7 +44,7 @@ async function settle(rounds = 6) {
 
 const chatRows = () => [...container.querySelectorAll<HTMLButtonElement>('button[title*=" — "]')];
 const composer = () => container.querySelector<HTMLTextAreaElement>("textarea");
-const stopButton = () => container.querySelector<HTMLButtonElement>('button[aria-label="Stop"], button[aria-label="Stopping…"]');
+const stopButton = () => container.querySelector<HTMLButtonElement>('button[aria-label="Stop"], button[aria-label="Stopping"]');
 
 async function click(element: Element) {
   await act(async () => { element.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
@@ -213,7 +213,8 @@ describe("sending a message reacts before the daemon answers", () => {
     // Nothing to interrupt yet: the request is held, not dropped, and the
     // control says so instead of snapping back to Send.
     expect(interrupt).not.toHaveBeenCalled();
-    expect(stopButton()?.getAttribute("aria-label")).toBe("Stopping…");
+    expect(stopButton()?.getAttribute("aria-label")).toBe("Stopping");
+    expect(stopButton()?.getAttribute("aria-busy")).toBe("true");
 
     // The mock backend runs the whole turn inside submitInput, so the turn is
     // acknowledged and completed in one step; the held request has nothing left

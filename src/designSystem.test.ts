@@ -133,7 +133,7 @@ describe("design system", () => {
     // reaches for `.skeleton-shimmer` itself, or pulses a muted bar, forks the
     // look the kit exists to keep.
     const kit = join("components", "ui", "skeleton.tsx");
-    expect(offenders(/\b(?:skeleton-shimmer|animate-skeleton-in)\b/g, name => name === kit)).toEqual([]);
+    expect(offenders(/\b(?:skeleton-shimmer|skeleton-pending|animate-skeleton-in)\b/g, name => name === kit)).toEqual([]);
     const pulsingBars = files.flatMap(file => {
       const classStrings = file.text.match(/"[^"\n]*"|'[^'\n]*'|`[^`\n]*`/g) ?? [];
       return classStrings
@@ -141,6 +141,16 @@ describe("design system", () => {
         .map(value => `${file.name}: ${value.slice(0, 120)}`);
     });
     expect(pulsingBars).toEqual([]);
+  });
+
+  it("has one loading state: no spinner and no loading copy", () => {
+    // A wait is drawn by the skeleton kit and nothing else: placeholders for a
+    // first load, `pendingClass` on a busy control, `SkeletonDot` on a live
+    // row. A rotating glyph or a "Loading reviews…" line is a second look.
+    expect(offenders(/\banimate-spin\b|\b(?:LoaderCircle|Loader2(?:Icon)?|LoaderIcon|CircleNotch|Spinner)\b/g)).toEqual([]);
+    // Any "Loading…", "Saving…" or "Reading your integrations…" string: a busy
+    // control keeps its idle label, and a wait is drawn, not narrated.
+    expect(offenders(/(?<![\w$])(?!Something\b)[A-Z][a-z]+ing\b[^"'`<>{}\n]*?(?:…|\.\.\.)(?=["'`<}])/g, name => name === "mockConversation.ts")).toEqual([]);
   });
 
   it("keeps blur off resting surfaces", () => {

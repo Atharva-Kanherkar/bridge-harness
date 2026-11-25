@@ -23,7 +23,8 @@ describe("Codex update dialog", () => {
     const onConfirm = vi.fn();
     await act(async () => root.render(<CodexUpdateDialog open phase={phase} onOpenChange={onOpenChange} onConfirm={onConfirm} />));
     const dialog = document.querySelector('[role="dialog"]')!;
-    expect(dialog.querySelector('[role="status"]')?.textContent).toContain(phase === "installing" ? "Downloading and installing" : "Installation finished");
+    expect(dialog.querySelector('[role="status"]')?.getAttribute("aria-label")).toBe(phase === "installing" ? "Installing Codex" : "Verifying Codex");
+    expect(dialog.querySelector(".animate-spin")).toBeNull();
     const close = [...dialog.querySelectorAll("button")].find(button => button.textContent === "Close")!;
     expect(close.disabled).toBe(false);
     await act(async () => close.click());

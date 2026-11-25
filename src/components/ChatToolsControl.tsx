@@ -2,8 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, Lock, RotateCw, ToggleRight, Wrench, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
-import { Skeleton, SkeletonRows } from "@/components/ui/skeleton";
-import { Spinner } from "@/components/ui/spinner";
+import { Skeleton, SkeletonRows, pendingClass } from "@/components/ui/skeleton";
 import { bridgeApi } from "../api";
 import { allOn, baseChoice, fits, leavesOut, overlay, removed, switched, type Choice } from "../chatToolChoice";
 import { relativeTime } from "../connectorSurface";
@@ -274,8 +273,9 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
           tabIndex={-1}
           disabled={!!pending || disabled}
           onClick={turnAllOn}
-          className="-ml-1.5 mt-1 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-meta text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
-        >{turningAllOn ? <Spinner className="size-3" /> : <ToggleRight size={12} aria-hidden="true" />}Turn all on</button>}
+          aria-busy={turningAllOn || undefined}
+          className={cn("-ml-1.5 mt-1 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-meta text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40", pendingClass(turningAllOn))}
+        ><ToggleRight size={12} aria-hidden="true" />Turn all on</button>}
       </div>
       {notApplied && <div className="mx-1 mb-1 rounded-md bg-accent px-2 py-1.5">
         <p role="note" className="text-caption leading-4 text-warning">{notApplied}</p>
@@ -361,8 +361,9 @@ function ToolRow({ item, pending, busy, onSwitch, onRemove }: {
     onClick={onRemove}
     aria-label={`Remove ${item.label} from the choice`}
     title="Remove from the choice"
-    className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
-  >{pending?.on === null ? <Spinner className="size-3.5" /> : <X size={13} aria-hidden="true" />}</button>;
+    aria-busy={pending?.on === null || undefined}
+    className={cn("flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40", pendingClass(pending?.on === null))}
+  ><X size={13} aria-hidden="true" /></button>;
   const meta = <>
     {item.fixedReason && <span className="block text-caption leading-4 text-muted-foreground">{item.fixedReason}</span>}
     {figure && <span title={figure} className="block truncate text-caption leading-4 text-muted-foreground">{figure}</span>}
@@ -387,13 +388,13 @@ function ToolRow({ item, pending, busy, onSwitch, onRemove }: {
       aria-checked={on}
       disabled={busy}
       onClick={() => onSwitch(!on)}
-      className="flex min-h-7 min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-default disabled:hover:bg-transparent"
+      aria-busy={pending?.on != null || undefined}
+      className={cn("flex min-h-7 min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-default disabled:hover:bg-transparent", pendingClass(pending?.on != null))}
     >
       <span className="min-w-0 flex-1">
         <span className={cn("block truncate text-ui", on ? "text-foreground" : "text-muted-foreground")}>{item.label}</span>
         {meta}
       </span>
-      {pending?.on != null && <Spinner className="size-3.5 shrink-0 text-muted-foreground" />}
       <span aria-hidden="true" className={cn("relative h-[18px] w-8 shrink-0 rounded-full transition-colors", on ? "bg-foreground" : "bg-foreground/15", busy && "opacity-60")}>
         <span className={cn("absolute top-[2px] size-[14px] rounded-full bg-background transition-[left] duration-150", on ? "left-4" : "left-[2px]")} />
       </span>

@@ -38,7 +38,7 @@ export function limitRecoveryNotice(view: LimitRecoveryView | null | undefined, 
       return { tone: "waiting", text: `Usage limit reached. Bridge continues this chat at ${clock} (${untilText(due, now)}), ${why}.`, actionable: true };
     }
     case "acting":
-      return { tone: "waiting", text: view.switchesModel ? `Switching to ${targetLabel(view.target, adapters)} and continuing…` : "Continuing after the usage limit…", actionable: false };
+      return { tone: "waiting", text: view.switchesModel ? `Switching to ${targetLabel(view.target, adapters)} and continuing` : "Continuing after the usage limit", actionable: false };
     case "failed":
       return { tone: "problem", text: `Bridge could not continue this chat after the usage limit: ${view.outcome ?? "unknown error"}`, actionable: false };
     case "gave_up":

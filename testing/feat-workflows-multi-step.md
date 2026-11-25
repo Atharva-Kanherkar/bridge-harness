@@ -8,7 +8,7 @@ parallel steps.
 
 | ID | Expectation |
 |----|-------------|
-| M1 | `WorkflowStep` gains `servers` (the workflow grants this step uses) and `files` (whether it works in the run's worktree). Both are optional and omitted when unset, so a Phase 1 definition round-trips byte for byte and keeps its digest. `WorkflowRun` gains `steps`, one row per started step: index, agent, model, status, session, summary, failure code, times, tokens and cost. Protocol 1.57 refuses older clients, and 1.57 pairs with itself. |
+| M1 | `WorkflowStep` gains `servers` (the workflow grants this step uses) and `files` (whether it works in the run's worktree). Both are optional and omitted when unset, so a Phase 1 definition round-trips byte for byte and keeps its digest. `WorkflowRun` gains `steps`, one row per started step: index, agent, model, status, session, summary, failure code, times, tokens and cost. Protocol 1.58 refuses older clients, and 1.58 pairs with itself. |
 
 ## Validation and approval
 
