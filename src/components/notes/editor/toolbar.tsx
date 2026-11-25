@@ -5,11 +5,10 @@ import type { Editor } from "@tiptap/core";
 import { useEditorState } from "@tiptap/react";
 import { BubbleMenu } from "@tiptap/react/menus";
 import { Bold, ChevronDown, Code, Italic, Link2, Sigma, Strikethrough, Underline } from "lucide-react";
-// clsx rather than cn: tailwind-merge does not know the text-ui and
-// text-caption sizes, and drops them beside a text color.
-import { clsx } from "clsx";
 import { NodeSelection } from "@tiptap/pm/state";
 import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
+import { Input } from "@/components/ui/input";
 
 const TURN_INTO: { id: string; label: string; active: (editor: Editor) => boolean; run: (editor: Editor) => void }[] = [
   { id: "text", label: "Text", active: editor => editor.isActive("paragraph") && !editor.isActive("bulletList") && !editor.isActive("orderedList") && !editor.isActive("taskList"), run: editor => editor.chain().focus().setParagraph().run() },
@@ -24,15 +23,15 @@ const TURN_INTO: { id: string; label: string; active: (editor: Editor) => boolea
 ];
 
 function Tool({ label, active = false, onClick, children }: { label: string; active?: boolean; onClick: () => void; children: ReactNode }) {
-  return <button
-    type="button"
+  return <Button
+    variant="quiet"
+    size="icon-xs"
     aria-label={label}
     aria-pressed={active}
-    title={label}
+    tooltip={label}
     onMouseDown={event => event.preventDefault()}
     onClick={onClick}
-    className={clsx("grid h-7 min-w-7 place-items-center rounded-md px-1 transition-colors", active ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")}
-  >{children}</button>;
+  >{children}</Button>;
 }
 
 export function SelectionToolbar({ editor, onMath }: { editor: Editor; onMath: () => void }) {
@@ -69,15 +68,17 @@ export function SelectionToolbar({ editor, onMath }: { editor: Editor; onMath: (
     className="z-40 flex items-center gap-0.5 rounded-xl bg-popover p-1 shadow-lg ring-1 ring-border"
   >
     {linking !== null
-      ? <form onSubmit={event => { event.preventDefault(); applyLink(linking); }} className="flex items-center gap-1">
-        <input
+      ? <form onSubmit={event => { event.preventDefault(); applyLink(linking); }} className="flex h-7 items-center gap-1 text-ui">
+        <Input
+          unstyled
+          size="bare"
           autoFocus
           aria-label="Link address"
           value={linking}
           placeholder="Paste a link"
           onChange={event => setLinking(event.target.value)}
           onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); setLinking(null); editor.commands.focus(); } }}
-          className="h-7 w-56 rounded-md bg-transparent px-2 text-ui text-foreground outline-none placeholder:text-faint"
+          className="mx-2 w-52"
         />
         {active.link && <Button variant="quiet" size="xs" onClick={() => applyLink("")}>Remove</Button>}
       </form>
@@ -87,7 +88,7 @@ export function SelectionToolbar({ editor, onMath }: { editor: Editor; onMath: (
             {current}<ChevronDown size={12} aria-hidden="true" className="text-faint" />
           </Button>
           {turning && <div role="menu" aria-label="Turn into" className="absolute left-0 top-full z-50 mt-1 w-44 rounded-xl bg-popover p-1 shadow-lg ring-1 ring-border">
-            {TURN_INTO.map(choice => <button key={choice.id} type="button" role="menuitem" onMouseDown={event => event.preventDefault()} onClick={() => { choice.run(editor); setTurning(false); }} className={clsx("flex h-7 w-full items-center rounded-md px-2 text-left text-meta hover:bg-accent", choice.label === current ? "text-foreground" : "text-muted-foreground")}>{choice.label}</button>)}
+            {TURN_INTO.map(choice => <RowButton key={choice.id} size="sm" tone="muted" role="menuitem" active={choice.label === current} onMouseDown={event => event.preventDefault()} onClick={() => { choice.run(editor); setTurning(false); }}>{choice.label}</RowButton>)}
           </div>}
         </div>
         <span aria-hidden="true" className="mx-0.5 h-4 w-px bg-border" />

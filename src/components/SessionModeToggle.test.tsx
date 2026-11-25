@@ -34,7 +34,7 @@ describe("SessionModeToggle", () => {
     expect(group.getAttribute("aria-describedby")).toBe("mode-hint");
     expect(radios().map(radio => [radio.textContent, radio.getAttribute("aria-checked"), radio.tabIndex]))
       .toEqual([["Orchestrator", "true", 0], ["Direct", "false", -1]]);
-    expect(radios()[1].title).toBe(sessionModeDescription("direct"));
+    expect(radios()[1].dataset.tip).toBe(sessionModeDescription("direct"));
   });
 
   it("clicking an option selects it", () => {
@@ -50,7 +50,11 @@ describe("SessionModeToggle", () => {
     expect(onChange).toHaveBeenLastCalledWith("orchestrator");
     key(radios()[1], "ArrowLeft");
     expect(onChange).toHaveBeenLastCalledWith("orchestrator");
-    key(radios()[0], "ArrowLeft");
+  });
+
+  it("arrow keys wrap from the first option to the last", () => {
+    const onChange = render("orchestrator");
+    act(() => { radios()[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true })); });
     expect(onChange).toHaveBeenLastCalledWith("direct");
   });
 

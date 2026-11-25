@@ -50,7 +50,7 @@ export function NoteTasks({ tasks, drafts = [], adapters, workspaces, sessions, 
             <StatusGlyph state={task.state} size={15} />
           </Button>
           <div className="min-w-0 flex-1">
-            <button type="button" onClick={() => onOpen(task)} className={`block max-w-full truncate text-left text-body leading-6 hover:underline hover:decoration-border hover:underline-offset-4 ${done ? "text-muted-foreground line-through" : "text-foreground"}`}>{title}</button>
+            <Button variant="link" size="inline" onClick={() => onOpen(task)} className="max-w-full justify-start"><span className={done ? "truncate text-body leading-6 text-muted-foreground line-through" : "truncate text-body leading-6"}>{title}</span></Button>
             <p role="status" className={`m-0 mb-0.5 text-meta ${!done && session?.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{status}</p>
             {task.sourceExcerpt && <blockquote className="m-0 line-clamp-2 text-meta leading-snug text-muted-foreground before:content-['“'] after:content-['”']">{quoteText(task.sourceExcerpt)}</blockquote>}
           </div>

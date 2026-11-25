@@ -42,6 +42,8 @@ export const rowVariants = cva(
         choice: "border border-border text-foreground hover:border-foreground/25 hover:bg-accent aria-checked:border-info/60 aria-checked:bg-info/10 aria-checked:hover:bg-info/10 aria-pressed:border-info/60 aria-pressed:bg-info/10",
         // A raised card that fills on hover.
         surface: "u-surface text-foreground hover:bg-accent",
+        // A menu's destructive entry.
+        destructive: "text-destructive hover:bg-destructive/10 data-[active=true]:bg-destructive/10",
         // No fill at all; the content changes instead (a disclosure, a heading).
         plain: "text-muted-foreground hover:text-foreground",
       },

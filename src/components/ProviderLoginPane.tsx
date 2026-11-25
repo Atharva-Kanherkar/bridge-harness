@@ -5,6 +5,7 @@ import type { UsageProvider } from "../usage";
 import { Skeleton } from "./ui/skeleton";
 import { SignInProgress, type SignInStage } from "./SignInProgress";
 import { plainProviderLoginOutput, providerLoginCode, providerLoginTerminalId, providerLoginUrl } from "../providerLoginPresentation";
+import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
 // `bare` drops the card and header for hosts that supply their own (the
@@ -112,13 +113,15 @@ export function ProviderLoginPane({ provider, label, account, onClose, onExited,
   const linkPlaceholder = !loginUrl && provider !== "opencode";
   const progress = <SignInProgress harness={provider} label={label} stage={stage} account={!!account} slow={slow && !cleanOutput} />;
   const replyField = <div className="flex gap-1.5">
-    <input
+    <Input
+      size="sm"
+      mono
       value={entry}
       onChange={event => setEntry(event.target.value)}
       onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); send(); } }}
       placeholder={bare ? "Paste code" : "Code or response"}
       aria-label={`Reply to the ${label} sign-in prompt`}
-      className="min-w-0 flex-1 rounded-md border border-border bg-card px-2 py-1 font-mono text-caption text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+      className="min-w-0 flex-1"
     />
     <Button variant="outline" size="xs" onClick={send}>Send</Button>
   </div>;

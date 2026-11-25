@@ -370,7 +370,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
       onSave={() => void override.save(view, query => saveView(() => ({ filter: query.filter, sorts: query.sorts, groupBy: query.groupBy }), view))}
     />}
     {rows === null || !body
-      ? <SkeletonRows label="Loading rows" rows={4} meta={false} framed={false} className="py-1" />
+      ? <SkeletonRows label="Loading rows" rows={4} meta={false} framed={false} className="my-1" />
       : view?.type === "board" ? <DatabaseBoard {...body} />
         : view?.type === "calendar" ? <DatabaseCalendar {...body} />
           : view?.type === "list" ? <DatabaseList {...body} />

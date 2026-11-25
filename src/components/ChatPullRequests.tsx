@@ -13,6 +13,7 @@ import {
   type CheckTone,
 } from "../chatPullRequests";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 // A chat's pull requests, kept live after the turn ends: CI runs, fails,
 // passes, the PR merges, and none of it appends a message to the transcript.
@@ -253,22 +254,22 @@ export function AttachPullRequest({ onAttach, variant = "inline" }: { onAttach: 
     } finally { setBusy(false); }
   };
   if (!open) {
-    return <button type="button" onClick={() => setOpen(true)} className={cn("inline-flex min-h-7 items-center gap-1.5 rounded-lg px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground", variant === "empty" && "border border-dashed border-border")}>
-      <Plus size={12} aria-hidden="true" /> Attach a pull request
-    </button>;
+    return <Button variant={variant === "empty" ? "dashed" : "quiet"} size="2xs" onClick={() => setOpen(true)} className="self-start">
+      <Plus aria-hidden="true" /> Attach a pull request
+    </Button>;
   }
   return <form onSubmit={submit} className="animate-page-mount flex flex-col gap-1.5 rounded-xl border border-border bg-card p-2 shadow-sm">
     <label htmlFor={inputId} className="sr-only">Pull request URL or number</label>
-    <div className="flex items-center gap-1.5">
+    <div className="flex items-center gap-1.5 text-meta">
       <Link2 size={13} className="ml-1 shrink-0 text-muted-foreground" aria-hidden="true" />
-      <input
+      <Input unstyled size="bare"
         id={inputId}
         autoFocus
         value={value}
         onChange={event => setValue(event.target.value)}
         onKeyDown={event => { if (event.key === "Escape") { setOpen(false); setError(undefined); } }}
         placeholder="github.com/owner/repo/pull/123 or #123"
-        className="min-w-0 flex-1 bg-transparent px-1 py-1 text-meta text-foreground outline-none placeholder:text-muted-foreground/70"
+        className="m-1 min-w-0 flex-1"
         aria-invalid={!!error}
         aria-describedby={error ? `${inputId}-error` : undefined}
         disabled={busy}

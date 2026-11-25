@@ -10,6 +10,7 @@ import { notesContext, withNotesContext } from "../../notesBrief";
 import type { NotePage } from "../../types";
 import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
+import { Textarea } from "@/components/ui/textarea";
 
 export interface NotesQuickAsk { label: string; prompt: string; needsPage: boolean; needsDrawing?: boolean }
 
@@ -88,15 +89,15 @@ function NotesCopilotIntro({ asks, hasPage, starting, onAsk }: { asks: NotesQuic
         </li>)}
       </ul>
     </div>
-    <form onSubmit={event => { event.preventDefault(); submit(question); }} className="m-3 flex shrink-0 items-end gap-2 rounded-2xl bg-card p-2 shadow-sm ring-1 ring-border focus-within:ring-2 focus-within:ring-ring">
-      <textarea
+    <form onSubmit={event => { event.preventDefault(); submit(question); }} className="m-3 flex shrink-0 items-end gap-2 rounded-2xl bg-card p-2 text-ui shadow-sm ring-1 ring-border focus-within:ring-2 focus-within:ring-ring">
+      <Textarea unstyled size="bare"
         aria-label="Ask about your notes"
         value={question}
         rows={2}
         placeholder="Write up what I know about…"
         onChange={event => setQuestion(event.target.value)}
         onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(question); } }}
-        className="min-w-0 flex-1 resize-none bg-transparent px-1.5 py-1 text-ui text-foreground outline-none placeholder:text-faint"
+        className="mx-1.5 my-1 min-w-0 flex-1"
       />
       <Button variant="default" size="icon-sm" className="shrink-0" type="submit" aria-label={starting ? "Starting" : "Ask"} disabled={!question.trim() || starting}>
         <ArrowUp size={15} aria-hidden="true" />

@@ -7,10 +7,8 @@ import { Extension, type Editor, type Range } from "@tiptap/core";
 import Suggestion, { type SuggestionKeyDownProps, type SuggestionProps } from "@tiptap/suggestion";
 import { PluginKey, TextSelection } from "@tiptap/pm/state";
 import { ChevronRight, Code2, FileText, Heading1, Heading2, Heading3, Image as ImageIcon, List, ListOrdered, ListTodo, Minus, Quote, Sigma, SquareRadical, Table2, Text as TextIcon, MessageSquareText, Database, Workflow, PenLine } from "lucide-react";
-// clsx rather than cn: tailwind-merge does not know the text-ui and
-// text-caption sizes, and drops them beside a text color.
-import { clsx } from "clsx";
 import { newDrawingBody } from "./drawingScene";
+import { RowButton } from "@/components/ui/row";
 
 /** What a block choice needs from the page around the editor. */
 export interface BlockHost {
@@ -157,22 +155,22 @@ export const SlashMenu = forwardRef<SlashMenuHandle, { state: SlashState }>(func
     {choices.length
       ? <>
         <p className="m-0 px-2 pb-1 pt-1.5 text-caption font-medium text-faint">{state.query ? "Results" : "Blocks"}</p>
-        {choices.map((choice, index) => <button
+        {choices.map((choice, index) => <RowButton
+          size="bare"
+          shape="card"
           key={choice.id}
-          type="button"
           role="option"
           data-index={index}
           aria-selected={index === active}
           onMouseEnter={() => setActive(index)}
           onClick={() => state.choose(choice)}
-          className={clsx("flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left", index === active ? "bg-accent" : "")}
-        >
+        ><span className="flex w-full items-center gap-2.5 px-2 py-1.5">
           <span className="grid size-8 shrink-0 place-items-center rounded-md bg-card text-muted-foreground ring-1 ring-border">{choice.icon}</span>
           <span className="min-w-0">
             <span className="block truncate text-ui text-foreground">{choice.label}</span>
             <span className="block truncate text-caption text-muted-foreground">{choice.hint}</span>
           </span>
-        </button>)}
+        </span></RowButton>)}
       </>
       : <p className="m-0 px-2.5 py-2 text-meta text-muted-foreground">No blocks match “{state.query}”.</p>}
   </div>, document.body);

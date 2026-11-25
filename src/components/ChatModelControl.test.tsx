@@ -514,7 +514,7 @@ describe("ChatModelControl effort control", () => {
       const thinking = panel().querySelector('[data-picker-zone="thinking"]')!;
       expect(thinking.textContent).toContain("Thinking");
       expect(thinking.textContent).toContain("Long reasoning chains.");
-      expect(segment("max").title).toBe("Longest Claude allows.");
+      expect(segment("max").dataset.tip).toBe("Longest Claude allows.");
     });
 
     it("fits Codex's six levels in one row", async () => {

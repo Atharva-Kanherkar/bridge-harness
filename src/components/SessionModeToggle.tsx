@@ -1,7 +1,5 @@
-import type { KeyboardEvent } from "react";
-import { useRef } from "react";
 import { MessageSquare, Network } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { SegmentedRadio } from "@/components/ui/segmented";
 import type { WorkspaceSessionKind } from "../types";
 
 export const SESSION_MODES: ReadonlyArray<{ id: WorkspaceSessionKind; label: string; description: string; icon: typeof Network }> = [
@@ -22,39 +20,15 @@ export function SessionModeToggle({ value, onChange, disabled, describedBy }: {
   /** Id of the visible explanation of the active mode. */
   describedBy?: string;
 }) {
-  const buttons = useRef<Array<HTMLButtonElement | null>>([]);
-  const select = (index: number) => {
-    const next = SESSION_MODES[(index + SESSION_MODES.length) % SESSION_MODES.length];
-    onChange(next.id);
-    buttons.current[SESSION_MODES.indexOf(next)]?.focus();
-  };
-  const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
-    if (event.key === "ArrowRight" || event.key === "ArrowDown") { event.preventDefault(); select(index + 1); }
-    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") { event.preventDefault(); select(index - 1); }
-  };
-  return <div role="radiogroup" aria-label="Chat mode" aria-describedby={describedBy} className="inline-flex h-7 shrink-0 items-center gap-0.5 rounded-md bg-muted p-0.5">
-    {SESSION_MODES.map((mode, index) => {
-      const checked = mode.id === value;
+  return <SegmentedRadio
+    label="Chat mode"
+    describedBy={describedBy}
+    value={value}
+    options={SESSION_MODES.map(mode => {
       const Icon = mode.icon;
-      return <button
-        key={mode.id}
-        ref={node => { buttons.current[index] = node; }}
-        type="button"
-        role="radio"
-        aria-checked={checked}
-        tabIndex={checked ? 0 : -1}
-        disabled={disabled}
-        title={mode.description}
-        onClick={() => onChange(mode.id)}
-        onKeyDown={event => onKeyDown(event, index)}
-        className={cn(
-          "inline-flex h-6 items-center gap-1.5 rounded-sm px-2 text-meta tracking-snug transition-colors disabled:opacity-50",
-          checked ? "bg-card text-foreground shadow-control" : "text-muted-foreground hover:text-foreground",
-        )}
-      >
-        <Icon className="h-3 w-3" strokeWidth={1.75} aria-hidden="true" />
-        {mode.label}
-      </button>;
+      return { value: mode.id, label: <><Icon className="size-3" strokeWidth={1.75} aria-hidden="true" />{mode.label}</>, hint: mode.description };
     })}
-  </div>;
+    onChange={onChange}
+    disabled={disabled}
+  />;
 }

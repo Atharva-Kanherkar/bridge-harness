@@ -4,6 +4,7 @@ import { bridgeApi } from "../api";
 import type { SearchSessionEntriesResult, SessionRecallHit } from "../types";
 import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
+import { Input } from "@/components/ui/input";
 
 export type SessionRecallSearchProps = {
   sessionId: string;
@@ -83,16 +84,16 @@ export function SessionRecallSearch({
     <div className="shrink-0 border-b border-border px-3 py-2 sm:px-6">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-2">
         <div className="flex items-center gap-2">
-          <label className="u-glass-soft flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5">
+          <label className="u-glass-soft flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 text-ui">
             <Search size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-            <input
+            <Input unstyled size="bare"
               type="search"
               value={query}
               onChange={event => setQuery(event.target.value)}
               autoFocus
               placeholder="Search this chat…"
               aria-label="Search this chat"
-              className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground"
+              className="min-w-0 flex-1"
             />
             {status === "loading" && <LoaderCircle size={13} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />}
           </label>

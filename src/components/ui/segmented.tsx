@@ -1,5 +1,6 @@
-import type * as React from "react";
+import * as React from "react";
 import { cn } from "@/lib/utils";
+import { Tip } from "@/components/ui/tooltip";
 
 /**
  * Two to four short choices, all visible at once. The track and the raised
@@ -64,26 +65,115 @@ export function SegmentedGroup({
   );
 }
 
-export function SegmentedItem({
-  active,
-  tab = false,
-  className,
-  ...props
-}: Omit<React.ComponentProps<"button">, "type"> & {
+type SegmentedItemProps = Omit<React.ComponentProps<"button">, "type"> & {
   active: boolean;
   /** Inside a `tabs` group: a tab, selected rather than pressed. */
   tab?: boolean;
-}): React.ReactElement {
+  /** Inside a `SegmentedRadio`: a radio, checked rather than pressed. */
+  radio?: boolean;
+};
+
+export const SegmentedItem = React.forwardRef<HTMLButtonElement, SegmentedItemProps>(function SegmentedItem(
+  { active, tab = false, radio = false, className, ...props },
+  ref,
+): React.ReactElement {
   return (
     <button
+      ref={ref}
       type="button"
-      className={cn("u-segmented-item disabled:opacity-45", className)}
+      className={cn("u-segmented-item inline-flex items-center justify-center gap-1 disabled:opacity-45", className)}
       data-active={active}
-      role={tab ? "tab" : undefined}
+      role={tab ? "tab" : radio ? "radio" : undefined}
       aria-selected={tab ? active : undefined}
-      aria-pressed={tab ? undefined : active}
+      aria-checked={radio ? active : undefined}
+      aria-pressed={tab || radio ? undefined : active}
       data-slot="segmented-item"
       {...props}
     />
+  );
+});
+
+/**
+ * A segmented control that is a radio group: one tab stop (the checked item,
+ * or the first when none is), arrows wrap and pick, Home and End jump. Each
+ * option may carry a hover hint and extra data attributes.
+ */
+export function SegmentedRadio<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+  disabled,
+  className,
+  itemClassName,
+  describedBy,
+}: {
+  label: string;
+  value: T | undefined;
+  options: readonly {
+    value: T;
+    label: React.ReactNode;
+    hint?: string;
+    data?: Record<`data-${string}`, string>;
+  }[];
+  onChange?: (next: T) => void;
+  disabled?: boolean;
+  className?: string;
+  itemClassName?: string;
+  describedBy?: string;
+}): React.ReactElement {
+  const index = options.findIndex((option) => option.value === value);
+  const inert = disabled || !onChange;
+  const items = React.useRef<Array<HTMLButtonElement | null>>([]);
+  const onKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, i: number) => {
+    if (inert) return;
+    const step =
+      event.key === "ArrowRight" || event.key === "ArrowDown" ? 1
+      : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1
+      : 0;
+    if (!step && event.key !== "Home" && event.key !== "End") return;
+    event.preventDefault();
+    const count = options.length;
+    const next =
+      event.key === "Home" ? 0
+      : event.key === "End" ? count - 1
+      : index < 0 ? (step > 0 ? 0 : count - 1)
+      : (i + step + count) % count;
+    if (next !== index) onChange?.(options[next].value);
+    items.current[next]?.focus();
+  };
+  return (
+    <div
+      role="radiogroup"
+      aria-label={label}
+      aria-describedby={describedBy}
+      className={cn("u-segmented flex shrink-0", className)}
+      data-slot="segmented"
+    >
+      {options.map((option, i) => {
+        const on = i === index;
+        return (
+          <Tip key={option.value} label={option.hint}>
+            <SegmentedItem
+              ref={(node) => {
+                items.current[i] = node;
+              }}
+              radio
+              active={on}
+              tabIndex={on || (index < 0 && i === 0) ? 0 : -1}
+              disabled={inert}
+              className={itemClassName}
+              onClick={() => {
+                if (!on) onChange?.(option.value);
+              }}
+              onKeyDown={(event) => onKeyDown(event, i)}
+              {...option.data}
+            >
+              {option.label}
+            </SegmentedItem>
+          </Tip>
+        );
+      })}
+    </div>
   );
 }

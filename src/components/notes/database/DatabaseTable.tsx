@@ -18,6 +18,7 @@ import { PropertyCell, type CellHost, type CloseReason } from "./PropertyCell";
 import { AddProperty, ColumnMenu, type ColumnActions } from "./SchemaMenu";
 import { SYSTEM_COLUMNS, TYPE_LABELS, cellValue, columnsOf, defaultWidth, nextWidth, type Column } from "./formatValue";
 import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
 
 export const ROW_HEIGHT = 36;
 export const OVERSCAN = 10;
@@ -363,16 +364,19 @@ function HeaderCell({ column, width, pinned, open, onOpen, onClose, onWidth, onR
     style={{ width, minWidth: width }}
     className={clsx("relative shrink-0 border-r border-border", pinned && "sticky left-0 z-10 bg-background")}
   >
-    <button
-      type="button"
+    <RowButton
+      size="sm"
+      tone="muted"
+      shape="flush"
       aria-haspopup="menu"
       aria-expanded={open}
+      active={open}
       onClick={onOpen}
-      className={clsx("flex h-full w-full min-w-0 items-center gap-1.5 px-2 text-left text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground", open && "bg-accent text-foreground")}
+      className="h-full"
     >
       <span className="shrink-0">{typeIcon(column.type)}</span>
       <span className="min-w-0 truncate">{column.name}</span>
-    </button>
+    </RowButton>
     <span
       role="separator"
       aria-orientation="vertical"

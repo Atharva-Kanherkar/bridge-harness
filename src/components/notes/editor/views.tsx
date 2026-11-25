@@ -115,7 +115,7 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
     window.addEventListener("pointercancel", cancel);
   };
   const handle = clsx("absolute top-1/2 z-10 h-12 w-1.5 -translate-y-1/2 cursor-col-resize rounded-full bg-foreground/40 opacity-0 transition-opacity", selected ? "opacity-100" : "group-hover:opacity-100");
-  return <NodeViewWrapper as="figure" ref={figure} data-drag-handle="" className="note-image group relative mx-auto my-3 w-fit max-w-full">
+  return <NodeViewWrapper as="figure" ref={figure} data-drag-handle="" data-note-image="" className="group relative mx-auto my-3 w-fit max-w-full">
     <span className="relative block w-fit max-w-full">
       {failed
         ? <div className="rounded-lg bg-muted px-3 py-6 text-center text-meta text-muted-foreground">Couldn't load {src}</div>
@@ -251,15 +251,17 @@ function CalloutView({ node, updateAttributes }: ReactNodeViewProps) {
   const look = CALLOUT_LOOK[kind];
   const next = CALLOUT_KINDS[(CALLOUT_KINDS.indexOf(kind) + 1) % CALLOUT_KINDS.length];
   return <NodeViewWrapper as="aside" data-callout="" data-kind={kind} className={clsx("my-2 flex gap-2.5 rounded-lg px-3 py-2.5", look.tone)}>
-    <Tip label={`${look.label} · click to change`}><button
-      type="button"
+    <Button
+      variant="quiet"
+      size="icon-3xs"
       contentEditable={false}
       aria-label={`${look.label} callout. Change to ${CALLOUT_LOOK[next].label}`}
+      tooltip={`${look.label} · click to change`}
       onClick={() => updateAttributes({ kind: next })}
-      className={clsx("mt-[0.3rem] grid size-5 shrink-0 place-items-center rounded transition-colors hover:bg-accent", kind === "WARNING" ? "text-warning" : kind === "CAUTION" ? "text-destructive" : "text-muted-foreground")}
+      className="mt-[0.3rem]"
     >
-      <look.icon size={15} strokeWidth={1.9} aria-hidden="true" />
-    </button></Tip>
+      <look.icon size={15} strokeWidth={1.9} aria-hidden="true" className={kind === "WARNING" ? "size-3.5 text-warning" : kind === "CAUTION" ? "size-3.5 text-destructive" : "size-3.5"} />
+    </Button>
     <NodeViewContent className="note-callout-body min-w-0 flex-1" />
   </NodeViewWrapper>;
 }

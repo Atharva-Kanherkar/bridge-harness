@@ -15,9 +15,6 @@ import type { AdapterDescriptor, Note, NoteJob, NotePage, NotePassProgressPayloa
 import { harnessLabel } from "../../utils";
 import { chordLabel } from "../../keymap";
 import { HarnessMark } from "../harnessMarks";
-// clsx rather than cn: tailwind-merge does not know the text-ui and
-// text-caption sizes, and drops them beside a text color.
-import { clsx } from "clsx";
 import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
 import { PassPicker, PopoverAction, StartPicker, type StartChoice } from "./NotePickers";
@@ -28,6 +25,7 @@ import { NoteEditor, type NoteEditorHandle } from "./editor/NoteEditor";
 import { useNoteDraft, type DraftStatus } from "./useNoteDraft";
 import { DatabaseView } from "./database/DatabaseView";
 import { RowProperties } from "./database/RowProperties";
+import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
 
 export const NOTE_KINDS = ["note", "idea", "task", "question"];
 export const NOTE_STATES = ["inbox", "open", "doing", "done", "archived"];
@@ -253,12 +251,12 @@ export function NotePageView(props: NotePageViewProps) {
       </div>}
 
       <div className="mt-6 flex flex-wrap items-center gap-1 border-b border-border pb-3">
-        <div role="tablist" aria-label="Views" className="mr-auto inline-flex rounded-full bg-muted p-0.5">
+        <SegmentedGroup tabs label="Views" className="mr-auto">
           {([["words", "Your words"], ["structured", "Structured"]] as const).map(([id, label]) =>
-            <button key={id} type="button" role="tab" aria-selected={view === id} onClick={() => setView(id)} className={clsx("inline-flex h-7 items-center gap-1.5 rounded-full px-3 text-ui transition-colors", view === id ? "bg-selection font-medium text-selection-foreground" : "text-muted-foreground hover:text-foreground")}>
+            <SegmentedItem key={id} tab active={view === id} onClick={() => setView(id)}>
               {label}{id === "structured" && page.structured?.stale && <span aria-label="stale" className="size-1.5 rounded-full bg-warning" />}
-            </button>)}
-        </div>
+            </SegmentedItem>)}
+        </SegmentedGroup>
         <PopoverAction label={page.structured ? "Re-structure" : "Structure"} triggerLabel="Structure" busy={busy(structureJob)} busyLabel={PASS_COPY.structure.busy} panelLabel="Structure options" align="end">
           {close => <PassPicker label="Structure" what="A second view beside your words: a title, kind, tags, a summary and the separate ideas, each quoting you. Your words stay exactly as they are." adapters={adapters} defaultHarness={defaultHarness} onRun={harness => { close(); void run("structure", harness); }} />}
         </PopoverAction>
@@ -395,14 +393,16 @@ function Property({ label, children }: { label: string; children: ReactNode }) {
 function PropertyMenu({ label, value, children }: { label: string; value: ReactNode | null; children: (close: () => void) => ReactNode }) {
   const [open, setOpen] = useState(false);
   return <div className="relative inline-block max-w-full">
-    <button
-      type="button"
+    <Button
+      variant="ghost"
+      size="sm"
       aria-label={label}
       aria-haspopup="listbox"
       aria-expanded={open}
+      data-pressed={open ? "" : undefined}
       onClick={() => setOpen(current => !current)}
-      className={clsx("-ml-1.5 inline-flex h-8 max-w-full items-center truncate rounded-md px-1.5 text-ui transition-colors hover:bg-accent", open && "bg-accent", value === null ? "text-faint" : "text-foreground")}
-    >{value ?? "Empty"}</button>
+      className="-ml-2.5 max-w-full justify-start"
+    ><span className={value === null ? "truncate font-normal text-faint" : "truncate font-normal"}>{value ?? "Empty"}</span></Button>
     <Popover open={open} onClose={() => setOpen(false)} label={`${label} choices`} width="w-60">{children(() => setOpen(false))}</Popover>
   </div>;
 }
@@ -474,7 +474,7 @@ function MoreMenu({ note, taskCount, moveTargets, onPromote, onMove, onHistory, 
 }
 
 function MenuButton({ destructive = false, onClick, children }: { destructive?: boolean; onClick: () => void; children: ReactNode }) {
-  return <button type="button" onClick={onClick} className={clsx("flex h-8 w-full items-center rounded-lg px-2.5 text-left text-ui transition-colors hover:bg-accent", destructive ? "text-destructive" : "text-foreground")}>{children}</button>;
+  return <RowButton tone={destructive ? "destructive" : "default"} shape="card" onClick={onClick}>{children}</RowButton>;
 }
 
 function StructuredPanel({ view, busy, streaming, onSplit }: { view: StructuredView | null; busy: boolean; streaming: StreamingStructure | null; onSplit: (index: number) => void }) {
