@@ -362,54 +362,112 @@ fn request_id(event: &NormalizedEvent) -> Value {
 }
 
 /// Drive one turn to its end. Returns the final assistant message.
-#[allow(clippy::too_many_arguments)]
-fn turn(
-    session: &mut dyn Session,
-    root: &Path,
-    text: &str,
-    request_title: &str,
-    usage: &mut Usage,
-    deadline: Instant,
-    limits: Limits,
-    cancel: &CancelToken,
-    activity: Option<&dyn ActivitySink>,
-) -> Result<String, SessionError> {
-    let record = |kind: ReviewActivityKind, title: Option<&str>, text: Option<&str>| {
-        if let Some(sink) = activity {
+/// What one turn reports to the activity sink, each thing once.
+struct TurnLog<'a> {
+    sink: Option<&'a dyn ActivitySink>,
+    /// Assistant messages already recorded, by item.
+    said: std::collections::HashSet<Option<String>>,
+    /// Tools already recorded, by item. Claude reports a tool first while it
+    /// is still writing the arguments, then again with them when it runs: the
+    /// second is the one worth showing.
+    shown: std::collections::HashSet<String>,
+    /// The checkout as the session may name it, longest first.
+    roots: Vec<String>,
+}
+
+impl<'a> TurnLog<'a> {
+    fn new(sink: Option<&'a dyn ActivitySink>, root: &Path) -> Self {
+        // macOS reaches `/var/…` through `/private/var/…`, and a harness may
+        // report either.
+        let mut roots = vec![format!("{}/", root.to_string_lossy().trim_end_matches('/'))];
+        if let Ok(canonical) = std::fs::canonicalize(root) {
+            roots.push(format!("{}/", canonical.to_string_lossy().trim_end_matches('/')));
+        }
+        if let Some(stripped) = roots[0].strip_prefix("/private") {
+            roots.push(stripped.to_owned());
+        } else if roots[0].starts_with("/var/") || roots[0].starts_with("/tmp/") {
+            roots.push(format!("/private{}", roots[0]));
+        }
+        // Longest first, so `/private/var/x/` goes before `/var/x/` matches inside it.
+        roots.sort_by_key(|root| std::cmp::Reverse(root.len()));
+        roots.dedup();
+        Self { sink, said: Default::default(), shown: Default::default(), roots }
+    }
+
+    fn record(&self, kind: ReviewActivityKind, title: Option<&str>, text: Option<&str>) {
+        if let Some(sink) = self.sink {
             sink.record(kind, title, text);
         }
-    };
-    record(ReviewActivityKind::Prompt, Some(request_title), Some(text));
-    session.send_turn(text).map_err(SessionError::Provider)?;
-    // Assistant messages already recorded, by item: each is recorded once.
-    let mut said: std::collections::HashSet<Option<String>> = std::collections::HashSet::new();
-    // Tools already recorded, by item. Claude reports a tool first while it
-    // is still writing the arguments, then again with them when it runs: the
-    // second is the one worth showing.
-    let mut shown: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // The checkout as the session names it: macOS reaches `/var/…` through
-    // `/private/var/…`, and a harness may report either.
-    let mut roots = vec![format!("{}/", root.to_string_lossy().trim_end_matches('/'))];
-    if let Ok(canonical) = std::fs::canonicalize(root) {
-        roots.push(format!("{}/", canonical.to_string_lossy().trim_end_matches('/')));
     }
-    if let Some(stripped) = roots[0].strip_prefix("/private") {
-        roots.push(stripped.to_owned());
-    } else if roots[0].starts_with("/var/") || roots[0].starts_with("/tmp/") {
-        roots.push(format!("/private{}", roots[0]));
+
+    /// A completed assistant message, once per item.
+    fn said(&mut self, item: &Option<String>, text: &str) {
+        if self.said.insert(item.clone()) && !text.trim().is_empty() {
+            self.record(ReviewActivityKind::Message, None, Some(text));
+        }
     }
-    // Longest first, so `/private/var/x/` goes before `/var/x/` matches inside it.
-    roots.sort_by_key(|root| std::cmp::Reverse(root.len()));
-    roots.dedup();
+
+    /// A tool or command, once it runs, with its detail.
+    fn tool(&mut self, event: &NormalizedEvent, name: Option<&str>) {
+        let preparing = event.data.get("phase").and_then(Value::as_str) == Some("preparing");
+        let first = match &event.item_id {
+            Some(id) => !preparing && self.shown.insert(id.clone()),
+            None => true,
+        };
+        if !first {
+            return;
+        }
+        let kind = if event.kind == "command.started" { ReviewActivityKind::Command } else { ReviewActivityKind::Tool };
+        let detail = tool_detail(event).map(|detail| display_paths(&detail, &self.roots));
+        let title = name.map(str::to_owned).unwrap_or_else(|| if kind == ReviewActivityKind::Command { "Command".into() } else { "Tool".into() });
+        // A command's name is its command line: no detail twice.
+        self.record(kind, Some(&title), detail.as_deref().filter(|detail| *detail != title));
+    }
+
+    /// Messages that never completed are what the reviewer said too.
+    fn flush(&mut self, parts: &[(Option<String>, String)]) {
+        for (id, part) in parts {
+            self.said(id, part);
+        }
+    }
+}
+
+/// Add a usage report to the session's totals.
+fn add_usage(usage: &mut Usage, event: &NormalizedEvent) {
+    let count = |key: &str| event.data.pointer(&format!("/usage/{key}")).and_then(Value::as_u64).unwrap_or(0);
+    usage.tokens_in += count("input_tokens");
+    usage.tokens_out += count("output_tokens");
+    let cost = event.data.get("totalCostUsd").or_else(|| event.data.get("cost")).and_then(Value::as_f64);
+    if let Some(cost) = cost.filter(|cost| cost.is_finite() && *cost > 0.0) {
+        usage.cost_microusd += (cost * 1_000_000.0).round() as u64;
+    }
+}
+
+/// How one turn is asked and bounded.
+struct TurnAsk<'a> {
+    root: &'a Path,
+    text: &'a str,
+    title: &'a str,
+    deadline: Instant,
+    limits: Limits,
+    cancel: &'a CancelToken,
+    activity: Option<&'a dyn ActivitySink>,
+}
+
+/// Drive one turn to its end. Returns the final assistant message.
+fn turn(session: &mut dyn Session, ask: &TurnAsk<'_>, usage: &mut Usage) -> Result<String, SessionError> {
+    let mut log = TurnLog::new(ask.activity, ask.root);
+    log.record(ReviewActivityKind::Prompt, Some(ask.title), Some(ask.text));
+    session.send_turn(ask.text).map_err(SessionError::Provider)?;
     let mut parts: Vec<(Option<String>, String)> = Vec::new();
     let mut started = false;
     let mut result_text: Option<String> = None;
     loop {
-        if cancel.is_cancelled() {
+        if ask.cancel.is_cancelled() {
             return Err(SessionError::Cancelled);
         }
-        if Instant::now() >= deadline {
-            return Err(SessionError::Deadline(limits.max_wall));
+        if Instant::now() >= ask.deadline {
+            return Err(SessionError::Deadline(ask.limits.max_wall));
         }
         let events = match session.next(Duration::from_millis(200)) {
             Next::Idle => continue,
@@ -429,23 +487,13 @@ fn turn(
                         Some((_, part)) => part.push_str(&text),
                         None => parts.push((event.item_id.clone(), text)),
                     }
-                    if completed && said.insert(event.item_id.clone()) {
+                    if completed {
                         if let Some((_, part)) = parts.iter().find(|(id, _)| *id == event.item_id) {
-                            if !part.trim().is_empty() {
-                                record(ReviewActivityKind::Message, None, Some(part));
-                            }
+                            log.said(&event.item_id, part);
                         }
                     }
                 }
-                "usage.updated" => {
-                    let count = |key: &str| event.data.pointer(&format!("/usage/{key}")).and_then(Value::as_u64).unwrap_or(0);
-                    usage.tokens_in += count("input_tokens");
-                    usage.tokens_out += count("output_tokens");
-                    let cost = event.data.get("totalCostUsd").or_else(|| event.data.get("cost")).and_then(Value::as_f64);
-                    if let Some(cost) = cost.filter(|cost| cost.is_finite() && *cost > 0.0) {
-                        usage.cost_microusd += (cost * 1_000_000.0).round() as u64;
-                    }
-                }
+                "usage.updated" => add_usage(usage, &event),
                 // A tool (Claude, OpenCode) or a command (Codex reads files
                 // through its sandboxed shell), counted once per invocation.
                 "tool.started" | "command.started" => {
@@ -454,38 +502,27 @@ fn turn(
                         Some(id) => usage.seen.insert(id.clone()),
                         None => true,
                     };
-                    let preparing = event.data.get("phase").and_then(Value::as_str) == Some("preparing");
-                    let first_shown = match &event.item_id {
-                        Some(id) => !preparing && shown.insert(id.clone()),
-                        None => true,
-                    };
                     let name = event.title.clone().or_else(|| event.data.get("command").and_then(Value::as_str).map(str::to_owned));
-                    if first_shown {
-                        let kind = if event.kind == "command.started" { ReviewActivityKind::Command } else { ReviewActivityKind::Tool };
-                        let detail = tool_detail(&event).map(|detail| display_paths(&detail, &roots));
-                        let title = name.clone().unwrap_or_else(|| if kind == ReviewActivityKind::Command { "Command".into() } else { "Tool".into() });
-                        // A command's name is its command line: no detail twice.
-                        record(kind, Some(&title), detail.as_deref().filter(|detail| *detail != title));
-                    }
+                    log.tool(&event, name.as_deref());
                     if fresh {
                         usage.tool_calls += 1;
                         usage.tools.push(name.unwrap_or_else(|| event.kind.clone()));
-                        if usage.tool_calls > limits.max_tool_calls {
-                            return Err(SessionError::ToolLimit(limits.max_tool_calls));
+                        if usage.tool_calls > ask.limits.max_tool_calls {
+                            return Err(SessionError::ToolLimit(ask.limits.max_tool_calls));
                         }
                     }
                 }
                 // Nobody answers a hidden session: refuse at once, and count.
                 "permission.requested" | "approval.requested" => {
                     usage.denied_requests += 1;
-                    record(ReviewActivityKind::Denied, Some("Refused a permission request"), event.title.as_deref().or(event.text.as_deref()));
+                    log.record(ReviewActivityKind::Denied, Some("Refused a permission request"), event.title.as_deref().or(event.text.as_deref()));
                     if let Err(error) = session.decline(request_id(&event)) {
                         eprintln!("[reviews] could not decline a permission request: {error}");
                     }
                 }
                 "question.requested" => {
                     usage.denied_requests += 1;
-                    record(ReviewActivityKind::Denied, Some("Refused a question"), event.text.as_deref().or(event.title.as_deref()));
+                    log.record(ReviewActivityKind::Denied, Some("Refused a question"), event.text.as_deref().or(event.title.as_deref()));
                     let method = event.data.get("requestMethod").and_then(Value::as_str);
                     if let Err(error) = session.reject_question(request_id(&event), method) {
                         eprintln!("[reviews] could not reject a question: {error}");
@@ -502,19 +539,14 @@ fn turn(
                 "error" if event.status.as_deref() == Some("retrying") => {}
                 "error" => {
                     let detail = event.text.or(event.title).unwrap_or_else(|| "the provider reported an error".into());
-                    record(ReviewActivityKind::Error, None, Some(&detail));
+                    log.record(ReviewActivityKind::Error, None, Some(&detail));
                     return Err(SessionError::Provider(detail));
                 }
                 _ => {}
             }
         }
         if done {
-            // Messages that never completed are what the reviewer said too.
-            for (id, part) in &parts {
-                if !said.contains(id) && !part.trim().is_empty() {
-                    record(ReviewActivityKind::Message, None, Some(part));
-                }
-            }
+            log.flush(&parts);
             // The final message: the last thing the assistant said.
             let last = parts.into_iter().map(|(_, text)| text).filter(|text| !text.trim().is_empty()).last();
             return Ok(last.or(result_text).unwrap_or_default());
@@ -559,13 +591,20 @@ pub fn run_answered(
         Err(error) => return (Err(SessionError::Start(error)), usage),
     };
     let deadline = Instant::now() + limits.max_wall;
-    let activity = start.activity;
-    let root = start.cwd;
-    let result = turn(session.as_mut(), root, prompt, "Bridge asked for a review", &mut usage, deadline, limits, cancel, activity).and_then(|text| match contract::parse(&text) {
+    let result = turn(
+        session.as_mut(),
+        &TurnAsk { root: start.cwd, text: prompt, title: "Bridge asked for a review", deadline, limits, cancel, activity: start.activity },
+        &mut usage,
+    )
+    .and_then(|text| match contract::parse(&text) {
         Ok(review) => Ok((review, text)),
         Err(error) => {
-            let repaired =
-                turn(session.as_mut(), root, &repair_prompt(&error), "Bridge asked for the findings again", &mut usage, deadline, limits, cancel, activity)?;
+            let repair = repair_prompt(&error);
+            let repaired = turn(
+                session.as_mut(),
+                &TurnAsk { root: start.cwd, text: &repair, title: "Bridge asked for the findings again", deadline, limits, cancel, activity: start.activity },
+                &mut usage,
+            )?;
             contract::parse(&repaired).map(|review| (review, repaired)).map_err(SessionError::Contract)
         }
     });
