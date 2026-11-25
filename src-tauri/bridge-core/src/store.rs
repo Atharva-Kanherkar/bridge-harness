@@ -57,8 +57,13 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     if path != Path::new(":memory:") {
         prune_migration_backups_and_report(path, migration_backup.as_deref());
     }
+    // `synchronous=NORMAL` is SQLite's recommended setting under WAL: a commit
+    // no longer waits on fsync, only checkpoints do. Every streamed frame and
+    // session entry commits while holding the one `core.db` mutex, so the
+    // fsync was paid by every other session queued behind it. A crash of the
+    // app still loses nothing; only a power cut can drop the last commits.
     connection.execute_batch(
-        "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+        "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
     )?;
     // Per-frame lookups ask "does this session have any compaction marker?"
     // and "which entries of this kind exist?"; without this index each one
@@ -141,6 +146,7 @@ pub fn open_telemetry(path: &Path) -> Result<Connection, BridgeError> {
     let connection = Connection::open(path)?;
     connection.execute_batch(
         "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=NORMAL;
          PRAGMA busy_timeout=50;
          CREATE TABLE IF NOT EXISTS telemetry_spans (
             span_id TEXT PRIMARY KEY,
@@ -4875,6 +4881,19 @@ mod tests {
         let events = state(&db).unwrap().events;
         assert!(events.iter().all(|event| event.source != "latency"));
         assert!(events.iter().any(|event| event.kind == "session.input.steered"), "a real event outlives any number of latency rows");
+    }
+
+    #[test]
+    fn stores_commit_without_waiting_on_fsync() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open(&dir.path().join("bridge.db")).unwrap();
+        let telemetry = open_telemetry(&dir.path().join("telemetry.db")).unwrap();
+        for db in [&core, &telemetry] {
+            let mode: String = db.query_row("PRAGMA journal_mode", [], |row| row.get(0)).unwrap();
+            let synchronous: i64 = db.query_row("PRAGMA synchronous", [], |row| row.get(0)).unwrap();
+            assert_eq!(mode, "wal");
+            assert_eq!(synchronous, 1, "WAL with synchronous=NORMAL skips the per-commit fsync");
+        }
     }
 
     #[test]
