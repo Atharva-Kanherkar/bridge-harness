@@ -58,3 +58,33 @@ Frontend:
 Live: a real Claude review through a real `bridged`, watched in the dashboard while it runs,
 with the model and effort chosen in the Reviews Settings tab shown on its pass. Screenshots
 light and dark.
+
+## Amendment: hand reviews to the chat that wrote the code (requested mid-branch)
+
+7. **Setting** `ReviewJobSettings.handoff`: `off` (default) | `drafted` | `posted`, in the Reviews
+   Settings tab as "Send reviews to the chat that wrote the pull request".
+   - `drafted`: when a review drafts, its findings (all of them: nobody has triaged yet, and the
+     message says so) go to the chat.
+   - `posted`: when a review posts, the findings that were posted (kept or edited, with the
+     person's edits) go to the chat, with the posted review's link.
+   - A review with nothing to send sends nothing.
+8. **Which chat:** the newest top-level, unarchived chat in a workspace of the job's project whose
+   branch is the PR's head branch (`review_jobs.pr_branch`, stored by `prepare`). None: nothing is
+   sent, and the job notes why.
+9. **Sending** goes through `live_turn::submit_input`, so the chat starts a turn, or queues
+   behind the one running, and acts on the findings. Each job hands off at most once.
+10. **Loop guard:** auto-review on push plus handoff could chain without a person. At most 3
+    handoffs per PR in 24 hours; a fourth is not sent and the job notes why.
+11. **Recorded** on the job (migration 97: `pr_branch`, `handoff_session_id`, `handoff_chat`,
+    `handoff_at`, `handoff_note`) and on the wire (`ReviewJob.handoffSessionId`, `handoffChat`,
+    `handoffAt`, `handoffNote`). The dashboard detail shows "Sent to <chat>" with a way to open
+    it, or the note.
+
+Tests:
+- `handoff_tests`: `off_sends_nothing`; `drafted_sends_every_open_finding_to_the_branch_chat`
+  (the message lists them, says untriaged; the newest top-level chat on the branch is picked
+  over an older one, a worker and an archived chat); `posted_sends_only_what_was_posted_with_edits`;
+  `nothing_to_send_sends_nothing`; `no_chat_on_the_branch_is_noted`; `a_fourth_handoff_in_a_day_is_held`;
+  `a_job_hands_off_once`.
+- Runner: a drafted job in `drafted` mode calls the handoff (scripted sender).
+- Frontend: the Settings tab saves the handoff mode; the detail shows "Sent to <chat>" and the note.
