@@ -1,5 +1,5 @@
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
-import { SkeletonRows } from "@/components/ui/skeleton";
+import { SkeletonRows, pendingClass } from "@/components/ui/skeleton";
 import { useEffect, useRef, useState } from "react";
 import { Check, Pencil, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -24,7 +24,7 @@ type Kind = typeof KINDS[number];
 const KIND_LABEL: Record<Kind, string> = { preference: "Preference", fact: "Fact", decision: "Decision", constraint: "Constraint" };
 const KIND_PLURAL: Record<Kind, string> = { preference: "Preferences", fact: "Facts", decision: "Decisions", constraint: "Constraints" };
 
-/** Where the memory model came from, as the end of "Using X, …". */
+/** Where the memory model came from: the tail of the sentence naming the model in use. */
 const MEMORY_MODEL_SOURCE: Record<MemoryModelSource, string> = {
   user: "your pick",
   chat_default: "your new-chat model",
@@ -769,10 +769,11 @@ const EXCLUSION_LABEL: Record<string, string> = {
 function ShowMore({ remaining, loading, disabled, onClick }: { remaining: number; loading: boolean; disabled: boolean; onClick: () => void }) {
   return <button
     type="button"
-    className="mt-2 h-8 w-full rounded-lg text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45"
+    aria-busy={loading || undefined}
+    className={cn("mt-2 h-8 w-full rounded-lg text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45", pendingClass(loading))}
     disabled={disabled}
     onClick={onClick}
-  >{loading ? "Loading…" : <>Show <span className="tabular-nums">{Math.min(MEMORY_PAGE_SIZE, Math.max(remaining, 1))}</span> more</>}</button>;
+  >Show <span className="tabular-nums">{Math.min(MEMORY_PAGE_SIZE, Math.max(remaining, 1))}</span> more</button>;
 }
 
 /** One line for a settled run: what it did, or why it did not. */
