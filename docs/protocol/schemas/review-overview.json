@@ -606,6 +606,13 @@
       },
       "type": "array"
     },
+    "repositories": {
+      "description": "Every `owner/name` with a review, any period, for the filter.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "stats": {
       "$ref": "#/definitions/ReviewOverviewStats"
     }
@@ -614,6 +621,7 @@
     "findings",
     "harnesses",
     "jobs",
+    "repositories",
     "stats"
   ],
   "title": "ReviewOverview",
