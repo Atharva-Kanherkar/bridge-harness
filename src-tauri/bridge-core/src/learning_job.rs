@@ -1721,7 +1721,9 @@ pub fn run_database(
 
 fn open_existing_database(database_path: &std::path::Path) -> Result<Connection, BridgeError> {
     let db = Connection::open(database_path)?;
-    db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
+    db.execute_batch(
+        "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+    )?;
     Ok(db)
 }
 
