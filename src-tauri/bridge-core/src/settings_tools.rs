@@ -359,7 +359,7 @@ fn memory_pin(memory: &MemoryModelSettings) -> Value {
 /// A harness alone pins its default model, since a pin names both.
 fn change_memory_model(core: &Arc<BridgeCore>, setting: &Setting, value: &Value) -> Result<Value, ToolError> {
     let descriptors = core.adapter_registry.descriptors();
-    let db = core.db.lock().unwrap();
+    let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let choice = model_choice(setting.key, value, &usable(&db, &descriptors))?;
     let (harness, model) = match choice {
         None => (None, None),

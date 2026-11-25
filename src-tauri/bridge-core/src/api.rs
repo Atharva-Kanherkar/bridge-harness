@@ -2731,7 +2731,7 @@ pub fn update_extraction_settings(
 }
 
 pub fn get_memory_model(core: &Arc<BridgeCore>) -> Result<wire::MemoryModelSettings, BridgeError> {
-    let db = core.db.lock().unwrap();
+    let db = lock_db(core);
     crate::memory_model::resolve(&db, &core.adapter_registry)
 }
 
@@ -2742,7 +2742,7 @@ pub fn set_memory_model(
     harness: Option<&str>,
     model: Option<&str>,
 ) -> Result<wire::MemoryModelSettings, BridgeError> {
-    let db = core.db.lock().unwrap();
+    let db = lock_db(core);
     crate::memory_model::set(&db, harness, model)?;
     crate::memory_model::resolve(&db, &core.adapter_registry)
 }
