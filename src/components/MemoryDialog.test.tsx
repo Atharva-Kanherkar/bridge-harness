@@ -663,15 +663,22 @@ describe("memory hardening", () => {
 // testing/feat-memory-paging.md: lists page, badges show the true total, and
 // proposals are decided in bulk with one call.
 describe("MemoryDialog paging and bulk review", () => {
-  const proposal = (index: number): MemoryRecord => ({
+  // Each proposal is a minute older than the one before, so core's order
+  // (newest change first) is index order.
+  const minutesAgo = (minutes: number) => new Date(Date.UTC(2026, 10, 20) - minutes * 60_000).toISOString();
+  const proposal = (index: number, updatedAt = minutesAgo(index)): MemoryRecord => ({
     ...record(`q-${String(index).padStart(3, "0")}`, `Proposal number ${index}`, "fact"),
     status: "proposed",
     provenance: "model_proposal",
+    updatedAt,
   });
   const pageCursorsOf: string[] = [];
   const pagedList = () => vi.spyOn(bridgeApi, "listMemoryRecords").mockImplementation(async (scopeKey, status, page = {}) => {
     if (page.cursor) pageCursorsOf.push(page.cursor);
-    const matching = store.filter(item => item.status === (status ?? "active"));
+    // Core's order: newest change first, ties by id, both descending.
+    const matching = store
+      .filter(item => item.status === (status ?? "active"))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id));
     const start = page.cursor ? Number(page.cursor) : 0;
     const end = start + 50;
     return {
@@ -779,9 +786,34 @@ describe("MemoryDialog paging and bulk review", () => {
     expect(cards()).toHaveLength(100);
   });
 
+  it("keeps a ticked proposal through a reload when newer proposals arrive", async () => {
+    store.push(...Array.from({ length: 100 }, (_, index) => proposal(index)));
+    mount();
+    await flush();
+    click(tab("Review"));
+    click(buttonByText("Show 50 more"));
+    await flush();
+    expect(cards()).toHaveLength(100);
+    const last = cards()[99];
+    const ticked = last.getAttribute("aria-label");
+    toggle(last);
+    expect(container.textContent).toContain("1 selected");
+    // An extraction run lands five newer proposals, which sort to the top.
+    store.push(...Array.from({ length: 5 }, (_, index) => proposal(500 + index, minutesAgo(-1 - index))));
+    act(() => memoryHandler?.({ scopeKey: "account:local" }));
+    await flush();
+    await flush();
+    const labels = [...cards()].map(input => input.getAttribute("aria-label"));
+    expect(labels).toContain(ticked);
+    expect(cards()).toHaveLength(105);
+    expect(container.textContent).toContain("1 selected");
+    const kept = [...cards()].find(input => input.getAttribute("aria-label") === ticked) as HTMLInputElement;
+    expect(kept.checked).toBe(true);
+  });
+
   it("reads the rest of the memories before a search, so nothing unloaded is missed", async () => {
-    store = Array.from({ length: 70 }, (_, index) => record(`a-${index}`, `Ordinary memory ${index}`));
-    store.push(record("a-late", "Deploys from a laptop only"));
+    store = Array.from({ length: 70 }, (_, index) => ({ ...record(`a-${index}`, `Ordinary memory ${index}`), updatedAt: minutesAgo(index) }));
+    store.push({ ...record("a-late", "Deploys from a laptop only"), updatedAt: minutesAgo(500) });
     mount();
     await flush();
     expect(container.textContent).not.toContain("Deploys from a laptop only");

@@ -47,21 +47,35 @@ type MemoryStatus = "active" | "proposed";
 /** What one memory list holds: the pages read so far, where the next starts, and the true total. */
 type MemoryList = { records: MemoryRecord[]; total: number; cursor?: string };
 
+/** Where a record sits in core's order: newest change first, then id. */
+type ListPosition = Pick<MemoryRecord, "updatedAt" | "id">;
+
+/** Whether `record` sorts at or after `position`, in core's descending order. */
+function atOrPast(record: ListPosition, position: ListPosition): boolean {
+  return record.updatedAt < position.updatedAt || (record.updatedAt === position.updatedAt && record.id <= position.id);
+}
+
 /**
- * Read a list's pages until at least `want` records are loaded or the list
- * ends. A reload after a change asks for as many as were showing, so a bulk
- * decision does not throw the reader back to the first page.
+ * Read a list's pages until at least `want` records are loaded and, when
+ * `through` is given, the read has reached that record's position, or the
+ * list ends. A reload after a change passes the record that was last on
+ * screen: records that arrived at the top would otherwise push loaded ones
+ * onto an unread page, out of view and out of the selection.
  */
-async function readMemoryPages(status: MemoryStatus, want: number): Promise<MemoryList> {
+async function readMemoryPages(status: MemoryStatus, want: number, through?: ListPosition): Promise<MemoryList> {
   const records: MemoryRecord[] = [];
   let cursor: string | undefined;
   let total = 0;
+  const reached = () => {
+    const last = records[records.length - 1];
+    return !through || (last !== undefined && atOrPast(last, through));
+  };
   do {
     const page = await bridgeApi.listMemoryRecords("account:local", status === "active" ? undefined : status, cursor ? { cursor } : {});
     records.push(...page.records);
     total = page.total ?? records.length;
     cursor = page.nextCursor ?? undefined;
-  } while (cursor && records.length < want);
+  } while (cursor && (records.length < want || !reached()));
   return { records, total, cursor };
 }
 
@@ -114,8 +128,10 @@ export function MemoryDialog({
   // as RouterSettingsDialog's learningReadGeneration.
   const readGeneration = useRef(0);
   const editorRef = useRef<HTMLTextAreaElement>(null);
-  // How many records each list shows, read by the change-driven reload.
+  // How many records each list shows, and the last one on screen, read by the
+  // change-driven reload.
   const loadedCount = useRef<Record<MemoryStatus, number>>({ active: 0, proposed: 0 });
+  const lastLoaded = useRef<Partial<Record<MemoryStatus, ListPosition>>>({});
   // A page that failed to load is not retried by the automatic read below.
   const failedCursor = useRef<string | undefined>(undefined);
   const records = activeList?.records;
@@ -123,6 +139,7 @@ export function MemoryDialog({
 
   useEffect(() => {
     loadedCount.current = { active: activeList?.records.length ?? 0, proposed: proposedList?.records.length ?? 0 };
+    lastLoaded.current = { active: activeList?.records.at(-1), proposed: proposedList?.records.at(-1) };
   }, [activeList, proposedList]);
 
   /** Append the next page of one list. A reload that lands meanwhile wins. */
@@ -168,6 +185,7 @@ export function MemoryDialog({
     setSelected(new Set());
     setLoadingMore(null);
     loadedCount.current = { active: 0, proposed: 0 };
+    lastLoaded.current = {};
     setSettings(undefined);
     setBudget(undefined);
     setCapabilities(undefined);
@@ -194,8 +212,8 @@ export function MemoryDialog({
     const load = () => {
       const generation = ++readGeneration.current;
       Promise.all([
-        readMemoryPages("active", loadedCount.current.active),
-        readMemoryPages("proposed", loadedCount.current.proposed),
+        readMemoryPages("active", loadedCount.current.active, lastLoaded.current.active),
+        readMemoryPages("proposed", loadedCount.current.proposed, lastLoaded.current.proposed),
         bridgeApi.getExtractionSettings(),
         bridgeApi.getMemoryInjection(),
         bridgeApi.memoryRecallStats("account:local"),
