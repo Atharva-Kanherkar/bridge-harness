@@ -699,6 +699,16 @@ html[data-native-fullscreen] .u-traffic-inset {
   .title-word-in { animation: none; }
 }
 
+/* The caret riding the end of the streamed new-chat headline while it streams. */
+@keyframes caret-blink {
+  0%, 45% { opacity: 1; }
+  55%, 100% { opacity: 0; }
+}
+
+.animate-caret-blink {
+  animation: caret-blink 1s steps(1, end) infinite;
+}
+
 /* Soft breathing dot used instead of loading spinners. */
 @keyframes thinking-pulse {
   0%, 100% { opacity: 0.3; transform: scale(0.72); }
