@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { CircleAlert, CircleCheck, RefreshCw, Search, SquareArrowOutUpRight, X } from "lucide-react";
+import { CircleAlert, CircleCheck, RefreshCw, Search, Send, SquareArrowOutUpRight, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SCREEN_CONTENT, ScreenHeading } from "@/components/ui/screen";
 import { bridgeApi } from "../../api";
@@ -7,6 +7,9 @@ import { relativeTime } from "../workDashboard";
 import { formatTokens, formatUsd } from "../../usageReport";
 import { GithubMarkdown } from "../github/GithubMarkdown";
 import { ReviewDraft } from "../github/ReviewDraft";
+import { ReviewActivity } from "./ReviewActivity";
+import { ReviewSettings } from "./ReviewSettings";
+import type { AdapterDescriptor } from "../../types";
 import { formatElapsed } from "../github/ReviewJobs";
 import { harnessLabel, REVIEW_STATUS, SEVERITIES, SEVERITY_TEXT, type ReviewStatusTone } from "../github/reviewLabels";
 import type {
@@ -223,8 +226,12 @@ function FindingsTable({ findings, onOpenJob }: { findings: ReviewOverviewFindin
   </div>;
 }
 
-function JobDetail({ jobId, fallback, now, onClose }: { jobId: string; fallback?: ReviewJob; now: number; onClose: () => void }) {
+type DetailTab = "findings" | "activity";
+
+function JobDetail({ jobId, fallback, now, onClose, onOpenChat }: { jobId: string; fallback?: ReviewJob; now: number; onClose: () => void; onOpenChat?: (sessionId: string) => void }) {
   const [detail, setDetail] = useState<ReviewJobDetail>();
+  // A review still working opens on what it is doing; a finished one on what it found.
+  const [view, setView] = useState<DetailTab>(() => fallback && tone(fallback) === "running" ? "activity" : "findings");
   const [error, setError] = useState<string>();
   const closeRef = useRef<HTMLButtonElement>(null);
   const load = useCallback(() => {
@@ -235,8 +242,8 @@ function JobDetail({ jobId, fallback, now, onClose }: { jobId: string; fallback?
   const job = fallback ?? detail?.job;
   useEffect(() => { closeRef.current?.focus(); }, [jobId]);
   useEffect(() => {
-    if (fallback && detail && fallback.status !== detail.job.status) load();
-  }, [fallback?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (fallback && detail && (fallback.status !== detail.job.status || fallback.harnesses.join() !== detail.job.harnesses.join() || fallback.handoffAt !== detail.job.handoffAt)) load();
+  }, [fallback?.status, fallback?.harnesses.join(), fallback?.handoffAt]); // eslint-disable-line react-hooks/exhaustive-deps
   return <div className="fixed inset-0 z-40 flex justify-end bg-background/40 backdrop-blur-[1px]" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <aside role="dialog" aria-modal="true" aria-label="Review" data-review-detail={jobId} onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } }}
       className="flex h-full w-full max-w-[640px] flex-col border-l border-border bg-background shadow-xl">
@@ -250,11 +257,24 @@ function JobDetail({ jobId, fallback, now, onClose }: { jobId: string; fallback?
             {repositoryUrl(job) && <a href={`${repositoryUrl(job)}/pull/${job.number}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-meta text-muted-foreground hover:text-foreground">Open on GitHub <SquareArrowOutUpRight size={11} aria-hidden="true" /></a>}
             {job.postedReviewUrl && <a href={job.postedReviewUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-meta text-foreground hover:underline">Posted review <SquareArrowOutUpRight size={11} aria-hidden="true" /></a>}
           </div>
+          {job.handoffSessionId && <p data-handoff className="mt-1.5 flex flex-wrap items-center gap-1.5 text-meta text-muted-foreground">
+            <Send size={11} aria-hidden="true" /> Sent to
+            {onOpenChat
+              ? <button type="button" onClick={() => onOpenChat(job.handoffSessionId!)} className="font-medium text-foreground underline-offset-2 hover:underline">{job.handoffChat ?? "its chat"}</button>
+              : <span className="font-medium text-foreground">{job.handoffChat ?? "its chat"}</span>}
+            {job.handoffAt && <span>{relativeTime(job.handoffAt, new Date(now))}</span>}
+          </p>}
+          {!job.handoffSessionId && job.handoffNote && <p data-handoff className="mt-1.5 text-meta text-muted-foreground">{job.handoffNote}</p>}
         </div> : <SkeletonRegion label="Loading review" className="flex flex-1 flex-col gap-2"><Skeleton className="h-2.5 w-24" /><Skeleton className="h-4 w-3/5" /><Skeleton className="h-3 w-40" /></SkeletonRegion>}
         <button ref={closeRef} type="button" onClick={onClose} aria-label="Close review" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"><X size={14} /></button>
       </header>
+      <div className="border-b border-border px-5 py-2">
+        <Segmented<DetailTab> label="Review view" value={view} options={[{ value: "findings", label: "Findings" }, { value: "activity", label: "Activity" }]} onChange={setView} />
+      </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         {error && <p role="alert" className="mb-3 text-meta text-destructive">{error}</p>}
+        {view === "activity" && job && <ReviewActivity jobId={jobId} passes={detail?.passes ?? []} running={tone(job) === "running"} repositoryUrl={repositoryUrl(job)} />}
+        {view === "findings" && <>
         {job?.error && <p role="alert" className="mb-3 text-meta text-destructive">{job.error}</p>}
         {!detail && !error && <SkeletonRegion label="Loading review details" className="space-y-4"><SkeletonText lines={3} /><SkeletonRows rows={2} /></SkeletonRegion>}
         {detail?.summary && <section aria-label="Summary" className="mb-4">
@@ -284,12 +304,18 @@ function JobDetail({ jobId, fallback, now, onClose }: { jobId: string; fallback?
                 <p className="font-mono text-caption text-muted-foreground">{finding.path}:{finding.line} · {DECISION_LABEL[finding.decision]}{finding.fixedInSha ? " · fixed later" : ""}</p>
               </li>)}</ul>
             </section>}
+        {detail && job && tone(job) === "running" && detail.findings.length === 0 && <p className="text-meta text-muted-foreground">Findings appear when the review drafts. Activity shows what the reviewer is doing now.</p>}
+        </>}
       </div>
     </aside>
   </div>;
 }
 
-export function ReviewsScreen() {
+type Mode = "overview" | "settings";
+
+export function ReviewsScreen({ onOpenChat }: { onOpenChat?: (sessionId: string) => void } = {}) {
+  const [mode, setMode] = useState<Mode>("overview");
+  const [adapters, setAdapters] = useState<AdapterDescriptor[]>();
   const [period, setPeriod] = useState<Period>(30);
   const [repository, setRepository] = useState<string>("");
   const [overview, setOverview] = useState<ReviewOverview>();
@@ -313,6 +339,14 @@ export function ReviewsScreen() {
   }, []);
 
   useEffect(() => { read(); }, [period, repository, read]);
+
+  // The model catalog each reviewer can pick from.
+  useEffect(() => {
+    if (mode !== "settings" || adapters) return;
+    let active = true;
+    bridgeApi.health().then(health => { if (active) setAdapters(health.adapters); }, () => { if (active) setAdapters([]); });
+    return () => { active = false; };
+  }, [mode, adapters]);
 
   // Live: any job change rereads the overview, a burst of them once.
   useEffect(() => {
@@ -347,18 +381,24 @@ export function ReviewsScreen() {
     <div className={SCREEN_CONTENT}>
       <ScreenHeading
         title="Reviews"
-        description="Every pull request review Bridge ran: what needs you, how each reviewer does, and what was found."
+        description={mode === "settings" ? "Each reviewer's model and effort, how reviews run, and where they go." : "Every pull request review Bridge ran: what needs you, how each reviewer does, and what was found."}
         action={<>
+          <Segmented<Mode> label="Reviews view" value={mode} options={[{ value: "overview", label: "Overview" }, { value: "settings", label: "Settings" }]} onChange={setMode} />
+          {mode === "overview" && <>
           <Segmented<Period> label="Period" value={period} options={PERIODS} onChange={setPeriod} />
           <select aria-label="Repository" value={repository} onChange={event => setRepository(event.target.value)} className="h-8 max-w-[220px] rounded-lg border border-border bg-background px-2 text-meta text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <option value="">All repositories</option>
             {(overview?.repositories ?? []).map(repo => <option key={repo} value={repo}>{repo}</option>)}
           </select>
           <button type="button" onClick={read} disabled={loading} aria-label="Refresh reviews" aria-busy={loading} className={cn("inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40", pendingClass(loading))}><RefreshCw size={14} /></button>
+          </>}
         </>}
       />
-      {error && <p role="alert" className="mb-4 text-meta text-destructive">{error}</p>}
-      {stats && <>
+      {mode === "settings" && (adapters
+        ? <ReviewSettings adapters={adapters} />
+        : <SkeletonRegion label="Loading the reviewers"><SkeletonRows rows={4} trailing /></SkeletonRegion>)}
+      {mode === "overview" && error && <p role="alert" className="mb-4 text-meta text-destructive">{error}</p>}
+      {mode === "overview" && stats && <>
         <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
           <Tile label="Reviews" value={String(stats.reviews)} sub={[stats.posted && `${stats.posted} posted`, stats.waiting && `${stats.waiting} waiting`, stats.failed && `${stats.failed} failed`].filter(Boolean).join(" · ") || "None yet"} />
           <Tile label="Findings" value={String(stats.findings.total)} sub={stats.agreed > 0 ? `${stats.agreed} both reviewers flagged` : undefined}><SeverityBar counts={stats.findings} /></Tile>
@@ -379,12 +419,12 @@ export function ReviewsScreen() {
             : <FindingsTable findings={overview.findings} onOpenJob={setOpenJob} />}
         </section>
       </>}
-      {!stats && loading && <SkeletonRegion label="Loading reviews" className="space-y-4">
+      {mode === "overview" && !stats && loading && <SkeletonRegion label="Loading reviews" className="space-y-4">
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">{Array.from({ length: 6 }, (_, tile) => <Skeleton key={tile} index={tile} className="h-20 rounded-xl" />)}</div>
         <div className="grid gap-3 lg:grid-cols-2"><SkeletonRows rows={3} /><SkeletonRows rows={3} /></div>
         <SkeletonRows rows={5} />
       </SkeletonRegion>}
     </div>
-    {openJob && <JobDetail jobId={openJob} fallback={opened} now={now} onClose={() => setOpenJob(undefined)} />}
+    {openJob && <JobDetail jobId={openJob} fallback={opened} now={now} onClose={() => setOpenJob(undefined)} onOpenChat={onOpenChat ? sessionId => { setOpenJob(undefined); onOpenChat(sessionId); } : undefined} />}
   </div>;
 }

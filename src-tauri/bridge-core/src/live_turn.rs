@@ -3407,8 +3407,10 @@ fn handle_agent_value_timed(
                     Ok(events) => {
                         let state_changed=events.iter().any(|e|matches!(e.kind.as_str(),"subagent.started"|"subagent.completed"|"subagent.status"|"permission.requested"|"question.requested"));
                         for stored in events {
-                            if stored.kind=="permission.requested" && should_auto_approve_permission(&db, session_id, &event) {
-                                pending_auto_approvals.push((stored.session_id.clone(), stored.sequence));
+                            if stored.kind == event.kind && stored.sequence > 0 {
+                                if let Some(kind) = auto_resolution(&db, session_id, &event) {
+                                    pending_auto_approvals.push((stored.session_id.clone(), stored.sequence, kind));
+                                }
                             }
                             state.events.publish(CoreEvent::Agent(stored));
                         }
@@ -3588,7 +3590,7 @@ fn handle_agent_value_timed(
                     // reach this arm. Checked anyway — a structural guarantee
                     // that is also asserted is one that survives a refactor.
                     let is_permission_request = event.kind == "permission.requested";
-                    let auto_approve_this_event = should_auto_approve_permission(&db, session_id, event);
+                    let auto_approve_this_event = auto_resolution(&db, session_id, event).is_some();
                     if own_depth > 0 {
                         let _ = session_supervisor::SessionSupervisor::transition(
                             &db,
@@ -3875,7 +3877,7 @@ fn handle_agent_value_timed(
             }
         }
         for mut normalized_event in normalized {
-            let auto_approve_this_event = should_auto_approve_permission(&db, session_id, &normalized_event);
+            let auto_resolve_this_event = auto_resolution(&db, session_id, &normalized_event);
             // A failure to decide shows the card: asking a person is the safe default.
             let workflow_decision = crate::workflow_run::permission_decision(&db, session_id, &normalized_event)
                 .ok()
@@ -3884,10 +3886,11 @@ fn handle_agent_value_timed(
                 normalized_event.status = Some("settling".into());
                 normalized_event.data["resolvedBy"] = serde_json::json!("workflow");
             }
-            // Policy-owned permission requests are born settling. Clients may
+            // Policy-owned requests (a permission, OpenCode's web search
+            // consent) are born settling. Clients may
             // observe this request before the provider reply returns, but they
             // must never observe an actionable human race window.
-            if auto_approve_this_event && normalized_event.kind == "permission.requested" {
+            if auto_resolve_this_event.is_some() {
                 normalized_event.status = Some("settling".into());
                 normalized_event.data["resolvedBy"] = serde_json::json!("policy");
                 normalized_event.data["resolutionReason"] =
@@ -4230,8 +4233,8 @@ fn handle_agent_value_timed(
                     // is answering. `session_event` returns sequence 0 for a frame it
                     // chose not to persist, and answering 0 would resolve whatever
                     // approval happens to sit at that sequence.
-                    if auto_approve_this_event && event.kind == "permission.requested" && event.sequence > 0 {
-                        pending_auto_approvals.push((session_id.to_owned(), event.sequence));
+                    if let Some(kind) = auto_resolve_this_event.filter(|_| event.sequence > 0) {
+                        pending_auto_approvals.push((session_id.to_owned(), event.sequence, kind));
                     }
                     if let Some(decision) = workflow_decision.clone() {
                         if event.kind == "permission.requested" && event.sequence > 0 {
@@ -4495,8 +4498,8 @@ fn handle_agent_value_timed(
 
     // Before the parent is told a child is blocked: if policy already answered
     // the approval, nobody is blocked and mirroring a card would be a lie.
-    for (approval_session, event_id) in pending_auto_approvals {
-        apply_bypass_approval(core, &approval_session, event_id);
+    for (approval_session, event_id, kind) in pending_auto_approvals {
+        apply_bypass_approval(core, &approval_session, event_id, kind);
     }
     for (event_id, decision) in pending_workflow_decisions {
         crate::api::resolve_workflow_permission(core, session_id, event_id, &decision);
@@ -7476,9 +7479,46 @@ fn should_auto_approve_permission(db: &Connection, session_id: &str, event: &age
             .or_else(|| event.data.pointer("/data/approvalType"))
             .and_then(serde_json::Value::as_str),
             Some("delegation_path_scope" | "prompt_mutation"))
-        && crate::chat_defaults::effective_access(db, session_id)
-            .map(|access| access == wire::ChatAccess::Full)
-            .unwrap_or(false)
+        && has_full_access(db, session_id)
+}
+
+/// The approval seam's one read of the chat's access level.
+fn has_full_access(db: &Connection, session_id: &str) -> bool {
+    crate::chat_defaults::effective_access(db, session_id)
+        .map(|access| access == wire::ChatAccess::Full)
+        .unwrap_or(false)
+}
+
+/// OpenCode 2.x asks, as a form rather than a permission, before its
+/// `websearch` tool first sends a query to a search provider. Full access has
+/// already said yes to that. A read-only worker runs on a scratch data home
+/// where OpenCode remembers nothing, so without this every research worker
+/// raised the card again.
+///
+/// Only that consent: an ordinary question asks the person for information,
+/// which no policy can supply.
+fn should_auto_answer_question(db: &Connection, session_id: &str, event: &agent::NormalizedEvent) -> bool {
+    event.kind == "question.requested"
+        && crate::api::websearch_consent_allow_label(&event.data).is_some()
+        && !crate::workflow_run::is_workflow_session(db, session_id)
+        && has_full_access(db, session_id)
+}
+
+/// What Full access resolves without a card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoResolve {
+    Permission,
+    WebSearchConsent,
+}
+
+fn auto_resolution(db: &Connection, session_id: &str, event: &agent::NormalizedEvent) -> Option<AutoResolve> {
+    if should_auto_approve_permission(db, session_id, event) {
+        Some(AutoResolve::Permission)
+    } else if should_auto_answer_question(db, session_id, event) {
+        Some(AutoResolve::WebSearchConsent)
+    } else {
+        None
+    }
 }
 
 /// Answer an approval the permission policy granted.
@@ -7489,8 +7529,16 @@ fn should_auto_approve_permission(db: &Connection, session_id: &str, event: &age
 ///
 /// The reason ledger names the policy that matched, so an auto-approval is
 /// auditable after the fact rather than merely absent from the UI.
-fn apply_bypass_approval(core: &Arc<BridgeCore>, session_id: &str, event_id: i64) {
-    match crate::api::auto_resolve_provider_permission(core, session_id, event_id) {
+fn apply_bypass_approval(core: &Arc<BridgeCore>, session_id: &str, event_id: i64, kind: AutoResolve) {
+    let resolved = match kind {
+        AutoResolve::Permission => crate::api::auto_resolve_provider_permission(core, session_id, event_id),
+        AutoResolve::WebSearchConsent => crate::api::auto_answer_websearch_consent(core, session_id, event_id),
+    };
+    let subject = match kind {
+        AutoResolve::Permission => format!("permission {event_id}"),
+        AutoResolve::WebSearchConsent => format!("OpenCode web search consent {event_id}"),
+    };
+    match resolved {
         Ok(result) if matches!(result.disposition, wire::InteractionResolutionDisposition::Resolved) => {
             {
                 let db = core.db.lock().unwrap();
@@ -7499,10 +7547,15 @@ fn apply_bypass_approval(core: &Arc<BridgeCore>, session_id: &str, event_id: i64
                     "permission",
                     "approval.auto_allowed",
                     session_id,
-                    &format!(
-                        "Auto-approve provider permissions chose {} for permission {event_id}",
-                        result.decision
-                    ),
+                    &match kind {
+                        AutoResolve::Permission => format!(
+                            "Auto-approve provider permissions chose {} for {subject}",
+                            result.decision
+                        ),
+                        AutoResolve::WebSearchConsent => {
+                            format!("Auto-approve provider permissions allowed {subject}")
+                        }
+                    },
                 );
             }
             // `resolve_approval` already published, but it published before this
@@ -7519,7 +7572,7 @@ fn apply_bypass_approval(core: &Arc<BridgeCore>, session_id: &str, event_id: i64
                 "permission",
                 "approval.auto_allow_failed",
                 session_id,
-                &format!("Auto-approve provider permissions could not resolve permission {event_id}: {error}"),
+                &format!("Auto-approve provider permissions could not resolve {subject}: {error}"),
             );
         }
     }
@@ -20352,6 +20405,137 @@ mod permission_policy_tests {
             |row| row.get(0),
         ).unwrap();
         assert_eq!(serde_json::from_str::<serde_json::Value>(&submitted).unwrap(), serde_json::json!({"0": ["SQLite"], "1": ["Auth", "Something else"]}));
+    }
+
+    /// OpenCode 2.x's web search consent form, as `opencode_v2` hands it on.
+    fn websearch_consent_frame(form_kind: &str) -> serde_json::Value {
+        serde_json::json!({"type": "question.asked", "properties": {
+            "id": "frm_ws", "sessionID": "root", "formKind": form_kind,
+            "questions": [{
+                "header": "Web Search",
+                "question": "Allow OpenCode to search the web for up-to-date information?",
+                "options": [
+                    {"label": "Allow search via Exa, Tavily", "description": "", "value": "allow"},
+                    {"label": "Choose another provider", "description": "", "value": "choose"},
+                    {"label": "Disable web search", "description": "", "value": "disable"}
+                ],
+                "multiple": false, "custom": false
+            }],
+            "tool": {"callID": null, "messageID": null}
+        }})
+    }
+
+    fn opencode(core: &Arc<BridgeCore>, session_id: &str) {
+        core.db.lock().unwrap().execute(
+            "UPDATE sessions SET harness='opencode',provider_session_id='root' WHERE id=?1",
+            params![session_id],
+        ).unwrap();
+    }
+
+    fn question_entry(core: &Arc<BridgeCore>, session_id: &str, kind: &str) -> serde_json::Value {
+        let payload: String = core.db.lock().unwrap().query_row(
+            "SELECT payload FROM session_entries WHERE session_id=?1 AND kind=?2 ORDER BY sequence DESC LIMIT 1",
+            params![session_id, kind],
+            |row| row.get(0),
+        ).unwrap();
+        serde_json::from_str(&payload).unwrap()
+    }
+
+    /// The 2026-11-25 regression: Full access was on and research workers
+    /// still raised "Allow OpenCode to search the web?" five times, because
+    /// the auto-approval only matched `permission.requested`.
+    #[test]
+    fn full_access_allows_opencode_web_search_without_a_card() {
+        let (_fixture, core, _managed_root) = core_with_session(true);
+        opencode(&core, "chat");
+        let handles = attach(&core, "chat");
+
+        deliver(&core, &websearch_consent_frame("websearch.provider"));
+
+        assert_eq!(
+            handles.answered.lock().unwrap().as_slice(),
+            &[(serde_json::json!("frm_ws"), serde_json::json!([["Allow search via Exa, Tavily"]]))],
+            "answered once, with the allow option"
+        );
+        let requested = question_entry(&core, "chat", "question.requested");
+        assert_eq!(requested["status"], "settling", "born settling: no actionable card");
+        assert_eq!(requested["data"]["resolvedBy"], "policy");
+        let resolved = question_entry(&core, "chat", "question.resolved");
+        assert_eq!(resolved["status"], "answered");
+        assert_eq!(resolved["data"]["resolvedBy"], "policy");
+        assert_eq!(ledger(&core, "approval."), vec!["approval.auto_allowed".to_owned()]);
+    }
+
+    #[test]
+    fn web_search_consent_still_asks_without_full_access() {
+        let (_fixture, core, _managed_root) = core_with_session(false);
+        opencode(&core, "chat");
+        let handles = attach(&core, "chat");
+
+        deliver(&core, &websearch_consent_frame("websearch.provider"));
+
+        assert!(handles.answered.lock().unwrap().is_empty());
+        assert_eq!(question_entry(&core, "chat", "question.requested")["status"], "pending");
+        assert!(ledger(&core, "approval.").is_empty());
+    }
+
+    /// The model's own `question` tool asks for information, and a form whose
+    /// options are provider ids is a choice only the person can make.
+    #[test]
+    fn full_access_never_answers_any_other_opencode_form() {
+        let (_fixture, core, _managed_root) = core_with_session(true);
+        opencode(&core, "chat");
+        let handles = attach(&core, "chat");
+
+        deliver(&core, &websearch_consent_frame("question"));
+        let mut provider_choice = websearch_consent_frame("websearch.provider");
+        provider_choice["properties"]["id"] = serde_json::json!("frm_pick");
+        provider_choice["properties"]["questions"][0]["options"] = serde_json::json!([
+            {"label": "Exa", "description": "", "value": "exa"},
+            {"label": "Tavily", "description": "", "value": "tavily"}
+        ]);
+        deliver(&core, &provider_choice);
+
+        assert!(handles.answered.lock().unwrap().is_empty());
+        let pending: i64 = core.db.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM session_entries WHERE session_id='chat' AND kind='question.requested'
+               AND json_extract(payload,'$.status')='pending'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(pending, 2);
+        assert!(ledger(&core, "approval.").is_empty());
+        // The policy resolver refuses a form it does not own, even if asked.
+        let sequence: i64 = core.db.lock().unwrap().query_row(
+            "SELECT MIN(sequence) FROM session_entries WHERE session_id='chat' AND kind='question.requested'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(crate::api::auto_answer_websearch_consent(&core, "chat", sequence).is_err());
+        assert!(handles.answered.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_worker_web_search_consent_under_full_access_never_blocks_the_parent() {
+        let (_fixture, core, _managed_root) = core_with_worker(true);
+        opencode(&core, "child");
+        let child = attach(&core, "child");
+        let _parent = attach(&core, "parent");
+
+        deliver_to(&core, "child", &websearch_consent_frame("websearch.provider"));
+
+        assert_eq!(child.answered.lock().unwrap().len(), 1, "the worker's search was allowed");
+        let blocked_cards: i64 = core.db.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM session_entries
+             WHERE session_id='parent' AND kind='delegation.blocked'
+               AND json_extract(payload,'$.data.childBlocked')=1",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(blocked_cards, 0, "the parent is never told its worker is blocked");
+        let runtime = store::worker_runtime(&core.db.lock().unwrap(), "child").unwrap().unwrap();
+        assert_eq!(runtime.lifecycle_state, "working");
+        assert_eq!(runtime.waiting_reason, None);
     }
 
     /// `session_event` returns sequence 0 for a frame it did not persist, and

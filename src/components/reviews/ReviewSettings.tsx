@@ -3,7 +3,7 @@ import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
 import type { AdapterDescriptor } from "../../types";
 import type { ReviewerHarnessSettings, ReviewerSettings, ReviewJobSettings } from "../../protocol/generated/protocol";
-import { NumberField, SavedFlash, SaveBar, Segmented, Select, SettingsBlockRow, SettingsGroup, SettingsRow, Switch, TextArea, TextButton, useSavedFlash } from "./kit";
+import { NumberField, SavedFlash, SaveBar, Segmented, Select, SettingsBlockRow, SettingsGroup, SettingsRow, Switch, TextArea, TextButton, useSavedFlash } from "../settings/kit";
 
 /** The harnesses the GitHub pane can hand a review to. Cursor Bugbot is not a
  * local worker and takes no model. */
@@ -22,7 +22,7 @@ type FormSettings = ReviewerSettings & { harnesses: NonNullable<ReviewerSettings
 const normalize = (settings: ReviewerSettings): FormSettings => ({ ...settings, harnesses: settings.harnesses ?? {}, systemPrompt: settings.systemPrompt ?? "" });
 
 /** The job settings with every field the form edits filled in. */
-type JobForm = Required<Pick<ReviewJobSettings, "defaultHarnesses" | "fallbackHarnesses" | "maxConcurrentReviews" | "maxReviewWorktrees" | "postMode" | "secondOpinion" | "autoReview" | "skipDraftPrs" | "incremental">> & ReviewJobSettings;
+type JobForm = Required<Pick<ReviewJobSettings, "defaultHarnesses" | "fallbackHarnesses" | "maxConcurrentReviews" | "maxReviewWorktrees" | "postMode" | "secondOpinion" | "autoReview" | "skipDraftPrs" | "incremental" | "handoff">> & ReviewJobSettings;
 const normalizeJobs = (settings: ReviewJobSettings): JobForm => ({
   ...settings,
   defaultHarnesses: settings.defaultHarnesses ?? [],
@@ -34,7 +34,14 @@ const normalizeJobs = (settings: ReviewJobSettings): JobForm => ({
   autoReview: settings.autoReview ?? "off",
   skipDraftPrs: settings.skipDraftPrs ?? true,
   incremental: settings.incremental ?? false,
+  handoff: settings.handoff ?? "off",
 });
+
+const HANDOFF_TEXT: Record<JobForm["handoff"], string> = {
+  off: "Reviews stay here and on GitHub.",
+  drafted: "As soon as a review drafts, its findings go to the newest chat working on the pull request's branch, which starts on them. Nobody has triaged them yet, and the message says so.",
+  posted: "When you post a review, what you posted (with your edits) goes to the newest chat working on the pull request's branch, which starts on them.",
+};
 
 const AUTO_REVIEW_TEXT: Record<JobForm["autoReview"], string> = {
   off: "Reviews start only when you ask from the GitHub pane.",
@@ -89,6 +96,9 @@ function ReviewJobSettingsGroup() {
     <SettingsRow label="Incremental re-review" saved={isFlashed("incremental")}
       description={stored.incremental ? "A later review looks at the commits since the last posted review, remembers what was kept, dropped or resolved, and does not repeat it." : "Every review looks at the whole pull request."}
       control={<Switch label="Incremental re-review" disabled={busy} checked={stored.incremental} onChange={incremental => void save({ incremental }, "incremental")} />} />
+    <SettingsRow label="Send to the chat that wrote it" saved={isFlashed("handoff")}
+      description={`${HANDOFF_TEXT[stored.handoff]}${stored.handoff === "off" ? "" : " At most three reviews of a pull request go to its chat in a day."}`}
+      control={<Segmented label="Send reviews to the chat that wrote the pull request" disabled={busy} value={stored.handoff} onChange={handoff => void save({ handoff }, "handoff")} options={[{ value: "off", label: "Off" }, { value: "drafted", label: "When drafted" }, { value: "posted", label: "When posted" }]} />} />
     <SettingsRow label="Second opinion" saved={isFlashed("secondOpinion")}
       description="Lets one review run on two harnesses at once. Findings both of them report are marked Both reviewers."
       control={<Switch label="Second opinion" disabled={busy} checked={stored.secondOpinion} onChange={secondOpinion => void save(secondOpinion ? { secondOpinion } : { secondOpinion, defaultHarnesses: defaults([first]) }, "secondOpinion")} />} />
@@ -113,11 +123,12 @@ function ReviewJobSettingsGroup() {
   </SettingsGroup>;
 }
 
-/** Model, effort and instructions for the subagent that reviews pull requests
- * from the GitHub pane. Global rather than per workspace: it is a preference
- * about the reviewer, not about a repository. An empty choice falls through to
- * the Reviewer model profile, then the harness default. */
-export function ReviewerSettingsSection({ adapters }: { adapters: AdapterDescriptor[] }) {
+/** The Reviews app's Settings: each reviewer's model and effort, how review
+ * jobs run, and the reviewer instructions. Global rather than per workspace:
+ * they are preferences about the reviewer, not about a repository. An empty
+ * model or effort falls through to the Reviewer model profile, then the
+ * harness default. */
+export function ReviewSettings({ adapters }: { adapters: AdapterDescriptor[] }) {
   // `stored` is what the host kept; `prompt` is the unsaved instructions text.
   // A select writes the stored record with its harness entry replaced, so a
   // half-written prompt never rides along with it.
@@ -153,7 +164,7 @@ export function ReviewerSettingsSection({ adapters }: { adapters: AdapterDescrip
   const draftPrompt = prompt ?? stored.systemPrompt;
   return <div data-reviewer-settings className="space-y-6">
     {error && <p role="alert" className="text-ui text-destructive">{error}</p>}
-    <SettingsGroup anchor="reviewer" label="Pull request reviewer" note="The model and effort each harness reviews with. A blank model or effort falls back to the Reviewer model profile, then the harness default.">
+    <SettingsGroup anchor="reviewer" label="Reviewers" note="The model and effort each harness reviews with. Every review on that harness uses them, whether you start it from the GitHub pane or it starts on its own. A blank model or effort falls back to the Reviewer model profile, then the harness default.">
       {REVIEWER_HARNESSES.map(harness => {
         const adapter = adapters.find(item => item.id === harness.id);
         const entry = stored.harnesses[harness.id] ?? { model: null, effort: null };

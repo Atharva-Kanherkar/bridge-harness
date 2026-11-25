@@ -1085,6 +1085,12 @@ async fn start_review(
 }
 
 #[tauri::command]
+async fn review_activity(job_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReviewActivityList, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Reviews", move || api::review_activity(&core, &bridge_protocol::messages::ReviewActivityParams { job_id })).await
+}
+
+#[tauri::command]
 async fn review_overview(
     days: Option<u32>,
     repository: Option<String>,
@@ -4028,6 +4034,7 @@ pub fn run() -> i32 {
             start_review,
             list_reviews,
             review_overview,
+            review_activity,
             get_review,
             cancel_review,
             retry_review,

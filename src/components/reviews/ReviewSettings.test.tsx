@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { bridgeApi } from "../../api";
 import type { AdapterDescriptor } from "../../types";
-import { ReviewerSettingsSection } from "./ReviewerSettingsSection";
+import { ReviewSettings } from "./ReviewSettings";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -21,7 +21,7 @@ it("loads the stored reviewer settings and shows the default prompt as the place
     settings: { harnesses: { codex: { model: "gpt-5-codex", effort: "xhigh" } }, systemPrompt: "" },
     defaultSystemPrompt: "Review pull request #{number}.",
   });
-  await act(async () => { root.render(<ReviewerSettingsSection adapters={[codex]} />); });
+  await act(async () => { root.render(<ReviewSettings adapters={[codex]} />); });
   expect(host.querySelector<HTMLButtonElement>('[aria-label="Codex reviewer model"]')?.textContent).toContain("GPT-5 Codex");
   expect(host.querySelector<HTMLButtonElement>('[aria-label="Codex reviewer effort"]')?.textContent).toContain("xhigh");
   const prompt = host.querySelector<HTMLTextAreaElement>('[aria-label="Reviewer instructions"]')!;
@@ -35,7 +35,7 @@ it("saves an edited prompt through the save bar and never reports a failed save 
   const save = vi.spyOn(bridgeApi, "saveReviewerSettings")
     .mockRejectedValueOnce(new Error("Could not persist"))
     .mockResolvedValueOnce({ settings: { harnesses: {}, systemPrompt: "Only tests for PR {number}." }, defaultSystemPrompt: "default" });
-  await act(async () => { root.render(<ReviewerSettingsSection adapters={[codex]} />); });
+  await act(async () => { root.render(<ReviewSettings adapters={[codex]} />); });
   const prompt = host.querySelector<HTMLTextAreaElement>('[aria-label="Reviewer instructions"]')!;
   await act(async () => {
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
@@ -58,7 +58,7 @@ it("saves an edited prompt through the save bar and never reports a failed save 
 it("saves a reviewer model on change without the unsaved prompt", async () => {
   vi.spyOn(bridgeApi, "reviewerSettings").mockResolvedValue({ settings: { harnesses: {}, systemPrompt: "stored" }, defaultSystemPrompt: "default" });
   const save = vi.spyOn(bridgeApi, "saveReviewerSettings").mockImplementation(async settings => ({ settings, defaultSystemPrompt: "default" }));
-  await act(async () => { root.render(<ReviewerSettingsSection adapters={[codex]} />); });
+  await act(async () => { root.render(<ReviewSettings adapters={[codex]} />); });
   const prompt = host.querySelector<HTMLTextAreaElement>('[aria-label="Reviewer instructions"]')!;
   await act(async () => {
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
@@ -78,7 +78,7 @@ it("saves every field of the loaded record, not only the two the form edits", as
   const loaded = { harnesses: {}, systemPrompt: "stored", futureSetting: "keep me" } as ReviewerSettingsWithExtra;
   vi.spyOn(bridgeApi, "reviewerSettings").mockResolvedValue({ settings: loaded, defaultSystemPrompt: "default" });
   const save = vi.spyOn(bridgeApi, "saveReviewerSettings").mockImplementation(async settings => ({ settings, defaultSystemPrompt: "default" }));
-  await act(async () => { root.render(<ReviewerSettingsSection adapters={[codex]} />); });
+  await act(async () => { root.render(<ReviewSettings adapters={[codex]} />); });
   const prompt = host.querySelector<HTMLTextAreaElement>('[aria-label="Reviewer instructions"]')!;
   await act(async () => {
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
@@ -113,7 +113,7 @@ const pressButton = async (text: string) => act(async () => { [...host.querySele
 
 it("round-trips every review job setting", async () => {
   const save = mockJobSettings();
-  await act(async () => { root.render(<ReviewerSettingsSection adapters={[codex]} />); });
+  await act(async () => { root.render(<ReviewSettings adapters={[codex]} />); });
   expect(host.textContent).toContain("Findings wait in the pane");
 
   await pressButton("Post automatically");
@@ -145,7 +145,7 @@ it("round-trips every review job setting", async () => {
 
 it("round-trips auto-review, draft skipping and incremental re-review, each saying what it does", async () => {
   const save = mockJobSettings();
-  await act(async () => { root.render(<ReviewerSettingsSection adapters={[codex]} />); });
+  await act(async () => { root.render(<ReviewSettings adapters={[codex]} />); });
   expect(host.textContent).toContain("Reviews start only when you ask from the GitHub pane.");
   const skip = () => host.querySelector<HTMLButtonElement>('[aria-label="Skip draft PRs"]')!;
   expect(skip().disabled, "nothing to skip while auto-review is off").toBe(true);
@@ -172,7 +172,7 @@ it("round-trips auto-review, draft skipping and incremental re-review, each sayi
 
 it("turning Second opinion off keeps only the first default reviewer", async () => {
   const save = mockJobSettings({ ...JOB_DEFAULTS, secondOpinion: true, defaultHarnesses: ["codex", "claude"] });
-  await act(async () => { root.render(<ReviewerSettingsSection adapters={[codex]} />); });
+  await act(async () => { root.render(<ReviewSettings adapters={[codex]} />); });
   expect(host.querySelector('[aria-label="Second reviewer"]')).not.toBeNull();
   await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Second opinion"]')!.click());
   expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ secondOpinion: false, defaultHarnesses: ["codex"] }));
@@ -182,8 +182,23 @@ it("turning Second opinion off keeps only the first default reviewer", async () 
 it("a refused job settings save shows the reason and keeps the stored value", async () => {
   const save = mockJobSettings();
   save.mockRejectedValueOnce(new Error("Reviews at once must be between 1 and 4"));
-  await act(async () => { root.render(<ReviewerSettingsSection adapters={[codex]} />); });
+  await act(async () => { root.render(<ReviewSettings adapters={[codex]} />); });
   await pressButton("Post automatically");
   expect(host.querySelector('[role="alert"]')!.textContent).toContain("between 1 and 4");
   expect(host.querySelector('[aria-label="When a review finishes"] [aria-pressed="true"]')!.textContent).toBe("Draft first");
+});
+
+it("sends reviews to the chat that wrote the pull request only when turned on, and says how", async () => {
+  const save = mockJobSettings();
+  await act(async () => { root.render(<ReviewSettings adapters={[codex]} />); });
+  const group = host.querySelector<HTMLElement>('[aria-label="Send reviews to the chat that wrote the pull request"]')!;
+  expect(group.querySelector('[aria-pressed="true"]')?.textContent, "off unless you turn it on").toBe("Off");
+  expect(host.textContent).toContain("Reviews stay here and on GitHub.");
+  await act(async () => [...group.querySelectorAll("button")].find(button => button.textContent === "When drafted")!.click());
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ handoff: "drafted" }));
+  expect(host.textContent).toContain("Nobody has triaged them yet, and the message says so.");
+  expect(host.textContent).toContain("At most three reviews of a pull request go to its chat in a day.");
+  await act(async () => [...group.querySelectorAll("button")].find(button => button.textContent === "When posted")!.click());
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ handoff: "posted" }));
+  expect(host.textContent).toContain("what you posted (with your edits)");
 });

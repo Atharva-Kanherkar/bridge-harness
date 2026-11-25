@@ -83,8 +83,6 @@ export const SETTINGS_ROWS: RegistryRow[] = [
   { page: "workers", id: "preferred-agent", label: "Preferred coding agent", description: "Which coding agent background tasks use first" },
   { page: "workers", id: "task-limits", label: "Background task limits", description: "Tasks running at once, per message, and wait time" },
   { page: "workers", id: "orchestrator-notices", label: "Orchestrator notices", description: "Which worker notices cost an orchestrator a model turn" },
-  { page: "workers", id: "reviewer", label: "Pull request reviewer", description: "Model, effort and instructions per harness for GitHub PR reviews" },
-  { page: "workers", id: "review-jobs", label: "Review jobs", description: "Draft first or post automatically, auto-review on push, skip draft PRs, incremental re-review, second opinion, fallback reviewers, reviews at once" },
 
   { page: "work", id: "briefing", label: "Integration briefing", description: "Slack, GitHub, and other integration activity from the past 24 hours, and what it reads" },
   { page: "work", id: "briefing-schedule", label: "Refresh frequency", description: "How often the briefing runs, and refresh on focus" },

@@ -106,11 +106,10 @@ const sql = query => execFileSync("sqlite3", [path.join(data, "bridge.db"), quer
 const link = `${origin}/#bridge-daemon=${encodeURIComponent(`ws://127.0.0.1:${daemonPort}`)}&bridge-token=${encodeURIComponent(token)}`;
 
 const openSettings = async page => {
-  await page.getByText("Settings", { exact: true }).first().click();
-  const advanced = page.getByRole("button", { name: "Advanced" }).first();
-  await advanced.waitFor({ timeout: 15_000 });
-  if (!(await page.getByText("Background tasks", { exact: true }).first().isVisible())) await advanced.click();
-  await page.getByText("Background tasks", { exact: true }).first().click({ timeout: 15_000 });
+  // The review settings live in the Reviews app.
+  await page.getByText("Apps", { exact: true }).first().click();
+  await page.getByText("Reviews", { exact: true }).first().click({ timeout: 15_000 });
+  await page.getByRole("radio", { name: "Settings", exact: true }).click({ timeout: 15_000 });
   const group = page.locator('[data-settings-row="review-jobs"]');
   await group.waitFor({ timeout: 15_000 });
   await group.scrollIntoViewIfNeeded();

@@ -1408,6 +1408,12 @@ pub fn list_reviews(core: &Arc<BridgeCore>, params: &wire::ListReviewsParams) ->
     crate::reviews::list(core, params)
 }
 
+pub fn review_activity(core: &Arc<BridgeCore>, params: &wire::ReviewActivityParams) -> Result<wire::ReviewActivityList, BridgeError> {
+    let db = crate::reviews::lock_db(core);
+    crate::reviews::store::require_job(&db, &params.job_id)?;
+    Ok(wire::ReviewActivityList { entries: crate::reviews::store::activity(&db, &params.job_id)? })
+}
+
 pub fn review_overview(core: &Arc<BridgeCore>, params: &wire::ReviewOverviewParams) -> Result<wire::ReviewOverview, BridgeError> {
     crate::reviews::overview::overview(core, params)
 }
@@ -3732,20 +3738,89 @@ fn resolve_provider_permission(
     )
 }
 
+/// The form OpenCode 2.x raises before its `websearch` tool first sends a
+/// query to a search provider. OpenCode's server sets the kind; the model
+/// cannot.
+pub(crate) const OPENCODE_WEBSEARCH_CONSENT_KIND: &str = "websearch.provider";
+
+/// The label of the consent form's "allow" option, when `details` is that
+/// form. Its follow-up ("Choose a web search provider") has the same kind but
+/// no allow option, so it stays with a person.
+pub(crate) fn websearch_consent_allow_label(details: &Value) -> Option<String> {
+    if details.get("requestMethod").and_then(Value::as_str) != Some(agent::OPENCODE_QUESTION_REQUEST_METHOD)
+        || details.get("formKind").and_then(Value::as_str) != Some(OPENCODE_WEBSEARCH_CONSENT_KIND)
+    {
+        return None;
+    }
+    let questions = details.get("questions").and_then(Value::as_array)?;
+    let [question] = questions.as_slice() else { return None };
+    question
+        .get("options")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|option| option.get("value").and_then(Value::as_str) == Some("allow"))
+        .and_then(|option| option.get("label").and_then(Value::as_str))
+        .map(str::to_owned)
+}
+
+/// Full access answers OpenCode's web search consent the way a person would
+/// click "Allow", through the same single-owner resolver.
+pub(crate) fn auto_answer_websearch_consent(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    event_id: i64,
+) -> Result<wire::InteractionResolutionResult, BridgeError> {
+    let label = {
+        let db = core.db.lock().unwrap();
+        let (payload, _, _) = interaction_payload(&db, session_id, event_id, "question.requested")?;
+        websearch_consent_allow_label(payload.get("data").unwrap_or(&Value::Null))
+            .ok_or_else(|| BridgeError::Invalid("Only OpenCode's web search consent is answered automatically".into()))?
+    };
+    resolve_question_as(
+        core,
+        session_id,
+        event_id,
+        "answer",
+        std::collections::BTreeMap::from([("0".to_owned(), vec![label])]),
+        "policy",
+        Some("Auto-approve provider permissions"),
+    )
+}
+
 pub fn resolve_question(
     core: &Arc<BridgeCore>,
     session_id: &str,
     event_id: i64,
     action: &str,
+    answers: std::collections::BTreeMap<String, Vec<String>>,
+) -> Result<wire::InteractionResolutionResult, BridgeError> {
+    resolve_question_as(core, session_id, event_id, action, answers, "human", None)
+}
+
+fn resolve_question_as(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    event_id: i64,
+    action: &str,
     mut answers: std::collections::BTreeMap<String, Vec<String>>,
+    actor: &str,
+    reason: Option<&str>,
 ) -> Result<wire::InteractionResolutionResult, BridgeError> {
     if !matches!(action, "answer" | "decline" | "cancel") {
         return Err(BridgeError::Invalid("Unsupported question action".into()));
     }
     let db = core.db.lock().unwrap();
+    // Checked again under the lock: the access level can change between the
+    // frame that raised the form and this answer.
+    if actor == "policy" && crate::chat_defaults::effective_access(&db, session_id)? != wire::ChatAccess::Full {
+        return Err(BridgeError::Invalid("Automatic permission grant is no longer authorized".into()));
+    }
     let (payload, adapter_id, is_worker) =
         interaction_payload(&db, session_id, event_id, "question.requested")?;
     let details = payload.get("data").cloned().unwrap_or_else(|| serde_json::json!({}));
+    if actor == "policy" && websearch_consent_allow_label(&details).is_none() {
+        return Err(BridgeError::Invalid("Only OpenCode's web search consent is answered automatically".into()));
+    }
     let request_id = details
         .get("requestId")
         .cloned()
@@ -3772,8 +3847,8 @@ pub fn resolve_question(
         "question",
         action,
         None,
-        "human",
-        None,
+        actor,
+        reason,
         item_id.as_deref(),
     )?;
     let Some(resolving_event) = claim else {
@@ -3861,8 +3936,8 @@ pub fn resolve_question(
             "question",
             action,
             None,
-            "human",
-            None,
+            actor,
+            reason,
             &adapter_id,
             is_worker,
             item_id.as_deref(),
@@ -3878,8 +3953,8 @@ pub fn resolve_question(
         "question",
         action,
         None,
-        "human",
-        None,
+        actor,
+        reason,
         &adapter_id,
         is_worker,
         item_id.as_deref(),
