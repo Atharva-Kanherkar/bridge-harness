@@ -3,7 +3,7 @@ import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
 import { Check, Copy, KeyRound, Maximize2, Minimize2 } from "lucide-react";
-import katex from "katex";
+import type Katex from "katex";
 import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from "./highlight";
 import { isExternalUrl } from "../externalLinks";
 import { parseNoteLink } from "../noteLinks";
@@ -264,8 +264,22 @@ const INLINE = /(`[^`]+`|\\\([^\n]*?\\\)|\$(?![\s$])(?:[^\n$]*?[^\s$])?\$(?!\d)|
 /** One whole bare URL and nothing else — what a token has to be to become a link. */
 const BARE_URL_ONLY = /^https?:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]}]$/;
 
-/** Render a LaTeX string to KaTeX HTML, or null if it cannot be parsed. */
+// KaTeX is fetched the first time a chat shows math, not at startup: it was
+// ~260 kB of the startup bundle, parsed and kept in memory by every window,
+// and most chats never render an equation.
+let katex: typeof Katex | null = null;
+let katexLoading: Promise<void> | null = null;
+
+/** Load the math renderer. Resolves at once when it is already loaded. */
+export function loadMath(): Promise<void> {
+  katexLoading ??= import("katex").then(module => { katex = module.default; });
+  return katexLoading;
+}
+
+/** Render a LaTeX string to KaTeX HTML, or null if it cannot be parsed or the
+ *  renderer has not loaded yet (see `loadMath`). */
 export function renderMathToHtml(tex: string, displayMode: boolean): string | null {
+  if (!katex) return null;
   try {
     return katex.renderToString(tex, { displayMode, throwOnError: true, trust: false, output: "htmlAndMathml" });
   } catch {
@@ -273,8 +287,21 @@ export function renderMathToHtml(tex: string, displayMode: boolean): string | nu
   }
 }
 
+/** Whether the math renderer is loaded, loading it on first use. */
+function useMathReady(): boolean {
+  const [ready, setReady] = useState(() => katex !== null);
+  useEffect(() => {
+    if (ready) return;
+    let live = true;
+    void loadMath().then(() => { if (live) setReady(true); }, () => undefined);
+    return () => { live = false; };
+  }, [ready]);
+  return ready;
+}
+
 function InlineMath({ tex }: { tex: string }) {
-  const html = useMemo(() => renderMathToHtml(tex, false), [tex]);
+  const ready = useMathReady();
+  const html = useMemo(() => ready ? renderMathToHtml(tex, false) : null, [ready, tex]);
   if (html == null) return <code>{tex}</code>;
   return <span dangerouslySetInnerHTML={{ __html: html }} />;
 }
@@ -316,7 +343,11 @@ export function CopyButton({ text, floating = false, className }: { text: string
 }
 
 function MathBlock({ tex }: { tex: string }) {
-  const html = useMemo(() => renderMathToHtml(tex, true), [tex]);
+  const ready = useMathReady();
+  const html = useMemo(() => ready ? renderMathToHtml(tex, true) : null, [ready, tex]);
+  // Not loaded yet is not a parse error: show the source plainly meanwhile.
+  // oxlint-disable-next-line shadcn/no-arbitrary-values -- prose spacing in em, like the rendered block it stands in for
+  if (!ready) return <pre className="my-[0.6em] overflow-x-auto px-[0.85em] py-[0.6em] text-muted-foreground"><code>{tex}</code></pre>;
   if (html == null) {
     return <pre className="my-[0.6em] overflow-x-auto rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive"><code>{tex}</code></pre>;
   }

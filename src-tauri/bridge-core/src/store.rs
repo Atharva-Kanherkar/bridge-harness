@@ -57,8 +57,13 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     if path != Path::new(":memory:") {
         prune_migration_backups_and_report(path, migration_backup.as_deref());
     }
+    // `synchronous=NORMAL` is SQLite's recommended setting under WAL: a commit
+    // no longer waits on fsync, only checkpoints do. Every streamed frame and
+    // session entry commits while holding the one `core.db` mutex, so the
+    // fsync was paid by every other session queued behind it. A crash of the
+    // app still loses nothing; only a power cut can drop the last commits.
     connection.execute_batch(
-        "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+        "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
     )?;
     // Per-frame lookups ask "does this session have any compaction marker?"
     // and "which entries of this kind exist?"; without this index each one
@@ -68,6 +73,14 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     connection.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_session_entries_session_kind ON session_entries(session_id, kind);
          CREATE UNIQUE INDEX IF NOT EXISTS idx_harness_subagent_provider ON sessions(parent_session_id,provider_session_id) WHERE kind='harness_subagent';",
+    )?;
+    // The worker maintenance tick asks every second which chats are
+    // checkpointing. Without an index that walked every session row (90k on a
+    // long-lived install, ~150 ms) while holding the core.db mutex, stalling
+    // every live stream once a second. Partial, so it holds only the handful
+    // of rows actually checkpointing.
+    connection.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_checkpointing ON sessions(id) WHERE status='checkpointing';",
     )?;
     // The audit of early compaction attempts, added the same version-less way.
     crate::early_compaction::install_store(&connection)?;
@@ -141,6 +154,7 @@ pub fn open_telemetry(path: &Path) -> Result<Connection, BridgeError> {
     let connection = Connection::open(path)?;
     connection.execute_batch(
         "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=NORMAL;
          PRAGMA busy_timeout=50;
          CREATE TABLE IF NOT EXISTS telemetry_spans (
             span_id TEXT PRIMARY KEY,
@@ -187,9 +201,10 @@ pub fn append_telemetry_batch(
     }
     let transaction = db.unchecked_transaction()?;
     for span in spans {
-        transaction.execute(
+        transaction.prepare_cached(
             "INSERT OR IGNORE INTO telemetry_spans(span_id,trace_id,name,attributes,started_at,ended_at)
              VALUES(?1,?2,?3,?4,?5,?6)",
+        )?.execute(
             params![
                 span.span_id,
                 span.trace_id,
@@ -202,6 +217,37 @@ pub fn append_telemetry_batch(
     }
     transaction.commit()?;
     Ok(spans.len())
+}
+
+/// How long telemetry spans are kept. Nothing in Bridge reads them back, and
+/// one is written per persisted frame, so without a horizon the file only
+/// grows (1.9 GB after four months on one install).
+pub const TELEMETRY_RETENTION: chrono::Duration = chrono::Duration::days(14);
+
+/// Delete up to `batch` of the oldest spans that started before `cutoff`.
+///
+/// Spans are appended in time order, so the oldest rowids are the oldest
+/// spans: this reads at most `batch` rows from the front and deletes the run
+/// that is old enough, never scanning the rest of the table. A span written
+/// out of order stays until the run in front of it has aged out.
+pub fn prune_telemetry(db: &Connection, cutoff: &str, batch: usize) -> Result<usize, BridgeError> {
+    let last_expired = {
+        let mut statement =
+            db.prepare_cached("SELECT rowid,started_at FROM telemetry_spans ORDER BY rowid LIMIT ?1")?;
+        let mut rows = statement.query(params![batch as i64])?;
+        let mut last = None;
+        while let Some(row) = rows.next()? {
+            if row.get_ref(1)?.as_str().map_err(rusqlite::Error::from)? >= cutoff {
+                break;
+            }
+            last = Some(row.get::<_, i64>(0)?);
+        }
+        last
+    };
+    match last_expired {
+        Some(rowid) => Ok(db.execute("DELETE FROM telemetry_spans WHERE rowid<=?1", params![rowid])?),
+        None => Ok(0),
+    }
 }
 
 pub fn export_history_snapshot(
@@ -4875,6 +4921,71 @@ mod tests {
         let events = state(&db).unwrap().events;
         assert!(events.iter().all(|event| event.source != "latency"));
         assert!(events.iter().any(|event| event.kind == "session.input.steered"), "a real event outlives any number of latency rows");
+    }
+
+    #[test]
+    fn the_checkpointing_sweep_reads_an_index_not_every_session() {
+        let db = open(Path::new(":memory:")).unwrap();
+        let plan: Vec<String> = db
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT id FROM sessions WHERE status='checkpointing' AND parent_session_id IS NULL ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|step| step.contains("idx_sessions_checkpointing")),
+            "the 1 s maintenance query must not scan the sessions table: {plan:?}"
+        );
+    }
+
+    #[test]
+    fn telemetry_retention_deletes_only_expired_spans_from_the_front() {
+        let dir = tempfile::tempdir().unwrap();
+        let telemetry = open_telemetry(&dir.path().join("telemetry.db")).unwrap();
+        let span = |id: &str, at: &str| TelemetrySpan {
+            span_id: id.into(),
+            trace_id: "trace".into(),
+            name: "frame".into(),
+            attributes: "{}".into(),
+            started_at: at.into(),
+            ended_at: at.into(),
+        };
+        let spans: Vec<_> = (0..5)
+            .map(|index| span(&format!("old-{index}"), &format!("2026-01-0{}T00:00:00+00:00", index + 1)))
+            .chain([span("new", "2026-11-01T00:00:00+00:00")])
+            .collect();
+        append_telemetry_batch(&telemetry, &spans).unwrap();
+        let remaining = |db: &Connection| -> Vec<String> {
+            db.prepare("SELECT span_id FROM telemetry_spans ORDER BY rowid")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let cutoff = "2026-06-01T00:00:00+00:00";
+
+        assert_eq!(prune_telemetry(&telemetry, cutoff, 2).unwrap(), 2, "one batch at a time");
+        assert_eq!(remaining(&telemetry), ["old-2", "old-3", "old-4", "new"]);
+        assert_eq!(prune_telemetry(&telemetry, cutoff, 10).unwrap(), 3, "stops at the first span still kept");
+        assert_eq!(remaining(&telemetry), ["new"]);
+        assert_eq!(prune_telemetry(&telemetry, cutoff, 10).unwrap(), 0);
+    }
+
+    #[test]
+    fn stores_commit_without_waiting_on_fsync() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open(&dir.path().join("bridge.db")).unwrap();
+        let telemetry = open_telemetry(&dir.path().join("telemetry.db")).unwrap();
+        for db in [&core, &telemetry] {
+            let mode: String = db.query_row("PRAGMA journal_mode", [], |row| row.get(0)).unwrap();
+            let synchronous: i64 = db.query_row("PRAGMA synchronous", [], |row| row.get(0)).unwrap();
+            assert_eq!(mode, "wal");
+            assert_eq!(synchronous, 1, "WAL with synchronous=NORMAL skips the per-commit fsync");
+        }
     }
 
     #[test]

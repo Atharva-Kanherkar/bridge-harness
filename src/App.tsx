@@ -177,6 +177,7 @@ import { describeError, errorMessage, isThrottleKind } from "./errors";
 import { isCodexVersionError, isOlderCodexVersion, latestCodexVersion, withCodexRefreshDeadline } from "./codexUpdate";
 import { CodexUpdateDialog, type CodexUpdatePhase } from "./components/CodexUpdateDialog";
 import { mergeForestSnapshot } from "./forest";
+import { useShallowStableArray, useStableCallback } from "./useStableProps";
 import { createCoalescedRefresh, startSerialPoll } from "./polling";
 import { withWorkspace } from "./workspaceStats";
 import { reviewBadge, useChatChanges } from "./chatChanges";
@@ -1558,7 +1559,10 @@ function AppContent() {
     && workerRuntime?.lifecycleState !== "checkpointing"
     && liveStatuses.includes(session?.status ?? "stopped");
   const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
-  const sessionEvents = useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]);
+  // Another chat's stream changes `agentEvents` many times a second; keep this
+  // chat's slice when none of those events are its own, so its transcript
+  // does not re-reduce for them.
+  const sessionEvents = useShallowStableArray(useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]));
   const asideSession = useMemo(() => {
     if (!asideLifecycle || asideLifecycle.sourceSessionId !== session?.id) return undefined;
     return state.sessions.find(candidate => candidate.id === asideLifecycle.sessionId);
@@ -1572,6 +1576,36 @@ function AppContent() {
   const notesSession = useMemo(() => notesChatId ? state.sessions.find(candidate => candidate.id === notesChatId) : undefined, [notesChatId, state.sessions]);
   const notesPending = useMemo(() => pending.filter(item => item.sessionId === notesChatId), [pending, notesChatId]);
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id), [pending, session?.id]);
+  // Props for the open chat's transcript. Composer text lives in this
+  // component, so every keystroke renders it; one new function or array among
+  // these props was enough to re-render and re-reduce the whole transcript.
+  const conversationOpenSession = useStableCallback(openSession);
+  const conversationOpenAgent = useStableCallback(showAgentInDock);
+  const conversationOpenFile = useStableCallback(openFileInDock);
+  const conversationRetryCompaction = useStableCallback(() => session ? retryCompaction(session.id) : Promise.resolve());
+  const conversationAskAside = useStableCallback((quoted: string) => {
+    // Selecting transcript prose and asking aside: the same side-chat
+    // contract as /btw, with the excerpt quoted as the side chat's first
+    // message.
+    if (session) void openSideChat(quoted, session.id).catch(() => undefined);
+  });
+  const conversationForkSession = useStableCallback((snapshotSessionId: string, entryId: string) => {
+    setForkError(null);
+    setForkDraft({ sessionId: snapshotSessionId, entryId });
+  });
+  const conversationRewindEntry = useStableCallback((snapshotSessionId: string, entryId: string) => {
+    // Naming the entry id here told the reader nothing: it is a uuid.
+    // Describe the effect instead.
+    if (window.confirm("Rewind to this message? Everything after it becomes inactive. Your history is kept and no files are changed.")) {
+      void rewindSessionEntry(snapshotSessionId, entryId);
+    }
+  });
+  // The forest is re-read on a timer; key on the ids so an unchanged set of
+  // leaves stays the same array.
+  const leafKey = forest ? forest.leaves.map(entry => entry.id).join("\n") : undefined;
+  const leafEntryIds = useMemo(() => leafKey === undefined ? undefined : leafKey ? leafKey.split("\n") : [], [leafKey]);
+  const openMemoryView = useCallback(() => setView("memory"), []);
+  const memoryUsedChip = useMemo(() => <MemoryUsedChip audit={packetAudit} onOpenMemory={openMemoryView} />, [packetAudit, openMemoryView]);
   // Chats with a send on its way: the sidebar's Running group counts them as
   // a turn in flight, as `turnActive` below does for the open chat.
   const sendingChatIds = useMemo(() => new Set(pending.map(item => item.sessionId)), [pending]);
@@ -4145,7 +4179,7 @@ function AppContent() {
                 <AgentConversation
                   session={session}
                   projectName={projectName}
-                  onOpenSession={openSession}
+                  onOpenSession={conversationOpenSession}
                   events={sessionEvents}
                   forestEntries={forest?.entries}
                   activeProcessEntries={forest?.activeProcessEntries}
@@ -4157,12 +4191,12 @@ function AppContent() {
                   onWaiveCompletion={waiveCompletion}
                   onRefreshBase={refreshWorkspaceBase}
                   onRetryWorker={retryWorkerTask}
-                  onOpenAgent={showAgentInDock}
+                  onOpenAgent={conversationOpenAgent}
                   workerSessions={visibleSessions}
                   workerRuntimes={forest?.workerRuntimes}
                   onStopWorker={stopWorker}
                   onOpenAgents={showAgentsInDock}
-                  onRetryCompaction={() => retryCompaction(session.id)}
+                  onRetryCompaction={conversationRetryCompaction}
                   pendingAdoptions={pendingAdoptions}
                   onResolveAdoption={resolveAdoption}
                   continuationFidelity={session?.continuationFidelity}
@@ -4177,32 +4211,18 @@ function AppContent() {
                    onRetryTurn={session.kind === "harness_subagent" ? undefined : retryFailedTurn}
                    onEditTurn={session.kind === "harness_subagent" ? undefined : editFailedTurn}
                    onReviewChanges={session.kind !== "harness_subagent" && hasRepo && workspace ? reviewTurnChanges : undefined}
-                   onAskAside={quoted => {
-                     // Selecting transcript prose and asking aside: the same
-                     // side-chat contract as /btw, with the excerpt quoted as
-                     // the side chat's first message.
-                     void openSideChat(quoted, session.id).catch(() => undefined);
-                   }}
+                   onAskAside={conversationAskAside}
                   workspaceFiles={hasRepo ? workspaceFiles : undefined}
-                  onOpenFile={hasRepo && workspace ? openFileInDock : undefined}
+                  onOpenFile={hasRepo && workspace ? conversationOpenFile : undefined}
                   onRunInTerminal={runWorkspaceId ? runInTerminal : undefined}
                   highlightEntryId={highlightEntryId}
                   onRemember={rememberMessage}
-                  onForkSession={session.kind === "harness_subagent" ? undefined : (snapshotSessionId, entryId) => {
-                    setForkError(null);
-                    setForkDraft({ sessionId: snapshotSessionId, entryId });
-                  }}
-                  onRewindEntry={session.kind === "harness_subagent" ? undefined : (snapshotSessionId, entryId) => {
-                    // Naming the entry id here told the reader nothing — it is
-                    // a uuid. Describe the effect instead.
-                    if (window.confirm("Rewind to this message? Everything after it becomes inactive. Your history is kept and no files are changed.")) {
-                      void rewindSessionEntry(snapshotSessionId, entryId);
-                    }
-                  }}
-                  leafEntryIds={forest?.leaves.map(entry => entry.id)}
+                  onForkSession={session.kind === "harness_subagent" ? undefined : conversationForkSession}
+                  onRewindEntry={session.kind === "harness_subagent" ? undefined : conversationRewindEntry}
+                  leafEntryIds={leafEntryIds}
                   stopping={stopping}
                   onInterrupt={session ? requestStop : undefined}
-                  leading={<MemoryUsedChip audit={packetAudit} onOpenMemory={() => setView("memory")} />}
+                  leading={memoryUsedChip}
                   onBackgroundWork={backgroundWork.publish}
                 />
               </div>

@@ -89,6 +89,7 @@
     "src/sessionStop.ts": 5,
     "src/useAttentionFeed.ts": 1,
     "src/useBannerOwner.ts": 1,
+    "src/useStableProps.ts": 5,
     "src/useVoiceDictation.ts": 2
   },
   "react/set-state-in-effect": {

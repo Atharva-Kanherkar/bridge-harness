@@ -298,7 +298,8 @@ pub(crate) fn handle_connection(
             loop {
                 match subscription.recv_timeout(POLL_INTERVAL) {
                     Ok(notification) => {
-                        if write_frame(&*forward_writer, &notification).is_err() {
+                        let Some(wire) = notification.wire() else { break };
+                        if forward_writer.send(wire).is_err() {
                             break;
                         }
                     }
