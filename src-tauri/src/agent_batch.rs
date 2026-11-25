@@ -157,8 +157,10 @@ impl AgentEventBatcher {
     pub fn emit(&self, kind: &str, payload: Value) {
         let mut pending = self.pending.lock().unwrap_or_else(|error| error.into_inner());
         let emissions = pending.offer(kind, payload, Instant::now(), self.window, self.cap);
-        for (name, value) in &emissions {
-            (self.emit)(name, value.clone());
+        // By value: the batch is ours, and a clone here deep-copied every
+        // event of every flush during a streaming turn.
+        for (name, value) in emissions {
+            (self.emit)(&name, value);
         }
         let armed = pending.deadline.is_some();
         drop(pending);
