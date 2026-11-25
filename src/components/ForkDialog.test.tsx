@@ -4,7 +4,6 @@ import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 import { ForkDialog } from "./ForkDialog";
 
-type Container = HTMLDivElement & { textContent: string };
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -48,8 +47,8 @@ describe("ForkDialog", () => {
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await act(async () => {
-      const radios = container.querySelectorAll('input[name="fork-worktree"]');
-      (radios[1] as HTMLInputElement).click();
+      const radios = container.querySelectorAll('[role="radio"]');
+      (radios[1] as HTMLButtonElement).click();
     });
     expect(container.textContent).toContain("A Git worktree on a new");
     await click("Create fork");

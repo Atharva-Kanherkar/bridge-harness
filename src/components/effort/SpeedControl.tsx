@@ -4,9 +4,10 @@
 // with no faster tier, so most pickers never show it.
 
 import { Zap } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { SegmentedRadio } from "@/components/ui/segmented";
 import type { AdapterDescriptor } from "../../types";
 import type { SpeedTier } from "../../protocol/generated/protocol";
+import { Tip } from "@/components/ui/tooltip";
 
 /** The wire value for going back to the provider's standard speed. */
 export const STANDARD_SPEED = "standard";
@@ -30,41 +31,22 @@ export function SpeedControl({ tiers, value, onChange, disabled }: SpeedControlP
   if (tiers.length === 0) return null;
   const options = [{ id: STANDARD_SPEED, label: "Standard", description: "The provider's normal speed and rate." as string | null | undefined }, ...tiers];
   const current = tiers.some(tier => tier.id === value) ? value : STANDARD_SPEED;
-  const inert = disabled || !onChange;
   const active = options.find(option => option.id === current);
   return <div className="flex min-w-0 flex-col gap-1" data-testid="speed-control">
     <div className="flex items-center">
-      <div role="radiogroup" aria-label="Speed" className="inline-flex rounded-md bg-muted p-0.5 text-caption">
-        {options.map((option, i) => {
-          const on = option.id === current;
-          return <button
-            key={option.id}
-            type="button"
-            role="radio"
-            aria-checked={on}
-            tabIndex={on ? 0 : -1}
-            disabled={inert}
-            data-speed={option.id}
-            data-active={on}
-            title={option.description ?? undefined}
-            onClick={() => { if (!on) onChange?.(option.id); }}
-            onKeyDown={event => {
-              if (inert) return;
-              const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
-              if (!step) return;
-              event.preventDefault();
-              const next = (i + step + options.length) % options.length;
-              onChange?.(options[next].id);
-              event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
-            }}
-            className={cn(
-              "inline-flex items-center gap-1 rounded px-2 py-1 font-medium transition-colors disabled:cursor-default",
-              on ? "bg-card text-foreground shadow-xs" : "text-muted-foreground enabled:hover:text-foreground",
-            )}
-          >{option.id !== STANDARD_SPEED && <Zap size={11} aria-hidden="true" className="shrink-0" />}{option.label}</button>;
-        })}
-      </div>
+      <SegmentedRadio
+        label="Speed"
+        value={current ?? undefined}
+        options={options.map(option => ({
+          value: option.id,
+          label: <>{option.id !== STANDARD_SPEED && <Zap size={11} aria-hidden="true" className="shrink-0" />}{option.label}</>,
+          hint: option.description ?? undefined,
+          data: { "data-speed": option.id },
+        }))}
+        onChange={onChange}
+        disabled={disabled}
+      />
     </div>
-    {active?.description && current !== STANDARD_SPEED && <p className="truncate text-caption leading-4 text-muted-foreground" title={active.description}>{active.description}</p>}
+    {active?.description && current !== STANDARD_SPEED && <Tip label={active.description}><p className="truncate text-caption leading-4 text-muted-foreground">{active.description}</p></Tip>}
   </div>;
 }

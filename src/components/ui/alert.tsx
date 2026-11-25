@@ -25,12 +25,16 @@ const alertVariants = cva(
 export function Alert({
   className,
   variant,
+  floating = false,
   ...props
 }: React.ComponentProps<"div"> &
-  VariantProps<typeof alertVariants>): React.ReactElement {
+  VariantProps<typeof alertVariants> & {
+    /** A toast over the app: the overlay shadow on a popover surface. */
+    floating?: boolean;
+  }): React.ReactElement {
   return (
     <div
-      className={cn(alertVariants({ variant }), className)}
+      className={cn(alertVariants({ variant }), floating && "u-overlay bg-popover", className)}
       data-slot="alert"
       role="alert"
       {...props}

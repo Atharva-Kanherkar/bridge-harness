@@ -11,6 +11,8 @@ import type { DatabaseRow } from "../../../types";
 import { ROW_HEIGHT, windowOf } from "./DatabaseTable";
 import { cellValue, columnsOf, formatValue, type Column } from "./formatValue";
 import type { ViewBodyProps } from "./viewBody";
+import { Tip } from "@/components/ui/tooltip";
+import { RowButton } from "@/components/ui/row";
 
 export function DatabaseList({ database, view, query, rows, groups, host, onOpenRow }: ViewBodyProps) {
   const shown = useMemo(() => columnsOf(database, view).filter(column => column.visible && column.id !== "title"), [database, view]);
@@ -26,10 +28,10 @@ export function DatabaseList({ database, view, query, rows, groups, host, onOpen
 function Section({ label, count, shown, children }: { label: string; count: number; shown: number; children: React.ReactNode }) {
   const [open, setOpen] = useState(true);
   return <section aria-label={label}>
-    <button type="button" aria-expanded={open} onClick={() => setOpen(current => !current)} className="flex h-8 w-full items-center gap-1.5 rounded-md px-1 text-left text-ui font-medium text-foreground transition-colors hover:bg-accent">
+    <RowButton size="bare" tone="default" shape="card" aria-expanded={open} onClick={() => setOpen(current => !current)}><span className="flex h-8 w-full items-center gap-1.5 px-1 text-ui font-medium">
       <ChevronRight size={14} aria-hidden="true" className={clsx("text-muted-foreground transition-transform", open && "rotate-90")} />
       {label}<span className="text-meta font-normal text-muted-foreground tabular-nums">{count}</span>
-    </button>
+    </span></RowButton>
     {open && <div role="list" className="mt-0.5 flex flex-col">{children}</div>}
     {open && count > shown && <p className="m-0 px-2 pt-1 text-meta text-muted-foreground">Showing {shown} of {count}. Filter the view to narrow it.</p>}
   </section>;
@@ -66,12 +68,12 @@ function Line({ row, columns, host, onOpen }: { row: DatabaseRow; columns: Colum
   const context = { rowTitle: host.rowTitle, workspaceTitle: (id: string) => host.workspaces.find(workspace => workspace.id === id)?.title };
   const chips = columns.map(column => [column, formatValue(column, cellValue(column, row.note, row.values), context)] as const).filter(([column, text]) => text && !(column.type === "checkbox" && text === "No"));
   return <div role="listitem" className="h-9">
-    <button type="button" onClick={onOpen} className="flex h-9 w-full min-w-0 items-center gap-3 rounded-md px-2 text-left transition-colors hover:bg-accent">
+    <RowButton size="bare" tone="default" shape="card" onClick={onOpen}><span className="flex h-9 w-full min-w-0 items-center gap-3 px-2">
       <span className={clsx("min-w-0 max-w-[60%] shrink-0 truncate text-ui font-medium", row.note.title ? "text-foreground" : "text-faint")}>{row.note.title || "Untitled"}</span>
       {/* Right-aligned, and clipped at the right edge when there are more than fit. */}
       <span className="ml-auto flex min-w-0 shrink items-center gap-1.5 overflow-hidden">
-        {chips.map(([column, text]) => <span key={column.id} title={`${column.name}: ${text}`} className="max-w-48 shrink-0 truncate rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">{column.type === "checkbox" ? column.name : text}</span>)}
+        {chips.map(([column, text]) => <Tip key={column.id} label={`${column.name}: ${text}`}><span className="max-w-48 shrink-0 truncate rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">{column.type === "checkbox" ? column.name : text}</span></Tip>)}
       </span>
-    </button>
+    </span></RowButton>
   </div>;
 }

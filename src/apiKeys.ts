@@ -36,8 +36,8 @@ export const DEFAULT_KEY_NAMES: Record<string, string> = {
 /** Recognize a pasted value by its prefix, the way the core's detectors do. */
 export function guessKeyKind(value: string): string {
   const key = value.trim();
-  if (/^sk-ant-/.test(key)) return "anthropic";
-  if (/^sk-/.test(key)) return "openai";
+  if (key.startsWith("sk-ant-")) return "anthropic";
+  if (key.startsWith("sk-")) return "openai";
   if (/^(github_pat_|gh[pousr]_)/.test(key)) return "github";
   if (/^xox[baprs]-/.test(key)) return "slack";
   if (/^(secret|ntn)_/.test(key)) return "notion";

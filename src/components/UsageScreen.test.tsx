@@ -10,6 +10,7 @@ import { bridgeApi } from "../api";
 import type { ScanHistoryResult, SummaryParams, UsageBucket, UsageHistorySource, UsageSummaryResult } from "../types";
 import { formatDayShort, USAGE_LAYOUT_OPTIONS, USAGE_PREFERENCES_KEY, type UsageLayout } from "../usageReport";
 import { clearUsageCacheForTests, UsageScreen } from "./UsageScreen";
+import { chooseOption, openSelect, selectValue } from "@/testing/select";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -198,7 +199,7 @@ describe("UsageScreen", () => {
     const screenTime = vi.spyOn(bridgeApi, "screenTime");
     await mount();
     expect(screenTime).not.toHaveBeenCalled();
-    click(container.querySelector('[role="radiogroup"][aria-label="View"] [role="radio"]:last-child')!);
+    click(container.querySelector('[role="group"][aria-label="View"] button:last-child')!);
     await flush();
     await flush();
     expect(screenTime).toHaveBeenCalledTimes(1);
@@ -388,18 +389,14 @@ describe("UsageScreen", () => {
 });
 
 describe("UsageScreen layouts", () => {
-  const layoutSelect = () => container.querySelector<HTMLSelectElement>('select[aria-label="Layout"]')!;
-  const pick = (value: string) => act(() => {
-    const select = layoutSelect();
-    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, value);
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  const layoutSelect = () => container.querySelector<HTMLElement>('[role="combobox"][aria-label="Layout"]')!;
+  const pick = (value: string) => chooseOption(layoutSelect(), value);
   const section = (label: string) => container.querySelector<HTMLElement>(`[aria-label="${label}"]`)!;
 
   it.each(USAGE_LAYOUT_OPTIONS)("keeps every honesty note in the %s layout", async layout => {
     prefer(layout);
     await mount();
-    expect(layoutSelect().value).toBe(layout);
+    expect(selectValue(layoutSelect())).toBe(layout);
     expect(text()).toContain("$4.50~");
     expect(text()).toContain("API estimate · Partly unpriced");
         expect(text()).toContain("2 unpriced records");
@@ -409,9 +406,9 @@ describe("UsageScreen layouts", () => {
 
   it("defaults to Ledger, switches layout without refetching, and persists it", async () => {
     await mount();
-    expect(layoutSelect().value).toBe("ledger");
+    expect(selectValue(layoutSelect())).toBe("ledger");
     expect(text()).toContain("Itemised by model");
-    pick("strips");
+    await pick("strips");
     await flush();
     expect(summarySpy).toHaveBeenCalledTimes(2);
     expect(section("Strip scale")).not.toBeNull();
@@ -420,14 +417,15 @@ describe("UsageScreen layouts", () => {
 
   it("offers no Classic layout", async () => {
     await mount();
-    expect([...layoutSelect().options].map(option => option.value)).toEqual(["ledger", "strips", "flow", "mosaic", "calendar"]);
+    const options = await openSelect(layoutSelect());
+    expect([...options!.querySelectorAll<HTMLElement>('[role="option"]')].map(option => option.dataset.value)).toEqual(["ledger", "strips", "flow", "mosaic", "calendar"]);
   });
 
   it("falls back to Ledger for a stored layout it does not know", async () => {
     prefer("radar", "tokens");
     await mount();
-    expect(layoutSelect().value).toBe("ledger");
-    expect(buttonByText("Tokens").getAttribute("aria-checked")).toBe("true");
+    expect(selectValue(layoutSelect())).toBe("ledger");
+    expect(buttonByText("Tokens").getAttribute("aria-pressed")).toBe("true");
   });
 
   it("keeps the breakdown table one disclosure away in the new layouts", async () => {

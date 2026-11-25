@@ -55,6 +55,15 @@ const setBody = (value: string) => {
     textarea().dispatchEvent(new Event("input", { bubbles: true }));
   });
 };
+/** Opens the named list and picks the option with that label. */
+const choose = async (label: string, option: string) => {
+  await act(async () => { document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click(); });
+  const item = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent?.trim() === option)!;
+  await act(async () => {
+    item.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    item.click();
+  });
+};
 const setSearch = (value: string) => {
   const input = document.querySelector<HTMLInputElement>('input[aria-label="Search memory"]')!;
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
@@ -459,13 +468,13 @@ describe("MemoryDialog injection toggle", () => {
     });
     mount();
     await flush();
-    const toggle = document.querySelector<HTMLInputElement>('[aria-label="Use active memory in new chats"]')!;
-    expect(toggle.checked).toBe(true);
+    const toggle = document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Use active memory in new chats"]')!;
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
     expect(container.textContent).toContain("Use in new chats");
     act(() => { toggle.click(); });
     await flush();
     expect(bridgeApi.setMemoryInjection).toHaveBeenCalledWith(false);
-    expect(toggle.checked).toBe(false);
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
   });
 });
 
@@ -529,11 +538,12 @@ describe("MemoryDialog review queue", () => {
       defaultModel: "gpt-5.6-luna",
     },
   ];
-  const pick = (label: string, value: string) => act(() => {
-    const select = container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!;
-    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, value);
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  // Option labels for the ids these tests pick, as the Choice lists show them.
+  const optionLabel: Record<string, string> = { "": "", claude: "Claude", codex: "Codex", opus: "Claude Opus", haiku: "Claude Haiku", "gpt-5.6-luna": "GPT Luna" };
+  const pick = (label: string, value: string) =>
+    choose(label, value === "" ? (label === "Memory harness" ? "Use my new-chat model" : "Model…") : optionLabel[value]);
+  /** What a Choice trigger shows. */
+  const pickerValue = (label: string) => document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.textContent?.trim();
   const sourceLine = () => container.querySelector('[data-testid="memory-model-source"]')?.textContent;
 
   it("changing the extraction mode sends only the mode", async () => {
@@ -556,7 +566,7 @@ describe("MemoryDialog review queue", () => {
     expect(container.textContent).toContain("Runs extraction after chats, nightly cleanup and automatic approval");
     expect(container.textContent).not.toContain("Extraction model");
     expect(sourceLine()).toBe("Using Claude Opus, your new-chat model.");
-    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Memory harness"]')!.value).toBe("");
+    expect(pickerValue("Memory harness")).toBe("Use my new-chat model");
   });
 
   it("a skipped choice is shown with its reason", async () => {
@@ -576,16 +586,16 @@ describe("MemoryDialog review queue", () => {
     mount({ onError, adapters: memoryAdapters });
     await flush();
     click(tab("Review"));
-    pick("Memory harness", "claude");
+    await pick("Memory harness", "claude");
     await flush();
     expect(bridgeApi.setMemoryModel).not.toHaveBeenCalled();
-    pick("Memory model", "haiku");
+    await pick("Memory model", "haiku");
     await flush();
     expect(bridgeApi.setMemoryModel).toHaveBeenCalledTimes(1);
     expect(bridgeApi.setMemoryModel).toHaveBeenCalledWith("claude", "haiku");
     expect(sourceLine()).toBe("Using Claude Haiku, your pick.");
 
-    pick("Memory harness", "");
+    await pick("Memory harness", "");
     await flush();
     expect(bridgeApi.setMemoryModel).toHaveBeenLastCalledWith();
     expect(sourceLine()).toBe("Using Claude Opus, your new-chat model.");
@@ -597,35 +607,33 @@ describe("MemoryDialog review queue", () => {
     mount({ onError, adapters: memoryAdapters });
     await flush();
     click(tab("Review"));
-    pick("Memory harness", "codex");
-    pick("Memory model", "gpt-5.6-luna");
+    await pick("Memory harness", "codex");
+    await pick("Memory model", "gpt-5.6-luna");
     await flush();
     expect(onError).toHaveBeenCalledWith(expect.stringContaining("tool-free"));
-    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Memory harness"]')!.value).toBe("");
+    expect(pickerValue("Memory harness")).toBe("Use my new-chat model");
     expect(sourceLine()).toBe("Using Claude Opus, your new-chat model.");
   });
-
-  const pickerValue = (label: string) => container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!.value;
 
   it("the pickers follow a pin changed or cleared elsewhere", async () => {
     memoryModel = { pinned: { harness: "claude", model: "haiku" }, resolved: { harness: "claude", model: "haiku", source: "user" }, skipped: [] };
     mount({ adapters: memoryAdapters });
     await flush();
     click(tab("Review"));
-    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["claude", "haiku"]);
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["Claude", "Claude Haiku"]);
 
     // Changed through the settings tool in another chat.
     memoryModel = { pinned: { harness: "claude", model: "opus" }, resolved: { harness: "claude", model: "opus", source: "user" }, skipped: [] };
     await act(async () => { memoryHandler?.({ scopeKey: "account:local" }); });
     await flush();
     expect(sourceLine()).toBe("Using Claude Opus, your pick.");
-    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["claude", "opus"]);
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["Claude", "Claude Opus"]);
 
     // Cleared elsewhere: back to the new-chat model.
     memoryModel = { resolved: { harness: "claude", model: "opus", source: "chat_default" }, skipped: [] };
     await act(async () => { memoryHandler?.({ scopeKey: "account:local" }); });
     await flush();
-    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["", ""]);
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["Use my new-chat model", "Model…"]);
   });
 
   it("a harness picked without a model stays a local draft until a model is chosen", async () => {
@@ -633,12 +641,12 @@ describe("MemoryDialog review queue", () => {
     mount({ adapters: memoryAdapters });
     await flush();
     click(tab("Review"));
-    pick("Memory harness", "codex");
+    await pick("Memory harness", "codex");
     await flush();
-    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["codex", ""]);
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["Codex", "Model…"]);
     await act(async () => { memoryHandler?.({ scopeKey: "account:local" }); });
     await flush();
-    expect(pickerValue("Memory harness"), "an unrelated reload keeps the draft").toBe("codex");
+    expect(pickerValue("Memory harness"), "an unrelated reload keeps the draft").toBe("Codex");
     expect(sourceLine(), "the stored pin is still what runs").toBe("Using Claude Haiku, your pick.");
     expect(bridgeApi.setMemoryModel).not.toHaveBeenCalled();
   });
@@ -655,8 +663,8 @@ describe("MemoryDialog review queue", () => {
     mount({ adapters: memoryAdapters });
     await flush();
     click(tab("Review"));
-    pick("Memory harness", "claude");
-    pick("Memory model", "haiku");
+    await pick("Memory harness", "claude");
+    await pick("Memory model", "haiku");
     await flush();
     expect(sourceLine()).toBe("Using Claude Haiku, your pick.");
 
@@ -664,9 +672,9 @@ describe("MemoryDialog review queue", () => {
     await act(async () => { release(); });
     await flush();
     expect(sourceLine()).toBe("Using Claude Haiku, your pick.");
-    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["claude", "haiku"]);
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["Claude", "Claude Haiku"]);
 
-    pick("Memory harness", "");
+    await pick("Memory harness", "");
     await flush();
     expect(bridgeApi.setMemoryModel).toHaveBeenLastCalledWith();
     expect(memoryModel.pinned, "the clear reached the store").toBeUndefined();
@@ -769,9 +777,9 @@ describe("MemoryDialog paging and bulk review", () => {
       ...(end < matching.length ? { nextCursor: String(end) } : {}),
     };
   });
-  const cards = () => container.querySelectorAll('input[aria-label^="Select proposal"]');
+  const cards = () => container.querySelectorAll('[role="checkbox"][aria-label^="Select proposal"]');
   const toggle = (element: Element) => {
-    act(() => { (element as HTMLInputElement).click(); });
+    act(() => { (element as HTMLElement).click(); });
   };
 
   beforeEach(() => {
@@ -826,7 +834,7 @@ describe("MemoryDialog paging and bulk review", () => {
     mount();
     await flush();
     click(tab("Review"));
-    toggle(document.querySelector('input[aria-label="Select all shown proposals"]')!);
+    toggle(document.querySelector('[role="checkbox"][aria-label="Select all shown proposals"]')!);
     expect(container.textContent).toContain("50 selected");
     click(buttonByText("Reject selected"));
     await flush();
@@ -848,7 +856,7 @@ describe("MemoryDialog paging and bulk review", () => {
     mount({ onError });
     await flush();
     click(tab("Review"));
-    toggle(document.querySelector('input[aria-label="Select all shown proposals"]')!);
+    toggle(document.querySelector('[role="checkbox"][aria-label="Select all shown proposals"]')!);
     click(buttonByText("Approve selected"));
     await flush();
     expect(onError).toHaveBeenCalledWith(expect.stringContaining("1 of 2 could not be approved"));
@@ -888,8 +896,8 @@ describe("MemoryDialog paging and bulk review", () => {
     expect(labels).toContain(ticked);
     expect(cards()).toHaveLength(105);
     expect(container.textContent).toContain("1 selected");
-    const kept = [...cards()].find(input => input.getAttribute("aria-label") === ticked) as HTMLInputElement;
-    expect(kept.checked).toBe(true);
+    const kept = [...cards()].find(input => input.getAttribute("aria-label") === ticked)!;
+    expect(kept.getAttribute("aria-checked")).toBe("true");
   });
 
   it("reads the rest of the memories before a search, so nothing unloaded is missed", async () => {

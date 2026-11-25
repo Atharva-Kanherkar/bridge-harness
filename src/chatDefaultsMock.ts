@@ -1,6 +1,6 @@
 // Preview-only implementation. The shared core remains authoritative with a backend.
 import type { AdapterDescriptor, AgentDefinition, BridgeState } from "./types";
-import type { ChatDefaults, ChatDefaultsRecord, ChatDefaultsView, ChatSessionSettings, ResolveChatSettingsParams, ResolvedChatSettings, SaveChatDefaultsParams } from "./protocol/generated/protocol";
+import type { ChatDefaultsRecord, ChatDefaultsView, ChatSessionSettings, ResolveChatSettingsParams, ResolvedChatSettings, SaveChatDefaultsParams } from "./protocol/generated/protocol";
 import { layerChatDefaults, sameDefaultsRevision, WORKER_EFFORTS } from "./chatDefaults";
 
 const KEY = "bridge.mock.chatDefaults.v1";

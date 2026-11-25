@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronDown, Gauge, RefreshCw, RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { RowButton } from "@/components/ui/row";
+import { Segmented } from "@/components/ui/segmented";
+import { SelectField } from "@/components/ui/select";
 import { bridgeApi } from "../api";
 import { harnessLabel } from "../utils";
 import type { UsageHistorySource, UsagePriceOverride, UsageSummaryResult } from "../types";
@@ -15,7 +20,7 @@ import { UsageMosaic } from "./UsageMosaic";
 import { UsageCalendar } from "./UsageCalendar";
 import type { UsageLayoutProps } from "./UsageLayoutParts";
 import { UsageLoadingState } from "./UsageLayoutParts";
-import { Skeleton, pendingClass } from "@/components/ui/skeleton";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useProviderUsageOverviews } from "./UsageDot";
 import { UsageResetRow } from "./UsageResetRow";
 import {
@@ -75,12 +80,6 @@ const LAYOUTS: Record<UsageLayout, (props: UsageLayoutProps) => React.ReactNode>
 
 function windowLabel(days: UsageWindowDays): string {
   return days === 1 ? "24h" : `${days}d`;
-}
-
-function Segmented<T extends string | number>({ label, value, options, onChange }: { label: string; value: T; options: { value: T; label: string }[]; onChange: (value: T) => void }) {
-  return <div role="radiogroup" aria-label={label} className="u-segmented">
-    {options.map(option => <button key={String(option.value)} type="button" role="radio" aria-checked={option.value === value} data-active={option.value === value} className="u-segmented-item" onClick={() => onChange(option.value)}>{option.label}</button>)}
-  </div>;
 }
 
 function coverageTone(state: string): string {
@@ -296,8 +295,8 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         title="Usage"
         action={<span className="inline-flex shrink-0 items-center gap-2">
           <Segmented<UsageTab> label="View" value={tab} options={[{ value: "usage", label: "Usage" }, { value: "insights", label: "Insights" }, { value: "time", label: "Time" }]} onChange={setTab} />
-          {onOpenMeter && <button type="button" onClick={onOpenMeter} aria-label="Open usage meter" title="Usage meter" className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Gauge size={14} aria-hidden="true" /></button>}
-          <button type="button" onClick={() => { setRefreshTick(tick => tick + 1); providerUsage.refresh(); }} disabled={loading || scanning} aria-label="Refresh usage" aria-busy={loading || scanning} className={cn("inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40", pendingClass(loading || scanning))}><RefreshCw size={14} /></button>
+          {onOpenMeter && <Button variant="quiet" size="icon-sm" onClick={onOpenMeter} aria-label="Open usage meter" tooltip="Usage meter"><Gauge aria-hidden="true" /></Button>}
+          <Button variant="quiet" size="icon-sm" onClick={() => { setRefreshTick(tick => tick + 1); providerUsage.refresh(); }} disabled={loading || scanning} loading={loading || scanning} aria-label="Refresh usage" tooltip="Refresh usage"><RefreshCw aria-hidden="true" /></Button>
         </span>}
       />
 
@@ -308,9 +307,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         <Segmented<UsageMetric> label="Metric" value={metric} options={[{ value: "cost", label: "Cost" }, { value: "tokens", label: "Tokens" }]} onChange={value => update({ metric: value })} />
         <Segmented<UsageWindowDays> label="Window" value={preferences.windowDays} options={USAGE_WINDOW_OPTIONS.map(days => ({ value: days, label: windowLabel(days) }))} onChange={value => update({ windowDays: value })} />
         <span className="pt-2 text-caption tabular-nums text-muted-foreground">{formatWindowLabel(window_)}</span>
-        <select aria-label="Layout" value={layout} onChange={event => update({ layout: event.target.value as UsageLayout })} className="ml-auto h-8 rounded-lg border border-border bg-background px-2.5 text-ui text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">
-          {USAGE_LAYOUT_OPTIONS.map(option => <option key={option} value={option}>{LAYOUT_LABELS[option]}</option>)}
-        </select>
+        <SelectField label="Layout" size="sm" className="ml-auto w-auto" value={layout} onChange={next => update({ layout: next as UsageLayout })} options={USAGE_LAYOUT_OPTIONS.map(option => ({ value: option, label: LAYOUT_LABELS[option] }))} />
       </div>
 
       {(loading || scanning) && summary && <div role="status" aria-label="Loading usage" className="mb-5"><Skeleton className="h-0.5 w-full rounded-full" /></div>}
@@ -325,11 +322,11 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         <div aria-busy={loading || scanning} className={cn("transition-opacity", otherWindow && "opacity-50")}>
           <LayoutView report={report} summary={summary!} periods={periods} window={window_} windowDays={preferences.windowDays} metric={metric} />
           <section className={cn(CARD, "mt-6 py-3")} aria-label="Breakdown table">
-            <button type="button" aria-expanded={tableOpen} aria-controls="usage-breakdown-table" onClick={() => setTableOpen(open => !open)} className="flex w-full items-center gap-2 text-left">
+            <RowButton size="bare" tone="plain" aria-expanded={tableOpen} aria-controls="usage-breakdown-table" onClick={() => setTableOpen(open => !open)}>
               <h2 className="text-ui font-medium text-foreground">Breakdown table</h2>
               <span className="text-caption text-muted-foreground">{formatCount(report.models.length)} {report.models.length === 1 ? "model" : "models"} · {formatCount(report.harnesses.length)} {report.harnesses.length === 1 ? "harness" : "harnesses"}</span>
               <ChevronDown size={14} className={cn("ml-auto text-muted-foreground transition-transform", tableOpen && "rotate-180")} aria-hidden="true" />
-            </button>
+            </RowButton>
             {tableOpen && <div id="usage-breakdown-table" className="mt-3"><BreakdownTables report={report} window={window_} /></div>}
           </section>
         </div>
@@ -339,9 +336,9 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
             <div>
               <h2 className="text-ui font-medium text-foreground">History sources</h2>
             </div>
-            <button type="button" onClick={() => void scan()} disabled={scanning} aria-busy={scanning || undefined} className={cn("inline-flex h-8 items-center gap-2 rounded-lg border border-border px-3 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-40", pendingClass(scanning))}>
-              <RefreshCw size={13} aria-hidden="true" />Scan history
-            </button>
+            <Button variant="outline" size="sm" onClick={() => void scan()} disabled={scanning} loading={scanning}>
+              <RefreshCw aria-hidden="true" />Scan history
+            </Button>
           </div>
           {scanNote && <p role="status" className="mb-3 text-caption text-muted-foreground">{scanNote}</p>}
           <ul className="divide-y divide-border">
@@ -457,19 +454,19 @@ function PriceSection({ report, summary, overrides, refreshing, onRefreshRates, 
     setEditing(null);
   };
 
-  const field = (key: keyof PriceDraft, label: string) => <input aria-label={label} inputMode="decimal" value={draft[key]} onChange={event => setDraft(current => ({ ...current, [key]: event.target.value }))} className="h-7 w-full rounded-md border border-border bg-background px-2 text-right font-mono text-caption tabular-nums text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring" />;
+  const field = (key: keyof PriceDraft, label: string) => <Input size="sm" mono aria-label={label} inputMode="decimal" value={draft[key]} onChange={event => setDraft(current => ({ ...current, [key]: event.target.value }))} />;
 
   // Collapsed by default: prices are a setting you visit, not a figure you read.
   return <section className={cn(CARD, open ? "mt-4" : "mt-4 py-3")} aria-label="Model prices">
     <div className="flex items-center gap-2">
-      <button type="button" aria-expanded={open} aria-controls="usage-model-prices" onClick={() => setOpen(current => !current)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+      <RowButton size="bare" tone="plain" aria-expanded={open} aria-controls="usage-model-prices" onClick={() => setOpen(current => !current)} className="flex-1">
         <h2 className="text-ui font-medium text-foreground">Model prices</h2>
         <span className="truncate text-caption tabular-nums text-muted-foreground">{formatCount(rows.length)} {rows.length === 1 ? "model" : "models"} in this window · snapshot {summary.pricing.snapshotDate}{summary.pricing.overrides > 0 ? ` · ${formatCount(summary.pricing.overrides)} overrides` : ""}</span>
         <ChevronDown size={14} className={cn("ml-auto shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} aria-hidden="true" />
-      </button>
-      <button type="button" onClick={onRefreshRates} disabled={refreshing} aria-label="Refresh rates" aria-busy={refreshing} title={`Refresh rates from ${summary.pricing.source}`} className={cn("inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40", pendingClass(refreshing))}>
-        <RefreshCw size={13} aria-hidden="true" />
-      </button>
+      </RowButton>
+      <Button variant="quiet" size="icon-sm" onClick={onRefreshRates} disabled={refreshing} loading={refreshing} aria-label="Refresh rates" tooltip={`Refresh rates from ${summary.pricing.source}`}>
+        <RefreshCw aria-hidden="true" />
+      </Button>
     </div>
     {open && <div id="usage-model-prices" className="mt-3">
     <p className="mb-3 text-caption text-muted-foreground">USD per million tokens, from a {formatCount(summary.pricing.knownModels)}-model rate snapshot. Overrides apply to all past and future usage; blank cache rates use the automatic rate.</p>
@@ -487,8 +484,8 @@ function PriceSection({ report, summary, overrides, refreshing, onRefreshRates, 
               <td className="py-1.5 pl-3">{field("cacheRead", `${row.model} cache read price`)}</td>
               <td className="py-1.5 pl-3">{field("cacheWrite", `${row.model} cache write price`)}</td>
               <td className="py-1.5 pl-3 text-right">
-                <button type="button" onClick={() => void save(row.model)} className="rounded-md px-2 py-1 text-caption text-foreground hover:bg-accent">Save</button>
-                <button type="button" onClick={() => setEditing(null)} className="rounded-md px-2 py-1 text-caption text-muted-foreground hover:bg-accent">Cancel</button>
+                <Button variant="ghost" size="2xs" onClick={() => void save(row.model)}>Save</Button>
+                <Button variant="quiet" size="2xs" onClick={() => setEditing(null)}>Cancel</Button>
               </td>
             </> : <>
               <td className={`text-caption ${cn("py-2 font-mono", NUM, row.override ? "text-foreground" : "text-muted-foreground")}`}>{row.override ? microToUsdPerMtok(row.override.inputMicrousdPerMtok) : "Automatic"}</td>
@@ -496,8 +493,8 @@ function PriceSection({ report, summary, overrides, refreshing, onRefreshRates, 
               <td className={`text-caption ${cn("py-2 font-mono", NUM, row.override?.cacheReadMicrousdPerMtok != null ? "text-foreground" : "text-muted-foreground")}`}>{row.override?.cacheReadMicrousdPerMtok != null ? microToUsdPerMtok(row.override.cacheReadMicrousdPerMtok) : "Automatic"}</td>
               <td className={`text-caption ${cn("py-2 font-mono", NUM, row.override?.cacheWriteMicrousdPerMtok != null ? "text-foreground" : "text-muted-foreground")}`}>{row.override?.cacheWriteMicrousdPerMtok != null ? microToUsdPerMtok(row.override.cacheWriteMicrousdPerMtok) : "Automatic"}</td>
               <td className="py-2 text-right">
-                <button type="button" onClick={() => startEdit(row.model, row.override)} className="rounded-md px-2 py-1 text-caption text-foreground hover:bg-accent">Edit</button>
-                {row.override && <button type="button" aria-label={`Reset ${row.model} to automatic`} onClick={() => void onChange(bridgeApi.clearUsagePriceOverride(row.model))} className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"><RotateCcw size={13} aria-hidden="true" /></button>}
+                <Button variant="ghost" size="2xs" onClick={() => startEdit(row.model, row.override)}>Edit</Button>
+                {row.override && <Button variant="quiet" size="icon-2xs" aria-label={`Reset ${row.model} to automatic`} tooltip="Reset to automatic" onClick={() => void onChange(bridgeApi.clearUsagePriceOverride(row.model))}><RotateCcw aria-hidden="true" /></Button>}
               </td>
             </>}
           </tr>;

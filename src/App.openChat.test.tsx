@@ -88,7 +88,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-const row = (name: string) => [...container.querySelectorAll<HTMLButtonElement>("button[title]")].find(button => button.title.startsWith(`${name} —`));
+const row = (name: string) => [...container.querySelectorAll<HTMLButtonElement>("button[data-tip]")].find(button => (button.dataset.tip ?? "").startsWith(`${name} —`));
 const windowNotice = () => [...container.querySelectorAll('[role="status"]')].find(node => node.textContent?.includes("Showing the most recent"));
 
 it("paints a long chat's newest page first, then fetches its full window right behind it", async () => {

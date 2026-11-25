@@ -2,6 +2,7 @@ import { Check, ChevronDown, Shield, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MenuItem, MenuPanel, useMenuPanel } from "@/components/ui/menu-panel";
 import type { PermissionPolicy } from "../types";
+import { Button } from "@/components/ui/button";
 
 /**
  * The composer's access control: how agent approvals are handled for every
@@ -38,21 +39,22 @@ export function AccessControl({ policy, disabled, onChange }: {
   const current = mode ? LABELS[mode] : { label: "Access", detail: "" };
   const Icon = mode === "full" ? ShieldCheck : Shield;
   return <>
-    <button
+    <Button
       ref={menu.triggerRef}
-      type="button"
+      variant="quiet"
+      size="xs"
       disabled={disabled || mode == null}
       onClick={menu.toggle}
       aria-haspopup="menu"
       aria-expanded={menu.open}
       aria-label={`Access: ${current.label}`}
-      title={current.detail || undefined}
-      className={cn("flex h-8 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors enabled:hover:bg-accent disabled:cursor-default disabled:opacity-60")}
+      tooltip={current.detail || undefined}
+      className="min-w-0"
     >
       <Icon size={13} aria-hidden="true" className="shrink-0" />
       <span className="whitespace-nowrap">{current.label}</span>
       <ChevronDown size={14} className={cn("shrink-0 transition-transform", menu.open && "rotate-180")} aria-hidden="true" />
-    </button>
+    </Button>
     <MenuPanel controller={menu} label="Access mode">
       {(["full", "ask"] as AccessMode[]).map(option => <MenuItem
         key={option}

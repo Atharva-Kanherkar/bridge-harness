@@ -43,7 +43,7 @@ export function attentionCopy(item: Pick<AttentionItem, "kind" | "title" | "body
 
 /** Core titles an agent's question "<Harness> has a question". */
 export function isQuestionCopy(title: string | null | undefined): boolean {
-  return typeof title === "string" && / has a question$/.test(title);
+  return typeof title === "string" && title.endsWith(" has a question");
 }
 
 export function attentionToastKey(item: Pick<AttentionItem, "sequence">): string {

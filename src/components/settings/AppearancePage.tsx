@@ -15,6 +15,7 @@ import { canZoom, stepZoom, useZoomLevel } from "../../zoom";
 import { useOmarchyTheme } from "../../omarchy";
 import { chordLabel } from "../../keymap";
 import { PAGES } from "./sections";
+import { RowButton } from "@/components/ui/row";
 
 /** A tile previews either two swatches or a drawn figure, never both. */
 type Tile<T> = { id: T; label: string; hint: string } & ({ swatches: [string, string]; preview?: undefined } | { preview: ReactNode; swatches?: undefined });
@@ -44,9 +45,11 @@ function TileGrid<T extends string>({ name, tiles, value, onChange, columns }: {
   return <div role="radiogroup" aria-label={name} className={cn("grid gap-2 p-2.5", columns)}>
     {tiles.map(tile => {
       const selected = tile.id === value;
-      return <button
+      return <RowButton
         key={tile.id}
-        type="button"
+        size="bare"
+        tone="choice"
+        shape="card"
         role="radio"
         aria-checked={selected}
         tabIndex={selected ? 0 : -1}
@@ -60,13 +63,11 @@ function TileGrid<T extends string>({ name, tiles, value, onChange, columns }: {
           event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
         }}
         onClick={() => onChange(tile.id)}
-        className={cn(
-          // A column from the top: a button centers its content by default,
-          // so a tile whose hint wraps pushed its neighbours' swatches down.
-          "flex flex-col items-stretch justify-start rounded-lg border p-2.5 text-left transition-colors",
-          selected ? "border-foreground" : "border-border-card hover:bg-accent",
-        )}
+        className="items-stretch"
       >
+        {/* A column from the top: a tile whose hint wraps must not push its
+            neighbours' swatches down. */}
+        <span className="flex w-full flex-col justify-start p-2.5">
         <span aria-hidden="true" className="mb-2 flex h-8 overflow-hidden rounded-md border border-border">
           {tile.swatches
             ? <>
@@ -83,7 +84,8 @@ function TileGrid<T extends string>({ name, tiles, value, onChange, columns }: {
           <span className="min-w-0 flex-1 truncate text-ui text-foreground">{tile.label}</span>
         </span>
         <span className="mt-0.5 block text-meta text-muted-foreground">{tile.hint}</span>
-      </button>;
+        </span>
+      </RowButton>;
     })}
   </div>;
 }

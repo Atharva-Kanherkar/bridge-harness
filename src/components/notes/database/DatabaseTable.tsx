@@ -17,6 +17,8 @@ import { Floating } from "./Floating";
 import { PropertyCell, type CellHost, type CloseReason } from "./PropertyCell";
 import { AddProperty, ColumnMenu, type ColumnActions } from "./SchemaMenu";
 import { SYSTEM_COLUMNS, TYPE_LABELS, cellValue, columnsOf, defaultWidth, nextWidth, type Column } from "./formatValue";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
 
 export const ROW_HEIGHT = 36;
 export const OVERSCAN = 10;
@@ -309,21 +311,19 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
         {!rows.length && <p className="m-0 px-3 py-6 text-ui text-muted-foreground">No rows yet</p>}
       </div>
     </div>
-    <button type="button" onClick={() => void newRow()} className="mt-1 inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-ui text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+    <Button variant="quiet" size="sm" className="mt-1" onClick={() => void newRow()}>
       <Plus size={14} aria-hidden="true" />New
-    </button>
+    </Button>
   </div>;
 }
 
 function TitleCell({ title, onOpen }: { title: string; onOpen: () => void }) {
   return <span className="flex h-full min-w-0 items-center gap-1 pl-2 pr-1 text-ui">
     <span className={clsx("min-w-0 flex-1 truncate font-medium", title ? "text-foreground" : "text-faint")}>{title || "Untitled"}</span>
-    <button
-      type="button"
+    <Button variant="outline" size="2xs" className="shrink-0"
       aria-label={`Open ${title || "Untitled"}`}
       onClick={event => { event.stopPropagation(); onOpen(); }}
-      className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-caption text-muted-foreground opacity-0 ring-1 ring-border transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-    ><ArrowUpRight size={12} aria-hidden="true" />Open</button>
+    ><ArrowUpRight size={12} aria-hidden="true" />Open</Button>
   </span>;
 }
 
@@ -364,16 +364,19 @@ function HeaderCell({ column, width, pinned, open, onOpen, onClose, onWidth, onR
     style={{ width, minWidth: width }}
     className={clsx("relative shrink-0 border-r border-border", pinned && "sticky left-0 z-10 bg-background")}
   >
-    <button
-      type="button"
+    <RowButton
+      size="sm"
+      tone="muted"
+      shape="flush"
       aria-haspopup="menu"
       aria-expanded={open}
+      active={open}
       onClick={onOpen}
-      className={clsx("flex h-full w-full min-w-0 items-center gap-1.5 px-2 text-left text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground", open && "bg-accent text-foreground")}
+      className="h-full"
     >
       <span className="shrink-0">{typeIcon(column.type)}</span>
       <span className="min-w-0 truncate">{column.name}</span>
-    </button>
+    </RowButton>
     <span
       role="separator"
       aria-orientation="vertical"
@@ -388,9 +391,9 @@ function HeaderCell({ column, width, pinned, open, onOpen, onClose, onWidth, onR
 function AddColumn({ open, onToggle, onClose, children }: { open: boolean; onToggle: () => void; onClose: () => void; children: ReactNode }) {
   const anchor = useRef<HTMLDivElement>(null);
   return <div ref={anchor} style={{ width: ADD_WIDTH, minWidth: ADD_WIDTH }} className="relative shrink-0">
-    <button type="button" aria-label="Add a property" aria-expanded={open} onClick={onToggle} className="grid h-full w-full place-items-center text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+    <Button variant="quiet" size="icon-xs" aria-label="Add a property" aria-expanded={open} onClick={onToggle}>
       <Plus size={14} aria-hidden="true" />
-    </button>
+    </Button>
     {open && <Floating anchor={anchor} label="Add a property" onClose={onClose} width="w-72">{children}</Floating>}
   </div>;
 }

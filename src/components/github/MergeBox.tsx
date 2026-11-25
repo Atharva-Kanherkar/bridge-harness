@@ -20,7 +20,12 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
+import { RowButton } from "@/components/ui/row";
+import { Tip } from "@/components/ui/tooltip";
 import { MenuItem, MenuPanel, useMenuPanel } from "@/components/ui/menu-panel";
 import { modKey } from "@/lib/platform";
 import { usePrefersReducedMotion } from "@/motion";
@@ -32,7 +37,6 @@ import type {
 } from "@/protocol/generated/protocol";
 import { MergeGraph } from "./MergeGraph";
 import { RollupMeter } from "../GitHubPane";
-import { pendingClass } from "@/components/ui/skeleton";
 
 // The merge box (issue #1028): one card that owns readiness, the strategy,
 // the confirm step and the receipt. Merge expands the card into the confirm
@@ -333,51 +337,47 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
           {/* Wraps in a narrow dock rather than pushing the pane sideways. */}
           <div className="flex flex-wrap items-center gap-1.5 px-3.5 py-3">
             <span className="inline-flex shrink-0 overflow-hidden rounded-lg bg-primary text-primary-foreground">
-              <button
-                type="button"
+              <Button variant="default" size="xs"
                 data-merge-button
                 onClick={() => dispatch({ type: "open", subject: defaultMergeSubject(summary, state.strategy) })}
                 disabled={busy || !config}
-                className="inline-flex h-[30px] items-center gap-1.5 px-3 text-meta font-medium transition-colors hover:bg-primary-foreground/10 disabled:opacity-50"
               >
                 <GitMerge size={12} aria-hidden="true" />
                 {config ? MERGE_BUTTON_LABEL[state.strategy] : "Merge"}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button variant="default" size="icon-xs"
                 onClick={() => setMenuOpen(value => !value)}
                 disabled={busy || !config}
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
                 aria-label="Choose a merge strategy"
-                className="inline-flex h-[30px] items-center border-l border-primary-foreground/25 px-2 transition-colors hover:bg-primary-foreground/10 disabled:opacity-50"
               >
                 <ChevronDown size={12} aria-hidden="true" />
-              </button>
+              </Button>
             </span>
             {/* Approve, Review and More wrap as one group: never one alone. */}
             <span className="ml-auto flex shrink-0 items-center gap-1.5">
-            <button type="button" onClick={onApprove} disabled={busy} className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 text-meta font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50">
-              <ThumbsUp size={12} aria-hidden="true" /> Approve
-            </button>
-            <button type="button" onClick={onToggleReview} disabled={busy || reviewBusy} aria-expanded={reviewOpen} aria-busy={reviewBusy || reviewing > 0} className={cn("inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 text-meta font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50", reviewOpen && "bg-accent", pendingClass(reviewBusy || reviewing > 0))}>
-              <Sparkles size={12} aria-hidden="true" />
+            <Button variant="ghost" size="xs" onClick={onApprove} disabled={busy}>
+              <ThumbsUp className="size-3" aria-hidden="true" /> Approve
+            </Button>
+            <Button variant="ghost" size="xs" onClick={onToggleReview} disabled={busy || reviewBusy} loading={reviewBusy} aria-busy={reviewBusy || reviewing > 0 || undefined} aria-expanded={reviewOpen} data-pressed={reviewOpen ? "" : undefined}>
+              <Sparkles className="size-3" aria-hidden="true" />
               {reviewing > 0 && !reviewBusy ? "Reviewing" : "Review"}
-            </button>
+            </Button>
             {overflow.length > 0 && <>
-              <button
+              <Button
                 ref={more.triggerRef}
-                type="button"
+                variant="quiet"
+                size="icon-xs"
                 onClick={more.toggle}
                 disabled={busy}
                 aria-haspopup="menu"
                 aria-expanded={more.open}
                 aria-label="More pull request actions"
-                title="More pull request actions"
-                className="inline-grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                tooltip="More pull request actions"
               >
-                <Ellipsis size={14} aria-hidden="true" />
-              </button>
+                <Ellipsis aria-hidden="true" />
+              </Button>
               {/* Portalled: the actions sit in a collapsing row that clips anything
                   drawn outside it, which hid this menu entirely. */}
               <MenuPanel controller={more} label="More pull request actions">
@@ -404,23 +404,20 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
             {state.strategy !== "rebase" && (
               <label className="mt-2.5 block">
                 <span className="mb-1 block text-caption text-muted-foreground">Commit message</span>
-                <input
+                <Input
                   value={state.subject}
                   onChange={event => dispatch({ type: "subject", subject: event.target.value })}
                   disabled={merging}
                   aria-label="Commit message"
-                  className="h-8 w-full rounded-lg border border-input bg-background px-2.5 text-meta text-foreground outline-none focus-visible:border-ring disabled:opacity-45"
                 />
               </label>
             )}
             <label className="mt-2.5 flex items-center gap-2 text-meta text-foreground">
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={state.deleteBranch}
-                onChange={event => dispatch({ type: "deleteBranch", value: event.target.checked })}
+                onCheckedChange={value => dispatch({ type: "deleteBranch", value })}
                 disabled={merging}
                 aria-label={`Delete ${headBranch} after merge`}
-                className="size-[15px] shrink-0"
               />
               Delete <span className="rounded-sm bg-muted px-1.5 py-px font-mono text-caption text-foreground/80">{headBranch}</span> after merge
             </label>
@@ -431,36 +428,28 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
               </div>
             )}
             <div className="mt-3 flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => dispatch({ type: "collapse" })}
-                disabled={merging}
-                className="inline-flex min-h-7 items-center rounded-md px-2 text-meta font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-              >Cancel</button>
+              <Button variant="quiet" size="xs" onClick={() => dispatch({ type: "collapse" })} disabled={merging}>Cancel</Button>
               <span className="flex items-center gap-1 text-micro text-muted-foreground">
-                <Kbd className="border border-border bg-transparent">{modKey("↵")}</Kbd> to merge
+                <Kbd>{modKey("↵")}</Kbd> to merge
               </span>
               <span className="flex-1" />
-              <button
-                type="button"
+              <span className={cn("inline-flex", shaking && "merge-shake")} onAnimationEnd={() => setShaking(false)}>
+              <Button
+                size="sm"
                 data-merge-go
                 onClick={onConfirm}
                 disabled={merging || busy}
-                onAnimationEnd={() => setShaking(false)}
-                className={cn(
-                  "relative inline-flex h-[30px] items-center overflow-hidden rounded-lg bg-primary px-3 text-meta font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50",
-                  shaking && "merge-shake",
-                )}
+                className="overflow-hidden"
               >
                 <span className={cn(
-                  "inline-flex items-center gap-1.5 transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                  "inline-flex items-center gap-1.5 transition-[opacity,transform] duration-200 ease-out-bridge",
                   merging && "pointer-events-none -translate-y-2.5 opacity-0",
                 )}>
                   <GitMerge size={12} aria-hidden="true" />
                   {failed ? "Try again" : `Confirm ${MERGE_BUTTON_LABEL[state.strategy]}`}
                 </span>
                 <span className={cn(
-                  "absolute inset-0 flex items-center justify-center gap-1.5 transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                  "absolute inset-0 flex items-center justify-center gap-1.5 transition-[opacity,transform] duration-200 ease-out-bridge",
                   merging ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-2.5 opacity-0",
                 )}>
                   Merging
@@ -468,7 +457,8 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
                     <span className="merge-dot" /><span className="merge-dot" /><span className="merge-dot" />
                   </span>
                 </span>
-              </button>
+              </Button>
+              </span>
             </div>
           </div>
         </div>
@@ -489,26 +479,23 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
               </span>
             </div>
             <div className={cn("mt-3 flex items-center gap-1.5", celebrate && "merge-rise d2")}>
-              <a
-                href={prUrl}
-                data-system-browser
-                aria-label="Open the revert flow on GitHub"
-                title="Revert on GitHub"
-                className="inline-flex min-h-7 items-center gap-1.5 rounded-md border border-border-card bg-card px-2.5 text-meta font-medium text-foreground transition-colors hover:bg-accent"
-              ><RotateCcw size={12} aria-hidden="true" /> Revert</a>
-              <a
-                href={`${prUrl}/commits`}
-                data-system-browser
-                aria-label="View the commit on GitHub"
-                title="View commit on GitHub"
-                className="inline-flex min-h-7 items-center gap-1.5 rounded-md border border-border-card bg-card px-2.5 text-meta font-medium text-foreground transition-colors hover:bg-accent"
-              ><Eye size={12} aria-hidden="true" /> View commit</a>
-              <button
-                type="button"
-                onClick={onRestore}
-                disabled={busy}
-                className="inline-flex min-h-7 items-center rounded-md px-2 text-meta font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-              >Restore branch</button>
+              <Tip label="Revert on GitHub">
+                <a
+                  href={prUrl}
+                  data-system-browser
+                  aria-label="Open the revert flow on GitHub"
+                  className="inline-flex min-h-7 items-center gap-1.5 rounded-md border border-border-card bg-card px-2.5 text-meta font-medium text-foreground transition-colors hover:bg-accent"
+                ><RotateCcw size={12} aria-hidden="true" /> Revert</a>
+              </Tip>
+              <Tip label="View commit on GitHub">
+                <a
+                  href={`${prUrl}/commits`}
+                  data-system-browser
+                  aria-label="View the commit on GitHub"
+                  className="inline-flex min-h-7 items-center gap-1.5 rounded-md border border-border-card bg-card px-2.5 text-meta font-medium text-foreground transition-colors hover:bg-accent"
+                ><Eye size={12} aria-hidden="true" /> View commit</a>
+              </Tip>
+              <Button variant="quiet" size="xs" onClick={onRestore} disabled={busy}>Restore branch</Button>
             </div>
           </div>
         </div>
@@ -527,26 +514,27 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
             animate={{ opacity: 1, y: 0, scale: 1, transition: { duration: 0.2, ease: ENTER_EASE } }}
             exit={{ opacity: 0, y: 6, scale: 0.97, transition: { duration: 0.2, ease: "easeIn" } }}
             style={{ transformOrigin: "20% 100%" }}
-            className="absolute bottom-[calc(100%+6px)] left-3.5 z-20 w-[300px] rounded-xl border border-border-card bg-popover p-1.5 shadow-[0_16px_40px_-18px_rgb(0_0_0/0.5),0_2px_8px_-4px_rgb(0_0_0/0.22)]"
+            className="absolute bottom-[calc(100%+6px)] left-3.5 z-20 w-[300px] rounded-xl border border-border-card bg-popover p-1.5 shadow-lg"
           >
             {strategies.map(strategy => (
-              <button
+              <RowButton
                 key={strategy}
-                type="button"
+                size="lg"
+                shape="card"
                 role="menuitemradio"
                 aria-checked={state.strategy === strategy}
                 onClick={() => { setMenuOpen(false); dispatch({ type: "pick", strategy, subject: defaultMergeSubject(summary, strategy) }); }}
-                className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-accent"
+                className="items-start"
               >
                 <StrategyGlyph kind={strategy} />
                 <span className="min-w-0 flex-1">
                   <span className="block text-meta font-medium text-foreground">{MERGE_BUTTON_LABEL[strategy]}</span>
-                  <span className="mt-0.5 block text-caption leading-[1.4] text-muted-foreground">
+                  <span className="mt-0.5 block text-caption leading-snug text-muted-foreground">
                     {menuNote(strategy, commitCount, baseBranch, config?.defaultStrategy === strategy)}
                   </span>
                 </span>
                 {state.strategy === strategy && <Check size={13} aria-hidden="true" className="ml-auto mt-0.5 shrink-0 text-foreground" />}
-              </button>
+              </RowButton>
             ))}
           </motion.div>
         )}

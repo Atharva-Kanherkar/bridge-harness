@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { Skeleton, SkeletonRegion, SkeletonText, pendingClass } from "@/components/ui/skeleton";
+import { Skeleton, SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 import { Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
 import { harnessLabel } from "../utils";
 import type { MemoryInsightsResult } from "../types";
 import { CARD, relative, rise, Themes, TONE } from "./UsageInsights";
+import { Button } from "@/components/ui/button";
 
 // The Memory Insights tab: the same harness-written report as usage Insights,
 // over the memory ledger. Figures are Bridge's own (recall counts, budget);
@@ -37,9 +38,9 @@ export function MemoryInsights({ onError }: { onError: (message: string) => void
   useEffect(() => { load(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const report = result?.report ?? null;
-  const analyseButton = <button type="button" onClick={() => load(true)} disabled={loading} aria-busy={loading || undefined} className={cn("inline-flex h-8 shrink-0 items-center gap-2 rounded-lg border border-border px-3 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-40", pendingClass(loading))}>
+  const analyseButton = <Button variant="outline" size="sm" className="shrink-0" onClick={() => load(true)} disabled={loading} loading={loading}>
     <Sparkles size={13} aria-hidden="true" />{report ? "Analyse again" : "Analyse my memory"}
-  </button>;
+  </Button>;
 
   if (loading && !report) {
     return <div className="space-y-4">

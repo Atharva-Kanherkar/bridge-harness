@@ -7,6 +7,7 @@ import type { AgentEvent } from "../../types";
 import { Field, GhostButton, SettingsGroup, SettingsPage, TextButton } from "./kit";
 import { PAGES } from "./sections";
 import { AgentConversation } from "../AgentConversation";
+import { RowButton } from "@/components/ui/row";
 
 export function ArchivedChatsPage() {
   const [query, setQuery] = useState("");
@@ -98,7 +99,7 @@ export function ArchivedChatsPage() {
       <SettingsGroup label={viewing?.title} note="Read-only transcript. Reasoning, tools and interactions use the same conversation view; historical actions are disabled.">
         <div className="relative h-[60dvh] min-h-64">
           {loading && events.length === 0
-            ? <SkeletonRegion label="Loading conversation" className="flex flex-col gap-5 p-4"><Skeleton className="ml-auto h-10 w-2/5 rounded-2xl" /><SkeletonText index={1} /><SkeletonText index={2} lines={2} /></SkeletonRegion>
+            ? <SkeletonRegion label="Loading conversation"><div className="flex flex-col gap-5 p-4"><Skeleton className="ml-auto h-10 w-2/5 rounded-2xl" /><SkeletonText index={1} /><SkeletonText index={2} lines={2} /></div></SkeletonRegion>
             : <AgentConversation key={viewing?.id} readOnly events={events} onResolve={() => undefined} />}
         </div>
       </SettingsGroup>
@@ -111,10 +112,10 @@ export function ArchivedChatsPage() {
       {loading ? <SkeletonRows label="Loading archived chats" rows={4} trailing /> : <SettingsGroup label="Conversations">
         {chats.length === 0 ? <div className="p-8 text-center text-muted-foreground"><Archive size={24} className="mx-auto mb-3" /><p className="text-ui">{query ? "No archived chats match your search." : "No archived chats yet."}</p></div> : <ul className="divide-y divide-border">
           {chats.map(chat => <li key={chat.id} className="flex flex-wrap items-center gap-3 p-4">
-            <button type="button" className="min-w-0 flex-1 text-left" onClick={() => { setSelected(chat); readConversation(); setChildrenOffset(0); setChildren([]); setMoreChildren(false); }}>
+            <RowButton size="bare" tone="default" shape="card" onClick={() => { setSelected(chat); readConversation(); setChildrenOffset(0); setChildren([]); setMoreChildren(false); }}><span className="min-w-0 flex-1">
               <span className="block truncate text-ui font-medium text-foreground">{chat.title}</span>
               <span className="mt-1 block text-meta text-muted-foreground">{chat.workspaceTitle ?? "Direct chat"} · {chat.harness} · {new Date(chat.archivedAt).toLocaleDateString()}</span>
-            </button>
+            </span></RowButton>
             <GhostButton disabled={busy} ariaLabel={`Unarchive ${chat.title}`} onClick={() => void unarchive(chat)}><ArchiveRestore size={14} />Unarchive</GhostButton>
           </li>)}
         </ul>}

@@ -99,7 +99,7 @@ describe("NoteEditor", () => {
   it("draws every block and hands nothing over when nothing was typed", async () => {
     const { onChange } = await mount(EVERY_BLOCK);
     const dom = host.querySelector(".note-editor")!;
-    for (const selector of ["h1", "h2", "h3", "strong", "em", "s", "code", "u", "a", "[data-type='inline-math']", "ul li", "ol li", "ul[data-type='taskList']", "blockquote", "aside[data-callout][data-kind='WARNING']", "[data-type='details']", "pre", "table", "hr", "figure.note-image", "[data-type='block-math']", "[data-raw-block]"]) {
+    for (const selector of ["h1", "h2", "h3", "strong", "em", "s", "code", "u", "a", "[data-type='inline-math']", "ul li", "ol li", "ul[data-type='taskList']", "blockquote", "aside[data-callout][data-kind='WARNING']", "[data-type='details']", "pre", "table", "hr", "figure[data-note-image]", "[data-type='block-math']", "[data-raw-block]"]) {
       expect(dom.querySelector(selector), selector).not.toBeNull();
     }
     expect(dom.textContent).toContain("Child page");
@@ -414,7 +414,7 @@ describe("NoteEditor", () => {
 
   it("edits an image caption and round-trips a set width through its Markdown", async () => {
     const { onChange } = await mount("Before\n\n![Old plan](assets/0123456789abcdef.png \"420\")\n\n![](assets/89abcdef01234567.png)\n");
-    const figure = host.querySelector("figure.note-image")!;
+    const figure = host.querySelector("figure[data-note-image]")!;
     const caption = figure.querySelector("figcaption[aria-label='Caption']")!;
     expect(caption.textContent).toBe("Old plan");
     expect((figure.querySelector("img") as HTMLElement).style.width).toBe("420px");
@@ -445,7 +445,7 @@ describe("NoteEditor", () => {
 
   it("shows an empty caption while its image is selected, and keeps a real title", async () => {
     await mount("Intro\n\n![](assets/0123456789abcdef.png)\n\n![](assets/89abcdef01234567.png \"Figure 1\")\n");
-    const [plain, titled] = [...host.querySelectorAll("figure.note-image")];
+    const [plain, titled] = [...host.querySelectorAll("figure[data-note-image]")];
     expect(plain.querySelector("figcaption")!.className).toContain("data-[empty]:hidden");
     await act(async () => { editor().commands.setNodeSelection(editor().state.doc.child(0).nodeSize); });
     expect(plain.querySelector("figcaption")!.className).not.toContain("data-[empty]:hidden");
@@ -456,7 +456,7 @@ describe("NoteEditor", () => {
 
   it("keeps the handles on an image whose width reads 0, drawn at its natural size", async () => {
     await mount("Intro\n\n![](assets/0123456789abcdef.png \"0\")\n");
-    const image = host.querySelector("figure.note-image img") as HTMLElement;
+    const image = host.querySelector("figure[data-note-image] img") as HTMLElement;
     expect(image.style.width).toBe("");
     expect(image.getAttribute("title")).toBeNull();
     expect(host.querySelector("button[aria-label='Resize from the right edge']")).not.toBeNull();

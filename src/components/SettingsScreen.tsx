@@ -3,7 +3,7 @@ import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../api";
 import { MenuBarSettingsPage } from "../features/menu-bar/MenuBarSettingsPage";
 import { profileDraftsFromSetup } from "../modelProfiles";
-import type { AdapterDescriptor, AgentDefinition, AgentRole, BridgeEvent, ConfigState, HarnessConfig, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PermissionPolicy, ReasoningEffort } from "../types";
+import type { AdapterDescriptor, AgentDefinition, BridgeEvent, ConfigState, HarnessConfig, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PermissionPolicy } from "../types";
 import { useManagedAgents } from "./ManagedAgentsPanel";
 import { PromptStudio } from "./PromptStudio";
 import { WorkSettingsSection } from "./WorkSettingsSection";

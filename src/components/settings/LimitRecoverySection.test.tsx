@@ -73,7 +73,7 @@ it("holds backup mode as a draft until a backup is chosen, then saves model and 
   await choose("Backup effort", "xhigh");
   expect(save).toHaveBeenLastCalledWith({ mode: "backup", backup: { harness: "codex", model: "gpt-5.5", effort: "xhigh" } });
   // The effort row confirms its own save, like every other control here.
-  const effortRow = host.querySelector<HTMLButtonElement>('[aria-label="Backup effort"]')!.closest("[class*='min-h-11']")!;
+  const effortRow = host.querySelector<HTMLButtonElement>('[aria-label="Backup effort"]')!.closest("[data-settings-row]")!;
   expect(effortRow.textContent).toContain("Saved");
 });
 

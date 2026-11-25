@@ -34,7 +34,7 @@ async function setComposer(value: string) {
 }
 
 async function openWorkspaceSession() {
-  const rows = [...container.querySelectorAll<HTMLButtonElement>('button[title*=" — "]')];
+  const rows = [...container.querySelectorAll<HTMLButtonElement>('button[data-tip*=" — "]')];
   for (const row of rows) {
     await act(async () => row.click());
     await settle();

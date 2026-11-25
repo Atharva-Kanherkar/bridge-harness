@@ -17,6 +17,26 @@
        this file must not retune it. */
     --ease-out-bridge: cubic-bezier(0.22, 1, 0.36, 1);
     --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+    /* Letter spacing: snug for UI text, display for large figures. Tailwind's
+       tight (-0.025em) sits between them. */
+    --tracking-snug: -0.01em;
+    --tracking-display: -0.035em;
+    /* Room for the macOS window controls, and the top gap of a sheet that
+       hangs from the viewport (pt-viewport, sm:pt-viewport-lg). */
+    --spacing-window-control: var(--window-control-inset);
+    --spacing-viewport: 8vh;
+    --spacing-viewport-lg: 12vh;
+    /* The Cursor mark's facet shades, which flip with the theme. */
+    --color-cursor-facet-darkest: var(--cursor-facet-darkest);
+    --color-cursor-facet-mid: var(--cursor-facet-mid);
+    --color-cursor-facet-light: var(--cursor-facet-light);
+    --color-cursor-facet-lighter: var(--cursor-facet-lighter);
+    --color-cursor-facet-lightest: var(--cursor-facet-lightest);
+    /* Reveal motion for charts and meters: marks grow from their baseline once. */
+    --animate-meter-fill: meter-fill 600ms ease-out both;
+    --animate-chart-rise: chart-rise 600ms ease-out both;
+    --animate-insight-rise: insight-rise 420ms ease-out both;
+    --animate-thinking-pulse: thinking-pulse 1.6s ease-in-out infinite;
     /* Shared desktop hierarchy: reading, controls, metadata, and page titles. */
     --container-conversation: 50rem;
     --container-conversation-frame: 54rem;
@@ -55,6 +75,8 @@
     --color-selection: var(--selection);
     --color-selection-foreground: var(--selection-foreground);
     --shadow-control: var(--control-shadow);
+    /* A card that floats over the conversation (outgoing drafts). */
+    --shadow-float: 0 1px 2px rgb(0 0 0 / 0.04), 0 12px 32px -16px rgb(0 0 0 / 0.18);
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
     --color-sidebar-primary: var(--sidebar-primary);

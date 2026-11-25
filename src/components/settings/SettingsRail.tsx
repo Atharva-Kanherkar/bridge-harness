@@ -24,6 +24,9 @@ import { filterSettingsRows, type SearchableRow } from "./settingsSearch";
 import { GhostButton, Select, TextButton } from "./kit";
 import type { UpdateInfo } from "../../updater";
 import { cn } from "@/lib/utils";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
 
 const PAGE_ICONS: Record<PageId, Icon> = {
   general: Sun,
@@ -83,47 +86,41 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
   const item = (id: PageId) => {
     const PageIcon = PAGE_ICONS[id];
     const active = section === id;
-    return <button
+    return <RowButton
       key={id}
-      type="button"
+      tone="nav"
+      shape="card"
+      active={active}
       aria-current={active ? "page" : undefined}
       onClick={() => onSelect(id)}
-      className={cn(
-        "flex h-8 w-full items-center gap-2.5 rounded-lg px-2 text-left text-ui transition-colors",
-        active ? "bg-selection font-medium text-selection-foreground" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
-      )}
     >
       <PageIcon size={14} strokeWidth={1.7} aria-hidden="true" className="shrink-0" />
       <span className="min-w-0 flex-1 truncate">{PAGES[id].label}</span>
       {id === "updates" && availableUpdate && <span role="img" aria-label="Update available" className="size-1.5 shrink-0 rounded-full bg-foreground" />}
-    </button>;
+    </RowButton>;
   };
 
   return <nav aria-label="Settings" className="u-vibrancy-sidebar flex w-full shrink-0 flex-col border-b border-sidebar-border bg-sidebar md:h-full md:w-60 md:border-b-0 md:border-r">
     <div data-tauri-drag-region="deep" className="u-traffic-inset flex h-11 shrink-0 items-center pl-24 pr-3">
-      {onExit && <button
-        type="button"
-        onClick={onExit}
-        className="flex h-7 items-center gap-1 rounded-lg pl-1 pr-2 text-ui text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
-      >
-        <CaretLeft size={14} strokeWidth={1.7} aria-hidden="true" className="shrink-0" />Back to app
-      </button>}
+      {onExit && <Button variant="quiet" size="xs" onClick={onExit}>
+        <CaretLeft size={14} strokeWidth={1.7} aria-hidden="true" />Back to app
+      </Button>}
     </div>
     <div className="flex shrink-0 items-center gap-2 px-3 pb-2 md:block">
       <div className="min-w-0 flex-1 md:hidden">
         <Select label="Settings section" value={section} options={PICKER_OPTIONS} onChange={value => onSelect(value as PageId)} width="w-full" />
       </div>
-      <div className="relative min-w-0 flex-1">
-        <MagnifyingGlass size={12} strokeWidth={1.7} aria-hidden="true" className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
-        <input
+      <InputGroup className="min-w-0 flex-1">
+        <InputGroupAddon><MagnifyingGlass size={12} strokeWidth={1.7} aria-hidden="true" /></InputGroupAddon>
+        <InputGroupInput
+          size="sm"
           type="search"
           value={query}
           aria-label="Search settings"
           placeholder="Search settings"
           onChange={event => onQueryChange(event.target.value)}
-          className="h-7 w-full rounded-lg border border-border-card bg-popover pl-7 pr-2 text-ui text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring"
         />
-      </div>
+      </InputGroup>
     </div>
 
     <div className={cn("min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-1", results ? "max-h-72 md:max-h-none" : "hidden md:block")}>
@@ -135,15 +132,15 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
             const open = !collapsible || advancedOpen || group.pages.includes(section);
             return <div key={group.id} role="group" aria-label={group.label} className="mt-4 first:mt-1">
               {collapsible
-                ? <button
-                    type="button"
+                ? <RowButton
+                    size="sm"
+                    tone="plain"
                     aria-expanded={open}
                     onClick={() => { const next = !open; setAdvancedOpen(next); writeAdvancedOpen(next); }}
-                    className="flex h-6 w-full items-center gap-1 rounded-md px-2 text-left text-caption font-medium text-muted-foreground transition-colors hover:text-foreground"
                   >
                     <span className="flex-1">{group.label}</span>
                     <CaretRight size={12} strokeWidth={1.7} aria-hidden="true" className={cn("transition-transform", open && "rotate-90")} />
-                  </button>
+                  </RowButton>
                 : <p className="flex h-6 items-center px-2 text-caption font-medium text-muted-foreground">{group.label}</p>}
               {open && <div className="mt-0.5 space-y-px">{group.pages.map(item)}</div>}
             </div>;
@@ -162,15 +159,16 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
               <TextButton tone="destructive" disabled={resetting} onClick={() => { setConfirming(false); onResetAll(); }}>Reset everything</TextButton>
             </div>
           </div>
-        : <button
-            type="button"
+        : <RowButton
+            tone="muted"
+            shape="card"
+            className="items-start"
             disabled={resetting}
             onClick={() => setConfirming(true)}
-            className="flex w-full items-start gap-2.5 rounded-lg px-2 py-1.5 text-left text-ui text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground disabled:opacity-45"
           >
             <ArrowCounterClockwise size={14} strokeWidth={1.7} aria-hidden="true" className="mt-0.5 shrink-0" />
             <span className="min-w-0 flex-1">Reset agents, models and instructions</span>
-          </button>}
+          </RowButton>}
     </div>
   </nav>;
 }
@@ -185,16 +183,16 @@ function SearchResults({ results, onSelect }: {
   return <div role="list" aria-label="Search results">
     {results.map(group => <div key={group.page} className="mb-3 last:mb-0">
       <p className="px-2 pb-1 text-caption font-medium text-muted-foreground">{group.pageLabel}</p>
-      {group.rows.map(row => <button
+      {group.rows.map(row => <RowButton
         key={`${group.page}:${row.id ?? row.target?.id ?? "page"}:${row.label}`}
-        type="button"
+        tone="muted"
+        shape="card"
         role="listitem"
         onClick={() => onSelect(row)}
-        className="w-full rounded-lg px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
-      >
+      ><span className="block min-w-0 flex-1">
         <span className="block truncate text-ui">{row.label}</span>
         {row.description && <span className="block truncate text-caption text-muted-foreground/70">{row.description}</span>}
-      </button>)}
+      </span></RowButton>)}
     </div>)}
   </div>;
 }

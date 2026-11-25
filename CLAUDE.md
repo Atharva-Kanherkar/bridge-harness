@@ -11,11 +11,14 @@ bun install                # deps for the root app and the sidecar workspace
 bun run dev                # Vite only, http://127.0.0.1:1420 (frontend runs on mock data)
 bun run tauri dev          # full desktop app: Rust shell, SQLite, adapters, PTY
 bun run check              # tsc -b + cargo check --workspace
+bun run lint               # oxlint against lint-baseline.json; a file may never gain a violation
 bun run test               # sidecar node:test + vitest run + cargo test --workspace
 bun run build              # tsc -b && vite build
 ```
 
-`bun run build` and `bun run test` must both be green before a PR.
+`bun run build`, `bun run lint` and `bun run test` must all be green before a PR.
+
+UI work: compose the primitives in `src/components/ui/` and pass them layout classes only. Read [`docs/design/ui-rules.md`](docs/design/ui-rules.md) before building or changing any screen; the `bridge-ui` skill carries the same rules.
 
 Narrower runs:
 

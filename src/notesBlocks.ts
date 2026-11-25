@@ -29,7 +29,7 @@ export function keepUntouched(source: string, output: string, codec: BlockCodec)
   const original = before.map(block => codec.canon(block).trim());
   const written = after.map(block => block.trim());
   // Which source block each output block is, where it is one.
-  const from = new Array<number | null>(written.length).fill(null);
+  const from: (number | null)[] = Array.from({ length: written.length }, () => null);
   let a = 0;
   let b = 0;
   const pair = (until: number) => { for (; a < until; a += 1, b += 1) from[b] = a; };

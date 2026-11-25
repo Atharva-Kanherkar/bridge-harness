@@ -250,7 +250,7 @@ describe("DatabaseTable", () => {
     expect(props.actions.show).toHaveBeenCalledWith(expect.objectContaining({ id: "p-note" }));
     click(document.querySelector("button[aria-label='Add a property']")!);
     type(input("New property name"), "Due");
-    click([...document.querySelectorAll("[role=radio]")].find(radio => radio.textContent === "Date")!);
+    click([...document.querySelectorAll('[aria-label="New property type"] button')].find(radio => radio.textContent === "Date")!);
     click(menuItem("Add"));
     expect(props.actions.addProperty).toHaveBeenCalledWith("Due", "date");
   });
@@ -266,7 +266,7 @@ describe("DatabaseTable", () => {
     // The date editor's own toggles.
     click(cell(0, 1));
     press("Enter");
-    click([...document.querySelectorAll("label")].find(label => label.textContent === "End date")!.querySelector("input")!);
+    click([...document.querySelectorAll("label")].find(label => label.textContent === "End date")!.querySelector<HTMLElement>('[data-slot="checkbox"]')!);
     expect(document.querySelector("[role=dialog][aria-label='Due editor']")).not.toBeNull();
     expect(input("Due end")).not.toBeNull();
     act(() => { input("Due start").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });

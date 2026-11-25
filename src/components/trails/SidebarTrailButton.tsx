@@ -1,6 +1,7 @@
 import { Route } from "lucide-react";
 import type { TrailSummary } from "@/protocol/generated/protocol";
 import { TrailPeek } from "./TrailPeek";
+import { Button } from "@/components/ui/button";
 
 /**
  * A sidebar chat row's trail button: hidden until the row (a `group/row`) is
@@ -15,15 +16,13 @@ export function SidebarTrailButton({ trail, onOpenTrail }: { trail: TrailSummary
       onOpen={onOpenTrail}
       side="right"
       align="start"
-      trigger={<button
-        type="button"
+      trigger={<Button variant="quiet" size="icon-xs" className="hidden shrink-0 focus-visible:grid group-hover/row:grid group-focus-within/row:grid data-popup-open:grid"
         onClick={event => { event.stopPropagation(); onOpenTrail(trail.id); }}
         aria-label={`Trail: ${trail.title}`}
         data-sidebar-trail={trail.id}
-        className="hidden size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:grid group-hover/row:grid group-focus-within/row:grid data-popup-open:grid data-popup-open:bg-accent data-popup-open:text-foreground"
       >
         <Route size={13} strokeWidth={1.7} aria-hidden="true" />
-      </button>}
+      </Button>}
     />
   );
 }

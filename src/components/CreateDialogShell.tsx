@@ -4,6 +4,7 @@ import { AnimatePresence, motion, usePresence } from "framer-motion";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
+import { Button } from "@/components/ui/button";
 
 /**
  * The chrome the two create dialogs share: scrim, floating panel, and a header
@@ -65,6 +66,7 @@ function DialogSurface({
   useEffect(() => {
     const surface = surfaceRef.current;
     if (surface && !surface.contains(document.activeElement)) surface.querySelector<HTMLElement>("button:not([disabled]), input:not([disabled])")?.focus();
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- returnFocus holds the element focused before the dialog opened; it is set once and never reassigned
     return () => { if (returnFocus.current?.isConnected) returnFocus.current.focus(); };
   }, []);
   const transition = useMotionTransition(MOTION_DURATION.overlay);
@@ -82,7 +84,7 @@ function DialogSurface({
     <motion.div
       ref={surfaceRef}
       className={cn(
-        "fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-[8vh] sm:pt-[12vh]",
+        "fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-viewport sm:pt-viewport-lg",
         !isPresent && "pointer-events-none",
       )}
       onClick={dismissOnScrim ? event => { if (!closeDisabled && event.target === event.currentTarget) onClose(); } : undefined}
@@ -127,15 +129,13 @@ function DialogSurface({
               </p>
             </div>
           </div>
-          <button
-            type="button"
+          <Button variant="quiet" size="icon-xs" className="shrink-0"
             onClick={onClose}
             disabled={closeDisabled}
-            className="shrink-0 rounded-xl p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
             aria-label={closeLabel}
           >
             <X className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
-          </button>
+          </Button>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-5">{children}</div>

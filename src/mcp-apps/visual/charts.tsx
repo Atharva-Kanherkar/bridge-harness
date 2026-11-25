@@ -555,7 +555,7 @@ function Proportion({ block }: { block: ChartBlock }) {
               <svg width="8" height="8" aria-hidden="true"><circle cx="4" cy="4" r="4" fill={colors.get(part)} /></svg>
               <span className="truncate">{part}</span>
             </div>
-            <div className="mt-1 text-[22px] font-light tracking-[-0.02em] text-foreground tabular-nums">{formatNumber(entry.value, format)}{entry.estimate && <span className="ml-1 text-meta text-muted-foreground">est.</span>}</div>
+            <div className="mt-1 text-2xl font-light tracking-tight text-foreground tabular-nums">{formatNumber(entry.value, format)}{entry.estimate && <span className="ml-1 text-meta text-muted-foreground">est.</span>}</div>
             <div className="text-meta text-muted-foreground tabular-nums">{((entry.value / sum) * 100).toFixed(1)}%</div>
           </div>
         ))}
@@ -564,7 +564,7 @@ function Proportion({ block }: { block: ChartBlock }) {
   );
 }
 
-function Funnel({ block, prepared }: { block: ChartBlock; prepared: Prepared }) {
+function Funnel({ prepared }: { block: ChartBlock; prepared: Prepared }) {
   const [ref, width] = useWidth();
   const steps = prepared.categories.map(category => ({ category, cell: cellOf(prepared, category, prepared.series[0]) }));
   const first = steps[0]?.cell?.value || 1;

@@ -49,7 +49,7 @@ describe("StreamingGreeting", () => {
   const spoken = () => container.querySelector(".sr-only")?.textContent;
 
   it("streams a line token by token, then rotates to the next", () => {
-    act(() => root.render(<StreamingGreeting lines={[line("What should we build in "), line("Where are the sharp edges in ")]} projectClassName="project" />));
+    act(() => root.render(<StreamingGreeting lines={[line("What should we build in "), line("Where are the sharp edges in ")]} projectClassName="font-medium" />));
     expect(visible()).toBe("");
     expect(spoken()).toBe("What should we build in harness?");
     advance(300);
@@ -58,7 +58,7 @@ describe("StreamingGreeting", () => {
     // Stream to the end, then hold the finished line before fading it.
     for (let step = 0; step < 400 && visible() !== "What should we build in harness?"; step += 1) advance(10);
     expect(visible()).toBe("What should we build in harness?");
-    expect(container.querySelector(".project")?.textContent).toBe("harness");
+    expect(container.querySelector(".font-medium")?.textContent).toBe("harness");
     expect(container.querySelector(".animate-caret-blink")).toBeNull();
     advance(3380);
     expect(container.querySelector(".opacity-0")).toBeNull();

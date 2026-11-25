@@ -8,6 +8,7 @@ import { formatReset, windowLabel, type RateWindow, type UsageProvider, type Usa
 import { pacePhrase, paceVisible, paceWeekly } from "../../meter";
 import { HarnessMark, harnessChartDot, harnessChartText } from "../harnessMarks";
 import { harnessLabel } from "../../utils";
+import { RowButton } from "@/components/ui/row";
 
 export const PROVIDER_ORDER: UsageProvider[] = ["codex", "claude", "cursor", "opencode"];
 
@@ -65,9 +66,9 @@ export function WindowRow({ provider, window, nowMs }: { provider: UsageProvider
       <span className="font-medium text-foreground">{name}</span>
       <span className="shrink-0 tabular-nums text-muted-foreground">{Math.round(used)}% used</span>
     </div>
-    <button type="button" aria-expanded={expanded} aria-controls={`meter-window-${provider}-${window.id}`} onClick={() => setExpanded(value => !value)} className="mt-1 block h-1.5 w-full overflow-hidden rounded-full bg-muted text-left outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring">
-      <span className={cn("block h-full origin-left rounded-full motion-safe:animate-[meter-fill_600ms_ease-out]", harnessChartDot(provider))} style={{ width: `${used}%` }} />
-    </button>
+    <RowButton size="bare" tone="plain" shape="card" aria-expanded={expanded} aria-controls={`meter-window-${provider}-${window.id}`} onClick={() => setExpanded(value => !value)}><span className="mt-1 block h-1.5 w-full overflow-hidden rounded-full bg-muted">
+      <span className={cn("block h-full origin-left rounded-full motion-safe:animate-meter-fill", harnessChartDot(provider))} style={{ width: `${used}%` }} />
+    </span></RowButton>
     <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-caption text-muted-foreground">
       {reset && <span className="tabular-nums">{reset}</span>}
       {pace && showPace && <span>{pacePhrase(pace)}</span>}

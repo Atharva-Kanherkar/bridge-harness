@@ -8,6 +8,8 @@ import { cn } from "@/lib/utils";
 import { PullRequestGlyph, useStatusAnnouncements } from "./ChatPullRequests";
 import { HarnessMark } from "./harnessMarks";
 import { useBackgroundTasks, type BackgroundNotice } from "./useBackgroundTasks";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
 
 // The glance: one line at the top of the composer that says how this chat's
 // pull requests and background work are doing. It is part of the composer
@@ -111,28 +113,23 @@ export function WorkShelf({ prs, tasks, notice, harness, onOpen, onFix }: {
   const lone = ordered.length === 1 ? ordered[0] : undefined;
   const fixable = lone && onFix && lone.state === "open" && chatPrStatus(lone).phase === "failing" ? lone : undefined;
   return <div data-work-shelf className="flex h-9 shrink-0 items-center gap-1 border-b border-border pr-1.5 text-meta text-muted-foreground">
-    <button
-      type="button"
+    <RowButton size="bare" tone="default" shape="card"
       data-work-shelf-open
       onClick={() => onOpen(lone?.number)}
-      aria-label={shelfLabel(ordered, taskSummary(tasks))}
-      className="group/shelf flex h-full min-w-0 flex-1 items-center gap-3 rounded-tl-xl pl-3 pr-1 text-left transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-    >
+      aria-label={shelfLabel(ordered, taskSummary(tasks))}><span className="group/shelf flex h-full min-w-0 flex-1 items-center gap-3 pl-3 pr-1">
       {ordered.length > 0 && <PullRequestPart prs={ordered} />}
       {(tasks.length > 0 || notice) && <>
         {ordered.length > 0 && <span className="h-4 w-px shrink-0 bg-border" aria-hidden="true" />}
         <TaskPart tasks={tasks} notice={notice} harness={harness} grow={ordered.length === 0} />
       </>}
       <ChevronUp size={13} className="shrink-0 text-faint transition-transform group-hover/shelf:-translate-y-px" aria-hidden="true" />
-    </button>
-    {fixable && <button
-      type="button"
+    </span></RowButton>
+    {fixable && <Button variant="outline" size="2xs" className="shrink-0"
       data-work-shelf-fix
       onClick={() => onFix!(fixable)}
-      className="inline-flex h-6 shrink-0 items-center rounded-md border border-border-card px-2 text-caption text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       Fix it
-    </button>}
+    </Button>}
     <p aria-live="polite" className="sr-only">{spoken}</p>
   </div>;
 }

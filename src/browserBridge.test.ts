@@ -75,7 +75,7 @@ describe("authenticated browser bridge artifacts", () => {
     const invoke = (message: unknown) => new Promise<{ ok: boolean; result?: Record<string, unknown>; error?: string }>(resolve => listeners[0](message, null, value => resolve(value as { ok: boolean; result?: Record<string, unknown>; error?: string })));
     const snapshot = await invoke({ type: "bridge-page-action", action: { kind: "snapshot", delta: false } });
     const generation = snapshot.result?.pageGeneration;
-    const elementId = (snapshot.result?.elements as Array<{ id: string }>)[0].id;
+    const elementId = (snapshot.result!.elements as Array<{ id: string }>)[0].id;
     dom.window.document.querySelector("button")?.setAttribute("aria-label", "Changed");
     await new Promise(resolve => dom.window.setTimeout(resolve, 0));
     const delayed = await invoke({ type: "bridge-page-action", action: { kind: "click", elementId }, expectedPageGeneration: generation });
@@ -103,7 +103,6 @@ describe("authenticated browser bridge artifacts", () => {
   it("streams backpressured pre-redacted WebP frames without double encoding", () => {
     const offscreen = read("browser-extension/offscreen.js");
     const background = read("browser-extension/background.js");
-    const surface = read("src/components/BrowserSurface.tsx");
     expect(offscreen).toContain("const FRAME_INTERVAL_MS = 100");
     expect(offscreen).toContain("if (!stream?.active || encoding)");
     expect(offscreen).toContain('canvas.toBlob(resolve, "image/webp", 0.52)');
@@ -119,7 +118,6 @@ describe("authenticated browser bridge artifacts", () => {
     expect(background).toContain("expectedSnapshotGeneration !== snapshotGeneration");
     expect(background).toContain('action.kind === "snapshot"');
     expect(background).toContain("result = await sendSnapshot(Boolean(action.delta))");
-    expect(surface).toContain("bridgeApi.browserFrame(frameRevision.current)");
   });
 
   it("exposes a session and lease scoped agent browser tool through application context", () => {

@@ -1,7 +1,9 @@
 import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
 import { Check, Copy, KeyRound, Maximize2, Minimize2 } from "lucide-react";
-import katex from "katex";
+import type Katex from "katex";
 import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from "./highlight";
 import { isExternalUrl } from "../externalLinks";
 import { parseNoteLink } from "../noteLinks";
@@ -13,6 +15,7 @@ import { SNAPSHOT_FENCE, splitSnapshot } from "../diskSpace";
 import { NOTES_CONTEXT_FENCE, splitNotesContext } from "../notesBrief";
 import { placeholderReference, SECRET_PLACEHOLDER } from "../apiKeys";
 import { RunButton } from "./RunInTerminal";
+import { BlockAction } from "@/components/ui/block-action";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 type Block =
@@ -177,13 +180,13 @@ function InlineCode({ text }: { text: string }) {
   const links = useContext(FileLinkContext);
   const ref = parseFileRef(text, links);
   if (!ref) return <code>{text}</code>;
-  return <button
-    type="button"
+  return <Button
+    variant="ghost"
+    size="inline"
     onClick={() => links!.open(ref.path, ref.line)}
     aria-label={`Open ${ref.path} in the Code pane`}
-    title={`Open ${ref.path} in the Code pane`}
-    className="rounded transition-colors hover:bg-accent"
-  ><code>{text}</code></button>;
+    tooltip={`Open ${ref.path} in the Code pane`}
+  ><code className="whitespace-normal">{text}</code></Button>;
 }
 
 const MENTION = /(@[\w~@./-]+)/g;
@@ -224,12 +227,11 @@ function TextRun({ text }: { text: string }) {
  *  Bridge. A saved key shows its name, a pasted one just "API key". */
 function KeyChip({ reference }: { reference: string }) {
   const name = reference.startsWith("sec_") ? "API key" : reference;
-  return <span
+  return <Tip label={`Bridge kept this key out of the chat. The agent sees only [secret:${reference}] and can use it on the sites allowed in Settings, Permissions, API keys.`}><span
     role="img"
     aria-label={`${name}, kept by Bridge`}
-    title={`Bridge kept this key out of the chat. The agent sees only [secret:${reference}] and can use it on the sites allowed in Settings, Permissions, API keys.`}
     className="mx-0.5 inline-flex items-baseline gap-1 rounded-md border border-border bg-foreground/[0.04] px-1.5 font-mono text-caption text-muted-foreground"
-  ><KeyRound size={10} aria-hidden="true" className="self-center" />{name}</span>;
+  ><KeyRound size={10} aria-hidden="true" className="self-center" />{name}</span></Tip>;
 }
 
 function MentionRun({ text }: { text: string }) {
@@ -239,14 +241,12 @@ function MentionRun({ text }: { text: string }) {
   return <>{parts.map((part, index) => {
     if (part.startsWith("@") && links.has(part.slice(1))) {
       const path = part.slice(1);
-      return <button
-        key={index}
-        type="button"
+      return <Tip key={index} label={`Open ${path} in the Code pane`}><Button
+        variant="link"
+        size="inline"
         onClick={() => links.open(path)}
         aria-label={`Open ${path} in the Code pane`}
-        title={`Open ${path} in the Code pane`}
-        className="rounded text-[var(--color-ring)] underline decoration-dotted underline-offset-2 transition-colors hover:bg-accent"
-      >{part}</button>;
+      >{part}</Button></Tip>;
     }
     return <span key={index}>{part}</span>;
   })}</>;
@@ -264,8 +264,22 @@ const INLINE = /(`[^`]+`|\\\([^\n]*?\\\)|\$(?![\s$])(?:[^\n$]*?[^\s$])?\$(?!\d)|
 /** One whole bare URL and nothing else — what a token has to be to become a link. */
 const BARE_URL_ONLY = /^https?:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]}]$/;
 
-/** Render a LaTeX string to KaTeX HTML, or null if it cannot be parsed. */
+// KaTeX is fetched the first time a chat shows math, not at startup: it was
+// ~260 kB of the startup bundle, parsed and kept in memory by every window,
+// and most chats never render an equation.
+let katex: typeof Katex | null = null;
+let katexLoading: Promise<void> | null = null;
+
+/** Load the math renderer. Resolves at once when it is already loaded. */
+export function loadMath(): Promise<void> {
+  katexLoading ??= import("katex").then(module => { katex = module.default; });
+  return katexLoading;
+}
+
+/** Render a LaTeX string to KaTeX HTML, or null if it cannot be parsed or the
+ *  renderer has not loaded yet (see `loadMath`). */
 export function renderMathToHtml(tex: string, displayMode: boolean): string | null {
+  if (!katex) return null;
   try {
     return katex.renderToString(tex, { displayMode, throwOnError: true, trust: false, output: "htmlAndMathml" });
   } catch {
@@ -273,8 +287,21 @@ export function renderMathToHtml(tex: string, displayMode: boolean): string | nu
   }
 }
 
+/** Whether the math renderer is loaded, loading it on first use. */
+function useMathReady(): boolean {
+  const [ready, setReady] = useState(() => katex !== null);
+  useEffect(() => {
+    if (ready) return;
+    let live = true;
+    void loadMath().then(() => { if (live) setReady(true); }, () => undefined);
+    return () => { live = false; };
+  }, [ready]);
+  return ready;
+}
+
 function InlineMath({ tex }: { tex: string }) {
-  const html = useMemo(() => renderMathToHtml(tex, false), [tex]);
+  const ready = useMathReady();
+  const html = useMemo(() => ready ? renderMathToHtml(tex, false) : null, [ready, tex]);
   if (html == null) return <code>{tex}</code>;
   return <span dangerouslySetInnerHTML={{ __html: html }} />;
 }
@@ -305,25 +332,29 @@ export function useCopy(text: string, resetMs = 1400) {
   return { copied, copy };
 }
 
-export function CopyButton({ text, className }: { text: string; className: string }) {
+export function CopyButton({ text, floating = false, className }: { text: string; floating?: boolean; className?: string }) {
   const { copied, copy } = useCopy(text);
   return (
-    <button type="button" className={className} onClick={copy} aria-label={copied ? "Copied" : "Copy"}>
+    <BlockAction floating={floating} className={className} onClick={copy} aria-label={copied ? "Copied" : "Copy"}>
       {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
       {copied ? "Copied" : "Copy"}
-    </button>
+    </BlockAction>
   );
 }
 
 function MathBlock({ tex }: { tex: string }) {
-  const html = useMemo(() => renderMathToHtml(tex, true), [tex]);
+  const ready = useMathReady();
+  const html = useMemo(() => ready ? renderMathToHtml(tex, true) : null, [ready, tex]);
+  // Not loaded yet is not a parse error: show the source plainly meanwhile.
+  // oxlint-disable-next-line shadcn/no-arbitrary-values -- prose spacing in em, like the rendered block it stands in for
+  if (!ready) return <pre className="my-[0.6em] overflow-x-auto px-[0.85em] py-[0.6em] text-muted-foreground"><code>{tex}</code></pre>;
   if (html == null) {
-    return <pre className="my-[0.6em] overflow-x-auto rounded-[0.7rem] border border-destructive/30 bg-destructive/10 px-[0.85em] py-[0.6em] text-destructive"><code>{tex}</code></pre>;
+    return <pre className="my-[0.6em] overflow-x-auto rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive"><code>{tex}</code></pre>;
   }
   return (
     <div className="rich-block my-[0.9em]">
-      <CopyButton text={tex} className="rich-block-copy" />
-      <div className="overflow-x-auto py-[0.2em] text-foreground" dangerouslySetInnerHTML={{ __html: html }} />
+      <CopyButton text={tex} floating />
+      <div className="overflow-x-auto py-0.5 text-foreground" dangerouslySetInnerHTML={{ __html: html }} />
     </div>
   );
 }
@@ -392,7 +423,7 @@ function CodeBlock({ lang, body, closed = true }: { lang: string; body: string; 
         <span className="code-block-lang">{label}</span>
         <div className="flex items-center gap-0.5">
           <RunButton lang={lang} body={body} closed={closed} />
-          <CopyButton text={body} className="code-block-copy" />
+          <CopyButton text={body} />
         </div>
       </div>
       <pre><code className="stx" dangerouslySetInnerHTML={{ __html: html }} /></pre>
@@ -422,7 +453,7 @@ function DiagramBlock({ spec }: { spec: string }) {
   return (
     <div className="rich-block my-[0.9em]">
       <div className="rich-block-actions">
-        <CopyButton text={spec} className="rich-block-copy" />
+        <CopyButton text={spec} floating />
         <ExpandButton onClick={() => setFullscreen(true)} />
       </div>
       <DiagramFigure spec={parsed} />
@@ -496,13 +527,13 @@ function MermaidBlock({ code }: { code: string }) {
     </div>;
   }
   if (rendered?.code !== code || rendered.dark !== dark) {
-    return <SkeletonRegion label="Rendering diagram" className="my-[0.9em]"><Skeleton className="h-40 rounded-[0.9rem]" /></SkeletonRegion>;
+    return <SkeletonRegion label="Rendering diagram" className="my-[0.9em]"><Skeleton className="h-40 rounded-2xl" /></SkeletonRegion>;
   }
   const viewBoxWidth = Number(/viewBox="0 0 ([\d.]+) /.exec(rendered.svg)?.[1]);
   const { width: clampedWidth, clamped } = mermaidClamp(containerWidth, viewBoxWidth);
   return <div className="rich-block my-[0.9em]">
     <div className="rich-block-actions">
-      <CopyButton text={code} className="rich-block-copy" />
+      <CopyButton text={code} floating />
       <ExpandButton onClick={() => setFullscreen(true)} />
     </div>
     <div ref={holder}>
@@ -555,9 +586,9 @@ function HtmlBlock({ html }: { html: string }) {
       <DialogPopup showCloseButton={false} aria-label="HTML preview" className="h-[84dvh] max-w-[calc(100vw-4rem)] overflow-hidden">
         <div className="code-block-header">
           <span className="code-block-lang">html</span>
-          <button type="button" className="code-block-copy" onClick={() => setFullscreen(false)} aria-label="Exit fullscreen" title="Exit fullscreen (Esc)">
+          <Tip label="Exit fullscreen" shortcut="Esc"><BlockAction onClick={() => setFullscreen(false)} aria-label="Exit fullscreen">
             <Minimize2 size={12} aria-hidden="true" />Close
-          </button>
+          </BlockAction></Tip>
         </div>
         {frame}
       </DialogPopup>
@@ -568,10 +599,10 @@ function HtmlBlock({ html }: { html: string }) {
     <div className="html-block my-[0.9em]">
       <div className="code-block-header">
         <span className="code-block-lang">html</span>
-        <button type="button" className="code-block-copy" onClick={() => setFullscreen(true)} aria-label="Fullscreen" title="Fullscreen">
+        <Tip label="Fullscreen"><BlockAction onClick={() => setFullscreen(true)} aria-label="Fullscreen">
           <Maximize2 size={12} aria-hidden="true" />
           Expand
-        </button>
+        </BlockAction></Tip>
       </div>
       {frame}
     </div>

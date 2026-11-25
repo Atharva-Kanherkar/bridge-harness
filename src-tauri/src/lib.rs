@@ -491,7 +491,10 @@ async fn github_attach_pr(session_id: String, reference: String, state: State<'_
 async fn browser_bridge_state(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<browser_bridge::BrowserBridgeSnapshot, BridgeError> {
-    api::browser_bridge_state(state.inner())
+    // Off the async runtime like every other core call: these take the
+    // browser supervisor's lock and copy screenshot data while holding it.
+    let core = state.inner().clone();
+    blocking("Browser state", move || api::browser_bridge_state(&core)).await
 }
 
 #[tauri::command]
@@ -499,7 +502,8 @@ async fn browser_frame(
     state: State<'_, Arc<BridgeCore>>,
     after_revision: u64,
 ) -> Result<Option<browser_bridge::BrowserFrame>, BridgeError> {
-    api::browser_frame(state.inner(), after_revision)
+    let core = state.inner().clone();
+    blocking("Browser frame", move || api::browser_frame(&core, after_revision)).await
 }
 
 #[tauri::command]
@@ -513,7 +517,8 @@ async fn browser_action(
     request: browser_bridge::BrowserActionRequest,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<String, BridgeError> {
-    api::browser_action(state.inner(), request)
+    let core = state.inner().clone();
+    blocking("Browser action", move || api::browser_action(&core, request)).await
 }
 
 #[tauri::command]
@@ -521,7 +526,8 @@ async fn set_browser_permission(
     permission: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    api::set_browser_permission(state.inner(), &permission)
+    let core = state.inner().clone();
+    blocking("Browser permission", move || api::set_browser_permission(&core, &permission)).await
 }
 
 #[tauri::command]
@@ -530,12 +536,14 @@ async fn resolve_browser_approval(
     allow: bool,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    api::resolve_browser_approval(state.inner(), &approval_id, allow)
+    let core = state.inner().clone();
+    blocking("Browser approval", move || api::resolve_browser_approval(&core, &approval_id, allow)).await
 }
 
 #[tauri::command]
 async fn takeover_browser(state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
-    api::takeover_browser(state.inner())
+    let core = state.inner().clone();
+    blocking("Browser takeover", move || api::takeover_browser(&core)).await
 }
 
 #[tauri::command]
@@ -657,7 +665,8 @@ async fn clone_requests(state: State<'_, Arc<BridgeCore>>) -> Result<Vec<bridge_
 
 #[tauri::command]
 async fn detach_browser(state: State<'_, Arc<BridgeCore>>) -> Result<String, BridgeError> {
-    api::detach_browser(state.inner())
+    let core = state.inner().clone();
+    blocking("Browser detach", move || api::detach_browser(&core)).await
 }
 
 #[tauri::command]

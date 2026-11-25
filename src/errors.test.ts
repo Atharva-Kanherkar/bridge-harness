@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { authModeFromText, classifyErrorKind, describeError, errorMessage, providerFromText, upstreamFromText, usageHeadroomHint, usageResetHint } from "./errors";
+import { authModeFromText, classifyErrorKind, describeError, errorMessage, providerFromText, upstreamFromText, usageResetHint } from "./errors";
 import type { UsageSnapshot } from "./usage";
 
 const snapshot = (usedPercent: number, resetsInSeconds?: number, label = "Weekly"): UsageSnapshot => ({

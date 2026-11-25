@@ -26,9 +26,16 @@ bun install
 | `bun run tauri dev` | Full Tauri 2 desktop app: Rust runtime, SQLite, adapters, PTY |
 | `bun run check` | `tsc -b` plus `cargo check --workspace` |
 | `bun run build` | Typecheck and production frontend build |
+| `bun run lint` | oxlint design-system and correctness rules, checked against `lint-baseline.json` |
 | `bun run test` | Sidecar, Vitest, and Cargo tests |
 
-Run **`bun run build`** and **`bun run test`** before opening a PR. Both must be green.
+Run **`bun run build`**, **`bun run lint`** and **`bun run test`** before opening a PR. All three must be green.
+
+### Working on the interface
+
+Bridge's UI has three layers: tokens in `src/index.css`, primitives in `src/components/ui/`, and feature code that composes them. Feature code passes primitives layout classes only; it does not style controls. [`docs/design/ui-rules.md`](docs/design/ui-rules.md) has the rules and a table of what to reach for, and [`docs/design/graphite-paper.md`](docs/design/graphite-paper.md) has the palette and type scale.
+
+`bun run lint` fails when a file gains a violation. Each error names the fix. If you remove violations, run `bun run lint:update` and commit the lower baseline.
 
 Architecture and agent-specific conventions live in [`AGENTS.md`](AGENTS.md) (Tailwind CSS v4 only, colocated tests, layout patterns). Read it before touching `src/` or styling.
 

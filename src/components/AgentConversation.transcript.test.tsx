@@ -385,7 +385,7 @@ describe("inline diffs", () => {
     openActivity();
     expect(host.textContent).toContain("+24");
     expect(host.textContent).toContain("−3");
-    expect(host.querySelector('[title="src-tauri/src/lib.rs"]')?.textContent).toBe("src-tauri/src");
+    expect(host.querySelector('[data-tip="src-tauri/src/lib.rs"]')?.textContent).toBe("src-tauri/src");
   });
 
   it("still opens a group whose edit carries no diff only on request", () => {
@@ -587,7 +587,6 @@ describe("three layers", () => {
     ]);
     expect([...host.querySelectorAll("button")].filter(btn => btn.textContent?.includes("Ran 2 commands"))).toHaveLength(1);
     act(() => buttonWith("Ran 2 commands")!.click());
-    const text = host.textContent ?? "";
     // Checks are labelled by the command as typed; the order is what matters.
     const expanded = host.querySelector("[data-activity-group] > div:last-child")!.textContent ?? "";
     expect(expanded.indexOf("bun test")).toBeLessThan(expanded.indexOf("Next step"));

@@ -4,6 +4,10 @@ import type { Terminal } from "@xterm/xterm";
 import { backendMode, bridgeApi } from "../api";
 import { errorMessage } from "../errors";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { RowButton } from "@/components/ui/row";
+import { Tip } from "@/components/ui/tooltip";
 import { terminalRunInput } from "../terminal/runCommand";
 import { onTerminalRun, type TerminalRun } from "../terminal/runQueue";
 import { TERMINAL_SCROLLBACK, type TerminalRecord } from "../terminal/types";
@@ -293,12 +297,14 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
         const mark = marks.get(terminalId);
         return <span key={terminalId} className={cn("group/shell flex h-8 shrink-0 items-center gap-1 rounded-md px-1.5 text-caption", terminalId === active ? "bg-card text-foreground" : "text-muted-foreground hover:bg-accent")}>
           {mark === "exited"
-            ? <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/50" title="Shell exited" data-shell-mark="exited" />
+            ? <Tip label="Shell exited"><span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/50" data-shell-mark="exited" /></Tip>
             : mark === "output"
-              ? <span className="h-1.5 w-1.5 rounded-full bg-success" title="New output" data-shell-mark="output" />
+              ? <Tip label="New output"><span className="h-1.5 w-1.5 rounded-full bg-success" data-shell-mark="output" /></Tip>
               : null}
           {renaming === terminalId
-            ? <input
+            ? <Input
+                size="sm"
+                className="w-24"
                 autoFocus
                 defaultValue={labelOf(terminalId)}
                 aria-label={`Rename ${terminalId}`}
@@ -308,17 +314,17 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
                   setRenaming(undefined);
                 }}
                 onKeyDown={event => { if (event.key === "Enter") (event.target as HTMLInputElement).blur(); if (event.key === "Escape") setRenaming(undefined); }}
-                className="h-7 w-24 rounded-md border border-border bg-background px-1 text-caption text-foreground outline-none"
               />
-            : <button
-                type="button"
+            : <Tip label={`${labelOf(terminalId)} — double-click to rename`}><RowButton
+                size="bare"
+                tone="plain"
                 onClick={() => activate(terminalId)}
                 onDoubleClick={() => setRenaming(terminalId)}
-                title={`${labelOf(terminalId)} — double-click to rename`}
-                className="min-h-7 max-w-[120px] truncate"
-              >{labelOf(terminalId)}</button>}
-          <button
-            type="button"
+                className="max-w-[120px]"
+              ><span className="flex min-h-7 min-w-0 items-center truncate text-inherit">{labelOf(terminalId)}</span></RowButton></Tip>}
+          <Button
+            variant="quiet"
+            size="icon-2xs"
             onClick={() => {
               void bridgeApi.closeTerminal(workspaceId, terminalId).catch(() => undefined);
               roster.ids = roster.ids.filter(id => id !== terminalId);
@@ -332,18 +338,18 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
               setFailures(previous => without(previous, terminalId));
             }}
             aria-label={`Close ${labelOf(terminalId)}`}
-            title="Close this shell"
-            className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-          ><X size={10} aria-hidden="true" /></button>
+            tooltip="Close this shell"
+          ><X size={10} aria-hidden="true" /></Button>
         </span>;
       })}
-      <button
-        type="button"
+      <Button
+        variant="quiet"
+        size="icon-xs"
+        className="ml-1"
         onClick={() => { roster.counter += 1; const terminalId = `t${roster.counter}`; openShell(workspaceId, terminalId); setFocusShell(terminalId); }}
         aria-label="New shell"
-        title="New shell"
-        className="ml-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-      ><Plus size={13} strokeWidth={1.8} aria-hidden="true" /></button>
+        tooltip="New shell"
+      ><Plus size={13} strokeWidth={1.8} aria-hidden="true" /></Button>
     </div>
     <div className="relative min-h-0 flex-1">
       {shells.map(terminalId => {
@@ -366,12 +372,12 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
             : failure
               ? <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-xs text-destructive">
                   <span>{failure}</span>
-                  <button type="button" onClick={() => restartShell(terminalId)} className="rounded-md px-2 py-1 text-foreground underline hover:bg-accent">Try again</button>
+                  <Button variant="outline" size="xs" onClick={() => restartShell(terminalId)}>Try again</Button>
                 </div>
               : <SkeletonRegion label="Starting shell" className="flex flex-1 flex-col gap-2 p-3"><Skeleton className="h-3 w-2/5" /><Skeleton className="h-3 w-1/4" /></SkeletonRegion>}
           {ended && <div className="flex shrink-0 items-center gap-2 border-t border-border bg-background px-2.5 py-1.5 text-caption text-muted-foreground">
             <span className="min-w-0 flex-1 truncate">Shell ended{record?.exitCode != null ? ` · exit ${record.exitCode}` : ""}.</span>
-            <button type="button" onClick={() => restartShell(terminalId)} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-foreground hover:bg-accent"><RotateCcw size={11} aria-hidden="true" />Restart</button>
+            <Button variant="ghost" size="2xs" onClick={() => restartShell(terminalId)}><RotateCcw aria-hidden="true" />Restart</Button>
           </div>}
         </div>;
       })}

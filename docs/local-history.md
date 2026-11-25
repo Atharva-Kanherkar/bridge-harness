@@ -2,7 +2,7 @@
 
 Bridge keeps correctness-critical state—session entries and heads, worker leases and queues, approvals, usage, and the outbox—in `bridge.db`. This is durable local history, not a tamper-proof or replicated evidence ledger.
 
-Provider telemetry uses a separate `bridge-telemetry.db`. Normalized spans are batched only after their semantic transactions commit, so a telemetry writer lock or failure cannot delay, roll back, or relabel correctness-critical state.
+Provider telemetry uses a separate `bridge-telemetry.db`. Normalized spans are batched only after their semantic transactions commit, so a telemetry writer lock or failure cannot delay, roll back, or relabel correctness-critical state. Spans are kept for 14 days: the history-snapshot maintenance thread deletes older ones oldest-first, one bounded batch per lock, so the file stops growing without the frame path ever waiting on it.
 
 Shortly after startup and every 15 minutes, Bridge exports a transactionally consistent SQLite snapshot under `history-snapshots/`. The export runs on a maintenance thread, never on the boot path: `VACUUM INTO` and the checksum grow with total history, and the daemon must be reachable before either starts. A boot export is skipped when the newest snapshot is younger than the 15-minute cadence. Each export has a versioned manifest containing its filename, creation time, and SHA-256 checksum. Verification recomputes the checksum so disk corruption or accidental modification is visible. These local snapshots reduce single-file loss risk; copying the snapshot directory to another device remains the user's backup boundary.
 
