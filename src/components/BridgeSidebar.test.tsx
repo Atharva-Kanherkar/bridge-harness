@@ -375,7 +375,7 @@ describe("BridgeSidebar history", () => {
     const html = render({
       chats: [session("a", { title: "Policy engine budget", harness: "opencode", model: "qwen3.7-plus" })],
     });
-    expect(html).toContain('title="Policy engine budget — OpenCode · qwen3.7-plus"');
+    expect(html).toContain('data-tip="Policy engine budget — OpenCode · qwen3.7-plus"');
     expect(html).not.toMatch(/>OpenCode · qwen3\.7-plus</);
   });
 

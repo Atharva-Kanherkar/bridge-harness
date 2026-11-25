@@ -179,19 +179,19 @@ export function TrailPage({ trail, summary: knownSummary, workspaceTitle, loadin
               </h1>
             )}
             <div className="flex shrink-0 items-center gap-1">
-              <Button variant="ghost" size="sm" onClick={onAdd} aria-haspopup="dialog" title="Add a note, chat, pull request, draft or issue"><Plus aria-hidden="true" />Add</Button>
-              <Button
+              <Button tooltip="Add a note, chat, pull request, draft or issue" variant="ghost" size="sm" onClick={onAdd} aria-haspopup="dialog"><Plus aria-hidden="true" />Add</Button>
+              <Button tooltip={refreshing ? "Refreshing from GitHub" : "Refresh from GitHub"}
                 variant="ghost"
                 size="icon-sm"
                 onClick={onRefresh}
                 disabled={refreshing}
                 aria-busy={refreshing}
                 aria-label="Refresh from GitHub"
-                title={refreshing ? "Refreshing from GitHub" : "Refresh from GitHub"}
+               
               >
                 <RefreshCw aria-hidden="true" className={cn(refreshing && "animate-spin")} />
               </Button>
-              <Button variant="ghost" size="icon-sm" onClick={() => onArchive(!summary.archivedAt)} aria-label={summary.archivedAt ? "Unarchive trail" : "Archive trail"} title={summary.archivedAt ? "Unarchive" : "Archive"}>
+              <Button tooltip={summary.archivedAt ? "Unarchive" : "Archive"} variant="ghost" size="icon-sm" onClick={() => onArchive(!summary.archivedAt)} aria-label={summary.archivedAt ? "Unarchive trail" : "Archive trail"}>
                 {summary.archivedAt ? <ArchiveRestore aria-hidden="true" /> : <Archive aria-hidden="true" />}
               </Button>
               <Button className="ml-1" onClick={onContinue}><Plus aria-hidden="true" />Continue this trail</Button>

@@ -141,15 +141,15 @@ export function ConnectorPane({ visible = true, focusItemKey, onClose, onUnreadC
         {items.filter(item => item.state !== "resolved").length} unread
       </Badge>}
       {degraded && <Badge variant="warning" size="sm">Degraded</Badge>}
-      <Button
+      <Button tooltip={includeReadMentions
+          ? "Including messages you have already read"
+          : "Only unread messages — turn on to check this connector is being read"}
         variant="ghost"
         size="icon-xs"
         role="switch"
         aria-checked={includeReadMentions}
         aria-label="Include messages you have already read"
-        title={includeReadMentions
-          ? "Including messages you have already read"
-          : "Only unread messages — turn on to check this connector is being read"}
+       
         className={includeReadMentions ? "text-foreground" : "text-muted-foreground"}
         disabled={busy}
         onClick={() => void (async () => {

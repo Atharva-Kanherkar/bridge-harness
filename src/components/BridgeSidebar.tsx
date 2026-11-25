@@ -161,7 +161,7 @@ function ChatRow({
       "group/row relative flex items-center rounded-md transition-colors",
       active ? "bg-selection text-selection-foreground" : "hover:bg-accent",
     )}>
-    <RowButton
+    <Tip label={detail} side="right"><RowButton
       size="bare"
       tone="plain"
       draggable
@@ -173,7 +173,6 @@ function ChatRow({
       onPointerEnter={intent.start}
       onPointerLeave={intent.cancel}
       onFocus={intent.now}
-      title={detail}
       aria-description="Drag into Mission Control to keep this chat in the grid"
       aria-current={active ? "page" : undefined}
       className="h-11 flex-1"
@@ -218,7 +217,7 @@ function ChatRow({
           </>}
         </span>
       </span>
-    </RowButton>
+    </RowButton></Tip>
     {/* Revealed on hover or keyboard focus: one three-dot menu holding every
         row action, so the row itself stays a single click target. The copy
         action puts the public `brio_…` alias on the clipboard — the token the
@@ -1167,7 +1166,7 @@ export function BridgeSidebar({
         {/* A rail pinned to the bottom: the account's settings entry and the
             usage dot. */}
         <div className="mt-1 flex shrink-0 items-center gap-0.5 border-t border-sidebar-border pt-1.5">
-          <RowButton tone="selection" shape="card" active={settingsActive} onClick={onOpenSettings} aria-label={`Open settings for ${accountName}`} aria-current={settingsActive ? "page" : undefined} title={`Open settings for ${accountName}`} className="flex-1">
+          <RowButton tone="selection" shape="card" active={settingsActive} onClick={onOpenSettings} aria-label={`Open settings for ${accountName}`} aria-current={settingsActive ? "page" : undefined} className="flex-1">
             <Settings2 size={16} strokeWidth={1.6} className={cn(!settingsActive && "text-muted-foreground")} aria-hidden="true" />
             <span className={cn("truncate text-meta", !settingsActive && "text-muted-foreground")}>Settings</span>
           </RowButton>

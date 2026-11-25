@@ -324,7 +324,7 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
       </div></DialogPanel>
       <DialogFooter>
         <Button variant="ghost" disabled={busy} onClick={onCancel}>Cancel</Button>
-        <Button variant="secondary" disabled={busy || !ready || previewPending} title={tryOn ? `On: ${tryOn.title}` : undefined} onClick={() => onSubmit({ definition: composed, approve: false, dryRun: true, event: tryOn })}>{tryOn ? "Dry run on the latest event" : "Dry run first"}</Button>
+        <Button tooltip={tryOn ? `On: ${tryOn.title}` : undefined} variant="secondary" disabled={busy || !ready || previewPending} onClick={() => onSubmit({ definition: composed, approve: false, dryRun: true, event: tryOn })}>{tryOn ? "Dry run on the latest event" : "Dry run first"}</Button>
         <Button disabled={busy || !ready} onClick={() => onSubmit({ definition: composed, approve: true, dryRun: false })}>{busy ? <LoaderCircle className="animate-spin" size={12}/> : <ShieldCheck size={12}/>}Approve and save</Button>
       </DialogFooter>
     </DialogContent>}

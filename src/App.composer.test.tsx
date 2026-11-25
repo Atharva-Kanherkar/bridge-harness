@@ -99,7 +99,7 @@ describe("the welcome surface's add-project control inside the app", () => {
 });
 
 async function openChat() {
-  const row = container.querySelector<HTMLButtonElement>('button[title*=" — "]');
+  const row = container.querySelector<HTMLButtonElement>('button[data-tip*=" — "]');
   expect(row).toBeTruthy();
   await act(async () => row!.click());
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
@@ -158,7 +158,7 @@ describe("composer discovery and completion", () => {
   it("keeps the provider when selecting a local command in a direct chat", async () => {
     await act(async () => { await bridgeApi.createChat("codex", null, "Composer direct regression"); });
     await pause(30);
-    const row = [...container.querySelectorAll<HTMLButtonElement>("button[title]")].find(button => button.title.includes("Composer direct regression"))!;
+    const row = [...container.querySelectorAll<HTMLButtonElement>("button[data-tip]")].find(button => (button.dataset.tip ?? "").includes("Composer direct regression"))!;
     await act(async () => row.click());
     await pause(30);
     const field = [...container.querySelectorAll<HTMLTextAreaElement>("textarea")].find(field => field.placeholder.startsWith("Message Bridge"))!;

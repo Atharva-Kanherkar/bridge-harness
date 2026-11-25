@@ -124,7 +124,7 @@ describe("ProjectsScreen", () => {
     mount({ workspaces: [workspace("harness", { path: "/Users/atharva/Documents/harness" })] });
     const line = [...container.querySelectorAll("p")].find(node => node.textContent?.includes("harness"))!;
     expect(line.textContent).toBe("…/atharva/Documents/harness");
-    expect(line.getAttribute("title")).toBe("/Users/atharva/Documents/harness");
+    expect(line.getAttribute("data-tip")).toBe("/Users/atharva/Documents/harness");
     // A leading slash must not end up on the end, which is what clipping with
     // `direction: rtl` did.
     expect(line.textContent!.endsWith("/")).toBe(false);

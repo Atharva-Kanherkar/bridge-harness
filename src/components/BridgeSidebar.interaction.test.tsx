@@ -249,7 +249,7 @@ describe("BridgeSidebar action rows", () => {
   it("exports idle chats for Mission Control without opening the chat", () => {
     const onOpenSession = vi.fn();
     mount({ onOpenSession });
-    const row = container.querySelector<HTMLButtonElement>("button[title^='Japan relocation']")!;
+    const row = container.querySelector<HTMLButtonElement>("button[data-tip^='Japan relocation']")!;
     expect(row.draggable).toBe(true);
     const dataTransfer = { setData: vi.fn(), effectAllowed: "none" };
     const event = new Event("dragstart", { bubbles: true });

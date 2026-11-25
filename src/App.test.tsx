@@ -175,7 +175,7 @@ async function mountApp() {
   await settle();
 }
 
-const chatRows = () => [...container.querySelectorAll<HTMLButtonElement>('button[title*=" — "]')];
+const chatRows = () => [...container.querySelectorAll<HTMLButtonElement>('button[data-tip*=" — "]')];
 const dockToggle = () => container.querySelector<HTMLButtonElement>('button[aria-label="Toggle dock"]');
 const dockAside = () => container.querySelector<HTMLElement>('aside[aria-label="Dock"]');
 const composer = () => container.querySelector<HTMLTextAreaElement>("textarea");
@@ -337,7 +337,7 @@ describe("the dock in the session view", () => {
       await bridgeApi.createChat("codex", null, "Scratch questions");
     });
     await settle();
-    const scratch = chatRows().find(row => row.title.includes("Scratch questions"))!;
+    const scratch = chatRows().find(row => (row.dataset.tip ?? "").includes("Scratch questions"))!;
     await click(scratch);
 
     await key({ ...chord, code: "Digit1", key: "1" });
@@ -554,7 +554,7 @@ describe("the dock in the session view", () => {
       await bridgeApi.createChat("codex", null, "Transcript scratch");
     });
     await settle();
-    const scratch = chatRows().find(row => row.title.includes("Transcript scratch"))!;
+    const scratch = chatRows().find(row => (row.dataset.tip ?? "").includes("Transcript scratch"))!;
     await click(scratch);
     await key({ ...chord, code: "Digit5", key: "5" });
     await settle(2);
@@ -630,7 +630,7 @@ describe("the dock in the session view", () => {
       await bridgeApi.createChat("codex", null, "Browser scratch");
     });
     await settle();
-    await click(chatRows().find(row => row.title.includes("Browser scratch"))!);
+    await click(chatRows().find(row => (row.dataset.tip ?? "").includes("Browser scratch"))!);
     await key({ ...chord, code: "Digit4", key: "4" });
     await settle(2);
     expect(dockAside()!.textContent).not.toContain("needs a repository");
@@ -668,7 +668,7 @@ describe("the dock in the session view", () => {
       await bridgeApi.createChat("codex", null, "Browser scratch");
     });
     await settle();
-    await click(chatRows().find(row => row.title.includes("Browser scratch"))!);
+    await click(chatRows().find(row => (row.dataset.tip ?? "").includes("Browser scratch"))!);
     await key({ ...chord, code: "Digit4", key: "4" });
     await settle(2);
     expect(dockAside()!.textContent).not.toContain("needs a repository");
@@ -1197,7 +1197,7 @@ describe("the dock in the session view", () => {
 
   it("gives Settings the sidebar's place and returns from its Back row", async () => {
     await mountApp();
-    await click(container.querySelector<HTMLButtonElement>('button[title^="Open settings"]')!);
+    await click(container.querySelector<HTMLButtonElement>('button[aria-label^="Open settings"]')!);
     // The settings screen is a lazy chunk.
     for (let round = 0; round < 100 && !container.querySelector('nav[aria-label="Settings"]'); round++) {
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
@@ -1360,15 +1360,15 @@ describe("the dock in the session view", () => {
     await click([...container.querySelectorAll("button")].find(button => button.textContent?.includes("Create fork"))!);
     await settle(8);
     // The rail gained the fork, and it names where it came from.
-    const titles = chatRows().map(row => row.getAttribute("title") ?? "");
+    const titles = chatRows().map(row => row.getAttribute("data-tip") ?? "");
     expect(chatRows().length).toBe(before + 1);
     expect(titles.some(title => title.includes("Fork of"))).toBe(true);
     expect(container.textContent).toContain("forked from");
     // And it is still reachable after navigating away to another chat.
-    const other = chatRows().find(row => !(row.getAttribute("title") ?? "").includes("Fork of"))!;
+    const other = chatRows().find(row => !(row.getAttribute("data-tip") ?? "").includes("Fork of"))!;
     await click(other);
     await settle(4);
-    expect(chatRows().some(row => (row.getAttribute("title") ?? "").includes("Fork of"))).toBe(true);
+    expect(chatRows().some(row => (row.getAttribute("data-tip") ?? "").includes("Fork of"))).toBe(true);
   });
 });
 
