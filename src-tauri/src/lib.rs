@@ -5785,7 +5785,8 @@ mod tests {
         .unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('s','w','codex','Codex','working','reported')", []).unwrap();
 
-        let clean = session_forest::SessionForest::new(&db)
+        let clean_sample = store::repository_state_for_path(repository);
+        let clean = session_forest::SessionForest::with_repository_state(&db, &clean_sample)
             .append(
                 "s",
                 session_forest::EntryKind::UserMessage,
@@ -5801,18 +5802,10 @@ mod tests {
             "aligned"
         );
 
-        // A tool changes the folder and reports it. Entry stamps come from a
-        // cache that a tool completion invalidates (see `repo_stamp`), so the
-        // reply after it is measured again.
+        // An external edit has no tool event to invalidate a cached sample.
         std::fs::write(repository.join("tracked.txt"), "changed\n").unwrap();
-        session_forest::SessionForest::new(&db)
-            .append(
-                "s",
-                session_forest::EntryKind::ToolCompleted,
-                serde_json::json!({"toolId":"edit-1","title":"Edit","status":"completed"}),
-            )
-            .unwrap();
-        let dirty = session_forest::SessionForest::new(&db)
+        let dirty_sample = store::repository_state_for_path(repository);
+        let dirty = session_forest::SessionForest::with_repository_state(&db, &dirty_sample)
             .append(
                 "s",
                 session_forest::EntryKind::AssistantMessage,

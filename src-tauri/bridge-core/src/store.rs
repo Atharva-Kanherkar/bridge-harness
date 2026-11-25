@@ -3410,6 +3410,24 @@ pub(crate) fn append_session_entry_tx(
     context_visibility: &str,
     token_estimate: Option<i64>,
 ) -> Result<SessionEntry, BridgeError> {
+    append_session_entry_tx_with_repository_state(
+        transaction, session_id, parent_entry_id, kind, payload,
+        provider_event_id, context_visibility, token_estimate, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn append_session_entry_tx_with_repository_state(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    parent_entry_id: Option<&str>,
+    kind: &str,
+    payload: &serde_json::Value,
+    provider_event_id: Option<&str>,
+    context_visibility: &str,
+    token_estimate: Option<i64>,
+    repository_state: Option<&serde_json::Value>,
+) -> Result<SessionEntry, BridgeError> {
     let sequence = transaction.query_row(
         "SELECT COALESCE(MAX(sequence),0)+1 FROM session_entries WHERE session_id=?1",
         params![session_id],
@@ -3428,7 +3446,7 @@ pub(crate) fn append_session_entry_tx(
     // the core's one database lock while it scans. See `repo_stamp`.
     object.insert(
         "_bridgeRepoState".into(),
-        crate::repo_stamp::for_entry(transaction, session_id, kind)?,
+        crate::repo_stamp::for_entry(transaction, session_id, kind, repository_state)?,
     );
     let entry = SessionEntry {
         id: Uuid::new_v4().to_string(),
@@ -3497,33 +3515,57 @@ pub fn repository_path_for_session(
     db: &Connection,
     session_id: &str,
 ) -> Result<Option<PathBuf>, BridgeError> {
+    Ok(repository_location_for_session(db, session_id)?.and_then(|location| location.resolve()))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct SessionRepositoryLocation {
+    path: PathBuf,
+    database_path: Option<PathBuf>,
+}
+
+/// Read the location without filesystem work, so a caller can release the
+/// database guard before applying the scratch-directory guard.
+pub(crate) fn repository_location_for_session(
+    db: &Connection,
+    session_id: &str,
+) -> Result<Option<SessionRepositoryLocation>, BridgeError> {
     let path: Option<String> = db.query_row(
         "SELECT COALESCE(s.cwd,w.path) FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
         params![session_id],
         |row| row.get(0),
     ).optional()?.flatten();
-    let path = path.map(PathBuf::from);
-    // A private chat has no connected repository. Git's normal ancestor
-    // discovery can otherwise reach a home-directory repository and scan it
-    // while a durable event holds the shared database lock. Only an explicit
-    // repository initialized in this scratch directory belongs to the chat.
-    if let (Some(path), Some(database_path)) = (&path, db.path()) {
-        let chats = Path::new(database_path)
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("chats");
-        // Asides share their source chat's scratch directory, so ownership
-        // follows the directory's parent rather than this session's ID.
-        // SQLite resolves aliases such as macOS /var -> /private/var. The
-        // stored cwd may retain the spelling supplied by the caller.
-        let is_scratch = path.parent() == Some(chats.as_path()) || std::fs::canonicalize(path)
-            .and_then(|actual| std::fs::canonicalize(&chats).map(|owned| actual.parent() == Some(owned.as_path())))
-            .unwrap_or(false);
-        if is_scratch && !path.join(".git").exists() {
-            return Ok(None);
+    Ok(path.map(|path| SessionRepositoryLocation {
+        path: PathBuf::from(path),
+        database_path: db.path().map(PathBuf::from),
+    }))
+}
+
+impl SessionRepositoryLocation {
+    pub(crate) fn resolve(&self) -> Option<PathBuf> {
+        let path = &self.path;
+        // A private chat has no connected repository. Git's normal ancestor
+        // discovery can otherwise reach a home-directory repository and scan it
+        // while a durable event holds the shared database lock. Only an explicit
+        // repository initialized in this scratch directory belongs to the chat.
+        if let Some(database_path) = &self.database_path {
+            let chats = database_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("chats");
+            // Asides share their source chat's scratch directory, so ownership
+            // follows the directory's parent rather than this session's ID.
+            // SQLite resolves aliases such as macOS /var -> /private/var. The
+            // stored cwd may retain the spelling supplied by the caller.
+            let is_scratch = path.parent() == Some(chats.as_path()) || std::fs::canonicalize(path)
+                .and_then(|actual| std::fs::canonicalize(&chats).map(|owned| actual.parent() == Some(owned.as_path())))
+                .unwrap_or(false);
+            if is_scratch && !path.join(".git").exists() {
+                return None;
+            }
         }
+        Some(path.clone())
     }
-    Ok(path)
 }
 
 /// The directory a session's base-branch facts describe: the workspace root
@@ -3551,10 +3593,9 @@ pub fn base_branch_path_for_session(
     }
 }
 
-/// Measure a repository's state now. Also refreshes the stamp cache that
-/// stored entries read, since the measurement is as fresh as it gets.
+/// Measure a repository's state now, outside the database guard.
 pub fn repository_state_for_path(path: &Path) -> serde_json::Value {
-    crate::repo_stamp::measure(path)
+    measure_repository_state(path)
 }
 
 pub(crate) fn measure_repository_state(path: &Path) -> serde_json::Value {
@@ -4695,10 +4736,25 @@ pub fn session_event(
     event: &crate::agent::NormalizedEvent,
     provider_meta: &serde_json::Value,
 ) -> Result<AgentEvent, BridgeError> {
+    session_event_with_repository_state(db, session_id, event, provider_meta, None)
+}
+
+pub(crate) fn session_event_with_repository_state(
+    db: &Connection,
+    session_id: &str,
+    event: &crate::agent::NormalizedEvent,
+    provider_meta: &serde_json::Value,
+    repository_state: Option<&serde_json::Value>,
+) -> Result<AgentEvent, BridgeError> {
     event.validate().map_err(BridgeError::Invalid)?;
     let transaction = db.unchecked_transaction()?;
-    let stored = session_event_in_transaction(&transaction, session_id, event, provider_meta)?;
+    let stored = session_event_in_transaction_with_repository_state(
+        &transaction, session_id, event, provider_meta, repository_state,
+    )?;
     transaction.commit()?;
+    if stored.sequence > 0 && crate::repo_stamp::changes_folder(&stored.kind) {
+        crate::repo_stamp::invalidate_session(db, session_id);
+    }
     Ok(stored)
 }
 
@@ -4718,6 +4774,26 @@ pub(crate) fn session_event_in_transaction(
     session_id: &str,
     event: &crate::agent::NormalizedEvent,
     provider_meta: &serde_json::Value,
+) -> Result<AgentEvent, BridgeError> {
+    session_event_in_transaction_with_repository_state(
+        transaction, session_id, event, provider_meta, None,
+    )
+}
+
+pub(crate) fn session_event_entry_kind(event: &crate::agent::NormalizedEvent) -> &str {
+    match (event.kind.as_str(), event.role.as_deref()) {
+        ("message.completed", Some("user")) => "user.message",
+        ("message.completed", _) => "assistant.message",
+        (kind, _) => kind,
+    }
+}
+
+pub(crate) fn session_event_in_transaction_with_repository_state(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    event: &crate::agent::NormalizedEvent,
+    provider_meta: &serde_json::Value,
+    repository_state: Option<&serde_json::Value>,
 ) -> Result<AgentEvent, BridgeError> {
     event.validate().map_err(BridgeError::Invalid)?;
     // An agent that printed its environment must not leave the key proxy's
@@ -4777,24 +4853,8 @@ pub(crate) fn session_event_in_transaction(
         payload["data"]["turnIndex"] = serde_json::json!(ordinal + 1);
     }
     let payload = payload;
-    let mut final_kind = event.kind.as_str();
-    if final_kind == "message.completed" {
-        final_kind = if event.role.as_deref() == Some("user") {
-            "user.message"
-        } else {
-            "assistant.message"
-        };
-    } else if final_kind == "tool.started"
-        || final_kind == "tool.completed"
-        || final_kind == "approval.requested"
-        || final_kind == "approval.resolved"
-        || final_kind == "delegation.requested"
-        || final_kind == "delegation.approved"
-        || final_kind == "delegation.rejected"
-        || final_kind == "worker.result"
-    {
-        // Keep as is, it maps directly.
-    } else if final_kind.ends_with(".delta")
+    let final_kind = session_event_entry_kind(event);
+    if final_kind.ends_with(".delta")
         || final_kind.ends_with(".progress")
         || final_kind == "question.settled"
         || final_kind == crate::agent::NATIVE_COMPACTING_KIND
@@ -4825,7 +4885,7 @@ pub(crate) fn session_event_in_transaction(
         });
     }
 
-    let entry = append_session_entry_tx(
+    let entry = append_session_entry_tx_with_repository_state(
         transaction,
         session_id,
         parent_entry_id.as_deref(),
@@ -4838,6 +4898,7 @@ pub(crate) fn session_event_in_transaction(
             "eligible"
         },
         None,
+        repository_state,
     )?;
     Ok(AgentEvent {
         id: entry.sequence,

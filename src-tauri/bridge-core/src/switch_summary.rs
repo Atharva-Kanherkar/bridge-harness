@@ -274,10 +274,19 @@ pub fn handle_detached_frame(
                     detached.saw_reply = true;
                 }
                 let output = event.text.as_deref().unwrap_or_default();
-                let outcome = {
-                    let db = core.db.lock().unwrap();
-                    CompactionController::handle_output(&db, session_id, output)
-                };
+                let outcome = (|| {
+                    let prepared = crate::repo_stamp::Prepared::for_session(&core.db, session_id)?;
+                    let (db, prepared) = prepared.lock_current(&core.db, session_id)?;
+                    // The outgoing launch may have retired while Git was running.
+                    let active = core.detached_summaries.lock().unwrap().get(session_id)
+                        .is_some_and(|detached| detached.is_active() && detached.launch == identity);
+                    if !active {
+                        return Ok(CheckpointOutcome::NotPending);
+                    }
+                    CompactionController::handle_output_with_repository_state(
+                        &db, session_id, output, Some(prepared.value()),
+                    )
+                })();
                 if let Ok(CheckpointOutcome::Repair { prompt }) = outcome {
                     resend(core, session_id, &prompt);
                 }

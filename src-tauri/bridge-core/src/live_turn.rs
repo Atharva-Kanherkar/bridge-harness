@@ -1712,19 +1712,12 @@ pub fn start_session(
     } else {
         None
     };
-    for message in &started.startup_messages {
-        if !passes_usage_replay(&mut usage_replay, message) {
-            continue;
-        }
-        persist_agent_value(
-            &db,
-            &state.adapter_registry,
-            adapter_id,
-            &session_id,
-            message,
-        )?;
-    }
     drop(db);
+    for message in &started.startup_messages {
+        if passes_usage_replay(&mut usage_replay, message) {
+            persist_startup_message(state, adapter_id, &session_id, message)?;
+        }
+    }
     // This launch carries no tool choice. With no entry, a stored choice
     // makes the next send relaunch through `start_chat`.
     crate::tool_selection::forget_applied(state, &session_id);
@@ -2570,17 +2563,10 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<(), 
         if plan == restoration::RestorationPlan::Native && mode == RestorationMode::Native {
             usage_replay = native_resume_usage(&db, &state.adapter_registry, adapter_id, &session_id, &thread_id);
         }
-        for message in &started.startup_messages {
-            if !passes_usage_replay(&mut usage_replay, message) {
-                continue;
-            }
-            persist_agent_value(
-                &db,
-                &state.adapter_registry,
-                adapter_id,
-                &session_id,
-                message,
-            )?;
+    }
+    for message in &started.startup_messages {
+        if passes_usage_replay(&mut usage_replay, message) {
+            persist_startup_message(state, adapter_id, &session_id, message)?;
         }
     }
     // Before the runtime is visible, so a send never finds a warm runtime with
@@ -3125,25 +3111,29 @@ fn passes_usage_replay(seed: &mut Option<CodexUsageReplay>, frame: &serde_json::
     }
 }
 
-fn persist_agent_value(
-    db: &Connection,
-    registry: &adapters::AdapterRegistry,
+fn persist_startup_message(
+    core: &BridgeCore,
     adapter_id: &str,
     session_id: &str,
     value: &serde_json::Value,
-) -> Result<Vec<AgentEvent>, BridgeError> {
-    let normalized = registry.normalize(adapter_id, value);
-    normalized
-        .iter()
-        .map(|event| {
-            store::session_event(
-                db,
-                session_id,
-                event,
-                &serde_json::json!({"adapter":adapter_id,"method":value.get("method")}),
-            )
-        })
-        .collect()
+) -> Result<(), BridgeError> {
+    let events = core.adapter_registry.normalize(adapter_id, value);
+    let prepared = events.iter().any(|event| crate::repo_stamp::exact_kind(store::session_event_entry_kind(event)))
+        .then(|| crate::repo_stamp::Prepared::for_session(&core.db, session_id))
+        .transpose()?;
+    let (db, prepared) = match prepared {
+        Some(prepared) => {
+            let (db, prepared) = prepared.lock_current(&core.db, session_id)?;
+            (db, Some(prepared))
+        }
+        None => (core.db.lock().unwrap(), None),
+    };
+    let repository_state = prepared.as_ref().map(crate::repo_stamp::Prepared::value);
+    let meta = serde_json::json!({"adapter":adapter_id,"method":value.get("method")});
+    for event in events {
+        store::session_event_with_repository_state(&db, session_id, &event, &meta, repository_state)?;
+    }
+    Ok(())
 }
 
 pub fn agent_event_changes_bridge_state(event: &agent::NormalizedEvent) -> bool {
@@ -3291,28 +3281,20 @@ fn handle_agent_value_timed(
     let mut recover_compaction = false;
     let bridge_state_changed;
 
-    // Any `git` this frame's entries need runs now, while the database lock
-    // is free for every other chat's frames. See `repo_stamp`.
-    crate::repo_stamp::refresh_before_lock(session_id);
     {
         let lock_requested = std::time::Instant::now();
-        let db = state.db.lock().unwrap();
-        let db_wait_ms = lock_requested.elapsed().as_secs_f64() * 1000.0;
-        // The reader's first gate check precedes database acquisition. A clean
-        // shutdown may retire this launch while a frame is waiting on the DB;
-        // recheck under the same lock as durable shutdown settlement so that
-        // late turn/error frames cannot undo its stopped state.
-        if state.reader_launches.lock().unwrap().get(session_id)
-            .is_some_and(|gate| !*gate.lock().unwrap())
-        {
-            return;
-        }
-        // A frame buffered by a replaced reader cannot acquire the new
-        // session's prompt authority. Check the launch generation under the
-        // same lock that will authorize and persist the proposal.
-        if expected_launch.is_some_and(|(started_at, provider_session_id)| {
-            !reader_launch_is_current(&db, session_id, started_at, provider_session_id)
-        }) {
+        let mut db = state.db.lock().unwrap();
+        let mut db_wait_ms = lock_requested.elapsed().as_secs_f64() * 1000.0;
+        // Recheck after every acquisition: a stopped or replaced reader has
+        // no authority to persist this frame or apply its policy decisions.
+        let reader_is_current = |db: &Connection| {
+            !state.reader_launches.lock().unwrap().get(session_id)
+                .is_some_and(|gate| !*gate.lock().unwrap())
+                && expected_launch.is_none_or(|(started_at, provider_session_id)| {
+                    reader_launch_is_current(db, session_id, started_at, provider_session_id)
+                })
+        };
+        if !reader_is_current(&db) {
             return;
         }
         let session_context: Option<(Option<String>, String, i64, Option<String>, String, String)> = db
@@ -3337,27 +3319,6 @@ fn handle_agent_value_timed(
         }
         // Direct chats are single-agent: no worker delegation and no auto-compaction.
         let is_direct = session_kind == "direct";
-        let runtime_turn_id = current_turn.lock().unwrap().clone();
-        // Claude and other runtimes allocate a turn locally before receiving
-        // a provider start event. This Arc belongs to the checked reader
-        // generation, so it is also a trusted turn binding for host tools.
-        if let Some(turn_id) = runtime_turn_id.as_deref() {
-            let _ = db.execute(
-                "UPDATE sessions SET active_turn_id=?2 WHERE id=?1 AND active_turn_id IS NULL AND status IN ('working','waiting')",
-                params![session_id, turn_id],
-            );
-        }
-        let mut observed_turn_id = runtime_turn_id
-            .or(stored_turn_id)
-            .or_else(|| {
-                state
-                    .delegations
-                    .lock()
-                    .unwrap()
-                    .last_turn_by_session
-                    .get(session_id)
-                    .cloned()
-            });
         // The exact composer text is persisted locally at submission time.
         // Provider echoes may include hidden user-role file context, so do not
         // duplicate them into the visible conversation.
@@ -3379,6 +3340,54 @@ fn handle_agent_value_timed(
                 event.role.as_deref() != Some("user") || !event.kind.starts_with("message.")
             })
             .collect::<Vec<_>>();
+        let normalization_ms = normalization_started.elapsed().as_secs_f64() * 1000.0;
+        let mut repository_state = None;
+        let mut stored_turn_id = stored_turn_id;
+        if normalized.iter().any(|event| crate::repo_stamp::exact_kind(store::session_event_entry_kind(event))) {
+            let Ok(location) = store::repository_location_for_session(&db, session_id) else { return };
+            drop(db);
+            let prepared = crate::repo_stamp::Prepared::observe(location);
+            let lock_requested = std::time::Instant::now();
+            let Ok((guard, prepared)) = prepared.lock_current(&state.db, session_id) else { return };
+            db = guard;
+            db_wait_ms += lock_requested.elapsed().as_secs_f64() * 1000.0;
+            if !reader_is_current(&db) {
+                return;
+            }
+            let current_turn = db.query_row(
+                "SELECT active_turn_id FROM sessions
+                 WHERE id=?1 AND harness=?2 AND kind=?3
+                   AND NOT EXISTS (SELECT 1 FROM worker_runtime
+                                   WHERE session_id=?1 AND lifecycle_state IN ('completed','cancelled'))",
+                params![session_id, adapter_id, session_kind],
+                |row| row.get(0),
+            );
+            let Ok(turn_id) = current_turn else { return };
+            stored_turn_id = turn_id;
+            repository_state = Some(prepared);
+        }
+        let repository_state = repository_state.as_ref().map(crate::repo_stamp::Prepared::value);
+        let runtime_turn_id = current_turn.lock().unwrap().clone();
+        // Claude and other runtimes allocate a turn locally before receiving
+        // a provider start event. This Arc belongs to the checked reader
+        // generation, so it is also a trusted turn binding for host tools.
+        if let Some(turn_id) = runtime_turn_id.as_deref() {
+            let _ = db.execute(
+                "UPDATE sessions SET active_turn_id=?2 WHERE id=?1 AND active_turn_id IS NULL AND status IN ('working','waiting')",
+                params![session_id, turn_id],
+            );
+        }
+        let mut observed_turn_id = runtime_turn_id
+            .or(stored_turn_id)
+            .or_else(|| {
+                state
+                    .delegations
+                    .lock()
+                    .unwrap()
+                    .last_turn_by_session
+                    .get(session_id)
+                    .cloned()
+            });
         // Route before any root error/turn/control handling. Child prose is
         // never interpreted as a Bridge delegation or prompt mutation.
         let mut root_events = Vec::new();
@@ -3403,7 +3412,7 @@ fn handle_agent_value_timed(
                         &event.data,
                     );
                 }
-                match crate::harness_subagents::route(&db, session_id, &event, &serde_json::json!({"adapter":adapter_id})) {
+                match crate::harness_subagents::route_with_repository_state(&db, session_id, &event, &serde_json::json!({"adapter":adapter_id}), repository_state) {
                     Ok(events) => {
                         let state_changed=events.iter().any(|e|matches!(e.kind.as_str(),"subagent.started"|"subagent.completed"|"subagent.status"|"permission.requested"|"question.requested"));
                         for stored in events {
@@ -3419,7 +3428,6 @@ fn handle_agent_value_timed(
             } else { root_events.push(event); }
         }
         let mut normalized = root_events;
-        let normalization_ms = normalization_started.elapsed().as_secs_f64() * 1000.0;
         // Interrupting a provider to honor a user's Stop click routinely makes
         // it emit an "error" frame (an aborted turn, a broken pipe, a non-zero
         // exit) that looks identical to a genuine crash. That is not a failure
@@ -3942,8 +3950,8 @@ fn handle_agent_value_timed(
                 checkpoint_response_seen = true;
                 checkpoint_turn_handled = true;
                 let output = normalized_event.text.as_deref().unwrap_or_default();
-                match compaction_controller::CompactionController::handle_output(
-                    &db, session_id, output,
+                match compaction_controller::CompactionController::handle_output_with_repository_state(
+                    &db, session_id, output, repository_state,
                 ) {
                     Ok(compaction_controller::CheckpointOutcome::Repair { prompt }) => {
                         checkpoint_prompt_after_turn = Some(prompt);
@@ -4213,11 +4221,12 @@ fn handle_agent_value_timed(
             // streamed text/reasoning and late output after cancellation.
             if !suppress_checkpoint_frame {
                 let persistence_started = std::time::Instant::now();
-                if let Ok(mut event) = store::session_event(
+                if let Ok(mut event) = store::session_event_with_repository_state(
                     &db,
                     session_id,
                     &normalized_event,
                     &serde_json::json!({"adapter":adapter_id,"method":value.get("method")}),
+                    repository_state,
                 ) {
                     pending_telemetry.push(store::telemetry_span(
                         &trace_id,
@@ -5050,10 +5059,14 @@ fn run_compaction_recovery(core: &Arc<BridgeCore>, session_id: &str) -> Result<(
         )?
     };
     let git_status = worker_guard::tracked_status(Path::new(&workspace_path)).unwrap_or_default();
-    compaction_controller::CompactionController::reconstruct_from_normalized_events_and_git(
-        &state.db.lock().unwrap(),
+    let prepared = crate::repo_stamp::Prepared::for_session(&state.db, session_id)?;
+    let (db, prepared) = prepared.lock_current(&state.db, session_id)?;
+    compaction_controller::CompactionController::reconstruct_with_repository_state(
+        &db,
         session_id,
         &git_status,
+        compaction_controller::CompactionReason::PhaseBoundary,
+        Some(prepared.value()),
     )?;
     Ok(())
 }
@@ -6936,13 +6949,14 @@ pub fn launch_worker_outcome(
         if activation == WorkerActivation::Native {
             usage_replay = native_resume_usage(&db, &state.adapter_registry, &harness, &session_id, &thread_id);
         }
-        for message in &startup_messages {
-            if !passes_usage_replay(&mut usage_replay, message) {
-                continue;
-            }
-            let _ =
-                persist_agent_value(&db, &state.adapter_registry, &harness, &session_id, message);
+    }
+    for message in &startup_messages {
+        if passes_usage_replay(&mut usage_replay, message) {
+            let _ = persist_startup_message(&state, &harness, &session_id, message);
         }
+    }
+    {
+        let db = state.db.lock().unwrap();
         let spawn_event = agent::NormalizedEvent {
             kind: if reservation.reuse_existing {
                 "delegation.resumed".into()
@@ -11466,6 +11480,11 @@ fn fail_stalled_chat_turn(core: &Arc<BridgeCore>, session_id: &str, deadline: u6
         Some(silent) if silent >= deadline => {}
         _ => return,
     }
+    let Ok(prepared) = crate::repo_stamp::Prepared::for_session(&state.db, session_id) else { return };
+    // The reader remained free to settle the turn while Git was running.
+    if !chat_silence_secs(&state, session_id).is_some_and(|silent| silent >= deadline) {
+        return;
+    }
     // Reset first: a second tick must not stall the same turn twice while
     // the provider takes its time reacting to the interrupt.
     reset_chat_heartbeat(&state, session_id);
@@ -11484,18 +11503,6 @@ fn fail_stalled_chat_turn(core: &Arc<BridgeCore>, session_id: &str, deadline: u6
         .get(session_id)
         .map(|runtime| runtime.interrupt().is_ok())
         .unwrap_or(false);
-    let (harness, workspace_id): (String, Option<String>) = {
-        let db = state.db.lock().unwrap();
-        match db.query_row(
-            "SELECT harness, workspace_id FROM sessions WHERE id=?1 AND status='working' AND COALESCE(depth,0)=0",
-            params![session_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ) {
-            Ok(row) => row,
-            // Settled by a real frame between the snapshot and now.
-            Err(_) => return,
-        }
-    };
     let mut error = agent::NormalizedEvent::new("error");
     error.status = Some("failed".into());
     error.title = Some("Turn stalled".into());
@@ -11512,12 +11519,19 @@ fn fail_stalled_chat_turn(core: &Arc<BridgeCore>, session_id: &str, deadline: u6
     let mut ended = agent::NormalizedEvent::new("turn.completed");
     ended.status = Some("failed".into());
     ended.data = serde_json::json!({ "bridgeStall": true });
-    let provider_meta = serde_json::json!({ "adapter": harness, "bridgeStall": true });
     let stored: Vec<AgentEvent> = {
-        let db = state.db.lock().unwrap();
+        let Ok((db, prepared)) = prepared.lock_current(&state.db, session_id) else { return };
+        let session: rusqlite::Result<(String, Option<String>)> = db.query_row(
+            "SELECT harness, workspace_id FROM sessions
+             WHERE id=?1 AND status='working' AND COALESCE(depth,0)=0",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        );
+        let Ok((harness, workspace_id)) = session else { return };
+        let provider_meta = serde_json::json!({ "adapter": harness, "bridgeStall": true });
         let mut stored = Vec::new();
         for event in [&error, &ended] {
-            if let Ok(stored_event) = store::session_event(&db, session_id, event, &provider_meta) {
+            if let Ok(stored_event) = store::session_event_with_repository_state(&db, session_id, event, &provider_meta, Some(prepared.value())) {
                 stored.push(stored_event);
             }
         }
@@ -11776,7 +11790,7 @@ pub fn persist_submitted_user_turn(
     adapter_id: &str,
     display_text: &str,
 ) -> Result<Option<AgentEvent>, BridgeError> {
-    persist_submitted_user_turn_with_delivery(db, session_id, adapter_id, display_text, "submitted", &[])
+    persist_submitted_user_turn_with_delivery(db, session_id, adapter_id, display_text, "submitted", &[], None)
 }
 
 /// The same durable user message, stamped with how it reached the provider.
@@ -11789,13 +11803,14 @@ pub fn persist_submitted_user_turn(
 /// Image attachments ride along as data URIs in the event payload so the
 /// conversation can render them from durable history — a reload must not
 /// erase what the user sent.
-pub fn persist_submitted_user_turn_with_delivery(
+fn persist_submitted_user_turn_with_delivery(
     db: &Connection,
     session_id: &str,
     adapter_id: &str,
     display_text: &str,
     delivery: &str,
     images: &[wire::TurnImage],
+    repository_state: Option<&serde_json::Value>,
 ) -> Result<Option<AgentEvent>, BridgeError> {
     let data = if images.is_empty() {
         serde_json::json!({"delivery": delivery})
@@ -11817,11 +11832,12 @@ pub fn persist_submitted_user_turn_with_delivery(
         text: Some(display_text.into()),
         data,
     };
-    store::session_event(
+    store::session_event_with_repository_state(
         db,
         session_id,
         &user_event,
         &serde_json::json!({"adapter": adapter_id}),
+        repository_state,
     )
     .map(Some)
 }
@@ -12209,6 +12225,9 @@ fn deliver_prepared_input(
     delivery: DeliveryMode,
 ) -> Result<(), BridgeError> {
     let state = core;
+    let repository_state = delivery.persists_user_message()
+        .then(|| crate::repo_stamp::Prepared::for_session(&state.db, session_id))
+        .transpose()?;
     // Read the owed frame and let the ledger lock go before the adapter map is
     // taken. Both delivery seams acquire in this order — ledger, then adapters
     // — and `arm` never reaches for the adapter map, so no pair can invert.
@@ -12303,7 +12322,13 @@ fn deliver_prepared_input(
             .unwrap()
             .record_delivered(session_id, frame.digest());
     }
-    let db = state.db.lock().unwrap();
+    let (db, repository_state) = match repository_state {
+        Some(prepared) => {
+            let (guard, prepared) = prepared.lock_current(&state.db, session_id)?;
+            (guard, Some(prepared))
+        }
+        None => (state.db.lock().unwrap(), None),
+    };
     // Claude stream-json does not reliably echo the submitted user turn; persist
     // it locally. A queued follow-up was already persisted at submission time.
     if delivery.persists_user_message() {
@@ -12319,6 +12344,7 @@ fn deliver_prepared_input(
             &prepared.display_text,
             delivery.stamp(),
             &prepared.images,
+            repository_state.as_ref().map(crate::repo_stamp::Prepared::value),
         )? {
             core.events.publish(CoreEvent::Agent(event));
         }
@@ -12569,11 +12595,14 @@ fn persist_direct_agent_request(
             "agentRole": agent.role,
         }),
     };
-    let stored = store::session_event(
-        &core.db.lock().unwrap(),
+    let prepared = crate::repo_stamp::Prepared::for_session(&core.db, session_id)?;
+    let (db, prepared) = prepared.lock_current(&core.db, session_id)?;
+    let stored = store::session_event_with_repository_state(
+        &db,
         session_id,
         &event,
         &serde_json::json!({"adapter": adapter_id, "directDispatch": true}),
+        Some(prepared.value()),
     )?;
     core.events.publish(CoreEvent::Agent(stored));
     Ok(())
@@ -12967,6 +12996,7 @@ fn answer_pending_question(
         |row| row.get(0),
     )?;
     drop(db);
+    let repository_state = crate::repo_stamp::Prepared::for_session(&core.db, session_id)?;
     let adapters = core.adapters.lock().unwrap();
     let runtime = adapters
         .get(session_id)
@@ -12992,7 +13022,7 @@ fn answer_pending_question(
         return Ok(None);
     }
     settle_question_resolution(core, session_id, event_id, is_worker, "answered")?;
-    let db = core.db.lock().unwrap();
+    let (db, repository_state) = repository_state.lock_current(&core.db, session_id)?;
     if let Some(user_event) = persist_submitted_user_turn_with_delivery(
         &db,
         session_id,
@@ -13000,6 +13030,7 @@ fn answer_pending_question(
         &sanitized,
         "answered_question",
         &[],
+        Some(repository_state.value()),
     )? {
         core.events.publish(CoreEvent::Agent(user_event));
     }
@@ -13243,8 +13274,9 @@ fn hold_input(
     front: bool,
     steered: bool,
 ) -> Result<session_input::QueuedInput, BridgeError> {
+    let repository_state = crate::repo_stamp::Prepared::for_session(&core.db, session_id)?;
     let queued = {
-        let db = core.db.lock().unwrap();
+        let (db, repository_state) = repository_state.lock_current(&core.db, session_id)?;
         let enqueue = if front {
             session_input::enqueue_steer
         } else {
@@ -13272,6 +13304,7 @@ fn hold_input(
             &prepared.display_text,
             if steered { "steered" } else { "queued" },
             &prepared.images,
+            Some(repository_state.value()),
         )? {
             core.events.publish(CoreEvent::Agent(event));
         }
@@ -13906,8 +13939,9 @@ fn emit_local_assistant(
     adapter_id: &str,
     text: &str,
 ) -> Result<(), BridgeError> {
-    let db = core.db.lock().unwrap();
-    let event = store::session_event(
+    let prepared = crate::repo_stamp::Prepared::for_session(&core.db, session_id)?;
+    let (db, prepared) = prepared.lock_current(&core.db, session_id)?;
+    let event = store::session_event_with_repository_state(
         &db,
         session_id,
         &agent::NormalizedEvent {
@@ -13920,6 +13954,7 @@ fn emit_local_assistant(
             data: serde_json::json!({ "bridgeLocal": true }),
         },
         &serde_json::json!({ "adapter": adapter_id }),
+        Some(prepared.value()),
     )?;
     core.events.publish(CoreEvent::Agent(event));
     Ok(())
@@ -14316,8 +14351,9 @@ fn stop_turn(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) -> Resul
 fn stop_turn_claimed(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) -> Result<(), BridgeError> {
     // The DB lock serializes this boundary with normalization/publication.
     // Once released, no buffered frame can reopen the stopped turn.
+    let prepared = crate::repo_stamp::Prepared::for_session(&core.db, session_id)?;
     let runtime = {
-        let db = core.db.lock().unwrap();
+        let (db, prepared) = prepared.lock_current(&core.db, session_id)?;
         let transaction = db.unchecked_transaction()?;
         void_orphaned_questions(&transaction, session_id, "turn_cancelled");
         if cause == TurnStop::User {
@@ -14334,7 +14370,9 @@ fn stop_turn_claimed(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) 
         };
         event.title = Some(title.into());
         event.data = serde_json::json!({"reason":reason});
-        let stored = store::session_event_in_transaction(&transaction, session_id, &event, &serde_json::Value::Null)?;
+        let stored = store::session_event_in_transaction_with_repository_state(
+            &transaction, session_id, &event, &serde_json::Value::Null, Some(prepared.value()),
+        )?;
         transaction.commit()?;
         let _ = crate::harness_subagents::interrupt_children(&db, session_id);
         core.deactivate_reader_launch(session_id);
