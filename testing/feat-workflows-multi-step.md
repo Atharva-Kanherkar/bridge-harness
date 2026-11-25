@@ -57,3 +57,10 @@ parallel steps.
 - `bridged` journey E9: a two-step run on the fake SDK. Different models and servers per step; order; the hand-off in step 2's first turn; step 2's policy without step 1's server; one settle; a failed first step stops the run.
 - Live, scratch `bridged`: a two-step run with Claude then Codex, in a worktree. Codex reports no MCP tool.
 - Gates: `cargo test --workspace`, `bun run build`, vitest, `tsc -b`, clippy ratchet.
+
+## Review fixes
+
+| ID | Expectation |
+|----|-------------|
+| R1 | The editor never keeps per-step settings that the single-step controls cannot show. When the steps drop to one, the remaining step keeps exactly what it had and loses its own `servers` and `files`. A worktree step keeps the worktree and no connectors. Any other step keeps the grants it used, with their always-allowed tools, and the grants only removed steps used are dropped. Clearing the project returns every step to the workflow's files. `stepsProblem` checks a single step as the daemon does, so Save waits instead of failing. |
+| R2 | A step row is written only once the run moved to that step. If the run was cancelled or lost its lease while the step was being set up, `transition` refuses and no step row exists, so no run shows a step still running after it ended. |
