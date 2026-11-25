@@ -152,7 +152,8 @@ import { readAgentOnboardingComplete, shouldShowAgentOnboarding, writeAgentOnboa
 import { resolveAsideModel } from "./asideModel";
 import { parseSideChatCommand, quoteSelection } from "./sideChat";
 import { parseFindCommand } from "./chatSearch";
-import { welcomeHeadline } from "./greetings";
+import { projectGreetingLines, welcomeHeadline } from "./greetings";
+import { StreamingGreeting } from "./components/StreamingGreeting";
 import { useThemePreference } from "./theme";
 import { startAppPreferenceSync } from "./appPreferences";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
@@ -4765,6 +4766,7 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
   // Falls back to the workspace title only when it has no distinct project.
   const heroProject = projectName ?? workspace?.title;
   const greeting = welcomeHeadline(heroProject);
+  const heroLines = useMemo(() => projectGreetingLines(heroProject), [heroProject]);
   const sessionModeHintId = useId();
   const [draft, setDraftValue] = useState("");
   // Same revisioned draft as the chat composer: dictation must see edits that
@@ -4858,7 +4860,9 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
       <ManagedAgentsPanel adapters={adapters} onChanged={onHealthChange} />
     </div>}
     <h1 className="mb-7 text-balance text-center font-display text-[26px] font-medium leading-tight tracking-[-0.025em] text-foreground sm:text-[30px]">
-      {greeting.parts.map((part, index) => <span key={index} className={part.kind === "project" ? "font-semibold" : undefined}>{part.text}</span>)}
+      {heroLines.length
+        ? <StreamingGreeting key={heroProject} lines={heroLines} projectClassName="font-semibold" />
+        : greeting.headline}
     </h1>
     <div className="relative">
     {slashOpen && <ComposerSlashMenu id="welcome-slash-listbox" commands={slashMatches} index={Math.min(slashIndex, slashMatches.length - 1)} onIndex={setSlashIndex} onSelect={applySlash} />}
