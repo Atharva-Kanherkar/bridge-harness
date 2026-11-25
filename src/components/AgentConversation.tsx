@@ -291,7 +291,7 @@ function SubagentSection({ label, text, markdown }: { label: string; text: strin
     <section className="overflow-hidden rounded-lg border border-border bg-code">
       <div className="flex items-center justify-between border-b border-border bg-code-highlight px-3 py-1.5">
         <span className="text-caption font-semibold text-faint">{label}</span>
-        <CopyButton text={text} className="code-block-copy" />
+        <CopyButton text={text} />
       </div>
       <div className={cn("px-3.5 py-2.5", markdown && "max-h-[320px] overflow-auto")}>
         {markdown ? (

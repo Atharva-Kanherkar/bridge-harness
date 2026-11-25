@@ -15,6 +15,7 @@ import { SNAPSHOT_FENCE, splitSnapshot } from "../diskSpace";
 import { NOTES_CONTEXT_FENCE, splitNotesContext } from "../notesBrief";
 import { placeholderReference, SECRET_PLACEHOLDER } from "../apiKeys";
 import { RunButton } from "./RunInTerminal";
+import { BlockAction } from "@/components/ui/block-action";
 
 type Block =
   /** `closed` is false while a streaming fence still lacks its closing line. */
@@ -239,12 +240,12 @@ function MentionRun({ text }: { text: string }) {
   return <>{parts.map((part, index) => {
     if (part.startsWith("@") && links.has(part.slice(1))) {
       const path = part.slice(1);
-      return <Tip key={index} label={`Open ${path} in the Code pane`}><button
-        type="button"
+      return <Tip key={index} label={`Open ${path} in the Code pane`}><Button
+        variant="link"
+        size="inline"
         onClick={() => links.open(path)}
         aria-label={`Open ${path} in the Code pane`}
-        className="rounded text-ring underline decoration-dotted underline-offset-2 transition-colors hover:bg-accent"
-      >{part}</button></Tip>;
+      >{part}</Button></Tip>;
     }
     return <span key={index}>{part}</span>;
   })}</>;
@@ -303,13 +304,13 @@ export function useCopy(text: string, resetMs = 1400) {
   return { copied, copy };
 }
 
-export function CopyButton({ text, className }: { text: string; className: string }) {
+export function CopyButton({ text, floating = false, className }: { text: string; floating?: boolean; className?: string }) {
   const { copied, copy } = useCopy(text);
   return (
-    <button type="button" className={className} onClick={copy} aria-label={copied ? "Copied" : "Copy"}>
+    <BlockAction floating={floating} className={className} onClick={copy} aria-label={copied ? "Copied" : "Copy"}>
       {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
       {copied ? "Copied" : "Copy"}
-    </button>
+    </BlockAction>
   );
 }
 
@@ -320,7 +321,7 @@ function MathBlock({ tex }: { tex: string }) {
   }
   return (
     <div className="rich-block my-[0.9em]">
-      <CopyButton text={tex} className="rich-block-copy" />
+      <CopyButton text={tex} floating />
       <div className="overflow-x-auto py-0.5 text-foreground" dangerouslySetInnerHTML={{ __html: html }} />
     </div>
   );
@@ -390,7 +391,7 @@ function CodeBlock({ lang, body, closed = true }: { lang: string; body: string; 
         <span className="code-block-lang">{label}</span>
         <div className="flex items-center gap-0.5">
           <RunButton lang={lang} body={body} closed={closed} />
-          <CopyButton text={body} className="code-block-copy" />
+          <CopyButton text={body} />
         </div>
       </div>
       <pre><code className="stx" dangerouslySetInnerHTML={{ __html: html }} /></pre>
@@ -420,7 +421,7 @@ function DiagramBlock({ spec }: { spec: string }) {
   return (
     <div className="rich-block my-[0.9em]">
       <div className="rich-block-actions">
-        <CopyButton text={spec} className="rich-block-copy" />
+        <CopyButton text={spec} floating />
         <ExpandButton onClick={() => setFullscreen(true)} />
       </div>
       <DiagramFigure spec={parsed} />
@@ -500,7 +501,7 @@ function MermaidBlock({ code }: { code: string }) {
   const { width: clampedWidth, clamped } = mermaidClamp(containerWidth, viewBoxWidth);
   return <div className="rich-block my-[0.9em]">
     <div className="rich-block-actions">
-      <CopyButton text={code} className="rich-block-copy" />
+      <CopyButton text={code} floating />
       <ExpandButton onClick={() => setFullscreen(true)} />
     </div>
     <div ref={holder}>
@@ -553,9 +554,9 @@ function HtmlBlock({ html }: { html: string }) {
       <DialogPopup showCloseButton={false} aria-label="HTML preview" className="h-[84dvh] max-w-[calc(100vw-4rem)] overflow-hidden">
         <div className="code-block-header">
           <span className="code-block-lang">html</span>
-          <Tip label="Exit fullscreen (Esc)"><button type="button" className="code-block-copy" onClick={() => setFullscreen(false)} aria-label="Exit fullscreen">
+          <Tip label="Exit fullscreen" shortcut="Esc"><BlockAction onClick={() => setFullscreen(false)} aria-label="Exit fullscreen">
             <Minimize2 size={12} aria-hidden="true" />Close
-          </button></Tip>
+          </BlockAction></Tip>
         </div>
         {frame}
       </DialogPopup>
@@ -566,10 +567,10 @@ function HtmlBlock({ html }: { html: string }) {
     <div className="html-block my-[0.9em]">
       <div className="code-block-header">
         <span className="code-block-lang">html</span>
-        <Tip label="Fullscreen"><button type="button" className="code-block-copy" onClick={() => setFullscreen(true)} aria-label="Fullscreen">
+        <Tip label="Fullscreen"><BlockAction onClick={() => setFullscreen(true)} aria-label="Fullscreen">
           <Maximize2 size={12} aria-hidden="true" />
           Expand
-        </button></Tip>
+        </BlockAction></Tip>
       </div>
       {frame}
     </div>

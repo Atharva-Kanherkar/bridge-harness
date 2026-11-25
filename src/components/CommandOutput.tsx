@@ -8,6 +8,8 @@ import { PatchView } from "./DiffView";
 import { CopyButton, Markdown } from "./Markdown";
 import { CONNECTOR_LOGOS, GitMark, logoForMcpServer } from "./connectorLogos";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
 
 // A shell call, opened: the steps it chained, its output drawn when Bridge
 // knows the shape, and the command and raw output exactly as they ran. The
@@ -64,13 +66,13 @@ export function CappedOutput({ text, className }: { text: string; className?: st
     <div>
       <pre className={className}>{clipped ? text.slice(-OUTPUT_DISPLAY_CAP) : text}</pre>
       {clipped && (
-        <button
-          type="button"
-          className="px-3.5 pb-2.5 text-left text-caption text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+        <Button variant="text" size="xs" className="-ms-1"
+         
+         
           onClick={() => setAll(true)}
         >
           Show earlier output
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -79,12 +81,12 @@ export function CappedOutput({ text, className }: { text: string; className?: st
 /// A command the way a terminal shows one: a `❯` prompt line carrying what ran,
 /// and the output dimmed a step below it on the code ground.
 export function TerminalBlock({ command, output }: { command?: string; output?: string }) {
-  return <div className="bg-code font-mono text-meta leading-[1.7]">
+  return <div className="bg-code font-mono text-meta leading-relaxed">
     {command && <div className="flex gap-2 px-3.5 pb-1 pt-2.5">
       <span className="shrink-0 select-none font-semibold text-success" aria-hidden="true">❯</span>
       <span className="min-w-0 whitespace-pre-wrap break-words text-foreground">{command}</span>
     </div>}
-    {output && <CappedOutput text={output} className="max-h-[260px] overflow-auto whitespace-pre-wrap break-words px-3.5 pb-2.5 pl-[30px] text-muted-foreground"/>}
+    {output && <CappedOutput text={output} className="max-h-[260px] overflow-auto whitespace-pre-wrap break-words px-3.5 pb-2.5 pl-7.5 text-muted-foreground"/>}
   </div>;
 }
 
@@ -94,9 +96,7 @@ export function TerminalBlock({ command, output }: { command?: string; output?: 
 function StepsList({ steps, live }: { steps: CommandStep[]; live: boolean }) {
   return <ol data-command-steps className="grid py-1">
     {steps.map((step, index) => (
-      <li
-        key={index}
-        title={step.text}
+      <Tip key={index} label={step.text}><li
         className="grid grid-cols-[1rem_0.875rem_minmax(0,1fr)] items-center gap-x-2.5 gap-y-1 border-t border-dashed border-border/60 px-3.5 py-1.5 text-meta first:border-t-0 sm:grid-cols-[1rem_0.875rem_minmax(0,1fr)_auto]"
       >
         <span className="text-right text-caption tabular-nums text-faint">{index + 1}</span>
@@ -109,7 +109,7 @@ function StepsList({ steps, live }: { steps: CommandStep[]; live: boolean }) {
           {step.notes.map(note => <span key={note} className={CHIP}>{note}</span>)}
           {step.effect !== "read" && <EffectChip effect={step.effect}/>}
         </span>
-      </li>
+      </li></Tip>
     ))}
   </ol>;
 }
@@ -135,18 +135,18 @@ export function CommandPanel({ call, live }: { call: ToolCallDisplay; live: bool
     : <TerminalBlock command={call.command} output={call.output}/>;
   if (views.length === 1) return output;
   return <div data-command-panel>
-    <div role="tablist" className="flex items-center gap-0.5 border-b border-border/60 px-2 py-1.5 text-caption">
+    <div role="tablist" className="flex items-center gap-0.5 border-b border-border/60 px-2 py-1.5">
       {views.map(view => (
-        <button
+        <Button
           key={view}
-          type="button"
+          variant="quiet"
+          size="2xs"
           role="tab"
           aria-selected={active === view}
-          className={cn("rounded-md px-2 py-0.5 transition-colors", active === view ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground")}
           onClick={() => setChosen(view)}
-        >{VIEW_LABEL[view]}</button>
+        >{VIEW_LABEL[view]}</Button>
       ))}
-      {call.command && <CopyButton text={call.command} className="ml-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-caption text-muted-foreground transition-colors hover:text-foreground"/>}
+      {call.command && <CopyButton text={call.command} className="ml-auto"/>}
     </div>
     <div role="tabpanel">
       {active === "steps" && steps && <StepsList steps={steps} live={live}/>}
@@ -164,7 +164,7 @@ function StructuredView({ structured }: { structured: StructuredOutput }) {
     {(structured.kind === "gh-pr" || structured.kind === "gh-issue") && <GhCard summary={ghSummary(structured.data)} pr={structured.kind === "gh-pr"}/>}
     {structured.kind === "gh-run" && <RunCard data={structured.data}/>}
     {structured.kind === "gh-list" && <ListView data={structured.data}/>}
-    {structured.kind === "json" && <div className="px-3.5 py-2.5 font-mono text-meta leading-[1.65]"><JsonNode value={structured.data} depth={0}/></div>}
+    {structured.kind === "json" && <div className="px-3.5 py-2.5 font-mono text-meta leading-relaxed"><JsonNode value={structured.data} depth={0}/></div>}
   </div>;
 }
 
@@ -208,7 +208,7 @@ function GhCard({ summary, pr }: { summary: GhSummary; pr: boolean }) {
       {checks && <span>{checks.failed ? <span className="text-destructive">{checks.failed} failing</span> : checks.pending ? `${checks.pending} checks running` : `${checks.passed} checks passed`}</span>}
       {!pr && summary.comments !== undefined && <span>{summary.comments} comment{summary.comments === 1 ? "" : "s"}</span>}
     </div>
-    {summary.title && <h4 className="text-message font-medium leading-snug tracking-[-0.01em] text-foreground">{summary.title}</h4>}
+    {summary.title && <h4 className="text-message font-medium leading-snug tracking-tight text-foreground">{summary.title}</h4>}
     {(summary.author || summary.head) && <p className="flex flex-wrap items-center gap-1.5 text-meta text-muted-foreground">
       {summary.author && <span>{summary.author}{pr && summary.head ? " wants to merge" : ""}</span>}
       {pr && summary.head && <><code className="rounded bg-muted px-1.5 text-caption text-foreground">{summary.head}</code>{summary.base && <>into<code className="rounded bg-muted px-1.5 text-caption text-foreground">{summary.base}</code></>}</>}
@@ -224,10 +224,10 @@ function GhCard({ summary, pr }: { summary: GhSummary; pr: boolean }) {
       <div className="max-h-[320px] overflow-auto rounded-lg border border-border/60 px-3 py-2.5 [&_.md]:text-ui!"><Markdown text={summary.body}/></div>
     </Section>}
     {summary.files.length > 0 && <Section label="Changed files">
-      <ul className="font-mono text-caption leading-[1.9]">
+      <ul className="font-mono text-caption leading-loose">
         {summary.files.slice(0, SHOWN_FILES).map(file => <li key={file.path} className="flex gap-2.5">
           <span className="w-3 shrink-0 text-faint">{file.change ?? ""}</span>
-          <span className="min-w-0 flex-1 truncate text-foreground" title={file.path}>{file.path}</span>
+          <Tip label={file.path}><span className="min-w-0 flex-1 truncate text-foreground">{file.path}</span></Tip>
           {file.additions !== undefined && <span className="shrink-0 tabular-nums"><span className="text-success">+{file.additions}</span> <span className="text-destructive">−{file.deletions ?? 0}</span></span>}
         </li>)}
       </ul>
@@ -252,7 +252,7 @@ function RunCard({ data }: { data: unknown }) {
       <span>{[run.workflow, run.branch, run.event].filter(Boolean).join(" · ") || "Workflow run"}</span>
       <StateBadge state={run.conclusion || run.status}/>
     </div>
-    {run.title && <h4 className="text-message font-medium leading-snug tracking-[-0.01em] text-foreground">{run.title}</h4>}
+    {run.title && <h4 className="text-message font-medium leading-snug tracking-tight text-foreground">{run.title}</h4>}
     {run.jobs.length > 0 && <Section label="Jobs">
       <ul className="grid gap-1">
         {run.jobs.map(job => <li key={job.name} className="flex items-center gap-2"><span className="flex size-3 items-center justify-center"><JobGlyph status={job.status} conclusion={job.conclusion}/></span><span className="text-foreground">{job.name}</span><span className="ml-auto text-caption text-muted-foreground">{(job.conclusion || job.status || "").replaceAll("_", " ")}</span></li>)}

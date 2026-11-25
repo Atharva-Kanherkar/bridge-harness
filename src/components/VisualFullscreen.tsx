@@ -1,6 +1,8 @@
 import { useState, type ReactNode } from "react";
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { Maximize2, Minimize2, Minus, Plus } from "lucide-react";
+import { BlockAction } from "@/components/ui/block-action";
+import { Tip } from "@/components/ui/tooltip";
 
 /**
  * A diagram laid out to fit a chat column is often unreadable — a wide Mermaid
@@ -23,16 +25,14 @@ export function nextZoom(current: number, direction: "in" | "out"): number {
 /** The inline affordance, styled like the block's other hover actions. */
 export function ExpandButton({ onClick }: { onClick: () => void }) {
   return (
-    <button
-      type="button"
-      className="rich-block-copy"
+    <Tip label="Fullscreen"><BlockAction
+      floating
       onClick={onClick}
       aria-label="Fullscreen"
-      title="Fullscreen"
     >
       <Maximize2 size={12} aria-hidden="true" />
       Expand
-    </button>
+    </BlockAction></Tip>
   );
 }
 
@@ -66,43 +66,34 @@ export function VisualFullscreen({ open, onClose, label, children }: VisualFulls
       >
         <div className="code-block-header">
           <span className="code-block-lang">{label}</span>
-          <div className="flex items-center gap-[0.15rem]">
-            <button
-              type="button"
-              className="code-block-copy disabled:cursor-not-allowed disabled:opacity-40"
+          <div className="flex items-center gap-0.5">
+            <Tip label="Zoom out"><BlockAction
               onClick={() => setZoom(current => nextZoom(current, "out"))}
               disabled={zoom <= ZOOM_MIN}
               aria-label="Zoom out"
-              title="Zoom out"
             >
               <Minus size={12} aria-hidden="true" />
-            </button>
+            </BlockAction></Tip>
             <span className="min-w-[3.4em] text-center text-caption tabular-nums text-muted-foreground" aria-live="polite">
               {zoom}%
             </span>
-            <button
-              type="button"
-              className="code-block-copy disabled:cursor-not-allowed disabled:opacity-40"
+            <Tip label="Zoom in"><BlockAction
               onClick={() => setZoom(current => nextZoom(current, "in"))}
               disabled={zoom >= ZOOM_MAX}
               aria-label="Zoom in"
-              title="Zoom in"
             >
               <Plus size={12} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              className="code-block-copy"
+            </BlockAction></Tip>
+            <Tip label="Exit fullscreen" shortcut="Esc"><BlockAction
               onClick={close}
               aria-label="Exit fullscreen"
-              title="Exit fullscreen (Esc)"
             >
               <Minimize2 size={12} aria-hidden="true" />
               Close
-            </button>
+            </BlockAction></Tip>
           </div>
         </div>
-        <div className="flex-1 overflow-auto bg-background p-[1.25rem]">
+        <div className="flex-1 overflow-auto bg-background p-5">
           {/* Zoom is expressed as the canvas width, so the overlay's own width
               is the 100% baseline and everything past it scrolls instead of
               clipping. `visual-fullscreen-canvas` turns that width into an SVG
