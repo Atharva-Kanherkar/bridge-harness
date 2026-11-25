@@ -564,7 +564,7 @@ function Proportion({ block }: { block: ChartBlock }) {
   );
 }
 
-function Funnel({ block, prepared }: { block: ChartBlock; prepared: Prepared }) {
+function Funnel({ prepared }: { block: ChartBlock; prepared: Prepared }) {
   const [ref, width] = useWidth();
   const steps = prepared.categories.map(category => ({ category, cell: cellOf(prepared, category, prepared.series[0]) }));
   const first = steps[0]?.cell?.value || 1;

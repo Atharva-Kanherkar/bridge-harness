@@ -15,7 +15,6 @@ import { connectionLabel } from "./personalAppShared";
 import { bridgeApi } from "../api";
 import { errorMessage } from "../errors";
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
-import { chordLabel } from "../keymap";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { AppSummary, PersonalAppEntry } from "../protocol/generated/protocol";

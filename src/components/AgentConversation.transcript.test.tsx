@@ -587,7 +587,6 @@ describe("three layers", () => {
     ]);
     expect([...host.querySelectorAll("button")].filter(btn => btn.textContent?.includes("Ran 2 commands"))).toHaveLength(1);
     act(() => buttonWith("Ran 2 commands")!.click());
-    const text = host.textContent ?? "";
     // Checks are labelled by the command as typed; the order is what matters.
     const expanded = host.querySelector("[data-activity-group] > div:last-child")!.textContent ?? "";
     expect(expanded.indexOf("bun test")).toBeLessThan(expanded.indexOf("Next step"));

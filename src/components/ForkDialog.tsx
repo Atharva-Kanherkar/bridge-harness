@@ -28,8 +28,6 @@ export type ForkDialogProps = {
 export function ForkDialog({
   open,
   sessionLabel,
-  sessionId,
-  entryId,
   busy,
   error,
   onFork,

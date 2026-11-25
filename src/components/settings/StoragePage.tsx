@@ -14,7 +14,7 @@
 // person can drag the rail wider; its width is kept per Mac.
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
-import { Check, ChevronDown, ChevronRight, CircleAlert, CircleCheck, File, Folder, FolderOpen, LoaderCircle, Lock, MessageCircle, RefreshCw, Trash2, X } from "lucide-react";
+import { ChevronDown, ChevronRight, CircleAlert, CircleCheck, File, Folder, FolderOpen, LoaderCircle, Lock, MessageCircle, RefreshCw, Trash2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi as api } from "../../api";
 import type { DiskDeleteResult, DiskEntry, DiskListing, DiskOverview, DiskSuggestion } from "../../types";

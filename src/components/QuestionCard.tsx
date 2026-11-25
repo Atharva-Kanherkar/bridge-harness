@@ -16,7 +16,6 @@ export type ResolveQuestion = (eventId: number, action: QuestionAction, answers:
 
 const PANEL = "min-w-0 overflow-hidden rounded-xl border border-border bg-card";
 const WELL = "block max-h-72 overflow-auto rounded-md border border-border bg-code px-3 py-2.5 font-mono text-meta leading-relaxed whitespace-pre text-foreground";
-const INPUT = "w-full rounded-lg border border-input bg-background px-3 py-2 text-ui text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring disabled:opacity-60";
 
 /** The typed "Other" answer, kept apart from the listed choices. */
 type Other = { on: boolean; text: string };

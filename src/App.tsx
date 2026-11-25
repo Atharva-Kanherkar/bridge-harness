@@ -17,7 +17,7 @@ import type { ImportContinuation, ImportJob, ResolveReferenceResult, WorkflowDra
 import { workflowNotification } from "./components/workflows/notify";
 import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, Check, CircleDot, Clock3, Code2, History, FileCode2, FileDiff, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, SquarePen, TerminalSquare, X } from "lucide-react";
+import { Activity, Bot, Braces, Check, Clock3, Code2, History, FileCode2, FileDiff, FolderGit2, GitPullRequest, Inbox, ListChecks, LoaderCircle, Monitor, Plus, SquarePen, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
 import { continuationNotice, importedChatBadge, importSourceLabel } from "./importSources";
 import { abandonFlight, beginNewChat, beginSend, bindNewChat, markFlight, markSubmitted } from "./sendLatency";
@@ -32,7 +32,7 @@ import { parseNoteLink } from "./noteLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
 import { createLiveReplay } from "./liveReplay";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, AttentionItem, BridgeState, Harness, HarnessConfig, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, WorkerRepositoryBinding, Workspace, WorkspaceSessionKind } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, AttentionItem, BridgeState, Harness, HarnessConfig, ModelSetupState, PermissionPolicy, Session, SessionForestSnapshot, SessionStatus, WorkerRepositoryBinding, Workspace, WorkspaceSessionKind } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
@@ -128,7 +128,6 @@ import { ComposerPill } from "./components/ComposerPill";
 import { SessionModeToggle, sessionModeDescription } from "./components/SessionModeToggle";
 import { useActiveTurnInput } from "./activeTurnSettings";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
-import { PatchView } from "./components/DiffView";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
 import { ForkDialog } from "./components/ForkDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
@@ -139,8 +138,7 @@ import { ProviderSignInDialog } from "./components/ProviderSignInDialog";
 import { ChatUsageDot } from "./components/UsageDot";
 import { ContextRing } from "./components/ContextRing";
 import { ContextLensDialog } from "./components/ContextLensDialog";
-import type { MeterRegistry } from "./types";
-import { formatElapsed, harnessLabel, modelLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
+import { harnessLabel, modelLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
 import { accountChoices, type AccountChoice } from "./providerAccounts";
 import { useComposerSuggestion } from "./useComposerSuggestion";
 import { ComposerSlashMenu } from "./components/ComposerSlashMenu";
@@ -150,7 +148,7 @@ import { reduceConversation, undeliveredPending, userTurnWatermark, type Convers
 import { projectSessionConversationCached } from "./transcript/projectionCache";
 import { readAgentOnboardingComplete, shouldShowAgentOnboarding, writeAgentOnboardingComplete } from "./onboarding";
 import { resolveAsideModel } from "./asideModel";
-import { parseSideChatCommand, quoteSelection } from "./sideChat";
+import { parseSideChatCommand } from "./sideChat";
 import { parseFindCommand } from "./chatSearch";
 import { projectGreetingLines, welcomeHeadline } from "./greetings";
 import { StreamingGreeting } from "./components/StreamingGreeting";
@@ -167,7 +165,7 @@ import { NotesCopilot } from "./components/notes/NotesCopilot";
 import { StorageCopilot, type StorageCopilotHost } from "./components/settings/StorageCopilot";
 import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFromFolder } from "./workspaceFolder";
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
-import { isTypingTarget, isWindowLevel, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
+import { isTypingTarget, isWindowLevel, matchShortcut, type CommandId } from "./keymap";
 import { approvalTarget, type LaunchRequest } from "./launch";
 import { WEB_NOTIFICATION_OPEN } from "./webNotify";
 import { ACTION_EVENT, parseNotificationAction } from "./nativeNotify";
@@ -179,13 +177,11 @@ import { describeError, errorMessage, isThrottleKind } from "./errors";
 import { isCodexVersionError, isOlderCodexVersion, latestCodexVersion, withCodexRefreshDeadline } from "./codexUpdate";
 import { CodexUpdateDialog, type CodexUpdatePhase } from "./components/CodexUpdateDialog";
 import { mergeForestSnapshot } from "./forest";
-import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { createCoalescedRefresh, startSerialPoll } from "./polling";
 import { withWorkspace } from "./workspaceStats";
 import { reviewBadge, useChatChanges } from "./chatChanges";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { TRANSIENT_ALERT_TTL_MS, TransientAlert } from "./components/TransientAlert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
 import { Tip } from "@/components/ui/tooltip";
@@ -214,7 +210,6 @@ const CodePanel = lazy(() => import("./components/CodePanel").then(module => ({ 
 // Lazy for the same reason as CodePanel: CodeMirror is a large dependency, and
 // a static import here would drag it into the startup bundle for everyone,
 // including sessions that never open a diff.
-const InlineFileEditor = lazy(() => import("./components/editor/InlineFileEditor").then(module => ({ default: module.InlineFileEditor })));
 
 type HarnessShortcutOpenResult =
   | { kind: "notShortcut" }
@@ -230,22 +225,7 @@ function harnessShortcutError(result: Exclude<HarnessShortcutOpenResult, { kind:
 }
 
 const emptyState: BridgeState = { projects: [], workspaces: [], sessions: [], events: [] };
-const statusCopy: Record<SessionStatus, string> = { idle: "IDLE", starting: "STARTING", working: "WORKING", waiting: "NEEDS YOU", warm: "WARM", checkpointing: "CHECKPOINTING", ready: "READY", stopped: "STOPPED", resuming: "RESUMING", restored: "RESTORED", failed: "FAILED", completed: "COMPLETED", cancelled: "CANCELLED" };
 const liveStatuses: SessionStatus[] = ["working", "waiting", "ready"];
-
-function orderSessionTree(sessions: Session[]): Session[] {
-  const byParent = new Map<string | undefined, Session[]>();
-  for (const s of sessions) {
-    const key = s.parentSessionId ?? undefined;
-    const list = byParent.get(key) ?? [];
-    list.push(s); byParent.set(key, list);
-  }
-  const out: Session[] = [];
-  const visit = (parent: string | undefined) => { for (const s of byParent.get(parent) ?? []) { out.push(s); visit(s.id); } };
-  visit(undefined);
-  for (const s of sessions) if (!out.includes(s)) out.push(s);
-  return out;
-}
 
 // A new chat remains an unstarted draft. Only explicit overrides live here;
 // inherited values are resolved by the host for the selected workspace.
@@ -4695,15 +4675,6 @@ function localAccountName(...paths: Array<string | null | undefined>): string {
     if (windows?.[1]) return windows[1];
   }
   return "Local user";
-}
-
-function EnvPanel({ workspace, project, session, sessions, forest, onChanges, onSelectLeaf, onCompact }: { workspace: Workspace; project?: Project; session?: Session; sessions: Session[]; forest?: SessionForestSnapshot; onChanges: () => void; onSelectLeaf: (entryId: string) => void; onCompact: () => void }) {
-  const workers = sessions.filter(s => s.parentSessionId && s.parentSessionId === session?.id);
-  const doneWorkers = workers.filter(s => s.status === "stopped" || s.status === "ready").length;
-  const budget = turnBudget(forest, session?.activeTurnId);
-  const restoration = restorationPresentation(session?.restorationMode ?? "fresh");
-  return <aside className="hidden">
-  </aside>;
 }
 
 const NEW_CHAT_VOICE_OWNER = "new-chat";

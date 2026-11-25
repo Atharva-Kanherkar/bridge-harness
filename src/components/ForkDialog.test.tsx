@@ -4,7 +4,6 @@ import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 import { ForkDialog } from "./ForkDialog";
 
-type Container = HTMLDivElement & { textContent: string };
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FileLinkContext, Markdown, MentionText, mermaidClamp, renderMathToHtml, RichFence, richFenceKind, splitBlocks, type FileLinks } from "./Markdown";
+import { FileLinkContext, Markdown, MentionText, renderMathToHtml, RichFence, richFenceKind, splitBlocks, type FileLinks } from "./Markdown";
 import * as highlight from "./highlight";
 import { withNotesContext } from "../notesBrief";
 

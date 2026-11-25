@@ -16,8 +16,7 @@ import {
   ShieldAlert,
   Sparkles,
   TriangleAlert,
-  X,
-} from "lucide-react";
+  } from "lucide-react";
 import { bridgeApi } from "../api";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";

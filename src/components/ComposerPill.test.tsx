@@ -423,7 +423,6 @@ describe("ComposerPill", () => {
   });
 
   describe("image attachments", () => {
-    const chip = () => container.querySelector<HTMLButtonElement>('button[aria-label="Remove attached image"]');
 
     it("hands the paste to the owner before the textarea can insert anything", () => {
       const onPaste = vi.fn();

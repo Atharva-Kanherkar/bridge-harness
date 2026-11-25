@@ -1,4 +1,4 @@
-import type { AdapterDescriptor, Harness } from "./types";
+import type { Harness } from "./types";
 
 export const LAST_DRAFT_MODEL_KEY = "bridge.chat.lastDraftModel";
 

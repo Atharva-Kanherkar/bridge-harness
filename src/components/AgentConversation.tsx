@@ -2,10 +2,8 @@ import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
 import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { AlertTriangle, ArrowDown, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FileText, Gauge, GitFork, LoaderCircle, MessageSquarePlus, Navigation, PanelRight, PenLine, RotateCcw, SquareTerminal, X } from "lucide-react";
-import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, deliveryNotes, delegationFacet, foldWorkerDelegations, foldHarnessSubagents, groupItems, isToolItem, mergeConversationProjections, projectActiveProcesses, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type DeliveryNote, type PendingMessage, type Rendered, type ToolGlyph, type ToolVerb } from "../conversation";
+import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, deliveryNotes, delegationFacet, foldWorkerDelegations, foldHarnessSubagents, groupItems, isToolItem, mergeConversationProjections, projectActiveProcesses, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type DeliveryNote, type PendingMessage, type Rendered, type ToolVerb } from "../conversation";
 import { isToolLive } from "../transcript/toolCall";
-import { reduceTranscript } from "../transcript/reducer";
-import type { TranscriptEvent } from "../transcript/events";
 import { LAUNCH_STEPS, humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeLaunchFailure, humanizeResolution, launchFailureStep } from "../humanize";
 import { projectGreetingLines, welcomeHeadline, type GreetingPart } from "../greetings";
 import { StreamingGreeting } from "./StreamingGreeting";
@@ -52,7 +50,7 @@ import { useProviderUsageOverviews } from "./UsageDot";
 import { UsageResetRow } from "./UsageResetRow";
 import { TurnChangesCard, TurnEndBlock, TurnLine } from "./TurnChangesCard";
 import { describeTurnEnds, keepStable, type TurnEnd } from "../turnChanges";
-import type { InteractionResolutionResult, QuestionAction, SessionEntryWindowSummary } from "../protocol/generated/protocol";
+import type { InteractionResolutionResult, SessionEntryWindowSummary } from "../protocol/generated/protocol";
 
 type ResolvePermission = (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
 
@@ -369,7 +367,6 @@ const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: C
   // row stops claiming to run, without rewriting what the wire said.
   const live = isToolLive(call, turnActive, runtimeActive);
   const failed = call.status === "failed";
-  const succeeded = call.status === "completed";
   const body = call.patch ? "patch" : call.subagent ? "subagent" : call.command ? "command" : call.verb === "run" && call.output ? "terminal" : call.output ? "output" : null;
   // `null` is "nobody has decided yet", which is not the same as closed: a patch
   // arriving mid-stream should still open the row, while a reader who collapsed

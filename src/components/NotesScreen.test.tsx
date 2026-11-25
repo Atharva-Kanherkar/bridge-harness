@@ -73,10 +73,6 @@ const typeInto = async (node: HTMLTextAreaElement | HTMLInputElement, value: str
   const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(node), "value")!.set!;
   await act(async () => { setter.call(node, value); node.dispatchEvent(new Event("input", { bubbles: true })); });
 };
-const choose = async (node: HTMLSelectElement, value: string) => {
-  await act(async () => { node.value = value; node.dispatchEvent(new Event("change", { bubbles: true })); });
-  await settle();
-};
 const press = async (node: HTMLElement, key: string, init: KeyboardEventInit = {}) => {
   let prevented = false;
   await act(async () => { prevented = !node.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init })); });

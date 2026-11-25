@@ -3,7 +3,7 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Extension, type Editor, type Range } from "@tiptap/core";
+import { Extension, type Range } from "@tiptap/core";
 import Suggestion, { type SuggestionKeyDownProps, type SuggestionProps } from "@tiptap/suggestion";
 import { PluginKey } from "@tiptap/pm/state";
 import { FileText, Plus } from "lucide-react";

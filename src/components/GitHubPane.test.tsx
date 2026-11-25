@@ -882,7 +882,7 @@ describe("GitHubPane", () => {
       defaultStrategy: "squash" as const,
       strategies: { merge: true, squash: true, rebase: false },
     });
-    const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: false, message: 'Required status check "build" is expected.' });
+    vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: false, message: 'Required status check "build" is expected.' });
     await mount();
     await click(buttonByText("Safe GitHub surface"));
     await click(buttonByText("Squash and merge"));

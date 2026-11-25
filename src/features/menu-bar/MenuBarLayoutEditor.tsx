@@ -2,7 +2,6 @@ import { useState } from "react";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import type { MenuBarLayoutToken } from "../../protocol/generated/protocol";
 import { GhostButton, PrimaryButton, SettingsBlockRow, TextArea, TextButton } from "../../components/settings/kit";
-import { cn } from "@/lib/utils";
 import { layoutExample, layoutTokens, parseLayout } from "./layout";
 import { Button } from "@/components/ui/button";
 
