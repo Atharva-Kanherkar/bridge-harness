@@ -3,6 +3,7 @@ import { FolderGit2, FolderOpen, GitBranch, Plus, Sparkles } from "lucide-react"
 import type { Session, SessionStatus, Workspace } from "../types";
 import { cn } from "@/lib/utils";
 import { chatName, chatTimestamp } from "./sidebarChats";
+import { Tip } from "@/components/ui/tooltip";
 
 // Projects are their own entity, not a second kind of row in the chat rail. This
 // screen is where a repo's identity lives: where it is on disk, what branch it is
@@ -82,19 +83,19 @@ export function ProjectsScreen({
                 <section key={workspace.id} className="flex min-w-0 flex-col rounded-xl border border-border bg-card p-4">
                   <div className="flex min-w-0 items-center gap-2">
                     <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-accent text-muted-foreground"><FolderGit2 size={19} strokeWidth={1.6} aria-hidden="true" /></span>
-                    <h2 title={workspace.title} className="m-0 min-w-0 flex-1 truncate text-message font-semibold tracking-snug text-foreground">{workspace.title}</h2>
+                    <Tip label={workspace.title}><h2 className="m-0 min-w-0 flex-1 truncate text-message font-semibold tracking-snug text-foreground">{workspace.title}</h2></Tip>
                   </div>
 
-                  <p
+                  <Tip label={workspace.path ?? undefined}><p
                     className="mt-3 truncate text-caption text-muted-foreground"
-                    title={workspace.path ?? undefined}
+                   
                   >
                     {workspace.path ? shortPath(workspace.path) : "No folder connected"}
-                  </p>
+                  </p></Tip>
 
                   <p className="mt-1 flex min-w-0 items-center gap-1.5 text-caption text-muted-foreground">
                     <GitBranch size={11} strokeWidth={1.6} className="shrink-0" aria-hidden="true" />
-                    <span className="truncate" title={workspace.branch ?? undefined}>{workspace.branch ?? "folder"}</span>
+                    <Tip label={workspace.branch ?? undefined}><span className="truncate">{workspace.branch ?? "folder"}</span></Tip>
                   </p>
                   <p className="mt-2 flex flex-wrap items-center gap-1.5 text-caption text-muted-foreground">
                     <span>{own.length} {own.length === 1 ? "chat" : "chats"}</span>

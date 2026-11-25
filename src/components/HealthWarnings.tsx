@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import type { HealthWarning } from "../types";
+import { Tip } from "@/components/ui/tooltip";
 
 /** Warnings the user has closed, keyed by the backend's stable warning id.
  * Detection keeps firing — an ad-hoc signature is still an ad-hoc signature on
@@ -51,7 +52,7 @@ export function HealthWarnings({ warnings, className }: { warnings: HealthWarnin
     <AlertDescription>
       <p>{warning.detail}</p>
       {warning.paths.length > 0 && <ul className="mt-1.5 space-y-0.5">
-        {warning.paths.map(path => <li key={path} className="truncate font-mono text-caption" title={path}>{path}</li>)}
+        {warning.paths.map(path => <Tip label={path}><li key={path} className="truncate font-mono text-caption">{path}</li></Tip>)}
       </ul>}
     </AlertDescription>
     <AlertAction>

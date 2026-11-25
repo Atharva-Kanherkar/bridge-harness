@@ -11,6 +11,7 @@ import type { DatabaseRow } from "../../../types";
 import { ROW_HEIGHT, windowOf } from "./DatabaseTable";
 import { cellValue, columnsOf, formatValue, type Column } from "./formatValue";
 import type { ViewBodyProps } from "./viewBody";
+import { Tip } from "@/components/ui/tooltip";
 
 export function DatabaseList({ database, view, query, rows, groups, host, onOpenRow }: ViewBodyProps) {
   const shown = useMemo(() => columnsOf(database, view).filter(column => column.visible && column.id !== "title"), [database, view]);
@@ -70,7 +71,7 @@ function Line({ row, columns, host, onOpen }: { row: DatabaseRow; columns: Colum
       <span className={clsx("min-w-0 max-w-[60%] shrink-0 truncate text-ui font-medium", row.note.title ? "text-foreground" : "text-faint")}>{row.note.title || "Untitled"}</span>
       {/* Right-aligned, and clipped at the right edge when there are more than fit. */}
       <span className="ml-auto flex min-w-0 shrink items-center gap-1.5 overflow-hidden">
-        {chips.map(([column, text]) => <span key={column.id} title={`${column.name}: ${text}`} className="max-w-48 shrink-0 truncate rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">{column.type === "checkbox" ? column.name : text}</span>)}
+        {chips.map(([column, text]) => <Tip label={`${column.name}: ${text}`}><span key={column.id} className="max-w-48 shrink-0 truncate rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">{column.type === "checkbox" ? column.name : text}</span></Tip>)}
       </span>
     </button>
   </div>;

@@ -13,6 +13,7 @@ import { HarnessMark } from "./harnessMarks";
 import {
   GhostButton, SettingsGroup, SettingsRow, StatusPill, TextButton, type PillTone,
 } from "./settings/kit";
+import { Tip } from "@/components/ui/tooltip";
 
 /**
  * Install and remove the built-in agent runtimes.
@@ -413,9 +414,9 @@ function RemoveConfirmation({ agent, onCancel, onConfirm }: {
           {agent.version ? ` ${agent.version}` : ""}?
         </h4>
         {agent.executable && (
-          <p className="truncate font-mono text-caption text-muted-foreground" title={agent.executable}>
+          <Tip label={agent.executable}><p className="truncate font-mono text-caption text-muted-foreground">
             {agent.executable}
-          </p>
+          </p></Tip>
         )}
         <p className="text-meta text-muted-foreground">
           Your conversation history, vendor configuration, sign-in, and any copy you

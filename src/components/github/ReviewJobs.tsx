@@ -6,6 +6,7 @@ import { relativeTime } from "../workDashboard";
 import type { ReviewJob, ReviewJobStatus } from "../../protocol/generated/protocol";
 import { ReviewDraft } from "./ReviewDraft";
 import { harnessLabel, REVIEW_STATUS, SEVERITIES, SEVERITY_TEXT } from "./reviewLabels";
+import { Tip } from "@/components/ui/tooltip";
 
 // The PR's review jobs, newest first, kept current by `reviews/job_updated`:
 // a review started here, from another window, or while another chat was open
@@ -81,7 +82,7 @@ function JobRow({ job, now, onChanged }: { job: ReviewJob; now: number; onChange
       {job.findingCounts.total === 0 ? "No findings" : counts.map(severity => <span key={severity} className={cn("mr-1.5", SEVERITY_TEXT[severity])}>{job.findingCounts[severity]} {severity}</span>)}
     </span>}
     {job.trigger === "push" && <span className="text-caption text-muted-foreground">On push</span>}
-    {job.incrementalFromSha && <span className="text-caption text-muted-foreground" title={`Reviews the commits since ${job.incrementalFromSha}`}>Re-review since <span className="font-mono">{job.incrementalFromSha.slice(0, 7)}</span></span>}
+    {job.incrementalFromSha && <Tip label={`Reviews the commits since ${job.incrementalFromSha}`}><span className="text-caption text-muted-foreground">Re-review since <span className="font-mono">{job.incrementalFromSha.slice(0, 7)}</span></span></Tip>}
     <span className="ml-auto flex items-center gap-1">
       {job.status === "posted" && job.postedReviewUrl && <a href={job.postedReviewUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-meta text-foreground hover:bg-accent">
         View on GitHub <SquareArrowOutUpRight size={11} aria-hidden="true" />
@@ -258,7 +259,7 @@ export function ReviewStatusLine({ reviews, onShow }: { reviews: PullRequestRevi
       line.tone === "failed" ? "border-destructive/25 bg-destructive/10 text-destructive" : line.tone === "waiting" ? "border-border bg-card text-foreground" : "border-border bg-muted/40 text-muted-foreground")}>
       {line.tone === "running" ? <LoaderCircle size={12} aria-hidden="true" className="shrink-0 animate-spin motion-reduce:animate-none" />
         : line.tone === "failed" ? <CircleAlert size={12} aria-hidden="true" className="shrink-0" /> : <CircleCheck size={12} aria-hidden="true" className="shrink-0 text-success" />}
-      <span className="min-w-0 flex-1 truncate" title={line.text}>{line.text}</span>
+      <Tip label={line.text}><span className="min-w-0 flex-1 truncate">{line.text}</span></Tip>
       {line.time && <span className="shrink-0 font-mono text-caption tabular-nums">{line.time}</span>}
       <button type="button" disabled={line.tone === "failed" && busy} onClick={line.onAction} className="shrink-0 rounded px-1.5 py-0.5 text-meta font-medium text-foreground hover:bg-accent disabled:opacity-50">{line.action}</button>
     </div>)}

@@ -6,6 +6,7 @@ import { GitHubPane } from "./GitHubPane";
 import { Switch } from "./settings/kit";
 import { useAttributionSettings } from "../attributionSettings";
 import type { Project, Workspace } from "../types";
+import { Tip } from "@/components/ui/tooltip";
 
 // GitHub as a place of its own. The dock pane only exists inside a chat, so
 // with no chat open there was no way to look at a pull request. Pulls hosts
@@ -93,7 +94,7 @@ export function PullsScreen({ workspaces, projects, onJumpToFile, onAddProject }
         </span>
         <ChevronDown size={14} className={cn("mt-3 shrink-0 text-muted-foreground transition-transform", menu.open && "rotate-180")} aria-hidden="true" />
       </button>
-      <label className="ml-auto flex shrink-0 cursor-pointer items-center gap-2.5 rounded-lg border border-border bg-card px-2.5 py-1.5 shadow-xs" title="When on, models never add Co-authored-by or harness mentions to commits or PR text">
+      <Tip label="When on, models never add Co-authored-by or harness mentions to commits or PR text"><label className="ml-auto flex shrink-0 cursor-pointer items-center gap-2.5 rounded-lg border border-border bg-card px-2.5 py-1.5 shadow-xs">
         <span className="hidden text-meta text-muted-foreground sm:inline">Hide AI attribution</span>
         <Switch
           label="Hide AI attribution"
@@ -101,8 +102,8 @@ export function PullsScreen({ workspaces, projects, onJumpToFile, onAddProject }
           onChange={attribution.setHide}
           disabled={!attribution.loaded || attribution.saving}
         />
-      </label>
-      {attribution.error && <span role="alert" className="max-w-44 truncate text-meta text-destructive" title={attribution.error}>Not saved</span>}
+      </label></Tip>
+      {attribution.error && <Tip label={attribution.error}><span role="alert" className="max-w-44 truncate text-meta text-destructive">Not saved</span></Tip>}
     </div>
     <MenuPanel controller={menu} label="Repositories">
       {repos.map(repo => <MenuItem

@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Tip } from "@/components/ui/tooltip";
 
 const PROVIDER_LABELS: Record<AutomationProvider, string> = { claude: "Claude Code", codex: "Codex", cursor: "Cursor", opencode: "OpenCode" };
 const providerLabel = (provider: AutomationProvider) => PROVIDER_LABELS[provider] ?? provider;
@@ -156,7 +157,7 @@ export function AutomationsPanel({ initialCatalog, embedded = false }: { initial
       <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card" aria-label="Automation provider capabilities">
         {(catalog?.providers ?? []).map(state => <section key={state.provider} className="px-4 py-3" aria-label={`${providerLabel(state.provider)} automation support`}>
           <div className="flex items-center justify-between gap-2 text-caption font-medium text-foreground"><span>{providerLabel(state.provider)}</span><span className={`h-1.5 w-1.5 rounded-full ${state.available ? "bg-success" : "bg-muted-foreground/40"}`}/></div>
-          <p className="mt-1 text-caption leading-relaxed text-muted-foreground" title={state.detail}>{state.available ? `${state.count} native schedule${state.count === 1 ? "" : "s"}` : state.detail}</p>
+          <Tip label={state.detail}><p className="mt-1 text-caption leading-relaxed text-muted-foreground">{state.available ? `${state.count} native schedule${state.count === 1 ? "" : "s"}` : state.detail}</p></Tip>
           <div className="mt-2 flex flex-wrap gap-1">{state.available && state.capabilities.length ? state.capabilities.map(capability => <span key={capability} className="rounded-full border border-border bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">{capabilityLabel(capability)}</span>) : <span className="text-caption text-muted-foreground">No native automation controls</span>}</div>
         </section>)}
       </div>

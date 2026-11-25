@@ -198,12 +198,12 @@ function ChatRow({
               number lives in the hover and the screen-reader text. */}
           {pr && <>
             {status && <span aria-hidden="true">·</span>}
-            <span data-sidebar-pr={pr.pr.number} title={pr.title} className="flex shrink-0 items-center gap-1">
+            <Tip label={pr.title}><span data-sidebar-pr={pr.pr.number} className="flex shrink-0 items-center gap-1">
               <PullRequestGlyph pr={pr.pr} size={11} />
               <span className="sr-only">Pull request #{pr.pr.number} </span>
               <span className={pr.tone === "danger" ? SHELF_TONE.danger : undefined}>{pr.text}</span>
               {pr.more > 0 && <span className="text-faint" aria-label={`and ${pr.more} more`}>+{pr.more}</span>}
-            </span>
+            </span></Tip>
           </>}
           {/* Working plus a PR already fills the line, and a working chat is
               current anyway, so the time steps aside rather than clip. */}

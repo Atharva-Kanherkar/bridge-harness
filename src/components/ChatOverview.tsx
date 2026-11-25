@@ -9,6 +9,7 @@ import { formatShortcut } from "@/lib/platform";
 import type { AgentEvent, BaseBranchDivergence, CompletionSummary, Session, SessionEntry, Workspace } from "../types";
 import { HarnessMark } from "./harnessMarks";
 import { Kbd } from "./ui/kbd";
+import { Tip } from "@/components/ui/tooltip";
 
 // The head of the dock's Work pane: where this chat runs, which branch, what
 // it has not committed, how its last checks went, and what each turn did. It
@@ -102,8 +103,8 @@ function Row({ row, onReview, onOpenCode }: { row: OverviewRow; onReview?: () =>
     <span className="grid w-3.5 shrink-0 place-items-center text-muted-foreground">{icon}</span>
     <span className="w-14 shrink-0 text-meta text-muted-foreground">{ROW_LABEL[row.kind]}</span>
     <span className="min-w-0 flex-1">
-      <span className="block truncate text-meta text-foreground" title={title}>{main}</span>
-      {detail && <span className="block truncate text-caption text-faint" title={detail}>{detail}</span>}
+      <Tip label={title}><span className="block truncate text-meta text-foreground">{main}</span></Tip>
+      {detail && <Tip label={detail}><span className="block truncate text-caption text-faint">{detail}</span></Tip>}
     </span>
     {action}
   </div>;
@@ -117,7 +118,7 @@ function TurnOutcome({ changes }: { changes: TurnChanges | null }) {
 function TurnRow({ turn, harness, onOpen }: { turn: TurnHistoryEntry; harness?: string | null; onOpen?: (entryId: string) => void }) {
   const body = <>
     <HarnessMark harness={turn.harness ?? harness} size={12} />
-    <span className="min-w-0 truncate text-foreground" title={turn.title}>{turn.title}</span>
+    <Tip label={turn.title}><span className="min-w-0 truncate text-foreground">{turn.title}</span></Tip>
     {turn.durationMs !== undefined && <span className="shrink-0 tabular-nums text-faint">{formatTurnDuration(turn.durationMs)}</span>}
     <span className="ml-auto pl-2" />
     {turn.live ? <span className="shrink-0 text-info">Working</span> : <TurnOutcome changes={turn.changes} />}

@@ -6,6 +6,7 @@ import type { UsageSummaryResult } from "../types";
 import { HarnessMark, harnessChartFill, harnessChartStroke } from "./harnessMarks";
 import { costSourceLabel, formatCount, formatPercent, formatTokens, formatUsd, type UsageMetric, type UsageReport, type UsageWindow, type UsageWindowDays } from "../usageReport";
 import { axisFraction, evenTicks, TOKEN_KINDS, type TokenKind } from "../usageGeometry";
+import { Tip } from "@/components/ui/tooltip";
 
 // Pieces every Usage layout shares, so the honesty rules are written once:
 // the `API estimate` caption, the `~` on a partly unpriced
@@ -58,7 +59,7 @@ export function UsageLoadingState() {
 /** `~` after a cost whose window holds unpriced records: the figure is a floor, not a total. */
 export function EstimateMark({ report, large }: { report: UsageReport; large?: boolean }) {
   if (report.costSource !== "unpriced") return null;
-  return <span className={cn("font-normal text-muted-foreground", large && "ml-1 align-top text-[0.42em] tracking-normal")} title="Partly unpriced: some records have no known rate">~</span>;
+  return <Tip label="Partly unpriced: some records have no known rate"><span className={cn("font-normal text-muted-foreground", large && "ml-1 align-top text-[0.42em] tracking-normal")}>~</span></Tip>;
 }
 
 /** Request count and, in cost mode, `API estimate` plus the window's weakest provenance. */

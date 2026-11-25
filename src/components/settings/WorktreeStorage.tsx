@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { bridgeApi as api } from "../../api";
 import type { WorktreeInventoryEntry, WorktreeUsage } from "../../types";
 import { GhostButton, Select, StatusPill, TextButton, type PillTone } from "./kit";
+import { Tip } from "@/components/ui/tooltip";
 
 // Repositories have no identity colour of their own, so the breakdown wears
 // the same achromatic lightness ramp as the disk summary above it.
@@ -73,7 +74,7 @@ function RepoBreakdown({ repositories, totalBytes, onSelect }: {
           className={cn("flex items-center gap-1.5 rounded-md px-1 py-0.5 text-meta outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring", hover === index && "bg-accent")}
         >
           <span className={cn("size-2 shrink-0 rounded-full", swatch(index))} />
-          <span className="truncate text-foreground" title={repo.repoRoot}>{repoName(repo.repoRoot)}</span>
+          <Tip label={repo.repoRoot}><span className="truncate text-foreground">{repoName(repo.repoRoot)}</span></Tip>
           <span className="shrink-0 tabular-nums text-muted-foreground">{repo.count} · {bytes(repo.sizeBytes)}{repo.overBudget ? " · Over limit" : ""}</span>
         </button>
       </li>)}
@@ -272,12 +273,12 @@ export function WorktreeStorage({ onError }: { onError?: (message: string) => vo
         return <li key={entry.id} className="group flex items-center gap-4 py-2.5">
           <div className="min-w-0 flex-1">
             <p className="flex min-w-0 items-baseline gap-2">
-              <span className="truncate text-ui text-foreground" title={entry.path}>{entry.branch ?? repoName(entry.path)}</span>
+              <Tip label={entry.path}><span className="truncate text-ui text-foreground">{entry.branch ?? repoName(entry.path)}</span></Tip>
               <span className="shrink-0 text-caption text-muted-foreground">{repoName(entry.repoRoot)} · {entry.kind} · {age(entry.idleSeconds)}</span>
             </p>
-            <p className="truncate text-caption text-muted-foreground" title={entry.path}>
+            <Tip label={entry.path}><p className="truncate text-caption text-muted-foreground">
               {external ? "Not created by Bridge — shown for context, never reclaimed." : entry.retainedReason ?? entry.path}
-            </p>
+            </p></Tip>
           </div>
           {disposition && <StatusPill tone={DISPOSITION_TONE[disposition] ?? "neutral"}>{DISPOSITION_LABEL[disposition] ?? disposition}</StatusPill>}
           <span className="w-20 shrink-0 text-right text-ui tabular-nums text-foreground">{bytes(entry.sizeBytes)}</span>

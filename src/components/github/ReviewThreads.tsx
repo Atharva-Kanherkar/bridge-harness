@@ -9,6 +9,7 @@ import { Composer } from "./Composer";
 import { GithubMarkdown } from "./GithubMarkdown";
 import { hunkTail } from "./patch";
 import type { GithubAction, ReviewThread } from "../../protocol/generated/protocol";
+import { Tip } from "@/components/ui/tooltip";
 
 // Review conversations: the part of a pull request a reviewer works through
 // and closes. Each one is a card that says where it is, shows the lines it is
@@ -25,7 +26,7 @@ const EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
 function Timestamp({ iso }: { iso: string }) {
   if (Number.isNaN(Date.parse(iso))) return null;
-  return <time dateTime={iso} title={new Date(iso).toLocaleString()} className="text-caption text-muted-foreground">{relativeTime(iso, new Date())}</time>;
+  return <Tip label={new Date(iso).toLocaleString()}><time dateTime={iso} className="text-caption text-muted-foreground">{relativeTime(iso, new Date())}</time></Tip>;
 }
 
 /** The lines a conversation was opened on. */

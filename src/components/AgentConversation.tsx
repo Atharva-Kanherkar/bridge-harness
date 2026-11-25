@@ -319,11 +319,11 @@ function SubagentChip({ item }: { item: ConversationItem }) {
   const source = subagentSource(item);
   const label = subagentLabel(item);
   if (!source || !label) return null;
-  return <span
+  return <Tip label={source.title ? `Subagent: ${source.title}` : "Subagent work"}><span
     data-subagent={source.sessionId}
-    title={source.title ? `Subagent: ${source.title}` : "Subagent work"}
+   
     className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-1.5 py-px text-micro leading-4 text-muted-foreground"
-  ><CornerDownRight size={10} aria-hidden="true" /><span className="sr-only">Subagent </span>{label}</span>;
+  ><CornerDownRight size={10} aria-hidden="true" /><span className="sr-only">Subagent </span>{label}</span></Tip>;
 }
 
 type CheckState = "running" | "passed" | "failed" | "pending";

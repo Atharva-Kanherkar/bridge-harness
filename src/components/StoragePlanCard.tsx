@@ -11,6 +11,7 @@ import { Check, FolderOpen, MousePointerClick, Terminal, Trash2 } from "lucide-r
 import { cn } from "@/lib/utils";
 import { diskBytes, displayPath, parseStoragePlan, type StoragePlanCommand, type StoragePlanItem } from "../diskSpace";
 import { StatusPill } from "./settings/kit";
+import { Tip } from "@/components/ui/tooltip";
 
 /** What the Storage page lends a plan card. */
 export interface StorageAgentHost {
@@ -98,7 +99,7 @@ export function StoragePlanCard({ body }: { body: string }) {
                 : <StatusPill tone={item.safety === "safe" ? "success" : "warning"}>{item.safety === "safe" ? "Rebuilds" : "Review"}</StatusPill>}
             </p>
             {item.why && <p className="mt-0.5 text-caption text-muted-foreground">{item.why}</p>}
-            <p className="mt-0.5 truncate font-mono text-caption text-faint" title={item.path}>{displayPath(item.path, host?.home)}</p>
+            <Tip label={item.path}><p className="mt-0.5 truncate font-mono text-caption text-faint">{displayPath(item.path, host?.home)}</p></Tip>
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1">
             <span className="tabular-nums text-foreground">{diskBytes(item.sizeBytes)}</span>
@@ -114,7 +115,7 @@ export function StoragePlanCard({ body }: { body: string }) {
         return <li key={command.run} className="flex items-start gap-3 px-4 py-2.5">
           <Terminal size={14} className="mt-0.5 shrink-0 text-info" aria-hidden="true" />
           <div className="min-w-0 flex-1">
-            <code className="block truncate font-mono text-meta text-foreground" title={command.run}>{command.run}</code>
+            <Tip label={command.run}><code className="block truncate font-mono text-meta text-foreground">{command.run}</code></Tip>
             {command.why && <p className="mt-0.5 text-caption text-muted-foreground">{command.why}</p>}
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1">

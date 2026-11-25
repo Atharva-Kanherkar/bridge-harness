@@ -3,6 +3,7 @@ import { CircleDot, FileText, GitPullRequest, ListChecks, MessagesSquare, Send, 
 import type { TrailEventKind, TrailState } from "@/protocol/generated/protocol";
 import { TRAIL_STAGES, TRAIL_STATE_LABEL, stageLabel } from "@/trails";
 import { clsx as cn } from "clsx";
+import { Tip } from "@/components/ui/tooltip";
 
 export const KIND_LABEL: Record<TrailEventKind, string> = {
   issue: "Issue",
@@ -61,8 +62,8 @@ export function StateWord({ state, className }: { state: TrailState; className?:
 
 export function Chip({ children, tone = "plain", title, className }: { children: ReactNode; tone?: "plain" | "warning" | "danger" | "success"; title?: string; className?: string }) {
   return (
-    <span
-      title={title}
+    <Tip label={title}><span
+     
       className={cn(
         "inline-flex h-6 max-w-full items-center gap-1.5 truncate rounded-md bg-muted px-2 text-caption font-medium",
         tone === "warning" ? "text-warning" : tone === "danger" ? "text-destructive" : tone === "success" ? "text-success" : "text-muted-foreground",
@@ -70,7 +71,7 @@ export function Chip({ children, tone = "plain", title, className }: { children:
       )}
     >
       {children}
-    </span>
+    </span></Tip>
   );
 }
 

@@ -6,6 +6,7 @@ import { bridgeApi } from "../../api";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { GithubMediaItem } from "../githubMarkdown";
+import { Tip } from "@/components/ui/tooltip";
 
 // Images and videos inside a GitHub body.
 //
@@ -184,7 +185,7 @@ function GithubImage({ item }: { item: GithubMediaItem }) {
     <div className={cn(FRAME, !ready && "min-h-28")}>
       {!ready && <Skeleton className="absolute inset-0 h-full w-full rounded-none" />}
       {item.href
-        ? <a href={item.href} target="_blank" rel="noreferrer" title={item.alt || undefined}>{image}</a>
+        ? <Tip label={item.alt || undefined}><a href={item.href} target="_blank" rel="noreferrer">{image}</a></Tip>
         : <button type="button" onClick={() => ready && setZoomed(true)} aria-label={`Enlarge ${label}`} className="block w-full cursor-zoom-in">{image}</button>}
     </div>
     {createPortal(<AnimatePresence>

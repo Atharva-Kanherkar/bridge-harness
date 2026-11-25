@@ -7,6 +7,7 @@ import { formatElapsed, runningDetail, type RunningChat } from "../sidebarRunnin
 import { harnessLabel } from "../utils";
 import type { TrailSummary } from "../protocol/generated/protocol";
 import { SidebarTrailButton } from "./trails/SidebarTrailButton";
+import { Tip } from "@/components/ui/tooltip";
 
 /**
  * One clock for the whole group, ticking once a second: every row's timer
@@ -58,7 +59,7 @@ function RunningRow({ row, now, active, onOpen, trail, onOpenTrail }: {
         <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
           {/* The hover names the chat in full on the name itself: the row's own
               title stays with the chat's row in its project folder. */}
-          <span title={`${row.chat.titleLadder?.at(-1) ?? name} · ${harnessLabel(row.chat.harness)}`} className={clsx("min-w-0 truncate text-ui leading-4 tracking-snug text-foreground", active && "font-medium")}>{name}</span>
+          <Tip label={`${row.chat.titleLadder?.at(-1) ?? name} · ${harnessLabel(row.chat.harness)}`}><span className={clsx("min-w-0 truncate text-ui leading-4 tracking-snug text-foreground", active && "font-medium")}>{name}</span></Tip>
           <span className="flex min-w-0 items-center gap-1.5 text-caption leading-3.5 tracking-snug text-muted-foreground">
             <span data-active-dot aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-info motion-safe:animate-pulse" />
             <span data-running-elapsed className="shrink-0 tabular-nums text-info">{formatElapsed(now - row.since)}</span>

@@ -13,6 +13,7 @@ import {
   useTickingNow,
   type FanOutSummary,
 } from "./workerFanOut";
+import { Tip } from "@/components/ui/tooltip";
 
 // One card per delegation: who the orchestrator handed work to, how each of
 // them is doing, and how long it has taken. The worker rows themselves are the
@@ -52,9 +53,9 @@ export function FanOutCard({ summary, rows, readOnly = false, onOpenAgents, onSt
   return <div data-fan-out role="group" aria-label={`${summary.total} ${summary.total === 1 ? "worker" : "workers"}`} className="my-1 min-w-0 overflow-hidden rounded-xl border border-border bg-card">
     <div className="flex min-w-0 items-center gap-2.5 px-3.5 py-2.5">
       <span className="flex shrink-0 -space-x-1.5" aria-hidden="true">
-        {summary.marks.map(worker => <span key={worker.childSessionId} title={harnessLabel(worker.harness)} className="grid size-6 place-items-center rounded-full border border-border bg-background">
+        {summary.marks.map(worker => <Tip label={harnessLabel(worker.harness)}><span key={worker.childSessionId} className="grid size-6 place-items-center rounded-full border border-border bg-background">
           <HarnessMark harness={worker.harness} size={12}/>
-        </span>)}
+        </span></Tip>)}
         {summary.overflow > 0 && <span data-fan-out-overflow className="grid size-6 place-items-center rounded-full border border-border bg-background text-micro font-medium tabular-nums text-muted-foreground">+{summary.overflow}</span>}
       </span>
       <span className="shrink-0 text-ui font-medium text-foreground">{summary.total} {summary.total === 1 ? "worker" : "workers"}</span>

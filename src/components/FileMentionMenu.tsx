@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import type { ChatFileChange } from "../chatChangedFiles";
 import { markSegments, mentionMatch, splitMentionPath, type MatchRange } from "../fileMentionRows";
 import { glyphFor } from "./fileGlyph";
+import { Tip } from "@/components/ui/tooltip";
 
 /** Another composer trigger, taught in the footer: `#` agents, `/` commands. */
 export interface MentionTrigger {
@@ -110,7 +111,7 @@ function FileMentionRow({ id, index, path, query, active, change, onHover, onPic
     <Icon size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
     <span data-mention-name className="min-w-0 max-w-[70%] shrink-0 truncate font-mono text-meta text-foreground"><Marked text={name} range={match.name} /></span>
     {folder && <span data-mention-folder className="min-w-0 flex-1 truncate text-caption text-faint"><Marked text={folder} range={match.folder} /></span>}
-    {change && <span data-mention-change={change} className={`ml-auto shrink-0 pl-2 font-mono text-caption ${CHANGE_INK[change]}`} title={CHANGE_WORDS[change]}>{change}</span>}
+    {change && <Tip label={CHANGE_WORDS[change]}><span data-mention-change={change} className={`ml-auto shrink-0 pl-2 font-mono text-caption ${CHANGE_INK[change]}`}>{change}</span></Tip>}
   </button>;
 }
 

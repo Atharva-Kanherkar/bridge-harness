@@ -5,6 +5,7 @@ import { harnessChartDot } from "./harnessMarks";
 import { formatDayShort, formatHourShort, formatPercent, formatPeriodLabel, formatTokens, formatUsd, type UsageWindow } from "../usageReport";
 import { bucketKeys, calendarAxis, calendarWeeks, harnessesByMetric, harnessValue, modelValue, orderedRange, periodValue, scopeReport } from "../usageGeometry";
 import { EstimateMark, formatMetric, HarnessName, HeroCaption, LAYOUT_CARD, type UsageLayoutProps } from "./UsageLayoutParts";
+import { Tip } from "@/components/ui/tooltip";
 
 // Layout E: time is the navigation. The calendar is the hero; clicking a day
 // selects it, and shift-click or a drag extends the range. Everything under
@@ -159,7 +160,7 @@ export function UsageCalendar({ summary, periods, window, metric }: UsageLayoutP
         <h2 className="mb-2 text-ui font-medium text-foreground">Top models {range ? "in selection" : "in window"}</h2>
         {topModels.length === 0 ? <p className="py-6 text-caption text-muted-foreground">No activity in this {range ? "selection" : "window"}.</p> : <ul>
           {topModels.map(model => <li key={`${model.harness}:${model.model}`} className="grid h-8 grid-cols-[minmax(0,9rem)_minmax(0,1fr)_4.5rem_4.5rem] items-center gap-3">
-            <span className="flex min-w-0 items-center gap-1.5"><span className="truncate font-mono text-caption text-foreground/85" title={`${harnessLabel(model.harness)} · ${model.model}`}>{model.model}</span>{model.costSource === "unpriced" && <span className="shrink-0 text-caption text-muted-foreground">unpriced</span>}</span>
+            <span className="flex min-w-0 items-center gap-1.5"><Tip label={`${harnessLabel(model.harness)} · ${model.model}`}><span className="truncate font-mono text-caption text-foreground/85">{model.model}</span></Tip>{model.costSource === "unpriced" && <span className="shrink-0 text-caption text-muted-foreground">unpriced</span>}</span>
             <span className="h-1.5 overflow-hidden rounded-full bg-muted"><span className={cn("block h-full rounded-full", harnessChartDot(model.harness))} style={{ width: `${topModel > 0 ? (modelValue(model, metric) / topModel) * 100 : 0}%` }} /></span>
             <span className="text-right text-ui tabular-nums text-foreground">{format(modelValue(model, metric))}</span>
             <span className="text-right text-caption tabular-nums text-muted-foreground">{metric === "cost" ? formatTokens(model.tokens) : formatUsd(model.costMicrousd)}</span>

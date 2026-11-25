@@ -7,6 +7,7 @@ import { Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AdapterDescriptor } from "../../types";
 import type { SpeedTier } from "../../protocol/generated/protocol";
+import { Tip } from "@/components/ui/tooltip";
 
 /** The wire value for going back to the provider's standard speed. */
 export const STANDARD_SPEED = "standard";
@@ -65,6 +66,6 @@ export function SpeedControl({ tiers, value, onChange, disabled }: SpeedControlP
         })}
       </div>
     </div>
-    {active?.description && current !== STANDARD_SPEED && <p className="truncate text-caption leading-4 text-muted-foreground" title={active.description}>{active.description}</p>}
+    {active?.description && current !== STANDARD_SPEED && <Tip label={active.description}><p className="truncate text-caption leading-4 text-muted-foreground">{active.description}</p></Tip>}
   </div>;
 }

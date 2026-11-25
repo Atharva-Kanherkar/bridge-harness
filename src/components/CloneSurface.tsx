@@ -11,6 +11,7 @@ import { CLONE_BROWSERS, SAFARI_SIGN_IN_HINT } from "../cloneSettings";
 import { PaneState } from "./ui/pane";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
+import { Tip } from "@/components/ui/tooltip";
 
 // The dock tenant for a throwaway browser clone: the agent drives a private
 // copy of the browser, and this is where the person watches it, takes it over
@@ -127,7 +128,7 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
         <span className={cn("min-w-0 truncate text-meta text-foreground", snapshot?.domain && "font-mono")}>{snapshot?.domain ?? "Browser clone"}</span>
         <span className="ml-auto shrink-0 truncate text-caption text-muted-foreground">{statusLabel[status]}</span>
       </div>
-      {live && remaining !== undefined && <span title="Time until the clone is wiped" className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-border px-2 text-caption tabular-nums text-muted-foreground"><Timer size={12} aria-hidden="true" />{remaining}m</span>}
+      {live && remaining !== undefined && <Tip label="Time until the clone is wiped"><span className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-border px-2 text-caption tabular-nums text-muted-foreground"><Timer size={12} aria-hidden="true" />{remaining}m</span></Tip>}
       {onClose && <Button variant="ghost" size="icon-xs" onClick={onClose} aria-label="Close Clone Surface"><ChevronRight size={14} /></Button>}
     </header>
 

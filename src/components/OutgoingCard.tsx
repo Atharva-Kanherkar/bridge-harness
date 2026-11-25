@@ -21,6 +21,7 @@ import type { OutgoingAttachment, OutgoingDestination, OutgoingLintFinding, Outg
 import { ConnectorApprovalSheet } from "./ConnectorApprovalSheet";
 import { Markdown } from "./Markdown";
 import { outgoingCallState, outgoingDraftId, outgoingRefusal } from "../transcript/outgoing";
+import { Tip } from "@/components/ui/tooltip";
 
 function DestinationIcon({ destination }: { destination: OutgoingDestination }) {
   const Icon = destination.kind === "slackDm" ? AtSign
@@ -128,9 +129,9 @@ function Attachment({ draftId, index, attachment, readOnly, canRemove, busy, onR
           : <ImageIcon size={18} className={cn("text-muted-foreground", !failed && "animate-pulse")} aria-hidden="true" />}
       </div>
       <div className="flex min-w-0 items-center gap-1 px-2 py-1.5">
-        <span className="min-w-0 flex-1 truncate text-caption text-foreground/85" title={failed ? `${attachment.name}: file missing or changed` : attachment.name}>
+        <Tip label={failed ? `${attachment.name}: file missing or changed` : attachment.name}><span className="min-w-0 flex-1 truncate text-caption text-foreground/85">
           {failed ? "Missing: " : ""}{attachment.name}
-        </span>
+        </span></Tip>
         {!readOnly && <>
           <button type="button" aria-label={copied ? "Image copied" : `Copy image ${attachment.name}`} disabled={!src || busy} onClick={() => void copy()}
             className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
