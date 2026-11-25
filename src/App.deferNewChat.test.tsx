@@ -384,7 +384,10 @@ describe("deferred new-chat creation (#350)", () => {
     await act(async()=>byLabel("New Chat")!.click());
     expect(modeRadio("Direct")?.getAttribute("aria-checked")).toBe("true");
     const saveGlobal=vi.spyOn(bridgeApi,"savePermissionPolicy");
-    const access=container.querySelector<HTMLButtonElement>('[aria-label="Access: User approval"]')!;
+    // Access lives in the model picker's footer, not in the composer row.
+    expect(container.querySelector('[data-composer-frame] [aria-label="Access: User approval"]:not([role="dialog"] *)')).toBeNull();
+    await act(async()=>container.querySelector<HTMLButtonElement>('[data-composer-frame] button[aria-haspopup="dialog"]')!.click());
+    const access=container.querySelector<HTMLButtonElement>('[role="dialog"][aria-label="Choose a model"] [aria-label="Access: User approval"]')!;
     await act(async()=>access.click());
     const full=[...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(b=>b.textContent==="Full access")!;
     await act(async()=>full.click());expect(saveGlobal).not.toHaveBeenCalled();

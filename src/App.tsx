@@ -152,7 +152,8 @@ import { readAgentOnboardingComplete, shouldShowAgentOnboarding, writeAgentOnboa
 import { resolveAsideModel } from "./asideModel";
 import { parseSideChatCommand, quoteSelection } from "./sideChat";
 import { parseFindCommand } from "./chatSearch";
-import { welcomeHeadline } from "./greetings";
+import { projectGreetingLines, welcomeHeadline } from "./greetings";
+import { StreamingGreeting } from "./components/StreamingGreeting";
 import { useThemePreference } from "./theme";
 import { startAppPreferenceSync } from "./appPreferences";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
@@ -3821,9 +3822,11 @@ function AppContent() {
     finally {setBusy(false);}
   };
   const effectiveSettings = session ? currentChatConfiguration?.settings : draftSettings.settings;
-  // The model picker repeats the access mode in its footer.
+  // The access mode lives in the model picker's footer. Only a chat drawn
+  // without the picker (a worker's) keeps it in the composer row.
   const accessModeControl = <AccessControl disabled={busy} policy={effectiveSettings ? {...(permissionPolicy ?? {workerPromptProposalRoles:[],updatedAt:""}),autoApproveProviderPermissions:effectiveSettings.access === "full"} : undefined} onChange={mode => void changeChatOptions(mode)} />;
-  const accessControl = <>{accessModeControl}
+  const composerHasModelPicker = !session || session.kind === "direct" || session.kind === "orchestrator";
+  const accessControl = <>{!composerHasModelPicker && accessModeControl}
     {session
       ? !session.parentSessionId && session.kind !== "worker" && <ChatToolsControl sessionId={session.id} harness={session.harness} account={session.account ?? null} />
       : draftSettings.settings && <ChatToolsControl
@@ -4362,7 +4365,7 @@ function AppContent() {
                     inputRef={composerRef}
                     header={<ChatWorkShelf sessionId={session.id} harness={session.harness} prs={chatPrs.prs} onOpen={showWorkInDock} onFix={draftPullRequestFix} />}
                     leading={contextRing}
-                    modelControl={session.kind === "direct" || session.kind === "orchestrator"
+                    modelControl={composerHasModelPicker
                       ? <ChatModelControl adapters={adapters} accounts={providerAccounts} account={session.account ?? null} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model, account) => void changeChatModel(harness, model, account)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} speed={session.speed ?? null} onSpeedChange={speed => void changeChatSpeed(speed)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} accessControl={accessModeControl} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-ui rounded-full">{harnessLabel(session.harness)}</span>}
                     accessControl={accessControl}
@@ -4765,6 +4768,7 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
   // Falls back to the workspace title only when it has no distinct project.
   const heroProject = projectName ?? workspace?.title;
   const greeting = welcomeHeadline(heroProject);
+  const heroLines = useMemo(() => projectGreetingLines(heroProject), [heroProject]);
   const sessionModeHintId = useId();
   const [draft, setDraftValue] = useState("");
   // Same revisioned draft as the chat composer: dictation must see edits that
@@ -4858,7 +4862,9 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
       <ManagedAgentsPanel adapters={adapters} onChanged={onHealthChange} />
     </div>}
     <h1 className="mb-7 text-balance text-center font-display text-[26px] font-medium leading-tight tracking-[-0.025em] text-foreground sm:text-[30px]">
-      {greeting.parts.map((part, index) => <span key={index} className={part.kind === "project" ? "font-semibold" : undefined}>{part.text}</span>)}
+      {heroLines.length
+        ? <StreamingGreeting key={heroProject} lines={heroLines} projectClassName="font-semibold" />
+        : greeting.headline}
     </h1>
     <div className="relative">
     {slashOpen && <ComposerSlashMenu id="welcome-slash-listbox" commands={slashMatches} index={Math.min(slashIndex, slashMatches.length - 1)} onIndex={setSlashIndex} onSelect={applySlash} />}

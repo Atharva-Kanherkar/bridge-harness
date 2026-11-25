@@ -20,16 +20,6 @@
             "null"
           ]
         },
-        "effortSelector": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/EffortSelectorStyle"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "showThinking": {
           "type": [
             "boolean",
@@ -58,14 +48,6 @@
         }
       },
       "type": "object"
-    },
-    "EffortSelectorStyle": {
-      "enum": [
-        "slider",
-        "sentence",
-        "list"
-      ],
-      "type": "string"
     },
     "ThemePreference": {
       "enum": [

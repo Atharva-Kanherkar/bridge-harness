@@ -20,14 +20,6 @@ pub enum ThemeSkin {
     Omarchy,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum EffortSelectorStyle {
-    Slider,
-    Sentence,
-    List,
-}
-
 /// Absent means never set: the app keeps its built-in default.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
@@ -36,8 +28,13 @@ pub struct AppPreferenceValues {
     pub theme: Option<ThemePreference>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skin: Option<ThemeSkin>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub effort_selector: Option<EffortSelectorStyle>,
+    /// Retired: the model picker's effort style (slider, sentence or list).
+    /// Bridge draws one effort control now. The key is still read, and
+    /// dropped, so a record or a client from an earlier build parses rather
+    /// than resetting every other preference; it is never written.
+    #[serde(skip_serializing, deserialize_with = "drop_retired")]
+    #[schemars(skip)]
+    pub effort_selector: (),
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_thinking: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -64,6 +61,10 @@ pub struct SaveAppPreferencesParams {
     pub values: AppPreferenceValues,
 }
 
+fn drop_retired<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<(), D::Error> {
+    serde::de::IgnoredAny::deserialize(deserializer).map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,9 +74,19 @@ mod tests {
     fn values_are_lowercase_and_unset_keys_stay_off_the_wire() {
         let values = AppPreferenceValues { theme: Some(ThemePreference::Light), show_thinking: Some(false), ..Default::default() };
         assert_eq!(serde_json::to_value(&values).unwrap(), json!({"theme": "light", "showThinking": false}));
-        let parsed: AppPreferenceValues = serde_json::from_value(json!({"skin": "vibrancy", "effortSelector": "list"})).unwrap();
+        let parsed: AppPreferenceValues = serde_json::from_value(json!({"skin": "vibrancy", "showThinking": true})).unwrap();
         assert_eq!(parsed.skin, Some(ThemeSkin::Vibrancy));
-        assert_eq!(parsed.effort_selector, Some(EffortSelectorStyle::List));
         assert!(serde_json::from_value::<AppPreferenceValues>(json!({"zoom": 2})).is_err());
+    }
+
+    #[test]
+    fn a_retired_effort_selector_is_read_and_dropped_not_rejected() {
+        // Records and clients from before the single effort control still
+        // carry the key. Rejecting it would reset theme and skin with it.
+        let record: AppPreferences = serde_json::from_value(json!({"revision": 3, "values": {"theme": "dark", "effortSelector": "list"}})).unwrap();
+        assert_eq!(record.values.theme, Some(ThemePreference::Dark));
+        assert_eq!(serde_json::to_value(&record.values).unwrap(), json!({"theme": "dark"}));
+        let params: SaveAppPreferencesParams = serde_json::from_value(json!({"values": {"effortSelector": "sentence"}})).unwrap();
+        assert_eq!(params.values, AppPreferenceValues::default());
     }
 }

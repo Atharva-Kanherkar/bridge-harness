@@ -192,31 +192,10 @@ describe("SettingsScreen", () => {
       expect(document.documentElement.dataset.skin).toBe("graphite");
     });
 
-    it("persists the thinking control style from the Appearance tiles", async () => {
-      const store = new Map<string, string>();
-      const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
-      Object.defineProperty(globalThis, "localStorage", {
-        configurable: true,
-        value: {
-          getItem: (key: string) => store.get(key) ?? null,
-          setItem: (key: string, value: string) => { store.set(key, value); },
-          removeItem: (key: string) => { store.delete(key); },
-          clear: () => store.clear(),
-        },
-      });
-      try {
-        await render({ initialSection: "appearance" });
-        expect(container.textContent).toContain("Thinking control");
-        const group = container.querySelector('[role="radiogroup"][aria-label="Thinking control"]')!;
-        expect(group.querySelector('[role="radio"][aria-checked="true"]')!.textContent).toContain("Slider");
-
-        await act(async () => { button(container, "Sentence").click(); await flush(); });
-        expect(store.get("bridge.effortSelector")).toBe("sentence");
-        expect(group.querySelector('[role="radio"][aria-checked="true"]')!.textContent).toContain("Sentence");
-      } finally {
-        if (original) Object.defineProperty(globalThis, "localStorage", original);
-        else Reflect.deleteProperty(globalThis, "localStorage");
-      }
+    it("offers no thinking control style: the model picker has one effort control", async () => {
+      await render({ initialSection: "appearance" });
+      expect(container.textContent).not.toContain("Thinking control");
+      expect(container.querySelector('[role="radiogroup"][aria-label="Thinking control"]')).toBeNull();
     });
 
     it("opens Permissions from initialSection, which is what the bypass badge does", async () => {

@@ -1653,7 +1653,6 @@ export interface AppManifest {
 export interface AppPreferenceValues {
   allowOpencodeAppCourier?: boolean | null;
   autoExpandEdits?: boolean | null;
-  effortSelector?: EffortSelectorStyle | null;
   showThinking?: boolean | null;
   skin?: ThemeSkin | null;
   theme?: ThemePreference | null;
@@ -2243,8 +2242,6 @@ export interface EarlierContextWindow {
 }
 
 export type Effort = "low" | "medium" | "high" | "xhigh";
-
-export type EffortSelectorStyle = "slider" | "sentence" | "list";
 
 export type EvalKind = "deterministic" | "scrutiny" | "user_testing";
 

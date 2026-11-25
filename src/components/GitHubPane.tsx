@@ -257,9 +257,9 @@ function OpenOnGithub({ url, what, className }: { url: string; what: string; cla
 }
 
 /** Centered empty/availability state — the pane never renders blank. */
-function PaneNotice({ icon: Icon, title, spin, children }: { icon: typeof GitPullRequest; title: string; spin?: boolean; children?: React.ReactNode }) {
+function PaneNotice({ icon: Icon, title, children }: { icon: typeof GitPullRequest; title: string; children?: React.ReactNode }) {
   return <div className="animate-page-mount flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
-    <span className="grid size-12 place-items-center rounded-2xl border border-border bg-card text-muted-foreground shadow-xs"><Icon size={19} strokeWidth={1.6} className={cn(spin && "animate-spin")} aria-hidden="true" /></span>
+    <span className="grid size-12 place-items-center rounded-2xl border border-border bg-card text-muted-foreground shadow-xs"><Icon size={19} strokeWidth={1.6} aria-hidden="true" /></span>
     <p className="mt-2 font-display text-body font-semibold text-foreground">{title}</p>
     <div className="max-w-[26rem] text-meta leading-relaxed text-muted-foreground">{children}</div>
   </div>;
@@ -272,25 +272,12 @@ function CommentTime({ iso }: { iso: string }) {
   return <time dateTime={iso} title={new Date(iso).toLocaleString()} className="text-caption text-muted-foreground">{relativeTime(iso, new Date())}</time>;
 }
 
-/** Placeholder rows with optional connection context above the shared list. */
-function ListSkeleton({ label, notice }: { label: string; notice?: React.ReactNode }) {
+/** Placeholder rows shaped like the shared list. One quiet loading state:
+ *  the rows are the signal, with no spinner or status copy stacked on top. */
+function ListSkeleton({ label }: { label: string }) {
   return <SkeletonRegion label={label} className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
-    {notice}
     <SkeletonRows rows={6} lead="dot" />
   </SkeletonRegion>;
-}
-
-/** First paint, while `gh` availability and the repository resolve. The pane
- *  shows its real structure (rows filling in) with the connect step named
- *  inside it, never a lone spinner on a blank surface. */
-function ConnectingNotice() {
-  return <div className="mb-3 flex items-center gap-2.5 rounded-xl border border-border bg-card px-3 py-2.5">
-    <LoaderCircle size={14} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
-    <span className="min-w-0">
-      <span className="block text-meta font-medium text-foreground">Connecting to GitHub…</span>
-      <span className="block text-caption leading-relaxed text-muted-foreground">Resolving the CLI and repository.</span>
-    </span>
-  </div>;
 }
 
 /** Placeholder shaped like a PR/issue detail: meta line, title, branch line,
@@ -634,7 +621,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   if (surfaceError) {
     body = <PaneNotice icon={CircleX} title="GitHub is unreachable">{surfaceError}</PaneNotice>;
   } else if (!status) {
-    body = <ListSkeleton label="Connecting to GitHub" notice={<ConnectingNotice />} />;
+    body = <ListSkeleton label="Connecting to GitHub" />;
   } else if (status.availability.status === "notInstalled") {
     body = <PaneNotice icon={CircleSlash} title="GitHub CLI is not installed">Bridge drives GitHub through <code className="font-mono text-foreground/90">gh</code> — install it and sign in, and this pane fills in by itself.</PaneNotice>;
   } else if (status.availability.status === "notAuthenticated") {

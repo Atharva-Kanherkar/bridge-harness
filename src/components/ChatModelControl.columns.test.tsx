@@ -8,8 +8,7 @@ import { MODEL_FAVORITES_STORAGE_KEY } from "../modelFavorites";
 import type { AdapterDescriptor } from "../types";
 
 // The single-column picker: a harness strip, the model list, and a thinking
-// row in the user's effort selector style, with speed and access in the
-// footer. The rail jumps between harness sections of one list, so every
+// row of level segments, with speed and access in the footer. The rail jumps between harness sections of one list, so every
 // harness stays one search away.
 
 const adapters: AdapterDescriptor[] = [
@@ -38,8 +37,7 @@ let original: PropertyDescriptor | undefined;
 
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  // Favorites and the effort style both live in localStorage; a stub keeps
-  // each case's stars and style its own.
+  // Favorites live in localStorage; a stub keeps each case's stars its own.
   original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
@@ -109,7 +107,7 @@ describe("ChatModelControl columns", () => {
     expect(lit()).toEqual(["Claude"]);
     expect(zone("models")!.querySelector('[role="listbox"]')).not.toBeNull();
     expect(groups()).toEqual(["Claude", "Codex"]);
-    expect(zone("thinking")!.textContent).toContain("Thinking effort");
+    expect(zone("thinking")!.textContent).toContain("Thinking");
     expect(zone("thinking")!.querySelector('[data-testid="effort-control"]')).not.toBeNull();
     // One column: the strip is horizontal, the thinking row follows the list,
     // and no keyboard-hint cell is drawn. With neither a speed tier nor an
@@ -181,7 +179,8 @@ describe("ChatModelControl column keys", () => {
     await act(async () => trigger().click());
     expect(active()).toBe(search());
     await press("Tab");
-    expect(active()?.getAttribute("role")).toBe("slider");
+    expect(active()?.getAttribute("role")).toBe("radio");
+    expect(active()?.getAttribute("data-effort")).toBe("high");
     expect(zone("thinking")!.contains(active())).toBe(true);
     await press("Tab");
     expect(active()?.getAttribute("aria-label")).toBe("Access: User approval");
@@ -202,7 +201,7 @@ describe("ChatModelControl column keys", () => {
     await press("ArrowDown");
     expect(active()?.textContent).toContain("Claude Opus");
     await press("Tab");
-    expect(active()?.getAttribute("role")).toBe("slider");
+    expect(active()?.getAttribute("role")).toBe("radio");
     await act(async () => row("Claude Opus").focus());
     await press("Tab", { shiftKey: true });
     expect(active()).toBe(search());
@@ -274,7 +273,6 @@ describe("ChatModelControl column keys", () => {
   });
 
   it("keeps the level and closes with Enter in the Thinking column", async () => {
-    store.set("bridge.effortSelector", "list");
     const onEffortChange = vi.fn();
     await mount(baseProps({ onEffortChange }));
     await act(async () => trigger().click());
@@ -282,7 +280,7 @@ describe("ChatModelControl column keys", () => {
     expect(active()?.getAttribute("data-effort")).toBe("high");
     await press("ArrowDown");
     expect(onEffortChange).toHaveBeenLastCalledWith("xhigh");
-    // A row that is only focused is chosen on Enter, then the picker closes.
+    // A segment that is only focused is chosen on Enter, then the picker closes.
     await act(async () => zone("thinking")!.querySelector<HTMLElement>('[data-effort="max"]')!.focus());
     await press("Enter");
     expect(onEffortChange).toHaveBeenLastCalledWith("max");
@@ -305,24 +303,25 @@ describe("ChatModelControl column keys", () => {
   });
 });
 
-describe("ChatModelControl Thinking column styles", () => {
-  it.each(["slider", "sentence", "list"] as const)("draws the %s style in the Thinking column", async style => {
-    store.set("bridge.effortSelector", style);
+describe("ChatModelControl Thinking row", () => {
+  it("draws one segmented control, one labelled segment per level", async () => {
     await mount(baseProps());
     await act(async () => trigger().click());
     const thinking = zone("thinking")!;
-    expect(thinking.querySelector(`[data-effort-style="${style}"]`)).not.toBeNull();
-    expect([...thinking.querySelectorAll("[data-effort]")].map(node => node.getAttribute("data-effort"))).toEqual(["low", "medium", "high", "xhigh", "max"]);
-    // One form at a time.
-    expect(panel()!.querySelectorAll("[data-effort-style]")).toHaveLength(1);
+    const group = thinking.querySelector('[role="radiogroup"][aria-label="Reasoning effort"]')!;
+    expect(thinking.querySelectorAll('[role="radiogroup"]')).toHaveLength(1);
+    expect([...group.querySelectorAll('[role="radio"]')].map(node => node.textContent)).toEqual(["Low", "Med", "High", "XHigh", "Max"]);
+    expect(group.querySelector('[aria-checked="true"]')!.getAttribute("data-effort")).toBe("high");
+    // No slider, and no style to choose between.
+    expect(thinking.querySelector('[role="slider"]')).toBeNull();
+    expect(panel()!.querySelector("[data-effort-style]")).toBeNull();
   });
 
-  it("swaps the column to the picked model's ladder", async () => {
+  it("swaps the row to the picked model's ladder", async () => {
     await mount(baseProps());
     await act(async () => trigger().click());
     await act(async () => row("GPT Luna").click());
     expect([...zone("thinking")!.querySelectorAll("[data-effort]")].map(node => node.getAttribute("data-effort"))).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
-    expect(zone("thinking")!.textContent).toContain("GPT Luna");
   });
 });
 

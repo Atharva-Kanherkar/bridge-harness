@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { welcomeHeadline } from "./greetings";
+import { projectGreetingLines, welcomeHeadline } from "./greetings";
 
 describe("welcomeHeadline", () => {
   it("asks one plain question when no project is known", () => {
@@ -19,5 +19,18 @@ describe("welcomeHeadline", () => {
 
   it("is the same line every time, not a random pick", () => {
     expect(new Set(Array.from({ length: 20 }, () => welcomeHeadline("Bridge").headline)).size).toBe(1);
+  });
+
+  it("rotates through distinct project lines that all end on the project name", () => {
+    const lines = projectGreetingLines(" harness ");
+    expect(lines.length).toBeGreaterThan(8);
+    expect(lines[0].map(part => part.text).join("")).toBe(welcomeHeadline("harness").headline);
+    for (const parts of lines) {
+      const text = parts.map(part => part.text).join("");
+      expect(text).toMatch(/harness[.?!]?$/);
+      expect(parts.filter(part => part.kind === "project")).toEqual([{ text: "harness", kind: "project" }]);
+    }
+    expect(new Set(lines.map(parts => parts.map(part => part.text).join(""))).size).toBe(lines.length);
+    for (const project of [undefined, null, "", "   "]) expect(projectGreetingLines(project)).toEqual([]);
   });
 });

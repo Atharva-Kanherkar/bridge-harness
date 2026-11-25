@@ -7,7 +7,8 @@ import { isToolLive } from "../transcript/toolCall";
 import { reduceTranscript } from "../transcript/reducer";
 import type { TranscriptEvent } from "../transcript/events";
 import { LAUNCH_STEPS, humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeLaunchFailure, humanizeResolution, launchFailureStep } from "../humanize";
-import { welcomeHeadline, type GreetingPart } from "../greetings";
+import { projectGreetingLines, welcomeHeadline, type GreetingPart } from "../greetings";
+import { StreamingGreeting } from "./StreamingGreeting";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError, isThrottleKind } from "../errors";
@@ -1596,7 +1597,8 @@ function isStreamingText(status?: string): boolean {
 function GreetingEmpty({ projectName }: { projectName?: string }) {
   // The same plain question the new-chat screen asks, naming the project.
   const greeting = welcomeHeadline(projectName);
-  return <Empty title={greeting.headline} parts={greeting.parts} />;
+  const lines = useMemo(() => projectGreetingLines(projectName), [projectName]);
+  return <Empty title={greeting.headline} parts={greeting.parts} lines={lines} />;
 }
 
 /// Placeholder rows shaped like a transcript while an existing chat's history
@@ -1631,11 +1633,13 @@ function ChatHistorySkeleton({ density }: { density: "comfortable" | "compact" }
   </SkeletonRegion>;
 }
 
-function Empty({ title, copy, parts }: { title: string; copy?: string; parts?: GreetingPart[] }) {
+function Empty({ title, copy, parts, lines }: { title: string; copy?: string; parts?: GreetingPart[]; lines?: GreetingPart[][] }) {
   return <div className="absolute inset-0 flex flex-col items-center justify-center px-4 text-center animate-page-enter sm:px-6">
     <div className="flex w-full max-w-[440px] flex-col items-center">
       <h2 className="text-balance font-display text-[22px] font-medium leading-[1.2] tracking-[-0.02em] text-foreground">
-        {parts && parts.length > 1
+        {lines?.length
+          ? <StreamingGreeting key={lines[0].map(part => part.text).join("")} lines={lines} projectClassName="font-semibold" />
+          : parts && parts.length > 1
           ? parts.map((part, index) => part.kind === "project"
             ? <span key={index} className="font-semibold">{part.text}</span>
             : <span key={index}>{part.text}</span>)

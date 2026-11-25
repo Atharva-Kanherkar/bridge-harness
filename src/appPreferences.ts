@@ -1,21 +1,19 @@
-// App preferences follow the core. Theme, skin, the effort picker's style and
-// transcript display are drawn by this app, but the core keeps their record so
-// a chat (through `settings_change`), another window or the web client can
-// change them. localStorage stays the first-paint cache: every value the core
+// App preferences follow the core. Theme, skin and transcript display are
+// drawn by this app, but the core keeps their record so a chat (through
+// `settings_change`), another window or the web client can change them. localStorage stays the first-paint cache: every value the core
 // sends is written there with the same writers Settings uses, and the same
 // in-window events fire, so every mounted consumer repaints without a reload.
 
 import type { AppPreferences, AppPreferenceValues } from "./protocol/generated/protocol";
 import {
-  EFFORT_SELECTOR_STORAGE_KEY, isEffortSelectorStyle, isThemePreference, isThemeSkin, SKIN_STORAGE_KEY, THEME_EVENT,
-  THEME_STORAGE_KEY, writeEffortSelectorStyle, writeThemePreference, writeThemeSkin,
+  isThemePreference, isThemeSkin, SKIN_STORAGE_KEY, THEME_EVENT, THEME_STORAGE_KEY, writeThemePreference, writeThemeSkin,
 } from "./theme";
 import {
   AUTO_EXPAND_EDIT_ACTIVITY_STORAGE_KEY, SHOW_THINKING_EVENT, SHOW_THINKING_STORAGE_KEY, writeAutoExpandEditActivity, writeShowThinking,
 } from "./transcriptSettings";
 
 type Key = keyof AppPreferenceValues;
-const THEME_KEYS: Key[] = ["theme", "skin", "effortSelector"];
+const THEME_KEYS: Key[] = ["theme", "skin"];
 const TRANSCRIPT_KEYS: Key[] = ["showThinking", "autoExpandEdits"];
 const KEYS: Key[] = [...THEME_KEYS, ...TRANSCRIPT_KEYS];
 
@@ -47,8 +45,6 @@ export function readLocalPreferences(storage: Pick<Storage, "getItem"> = localSt
   if (isThemePreference(theme)) values.theme = theme;
   const skin = raw(storage, SKIN_STORAGE_KEY);
   if (isThemeSkin(skin)) values.skin = skin;
-  const effortSelector = raw(storage, EFFORT_SELECTOR_STORAGE_KEY);
-  if (isEffortSelectorStyle(effortSelector)) values.effortSelector = effortSelector;
   const showThinking = flag(raw(storage, SHOW_THINKING_STORAGE_KEY));
   if (showThinking !== undefined) values.showThinking = showThinking;
   const autoExpandEdits = flag(raw(storage, AUTO_EXPAND_EDIT_ACTIVITY_STORAGE_KEY));
@@ -71,7 +67,6 @@ const isEmpty = (values: AppPreferenceValues) => Object.keys(values).length === 
 export function applyLocalPreferences(values: AppPreferenceValues, storage: Store = localStorage, target: Pick<Window, "dispatchEvent"> = window): void {
   if (values.theme) writeThemePreference(values.theme, storage);
   if (values.skin) writeThemeSkin(values.skin, storage);
-  if (values.effortSelector) writeEffortSelectorStyle(values.effortSelector, storage);
   if (typeof values.showThinking === "boolean") writeShowThinking(values.showThinking, storage);
   if (typeof values.autoExpandEdits === "boolean") writeAutoExpandEditActivity(values.autoExpandEdits, storage);
   if (THEME_KEYS.some(key => values[key] != null)) target.dispatchEvent(new Event(THEME_EVENT));

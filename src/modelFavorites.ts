@@ -1,6 +1,6 @@
-// Starred models for the model picker. Local to this window's storage, like
-// the effort-selector style: a favorite is a shortcut on this machine, not a
-// setting the backend has to know about.
+// Starred models for the model picker. Local to this window's storage: a
+// favorite is a shortcut on this machine, not a setting the backend has to
+// know about.
 //
 // A favorite names a model the way the picker emits it: the harness, the
 // catalog id, and the account group it was starred in (null for the user's
