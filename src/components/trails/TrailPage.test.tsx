@@ -116,7 +116,7 @@ describe("TrailPage", () => {
     await settle();
     const kinds = [...host.querySelectorAll("[data-brief-kind]")].map(item => item.getAttribute("data-brief-kind"));
     expect(kinds).toEqual(["issue", "note", "pullRequest", "chat", "chat", "message"]);
-    const total = [...host.querySelectorAll("section span")].find(item => /tokens$/.test(item.textContent ?? ""))!;
+    const total = [...host.querySelectorAll("section span")].find(item => (item.textContent ?? "").endsWith("tokens"))!;
     expect(total.className).toContain("tabular-nums");
     expect(total.className).not.toContain("font-mono");
   });

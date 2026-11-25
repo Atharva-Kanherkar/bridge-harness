@@ -86,6 +86,7 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
     setBusy(false);
     setConfirmingDestroy(false);
     setDomainDraft("");
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- a request generation counter, not a DOM ref: cleanup must bump its latest value
     return () => { ++latestRequest.current; };
   }, [sessionId]);
   useEffect(() => {

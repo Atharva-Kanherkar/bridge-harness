@@ -66,6 +66,7 @@ function DialogSurface({
   useEffect(() => {
     const surface = surfaceRef.current;
     if (surface && !surface.contains(document.activeElement)) surface.querySelector<HTMLElement>("button:not([disabled]), input:not([disabled])")?.focus();
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- returnFocus holds the element focused before the dialog opened; it is set once and never reassigned
     return () => { if (returnFocus.current?.isConnected) returnFocus.current.focus(); };
   }, []);
   const transition = useMotionTransition(MOTION_DURATION.overlay);

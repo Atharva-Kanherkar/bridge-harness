@@ -1030,7 +1030,7 @@ function AppContent() {
     if (previous && previous !== selectedSessionId) void bridgeApi.browserBridgeState().then(browser => browser.lease ? bridgeApi.detachBrowser() : undefined).catch(() => undefined);
   }, [selectedSessionId]);
 
-  const adapters = health?.adapters ?? [];
+  const adapters = useMemo(() => health?.adapters ?? [], [health?.adapters]);
   const adaptersReady = adapters.some(adapter => adapter.available);
   // Everything a human may meet. Filtered once, here, because the rail, Agent Fleet
   // and default selection disagreeing about what exists is how a briefing run ends up

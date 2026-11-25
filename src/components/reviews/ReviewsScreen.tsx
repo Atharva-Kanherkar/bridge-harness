@@ -333,7 +333,7 @@ export function ReviewsScreen() {
     return () => clearInterval(tick);
   }, [anyRunning]);
 
-  const jobs = overview?.jobs ?? [];
+  const jobs = useMemo(() => overview?.jobs ?? [], [overview?.jobs]);
   const waiting = useMemo(() => jobs.filter(job => job.status === "drafted"), [jobs]);
   const running = useMemo(() => jobs.filter(job => tone(job) === "running"), [jobs]);
   const stats = overview?.stats;

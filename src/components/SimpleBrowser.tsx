@@ -62,6 +62,7 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
       if (select) address.current?.select();
     });
   }, [cancelAddressFocus]);
+  // oxlint-disable-next-line react-hooks/exhaustive-deps -- selectionRevision is a counter, not a DOM ref: unmount must bump its latest value
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; selectionRevision.current++; cancelAddressFocus(); }; }, [cancelAddressFocus]);
   useEffect(() => { writeBrowserWorkspace(sessionId, workspace); }, [sessionId, workspace]);
   useEffect(() => { selectionRevision.current++; setDraft(active.url); setError(undefined); setSelection(undefined); setInspecting(false); setAttaching(false); }, [active.id, active.url]);

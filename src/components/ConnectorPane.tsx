@@ -96,7 +96,7 @@ export function ConnectorPane({ visible = true, focusItemKey, onClose, onUnreadC
     onUnreadChange?.(inbox ? unreadCount(inbox.items) : 0);
   }, [inbox, onUnreadChange]);
 
-  const items = inbox?.items ?? [];
+  const items = useMemo(() => inbox?.items ?? [], [inbox?.items]);
   const selected = useMemo(
     () => items.find(item => item.itemKey === selectedKey) ?? items.find(item => item.state !== "resolved"),
     [items, selectedKey],
