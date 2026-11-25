@@ -1,5 +1,5 @@
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
-import { SkeletonRows } from "@/components/ui/skeleton";
+import { pendingClass, SkeletonRows } from "@/components/ui/skeleton";
 import { useEffect, useRef, useState } from "react";
 import { Check, Pencil, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -717,10 +717,11 @@ const EXCLUSION_LABEL: Record<string, string> = {
 function ShowMore({ remaining, loading, disabled, onClick }: { remaining: number; loading: boolean; disabled: boolean; onClick: () => void }) {
   return <button
     type="button"
-    className="mt-2 h-8 w-full rounded-lg text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45"
+    className={cn("mt-2 h-8 w-full rounded-lg text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45", pendingClass(loading))}
+    aria-busy={loading || undefined}
     disabled={disabled}
     onClick={onClick}
-  >{loading ? "Loading…" : <>Show <span className="tabular-nums">{Math.min(MEMORY_PAGE_SIZE, Math.max(remaining, 1))}</span> more</>}</button>;
+  >Show <span className="tabular-nums">{Math.min(MEMORY_PAGE_SIZE, Math.max(remaining, 1))}</span> more</button>;
 }
 
 /** One line for a settled run: what it did, or why it did not. */
