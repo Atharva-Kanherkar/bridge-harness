@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from "react";
-import { SkeletonRows } from "@/components/ui/skeleton";
-import { AlertTriangle, ArrowRight, Bot, ChevronRight, Eye, EyeOff, Globe, Hand, LoaderCircle, Lock, MousePointer2, Timer, Trash2 } from "lucide-react";
+import { Skeleton, SkeletonRegion, SkeletonRows } from "@/components/ui/skeleton";
+import { AlertTriangle, ArrowRight, Bot, ChevronRight, Eye, EyeOff, Globe, Hand, Lock, MousePointer2, Timer, Trash2 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { startSerialPoll } from "../polling";
 import type { BrowserCloneSnapshot, BrowserCloneStatus, CloneSignInPath } from "../types";
@@ -261,7 +261,7 @@ function LiveView({ snapshot, takenOver, agentLabel, onInput }: { snapshot: Brow
     }
   };
 
-  if (!snapshot.screenshot) return <div className="grid min-h-full place-items-center p-6 text-center"><div><LoaderCircle size={18} className="mx-auto animate-spin text-muted-foreground" /><p className="mt-2 max-w-sm text-caption leading-5 text-muted-foreground">{snapshot.status === "starting" ? "Starting the clone…" : "Waiting for the first frame…"}</p></div></div>;
+  if (!snapshot.screenshot) return <SkeletonRegion label={snapshot.status === "starting" ? "Starting the clone" : "Waiting for the first frame"} className="min-h-full p-4"><Skeleton className="h-full min-h-64 w-full rounded-lg" /></SkeletonRegion>;
   const pointer = snapshot.agentPointer;
   // The cursor lingers where the agent last acted, then fades, so a quiet page
   // does not look like it is still being driven.

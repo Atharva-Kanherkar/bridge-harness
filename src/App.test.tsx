@@ -1456,7 +1456,7 @@ describe("a new chat's model before the host answers", () => {
     expect(pill()?.textContent).not.toContain("Loading models");
     // The grace period: a fast local read never flashes a spinner.
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 700)); });
-    expect(pill()?.textContent).toContain("Loading models…");
+    expect(pill()?.getAttribute("title")).toBe("Loading models");
     expect(pill()?.getAttribute("aria-busy")).toBe("true");
   });
 

@@ -104,8 +104,8 @@ export function ModelsPage({ profiles, adapters, version, busy, onSave, onRefres
           control={isStale
             ? <>
                 <StatusPill tone="warning">Needs refresh</StatusPill>
-                <GhostButton disabled={refreshing} onClick={() => void refresh()}>
-                  <ArrowsClockwise size={12} strokeWidth={1.7} aria-hidden="true" className={refreshing ? "animate-spin" : undefined} />Retry
+                <GhostButton busy={refreshing} disabled={refreshing} onClick={() => void refresh()}>
+                  <ArrowsClockwise size={12} strokeWidth={1.7} aria-hidden="true" />Retry
                 </GhostButton>
               </>
             : <StatusPill tone="success">Up to date</StatusPill>}

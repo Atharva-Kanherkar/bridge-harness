@@ -17,6 +17,7 @@ import { Select as SelectPrimitive } from "@base-ui/react/select";
 import { ChevronDown as CaretDown, ChevronRight as CaretRight, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SETTINGS_COLUMN } from "./layout";
+import { pendingClass } from "@/components/ui/skeleton";
 
 /* ── page ─────────────────────────────────────────────────────────────────── */
 
@@ -484,29 +485,34 @@ export function TextArea({ value, onChange, disabled, label, placeholder, rows =
 const BUTTON = "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs transition-colors disabled:opacity-40";
 
 /** Foreground fill. Reserved for Save and Connect, and nothing else. */
-export function PrimaryButton({ children, onClick, disabled, type = "button" }: {
+export function PrimaryButton({ children, onClick, disabled, busy, type = "button" }: {
   children: ReactNode; onClick?: () => void; disabled?: boolean; type?: "button" | "submit";
+  /** The action is in flight: disabled, and the label wears the skeleton sweep. */
+  busy?: boolean;
 }) {
-  return <button type={type} disabled={disabled} onClick={onClick} className={cn(BUTTON, "bg-foreground font-medium text-background hover:opacity-90")}>{children}</button>;
+  return <button type={type} disabled={disabled || busy} aria-busy={busy || undefined} onClick={onClick} className={cn(BUTTON, "bg-foreground font-medium text-background hover:opacity-90", pendingClass(busy))}>{children}</button>;
 }
 
 /** Bordered. Install, Repair, Retry, and the wizard's step actions. */
-export function GhostButton({ children, onClick, disabled, ariaLabel }: {
+export function GhostButton({ children, onClick, disabled, busy, ariaLabel }: {
   children: ReactNode; onClick?: () => void; disabled?: boolean; ariaLabel?: string;
+  /** The action is in flight: disabled, and the label wears the skeleton sweep. */
+  busy?: boolean;
 }) {
-  return <button type="button" aria-label={ariaLabel} disabled={disabled} onClick={onClick} className={cn(BUTTON, "border border-border-card bg-popover text-foreground hover:bg-accent")}>{children}</button>;
+  return <button type="button" aria-label={ariaLabel} disabled={disabled || busy} aria-busy={busy || undefined} onClick={onClick} className={cn(BUTTON, "border border-border-card bg-popover text-foreground hover:bg-accent", pendingClass(busy))}>{children}</button>;
 }
 
 /** Text only. `tone="destructive"` is Remove; the default muted tone is Reset. */
-export function TextButton({ children, onClick, disabled, tone = "muted", ariaLabel }: {
-  children: ReactNode; onClick?: () => void; disabled?: boolean; tone?: "muted" | "destructive"; ariaLabel?: string;
+export function TextButton({ children, onClick, disabled, busy, tone = "muted", ariaLabel }: {
+  children: ReactNode; onClick?: () => void; disabled?: boolean; busy?: boolean; tone?: "muted" | "destructive"; ariaLabel?: string;
 }) {
   return <button
     type="button"
     aria-label={ariaLabel}
-    disabled={disabled}
+    disabled={disabled || busy}
+    aria-busy={busy || undefined}
     onClick={onClick}
-    className={cn(BUTTON, tone === "destructive" ? "text-destructive hover:bg-destructive/10" : "text-muted-foreground hover:bg-accent hover:text-foreground")}
+    className={cn(BUTTON, tone === "destructive" ? "text-destructive hover:bg-destructive/10" : "text-muted-foreground hover:bg-accent hover:text-foreground", pendingClass(busy))}
   >{children}</button>;
 }
 
@@ -551,6 +557,6 @@ export function SaveBar({ dirty, saving, canSave = true, onSave, onDiscard, labe
   return <div className="sticky bottom-0 z-20 -mx-1 mt-[26px] flex flex-wrap items-center gap-3 rounded-xl border border-border-card bg-card px-3.5 py-2.5">
     <span className="min-w-0 flex-1 text-ui text-foreground">{label}</span>
     <TextButton onClick={onDiscard} disabled={saving}>Discard</TextButton>
-    <PrimaryButton onClick={onSave} disabled={saving || !canSave}>{saving ? "Saving…" : saveLabel}</PrimaryButton>
+    <PrimaryButton busy={saving} onClick={onSave} disabled={saving || !canSave}>{saveLabel}</PrimaryButton>
   </div>;
 }

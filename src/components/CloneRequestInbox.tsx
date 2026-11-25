@@ -88,7 +88,7 @@ export function CloneConsentCard({ request, label, onOpen, onResolved, onError }
       {onOpen && <Button variant="ghost" size="sm" onClick={onOpen} className="text-muted-foreground">Open chat</Button>}
       <div className="ml-auto flex gap-2">
         <Button variant="outline" size="sm" disabled={busy || !settings} onClick={() => void resolve(false)}>Deny</Button>
-        <Button size="sm" disabled={busy || !settings} onClick={() => void resolve(true)}>{busy ? "Starting…" : "Allow"}</Button>
+        <Button size="sm" loading={busy} disabled={!settings} onClick={() => void resolve(true)}>Allow</Button>
       </div>
     </div>
   </section>;

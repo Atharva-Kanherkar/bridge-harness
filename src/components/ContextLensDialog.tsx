@@ -8,7 +8,6 @@ import { Minimize2, TrendingUp } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogPanel, DialogTitle } from "@/components/ui/dialog";
-import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import type { ContextBridgeContribution, ContextReadingState, ContextWindow, ContextWindowReading, EarlierContextWindow } from "../protocol/generated/protocol";
 import { contextPressure } from "../usage";
@@ -257,10 +256,11 @@ function CompactAction({ window, owner, urgent, onCompact }: {
       size="sm"
       variant={urgent ? "default" : "outline"}
       onClick={() => void compact()}
-      disabled={state.phase === "sending" || state.phase === "sent"}
+      loading={state.phase === "sending"}
+      disabled={state.phase === "sent"}
       aria-label={`Compact ${roleTitle(window)}`}
     >
-      {state.phase === "sending" ? <Spinner className="size-3.5" /> : <Minimize2 className="size-3.5" aria-hidden="true" />}
+      <Minimize2 className="size-3.5" aria-hidden="true" />
       {state.phase === "sent" ? "Compacting" : native ? "Compact" : "Checkpoint"}
     </Button>
   </div>;

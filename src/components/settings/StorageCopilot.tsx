@@ -121,7 +121,7 @@ function StorageCopilotIntro({ selectedCount, starting, recent, onOpenRecent, on
         aria-label="Ask about your storage"
         value={question}
         rows={2}
-        placeholder={starting ? "Starting…" : "Ask about your storage…"}
+        placeholder="Ask about your storage…"
         onChange={event => setQuestion(event.target.value)}
         onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(question); } }}
         className="min-w-0 flex-1 resize-none bg-transparent px-1.5 py-1 text-ui text-foreground outline-none placeholder:text-muted-foreground"

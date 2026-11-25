@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { FlaskConical, LoaderCircle, PencilLine } from "lucide-react";
+import { FlaskConical, PencilLine } from "lucide-react";
 import { bridgeApi } from "../../api";
 import type { WorkflowTemplate } from "../../protocol/generated/protocol";
 import { Button } from "@/components/ui/button";
 import { CHIP, ErrorNote, errorText } from "./parts";
 import { triggerSummary } from "./format";
+import { SkeletonCards } from "@/components/ui/skeleton";
 
 const capitalized = (app: string) => app.replace(/\b\w/g, letter => letter.toUpperCase());
 
@@ -36,7 +37,7 @@ export function WorkflowTemplates({ busy, onTry, onCustomize }: {
   }, []);
 
   if (templates === null) {
-    return <div className="flex min-h-56 items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="animate-spin" size={15}/>Loading templates…</div>;
+    return <SkeletonCards label="Loading templates" count={6} className="mt-4" cardClassName="h-32" />;
   }
   return <div className="mt-4">
     <p className="mb-3 text-caption text-muted-foreground">Try one first: it runs as a dry run, so every change it would make is only shown to you. Nothing runs for real until you approve it.</p>

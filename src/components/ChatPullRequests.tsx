@@ -12,6 +12,7 @@ import {
   type ChatPrPhase,
   type CheckTone,
 } from "../chatPullRequests";
+import { pendingClass } from "@/components/ui/skeleton";
 
 // A chat's pull requests, kept live after the turn ends: CI runs, fails,
 // passes, the PR merges, and none of it appends a message to the transcript.
@@ -272,8 +273,8 @@ export function AttachPullRequest({ onAttach, variant = "inline" }: { onAttach: 
         aria-describedby={error ? `${inputId}-error` : undefined}
         disabled={busy}
       />
-      <button type="submit" disabled={busy || !value.trim()} className="inline-flex min-h-7 items-center rounded-lg bg-primary px-2.5 text-caption font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50">
-        {busy ? "Verifying…" : "Attach"}
+      <button aria-busy={busy || undefined} type="submit" disabled={busy || !value.trim()} className={cn("inline-flex min-h-7 items-center rounded-lg bg-primary px-2.5 text-caption font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50", pendingClass(busy))}>
+        Attach
       </button>
       <button type="button" onClick={() => { setOpen(false); setError(undefined); }} className="inline-flex min-h-7 items-center rounded-lg px-2 text-caption text-muted-foreground hover:bg-accent hover:text-foreground">Cancel</button>
     </div>

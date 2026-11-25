@@ -8,6 +8,7 @@ import { BrowserPage, type BrowserPageHandle } from "./BrowserPage";
 import { PaneState } from "./ui/pane";
 import { cn } from "../lib/utils";
 import { formatShortcut, modKey } from "../lib/platform";
+import { SkeletonDot, pendingClass } from "@/components/ui/skeleton";
 
 export type SimpleBrowserProps = {
   sessionId?: string;
@@ -234,7 +235,7 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
               else return;
               event.preventDefault(); selectTab(workspace.tabs[target].id);
               document.getElementById(`browser-tab-${workspace.tabs[target].id}`)?.focus();
-            }}>{snapshots[tab.id]?.loading ? <RotateCw size={12} className="shrink-0 animate-spin" aria-label="Loading page" /> : <Globe size={12} className="shrink-0" aria-hidden="true" />}<span className="truncate">{tab.title || (tab.url ? new URL(tab.url).hostname : "New tab")}</span></button>
+            }}>{snapshots[tab.id]?.loading ? <SkeletonDot label="Loading page" /> : <Globe size={12} className="shrink-0" aria-hidden="true" />}<span className="truncate">{tab.title || (tab.url ? new URL(tab.url).hostname : "New tab")}</span></button>
             <button type="button" aria-label={`Close ${tab.title || "browser tab"}`} title="Close tab" className={cn("mr-0.5 grid size-5 shrink-0 place-items-center rounded-sm text-muted-foreground transition-opacity hover:text-foreground", selected ? "opacity-100 hover:bg-accent" : "opacity-0 group-focus-within/tab:opacity-100 group-hover/tab:opacity-100")} onClick={() => closeTab(tab.id)}><X size={11} /></button>
           </div>;
         })}
@@ -267,7 +268,7 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
         <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted px-2.5 py-2 font-mono text-caption leading-4">{selection.snippet}</pre>
         <p className="text-xs leading-4 text-muted-foreground">Describe the change in the composer.</p>
         <label className="flex flex-col gap-1.5 text-xs">Annotation<textarea aria-label="Selection annotation" maxLength={1000} value={annotation} onChange={event => setAnnotation(event.target.value)} placeholder="Describe the area or mark what should change…" className="u-glass-soft min-h-24 resize-y rounded-lg p-2.5 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring" /></label>
-        <div className="flex gap-2"><button type="button" disabled={!onAttachSelection || attaching} onClick={() => void attach()} className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40">{attaching ? "Attaching…" : "Attach to prompt"}</button><button type="button" onClick={cancelSelection} className="u-glass-soft rounded-md px-3 py-2 text-xs transition-colors hover:bg-accent">Cancel</button></div>
+        <div className="flex gap-2"><button aria-busy={attaching || undefined} type="button" disabled={!onAttachSelection || attaching} onClick={() => void attach()} className={cn("rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40", pendingClass(attaching))}>Attach to prompt</button><button type="button" onClick={cancelSelection} className="u-glass-soft rounded-md px-3 py-2 text-xs transition-colors hover:bg-accent">Cancel</button></div>
         <p className="text-caption text-muted-foreground">Select the element again after navigating to a different page.</p>
       </section>}
     </div>

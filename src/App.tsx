@@ -17,7 +17,7 @@ import type { ImportContinuation, ImportJob, ResolveReferenceResult, WorkflowDra
 import { workflowNotification } from "./components/workflows/notify";
 import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, Check, CircleDot, Clock3, Code2, History, FileCode2, FileDiff, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, Check, Clock3, Code2, History, FileCode2, FileDiff, FolderGit2, GitPullRequest, Inbox, ListChecks, Monitor, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
 import { continuationNotice, importedChatBadge, importSourceLabel } from "./importSources";
 import { abandonFlight, beginNewChat, beginSend, bindNewChat, markFlight, markSubmitted } from "./sendLatency";
@@ -200,6 +200,7 @@ const UsageScreen = lazy(() => import("./components/UsageScreen").then(module =>
 const ReviewsScreen = lazy(() => import("./components/reviews/ReviewsScreen").then(module => ({ default: module.ReviewsScreen })));
 const NotesScreen = lazy(() => import("./components/NotesScreen").then(module => ({ default: module.NotesScreen })));
 import { NotesScreenSkeleton } from "./components/notes/NotesSkeleton";
+import { Skeleton, SkeletonPanel, SkeletonRegion, SkeletonRows } from "@/components/ui/skeleton";
 import type { NoteChatRequest, NotesCopilotHost } from "./components/NotesScreen";
 /** Longest rest between two state reads triggered by `state-changed`. Ten
  *  running chats send one on every turn start and usage update, and slow
@@ -2955,7 +2956,7 @@ function AppContent() {
     // The switch can take seconds (the outgoing provider may be asked for a
     // handoff summary); the narration row wears this instead of claiming the
     // old model is reading a message that does not exist.
-    // A null model means the adapter's default; "Switching to Automatic…"
+    // A null model means the adapter's default; "Switching to Automatic"
     // names nothing, so the harness carries the label instead.
     setModelSwitch({ sessionId: session.id, harness, label: model ? modelDisplayName(adapters, harness, model) : harnessLabel(harness) });
     // Explicit either way: the harness id is the user's own login.
@@ -3796,7 +3797,9 @@ function AppContent() {
     <CodexUpdateDialog open={codexUpdatePrompt} phase={codexUpdatePhase}
       onOpenChange={setCodexUpdatePrompt} onConfirm={() => void confirmCodexUpdate()} />
   </>;
-  if (!health || !modelSetup || !stateLoaded) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{startupError ? <><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
+  if (!health || !modelSetup || !stateLoaded) return startupError
+    ? <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div role="alert" className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs"><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</div></div>
+    : <AppShellSkeleton />;
   const hasExistingBridgeData = state.projects.length > 0 || state.workspaces.length > 0 || state.sessions.length > 0;
   if (shouldShowAgentOnboarding(modelSetup, agentOnboardingComplete, hasExistingBridgeData)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard
     adapters={health.adapters}
@@ -3948,7 +3951,7 @@ function AppContent() {
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
       {!adaptersReady && !settingsView && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-3xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
       {!settingsView && <HealthWarnings warnings={health.warnings ?? []} className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-3xl" />}
-      {view === "work" ? <Suspense fallback={<PanelLoading label="Opening work…"/>}><WorkView
+      {view === "work" ? <Suspense fallback={<PanelLoading label="Loading work"/>}><WorkView
         board={workBoard}
         error={workError}
         refreshError={workRefreshError}
@@ -4005,17 +4008,17 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "workflows" ? <Suspense fallback={<PanelLoading label="Opening workflows…"/>}><WorkflowsScreen projects={state.projects} onContinueInChat={result => { setState(result.state); openSession(result.sessionId); }} initialDraft={workflowDraft} onDraftOpened={clearWorkflowDraft} focusRun={focusWorkflowRun} onRunFocused={clearFocusWorkflowRun} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening the Store…"/>}><MarketplaceScreen onOpenApp={openApp} /></Suspense> : view === "personal-app" && personalAppId ? <PersonalAppSurface key={personalAppId} appId={personalAppId} /> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "reviews" ? <Suspense fallback={<PanelLoading label="Opening reviews…"/>}><ReviewsScreen onOpenChat={sessionId => openSession(sessionId)} /></Suspense> : view === "pulls" ? <PullsScreen
+      /> : view === "workflows" ? <Suspense fallback={<PanelLoading label="Loading workflows"/>}><WorkflowsScreen projects={state.projects} onContinueInChat={result => { setState(result.state); openSession(result.sessionId); }} initialDraft={workflowDraft} onDraftOpened={clearWorkflowDraft} focusRun={focusWorkflowRun} onRunFocused={clearFocusWorkflowRun} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Loading the Store"/>}><MarketplaceScreen onOpenApp={openApp} /></Suspense> : view === "personal-app" && personalAppId ? <PersonalAppSurface key={personalAppId} appId={personalAppId} /> : view === "usage" ? <Suspense fallback={<PanelLoading label="Loading usage"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "reviews" ? <Suspense fallback={<PanelLoading label="Loading reviews"/>}><ReviewsScreen onOpenChat={sessionId => openSession(sessionId)} /></Suspense> : view === "pulls" ? <PullsScreen
         workspaces={state.workspaces}
         projects={state.projects}
         onJumpToFile={jumpFromPulls}
         onAddProject={() => setNewProjectOpen(true)}
-      /> : settingsView ? <Suspense fallback={<SettingsScreenSkeleton />}><SettingsScreen onOpenWorkBoard={openWorkBoard} onExit={leaveSettings} adapters={adapters} autoApprovals={autoApprovals} key={view} initialSection={view === "archives" ? "archives" : view === "saved-setups" ? "agents" : view === "briefing-settings" ? "work" : settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onVoiceChanged={voice.retry} onHealthChange={invalidateHealth} availableUpdate={availableUpdate} onUpdate={setAvailableUpdate} onError={setError} storageCopilot={storageCopilot} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
+      /> : settingsView ? <Suspense fallback={<SettingsScreenSkeleton />}><SettingsScreen onOpenWorkBoard={openWorkBoard} onExit={leaveSettings} adapters={adapters} autoApprovals={autoApprovals} key={view} initialSection={view === "archives" ? "archives" : view === "saved-setups" ? "agents" : view === "briefing-settings" ? "work" : settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onVoiceChanged={voice.retry} onHealthChange={invalidateHealth} availableUpdate={availableUpdate} onUpdate={setAvailableUpdate} onError={setError} storageCopilot={storageCopilot} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Loading Agent Fleet"/>}><AgentFleet
         workspaces={state.workspaces}
         initialWorkspaceId={workspace?.id ?? welcomeWorkspaceId}
         onOpenProjects={() => setView("projects")}
         onError={setError}
-      /></Suspense> : view === "mission-control" || paradigm === "grid" ? <Suspense fallback={<PanelLoading label="Opening Mission Control…"/>}><MissionControl
+      /></Suspense> : view === "mission-control" || paradigm === "grid" ? <Suspense fallback={<PanelLoading label="Loading Mission Control"/>}><MissionControl
         sessions={visibleSessions}
         workspaces={state.workspaces}
         projects={state.projects}
@@ -4470,8 +4473,8 @@ function AppContent() {
                  workspace. */
               if (pane === "github") return <GitHubPane key={workspace.id} workspaceId={workspace.id} workspaceBranch={workspace.branch ?? null} sessionId={session?.id} intent={githubIntent} onJumpToFile={jumpToReviewComment} />;
               if (pane === "changes") return <ChangesPanel key={`${workspace.id}:${session.id}`} workspace={workspace} sessionId={session.id} chatSignal={chatChanges.signal} visible={dock.open && dock.pane === "changes"} onQuote={quoteToComposer} onOpenFile={openFileInDock} onSaved={() => void refreshWorkspaceStats(workspace.id)} />;
-              if (pane === "code") return <Suspense fallback={<PanelLoading label="Opening editor…"/>}><CodePanel key={workspace.id} workspaceId={workspace.id} visible={dock.open && dock.pane === "code"} reveal={codeReveal} driftSignal={`${workspace.dirtyFiles}:${workspace.additions}:${workspace.deletions}`} onSaved={() => void refreshWorkspaceStats(workspace.id)}/></Suspense>;
-              return <Suspense fallback={<PanelLoading label="Opening terminal…"/>}><TerminalPane key={workspace.id} workspaceId={workspace.id} workspacePath={workspace.path ?? undefined} visible={dock.open && dock.pane === "terminal" && !fullscreen} onActivity={setTerminalActivity}/></Suspense>;
+              if (pane === "code") return <Suspense fallback={<PanelLoading label="Loading editor"/>}><CodePanel key={workspace.id} workspaceId={workspace.id} visible={dock.open && dock.pane === "code"} reveal={codeReveal} driftSignal={`${workspace.dirtyFiles}:${workspace.additions}:${workspace.deletions}`} onSaved={() => void refreshWorkspaceStats(workspace.id)}/></Suspense>;
+              return <Suspense fallback={<PanelLoading label="Loading terminal"/>}><TerminalPane key={workspace.id} workspaceId={workspace.id} workspacePath={workspace.path ?? undefined} visible={dock.open && dock.pane === "terminal" && !fullscreen} onActivity={setTerminalActivity}/></Suspense>;
             }}
           </SessionDock>
         </section>
@@ -4516,7 +4519,8 @@ function AppContent() {
           const model = newChatDraft?.overrides?.model;
           patchDraft({target:agent?.id ? {kind:"agent",agentId:agent.id} : {kind:"orchestrator"}, ...(agent?.id && model?.account ? {model:{harness:model.harness,model:model.model}} : {})});
         }}
-        defaultsNotice={draftSettings.error ?? (draftSettings.loading ? "Loading project defaults…" : undefined)}
+        defaultsNotice={draftSettings.error ?? undefined}
+        defaultsLoading={draftSettings.loading}
         onToggleWorktree={() => patchDraft({createWorktree:!(draftSettings.settings?.createWorktree ?? false)})}
         onStartChat={(text, initialAttachments) => startChatOrShortcut(text, initialAttachments)}
         harnessShortcutFailure={harnessShortcutFailure}
@@ -4687,7 +4691,21 @@ function AppContent() {
 }
 
 function PanelLoading({ label }: { label: string }) {
-  return <div role="status" className="absolute inset-0 grid place-items-center text-xs text-muted-foreground">{label}</div>;
+  return <SkeletonPanel label={label} className="absolute inset-0" />;
+}
+
+/** The window before state arrives: the sidebar and the composer, as placeholders. */
+function AppShellSkeleton() {
+  return <SkeletonRegion label="Loading Bridge" className="flex h-[100dvh] bg-background">
+    <div className="flex w-64 shrink-0 flex-col gap-3 border-r border-border p-4">
+      <Skeleton className="h-6 w-28" />
+      <SkeletonRows rows={6} meta={false} framed={false} className="divide-y-0" rowClassName="min-h-8 px-0 py-1.5" />
+    </div>
+    <div className="flex flex-1 flex-col items-center justify-center gap-4 p-6">
+      <Skeleton className="h-5 w-48" />
+      <Skeleton className="h-28 w-full max-w-2xl rounded-2xl" />
+    </div>
+  </SkeletonRegion>;
 }
 
 function localAccountName(...paths: Array<string | null | undefined>): string {
@@ -4712,12 +4730,14 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
 
 const NEW_CHAT_VOICE_OWNER = "new-chat";
 
-function Welcome({ adapters, accounts, account, harness, model, knownLabel, loading, slashCommands, suggestionSettings, effort, onSelectEffort, speed, onSelectSpeed, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, modelAccessControl, agents, selectedAgent, onSelectAgent, defaultsNotice, onOpenAgents, onVoiceSetup }: {
+function Welcome({ defaultsLoading, adapters, accounts, account, harness, model, knownLabel, loading, slashCommands, suggestionSettings, effort, onSelectEffort, speed, onSelectSpeed, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, modelAccessControl, agents, selectedAgent, onSelectAgent, defaultsNotice, onOpenAgents, onVoiceSetup }: {
   onOpenAgents: () => void;
   agents: AgentDefinition[];
   selectedAgent: AgentDefinition | null;
   onSelectAgent: (agent:AgentDefinition | null) => void;
   defaultsNotice?: string;
+  /** Project defaults still loading: submit waits, and the status line shows a placeholder. */
+  defaultsLoading?: boolean;
   onVoiceSetup: () => void;
   slashCommands: import("./types").SlashCommand[];
   suggestionSettings?: SuggestionSettingsSnapshot;
@@ -4830,7 +4850,7 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
     const typed = draft.trim();
     // A chosen agent rides the same `#agent objective` directive the in-chat shortcut parses.
     const text = typed;
-    if (defaultsNotice) return;
+    if (defaultsNotice || defaultsLoading) return;
     if (typed === "/voice" && attachments.length === 0) { beginVoice(); return; }
     const started = text || attachments.length > 0 ? onStartChat(text, attachments) : onStartChat();
     void started.then(cleared => { if (cleared) { setDraft(""); setAttachments([]); } });
@@ -4944,7 +4964,7 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
     {/* One reserved line for status, so a notice that comes and goes on
         first load does not shift the centered hero. */}
     <div className="mt-1.5 min-h-5 px-2.5 text-left">
-      {defaultsNotice && <p role="status" className="text-caption text-muted-foreground">{defaultsNotice}</p>}
+      {defaultsNotice ? <p role="status" className="text-caption text-muted-foreground">{defaultsNotice}</p> : defaultsLoading && <SkeletonRegion label="Loading project defaults" className="py-1"><Skeleton className="h-2.5 w-32" /></SkeletonRegion>}
       {failure && <p role="alert" className="text-caption text-destructive">{failure}</p>}
       <ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} />
     </div>

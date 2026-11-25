@@ -23,7 +23,6 @@ import {
   GitPullRequestDraft,
   Info,
   ListTodo,
-  LoaderCircle,
   MessageSquare,
   RefreshCw,
   RotateCcw,
@@ -45,7 +44,7 @@ import { cn } from "@/lib/utils";
 import { ActionSheet, ActionSheetHost } from "./github/ActionSheet";
 import { MergeBox, initialMergeState, mergeReducer, type MergeState, type OverflowItem } from "./github/MergeBox";
 import { Badge } from "@/components/ui/badge";
-import { Skeleton, SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
+import { Skeleton, SkeletonDot, SkeletonRegion, SkeletonRows, SkeletonText, pendingClass } from "@/components/ui/skeleton";
 import { Avatar, AvatarScope, Monogram } from "./github/Avatar";
 import { Composer } from "./github/Composer";
 import { GithubMarkdown } from "./github/GithubMarkdown";
@@ -714,8 +713,8 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   ] as const;
   const pickSurface = (id: SurfaceTab) => { setPushDirection("back"); setSurfaceTab(id); setSelected(undefined); setSelectedIssue(undefined); setQuery(""); };
   const refresh = () => { void loadSurface(true); if (selected !== undefined) void openDetail(selected, true); if (selectedIssue !== undefined) void openIssue(selectedIssue, true); };
-  const refreshButton = <button type="button" onClick={refresh} aria-label="Refresh GitHub" title="Refresh" className={HEADER_ICON}>
-    <RefreshCw size={13} strokeWidth={1.7} className={cn(refreshing && "animate-spin")} aria-hidden="true" />
+  const refreshButton = <button type="button" onClick={refresh} aria-label="Refresh GitHub" title="Refresh" aria-busy={refreshing || undefined} className={cn(HEADER_ICON, pendingClass(refreshing))}>
+    <RefreshCw size={13} strokeWidth={1.7} aria-hidden="true" />
   </button>;
 
   return <GithubMediaScope.Provider value={mediaScope}><section data-gh-pane-root="" className="relative flex h-full w-full flex-col" aria-label="GitHub repository">
@@ -1751,7 +1750,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
                     const inUse = activeJobFor(reviews.jobs, [choice.id]);
                     return <button key={choice.id} type="button" disabled={reviewBusy || !!inUse} onClick={() => void startReview([choice.id])} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
                       {inUse && inUse.status !== "drafted"
-                        ? <LoaderCircle size={11} className="animate-spin text-muted-foreground motion-reduce:animate-none" aria-hidden="true" />
+                        ? <SkeletonDot className="size-[11px]" />
                         : <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />}
                       <span className="min-w-0 flex-1 truncate">{choice.label} <span className="font-mono text-micro text-muted-foreground" data-reviewer-model={choice.id}>{modelLine(choice.id)}</span></span>
                       {inUse && <span className="shrink-0 text-micro text-muted-foreground">{inUse.status === "drafted" ? "Draft waiting" : "Reviewing"}</span>}
@@ -1761,8 +1760,8 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
             {secondOpinion && (() => {
               const inUse = picked.length > 0 ? activeJobFor(reviews.jobs, picked) : undefined;
               const names = picked.map(id => REVIEW_HARNESSES.find(choice => choice.id === id)?.label ?? id).join(" and ");
-              return <button type="button" disabled={reviewBusy || picked.length === 0 || !!inUse} onClick={() => void startReview(picked)} className={cn(PRIMARY_ACTION, "mx-1 my-0.5 justify-center")}>
-                {reviewBusy ? "Starting review…" : picked.length === 0 ? "Pick a harness" : inUse ? (inUse.status === "drafted" ? `A draft from ${names} is waiting` : `${names} already reviewing`) : `Review with ${names}`}
+              return <button type="button" disabled={reviewBusy || picked.length === 0 || !!inUse} aria-busy={reviewBusy || undefined} onClick={() => void startReview(picked)} className={cn(PRIMARY_ACTION, "mx-1 my-0.5 justify-center", pendingClass(reviewBusy))}>
+                {picked.length === 0 ? "Pick a harness" : inUse ? (inUse.status === "drafted" ? `A draft from ${names} is waiting` : `${names} already reviewing`) : `Review with ${names}`}
               </button>;
             })()}
             <button type="button" disabled={reviewBusy} onClick={() => void startReview([BUGBOT.id])} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
@@ -2101,7 +2100,9 @@ function ConnectRepositoryDialog({ workspaceId, onCancel, onConnected }: {
       />
       {!pastedUrl && candidates !== undefined && <ul className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-border" aria-label="Matching repositories">
         {candidates.length === 0
-          ? <li className="px-3 py-2.5 text-meta text-muted-foreground">{searching ? "Searching…" : "No repository matches that. Paste its URL instead."}</li>
+          ? searching
+            ? <li><SkeletonRows label="Searching repositories" rows={3} meta={false} framed={false} /></li>
+            : <li className="px-3 py-2.5 text-meta text-muted-foreground">No repository matches that. Paste its URL instead.</li>
           : candidates.map(candidate => <li key={candidate.nameWithOwner}>
             <button type="button" disabled={busy} onClick={() => void connect(candidate.url)} className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent disabled:opacity-50">
               <FolderGit2 size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />

@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { clsx } from "clsx";
-import { ChevronRight, LoaderCircle } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { HarnessMark } from "./harnessMarks";
 import { dockPaneChord } from "../dockLayout";
 import { formatShortcut } from "@/lib/platform";
@@ -13,6 +13,8 @@ import {
   useTickingNow,
   type FanOutSummary,
 } from "./workerFanOut";
+import { SkeletonDot, pendingClass } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 
 // One card per delegation: who the orchestrator handed work to, how each of
 // them is doing, and how long it has taken. The worker rows themselves are the
@@ -76,19 +78,19 @@ export function FanOutCard({ summary, rows, readOnly = false, onOpenAgents, onSt
     {rows && <div className="border-t border-border px-3.5 py-1">{rows}</div>}
     {live && summary.waiting.length > 0 && <div data-fan-out-waiting className="flex min-w-0 items-center gap-3 border-t border-border px-3.5 py-2 text-meta text-muted-foreground">
       <span className="inline-flex min-w-0 items-center gap-1.5">
-        <LoaderCircle size={12} className="shrink-0 animate-spin" aria-hidden="true"/>
+        <SkeletonDot />
         <span className="min-w-0 truncate">Waiting on {summary.waiting.map((worker, index) => <span key={worker.childSessionId}>
           {index > 0 && ", "}
           <span className="text-foreground">{worker.name}</span>
         </span>)}</span>
       </span>
-      {onStopWorkers && <button
+      {onStopWorkers && <button aria-busy={stopping || undefined}
         type="button"
         disabled={stopping}
         onClick={stop}
         title={summary.waiting.length === 1 ? "Stop this worker" : `Stop these ${summary.waiting.length} workers`}
-        className="shrink-0 rounded-md px-1.5 py-0.5 font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50"
-      >{stopping ? "Stopping…" : "Stop"}</button>}
+        className={cn("shrink-0 rounded-md px-1.5 py-0.5 font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50", pendingClass(stopping))}
+      >Stop</button>}
     </div>}
     {error && <p role="alert" className="border-t border-border px-3.5 py-2 text-meta text-destructive">{error}</p>}
   </div>;

@@ -104,7 +104,7 @@ export function statusLabel(buffer: FileBuffer): string {
   if (buffer.tooLarge) return "Too large to edit";
   if (buffer.binary) return "Binary — read only";
   switch (buffer.state) {
-    case "saving": return "Saving…";
+    case "saving": return "Saving";
     case "conflict": return buffer.message ?? "Changed on disk";
     case "error": return buffer.message ?? "Could not save";
     case "dirty": return "Unsaved changes";

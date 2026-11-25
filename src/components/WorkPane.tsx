@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { AttachPullRequest, CHECK_ICON, PullRequestGlyph } from "./ChatPullRequests";
 import { SHELF_TONE, TaskKindGlyph } from "./WorkShelf";
 import { useBackgroundTasks } from "./useBackgroundTasks";
+import { pendingClass } from "@/components/ui/skeleton";
 
 // The detail behind the composer shelf: every pull request this chat opened
 // or had attached, and every task its agent left running. One row grammar for
@@ -44,8 +45,8 @@ function PullRequestDetail({ pr, now, onFix, onOpenGithub, onRetry, retrying }: 
     {pr.stale && <div role="status" className="my-1.5 flex items-center gap-2 rounded-lg border border-border px-2.5 py-1.5 text-caption text-muted-foreground">
       <CloudOff size={12} className="shrink-0" aria-hidden="true" />
       <span className="min-w-0 flex-1">GitHub didn’t answer, so this is the last state Bridge saw{pr.error ? <span className="block truncate text-micro text-faint" title={pr.error}>{pr.error}</span> : null}</span>
-      <button type="button" onClick={onRetry} disabled={retrying} className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-border-card px-2 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-60">
-        <RotateCw size={11} className={cn(retrying && "animate-spin")} aria-hidden="true" /> Retry
+      <button aria-busy={retrying || undefined} type="button" onClick={onRetry} disabled={retrying} className={cn("inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-border-card px-2 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-60", pendingClass(retrying))}>
+        <RotateCw size={11} aria-hidden="true" /> Retry
       </button>
     </div>}
     {ordered.length > 0

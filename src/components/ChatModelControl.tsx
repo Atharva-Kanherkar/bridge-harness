@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { SkeletonRows } from "@/components/ui/skeleton";
-import { Check, ChevronDown, LoaderCircle, RefreshCw, Search, Star } from "lucide-react";
+import { Skeleton, SkeletonRows, pendingClass } from "@/components/ui/skeleton";
+import { Check, ChevronDown, RefreshCw, Search, Star } from "lucide-react";
 import type { AdapterDescriptor, Harness, ModelOption } from "../types";
 import { harnessLabel } from "../utils";
 import { accountLabel, normalizeAccount, type AccountChoice } from "../providerAccounts";
@@ -590,11 +590,10 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   };
 
   return <div ref={wrapper} className="relative">
-    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={cn("flex min-w-0 items-center gap-1.5 rounded-md transition-colors disabled:cursor-default", maxWidthClassName, compact ? "h-8 px-2 text-xs text-muted-foreground enabled:hover:bg-accent" : "h-[28px] px-2 text-meta text-foreground/90 enabled:hover:bg-accent")} title={showAwaiting ? "Loading models…" : disabled ? disabledReason ?? "Model selection is temporarily unavailable" : compactLabel} aria-expanded={open} aria-haspopup="dialog" aria-busy={showAwaiting || undefined} aria-label={showAwaiting ? `${roleLabel} model: loading` : `${roleLabel} model: ${harnessName} ${modelLabel}`}>
+    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={cn("flex min-w-0 items-center gap-1.5 rounded-md transition-colors disabled:cursor-default", maxWidthClassName, compact ? "h-8 px-2 text-xs text-muted-foreground enabled:hover:bg-accent" : "h-[28px] px-2 text-meta text-foreground/90 enabled:hover:bg-accent")} title={showAwaiting ? "Loading models" : disabled ? disabledReason ?? "Model selection is temporarily unavailable" : compactLabel} aria-expanded={open} aria-haspopup="dialog" aria-busy={showAwaiting || undefined} aria-label={showAwaiting ? `${roleLabel} model: loading` : `${roleLabel} model: ${harnessName} ${modelLabel}`}>
       {showAwaiting
-        ? <LoaderCircle size={13} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
-        : <HarnessMark harness={activeHarness} size={14} />}
-      <span className="whitespace-nowrap overflow-hidden text-ellipsis">{showAwaiting ? "Loading models…" : compactLabel}</span>
+        ? <><Skeleton className="size-3.5 shrink-0 rounded-full" /><Skeleton className="h-2.5 w-20" /></>
+        : <><HarnessMark harness={activeHarness} size={14} /><span className="whitespace-nowrap overflow-hidden text-ellipsis">{compactLabel}</span></>}
       <ChevronDown size={compact ? 14 : 12} className={cn("shrink-0 text-muted-foreground transition-transform", open && "rotate-180", disabled && "opacity-40")} aria-hidden="true" />
     </button>
     {open && <>
@@ -637,18 +636,18 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
               aria-label="Search models"
               className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground/70"
             />
-            {onRefresh && <button type="button" disabled={refreshing} aria-label="Refresh model catalogues" title="Refresh model catalogues" onClick={() => {
+            {onRefresh && <button type="button" disabled={refreshing} aria-busy={refreshing || undefined} aria-label="Refresh model catalogues" title="Refresh model catalogues" onClick={() => {
               setRefreshing(true);
               setRefreshError(null);
               Promise.resolve().then(onRefresh).catch(() => setRefreshError("Could not refresh models. Try again.")).finally(() => setRefreshing(false));
-            }} className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50">
-              <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
+            }} className={cn("grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50", pendingClass(refreshing))}>
+              <RefreshCw size={13} aria-hidden="true" />
             </button>}
           </div>
           {refreshError && <p role="alert" className="order-2 px-3 py-2 text-xs text-destructive">{refreshError}</p>}
           <div ref={listRef} onScroll={onListScroll} role="listbox" aria-label={`${roleLabel} models`} aria-busy={switchInFlight || showAwaiting || undefined} className={cn("relative order-3 min-h-0 flex-1 overflow-y-auto px-2 pb-2", tight && "min-h-24 shrink-0", switchInFlight && "cursor-progress")}>
                 {showAwaiting
-                  ? <SkeletonRows label="Loading models…" rows={4} meta={false} framed={false} className="divide-y-0" rowClassName="min-h-8 px-2 py-1.5" />
+                  ? <SkeletonRows label="Loading models" rows={4} meta={false} framed={false} className="divide-y-0" rowClassName="min-h-8 px-2 py-1.5" />
                   : <>
                     {showFavorites && <div role="group" aria-label="Favorites" data-section={FAVORITES_SECTION}>
                       <div className={GROUP_HEADER}>

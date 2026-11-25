@@ -33,10 +33,10 @@ export function activeStepIndex(steps: readonly Step[], stage: SignInStage): num
 /** The one line narrating what Bridge is waiting on right now. */
 export function signInNarration(stage: SignInStage, label: string, account: boolean, slow: boolean): string {
   switch (stage) {
-    case "preparing": return account ? "Creating this account's folder…" : `Starting ${label}…`;
-    case "starting": return slow ? `${label} is taking a moment to start…` : `Starting ${label}…`;
-    case "browser": return "Waiting for you to finish in the browser…";
-    case "checking": return "Confirming sign-in…";
+    case "preparing": return account ? "Creating this account's folder" : `Starting ${label}`;
+    case "starting": return slow ? `${label} is taking a moment to start` : `Starting ${label}`;
+    case "browser": return "Finish signing in in your browser";
+    case "checking": return "Confirming sign-in";
     case "done": return "Signed in";
   }
 }

@@ -12,7 +12,6 @@ import {
   GitCommitHorizontal,
   GitMerge,
   GitPullRequestDraft,
-  LoaderCircle,
   MessageSquare,
   RotateCcw,
   Sparkles,
@@ -33,6 +32,7 @@ import type {
 } from "@/protocol/generated/protocol";
 import { MergeGraph } from "./MergeGraph";
 import { RollupMeter } from "../GitHubPane";
+import { pendingClass } from "@/components/ui/skeleton";
 
 // The merge box (issue #1028): one card that owns readiness, the strategy,
 // the confirm step and the receipt. Merge expands the card into the confirm
@@ -360,11 +360,9 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
             <button type="button" onClick={onApprove} disabled={busy} className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 text-meta font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50">
               <ThumbsUp size={12} aria-hidden="true" /> Approve
             </button>
-            <button type="button" onClick={onToggleReview} disabled={busy || reviewBusy} aria-expanded={reviewOpen} aria-busy={reviewBusy || reviewing > 0} className={cn("inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 text-meta font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50", reviewOpen && "bg-accent")}>
-              {reviewBusy || reviewing > 0
-                ? <LoaderCircle size={12} aria-hidden="true" className="animate-spin motion-reduce:animate-none" />
-                : <Sparkles size={12} aria-hidden="true" />}
-              {reviewBusy ? "Starting review…" : reviewing > 0 ? "Reviewing" : "Review"}
+            <button type="button" onClick={onToggleReview} disabled={busy || reviewBusy} aria-expanded={reviewOpen} aria-busy={reviewBusy || reviewing > 0} className={cn("inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 text-meta font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50", reviewOpen && "bg-accent", pendingClass(reviewBusy || reviewing > 0))}>
+              <Sparkles size={12} aria-hidden="true" />
+              {reviewing > 0 && !reviewBusy ? "Reviewing" : "Review"}
             </button>
             {overflow.length > 0 && <>
               <button

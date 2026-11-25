@@ -1,12 +1,12 @@
 import { useMemo } from "react";
-import { Check, LoaderCircle, X } from "lucide-react";
+import { Check, X } from "lucide-react";
+import { SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 import { bridgeApi } from "../api";
 import { usePolledSessionForest } from "../forest";
 import type { AgentEvent, ApprovalDecision, BridgeEvent, Session, WorkerRuntimeRecord } from "../types";
 import type { InteractionResolutionResult, QuestionAction } from "../protocol/generated/protocol";
 import { cn } from "@/lib/utils";
-import { harnessLabel } from "../utils";
-import { agentName, agentTopic } from "./agentIdentity";
+import { agentName } from "./agentIdentity";
 import { AgentConversation } from "./AgentConversation";
 import { Markdown } from "./Markdown";
 import { SteerComposer } from "./SteerComposer";
@@ -60,11 +60,9 @@ export function AgentChat({ session, runtime, liveEvents, reasons = [], onOpenSe
     const result = reportedResult(resultStatus, lastResult);
     return result ? <ResultCard result={result} /> : null;
   }, [lastResult, resultStatus]);
-  const topic = agentTopic(session);
-  const harness = session.harness;
   const empty = useMemo(
-    () => active ? <AgentStarting name={agentName(session.id)} topic={topic} harness={harnessLabel(harness)} /> : <AgentSilent />,
-    [active, harness, session.id, topic],
+    () => active ? <AgentStarting name={agentName(session.id)} /> : <AgentSilent />,
+    [active, session.id],
   );
   // A worker's approval card is resolvable right here: it is the one place the
   // person is looking while the worker waits on them.
@@ -97,15 +95,12 @@ export function AgentChat({ session, runtime, liveEvents, reasons = [], onOpenSe
 }
 
 /// A worker that is live but has not said anything yet.
-function AgentStarting({ name, topic, harness }: { name: string; topic?: string; harness?: string }) {
-  return <div role="status" aria-label={`${name} is starting`} className="absolute inset-0 grid place-items-center px-6 text-center animate-page-enter">
-    <div className="flex max-w-[360px] flex-col items-center">
-      <LoaderCircle size={18} className="animate-spin text-muted-foreground" aria-hidden="true" />
-      <p className="mt-3 text-body font-medium text-foreground">{name} is starting</p>
-      {topic && <p className="mt-1 line-clamp-2 text-meta leading-relaxed text-muted-foreground">{topic}</p>}
-      <p className="mt-2 text-caption text-muted-foreground/80">Waiting for its first message{harness ? ` from ${harness}` : ""}</p>
-    </div>
-  </div>;
+/// Drawn as the reply it is waiting for, not as a sentence about waiting.
+function AgentStarting({ name }: { name: string }) {
+  return <SkeletonRegion label={`${name} is starting`} className="absolute inset-0 mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 pt-8">
+    <SkeletonText lines={3} />
+    <SkeletonText lines={2} index={1} className="w-4/5" />
+  </SkeletonRegion>;
 }
 
 /// A worker that ended without a single message.

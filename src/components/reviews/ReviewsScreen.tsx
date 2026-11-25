@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { CircleAlert, CircleCheck, LoaderCircle, RefreshCw, Search, Send, SquareArrowOutUpRight, X } from "lucide-react";
+import { CircleAlert, CircleCheck, RefreshCw, Search, Send, SquareArrowOutUpRight, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SCREEN_CONTENT, ScreenHeading } from "@/components/ui/screen";
 import { bridgeApi } from "../../api";
@@ -15,6 +15,7 @@ import { harnessLabel, REVIEW_STATUS, SEVERITIES, SEVERITY_TEXT, type ReviewStat
 import type {
   ReviewHarnessStats, ReviewJob, ReviewJobDetail, ReviewOverview, ReviewOverviewFinding, ReviewOverviewStats, ReviewSeverity,
 } from "../../protocol/generated/protocol";
+import { Skeleton, SkeletonDot, SkeletonRegion, SkeletonRows, SkeletonText, pendingClass } from "@/components/ui/skeleton";
 
 // Every PR review Bridge ran, across repositories: what is waiting for the
 // person, what is running, the numbers for a period, how each reviewer does,
@@ -88,12 +89,12 @@ function SeverityBar({ counts }: { counts: ReviewOverviewStats["findings"] }) {
 
 function StatusLabel({ job, now }: { job: ReviewJob; now: number }) {
   const status = REVIEW_STATUS[job.status];
-  const Icon = status.tone === "running" ? LoaderCircle : status.tone === "failed" ? CircleAlert : status.tone === "done" ? CircleCheck : null;
+  const Icon = status.tone === "failed" ? CircleAlert : status.tone === "done" ? CircleCheck : null;
   const since = status.tone === "running" && job.status !== "posting" ? Date.parse(job.startedAt ?? job.createdAt) : NaN;
   return <span className={cn("inline-flex items-center gap-1 whitespace-nowrap text-meta",
     status.tone === "failed" && "text-destructive", status.tone === "done" && "text-success", status.tone === "waiting" && "font-medium text-foreground",
     (status.tone === "running" || status.tone === "quiet") && "text-muted-foreground")}>
-    {Icon && <Icon size={12} aria-hidden="true" className={cn(status.tone === "running" && "animate-spin motion-reduce:animate-none")} />}
+    {status.tone === "running" ? <SkeletonDot /> : Icon && <Icon size={12} aria-hidden="true" />}
     {status.label}
     {!Number.isNaN(since) && <span className="font-mono text-caption tabular-nums text-muted-foreground">{formatElapsed(now - since)}</span>}
   </span>;
@@ -264,7 +265,7 @@ function JobDetail({ jobId, fallback, now, onClose, onOpenChat }: { jobId: strin
             {job.handoffAt && <span>{relativeTime(job.handoffAt, new Date(now))}</span>}
           </p>}
           {!job.handoffSessionId && job.handoffNote && <p data-handoff className="mt-1.5 text-meta text-muted-foreground">{job.handoffNote}</p>}
-        </div> : <p className="flex-1 text-meta text-muted-foreground">Loading…</p>}
+        </div> : <SkeletonRegion label="Loading review" className="flex flex-1 flex-col gap-2"><Skeleton className="h-2.5 w-24" /><Skeleton className="h-4 w-3/5" /><Skeleton className="h-3 w-40" /></SkeletonRegion>}
         <button ref={closeRef} type="button" onClick={onClose} aria-label="Close review" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"><X size={14} /></button>
       </header>
       <div className="border-b border-border px-5 py-2">
@@ -275,6 +276,7 @@ function JobDetail({ jobId, fallback, now, onClose, onOpenChat }: { jobId: strin
         {view === "activity" && job && <ReviewActivity jobId={jobId} passes={detail?.passes ?? []} running={tone(job) === "running"} repositoryUrl={repositoryUrl(job)} />}
         {view === "findings" && <>
         {job?.error && <p role="alert" className="mb-3 text-meta text-destructive">{job.error}</p>}
+        {!detail && !error && <SkeletonRegion label="Loading review details" className="space-y-4"><SkeletonText lines={3} /><SkeletonRows rows={2} /></SkeletonRegion>}
         {detail?.summary && <section aria-label="Summary" className="mb-4">
           <h3 className={cn(EYEBROW, "mb-1.5")}>Summary</h3>
           <div className="text-meta text-foreground"><GithubMarkdown text={detail.summary} repositoryUrl={job ? repositoryUrl(job) : undefined} /></div>
@@ -388,13 +390,13 @@ export function ReviewsScreen({ onOpenChat }: { onOpenChat?: (sessionId: string)
             <option value="">All repositories</option>
             {(overview?.repositories ?? []).map(repo => <option key={repo} value={repo}>{repo}</option>)}
           </select>
-          <button type="button" onClick={read} disabled={loading} aria-label="Refresh reviews" aria-busy={loading} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={cn(loading && "animate-spin motion-reduce:animate-none")} /></button>
+          <button type="button" onClick={read} disabled={loading} aria-label="Refresh reviews" aria-busy={loading} className={cn("inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40", pendingClass(loading))}><RefreshCw size={14} /></button>
           </>}
         </>}
       />
       {mode === "settings" && (adapters
         ? <ReviewSettings adapters={adapters} />
-        : <p className="text-meta text-muted-foreground">Loading the reviewers…</p>)}
+        : <SkeletonRegion label="Loading the reviewers"><SkeletonRows rows={4} trailing /></SkeletonRegion>)}
       {mode === "overview" && error && <p role="alert" className="mb-4 text-meta text-destructive">{error}</p>}
       {mode === "overview" && stats && <>
         <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
@@ -417,7 +419,11 @@ export function ReviewsScreen({ onOpenChat }: { onOpenChat?: (sessionId: string)
             : <FindingsTable findings={overview.findings} onOpenJob={setOpenJob} />}
         </section>
       </>}
-      {mode === "overview" && !stats && loading && <p className="text-meta text-muted-foreground">Loading reviews…</p>}
+      {mode === "overview" && !stats && loading && <SkeletonRegion label="Loading reviews" className="space-y-4">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">{Array.from({ length: 6 }, (_, tile) => <Skeleton key={tile} index={tile} className="h-20 rounded-xl" />)}</div>
+        <div className="grid gap-3 lg:grid-cols-2"><SkeletonRows rows={3} /><SkeletonRows rows={3} /></div>
+        <SkeletonRows rows={5} />
+      </SkeletonRegion>}
     </div>
     {openJob && <JobDetail jobId={openJob} fallback={opened} now={now} onClose={() => setOpenJob(undefined)} onOpenChat={onOpenChat ? sessionId => { setOpenJob(undefined); onOpenChat(sessionId); } : undefined} />}
   </div>;

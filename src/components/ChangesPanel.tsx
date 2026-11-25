@@ -1,5 +1,5 @@
 import { PaneState } from "@/components/ui/pane";
-import { SkeletonRows } from "@/components/ui/skeleton";
+import { SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
 import { Suspense, lazy, useCallback, useEffect, useRef, useState, useMemo, type ReactNode } from "react";
 import { Check, ChevronDown, Code2, Quote, FileDiff, FolderGit2, CircleAlert } from "lucide-react";
 import type { RiskTier, SessionChangesResult, SessionChangesUnavailable, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "../types";
@@ -190,7 +190,7 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
         <FileDiffView patch={file.patch} patchTruncated={file.patchTruncated} binary={file.binary} path={file.path} onQuoteHunk={onQuote ? range => onQuote(file.path, range) : undefined} />
       </div>
       {everEdited && editable && <div className={cn(mode !== "edit" && "hidden")}>
-        <Suspense fallback={<div className="px-3.5 py-4 text-meta text-muted-foreground">Opening editor…</div>}>
+        <Suspense fallback={<SkeletonRegion label="Loading editor" className="px-3.5 py-4"><SkeletonText lines={4} /></SkeletonRegion>}>
           <InlineFileEditor workspaceId={workspaceId} path={file.path} onDirtyChange={setDirty} onSaved={onSaved} />
         </Suspense>
       </div>}

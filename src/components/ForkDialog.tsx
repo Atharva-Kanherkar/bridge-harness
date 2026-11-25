@@ -1,6 +1,8 @@
 import { GitFork, GitBranch, ShieldAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { CreateDialogShell } from "./CreateDialogShell";
+import { pendingClass } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 
 export type ForkWorktreeChoice = "shared" | "new";
 
@@ -121,9 +123,9 @@ export function ForkDialog({
 
       <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-border pt-4">
         <button type="button" disabled={busy} onClick={onClose} className="mr-auto min-h-8 rounded-lg px-3 text-ui text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30">Cancel</button>
-        <button ref={submitRef} type="button" disabled={busy} onClick={submit} className="flex items-center justify-center gap-2 min-h-8 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-30">
+        <button aria-busy={busy || undefined} ref={submitRef} type="button" disabled={busy} onClick={submit} className={cn("flex items-center justify-center gap-2 min-h-8 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-30", pendingClass(busy))}>
           <GitFork className="h-4 w-4" aria-hidden="true" />
-          {busy ? "Forking…" : "Create fork"}
+          Create fork
         </button>
       </div>
     </CreateDialogShell>

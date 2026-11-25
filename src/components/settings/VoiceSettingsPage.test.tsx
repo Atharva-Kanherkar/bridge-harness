@@ -104,7 +104,7 @@ it("keeps installation actions hidden until availability is known and retries st
   const pending = deferred<VoiceLocalStatusResult>();
   const status = vi.spyOn(bridgeApi, "voiceLocalStatus").mockReturnValueOnce(pending.promise).mockResolvedValue(base);
   await act(async () => root.render(<VoiceSettingsPage onError={vi.fn()} />));
-  expect(host.textContent).toContain("Checking…");
+  expect(host.querySelector('[role="status"][aria-label="Checking voice"]')).not.toBeNull();
   expect(host.textContent).not.toContain("Download and install");
   await act(async () => pending.reject(new Error("offline")));
   expect(host.querySelector('[role="alert"]')?.textContent).toContain("Could not check");

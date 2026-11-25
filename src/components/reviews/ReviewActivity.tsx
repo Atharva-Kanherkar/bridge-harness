@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Ban, ChevronRight, CircleAlert, FileSearch, LoaderCircle, SquareTerminal } from "lucide-react";
+import { Ban, ChevronRight, CircleAlert, FileSearch, SquareTerminal } from "lucide-react";
+import { SkeletonDot, SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../../api";
 import { GithubMarkdown } from "../github/GithubMarkdown";
@@ -98,7 +99,7 @@ export function ReviewActivity({ jobId, passes, running, repositoryUrl }: {
   }, [entries, passes]);
 
   if (error) return <p role="alert" className="text-meta text-destructive">{error}</p>;
-  if (!entries) return <p className="text-meta text-muted-foreground">Loading activity…</p>;
+  if (!entries) return <SkeletonRegion label="Loading activity" className="space-y-3"><SkeletonText lines={4} /></SkeletonRegion>;
   return <div data-review-activity={jobId} className="grid gap-4" onScroll={event => {
     const target = event.currentTarget;
     following.current = target.scrollHeight - target.scrollTop - target.clientHeight < 48;
@@ -119,7 +120,7 @@ export function ReviewActivity({ jobId, passes, running, repositoryUrl }: {
       </ul>
     </section>)}
     {running && <p role="status" className="flex items-center gap-2 text-meta text-muted-foreground">
-      <LoaderCircle size={12} aria-hidden="true" className="animate-spin motion-reduce:animate-none" /> Working…
+      <SkeletonDot /> Working…
     </p>}
     <div ref={bottom} />
   </div>;
