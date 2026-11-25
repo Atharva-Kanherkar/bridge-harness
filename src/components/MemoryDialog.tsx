@@ -13,6 +13,8 @@ import type {
   MemoryCapabilities,
   MemoryActivityEntry,
   MemoryExtractionSettings,
+  MemoryModelSettings,
+  MemoryModelSource,
   MemoryRecallStats,
   MemoryRecord,
 } from "../types";
@@ -21,6 +23,21 @@ const KINDS = ["preference", "fact", "decision", "constraint"] as const;
 type Kind = typeof KINDS[number];
 const KIND_LABEL: Record<Kind, string> = { preference: "Preference", fact: "Fact", decision: "Decision", constraint: "Constraint" };
 const KIND_PLURAL: Record<Kind, string> = { preference: "Preferences", fact: "Facts", decision: "Decisions", constraint: "Constraints" };
+
+/** Where the memory model came from, as the end of "Using X, …". */
+const MEMORY_MODEL_SOURCE: Record<MemoryModelSource, string> = {
+  user: "your pick",
+  chat_default: "your new-chat model",
+  standard: "Bridge's standard choice",
+};
+
+/** A model's label from the adapter list, else its id, else the harness default. */
+function memoryModelLabel(adapters: AdapterDescriptor[], harness: string, model?: string | null): string {
+  const adapter = adapters.find(item => item.id === harness);
+  const harnessName = adapter?.label ?? harnessLabel(harness);
+  if (!model) return `${harnessName}'s default model`;
+  return adapter?.models.find(item => item.id === model)?.label ?? model;
+}
 
 /** What each extraction mode does after a chat turn, said once beside its choice. */
 const MODES = [
@@ -108,6 +125,7 @@ export function MemoryDialog({
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [loadingMore, setLoadingMore] = useState<MemoryStatus | null>(null);
   const [settings, setSettings] = useState<MemoryExtractionSettings>();
+  const [memoryModel, setMemoryModel] = useState<MemoryModelSettings>();
   const [budget, setBudget] = useState<{ held: number; max: number }>();
   const [capabilities, setCapabilities] = useState<MemoryCapabilities>();
   const [injection, setInjection] = useState<boolean>();
@@ -219,7 +237,8 @@ export function MemoryDialog({
         bridgeApi.memoryRecallStats("account:local"),
         bridgeApi.memoryActivityLog("account:local"),
         bridgeApi.getConsolidationSettings(),
-      ]).then(([activeRead, proposedRead, extraction, injectionSettings, recallStats, activity, consolidation]) => {
+        bridgeApi.getMemoryModel(),
+      ]).then(([activeRead, proposedRead, extraction, injectionSettings, recallStats, activity, consolidation, model]) => {
         if (!active || generation !== readGeneration.current) return;
         setActiveList(activeRead);
         setBudget({ held: consolidation.heldRecords, max: consolidation.maxRecords });
@@ -232,8 +251,9 @@ export function MemoryDialog({
         setInjection(injectionSettings.enabled);
         setStats(recallStats);
         setLog(activity);
-        setProfileHarness(current => current || extraction.harness || "");
-        setProfileModel(current => current || extraction.model || "");
+        setMemoryModel(model);
+        setProfileHarness(current => current || model.pinned?.harness || "");
+        setProfileModel(current => current || model.pinned?.model || "");
       }).catch(error => {
         // The generation gate covers the failure path too: a slow read that
         // errors after a newer one rendered must not toast over it.
@@ -319,11 +339,31 @@ export function MemoryDialog({
     setKind("preference");
   };
   const setMode = (mode: string) => act(async () => {
-    const next = mode === "propose" || mode === "auto_apply"
-      ? await bridgeApi.updateExtractionSettings(mode, profileHarness, profileModel)
-      : await bridgeApi.updateExtractionSettings(mode);
-    setSettings(next);
+    setSettings(await bridgeApi.updateExtractionSettings(mode));
   });
+  // A pin names both halves, so picking a harness only saves once a model is
+  // chosen; "Use my new-chat model" clears the pin at once.
+  const pickMemoryHarness = (harness: string) => {
+    setProfileHarness(harness);
+    setProfileModel("");
+    if (!harness && memoryModel?.pinned) {
+      void act(async () => setMemoryModel(await bridgeApi.setMemoryModel()));
+    }
+  };
+  const pickMemoryModel = (model: string) => {
+    setProfileModel(model);
+    if (!profileHarness || !model) return;
+    void act(async () => {
+      try {
+        setMemoryModel(await bridgeApi.setMemoryModel(profileHarness, model));
+      } catch (error) {
+        // A refused pin changed nothing; show what is still in force.
+        setProfileHarness(memoryModel?.pinned?.harness ?? "");
+        setProfileModel(memoryModel?.pinned?.model ?? "");
+        throw error;
+      }
+    });
+  };
 
   const fieldClass = "rounded-lg border border-border-card bg-card text-foreground outline-none transition-colors placeholder:text-faint focus:border-ring/60 disabled:opacity-45";
   const quietSelect = "h-7 min-w-0 rounded-lg border border-transparent bg-transparent px-1.5 text-caption text-muted-foreground outline-none transition-colors hover:text-foreground focus:border-border-card disabled:opacity-45";
@@ -529,19 +569,31 @@ export function MemoryDialog({
           <p className="mt-2 px-0.5 text-caption text-faint">Invalid, unsafe, duplicate, or over-budget output is refused.</p>
         </section>
         <section>
-          <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border-card bg-card px-4 py-3">
-            <span className="min-w-0 flex-1 basis-48">
-              <span className="block text-ui text-foreground">Extraction model</span>
-              <span className="mt-0.5 block text-caption leading-relaxed text-muted-foreground">Runs on each chat&apos;s own model unless you pin a helper.</span>
-            </span>
-            <select className={`${fieldClass} h-7 w-40 px-2 text-caption`} value={profileHarness} disabled={busy} onChange={event => { setProfileHarness(event.target.value); setProfileModel(""); }} aria-label="Extraction harness">
-              <option value="">Chat&apos;s own model</option>
-              {adapters.map(adapter => <option key={adapter.id} value={adapter.id}>{adapter.label}</option>)}
-            </select>
-            <select className={`${fieldClass} h-7 w-44 px-2 text-caption`} value={profileModel} disabled={busy || !profileHarness} onChange={event => setProfileModel(event.target.value)} aria-label="Extraction model">
-              <option value="">Model…</option>
-              {models.map(model => <option key={model.id} value={model.id}>{model.label ?? model.id}</option>)}
-            </select>
+          <div className="rounded-xl border border-border-card bg-card px-4 py-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="min-w-0 flex-1 basis-48">
+                <span className="block text-ui text-foreground">Memory model</span>
+                <span className="mt-0.5 block text-caption leading-relaxed text-muted-foreground">Runs extraction after chats, nightly cleanup and automatic approval.</span>
+              </span>
+              <select className={`${fieldClass} h-7 w-44 px-2 text-caption`} value={profileHarness} disabled={busy} onChange={event => pickMemoryHarness(event.target.value)} aria-label="Memory harness">
+                <option value="">Use my new-chat model</option>
+                {adapters.map(adapter => <option key={adapter.id} value={adapter.id}>{adapter.label}</option>)}
+              </select>
+              <select className={`${fieldClass} h-7 w-44 px-2 text-caption`} value={profileModel} disabled={busy || !profileHarness} onChange={event => pickMemoryModel(event.target.value)} aria-label="Memory model">
+                <option value="">Model…</option>
+                {models.map(model => <option key={model.id} value={model.id}>{model.label ?? model.id}</option>)}
+              </select>
+            </div>
+            {memoryModel && <div className="mt-2 space-y-1 text-caption leading-relaxed">
+              {memoryModel.resolved
+                ? <p className="text-muted-foreground" data-testid="memory-model-source">
+                  Using {memoryModelLabel(adapters, memoryModel.resolved.harness, memoryModel.resolved.model)}, {MEMORY_MODEL_SOURCE[memoryModel.resolved.source]}.
+                </p>
+                : <p className="text-warning">No memory job can run: none of these can run a tool-free turn. Pick a Claude model.</p>}
+              {memoryModel.skipped.map(skip => <p key={`${skip.source}:${skip.harness}`} className="text-faint">
+                Skipped {memoryModelLabel(adapters, skip.harness, skip.model)}, {MEMORY_MODEL_SOURCE[skip.source]}: {skip.reason}.
+              </p>)}
+            </div>}
           </div>
           {settings?.lastRun && (
             <p className="mt-2 px-0.5 text-caption tabular-nums text-faint">
