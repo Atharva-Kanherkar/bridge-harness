@@ -19,7 +19,7 @@ use crate::workflow_trigger::stamp;
 use crate::workflows;
 use crate::BridgeError;
 
-/// Migration 96.
+/// Migration 97.
 pub fn install_store(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS workflow_run_steps (

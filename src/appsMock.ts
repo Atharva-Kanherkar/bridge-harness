@@ -1,4 +1,4 @@
-// Mock-mode apps: the same twelve built-ins core lists, with their on/off
+// Mock-mode apps: the same thirteen built-ins core lists, with their on/off
 // state and pins kept in localStorage so `bun run dev` behaves like a daemon
 // across reloads. The refusals use core's exact words.
 
@@ -15,6 +15,7 @@ const SPECS: Spec[] = [
   { id: "notes", name: "Notes", description: "Pages, tasks and quick captures", slots: ["screen"], tools: [["notes_search", false], ["notes_read", false], ["notes_create", true], ["notes_edit", true], ["notes_append", true], ["notes_set", true], ["notes_draw", true]] },
   { id: "trails", name: "Trails", description: "One page per piece of work: its chats, notes, PRs and drafts", slots: ["screen"] },
   { id: "pulls", name: "Pulls", description: "Pull requests across your repositories", slots: ["screen", "dock"] },
+  { id: "reviews", name: "Reviews", description: "Every PR review, what needs you, and how each reviewer does", slots: ["screen"] },
   { id: "workflows", name: "Workflows", description: "Runs that repeat on a schedule", slots: ["screen"] },
   { id: "memory", name: "Memory", description: "What Bridge remembers about you", slots: ["screen"], tools: [["memory_search", false], ["memory_propose", false]] },
   { id: "mission-control", name: "Mission Control", description: "Every agent on one board", slots: ["screen"] },

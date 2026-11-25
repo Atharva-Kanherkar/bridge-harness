@@ -221,9 +221,18 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// `WorkflowEventKind` values. A 1.55 daemon refuses older clients, which
 /// cannot read a workflow that uses one; a 1.55 client cannot pair with a 1.54
 /// daemon, which would refuse those triggers.
+///
+/// **1.56 adds the Reviews dashboard**: `reviews/review_overview`, the
+/// optional `repoOwner`, `repoName`, `prTitle` and `prAuthor` on `ReviewJob`,
+/// and `summary` on `ReviewJobDetail`. A 1.55 client still pairs: it never
+/// calls the new method, and the new fields are optional.
+///
+/// **1.57 adds multi-step workflows**: `servers` and `files` on a
+/// `WorkflowStep`, and `steps` on a `WorkflowRun`. Older clients are refused:
+/// they would drop a step's own servers and files on save.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 56,
+    minor: 57,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -244,7 +253,7 @@ impl ProtocolVersion {
         const TRAIL_ISSUES_MINOR: u32 = 35;
         const WORKFLOW_EVENTS_MINOR: u32 = 54;
         const MORE_TRIGGERS_MINOR: u32 = 55;
-        const MULTI_STEP_MINOR: u32 = 56;
+        const MULTI_STEP_MINOR: u32 = 57;
         self.major == client.major
             && client.minor <= self.minor
             && !(self.major == 1
@@ -637,12 +646,21 @@ mod tests {
 
     #[test]
     fn multi_step_workflows_pair_only_with_a_matching_daemon_and_client() {
-        let before = ProtocolVersion { major: 1, minor: 55 };
-        let steps = ProtocolVersion { major: 1, minor: 56 };
+        let before = ProtocolVersion { major: 1, minor: 56 };
+        let steps = ProtocolVersion { major: 1, minor: 57 };
         assert_eq!(PROTOCOL_VERSION, steps);
-        assert!(!steps.accepts(before), "a 1.55 client would save every step's servers and files away");
-        assert!(!before.accepts(steps), "a 1.56 client's steps would be refused by a 1.55 daemon");
+        assert!(!steps.accepts(before), "a 1.56 client would save every step's servers and files away");
+        assert!(!steps.accepts(ProtocolVersion { major: 1, minor: 55 }));
+        assert!(!before.accepts(steps), "a 1.57 client's steps would be refused by a 1.56 daemon");
         assert!(steps.accepts(steps));
+    }
+
+    #[test]
+    fn a_1_55_client_pairs_with_a_reviews_dashboard_daemon() {
+        let before = ProtocolVersion { major: 1, minor: 55 };
+        let dashboard = ProtocolVersion { major: 1, minor: 56 };
+        assert!(dashboard.accepts(before), "a 1.55 client never asks for the overview");
+        assert!(!before.accepts(dashboard), "a 1.56 client needs reviews/review_overview");
     }
 
     #[test]

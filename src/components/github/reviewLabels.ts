@@ -1,4 +1,4 @@
-import type { ReviewSeverity } from "../../protocol/generated/protocol";
+import type { ReviewJobStatus, ReviewSeverity } from "../../protocol/generated/protocol";
 
 // Words and colours the review pane, its draft and its toasts share.
 
@@ -12,3 +12,19 @@ export const SEVERITY_TEXT: Record<ReviewSeverity, string> = {
   minor: "text-info",
   nit: "text-muted-foreground",
 };
+
+export type ReviewStatusTone = "running" | "waiting" | "done" | "failed" | "quiet";
+
+export const REVIEW_STATUS: Record<ReviewJobStatus, { label: string; tone: ReviewStatusTone }> = {
+  queued: { label: "Queued", tone: "running" },
+  preparing: { label: "Preparing the checkout", tone: "running" },
+  reviewing: { label: "Reviewing", tone: "running" },
+  drafted: { label: "Draft ready", tone: "waiting" },
+  posting: { label: "Posting", tone: "running" },
+  posted: { label: "Posted", tone: "done" },
+  failed: { label: "Failed", tone: "failed" },
+  cancelled: { label: "Cancelled", tone: "quiet" },
+  interrupted: { label: "Interrupted", tone: "failed" },
+};
+
+export const SEVERITIES: ReadonlyArray<ReviewSeverity> = ["critical", "major", "minor", "nit"];

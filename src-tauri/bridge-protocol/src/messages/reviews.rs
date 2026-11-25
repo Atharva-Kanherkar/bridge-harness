@@ -187,6 +187,16 @@ pub struct ReviewJob {
     pub started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
+    /// The repository, for views that list reviews across repositories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_name: Option<String>,
+    /// The PR's title and author, once the job has prepared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_author: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -465,6 +475,96 @@ pub struct ListReviewsParams {
     pub number: Option<u64>,
 }
 
+/// Everything the Reviews dashboard shows, for a period and optionally one
+/// repository.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReviewOverviewParams {
+    /// The last this many days, 1 to 365. Absent: all time.
+    #[serde(default)]
+    pub days: Option<u32>,
+    /// `owner/name`, any case. Every workspace of that repository counts.
+    #[serde(default)]
+    pub repository: Option<String>,
+}
+
+/// The Reviews dashboard: jobs, stats, one row per reviewer, recent findings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewOverview {
+    /// Jobs created in the period, newest first, capped, plus every live job.
+    pub jobs: Vec<ReviewJob>,
+    pub stats: ReviewOverviewStats,
+    /// One row per harness that ran a pass in the period.
+    pub harnesses: Vec<ReviewHarnessStats>,
+    /// Findings of the period's jobs, newest first, capped.
+    pub findings: Vec<ReviewOverviewFinding>,
+    /// Every `owner/name` with a review, any period, for the filter.
+    pub repositories: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewOverviewStats {
+    /// Jobs created in the period.
+    pub reviews: u32,
+    /// Queued, preparing, reviewing or posting.
+    pub running: u32,
+    /// Drafted: waiting for a person.
+    pub waiting: u32,
+    pub posted: u32,
+    /// Failed or interrupted.
+    pub failed: u32,
+    pub cancelled: u32,
+    pub findings: ReviewFindingCounts,
+    pub kept: u32,
+    pub edited: u32,
+    pub dropped: u32,
+    pub pending: u32,
+    /// Findings a later review found fixed.
+    pub fixed_later: u32,
+    /// Findings two reviewers agreed on.
+    pub agreed: u32,
+    /// Median time from a job's start to its last pass finishing, over jobs
+    /// that drafted or posted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub median_seconds: Option<u32>,
+    pub spend_microusd: u64,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewHarnessStats {
+    pub harness: String,
+    pub passes: u32,
+    pub failed: u32,
+    /// Findings this harness raised (a merged finding counts for both).
+    pub findings: u32,
+    /// Kept or edited.
+    pub kept: u32,
+    pub dropped: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub median_seconds: Option<u32>,
+    pub spend_microusd: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewOverviewFinding {
+    pub finding: ReviewFinding,
+    pub workspace_id: String,
+    pub repo_owner: String,
+    pub repo_name: String,
+    pub number: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_title: Option<String>,
+    /// The harnesses that found it.
+    pub harnesses: Vec<String>,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetReviewParams {
@@ -539,6 +639,10 @@ pub struct ReviewJobDetail {
     pub job: ReviewJob,
     pub passes: Vec<ReviewPass>,
     pub findings: Vec<ReviewFinding>,
+    /// What the reviewers said overall, reviewers named. Absent until the
+    /// review drafted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 #[cfg(test)]
@@ -565,6 +669,10 @@ mod tests {
             created_at: "2026-11-23T10:00:00.000Z".into(),
             started_at: None,
             finished_at: None,
+            repo_owner: None,
+            repo_name: None,
+            pr_title: None,
+            pr_author: None,
         };
         let value = serde_json::to_value(&job).unwrap();
         assert_eq!(value["workspaceId"], "w1");

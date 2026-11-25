@@ -9,6 +9,7 @@
 pub mod auto;
 pub mod contract;
 pub mod merge;
+pub mod overview;
 pub mod post;
 pub mod prepare;
 pub mod runner;
@@ -211,6 +212,7 @@ pub fn get(core: &Arc<BridgeCore>, job_id: &str) -> Result<wire::ReviewJobDetail
         job: store::to_wire(&db, &job)?,
         passes: store::passes(&db, job_id)?,
         findings: store::findings(&db, job_id)?,
+        summary: job.named_summary.clone().or_else(|| job.summary.clone()),
     })
 }
 

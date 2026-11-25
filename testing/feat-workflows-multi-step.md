@@ -8,7 +8,7 @@ parallel steps.
 
 | ID | Expectation |
 |----|-------------|
-| M1 | `WorkflowStep` gains `servers` (the workflow grants this step uses) and `files` (whether it works in the run's worktree). Both are optional and omitted when unset, so a Phase 1 definition round-trips byte for byte and keeps its digest. `WorkflowRun` gains `steps`, one row per started step: index, agent, model, status, session, summary, failure code, times, tokens and cost. Protocol 1.56 refuses 1.55 clients, and 1.56 pairs with itself. |
+| M1 | `WorkflowStep` gains `servers` (the workflow grants this step uses) and `files` (whether it works in the run's worktree). Both are optional and omitted when unset, so a Phase 1 definition round-trips byte for byte and keeps its digest. `WorkflowRun` gains `steps`, one row per started step: index, agent, model, status, session, summary, failure code, times, tokens and cost. Protocol 1.57 refuses older clients, and 1.57 pairs with itself. |
 
 ## Validation and approval
 
@@ -24,7 +24,7 @@ parallel steps.
 
 | ID | Expectation |
 |----|-------------|
-| M7 | A run starts its steps in order, one chat session per step. Each started step has a `workflow_run_steps` row (migration 96), and the run's `sessionId` is the current step's. Only one step session is active at a time, so a run has at most one approval card waiting. |
+| M7 | A run starts its steps in order, one chat session per step. Each started step has a `workflow_run_steps` row (migration 97), and the run's `sessionId` is the current step's. Only one step session is active at a time, so a run has at most one approval card waiting. |
 | M8 | A step that does not end `done` stops the run, and later steps never start (no session, no step row). The run settles with that step's status and failure code, and its summary begins "Step N of M: ". The cases are `not_done`, a failed turn, no result block, the budget, approval expiry, the provider ending and an unavailable connector. With one step, the summary has no prefix. On success the summary is the last step's. |
 | M9 | Each step session runs under a single-step view of the definition: its own grants, the always-allow entries for those servers, its own files and the budget that is left. A tool granted only to step 1 is outside step 2's policy and is never always-allowed there. |
 | M10 | From step 2 on, the first turn carries the trigger and events as today, plus the earlier steps' summaries. They are inside a fenced JSON block, labelled as data from another agent and not instructions. A summary containing a fence cannot close that block. |
@@ -32,7 +32,7 @@ parallel steps.
 | M12 | A Codex worktree step: the adapter first reads the config Codex reports for the step's folder. It then launches with `enabled=false` for every MCP server, and with `features.apps`, `features.plugins`, `features.remote_plugin` and `features.skill_mcp_dependency_install` false. Before the thread starts, that process's own config must show each server and feature off. After the thread starts, no MCP server may report a tool. A key Bridge cannot write safely, or any failed check, refuses the launch with the reason, and the run fails. (Revised after the live run: per-plugin switches missed account-level remote plugins, which connect seconds after the thread starts, so the plugin features are switched off instead.) |
 | M13 | One worktree per run, created at the first worktree step and reused by later worktree steps. Steps without files run in the workflow home, or in a scratch folder for a project workflow. |
 | M14 | Recovery and cancellation. A crash between or during steps settles the run `interrupted` at boot, or `lease_expired` on lease expiry. Either way the open step row is closed, and no later step starts. Cancel stops the current step and starts no other. The effect key stays per run: a write repeated with the same arguments in a later step is declined as already run. The run waits for quota when any step's provider is above the reserve. |
-| M15 | Phase 1 compatibility: a single-step workflow saves, approves, runs as one step row and reads back unchanged. Runs from before migration 96 still map their session to the run. |
+| M15 | Phase 1 compatibility: a single-step workflow saves, approves, runs as one step row and reads back unchanged. Runs from before migration 97 still map their session to the run. |
 
 ## UI
 

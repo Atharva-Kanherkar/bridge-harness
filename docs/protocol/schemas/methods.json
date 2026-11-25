@@ -2536,6 +2536,13 @@
       "resultSchema": "review-job-list.json"
     },
     {
+      "command": "review_overview",
+      "domain": "reviews",
+      "method": "reviews/review_overview",
+      "paramsSchema": "review-overview-params.json",
+      "resultSchema": "review-overview.json"
+    },
+    {
       "command": "get_review",
       "domain": "reviews",
       "method": "reviews/get_review",
@@ -2587,7 +2594,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 56
+    "minor": 57
   },
   "reserved": {
     "cancel": "$/cancel",
