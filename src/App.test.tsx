@@ -526,7 +526,7 @@ describe("the dock in the session view", () => {
     expect(listbox.textContent).toContain("matching “to”");
     expect(textarea.getAttribute("aria-controls")).toBe("file-mention-listbox");
     // The mock chat edited src/auth/tokenStore.ts in its stored history.
-    const option = [...listbox.querySelectorAll<HTMLElement>('[role="option"]')].find(row => row.title === "src/auth/tokenStore.ts")!;
+    const option = [...listbox.querySelectorAll<HTMLElement>('[role="option"]')].find(row => row.dataset.tip === "src/auth/tokenStore.ts")!;
     expect(option.querySelector("[data-mention-name]")!.textContent).toBe("tokenStore.ts");
     expect([...option.querySelectorAll("[data-mention-name] mark")].map(mark => mark.textContent)).toEqual(["to"]);
     expect(option.querySelector("[data-mention-folder]")!.textContent).toBe("src/auth");
