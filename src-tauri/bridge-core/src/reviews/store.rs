@@ -1497,6 +1497,16 @@ pub fn to_wire(db: &Connection, job: &JobRow) -> Result<wire::ReviewJob, BridgeE
     })
 }
 
+/// The model and effort a pass runs with, known when its session starts, so a
+/// running or failed pass says what it ran on.
+pub fn set_pass_model(db: &Connection, pass_id: &str, model: Option<&str>, effort: Option<&str>) -> Result<(), BridgeError> {
+    db.execute(
+        "UPDATE review_passes SET model=COALESCE(?2, model), effort=COALESCE(?3, effort) WHERE id=?1",
+        params![pass_id, model, effort],
+    )?;
+    Ok(())
+}
+
 /// The PR's title, author and head branch, as `prepare` read them.
 pub fn set_pr_meta(db: &Connection, job_id: &str, title: &str, author: Option<&str>, branch: Option<&str>) -> Result<(), BridgeError> {
     db.execute(

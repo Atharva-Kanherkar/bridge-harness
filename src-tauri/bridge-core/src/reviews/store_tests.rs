@@ -953,3 +953,15 @@ fn activity_is_capped_and_cut_per_pass() {
     let json = serde_json::to_value(&entries[0]).unwrap();
     assert_eq!((json["kind"].as_str(), json["passId"].as_str()), (Some("message"), Some(first.as_str())));
 }
+
+#[test]
+fn a_pass_records_its_model_when_it_starts() {
+    let (_scratch, db) = open();
+    let (job, _) = insert(&db, &new_job(6, "sha", &["claude"]), at(0)).unwrap();
+    let pass = insert_pass(&db, &job.id, 0, 1, "claude", at(1)).unwrap();
+    set_pass_model(&db, &pass, Some("claude-sonnet-4-6"), Some("medium")).unwrap();
+    let stored = &passes(&db, &job.id).unwrap()[0];
+    assert_eq!((stored.model.as_deref(), stored.effort.as_deref()), (Some("claude-sonnet-4-6"), Some("medium")));
+    set_pass_model(&db, &pass, None, None).unwrap();
+    assert_eq!(passes(&db, &job.id).unwrap()[0].model.as_deref(), Some("claude-sonnet-4-6"), "nothing known keeps what was");
+}

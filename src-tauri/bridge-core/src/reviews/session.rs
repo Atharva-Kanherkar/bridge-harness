@@ -89,6 +89,26 @@ impl std::fmt::Debug for dyn ActivitySink + '_ {
 /// Longest tool detail recorded, in characters.
 const TOOL_DETAIL_CHARS: usize = 300;
 
+/// Paths inside the checkout relative to it; any other long absolute path as
+/// its last two parts.
+fn display_paths(detail: &str, roots: &[String]) -> String {
+    let mut text = detail.to_owned();
+    for root in roots {
+        text = text.replace(root.as_str(), "");
+    }
+    text.split(' ')
+        .map(|word| {
+            let parts: Vec<&str> = word.split('/').filter(|part| !part.is_empty()).collect();
+            if word.starts_with('/') && parts.len() > 3 {
+                format!("…/{}", parts[parts.len() - 2..].join("/"))
+            } else {
+                word.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// A tool's or command's short detail: the path, pattern, query or command
 /// it was given, when the event carries one.
 fn tool_detail(event: &NormalizedEvent) -> Option<String> {
@@ -337,6 +357,7 @@ fn request_id(event: &NormalizedEvent) -> Value {
 #[allow(clippy::too_many_arguments)]
 fn turn(
     session: &mut dyn Session,
+    root: &Path,
     text: &str,
     request_title: &str,
     usage: &mut Usage,
@@ -354,6 +375,24 @@ fn turn(
     session.send_turn(text).map_err(SessionError::Provider)?;
     // Assistant messages already recorded, by item: each is recorded once.
     let mut said: std::collections::HashSet<Option<String>> = std::collections::HashSet::new();
+    // Tools already recorded, by item. Claude reports a tool first while it
+    // is still writing the arguments, then again with them when it runs: the
+    // second is the one worth showing.
+    let mut shown: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // The checkout as the session names it: macOS reaches `/var/…` through
+    // `/private/var/…`, and a harness may report either.
+    let mut roots = vec![format!("{}/", root.to_string_lossy().trim_end_matches('/'))];
+    if let Ok(canonical) = std::fs::canonicalize(root) {
+        roots.push(format!("{}/", canonical.to_string_lossy().trim_end_matches('/')));
+    }
+    if let Some(stripped) = roots[0].strip_prefix("/private") {
+        roots.push(stripped.to_owned());
+    } else if roots[0].starts_with("/var/") || roots[0].starts_with("/tmp/") {
+        roots.push(format!("/private{}", roots[0]));
+    }
+    // Longest first, so `/private/var/x/` goes before `/var/x/` matches inside it.
+    roots.sort_by_key(|root| std::cmp::Reverse(root.len()));
+    roots.dedup();
     let mut parts: Vec<(Option<String>, String)> = Vec::new();
     let mut started = false;
     let mut result_text: Option<String> = None;
@@ -407,14 +446,21 @@ fn turn(
                         Some(id) => usage.seen.insert(id.clone()),
                         None => true,
                     };
+                    let preparing = event.data.get("phase").and_then(Value::as_str) == Some("preparing");
+                    let first_shown = match &event.item_id {
+                        Some(id) => !preparing && shown.insert(id.clone()),
+                        None => true,
+                    };
+                    let name = event.title.clone().or_else(|| event.data.get("command").and_then(Value::as_str).map(str::to_owned));
+                    if first_shown {
+                        let kind = if event.kind == "command.started" { ReviewActivityKind::Command } else { ReviewActivityKind::Tool };
+                        let detail = tool_detail(&event).map(|detail| display_paths(&detail, &roots));
+                        let title = name.clone().unwrap_or_else(|| if kind == ReviewActivityKind::Command { "Command".into() } else { "Tool".into() });
+                        // A command's name is its command line: no detail twice.
+                        record(kind, Some(&title), detail.as_deref().filter(|detail| *detail != title));
+                    }
                     if fresh {
                         usage.tool_calls += 1;
-                        let name = event.title.clone().or_else(|| event.data.get("command").and_then(Value::as_str).map(str::to_owned));
-                        let kind = if event.kind == "command.started" { ReviewActivityKind::Command } else { ReviewActivityKind::Tool };
-                        let detail = tool_detail(&event);
-                        let shown = name.clone().unwrap_or_else(|| if kind == ReviewActivityKind::Command { "Command".into() } else { "Tool".into() });
-                        // A command's name is its command line: no detail twice.
-                        record(kind, Some(&shown), detail.as_deref().filter(|detail| *detail != shown));
                         usage.tools.push(name.unwrap_or_else(|| event.kind.clone()));
                         if usage.tool_calls > limits.max_tool_calls {
                             return Err(SessionError::ToolLimit(limits.max_tool_calls));
@@ -506,11 +552,12 @@ pub fn run_answered(
     };
     let deadline = Instant::now() + limits.max_wall;
     let activity = start.activity;
-    let result = turn(session.as_mut(), prompt, "Bridge asked for a review", &mut usage, deadline, limits, cancel, activity).and_then(|text| match contract::parse(&text) {
+    let root = start.cwd;
+    let result = turn(session.as_mut(), root, prompt, "Bridge asked for a review", &mut usage, deadline, limits, cancel, activity).and_then(|text| match contract::parse(&text) {
         Ok(review) => Ok((review, text)),
         Err(error) => {
             let repaired =
-                turn(session.as_mut(), &repair_prompt(&error), "Bridge asked for the findings again", &mut usage, deadline, limits, cancel, activity)?;
+                turn(session.as_mut(), root, &repair_prompt(&error), "Bridge asked for the findings again", &mut usage, deadline, limits, cancel, activity)?;
             contract::parse(&repaired).map(|review| (review, repaired)).map_err(SessionError::Contract)
         }
     });
@@ -764,6 +811,9 @@ pub fn review_pass_with(
         (if custom.is_empty() { REVIEW_INSTRUCTIONS.to_owned() } else { custom }, crate::attribution_settings::hide_enabled(&db))
     };
     let (model, effort) = model_and_effort(core, request.harness);
+    if let Err(error) = super::store::set_pass_model(&super::lock_db(core), request.pass_id, model.as_deref(), Some(&effort)) {
+        eprintln!("[reviews] could not record pass {}'s model: {error}", request.pass_id);
+    }
     let instructions = instructions(&conventions_in(&placed), &user_instructions, hide);
     let sink = PassActivity { core, job_id: &request.job.id, pass_id: request.pass_id };
     let start = SessionStart { cwd: checkout, model: model.as_deref(), effort: Some(&effort), instructions: &instructions, activity: Some(&sink) };

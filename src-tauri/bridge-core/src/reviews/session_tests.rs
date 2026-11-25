@@ -1119,3 +1119,29 @@ fn a_provider_error_is_recorded() {
     assert!(result.is_err());
     assert_eq!(sink.0.lock().unwrap().last().unwrap(), &(ReviewActivityKind::Error, None, Some("Overloaded".into())));
 }
+
+#[test]
+fn a_claude_tool_is_shown_once_it_runs_with_its_input_relative_to_the_checkout() {
+    let preparing = NormalizedEvent { item_id: Some("t1".into()), data: json!({"phase": "preparing"}), ..tool("Read") };
+    let running = NormalizedEvent { item_id: Some("t1".into()), data: json!({"phase": "running", "input": {"file_path": "/tmp/checkout/src/cache.rs"}}), ..tool("Read") };
+    let script = script(vec![vec![
+        Step::Events(vec![event("turn.started"), preparing, running]),
+        Step::Events(vec![said("m1", &answer(json!([]))), event("turn.completed")]),
+    ]]);
+    let sink = Recorded::default();
+    let start = SessionStart { activity: Some(&sink), ..start(Path::new("/tmp/checkout")) };
+    let (result, usage) = run(&ScriptedTransport(script), "claude", &start, "go", &CancelToken::new(), Limits::default());
+    assert!(result.is_ok());
+    assert_eq!(usage.tool_calls, 1, "one invocation");
+    let tools: Vec<_> = sink.0.lock().unwrap().iter().filter(|(kind, _, _)| *kind == ReviewActivityKind::Tool).cloned().collect();
+    assert_eq!(tools, [(ReviewActivityKind::Tool, Some("Read".into()), Some("src/cache.rs".into()))]);
+}
+
+#[test]
+fn tool_paths_are_shown_short() {
+    let roots = vec!["/private/var/folders/x/checkout/".to_owned(), "/var/folders/x/checkout/".to_owned()];
+    assert_eq!(display_paths("/private/var/folders/x/checkout/src/a.rs", &roots), "src/a.rs", "the /private form");
+    assert_eq!(display_paths("/var/folders/x/checkout/src/a.rs", &roots), "src/a.rs");
+    assert_eq!(display_paths("/var/folders/x/T/sandbox/output/conventions/CLAUDE.md", &roots), "…/conventions/CLAUDE.md");
+    assert_eq!(display_paths("unwrap · src/lib.rs", &roots), "unwrap · src/lib.rs", "patterns and relative paths are kept");
+}
