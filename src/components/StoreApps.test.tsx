@@ -44,7 +44,7 @@ describe("the Store's Apps tab", () => {
     const catalog = vi.spyOn(bridgeApi, "marketplaceCatalog");
     await render(<MarketplaceScreen />);
     const names = [...host.querySelectorAll('[aria-label="Installed apps"] h3')].map(node => node.textContent);
-    expect(names).toEqual(["Notes", "Trails", "Pulls", "Workflows", "Memory", "Mission Control", "Terminals", "Usage", "Projects", "Agents", "Outgoing"]);
+    expect(names).toEqual(["Notes", "Trails", "Pulls", "Reviews", "Workflows", "Memory", "Mission Control", "Terminals", "Usage", "Projects", "Agents", "Outgoing"]);
     expect(host.querySelector('[aria-label="Store sections"] [aria-pressed="true"]')?.textContent).toBe("Apps");
     expect(catalog).not.toHaveBeenCalled();
     expect(button("Pin Outgoing"), "a card-only app has nothing to pin").toBeNull();

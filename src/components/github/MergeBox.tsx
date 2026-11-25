@@ -6,11 +6,13 @@ import {
   CircleCheck,
   CircleDashed,
   CircleX,
+  Ellipsis,
   Eye,
   FileDiff,
   GitCommitHorizontal,
   GitMerge,
   GitPullRequestDraft,
+  LoaderCircle,
   MessageSquare,
   RotateCcw,
   Sparkles,
@@ -20,6 +22,7 @@ import {
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { Kbd } from "@/components/ui/kbd";
+import { MenuItem, MenuPanel, useMenuPanel } from "@/components/ui/menu-panel";
 import { modKey } from "@/lib/platform";
 import { usePrefersReducedMotion } from "@/motion";
 import type {
@@ -200,6 +203,10 @@ export type MergeBoxProps = {
   dispatch: (event: MergeEvent) => void;
   busy: boolean;
   reviewBusy: boolean;
+  /** Whether the review picker is open. */
+  reviewOpen?: boolean;
+  /** Reviews of this PR still running on Bridge (queued, preparing, reviewing, posting). */
+  reviewing?: number;
   onToggleReview: () => void;
   onApprove: () => void;
   overflow: OverflowItem[];
@@ -208,10 +215,10 @@ export type MergeBoxProps = {
   onRestore: () => void;
 };
 
-export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch, prUrl, config, state, dispatch, busy, reviewBusy, onToggleReview, onApprove, overflow, onConfirm, onRestore }: MergeBoxProps) {
+export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch, prUrl, config, state, dispatch, busy, reviewBusy, reviewOpen = false, reviewing = 0, onToggleReview, onApprove, overflow, onConfirm, onRestore }: MergeBoxProps) {
   const reduced = usePrefersReducedMotion();
   const [menuOpen, setMenuOpen] = useState(false);
-  const [overflowOpen, setOverflowOpen] = useState(false);
+  const more = useMenuPanel<HTMLButtonElement>({ width: 208, height: 12 + overflow.length * 28 });
   const [shaking, setShaking] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
 
@@ -231,8 +238,8 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
   // Menus close on any press outside or on Escape (the confirm's own Escape
   // is handled at the detail level).
   useEffect(() => {
-    if (!menuOpen && !overflowOpen) return;
-    const close = () => { setMenuOpen(false); setOverflowOpen(false); };
+    if (!menuOpen) return;
+    const close = () => { setMenuOpen(false); };
     const onPointerDown = (event: PointerEvent) => {
       if (boxRef.current?.contains(event.target as Node)) return;
       close();
@@ -244,7 +251,7 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [menuOpen, overflowOpen]);
+  }, [menuOpen]);
 
   const rollup = summary.checks;
   const names = [...new Set(checks.map(check => check.name))];
@@ -323,7 +330,8 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
 
         {/* Actions */}
         <div className={cn("u-collapse", !open && "shut")} aria-hidden={!open} {...inertWhen(!open)}>
-          <div className="flex items-center gap-1.5 px-3.5 py-3">
+          {/* Wraps in a narrow dock rather than pushing the pane sideways. */}
+          <div className="flex flex-wrap items-center gap-1.5 px-3.5 py-3">
             <span className="inline-flex shrink-0 overflow-hidden rounded-lg bg-primary text-primary-foreground">
               <button
                 type="button"
@@ -347,57 +355,44 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
                 <ChevronDown size={12} aria-hidden="true" />
               </button>
             </span>
-            <span className="flex-1" />
+            {/* Approve, Review and More wrap as one group: never one alone. */}
+            <span className="ml-auto flex shrink-0 items-center gap-1.5">
             <button type="button" onClick={onApprove} disabled={busy} className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 text-meta font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50">
               <ThumbsUp size={12} aria-hidden="true" /> Approve
             </button>
-            <button type="button" onClick={onToggleReview} disabled={busy || reviewBusy} className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 text-meta font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50">
-              <Sparkles size={12} aria-hidden="true" /> {reviewBusy ? "Starting review…" : "Review"}
+            <button type="button" onClick={onToggleReview} disabled={busy || reviewBusy} aria-expanded={reviewOpen} aria-busy={reviewBusy || reviewing > 0} className={cn("inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 text-meta font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50", reviewOpen && "bg-accent")}>
+              {reviewBusy || reviewing > 0
+                ? <LoaderCircle size={12} aria-hidden="true" className="animate-spin motion-reduce:animate-none" />
+                : <Sparkles size={12} aria-hidden="true" />}
+              {reviewBusy ? "Starting review…" : reviewing > 0 ? "Reviewing" : "Review"}
             </button>
-            {overflow.length > 0 && (
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setOverflowOpen(value => !value)}
-                  disabled={busy}
-                  aria-haspopup="menu"
-                  aria-expanded={overflowOpen}
-                  aria-label="More pull request actions"
-                  className="inline-grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-                >
-                  <ChevronDown size={13} aria-hidden="true" className="rotate-90" />
-                </button>
-                <AnimatePresence>
-                  {overflowOpen && (
-                    <motion.div
-                      role="menu"
-                      aria-label="More pull request actions"
-                      initial={{ opacity: 0, y: 6, scale: 0.97 }}
-                      animate={{ opacity: 1, y: 0, scale: 1, transition: { duration: 0.2, ease: ENTER_EASE } }}
-                      exit={{ opacity: 0, y: 6, scale: 0.97, transition: { duration: 0.2, ease: "easeIn" } }}
-                      style={{ transformOrigin: "80% 100%" }}
-                      className="absolute bottom-[calc(100%+6px)] right-0 z-20 w-52 rounded-xl border border-border-card bg-popover p-1 shadow-[0_16px_40px_-18px_rgb(0_0_0/0.5),0_2px_8px_-4px_rgb(0_0_0/0.22)]"
-                    >
-                      {overflow.map(item => (
-                        <button
-                          key={item.label}
-                          type="button"
-                          role="menuitem"
-                          onClick={() => { setOverflowOpen(false); item.onSelect(); }}
-                          className={cn(
-                            "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-meta transition-colors",
-                            item.destructive ? "text-destructive hover:bg-destructive/10" : "text-foreground hover:bg-accent",
-                          )}
-                        >
-                          <item.icon size={12} aria-hidden="true" className="shrink-0 opacity-70" />
-                          {item.label}
-                        </button>
-                      ))}
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-            )}
+            {overflow.length > 0 && <>
+              <button
+                ref={more.triggerRef}
+                type="button"
+                onClick={more.toggle}
+                disabled={busy}
+                aria-haspopup="menu"
+                aria-expanded={more.open}
+                aria-label="More pull request actions"
+                title="More pull request actions"
+                className="inline-grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+              >
+                <Ellipsis size={14} aria-hidden="true" />
+              </button>
+              {/* Portalled: the actions sit in a collapsing row that clips anything
+                  drawn outside it, which hid this menu entirely. */}
+              <MenuPanel controller={more} label="More pull request actions">
+                {overflow.map(item => <MenuItem
+                  key={item.label}
+                  label={item.label}
+                  destructive={item.destructive}
+                  leading={<item.icon size={12} aria-hidden="true" className="shrink-0 opacity-70" />}
+                  onClick={() => { more.close(); item.onSelect(); }}
+                />)}
+              </MenuPanel>
+            </>}
+            </span>
           </div>
         </div>
 

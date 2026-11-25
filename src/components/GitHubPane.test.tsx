@@ -508,6 +508,71 @@ describe("GitHubPane", () => {
     expect(host!.textContent).not.toContain("RUN REVIEW WITH");
   });
 
+  it("answers a review start right under the actions, whatever tab is open", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "getReviewJobSettings").mockResolvedValue({ secondOpinion: false });
+    vi.spyOn(bridgeApi, "startReview").mockResolvedValue({ job: {
+      id: "job-1", workspaceId: "w", number: 1, headSha: "abc", status: "queued", trigger: "manual", postMode: "draft",
+      harnesses: ["codex"], findingCounts: { total: 0, critical: 0, major: 0, minor: 0, nit: 0 }, createdAt: new Date().toISOString(),
+    } });
+    await mount({ sessionId: "sess-1" });
+    await click(buttonByText("Safe GitHub surface"));
+    // Away from Conversation, where the Reviews section lives.
+    const tabs = () => [...host!.querySelectorAll<HTMLButtonElement>('[aria-label="Pull request detail"] [role="tab"]')];
+    await click(tabs().find(tab => tab.textContent?.toLowerCase().startsWith("changes"))!);
+    expect(host!.querySelector('section[aria-label="Reviews"]')).toBeNull();
+
+    await click(buttonByText("Review"));
+    await click(buttonByText("Codex"));
+    const line = host!.querySelector<HTMLElement>("[data-review-status]")!;
+    expect(line, "the start is answered where it was asked").not.toBeNull();
+    expect(line.textContent).toContain("Queued: waits for a free review slot");
+    expect(line.getAttribute("aria-live")).toBe("polite");
+    const review = host!.querySelector<HTMLButtonElement>('button[aria-busy="true"]')!;
+    expect(review.textContent, "the Review button shows a review is running").toContain("Reviewing");
+
+    await click([...line.querySelectorAll("button")].find(button => button.textContent === "Show")!);
+    expect(tabs().find(tab => tab.getAttribute("aria-selected") === "true")!.textContent?.toLowerCase()).toContain("conversation");
+    expect(host!.querySelector('section[aria-label="Reviews"]')!.textContent).toContain("Queued");
+  });
+
+  it("marks a harness already reviewing the PR, so starting it twice is not silent", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "getReviewJobSettings").mockResolvedValue({ secondOpinion: false });
+    vi.spyOn(bridgeApi, "listReviews").mockResolvedValue({ jobs: [{
+      id: "job-1", workspaceId: "w", number: 1, headSha: "abc", status: "reviewing", trigger: "manual", postMode: "draft",
+      harnesses: ["codex"], findingCounts: { total: 0, critical: 0, major: 0, minor: 0, nit: 0 }, createdAt: new Date().toISOString(), startedAt: new Date().toISOString(),
+    }] });
+    const start = vi.spyOn(bridgeApi, "startReview");
+    await mount({ sessionId: "sess-1" });
+    await click(buttonByText("Safe GitHub surface"));
+    expect(host!.querySelector("[data-review-status]")!.textContent).toContain("Codex is reviewing");
+    await click(buttonByText("Reviewing"));
+    const picker = host!.querySelector<HTMLElement>('[role="group"][aria-label="Review harness"]')!;
+    const codex = [...picker.querySelectorAll("button")].find(button => button.textContent?.startsWith("Codex"))!;
+    expect(codex.disabled).toBe(true);
+    expect(codex.textContent).toContain("Reviewing");
+    const claude = [...picker.querySelectorAll("button")].find(button => button.textContent?.startsWith("Claude"))!;
+    expect(claude.disabled).toBe(false);
+    await click(codex);
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("opens More pull request actions outside the clipped action row", async () => {
+    mockReads();
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    const trigger = host!.querySelector<HTMLButtonElement>('button[aria-label="More pull request actions"]')!;
+    expect(trigger.querySelector("svg"), "a … button, not a sideways chevron").not.toBeNull();
+    await click(trigger);
+    const menu = document.body.querySelector<HTMLElement>('[role="menu"][aria-label="More pull request actions"]')!;
+    expect(menu).not.toBeNull();
+    expect(host!.contains(menu), "portalled to the body: the collapsing row hides overflow").toBe(false);
+    expect(menu.closest(".u-collapse")).toBeNull();
+    expect(menu.textContent).toContain("Request changes");
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  });
+
   it("with Second opinion on, starts one job with the two picked harnesses", async () => {
     mockReads();
     vi.spyOn(bridgeApi, "getReviewJobSettings").mockResolvedValue({ secondOpinion: true });

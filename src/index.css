@@ -699,6 +699,16 @@ html[data-native-fullscreen] .u-traffic-inset {
   .title-word-in { animation: none; }
 }
 
+/* The caret riding the end of the streamed new-chat headline while it streams. */
+@keyframes caret-blink {
+  0%, 45% { opacity: 1; }
+  55%, 100% { opacity: 0; }
+}
+
+.animate-caret-blink {
+  animation: caret-blink 1s steps(1, end) infinite;
+}
+
 /* Soft breathing dot used instead of loading spinners. */
 @keyframes thinking-pulse {
   0%, 100% { opacity: 0.3; transform: scale(0.72); }
@@ -1157,12 +1167,19 @@ html[data-native-fullscreen] .u-traffic-inset {
 .u-collapse > div {
   min-height: 0;
   overflow: hidden;
+  transition: padding-block var(--duration-slow) var(--ease-out-bridge);
 }
 
 .u-collapse.shut {
   grid-template-rows: 0fr;
   opacity: 0;
   pointer-events: none;
+}
+
+/* A 0fr track still leaves the child's own padding showing: a shut confirm
+   or receipt left an empty band under the merge box's actions. */
+.u-collapse.shut > div {
+  padding-block: 0;
 }
 
 

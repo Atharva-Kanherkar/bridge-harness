@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, Pencil, Send, X } from "lucide-react";
+import { Check, LoaderCircle, Pencil, Send, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../../api";
 import type { ReviewFinding, ReviewFindingDecisionInput, ReviewJob, ReviewPass, ReviewSeverity } from "../../protocol/generated/protocol";
@@ -168,10 +168,11 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
   };
+  const [posting, setPosting] = useState(false);
   const post = async () => {
-    setBusy(true); setError(undefined);
+    setBusy(true); setPosting(true); setError(undefined);
     try { onPosting((await bridgeApi.postReview(job.id)).job); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); setBusy(false); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); setBusy(false); setPosting(false); }
   };
   const move = (id: string, step: number) => {
     const index = flat.findIndex(finding => finding.id === id);
@@ -189,7 +190,7 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
   const unsaved = findings.some(finding => drafts.has(finding.id) && drafts.get(finding.id) !== savedBody(finding));
   const blocked = unsaved || (findings.length > 0 && count === 0);
   const reason = unsaved ? "Save or cancel your edit to post." : blocked ? "Keep or edit at least one finding to post." : undefined;
-  const label = findings.length === 0 ? "Post summary" : count === 0 ? "Post" : `Post ${count} ${count === 1 ? "finding" : "findings"}`;
+  const label = posting ? "Posting…" : findings.length === 0 ? "Post summary" : count === 0 ? "Post" : `Post ${count} ${count === 1 ? "finding" : "findings"}`;
   return <div data-review-draft={job.id} className="border-t border-border/70 bg-muted/20 px-3 py-2.5">
     {findings.length > 0 && <div className="mb-2 flex flex-wrap items-center gap-1.5">
       <button type="button" disabled={busy} onClick={() => void decide(settled.map(finding => ({ findingId: finding.id, decision: "kept" })))} className="rounded-md border border-border bg-card px-2 py-0.5 text-meta text-foreground hover:bg-accent disabled:opacity-50">Keep all</button>
@@ -220,8 +221,8 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
     <div className="flex items-center justify-end gap-2">
       {reason && <span className="text-caption text-muted-foreground">{reason}</span>}
       {!reason && undecided > 0 && <span className="text-caption text-muted-foreground">{count} kept, {undecided} not decided</span>}
-      <button type="button" disabled={busy || blocked} onClick={() => void post()} className="inline-flex min-h-7 items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-meta font-medium text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50">
-        <Send size={11} aria-hidden="true" /> {label}
+      <button type="button" disabled={busy || blocked} aria-busy={posting} onClick={() => void post()} className="inline-flex min-h-7 items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-meta font-medium text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50">
+        {posting ? <LoaderCircle size={11} aria-hidden="true" className="animate-spin motion-reduce:animate-none" /> : <Send size={11} aria-hidden="true" />} {label}
       </button>
     </div>
   </div>;

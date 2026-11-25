@@ -221,9 +221,14 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// `WorkflowEventKind` values. A 1.55 daemon refuses older clients, which
 /// cannot read a workflow that uses one; a 1.55 client cannot pair with a 1.54
 /// daemon, which would refuse those triggers.
+///
+/// **1.56 adds the Reviews dashboard**: `reviews/review_overview`, the
+/// optional `repoOwner`, `repoName`, `prTitle` and `prAuthor` on `ReviewJob`,
+/// and `summary` on `ReviewJobDetail`. A 1.55 client still pairs: it never
+/// calls the new method, and the new fields are optional.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 55,
+    minor: 56,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -624,10 +629,18 @@ mod tests {
     fn more_triggers_pair_only_with_a_matching_daemon_and_client() {
         let before = ProtocolVersion { major: 1, minor: 54 };
         let more = ProtocolVersion { major: 1, minor: 55 };
-        assert_eq!(PROTOCOL_VERSION, more);
         assert!(!more.accepts(before), "a 1.54 client cannot read a Gmail, Linear or Notion trigger");
         assert!(!before.accepts(more), "a 1.55 client's new triggers would be refused by a 1.54 daemon");
         assert!(more.accepts(more));
+    }
+
+    #[test]
+    fn a_1_55_client_pairs_with_a_reviews_dashboard_daemon() {
+        let before = ProtocolVersion { major: 1, minor: 55 };
+        let dashboard = ProtocolVersion { major: 1, minor: 56 };
+        assert_eq!(PROTOCOL_VERSION, dashboard);
+        assert!(dashboard.accepts(before), "a 1.55 client never asks for the overview");
+        assert!(!before.accepts(dashboard), "a 1.56 client needs reviews/review_overview");
     }
 
     #[test]
