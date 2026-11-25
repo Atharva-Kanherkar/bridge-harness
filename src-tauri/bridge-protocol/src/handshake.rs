@@ -226,9 +226,13 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// optional `repoOwner`, `repoName`, `prTitle` and `prAuthor` on `ReviewJob`,
 /// and `summary` on `ReviewJobDetail`. A 1.55 client still pairs: it never
 /// calls the new method, and the new fields are optional.
+///
+/// **1.57 adds reviewer activity**: `reviews/review_activity` and the
+/// `reviews/activity` notification. A 1.56 client still pairs: it never calls
+/// the method and ignores the notification.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 56,
+    minor: 57,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -635,10 +639,18 @@ mod tests {
     }
 
     #[test]
+    fn a_1_56_client_pairs_with_a_reviewer_activity_daemon() {
+        let before = ProtocolVersion { major: 1, minor: 56 };
+        let activity = ProtocolVersion { major: 1, minor: 57 };
+        assert_eq!(PROTOCOL_VERSION, activity);
+        assert!(activity.accepts(before), "a 1.56 client never asks for activity");
+        assert!(!before.accepts(activity), "a 1.57 client needs reviews/review_activity");
+    }
+
+    #[test]
     fn a_1_55_client_pairs_with_a_reviews_dashboard_daemon() {
         let before = ProtocolVersion { major: 1, minor: 55 };
         let dashboard = ProtocolVersion { major: 1, minor: 56 };
-        assert_eq!(PROTOCOL_VERSION, dashboard);
         assert!(dashboard.accepts(before), "a 1.55 client never asks for the overview");
         assert!(!before.accepts(dashboard), "a 1.56 client needs reviews/review_overview");
     }

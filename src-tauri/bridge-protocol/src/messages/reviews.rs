@@ -197,6 +197,16 @@ pub struct ReviewJob {
     pub pr_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_author: Option<String>,
+    /// The chat the review was sent to (see `ReviewJobSettings::handoff`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_chat: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_at: Option<String>,
+    /// Why the review was not sent, when handoff is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -423,6 +433,22 @@ pub struct ReviewJobSettings {
     /// A later review of a PR looks at the commits since its last posted
     /// review and remembers what was said and decided. Off by default.
     pub incremental: bool,
+    /// Send finished reviews to the chat that wrote the pull request, which
+    /// then works on them. Off by default.
+    pub handoff: ReviewHandoff,
+}
+
+/// When a finished review goes to the chat that wrote the pull request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewHandoff {
+    /// Never: the person reads reviews in the Reviews app or on GitHub.
+    #[default]
+    Off,
+    /// As soon as a review drafts, before anyone has triaged it.
+    Drafted,
+    /// When a review posts: only what was posted, with the person's edits.
+    Posted,
 }
 
 /// The default and the bounds of `ReviewJobSettings::max_concurrent_reviews`.
@@ -444,6 +470,7 @@ impl Default for ReviewJobSettings {
             auto_review: ReviewAutoMode::Off,
             skip_draft_prs: true,
             incremental: false,
+            handoff: ReviewHandoff::Off,
         }
     }
 }
@@ -473,6 +500,80 @@ pub struct ListReviewsParams {
     pub workspace_id: String,
     #[serde(default)]
     pub number: Option<u64>,
+}
+
+/// What a reviewer did, one entry at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewActivityKind {
+    /// What Bridge asked the reviewer.
+    Prompt,
+    /// Something the reviewer said.
+    Message,
+    /// A tool the reviewer used (a read, a search).
+    Tool,
+    /// A command the reviewer ran in its sandbox.
+    Command,
+    /// A permission request or question Bridge refused.
+    Denied,
+    /// A provider error that ended the turn.
+    Error,
+}
+
+impl ReviewActivityKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ReviewActivityKind::Prompt => "prompt",
+            ReviewActivityKind::Message => "message",
+            ReviewActivityKind::Tool => "tool",
+            ReviewActivityKind::Command => "command",
+            ReviewActivityKind::Denied => "denied",
+            ReviewActivityKind::Error => "error",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<ReviewActivityKind> {
+        match text {
+            "prompt" => Some(ReviewActivityKind::Prompt),
+            "message" => Some(ReviewActivityKind::Message),
+            "tool" => Some(ReviewActivityKind::Tool),
+            "command" => Some(ReviewActivityKind::Command),
+            "denied" => Some(ReviewActivityKind::Denied),
+            "error" => Some(ReviewActivityKind::Error),
+            _ => None,
+        }
+    }
+}
+
+/// One thing a reviewer pass did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewActivityEntry {
+    pub job_id: String,
+    pub pass_id: String,
+    /// From 1, per pass.
+    pub seq: u32,
+    pub kind: ReviewActivityKind,
+    /// A tool's or command's name, or a short heading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The message, the prompt, or a tool's detail (a path, a pattern).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    pub at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReviewActivityParams {
+    pub job_id: String,
+}
+
+/// Every entry of a job's passes: pass by pass, each in order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewActivityList {
+    pub entries: Vec<ReviewActivityEntry>,
 }
 
 /// Everything the Reviews dashboard shows, for a period and optionally one
@@ -673,6 +774,10 @@ mod tests {
             repo_name: None,
             pr_title: None,
             pr_author: None,
+            handoff_session_id: None,
+            handoff_chat: None,
+            handoff_at: None,
+            handoff_note: None,
         };
         let value = serde_json::to_value(&job).unwrap();
         assert_eq!(value["workspaceId"], "w1");

@@ -68,7 +68,7 @@ light and dark.
    - `posted`: when a review posts, the findings that were posted (kept or edited, with the
      person's edits) go to the chat, with the posted review's link.
    - A review with nothing to send sends nothing.
-8. **Which chat:** the newest top-level, unarchived chat in a workspace of the job's project whose
+8. **Which chat:** the newest (latest started, then latest created) top-level, unarchived chat in a workspace of the job's project whose
    branch is the PR's head branch (`review_jobs.pr_branch`, stored by `prepare`). None: nothing is
    sent, and the job notes why.
 9. **Sending** goes through `live_turn::submit_input`, so the chat starts a turn, or queues

@@ -24,6 +24,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bridge_protocol::messages::ReviewActivityKind;
 use serde_json::Value;
 
 use super::contract::{self, RawReview, OUTPUT_CONTRACT};
@@ -68,6 +69,58 @@ pub struct SessionStart<'a> {
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
     pub instructions: &'a str,
+    /// Where the session reports what it does, as it does it. None records
+    /// nothing.
+    pub activity: Option<&'a dyn ActivitySink>,
+}
+
+/// What a reviewer session reports as it works: the dashboard's activity
+/// view. Recording must not fail the review, so it returns nothing.
+pub trait ActivitySink: Send + Sync {
+    fn record(&self, kind: ReviewActivityKind, title: Option<&str>, text: Option<&str>);
+}
+
+impl std::fmt::Debug for dyn ActivitySink + '_ {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ActivitySink")
+    }
+}
+
+/// Longest tool detail recorded, in characters.
+const TOOL_DETAIL_CHARS: usize = 300;
+
+/// A tool's or command's short detail: the path, pattern, query or command
+/// it was given, when the event carries one.
+fn tool_detail(event: &NormalizedEvent) -> Option<String> {
+    const KEYS: [&str; 8] = ["file_path", "path", "pattern", "query", "command", "url", "glob", "description"];
+    let from = |value: &Value| -> Option<String> {
+        let object = value.as_object()?;
+        let parts: Vec<String> = KEYS
+            .iter()
+            .filter_map(|key| object.get(*key))
+            .filter_map(|value| match value {
+                Value::String(text) => Some(text.clone()),
+                Value::Array(items) => {
+                    let joined = items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ");
+                    (!joined.is_empty()).then_some(joined)
+                }
+                _ => None,
+            })
+            .filter(|text| !text.trim().is_empty())
+            .take(2)
+            .collect();
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    };
+    let detail = event
+        .data
+        .get("input")
+        .and_then(from)
+        .or_else(|| from(&event.data))
+        .or_else(|| event.text.clone().filter(|text| !text.trim().is_empty()))?;
+    Some(match detail.char_indices().nth(TOOL_DETAIL_CHARS) {
+        Some((index, _)) => format!("{}…", &detail[..index]),
+        None => detail,
+    })
 }
 
 /// What the next read from a session found.
@@ -281,15 +334,26 @@ fn request_id(event: &NormalizedEvent) -> Value {
 }
 
 /// Drive one turn to its end. Returns the final assistant message.
+#[allow(clippy::too_many_arguments)]
 fn turn(
     session: &mut dyn Session,
     text: &str,
+    request_title: &str,
     usage: &mut Usage,
     deadline: Instant,
     limits: Limits,
     cancel: &CancelToken,
+    activity: Option<&dyn ActivitySink>,
 ) -> Result<String, SessionError> {
+    let record = |kind: ReviewActivityKind, title: Option<&str>, text: Option<&str>| {
+        if let Some(sink) = activity {
+            sink.record(kind, title, text);
+        }
+    };
+    record(ReviewActivityKind::Prompt, Some(request_title), Some(text));
     session.send_turn(text).map_err(SessionError::Provider)?;
+    // Assistant messages already recorded, by item: each is recorded once.
+    let mut said: std::collections::HashSet<Option<String>> = std::collections::HashSet::new();
     let mut parts: Vec<(Option<String>, String)> = Vec::new();
     let mut started = false;
     let mut result_text: Option<String> = None;
@@ -312,10 +376,18 @@ fn turn(
                 "message.delta" | "message.completed" if event.role.as_deref() == Some("assistant") => {
                     started = true;
                     let Some(text) = event.text else { continue };
+                    let completed = event.kind == "message.completed";
                     match parts.iter_mut().find(|(id, _)| *id == event.item_id) {
-                        Some((_, part)) if event.kind == "message.completed" => *part = text,
+                        Some((_, part)) if completed => *part = text,
                         Some((_, part)) => part.push_str(&text),
-                        None => parts.push((event.item_id, text)),
+                        None => parts.push((event.item_id.clone(), text)),
+                    }
+                    if completed && said.insert(event.item_id.clone()) {
+                        if let Some((_, part)) = parts.iter().find(|(id, _)| *id == event.item_id) {
+                            if !part.trim().is_empty() {
+                                record(ReviewActivityKind::Message, None, Some(part));
+                            }
+                        }
                     }
                 }
                 "usage.updated" => {
@@ -338,6 +410,11 @@ fn turn(
                     if fresh {
                         usage.tool_calls += 1;
                         let name = event.title.clone().or_else(|| event.data.get("command").and_then(Value::as_str).map(str::to_owned));
+                        let kind = if event.kind == "command.started" { ReviewActivityKind::Command } else { ReviewActivityKind::Tool };
+                        let detail = tool_detail(&event);
+                        let shown = name.clone().unwrap_or_else(|| if kind == ReviewActivityKind::Command { "Command".into() } else { "Tool".into() });
+                        // A command's name is its command line: no detail twice.
+                        record(kind, Some(&shown), detail.as_deref().filter(|detail| *detail != shown));
                         usage.tools.push(name.unwrap_or_else(|| event.kind.clone()));
                         if usage.tool_calls > limits.max_tool_calls {
                             return Err(SessionError::ToolLimit(limits.max_tool_calls));
@@ -347,12 +424,14 @@ fn turn(
                 // Nobody answers a hidden session: refuse at once, and count.
                 "permission.requested" | "approval.requested" => {
                     usage.denied_requests += 1;
+                    record(ReviewActivityKind::Denied, Some("Refused a permission request"), event.title.as_deref().or(event.text.as_deref()));
                     if let Err(error) = session.decline(request_id(&event)) {
                         eprintln!("[reviews] could not decline a permission request: {error}");
                     }
                 }
                 "question.requested" => {
                     usage.denied_requests += 1;
+                    record(ReviewActivityKind::Denied, Some("Refused a question"), event.text.as_deref().or(event.title.as_deref()));
                     let method = event.data.get("requestMethod").and_then(Value::as_str);
                     if let Err(error) = session.reject_question(request_id(&event), method) {
                         eprintln!("[reviews] could not reject a question: {error}");
@@ -369,12 +448,19 @@ fn turn(
                 "error" if event.status.as_deref() == Some("retrying") => {}
                 "error" => {
                     let detail = event.text.or(event.title).unwrap_or_else(|| "the provider reported an error".into());
+                    record(ReviewActivityKind::Error, None, Some(&detail));
                     return Err(SessionError::Provider(detail));
                 }
                 _ => {}
             }
         }
         if done {
+            // Messages that never completed are what the reviewer said too.
+            for (id, part) in &parts {
+                if !said.contains(id) && !part.trim().is_empty() {
+                    record(ReviewActivityKind::Message, None, Some(part));
+                }
+            }
             // The final message: the last thing the assistant said.
             let last = parts.into_iter().map(|(_, text)| text).filter(|text| !text.trim().is_empty()).last();
             return Ok(last.or(result_text).unwrap_or_default());
@@ -419,10 +505,12 @@ pub fn run_answered(
         Err(error) => return (Err(SessionError::Start(error)), usage),
     };
     let deadline = Instant::now() + limits.max_wall;
-    let result = turn(session.as_mut(), prompt, &mut usage, deadline, limits, cancel).and_then(|text| match contract::parse(&text) {
+    let activity = start.activity;
+    let result = turn(session.as_mut(), prompt, "Bridge asked for a review", &mut usage, deadline, limits, cancel, activity).and_then(|text| match contract::parse(&text) {
         Ok(review) => Ok((review, text)),
         Err(error) => {
-            let repaired = turn(session.as_mut(), &repair_prompt(&error), &mut usage, deadline, limits, cancel)?;
+            let repaired =
+                turn(session.as_mut(), &repair_prompt(&error), "Bridge asked for the findings again", &mut usage, deadline, limits, cancel, activity)?;
             contract::parse(&repaired).map(|review| (review, repaired)).map_err(SessionError::Contract)
         }
     });
@@ -625,6 +713,29 @@ fn model_and_effort(core: &BridgeCore, harness: &str) -> (Option<String>, String
     (model, effort.to_owned())
 }
 
+/// Stores each thing a pass does and tells the dashboards.
+struct PassActivity<'a> {
+    core: &'a BridgeCore,
+    job_id: &'a str,
+    pass_id: &'a str,
+}
+
+impl ActivitySink for PassActivity<'_> {
+    fn record(&self, kind: ReviewActivityKind, title: Option<&str>, text: Option<&str>) {
+        let stored = {
+            let db = super::lock_db(self.core);
+            super::store::record_activity(&db, self.job_id, self.pass_id, kind, title, text, chrono::Utc::now())
+        };
+        match stored {
+            Ok(Some(entry)) => {
+                self.core.events.publish(crate::events::CoreEvent::ReviewActivity { job_id: self.job_id.to_owned(), entry });
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("[reviews] could not record activity for pass {}: {error}", self.pass_id),
+        }
+    }
+}
+
 /// One reviewer pass on the real harnesses.
 pub fn review_pass(core: &BridgeCore, request: PassRequest<'_>, cancel: &CancelToken) -> Result<PassOutcome, StepError> {
     let transport = RegistryTransport { registry: core.adapter_registry.clone() };
@@ -654,7 +765,8 @@ pub fn review_pass_with(
     };
     let (model, effort) = model_and_effort(core, request.harness);
     let instructions = instructions(&conventions_in(&placed), &user_instructions, hide);
-    let start = SessionStart { cwd: checkout, model: model.as_deref(), effort: Some(&effort), instructions: &instructions };
+    let sink = PassActivity { core, job_id: &request.job.id, pass_id: request.pass_id };
+    let start = SessionStart { cwd: checkout, model: model.as_deref(), effort: Some(&effort), instructions: &instructions, activity: Some(&sink) };
     let (result, usage) = run(transport, request.harness, &start, &prompt(&pr, &context_name), cancel, limits);
     // Spent either way: a failed or retried attempt cost what it cost.
     request.usage.add(usage.spent());

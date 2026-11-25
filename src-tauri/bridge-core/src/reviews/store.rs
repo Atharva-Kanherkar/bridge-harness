@@ -182,12 +182,19 @@ pub struct JobRow {
     pub named_summary: Option<String>,
     pub pr_title: Option<String>,
     pub pr_author: Option<String>,
+    /// The PR's head branch, once prepared.
+    pub pr_branch: Option<String>,
+    pub handoff_session_id: Option<String>,
+    pub handoff_chat: Option<String>,
+    pub handoff_at: Option<String>,
+    pub handoff_note: Option<String>,
 }
 
 pub(crate) const SELECT_JOB: &str = "SELECT id, workspace_id, repo_owner, repo_name, pr_number, head_sha, base_sha,
     incremental_from_sha, trigger_kind, post_mode, harnesses, status, error, summary, posted_review_id,
     posted_review_url, retry_of, attempts, lease_owner, lease_expires_at, created_at, started_at, finished_at,
-    publication_key, worktree_path, repo_host, named_summary, pr_title, pr_author
+    publication_key, worktree_path, repo_host, named_summary, pr_title, pr_author, pr_branch,
+    handoff_session_id, handoff_chat, handoff_at, handoff_note
     FROM review_jobs";
 
 fn invalid_column(index: usize, text: &str) -> rusqlite::Error {
@@ -233,6 +240,11 @@ pub(crate) fn read_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
         named_summary: row.get(26)?,
         pr_title: row.get(27)?,
         pr_author: row.get(28)?,
+        pr_branch: row.get(29)?,
+        handoff_session_id: row.get(30)?,
+        handoff_chat: row.get(31)?,
+        handoff_at: row.get(32)?,
+        handoff_note: row.get(33)?,
     })
 }
 
@@ -1478,15 +1490,142 @@ pub fn to_wire(db: &Connection, job: &JobRow) -> Result<wire::ReviewJob, BridgeE
         repo_name: Some(job.repo_name.clone()),
         pr_title: job.pr_title.clone(),
         pr_author: job.pr_author.clone(),
+        handoff_session_id: job.handoff_session_id.clone(),
+        handoff_chat: job.handoff_chat.clone(),
+        handoff_at: job.handoff_at.clone(),
+        handoff_note: job.handoff_note.clone(),
     })
 }
 
-/// The PR's title and author, as `prepare` read them.
-pub fn set_pr_meta(db: &Connection, job_id: &str, title: &str, author: Option<&str>) -> Result<(), BridgeError> {
-    db.execute("UPDATE review_jobs SET pr_title=?2, pr_author=?3 WHERE id=?1", params![job_id, title, author])?;
+/// The PR's title, author and head branch, as `prepare` read them.
+pub fn set_pr_meta(db: &Connection, job_id: &str, title: &str, author: Option<&str>, branch: Option<&str>) -> Result<(), BridgeError> {
+    db.execute(
+        "UPDATE review_jobs SET pr_title=?2, pr_author=?3, pr_branch=COALESCE(?4, pr_branch) WHERE id=?1",
+        params![job_id, title, author, branch],
+    )?;
     Ok(())
+}
+
+/// Record where a review was sent. False when it was already sent: a job
+/// hands off once.
+pub fn record_handoff(db: &Connection, job_id: &str, session_id: &str, chat: &str, now: DateTime<Utc>) -> Result<bool, BridgeError> {
+    let changed = db.execute(
+        "UPDATE review_jobs SET handoff_session_id=?2, handoff_chat=?3, handoff_at=?4, handoff_note=NULL
+         WHERE id=?1 AND handoff_at IS NULL",
+        params![job_id, session_id, chat, stamp(now)],
+    )?;
+    Ok(changed == 1)
+}
+
+/// Record why a review was not sent.
+pub fn note_handoff(db: &Connection, job_id: &str, note: &str) -> Result<(), BridgeError> {
+    db.execute("UPDATE review_jobs SET handoff_note=?2 WHERE id=?1 AND handoff_at IS NULL", params![job_id, note])?;
+    Ok(())
+}
+
+/// Reviews of the job's PR handed off at or after `since`.
+pub fn handoffs_since(db: &Connection, job: &JobRow, since: DateTime<Utc>) -> Result<u32, BridgeError> {
+    let pr = PrKey::of(job);
+    Ok(db.query_row(
+        &format!("SELECT COUNT(*) FROM review_jobs j WHERE {} AND j.handoff_at>=?5", same_pr("j")),
+        params![pr.host, pr.owner, pr.name, pr.number as i64, stamp(since)],
+        |row| row.get(0),
+    )?)
 }
 
 #[cfg(test)]
 #[path = "store_tests.rs"]
 mod tests;
+
+// --- reviewer activity ------------------------------------------------------
+
+/// Most entries one pass keeps; the last says the log was cut.
+pub const MAX_ACTIVITY_PER_PASS: u32 = 500;
+/// Longest text an entry keeps, in characters.
+pub const MAX_ACTIVITY_TEXT: usize = 4_000;
+
+pub fn install_activity(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS review_activity(
+            pass_id TEXT NOT NULL REFERENCES review_passes(id) ON DELETE CASCADE,
+            job_id TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            title TEXT,
+            text TEXT,
+            at TEXT NOT NULL,
+            PRIMARY KEY(pass_id, seq)
+        );
+        CREATE INDEX IF NOT EXISTS idx_review_activity_job ON review_activity(job_id);",
+    )?;
+    // Handing a review to the chat that wrote the PR: its branch, and where
+    // the review went or why it did not.
+    for column in ["pr_branch", "handoff_session_id", "handoff_chat", "handoff_at", "handoff_note"] {
+        crate::store::add_column_if_missing(transaction, "review_jobs", column, "TEXT")?;
+    }
+    Ok(())
+}
+
+fn cut_text(text: Option<&str>) -> Option<String> {
+    text.map(|text| match text.char_indices().nth(MAX_ACTIVITY_TEXT) {
+        Some((index, _)) => format!("{}…", &text[..index]),
+        None => text.to_owned(),
+    })
+}
+
+/// Store one thing a pass did. `None` once the pass's log is full: the entry
+/// that filled it says it was cut, and later ones are dropped.
+pub fn record_activity(
+    db: &Connection,
+    job_id: &str,
+    pass_id: &str,
+    kind: wire::ReviewActivityKind,
+    title: Option<&str>,
+    text: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<Option<wire::ReviewActivityEntry>, BridgeError> {
+    let count: u32 = db.query_row("SELECT COUNT(*) FROM review_activity WHERE pass_id=?1", params![pass_id], |row| row.get(0))?;
+    if count >= MAX_ACTIVITY_PER_PASS {
+        return Ok(None);
+    }
+    let seq = count + 1;
+    let (kind, title, text) = if seq == MAX_ACTIVITY_PER_PASS {
+        (
+            wire::ReviewActivityKind::Message,
+            Some("Activity cut".to_owned()),
+            Some(format!("The reviewer kept going; only its first {MAX_ACTIVITY_PER_PASS} steps are kept.")),
+        )
+    } else {
+        (kind, title.map(str::to_owned), cut_text(text))
+    };
+    let at = stamp(now);
+    db.execute(
+        "INSERT INTO review_activity(pass_id, job_id, seq, kind, title, text, at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        params![pass_id, job_id, seq, kind.as_str(), title, text, at],
+    )?;
+    Ok(Some(wire::ReviewActivityEntry { job_id: job_id.to_owned(), pass_id: pass_id.to_owned(), seq, kind, title, text, at }))
+}
+
+/// Every entry of a job: pass by pass (slot, then attempt), each in order.
+pub fn activity(db: &Connection, job_id: &str) -> Result<Vec<wire::ReviewActivityEntry>, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT a.job_id, a.pass_id, a.seq, a.kind, a.title, a.text, a.at
+         FROM review_activity a JOIN review_passes p ON p.id=a.pass_id
+         WHERE a.job_id=?1 ORDER BY p.slot, p.attempt, p.created_at, p.rowid, a.seq",
+    )?;
+    let rows = statement
+        .query_map(params![job_id], |row| {
+            let kind: String = row.get(3)?;
+            Ok(wire::ReviewActivityEntry {
+                job_id: row.get(0)?,
+                pass_id: row.get(1)?,
+                seq: row.get(2)?,
+                kind: wire::ReviewActivityKind::parse(&kind).ok_or_else(|| invalid_column(3, &kind))?,
+                title: row.get(4)?,
+                text: row.get(5)?,
+                at: row.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}

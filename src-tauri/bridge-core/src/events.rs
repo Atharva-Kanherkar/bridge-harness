@@ -138,6 +138,8 @@ pub enum CoreEvent {
     WorkflowRunChanged { run: bridge_protocol::messages::WorkflowRun },
     /// A review job changed status, or one of its passes moved.
     ReviewJobUpdated { job: bridge_protocol::messages::ReviewJob },
+    /// A reviewer pass did something (a message, a tool, a refusal).
+    ReviewActivity { job_id: String, entry: bridge_protocol::messages::ReviewActivityEntry },
 }
 
 impl CoreEvent {
@@ -176,6 +178,7 @@ impl CoreEvent {
             CoreEvent::WorkflowsChanged { .. } => NotificationName::WorkflowsChanged,
             CoreEvent::WorkflowRunChanged { .. } => NotificationName::WorkflowRunChanged,
             CoreEvent::ReviewJobUpdated { .. } => NotificationName::ReviewJobUpdated,
+            CoreEvent::ReviewActivity { .. } => NotificationName::ReviewActivity,
         }
     }
 
@@ -251,6 +254,7 @@ impl CoreEvent {
             CoreEvent::WorkflowsChanged { workflow_id } => serde_json::json!({ "workflowId": workflow_id }),
             CoreEvent::WorkflowRunChanged { run } => serde_json::json!({ "run": run }),
             CoreEvent::ReviewJobUpdated { job } => serde_json::json!({ "job": job }),
+            CoreEvent::ReviewActivity { job_id, entry } => serde_json::json!({ "jobId": job_id, "entry": entry }),
         }
     }
 
@@ -493,7 +497,10 @@ impl EventBus {
                 CoreEvent::ReviewJobUpdated { job } => {
                     state.review_jobs_changed.insert(job.id.clone(), job.clone());
                 }
-                CoreEvent::Agent(_)
+                // Each entry is its own news; a client that lagged rereads
+                // `reviews/review_activity`.
+                CoreEvent::ReviewActivity { .. }
+                | CoreEvent::Agent(_)
                 | CoreEvent::SessionOutput { .. }
                 | CoreEvent::TerminalFrame(_)
                 | CoreEvent::TerminalExited { .. }
@@ -583,6 +590,10 @@ mod tests {
             repo_name: None,
             pr_title: None,
             pr_author: None,
+            handoff_session_id: None,
+            handoff_chat: None,
+            handoff_at: None,
+            handoff_note: None,
         }
     }
 
@@ -761,6 +772,18 @@ mod tests {
             CoreEvent::WorkflowsChanged { workflow_id: "w1".into() },
             CoreEvent::WorkflowRunChanged { run: run_fixture() },
             CoreEvent::ReviewJobUpdated { job: review_job_fixture() },
+            CoreEvent::ReviewActivity {
+                job_id: "job-1".into(),
+                entry: bridge_protocol::messages::ReviewActivityEntry {
+                    job_id: "job-1".into(),
+                    pass_id: "pass-1".into(),
+                    seq: 1,
+                    kind: bridge_protocol::messages::ReviewActivityKind::Tool,
+                    title: Some("Read".into()),
+                    text: Some("src/lib.rs".into()),
+                    at: "2026-11-25T00:00:00.000Z".into(),
+                },
+            },
         ];
         for event in &events {
             assert_eq!(

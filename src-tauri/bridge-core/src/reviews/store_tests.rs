@@ -924,3 +924,32 @@ fn merge_findings_keeps_the_dropped_identity() {
     assert_eq!(merged.also_known_as, [FindingIdentity { title: dropped.title, fingerprint: dropped.fingerprint }]);
     assert!(prior.iter().filter(|finding| finding.id != merged.id).all(|finding| finding.also_known_as.is_empty()));
 }
+
+#[test]
+fn activity_is_capped_and_cut_per_pass() {
+    use wire::ReviewActivityKind as Kind;
+    let (_scratch, db) = open();
+    let (job, _) = insert(&db, &new_job(5, "sha", &["claude", "codex"]), at(0)).unwrap();
+    let first = insert_pass(&db, &job.id, 0, 1, "claude", at(1)).unwrap();
+    let second = insert_pass(&db, &job.id, 1, 1, "codex", at(1)).unwrap();
+    // The second pass records first: the list still goes pass by pass.
+    record_activity(&db, &job.id, &second, Kind::Tool, Some("Read"), Some("a.rs"), at(2)).unwrap();
+    let long = "x".repeat(MAX_ACTIVITY_TEXT + 50);
+    let entry = record_activity(&db, &job.id, &first, Kind::Message, None, Some(&long), at(3)).unwrap().unwrap();
+    assert_eq!(entry.seq, 1);
+    assert_eq!(entry.text.as_deref().unwrap().chars().count(), MAX_ACTIVITY_TEXT + 1, "cut, with an ellipsis");
+    for index in 2..MAX_ACTIVITY_PER_PASS {
+        record_activity(&db, &job.id, &first, Kind::Tool, Some("Grep"), Some(&index.to_string()), at(4)).unwrap().unwrap();
+    }
+    let last = record_activity(&db, &job.id, &first, Kind::Tool, Some("Grep"), None, at(5)).unwrap().unwrap();
+    assert_eq!((last.seq, last.title.as_deref()), (MAX_ACTIVITY_PER_PASS, Some("Activity cut")));
+    assert!(record_activity(&db, &job.id, &first, Kind::Tool, Some("Grep"), None, at(6)).unwrap().is_none(), "dropped once full");
+
+    let entries = activity(&db, &job.id).unwrap();
+    assert_eq!(entries.len(), MAX_ACTIVITY_PER_PASS as usize + 1);
+    assert_eq!(entries[0].pass_id, first, "slot order, not arrival order");
+    assert_eq!(entries.last().unwrap().pass_id, second);
+    assert!(entries.windows(2).filter(|pair| pair[0].pass_id == pair[1].pass_id).all(|pair| pair[0].seq < pair[1].seq));
+    let json = serde_json::to_value(&entries[0]).unwrap();
+    assert_eq!((json["kind"].as_str(), json["passId"].as_str()), (Some("message"), Some(first.as_str())));
+}
