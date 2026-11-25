@@ -63,3 +63,8 @@ describe("the search index", () => {
     expect(groups[0].rows.map(row => [row.id, row.label])).toEqual([["early-compaction", "Early compaction"]]);
   });
 });
+
+it("leaves the reviewer settings to the Reviews app", () => {
+  expect(SETTINGS_ROWS.map(entry => entry.id)).not.toContain("reviewer");
+  expect(SETTINGS_ROWS.map(entry => entry.id)).not.toContain("review-jobs");
+});

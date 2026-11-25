@@ -1386,14 +1386,23 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   // Picks belong to one opening of the picker on one PR.
   useEffect(() => { if (!reviewOpen) setPicked([]); }, [reviewOpen]);
   useEffect(() => { setPicked([]); }, [number]);
+  // What each harness reviews with, set in the Reviews app's Settings.
+  const [reviewerModels, setReviewerModels] = useState<Record<string, { model?: string | null; effort?: string | null }>>({});
   useEffect(() => {
     if (!reviewOpen) return;
     let active = true;
     void bridgeApi.getReviewJobSettings()
       .then(settings => { if (active) setSecondOpinion(settings.secondOpinion === true); })
       .catch(() => { if (active) setSecondOpinion(false); });
+    void bridgeApi.reviewerSettings()
+      .then(result => { if (active) setReviewerModels(result.settings.harnesses ?? {}); })
+      .catch(() => { if (active) setReviewerModels({}); });
     return () => { active = false; };
   }, [reviewOpen]);
+  const modelLine = (harness: string) => {
+    const entry = reviewerModels[harness];
+    return [entry?.model ?? "default model", entry?.effort ?? "default effort"].join(" · ");
+  };
   const [pendingBody, setPendingBody] = useState("");
   // The merge flow's one state machine: idle | confirming | merging | merged
   // | failed, in a reducer rather than five booleans (issue #1028). A detail
@@ -1749,7 +1758,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
               return secondOpinion
                 ? <button key={choice.id} type="button" role="checkbox" aria-checked={checked} disabled={reviewBusy || (!checked && picked.length >= 2)} onClick={() => setPicked(current => checked ? current.filter(id => id !== choice.id) : [...current, choice.id])} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
                     <span aria-hidden="true" className={cn("grid size-3 place-items-center rounded-sm border border-border", checked && "border-primary bg-primary text-primary-foreground")}>{checked && <Check size={9} />}</span>
-                    <span className="min-w-0 flex-1 truncate">{choice.label}</span>
+                    <span className="min-w-0 flex-1 truncate">{choice.label} <span className="font-mono text-micro text-muted-foreground" data-reviewer-model={choice.id}>{modelLine(choice.id)}</span></span>
                   </button>
                 : (() => {
                     const inUse = activeJobFor(reviews.jobs, [choice.id]);
@@ -1757,7 +1766,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
                       {inUse && inUse.status !== "drafted"
                         ? <LoaderCircle size={11} className="animate-spin text-muted-foreground motion-reduce:animate-none" aria-hidden="true" />
                         : <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />}
-                      <span className="min-w-0 flex-1 truncate">{choice.label}</span>
+                      <span className="min-w-0 flex-1 truncate">{choice.label} <span className="font-mono text-micro text-muted-foreground" data-reviewer-model={choice.id}>{modelLine(choice.id)}</span></span>
                       {inUse && <span className="shrink-0 text-micro text-muted-foreground">{inUse.status === "drafted" ? "Draft waiting" : "Reviewing"}</span>}
                     </button>;
                   })();
