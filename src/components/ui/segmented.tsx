@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
  * Two to four short choices, all visible at once. The track and the raised
  * active item come from `.u-segmented` in index.css.
  */
-export function Segmented<T extends string>({
+export function Segmented<T extends string | number>({
   value,
   options,
   onChange,

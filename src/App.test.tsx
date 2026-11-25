@@ -428,7 +428,7 @@ describe("the dock in the session view", () => {
     await settle(4);
     const codeTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Code")!;
     expect(codeTab.getAttribute("aria-selected")).toBe("true");
-    expect([...container.querySelectorAll("button[title]")].some(node => node.getAttribute("title") === "src-tauri/bridge-core/src/policy.rs")).toBe(true);
+    expect([...container.querySelectorAll("button[data-tip]")].some(node => node.getAttribute("data-tip") === "src-tauri/bridge-core/src/policy.rs")).toBe(true);
   });
 
   // Review fix: ⌘P in the launcher pins; it must not also reach the Code
@@ -502,7 +502,7 @@ describe("the dock in the session view", () => {
     await settle(4);
     const codeTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Code")!;
     expect(codeTab.getAttribute("aria-selected")).toBe("true");
-    expect([...container.querySelectorAll("button[title]")].some(node => node.getAttribute("title") === "src/App.tsx")).toBe(true);
+    expect([...container.querySelectorAll("button[data-tip]")].some(node => node.getAttribute("data-tip") === "src/App.tsx")).toBe(true);
   });
 
   // Contract: testing/feat-t3-inspired-chat-ui.md §H.
