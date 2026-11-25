@@ -191,6 +191,8 @@ methods![
     (ListMemoryRecordsAsOf, "memory", "list_memory_records_as_of"),
     (GetConsolidationSettings, "memory", "get_consolidation_settings"),
     (UpdateConsolidationSettings, "memory", "update_consolidation_settings"),
+    (GetMemoryModel, "memory", "get_memory_model"),
+    (SetMemoryModel, "memory", "set_memory_model"),
     // approvals
     (ResolveApproval, "approvals", "resolve_approval"),
     (ResolveQuestion, "approvals", "resolve_question"),

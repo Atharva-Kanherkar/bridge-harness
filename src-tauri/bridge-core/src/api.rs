@@ -2668,10 +2668,25 @@ pub fn review_memory_records(
     Ok(result)
 }
 
+/// The memory model's harness and model, mirrored onto the deprecated
+/// `harness` and `model` fields of the per-job settings.
+fn memory_model_mirror(
+    core: &Arc<BridgeCore>,
+    db: &rusqlite::Connection,
+) -> Result<(Option<String>, Option<String>), BridgeError> {
+    let memory = crate::memory_model::resolve(db, &core.adapter_registry)?;
+    Ok(match crate::memory_model::profile(&memory) {
+        Some((harness, model)) => (Some(harness), model),
+        None => (None, None),
+    })
+}
+
 fn extraction_settings_wire(
+    core: &Arc<BridgeCore>,
     db: &rusqlite::Connection,
     settings: crate::memory_extraction::ExtractionSettings,
 ) -> Result<wire::MemoryExtractionSettings, BridgeError> {
+    let (harness, model) = memory_model_mirror(core, db)?;
     let last_run = crate::memory_extraction::last_run(db, &settings.scope_key)?.map(|run| {
         wire::MemoryExtractionRun {
             status: run.status,
@@ -2685,8 +2700,8 @@ fn extraction_settings_wire(
     Ok(wire::MemoryExtractionSettings {
         scope_key: settings.scope_key,
         mode: settings.mode,
-        harness: settings.harness,
-        model: settings.model,
+        harness,
+        model,
         last_run,
     })
 }
@@ -2697,30 +2712,47 @@ pub fn get_extraction_settings(
     let db = core.db.lock().unwrap();
     let settings =
         crate::memory_extraction::settings(&db, memory_ledger::account_memory_scope())?;
-    extraction_settings_wire(&db, settings)
+    extraction_settings_wire(core, &db, settings)
 }
 
+/// The wire's `harness` and `model` are deprecated and not taken here: what an
+/// extraction runs on is `memory/set_memory_model`.
 pub fn update_extraction_settings(
     core: &Arc<BridgeCore>,
     mode: &str,
-    harness: Option<&str>,
-    model: Option<&str>,
 ) -> Result<wire::MemoryExtractionSettings, BridgeError> {
     let db = core.db.lock().unwrap();
     let settings = crate::memory_extraction::update_settings(
         &db,
         memory_ledger::account_memory_scope(),
         mode,
-        harness,
-        model,
     )?;
-    extraction_settings_wire(&db, settings)
+    extraction_settings_wire(core, &db, settings)
+}
+
+pub fn get_memory_model(core: &Arc<BridgeCore>) -> Result<wire::MemoryModelSettings, BridgeError> {
+    let db = core.db.lock().unwrap();
+    crate::memory_model::resolve(&db, &core.adapter_registry)
+}
+
+/// Both a harness and a model pin the memory model; neither clears the pin.
+/// The next extraction and consolidation run on the answer.
+pub fn set_memory_model(
+    core: &Arc<BridgeCore>,
+    harness: Option<&str>,
+    model: Option<&str>,
+) -> Result<wire::MemoryModelSettings, BridgeError> {
+    let db = core.db.lock().unwrap();
+    crate::memory_model::set(&db, harness, model)?;
+    crate::memory_model::resolve(&db, &core.adapter_registry)
 }
 
 fn consolidation_settings_wire(
+    core: &Arc<BridgeCore>,
     db: &rusqlite::Connection,
     settings: crate::memory_consolidation::ConsolidationSettings,
 ) -> Result<wire::MemoryConsolidationSettings, BridgeError> {
+    let (harness, model) = memory_model_mirror(core, db)?;
     let last_run = crate::memory_consolidation::last_run(db, &settings.scope_key)?.map(|run| {
         wire::MemoryConsolidationRun {
             status: run.status,
@@ -2736,8 +2768,8 @@ fn consolidation_settings_wire(
     Ok(wire::MemoryConsolidationSettings {
         scope_key: settings.scope_key,
         mode: settings.mode,
-        harness: settings.harness,
-        model: settings.model,
+        harness,
+        model,
         max_records: settings.max_records,
         allow_removal: settings.allow_removal,
         debounce_seconds: settings.debounce_seconds,
@@ -2769,15 +2801,14 @@ pub fn get_consolidation_settings(
     let db = core.db.lock().unwrap();
     let settings =
         crate::memory_consolidation::settings(&db, memory_ledger::account_memory_scope())?;
-    consolidation_settings_wire(&db, settings)
+    consolidation_settings_wire(core, &db, settings)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The wire's `harness` and `model` are deprecated and not taken here: what a
+/// consolidation runs on is `memory/set_memory_model`.
 pub fn update_consolidation_settings(
     core: &Arc<BridgeCore>,
     mode: &str,
-    harness: Option<&str>,
-    model: Option<&str>,
     max_records: Option<i64>,
     allow_removal: Option<bool>,
     debounce_seconds: Option<i64>,
@@ -2787,13 +2818,11 @@ pub fn update_consolidation_settings(
         &db,
         memory_ledger::account_memory_scope(),
         mode,
-        harness,
-        model,
         max_records,
         allow_removal,
         debounce_seconds,
     )?;
-    consolidation_settings_wire(&db, settings)
+    consolidation_settings_wire(core, &db, settings)
 }
 
 /// The scope as it stood at one instant. History is a read, never a rewrite:

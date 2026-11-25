@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn auto_apply_mode_still_leaves_an_agent_proposal_for_review() {
         let (_dir, db) = tools_db();
-        memory_extraction::update_settings(&db, ACCOUNT_MEMORY_SCOPE, memory_extraction::MODE_AUTO_APPLY, Some("claude"), Some("sonnet")).unwrap();
+        memory_extraction::update_settings(&db, ACCOUNT_MEMORY_SCOPE, memory_extraction::MODE_AUTO_APPLY).unwrap();
         let outcome = run(&db, "chat", true, PROPOSE, &propose_args("Check upstream trackers before a security hunt")).unwrap();
         assert_eq!(outcome.result["proposed"]["status"], "proposed");
     }
@@ -295,7 +295,7 @@ mod tests {
     fn read_only_sessions_and_manual_only_mode_cannot_propose() {
         let (_dir, db) = tools_db();
         assert_eq!(run(&db, "chat", false, PROPOSE, &propose_args("A claim worth keeping")).unwrap_err().status, 403);
-        memory_extraction::update_settings(&db, ACCOUNT_MEMORY_SCOPE, memory_extraction::MODE_REMEMBER, None, None).unwrap();
+        memory_extraction::update_settings(&db, ACCOUNT_MEMORY_SCOPE, memory_extraction::MODE_REMEMBER).unwrap();
         let error = run(&db, "chat", true, PROPOSE, &propose_args("A claim worth keeping")).unwrap_err();
         assert_eq!(error.status, 403);
         assert!(error.message.contains("/pin"));
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn a_full_scope_refuses_the_proposal_and_says_why() {
         let (_dir, db) = tools_db();
-        crate::memory_consolidation::update_settings(&db, ACCOUNT_MEMORY_SCOPE, "off", None, None, Some(1), None, None).unwrap();
+        crate::memory_consolidation::update_settings(&db, ACCOUNT_MEMORY_SCOPE, "off", Some(1), None, None).unwrap();
         memory_ledger::save(&db, "Already holding one", None, None).unwrap();
         let error = run(&db, "chat", true, PROPOSE, &propose_args("A brand new durable rule")).unwrap_err();
         assert_eq!(error.status, 409);

@@ -12,8 +12,8 @@
 //! for the reason [`crate::memory_extraction`] is: what a candidate list
 //! contains, what shape an answer must have, and what the gate refuses are this
 //! module's decisions, and they have to be checkable without a network. The
-//! live binding ([`crate::memory_consolidation_live`]) runs the pinned harness
-//! and model in a hidden bounded session; the learning router is never
+//! live binding ([`crate::memory_consolidation_live`]) runs the memory model
+//! ([`crate::memory_model`]) in a hidden bounded session; the learning router is never
 //! consulted, and a consolidation run writes no router decision.
 //!
 //! Three choices are worth naming, because each is where a memory system
@@ -32,13 +32,13 @@
 //!   Reflecting in the middle of a conversation reads a scope that is about to
 //!   change, and pays for the privilege.
 //!
-//! The job is bookkeeping rather than judgement, which is why the settings
-//! point at a harness and a model instead of hardcoding one: the right choice
+//! The job is bookkeeping rather than judgement, which is why it runs on the
+//! memory model the user chose rather than a hardcoded one: the right choice
 //! here is usually the cheapest model the user has configured.
 
 use crate::memory_ledger;
 use crate::BridgeError;
-use bridge_protocol::messages::{MemoryRecord, ACCOUNT_MEMORY_SCOPE};
+use bridge_protocol::messages::{MemoryModelSettings, MemoryRecord, ACCOUNT_MEMORY_SCOPE};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Deserialize;
@@ -140,8 +140,6 @@ pub(crate) fn install(transaction: &Transaction<'_>) -> Result<(), BridgeError> 
 pub struct ConsolidationSettings {
     pub scope_key: String,
     pub mode: String,
-    pub harness: Option<String>,
-    pub model: Option<String>,
     pub max_records: i64,
     pub allow_removal: bool,
     pub debounce_seconds: i64,
@@ -160,25 +158,21 @@ pub fn settings(db: &Connection, scope_key: &str) -> Result<ConsolidationSetting
     let scope_key = memory_ledger::parse_scope_key(scope_key)?;
     let row = db
         .query_row(
-            "SELECT mode, harness, model, max_records, allow_removal, debounce_seconds
+            "SELECT mode, max_records, allow_removal, debounce_seconds
              FROM memory_consolidation_settings WHERE scope_key=?1",
             params![scope_key],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
                     row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
                 ))
             },
         )
         .optional()?;
-    let (mode, harness, model, max_records, allow_removal, debounce_seconds) = row.unwrap_or((
+    let (mode, max_records, allow_removal, debounce_seconds) = row.unwrap_or((
         MODE_OFF.to_string(),
-        None,
-        None,
         DEFAULT_MAX_RECORDS,
         0,
         DEFAULT_DEBOUNCE_SECONDS,
@@ -186,21 +180,18 @@ pub fn settings(db: &Connection, scope_key: &str) -> Result<ConsolidationSetting
     Ok(ConsolidationSettings {
         scope_key,
         mode,
-        harness,
-        model,
         max_records,
         allow_removal: allow_removal != 0,
         debounce_seconds,
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Propose mode runs on the memory model, so it needs no pin of its own; the
+/// legacy `harness` and `model` columns are no longer read or written.
 pub fn update_settings(
     db: &Connection,
     scope_key: &str,
     mode: &str,
-    harness: Option<&str>,
-    model: Option<&str>,
     max_records: Option<i64>,
     allow_removal: Option<bool>,
     debounce_seconds: Option<i64>,
@@ -220,25 +211,6 @@ pub fn update_settings(
             )))
         }
     };
-    let harness = harness.map(str::trim).filter(|value| !value.is_empty());
-    let model = model.map(str::trim).filter(|value| !value.is_empty());
-    if mode == MODE_PROPOSE && (harness.is_none() || model.is_none()) {
-        return Err(BridgeError::Invalid(
-            "Propose mode needs a pinned harness and model to run on.".into(),
-        ));
-    }
-    // Consolidation runs with an empty tool scope, enforced by the same
-    // briefing authority the briefing runner uses. A harness that cannot hold
-    // it would refuse at provider start on every queued run, so it is refused
-    // here instead, while the user is looking at the setting.
-    if let Some(harness) = harness {
-        if let Err(unsupported) = crate::briefing_policy::adapter_may_brief(harness) {
-            return Err(BridgeError::Invalid(format!(
-                "{harness} cannot run a tool-free consolidation: {}",
-                unsupported.reason()
-            )));
-        }
-    }
     let current = settings(db, &scope_key)?;
     let max_records = max_records.unwrap_or(current.max_records);
     if !(MIN_MAX_RECORDS..=MAX_MAX_RECORDS).contains(&max_records) {
@@ -255,15 +227,13 @@ pub fn update_settings(
     let allow_removal = allow_removal.unwrap_or(current.allow_removal);
     db.execute(
         "INSERT INTO memory_consolidation_settings(
-            scope_key, mode, harness, model, max_records, allow_removal, debounce_seconds, updated_at
-         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
-         ON CONFLICT(scope_key) DO UPDATE SET mode=?2, harness=?3, model=?4, max_records=?5,
-             allow_removal=?6, debounce_seconds=?7, updated_at=?8",
+            scope_key, mode, max_records, allow_removal, debounce_seconds, updated_at
+         ) VALUES(?1,?2,?3,?4,?5,?6)
+         ON CONFLICT(scope_key) DO UPDATE SET mode=?2, max_records=?3,
+             allow_removal=?4, debounce_seconds=?5, updated_at=?6",
         params![
             scope_key,
             mode,
-            harness,
-            model,
             max_records,
             allow_removal as i64,
             debounce_seconds,
@@ -418,9 +388,13 @@ pub fn enqueue_after_turn(
 /// The debounce still applies, so this cannot start a run against a scope
 /// somebody is still talking to, and a turn arriving later replaces the pending
 /// run and pushes it out again.
-pub fn enqueue_when_full(db: &Connection, now: DateTime<Utc>) -> Result<bool, BridgeError> {
+pub fn enqueue_when_full(
+    db: &Connection,
+    now: DateTime<Utc>,
+    memory: &MemoryModelSettings,
+) -> Result<bool, BridgeError> {
     let current = settings(db, ACCOUNT_MEMORY_SCOPE)?;
-    if !current.enabled() || current.harness.is_none() || current.model.is_none() {
+    if !current.enabled() || memory.resolved.is_none() {
         return Ok(false);
     }
     if held_records(db, ACCOUNT_MEMORY_SCOPE)? < current.max_records {
@@ -460,19 +434,21 @@ pub struct ClaimedConsolidation {
     pub session_id: Option<String>,
     pub lease_owner: String,
     pub harness: String,
-    pub model: String,
+    /// `None` runs the harness on its default model.
+    pub model: Option<String>,
 }
 
 /// One due run, leased.
 ///
 /// Two gates settle a run instead of executing it, and neither is a failure nor
 /// a model call: a scope that has since turned consolidation off, because off
-/// means off including for work already queued, and a scope left without a
-/// harness and model to run on. A full scope is deliberately not one of them —
-/// see [`enqueue_when_full`].
+/// means off including for work already queued, and no memory model to run
+/// on. A full scope is deliberately not one of them — see
+/// [`enqueue_when_full`].
 pub fn claim_due(
     db: &Connection,
     now: DateTime<Utc>,
+    memory: &MemoryModelSettings,
 ) -> Result<Option<ClaimedConsolidation>, BridgeError> {
     loop {
         let candidate: Option<(String, String, Option<String>)> = db
@@ -493,10 +469,10 @@ pub fn claim_due(
             settle_unclaimed(db, &run_id, STATUS_CANCELLED, "consolidation_disabled", now)?;
             continue;
         }
-        if current.harness.is_none() || current.model.is_none() {
-            settle_unclaimed(db, &run_id, STATUS_CANCELLED, "consolidation_unconfigured", now)?;
+        let Some((harness, model)) = crate::memory_model::profile(memory) else {
+            settle_unclaimed(db, &run_id, STATUS_CANCELLED, "no_memory_model", now)?;
             continue;
-        }
+        };
         let lease_owner = Uuid::new_v4().to_string();
         let expires = (now + Duration::minutes(LEASE_MINUTES)).to_rfc3339();
         let claimed = db.execute(
@@ -514,8 +490,8 @@ pub fn claim_due(
             scope_key,
             session_id,
             lease_owner,
-            harness: current.harness.expect("checked above"),
-            model: current.model.expect("checked above"),
+            harness,
+            model,
         }));
     }
 }
@@ -1152,18 +1128,20 @@ mod tests {
         .unwrap();
     }
 
+    /// Claude is the harness that can hold briefing authority, so it is the
+    /// one a fixture may pin as the memory model.
+    fn pin_memory_model(db: &Connection) {
+        crate::memory_model::set(db, Some("claude"), Some("haiku")).unwrap();
+    }
+
+    /// The memory model as the live loop resolves it, with no standard choice.
+    fn memory(db: &Connection) -> MemoryModelSettings {
+        crate::memory_model::resolve_with(db, || Err("no standard choice in tests".into())).unwrap()
+    }
+
     fn propose_mode(db: &Connection) {
-        update_settings(
-            db,
-            ACCOUNT_MEMORY_SCOPE,
-            MODE_PROPOSE,
-            Some("claude"),
-            Some("haiku"),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        pin_memory_model(db);
+        update_settings(db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, None, None, None).unwrap();
     }
 
     fn pin(db: &Connection, body: &str) -> MemoryRecord {
@@ -1453,8 +1431,6 @@ mod tests {
             &db,
             ACCOUNT_MEMORY_SCOPE,
             MODE_OFF,
-            None,
-            None,
             Some(2),
             None,
             None,
@@ -1504,12 +1480,11 @@ mod tests {
     fn a_full_scope_is_due_for_consolidation_rather_than_blocked_by_it() {
         let (_dir, db) = consolidation_db();
         insert_chat(&db, "s1", "direct");
+        pin_memory_model(&db);
         update_settings(
             &db,
             ACCOUNT_MEMORY_SCOPE,
             MODE_PROPOSE,
-            Some("claude"),
-            Some("haiku"),
             Some(2),
             None,
             Some(MIN_DEBOUNCE_SECONDS),
@@ -1526,18 +1501,18 @@ mod tests {
         // Nothing is talking to this scope, so nothing enqueued a run. Reaching
         // the ceiling is what schedules one.
         let start = Utc::now();
-        assert!(enqueue_when_full(&db, start).unwrap());
+        assert!(enqueue_when_full(&db, start, &memory(&db)).unwrap());
         assert!(
-            !enqueue_when_full(&db, start).unwrap(),
+            !enqueue_when_full(&db, start, &memory(&db)).unwrap(),
             "the ceiling schedules one run, not one per tick"
         );
         assert!(
-            claim_due(&db, start).unwrap().is_none(),
+            claim_due(&db, start, &memory(&db)).unwrap().is_none(),
             "the debounce still keeps a full scope out of a live conversation"
         );
 
         let due = start + Duration::seconds(MIN_DEBOUNCE_SECONDS + 1);
-        let claimed = claim_due(&db, due).unwrap().expect("a full scope is claimable");
+        let claimed = claim_due(&db, due, &memory(&db)).unwrap().expect("a full scope is claimable");
         assert_eq!(claimed.session_id, None, "no turn stands behind a capacity run");
         assert!(settle(
             &db,
@@ -1580,16 +1555,16 @@ mod tests {
         pin(&db, "Two");
         let start = Utc::now();
         assert!(enqueue_after_turn(&db, "s1", start).unwrap());
-        update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_OFF, None, None, None, None, None)
+        update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_OFF, None, None, None)
             .unwrap();
         let due = start + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
-        assert!(claim_due(&db, due).unwrap().is_none());
+        assert!(claim_due(&db, due, &memory(&db)).unwrap().is_none());
         let last = last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().unwrap();
         assert_eq!(last.status, STATUS_CANCELLED, "off is not a failure");
         assert_eq!(last.detail.as_deref(), Some("consolidation_disabled"));
         assert_eq!(last.spend_microusd, 0);
         assert!(
-            !enqueue_when_full(&db, due).unwrap(),
+            !enqueue_when_full(&db, due, &memory(&db)).unwrap(),
             "an off scope does not schedule a capacity run either"
         );
 
@@ -1597,17 +1572,13 @@ mod tests {
         // rather than a decision, and it stops the run for its own reason.
         propose_mode(&db);
         assert!(enqueue_after_turn(&db, "s1", due).unwrap());
-        db.execute(
-            "UPDATE memory_consolidation_settings SET harness=NULL, model=NULL WHERE scope_key=?1",
-            params![ACCOUNT_MEMORY_SCOPE],
-        )
-        .unwrap();
+        crate::memory_model::set(&db, None, None).unwrap();
         let later = due + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
-        assert!(claim_due(&db, later).unwrap().is_none());
+        assert!(claim_due(&db, later, &memory(&db)).unwrap().is_none());
         let last = last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().unwrap();
         assert_eq!(last.status, STATUS_CANCELLED);
-        assert_eq!(last.detail.as_deref(), Some("consolidation_unconfigured"));
-        assert!(!enqueue_when_full(&db, later).unwrap());
+        assert_eq!(last.detail.as_deref(), Some("no_memory_model"));
+        assert!(!enqueue_when_full(&db, later, &memory(&db)).unwrap());
 
         let mut model = RefusingModel;
         let _ = &mut model;
@@ -1634,11 +1605,11 @@ mod tests {
 
         let first_window = start + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
         assert!(
-            claim_due(&db, first_window).unwrap().is_none(),
+            claim_due(&db, first_window, &memory(&db)).unwrap().is_none(),
             "the later turn pushed the run out of the first window"
         );
         let second_window = second_turn + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
-        let claimed = claim_due(&db, second_window).unwrap().unwrap();
+        let claimed = claim_due(&db, second_window, &memory(&db)).unwrap().unwrap();
         assert_eq!(
             claimed.session_id.as_deref(),
             Some("s2"),
@@ -1674,12 +1645,12 @@ mod tests {
         assert!(enqueue_after_turn(&db, "s1", start).unwrap());
         let due = start + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
         assert!(
-            claim_due(&db, due - Duration::seconds(DEFAULT_DEBOUNCE_SECONDS)).unwrap().is_none(),
+            claim_due(&db, due - Duration::seconds(DEFAULT_DEBOUNCE_SECONDS), &memory(&db)).unwrap().is_none(),
             "a run before its debounce window is not due"
         );
-        let claimed = claim_due(&db, due).unwrap().unwrap();
+        let claimed = claim_due(&db, due, &memory(&db)).unwrap().unwrap();
         assert_eq!(claimed.harness, "claude");
-        assert!(claim_due(&db, due).unwrap().is_none(), "the lease excludes a second worker");
+        assert!(claim_due(&db, due, &memory(&db)).unwrap().is_none(), "the lease excludes a second worker");
         assert!(heartbeat(&db, &claimed.run_id, &claimed.lease_owner, due).unwrap());
         assert!(settle(
             &db,
@@ -1748,9 +1719,9 @@ mod tests {
         let start = Utc::now();
         assert!(enqueue_after_turn(&db, "s1", start).unwrap());
         let due = start + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
-        let first = claim_due(&db, due).unwrap().unwrap();
+        let first = claim_due(&db, due, &memory(&db)).unwrap().unwrap();
         let later = due + Duration::minutes(LEASE_MINUTES + 1);
-        let second = claim_due(&db, later).unwrap().unwrap();
+        let second = claim_due(&db, later, &memory(&db)).unwrap().unwrap();
         assert_eq!(first.run_id, second.run_id);
         assert_ne!(first.lease_owner, second.lease_owner);
         assert!(
@@ -1830,8 +1801,6 @@ mod tests {
             &db,
             ACCOUNT_MEMORY_SCOPE,
             MODE_OFF,
-            None,
-            None,
             None,
             Some(true),
             None,
@@ -1980,41 +1949,15 @@ mod tests {
     }
 
     #[test]
-    fn propose_mode_needs_a_profile_that_can_run_tool_free() {
+    fn propose_mode_needs_no_pin_of_its_own() {
         let (_dir, db) = consolidation_db();
-        assert!(update_settings(
-            &db,
-            ACCOUNT_MEMORY_SCOPE,
-            MODE_PROPOSE,
-            None,
-            None,
-            None,
-            None,
-            None
-        )
-        .is_err());
-        for harness in ["codex", "opencode"] {
-            let error = update_settings(
-                &db,
-                ACCOUNT_MEMORY_SCOPE,
-                MODE_PROPOSE,
-                Some(harness),
-                Some("m"),
-                None,
-                None,
-                None,
-            )
-            .unwrap_err()
-            .to_string();
-            assert!(error.contains("tool-free"), "{harness}: {error}");
-        }
-        assert_eq!(settings(&db, ACCOUNT_MEMORY_SCOPE).unwrap().mode, MODE_OFF);
+        let saved = update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, None, None, None).unwrap();
+        assert_eq!(saved.mode, MODE_PROPOSE, "the memory model is what it runs on");
+        update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_OFF, None, None, None).unwrap();
         assert!(update_settings(
             &db,
             ACCOUNT_MEMORY_SCOPE,
             "auto_apply",
-            Some("claude"),
-            Some("m"),
             None,
             None,
             None
@@ -2024,8 +1967,6 @@ mod tests {
             &db,
             ACCOUNT_MEMORY_SCOPE,
             MODE_OFF,
-            None,
-            None,
             Some(0),
             None,
             None
@@ -2037,8 +1978,6 @@ mod tests {
             MODE_OFF,
             None,
             None,
-            None,
-            None,
             Some(1)
         )
         .is_err());
@@ -2048,8 +1987,6 @@ mod tests {
             MODE_OFF,
             None,
             None,
-            None,
-            None,
             None
         )
         .is_err());
@@ -2057,8 +1994,6 @@ mod tests {
             &db,
             ACCOUNT_MEMORY_SCOPE,
             MODE_PROPOSE,
-            Some("claude"),
-            Some("haiku"),
             Some(12),
             Some(true),
             Some(45),
@@ -2068,10 +2003,33 @@ mod tests {
         assert!(saved.allow_removal);
         assert_eq!(saved.debounce_seconds, 45);
         let unchanged =
-            update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_OFF, None, None, None, None, None)
+            update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_OFF, None, None, None)
                 .unwrap();
         assert_eq!(unchanged.max_records, 12, "an omitted field keeps its value");
         assert!(unchanged.allow_removal);
+    }
+
+    #[test]
+    fn a_scope_with_no_legacy_pin_claims_on_the_resolved_memory_model() {
+        let (_dir, db) = consolidation_db();
+        insert_chat(&db, "s1", "direct");
+        update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, None, None, None).unwrap();
+        let start = Utc::now();
+        assert!(enqueue_after_turn(&db, "s1", start).unwrap());
+        let due = start + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
+        // No pin and no new-chat default: what a new chat would start on
+        // answers, with no model id, so the harness runs its default.
+        let standard = crate::memory_model::resolve_with(&db, || Ok(("claude".into(), None))).unwrap();
+        let claimed = claim_due(&db, due, &standard).unwrap().expect("the resolver answered");
+        assert_eq!((claimed.harness.as_str(), claimed.model.as_deref()), ("claude", None));
+
+        let (_dir, db) = consolidation_db();
+        insert_chat(&db, "s1", "direct");
+        update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, None, None, None).unwrap();
+        crate::memory_model::set(&db, Some("claude"), Some("claude-haiku-5-5")).unwrap();
+        assert!(enqueue_after_turn(&db, "s1", start).unwrap());
+        let claimed = claim_due(&db, due, &memory(&db)).unwrap().unwrap();
+        assert_eq!(claimed.model.as_deref(), Some("claude-haiku-5-5"), "a pin applies to the next run");
     }
 
     #[test]

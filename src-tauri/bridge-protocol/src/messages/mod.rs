@@ -318,6 +318,8 @@ typed_methods![
     (ListMemoryRecordsAsOf, ListMemoryRecordsAsOfParams, ListMemoryRecordsResult),
     (GetConsolidationSettings, _, MemoryConsolidationSettings),
     (UpdateConsolidationSettings, UpdateConsolidationSettingsParams, MemoryConsolidationSettings),
+    (GetMemoryModel, _, MemoryModelSettings),
+    (SetMemoryModel, SetMemoryModelParams, MemoryModelSettings),
     // approvals
     (ResolveApproval, ResolveApprovalParams, InteractionResolutionResult),
     (ResolveQuestion, ResolveQuestionParams, InteractionResolutionResult),

@@ -58,13 +58,12 @@ pub fn start_consolidation_maintenance(core: Arc<BridgeCore>) {
                 scope_key: memory_ledger::account_memory_scope().to_string(),
             });
         }
-        {
-            let db = core.db.lock().unwrap();
-            let _ = memory_consolidation::enqueue_when_full(&db, now);
-        }
         let claimed = {
             let db = core.db.lock().unwrap();
-            memory_consolidation::claim_due(&db, now)
+            crate::memory_model::resolve(&db, &core.adapter_registry).and_then(|memory| {
+                let _ = memory_consolidation::enqueue_when_full(&db, now, &memory);
+                memory_consolidation::claim_due(&db, now, &memory)
+            })
         };
         if let Ok(Some(run)) = claimed {
             execute(&core, run);
@@ -88,20 +87,20 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedConsolidation) {
     let (allow_removal, candidates) = match prepared {
         Ok((allow_removal, Some(candidates))) => (allow_removal, candidates),
         Ok((_, None)) => {
-            settle(core, &run_id, &lease_owner, STATUS_COMPLETED, "no_candidates", &harness, &model, None, None);
+            settle(core, &run_id, &lease_owner, STATUS_COMPLETED, "no_candidates", &harness, model.as_deref(), None, None);
             return;
         }
         Err(error) => {
-            settle(core, &run_id, &lease_owner, STATUS_FAILED, &error.to_string(), &harness, &model, None, None);
+            settle(core, &run_id, &lease_owner, STATUS_FAILED, &error.to_string(), &harness, model.as_deref(), None, None);
             return;
         }
     };
 
     let prompt = memory_consolidation::compose_prompt(&candidates, allow_removal);
-    let output = match one_bounded_turn(core, &harness, &model, &prompt) {
+    let output = match one_bounded_turn(core, &harness, model.as_deref(), &prompt) {
         Ok(output) => output,
         Err(detail) => {
-            settle(core, &run_id, &lease_owner, STATUS_FAILED, &detail, &harness, &model, Some(&candidates.sha256), None);
+            settle(core, &run_id, &lease_owner, STATUS_FAILED, &detail, &harness, model.as_deref(), Some(&candidates.sha256), None);
             return;
         }
     };
@@ -122,7 +121,7 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedConsolidation) {
                 STATUS_COMPLETED,
                 &report.detail(),
                 &harness,
-                &model,
+                model.as_deref(),
                 Some(&candidates.sha256),
                 Some((&output, report.applied as i64, report.refused as i64)),
             );
@@ -134,7 +133,7 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedConsolidation) {
             STATUS_FAILED,
             &error.to_string(),
             &harness,
-            &model,
+            model.as_deref(),
             Some(&candidates.sha256),
             Some((&output, 0, 0)),
         ),
@@ -149,7 +148,7 @@ fn settle(
     status: &str,
     detail: &str,
     harness: &str,
-    model: &str,
+    model: Option<&str>,
     prompt_digest: Option<&str>,
     output: Option<(&ConsolidationOutput, i64, i64)>,
 ) {
@@ -167,7 +166,7 @@ fn settle(
         status,
         Some(detail),
         Some(harness),
-        Some(model),
+        model,
         prompt_digest,
         tokens,
         spend,
@@ -182,7 +181,7 @@ fn settle(
 fn one_bounded_turn(
     core: &Arc<BridgeCore>,
     harness: &str,
-    model: &str,
+    model: Option<&str>,
     prompt: &str,
 ) -> Result<ConsolidationOutput, String> {
     let limits = wire::WorkBriefLimits {
@@ -214,7 +213,7 @@ fn one_bounded_turn(
         StartRequest {
             session_id: None,
             cwd: &cwd,
-            model: Some(model),
+            model,
             effort: None,
             speed: None,
             instructions: None,
