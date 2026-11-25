@@ -1392,8 +1392,6 @@ mod tests {
             db,
             ACCOUNT_MEMORY_SCOPE,
             "off",
-            None,
-            None,
             Some(max_records),
             None,
             None,

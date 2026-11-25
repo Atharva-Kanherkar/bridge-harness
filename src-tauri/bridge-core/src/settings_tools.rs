@@ -6,7 +6,7 @@
 //! its orchestrator and has no business restyling the person's app.
 //!
 //! The catalog is deliberately closed. Every setting here changes how Bridge
-//! looks or what a new chat starts on. Nothing here can widen what an agent
+//! looks, what a new chat starts on, or what memory jobs run on. Nothing here can widen what an agent
 //! may do: default access, permissions, API keys, accounts, budgets, worker
 //! limits and approvals are not in it, and a request for one is refused with
 //! a pointer to Settings. Each write goes through the same validated path the
@@ -16,7 +16,8 @@ use std::sync::Arc;
 
 use bridge_protocol::messages::{
     ActiveTurnInput, AppPreferenceValues, ChatDefaults, ChatEffortChoice, ChatModelChoice,
-    ResolveChatSettingsParams, SaveChatDefaultsParams, ThemePreference, ThemeSkin,
+    MemoryModelSettings, ResolveChatSettingsParams, SaveChatDefaultsParams, ThemePreference,
+    ThemeSkin,
 };
 use serde_json::{json, Value};
 
@@ -53,6 +54,8 @@ struct Setting {
 
 const NOW: &str = "every open Bridge window, at once";
 const NEW_CHATS: &str = "new chats from now on; chats already open keep theirs";
+const MEMORY_JOBS: &str = "the next memory extraction and nightly cleanup";
+const MEMORY_MODEL: &str = "memory.model";
 
 fn catalog() -> Vec<Setting> {
     vec![
@@ -64,6 +67,7 @@ fn catalog() -> Vec<Setting> {
         Setting { key: "newChat.effort", kind: Kind::Effort, default: Value::Null, description: "The thinking effort a new chat starts with: one of the default model's supported levels, or null for the provider default. Needs newChat.model set.", applies: NEW_CHATS },
         Setting { key: "newChat.createWorktree", kind: Kind::Switch, default: json!(false), description: "Start new project chats in their own isolated Git worktree.", applies: NEW_CHATS },
         Setting { key: "newChat.activeTurnInput", kind: Kind::Choice(&["steer", "queue"]), default: json!("steer"), description: "What a message sent while the agent is working does: steer joins the running turn, queue waits for it to finish.", applies: NEW_CHATS },
+        Setting { key: MEMORY_MODEL, kind: Kind::Model, default: Value::Null, description: "The harness and model every memory job runs on: extraction after chats, nightly cleanup and automatic approval. As {harness, model}, a bare model id, or null to use the new-chat model. Only a harness that can run a tool-free turn (Claude) qualifies. Call settings_read with this key to list the models you can choose.", applies: MEMORY_JOBS },
     ]
 }
 
@@ -118,8 +122,9 @@ fn read(core: &Arc<BridgeCore>, args: &Value) -> Result<Value, ToolError> {
     let app = crate::app_preferences::read(&db).map_err(service_error)?.values;
     let chat = crate::chat_defaults::view(&db, None).map_err(service_error)?.application.defaults;
     let effective = crate::chat_defaults::resolve(&db, &core.adapter_registry, &ResolveChatSettingsParams { workspace_id: None, overrides: ChatDefaults::default(), expected_revision: None }).ok();
+    let memory = crate::memory_model::resolve(&db, &core.adapter_registry).map_err(service_error)?;
     let describe = |setting: &Setting| {
-        let value = stored(setting.key, &app, &chat);
+        let value = if setting.key == MEMORY_MODEL { memory_pin(&memory) } else { stored(setting.key, &app, &chat) };
         let mut entry = json!({
             "key": setting.key,
             "value": value,
@@ -138,6 +143,12 @@ fn read(core: &Arc<BridgeCore>, args: &Value) -> Result<Value, ToolError> {
                 entry["effective"] = json!({"harness": resolved.model.harness, "model": resolved.model.model, "label": model_label(&descriptors, &resolved.model.harness, resolved.model.model.as_deref())});
             }
             ("newChat.effort", Some(resolved)) => entry["effective"] = json!(resolved.effort),
+            (MEMORY_MODEL, _) => {
+                entry["effective"] = memory.resolved.as_ref().map_or(Value::Null, |resolved| json!({"harness": resolved.harness, "model": resolved.model, "source": resolved.source, "label": model_label(&descriptors, &resolved.harness, resolved.model.as_deref())}));
+                if !memory.skipped.is_empty() {
+                    entry["skipped"] = json!(memory.skipped);
+                }
+            }
             _ => {}
         }
         entry
@@ -192,12 +203,12 @@ fn choice<T: serde::de::DeserializeOwned>(key: &str, values: &[&str], value: &Va
 
 /// Turn a model value into a choice: `{harness, model}`, a harness id (its
 /// default model), or a model id exactly one usable harness offers.
-fn model_choice(value: &Value, usable: &[AdapterDescriptor]) -> Result<Option<ChatModelChoice>, ToolError> {
+fn model_choice(key: &str, value: &Value, usable: &[AdapterDescriptor]) -> Result<Option<ChatModelChoice>, ToolError> {
     let pick = |harness: &str, model: Option<String>| Some(ChatModelChoice { harness: harness.to_owned(), model, account: None });
     match value {
         Value::Null => Ok(None),
         Value::Object(object) => {
-            let harness = object.get("harness").and_then(Value::as_str).ok_or_else(|| bad("newChat.model needs a harness, for example {\"harness\": \"claude\", \"model\": \"<id>\"}"))?;
+            let harness = object.get("harness").and_then(Value::as_str).ok_or_else(|| bad(format!("{key} needs a harness, for example {{\"harness\": \"claude\", \"model\": \"<id>\"}}")))?;
             Ok(pick(harness, object.get("model").and_then(Value::as_str).filter(|id| !id.is_empty()).map(str::to_owned)))
         }
         Value::String(text) => {
@@ -215,11 +226,11 @@ fn model_choice(value: &Value, usable: &[AdapterDescriptor]) -> Result<Option<Ch
             let offering: Vec<&AdapterDescriptor> = usable.iter().filter(|descriptor| descriptor.models.iter().any(|option| option.id == *text && option.available && option.compatible)).collect();
             match offering.as_slice() {
                 [one] => Ok(pick(&one.id, Some(text.clone()))),
-                [] => Err(bad(format!("No available model has the id \"{text}\". Call settings_read with key newChat.model (and search) for the ids you can use."))),
+                [] => Err(bad(format!("No available model has the id \"{text}\". Call settings_read with key {key} (and search) for the ids you can use."))),
                 many => Err(bad(format!("Several harnesses offer \"{text}\" ({}); pass {{\"harness\": ..., \"model\": \"{text}\"}}.", many.iter().map(|descriptor| descriptor.id.as_str()).collect::<Vec<_>>().join(", ")))),
             }
         }
-        _ => Err(bad("newChat.model takes {harness, model}, a model id, or null")),
+        _ => Err(bad(format!("{key} takes {{harness, model}}, a model id, or null"))),
     }
 }
 
@@ -264,7 +275,7 @@ fn change_new_chat(core: &Arc<BridgeCore>, setting: &Setting, value: &Value) -> 
     let mut notes: Vec<String> = Vec::new();
     let field = match setting.key {
         "newChat.model" => {
-            let mut choice = model_choice(value, &usable(&db, &descriptors))?;
+            let mut choice = model_choice(setting.key, value, &usable(&db, &descriptors))?;
             // Keep the account the person picked when the harness stays the same.
             if let (Some(next), Some(current)) = (choice.as_mut(), defaults.model.as_ref()) {
                 if next.harness == current.harness {
@@ -324,6 +335,10 @@ fn change_new_chat(core: &Arc<BridgeCore>, setting: &Setting, value: &Value) -> 
     let overriding = crate::chat_defaults::projects_overriding(&db, field).map_err(service_error)?;
     drop(db);
     core.events.publish(crate::events::CoreEvent::StateChanged);
+    if setting.key == "newChat.model" {
+        // An unpinned memory model follows the new-chat model.
+        core.events.publish(crate::events::CoreEvent::MemoryChanged { scope_key: crate::memory_ledger::account_memory_scope().to_string() });
+    }
     if !overriding.is_empty() {
         notes.push(format!("These projects set their own value and keep it: {}.", overriding.join(", ")));
     }
@@ -336,6 +351,40 @@ fn change_new_chat(core: &Arc<BridgeCore>, setting: &Setting, value: &Value) -> 
     }
     if !notes.is_empty() {
         result["notes"] = json!(notes);
+    }
+    Ok(result)
+}
+
+fn memory_pin(memory: &MemoryModelSettings) -> Value {
+    memory.pinned.as_ref().map_or(Value::Null, |pin| json!({"harness": pin.harness, "model": pin.model}))
+}
+
+/// Pins the memory model through the one validated write path the Memory
+/// page and the daemon use, which also tells open Memory screens. A harness
+/// alone pins its default model, since a pin names both.
+fn change_memory_model(core: &Arc<BridgeCore>, setting: &Setting, value: &Value) -> Result<Value, ToolError> {
+    let descriptors = core.adapter_registry.descriptors();
+    let (harness, model, previous) = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let choice = model_choice(setting.key, value, &usable(&db, &descriptors))?;
+        let (harness, model) = match choice {
+            None => (None, None),
+            Some(choice) => {
+                let model = choice.model.or_else(|| descriptors.iter().find(|descriptor| descriptor.id == choice.harness).and_then(|descriptor| descriptor.default_model.clone()));
+                let Some(model) = model else {
+                    return Err(bad(format!("{} has no default model; pass {{\"harness\": \"{}\", \"model\": \"<id>\"}}.", choice.harness, choice.harness)));
+                };
+                (Some(choice.harness), Some(model))
+            }
+        };
+        let previous = crate::memory_model::pinned(&db).map_err(service_error)?;
+        (harness, model, previous.map_or(Value::Null, |pin| json!({"harness": pin.harness, "model": pin.model})))
+    };
+    let saved = crate::api::set_memory_model(core, harness.as_deref(), model.as_deref()).map_err(service_error)?;
+    let value = memory_pin(&saved);
+    let mut result = json!({"key": setting.key, "previous": previous, "value": value, "changed": previous != value, "appliesTo": setting.applies});
+    if let Some(resolved) = &saved.resolved {
+        result["effective"] = json!({"harness": resolved.harness, "model": resolved.model, "source": resolved.source, "label": model_label(&descriptors, &resolved.harness, resolved.model.as_deref())});
     }
     Ok(result)
 }
@@ -354,7 +403,9 @@ fn change(core: &Arc<BridgeCore>, args: &Value) -> Result<Value, ToolError> {
         Value::String(text) if matches!(text.trim().to_lowercase().as_str(), "default" | "null" | "reset" | "") => Value::Null,
         other => other,
     };
-    if key.starts_with("newChat.") {
+    if key == MEMORY_MODEL {
+        change_memory_model(core, &setting, &value)
+    } else if key.starts_with("newChat.") {
         change_new_chat(core, &setting, &value)
     } else {
         let value = if value.is_null() { setting.default.clone() } else { value };
@@ -593,5 +644,73 @@ mod tests {
         assert!(set["notes"][0].as_str().unwrap().contains("Website"), "{set}");
         let worktree = change(&core, "newChat.createWorktree", json!(true)).unwrap();
         assert!(worktree.get("notes").is_none(), "the project does not set this field");
+    }
+
+    #[test]
+    fn memory_model_reads_sets_and_clears_through_the_memory_model_path() {
+        let (_dir, core) = with_models();
+        let read = run(&core, true, READ_TOOL, &json!({"key": "memory.model"})).unwrap();
+        assert_eq!(read["value"], Value::Null, "no pin");
+        assert!(read["options"].as_array().is_some_and(|options| !options.is_empty()), "lists models like newChat.model");
+
+        change(&core, "newChat.model", json!("opus")).unwrap();
+        let read = run(&core, true, READ_TOOL, &json!({"key": "memory.model"})).unwrap();
+        assert_eq!(read["effective"]["source"], "chat_default", "{read}");
+        assert_eq!(read["effective"]["model"], "opus");
+
+        let mut events = core.events.subscribe();
+        let set = change(&core, "memory.model", json!({"harness": "claude", "model": "shared"})).unwrap();
+        assert_eq!(set["value"], json!({"harness": "claude", "model": "shared"}));
+        assert_eq!((set["changed"].clone(), set["effective"]["source"].clone()), (json!(true), json!("user")));
+        assert!(matches!(events.try_recv(), Ok(crate::events::CoreEvent::MemoryChanged { .. })), "the Memory page refreshes");
+
+        let unknown = change(&core, "memory.model", json!({"harness": "claude", "model": "no-such-model"})).unwrap_err();
+        assert!(unknown.message.contains("unavailable or incompatible"), "{}", unknown.message);
+        let read = run(&core, true, READ_TOOL, &json!({"key": "memory.model"})).unwrap();
+        assert_eq!(read["value"], json!({"harness": "claude", "model": "shared"}), "a refused id keeps the working pin");
+        assert_eq!(read["effective"]["model"], "shared");
+
+        let refused = change(&core, "memory.model", json!({"harness": "codex", "model": "standard"})).unwrap_err();
+        assert!(refused.message.contains("tool-free"), "{}", refused.message);
+        assert_eq!(
+            crate::memory_model::pinned(&core.db.lock().unwrap()).unwrap().unwrap().model,
+            "shared",
+            "a refused pin changes nothing"
+        );
+
+        let cleared = change(&core, "memory.model", json!("default")).unwrap();
+        assert_eq!((cleared["value"].clone(), cleared["effective"]["source"].clone()), (Value::Null, json!("chat_default")));
+    }
+
+    fn memory_changed(events: &mut crate::events::EventReceiver) -> bool {
+        std::iter::from_fn(|| events.try_recv().ok()).any(|event| matches!(event, crate::events::CoreEvent::MemoryChanged { .. }))
+    }
+
+    #[test]
+    fn the_api_setter_validates_the_model_and_tells_open_memory_screens() {
+        let (_dir, core) = with_models();
+        let mut events = core.events.subscribe();
+        crate::api::set_memory_model(&core, Some("claude"), Some("opus")).unwrap();
+        assert!(memory_changed(&mut events), "the daemon and Tauri write path publishes the change");
+
+        let unknown = crate::api::set_memory_model(&core, Some("claude"), Some("no-such-model")).unwrap_err().to_string();
+        assert!(unknown.contains("unavailable or incompatible"), "{unknown}");
+        assert!(!memory_changed(&mut events), "a refusal changes nothing, so it announces nothing");
+        let pin = crate::memory_model::pinned(&core.db.lock().unwrap()).unwrap().unwrap();
+        assert_eq!(pin.model, "opus", "the working pin survives");
+    }
+
+    #[test]
+    fn changing_the_new_chat_model_tells_open_memory_screens() {
+        let (_dir, core) = with_models();
+        let mut events = core.events.subscribe();
+        let defaults = ChatDefaults {
+            model: Some(ChatModelChoice { harness: "claude".into(), model: Some("opus".into()), account: None }),
+            ..ChatDefaults::default()
+        };
+        crate::api::save_chat_defaults(&core, &SaveChatDefaultsParams { project_id: None, expected_revision: 0, defaults }).unwrap();
+        assert!(memory_changed(&mut events), "an unpinned memory model follows the new-chat model");
+        change(&core, "newChat.model", json!({"harness": "claude", "model": "shared"})).unwrap();
+        assert!(memory_changed(&mut events), "the settings tool path too");
     }
 }

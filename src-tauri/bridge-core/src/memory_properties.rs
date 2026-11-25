@@ -42,9 +42,10 @@ fn reset(db: &Connection, max_records: i64, mode: &str) {
         "DELETE FROM memory_records; DELETE FROM memory_retrieval_audits; DELETE FROM memory_extraction_runs;",
     )
     .unwrap();
-    memory_consolidation::update_settings(db, ACCOUNT_MEMORY_SCOPE, "off", None, None, Some(max_records), None, None).unwrap();
+    memory_consolidation::update_settings(db, ACCOUNT_MEMORY_SCOPE, "off", Some(max_records), None, None).unwrap();
     let (harness, model) = if mode == memory_extraction::MODE_REMEMBER { (None, None) } else { (Some("claude"), Some("sonnet")) };
-    memory_extraction::update_settings(db, ACCOUNT_MEMORY_SCOPE, mode, harness, model).unwrap();
+    crate::memory_model::set(db, harness, model).unwrap();
+    memory_extraction::update_settings(db, ACCOUNT_MEMORY_SCOPE, mode).unwrap();
 }
 
 fn row_count(db: &Connection) -> i64 {

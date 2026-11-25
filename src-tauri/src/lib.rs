@@ -3196,9 +3196,33 @@ async fn update_extraction_settings(
     model: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::MemoryExtractionSettings, BridgeError> {
+    // Deprecated and ignored: extraction runs on the memory model. Kept so the
+    // command matches its wire contract for one release.
+    drop((harness, model));
     let core = state.inner().clone();
     blocking("Update extraction settings", move || {
-        api::update_extraction_settings(&core, &mode, harness.as_deref(), model.as_deref())
+        api::update_extraction_settings(&core, &mode)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_memory_model(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryModelSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get memory model", move || api::get_memory_model(&core)).await
+}
+
+#[tauri::command]
+async fn set_memory_model(
+    harness: Option<String>,
+    model: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryModelSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Set memory model", move || {
+        api::set_memory_model(&core, harness.as_deref(), model.as_deref())
     })
     .await
 }
@@ -3252,13 +3276,14 @@ async fn update_consolidation_settings(
     debounce_seconds: Option<i64>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::MemoryConsolidationSettings, BridgeError> {
+    // Deprecated and ignored: consolidation runs on the memory model. Kept so
+    // the command matches its wire contract for one release.
+    drop((harness, model));
     let core = state.inner().clone();
     blocking("Update consolidation settings", move || {
         api::update_consolidation_settings(
             &core,
             &mode,
-            harness.as_deref(),
-            model.as_deref(),
             max_records,
             allow_removal,
             debounce_seconds,
@@ -4269,6 +4294,8 @@ pub fn run() -> i32 {
             get_insights,
             get_consolidation_settings,
             update_consolidation_settings,
+            get_memory_model,
+            set_memory_model,
             interrupt_turn,
             retry_worker_task,
             refresh_account_usage,

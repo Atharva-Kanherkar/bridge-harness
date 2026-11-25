@@ -21,7 +21,7 @@ import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
 import { activeWebDaemon } from "./webDaemon";
 import { asWireKind, readWireKind } from "./transcript/wire";
-import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, ReviewMemoryRecordsResult, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryConsolidationSettings, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, Workspace, WorkspaceSessionKind } from "./types";
+import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, ReviewMemoryRecordsResult, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryConsolidationSettings, MemoryExtractionSettings, MemoryInjectionSettings, MemoryModelChoice, MemoryModelSettings, MemoryModelSource, SkippedMemoryModel, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, Workspace, WorkspaceSessionKind } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { EarlyCompactionSettings } from "./types";
 import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath, BrowserCloneStatus } from "./types";
@@ -851,6 +851,22 @@ const mockActivityLog: MemoryActivityEntry[] = [
 ];
 let mockMemoryInsights: MemoryInsightsResult = { status: "empty" };
 let mockExtractionSettings: MemoryExtractionSettings = { scopeKey: "account:local", mode: "propose" };
+let mockMemoryModelPin: MemoryModelChoice | undefined;
+/** Like the host: the pin, then the new-chat default, then the standard
+ * choice, skipping any harness that cannot run a tool-free turn. */
+function mockMemoryModel(): MemoryModelSettings {
+  const skipped: SkippedMemoryModel[] = [];
+  const consider = (harness: string, model: string | null | undefined, source: MemoryModelSource) => {
+    if (harness === "claude") return { harness, ...(model ? { model } : {}), source };
+    skipped.push({ harness, ...(model ? { model } : {}), source, reason: `\`${harness}\` cannot enforce a tool-free turn` });
+    return undefined;
+  };
+  const chat = mockDefaultsView(mockState).application.defaults.model;
+  const resolved = (mockMemoryModelPin && consider(mockMemoryModelPin.harness, mockMemoryModelPin.model, "user"))
+    ?? (chat ? consider(chat.harness, chat.model, "chat_default") : undefined)
+    ?? consider("claude", "sonnet", "standard");
+  return { ...(mockMemoryModelPin ? { pinned: { ...mockMemoryModelPin } } : {}), ...(resolved ? { resolved } : {}), skipped };
+}
 const mockMemoryMaxRecords = 200;
 let mockMemoryInjection = true;
 const mockForests: Record<string, SessionForestSnapshot> = {
@@ -2010,7 +2026,8 @@ export const bridgeApi = {
   getChatDefaults: async (projectId?: string | null): Promise<ChatDefaultsView> => hasBackend() ? call("config/get_chat_defaults", { projectId: projectId ?? null }) : Promise.resolve(mockDefaultsView(mockState, projectId)),
   saveChatDefaults: async (params: SaveChatDefaultsParams): Promise<ChatDefaultsView> => {
     if (hasBackend()) return call("config/save_chat_defaults", params);
-    const result = mockSaveDefaults(mockState,params); emitState(); return result;
+    // Like the host: an unpinned memory model follows the new-chat model.
+    const result = mockSaveDefaults(mockState,params); emitState(); emitMemoryChanged("account:local"); return result;
   },
   resolveChatSettings: async (params: ResolveChatSettingsParams): Promise<ResolvedChatSettings> => hasBackend() ? call("sessions/resolve_chat_settings", params) : Promise.resolve(mockResolveSettings(mockState,mockHealth.adapters,mockConfigState.agents,params)),
   createConfiguredChat: async (params: CreateConfiguredChatParams): Promise<ConfiguredChatResult> => {
@@ -3791,20 +3808,28 @@ export const bridgeApi = {
     if (hasBackend()) return call("memory/get_extraction_settings");
     return structuredClone(mockExtractionSettings);
   },
-  updateExtractionSettings: async (mode: string, harness?: string | null, model?: string | null): Promise<MemoryExtractionSettings> => {
-    if (hasBackend()) {
-      return call("memory/update_extraction_settings", {
-        mode,
-        ...(harness ? { harness } : {}),
-        ...(model ? { model } : {}),
-      });
-    }
+  /** What an extraction runs on is the memory model (`setMemoryModel`). */
+  updateExtractionSettings: async (mode: string): Promise<MemoryExtractionSettings> => {
+    if (hasBackend()) return call("memory/update_extraction_settings", { mode });
     if (mode !== "remember" && mode !== "propose" && mode !== "auto_apply") {
       throw new Error(`Unknown extraction mode '${mode}'. Use remember, propose, or auto_apply.`);
     }
-    if (Boolean(harness) !== Boolean(model)) throw new Error("Pin both a helper and a model, or neither to run on each chat's own model.");
-    mockExtractionSettings = { ...mockExtractionSettings, mode, harness: harness ?? undefined, model: model ?? undefined };
+    mockExtractionSettings = { ...mockExtractionSettings, mode };
     return structuredClone(mockExtractionSettings);
+  },
+  /** The one harness and model extraction, nightly cleanup and automatic approval run on. */
+  getMemoryModel: async (): Promise<MemoryModelSettings> => {
+    if (hasBackend()) return call("memory/get_memory_model");
+    return mockMemoryModel();
+  },
+  /** Both pin the memory model; neither clears the pin, so the new-chat model is used. */
+  setMemoryModel: async (harness?: string | null, model?: string | null): Promise<MemoryModelSettings> => {
+    if (hasBackend()) return call("memory/set_memory_model", { ...(harness ? { harness } : {}), ...(model ? { model } : {}) });
+    if (Boolean(harness) !== Boolean(model)) throw new Error("Pin both a harness and a model, or neither to use your new-chat model.");
+    if (harness && harness !== "claude") throw new Error(`${harness} cannot run memory jobs, which must be tool-free.`);
+    mockMemoryModelPin = harness && model ? { harness, model } : undefined;
+    emitMemoryChanged("account:local");
+    return mockMemoryModel();
   },
   getMemoryInjection: async (): Promise<MemoryInjectionSettings> => {
     if (hasBackend()) return call("memory/get_memory_injection");

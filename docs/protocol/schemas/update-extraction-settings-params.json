@@ -5,6 +5,7 @@
   "description": "Extraction has three account-local modes. `propose` is the safe default and queues every gated candidate for review. `remember` stops future extraction; new memory is then saved only explicitly, while existing active extracted records remain active. `auto_apply` runs the same extractor but promotes only candidates at or above 90% confidence grounded in a cited, visible user message and cleared by the deterministic stability, tombstone, and conflict guards. Other validated candidates that fit the scope budget remain proposed for review; invalid, unsafe, duplicate, or over-budget output is refused.",
   "properties": {
     "harness": {
+      "description": "Deprecated and ignored: extraction runs on the memory model (`memory/set_memory_model`). Accepted for one release so older clients still decode.",
       "type": [
         "string",
         "null"

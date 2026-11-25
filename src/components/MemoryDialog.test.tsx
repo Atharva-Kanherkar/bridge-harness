@@ -7,7 +7,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
-import type { MemoryChangedPayload, MemoryExtractionSettings, MemoryRecord } from "../types";
+import type { AdapterDescriptor, MemoryChangedPayload, MemoryExtractionSettings, MemoryModelSettings, MemoryRecord } from "../types";
 import { bodyLength, MemoryDialog } from "./MemoryDialog";
 
 const record = (id: string, body: string, kind = "preference"): MemoryRecord => ({
@@ -26,6 +26,7 @@ let container: HTMLDivElement;
 let root: Root;
 let store: MemoryRecord[];
 let extractionSettings: MemoryExtractionSettings;
+let memoryModel: MemoryModelSettings;
 let memoryHandler: ((payload: MemoryChangedPayload) => void) | undefined;
 let maxRecords: number;
 
@@ -104,10 +105,18 @@ beforeEach(() => {
     allowRemoval: false,
     debounceSeconds: 600,
   }));
-  vi.spyOn(bridgeApi, "updateExtractionSettings").mockImplementation(async (mode, harness, model) => {
-    if (Boolean(harness) !== Boolean(model)) throw new Error("Pin both a helper and a model, or neither to run on each chat's own model.");
-    extractionSettings = { ...extractionSettings, mode, harness: harness ?? undefined, model: model ?? undefined };
+  vi.spyOn(bridgeApi, "updateExtractionSettings").mockImplementation(async mode => {
+    extractionSettings = { ...extractionSettings, mode };
     return structuredClone(extractionSettings);
+  });
+  memoryModel = { resolved: { harness: "claude", model: "opus", source: "chat_default" }, skipped: [] };
+  vi.spyOn(bridgeApi, "getMemoryModel").mockImplementation(async () => structuredClone(memoryModel));
+  vi.spyOn(bridgeApi, "setMemoryModel").mockImplementation(async (harness, model) => {
+    if (harness === "codex") throw new Error("codex cannot run memory jobs, which must be tool-free: no per-tool authority");
+    memoryModel = harness && model
+      ? { pinned: { harness, model }, resolved: { harness, model, source: "user" }, skipped: [] }
+      : { resolved: { harness: "claude", model: "opus", source: "chat_default" }, skipped: [] };
+    return structuredClone(memoryModel);
   });
   vi.spyOn(bridgeApi, "supersedeMemoryRecord").mockImplementation(async (recordId, newBody, newKind) => {
     const old = store.find(item => item.id === recordId && item.status === "active")!;
@@ -517,22 +526,27 @@ describe("MemoryDialog review queue", () => {
     expect(container.textContent).toContain("existing active memory stays active");
   });
 
-  it("review first without a pinned helper runs on the chat's own model", async () => {
-    const onError = vi.fn();
-    mount({ onError });
-    await flush();
-    click(tab("Review"));
-    expect(buttonByText("Manual only").getAttribute("aria-pressed")).toBe("true");
-    click(buttonByText("Review first"));
-    await flush();
-    expect(onError).not.toHaveBeenCalled();
-    expect(buttonByText("Review first").getAttribute("aria-pressed")).toBe("true");
-    expect(extractionSettings.harness).toBeFalsy();
-    expect(extractionSettings.model).toBeFalsy();
-    expect(container.textContent).toContain("Chat's own model");
-  });
+  const memoryAdapters: AdapterDescriptor[] = [
+    {
+      id: "claude", label: "Claude", available: true, authState: "signed_in", version: "test", unavailableReason: null, capabilities: [],
+      models: [{ id: "opus", label: "Claude Opus", tier: "strong", defaultForTier: true }, { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForTier: true }],
+      defaultModel: "opus",
+    },
+    {
+      id: "codex", label: "Codex", available: true, authState: "signed_in", version: "test", unavailableReason: null, capabilities: [],
+      models: [{ id: "gpt-5.6-luna", label: "GPT Luna", tier: "standard", defaultForTier: true }],
+      defaultModel: "gpt-5.6-luna",
+    },
+  ];
+  // Option labels for the ids these tests pick, as the Choice lists show them.
+  const optionLabel: Record<string, string> = { "": "", claude: "Claude", codex: "Codex", opus: "Claude Opus", haiku: "Claude Haiku", "gpt-5.6-luna": "GPT Luna" };
+  const pick = (label: string, value: string) =>
+    choose(label, value === "" ? (label === "Memory harness" ? "Use my new-chat model" : "Model…") : optionLabel[value]);
+  /** What a Choice trigger shows. */
+  const pickerValue = (label: string) => document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.textContent?.trim();
+  const sourceLine = () => container.querySelector('[data-testid="memory-model-source"]')?.textContent;
 
-  it("automatic is selectable and keeps the chat-own-model profile when unpinned", async () => {
+  it("changing the extraction mode sends only the mode", async () => {
     const onError = vi.fn();
     mount({ onError });
     await flush();
@@ -540,55 +554,136 @@ describe("MemoryDialog review queue", () => {
     click(buttonByText("Automatic"));
     await flush();
     expect(onError).not.toHaveBeenCalled();
-    expect(bridgeApi.updateExtractionSettings).toHaveBeenCalledWith("auto_apply", "", "");
+    expect(bridgeApi.updateExtractionSettings).toHaveBeenCalledWith("auto_apply");
     expect(buttonByText("Automatic").getAttribute("aria-pressed")).toBe("true");
   });
 
-  it("automatic forwards the selected extraction helper and model", async () => {
-    mount({
-      adapters: [{
-        id: "claude",
-        label: "Claude",
-        available: true,
-        authState: "signed_in",
-        version: "test",
-        unavailableReason: null,
-        capabilities: [],
-        models: [{ id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForTier: true }],
-        defaultModel: "sonnet",
-      }],
-    });
+  it("the memory model card says what every memory job runs on and why", async () => {
+    mount({ adapters: memoryAdapters });
     await flush();
     click(tab("Review"));
-    await choose("Extraction harness", "Claude");
-    await choose("Extraction model", "Claude Sonnet");
-    click(buttonByText("Automatic"));
-    await flush();
-    expect(bridgeApi.updateExtractionSettings).toHaveBeenCalledWith("auto_apply", "claude", "sonnet");
-    expect(buttonByText("Automatic").getAttribute("aria-pressed")).toBe("true");
+    expect(container.textContent).toContain("Memory model");
+    expect(container.textContent).toContain("Runs extraction after chats, nightly cleanup and automatic approval");
+    expect(container.textContent).not.toContain("Extraction model");
+    expect(sourceLine()).toBe("Using Claude Opus, your new-chat model.");
+    expect(pickerValue("Memory harness")).toBe("Use my new-chat model");
   });
 
-  it("a helper pinned without a model is refused and the mode stays put", async () => {
+  it("a skipped choice is shown with its reason", async () => {
+    memoryModel = {
+      resolved: { harness: "claude", model: "opus", source: "standard" },
+      skipped: [{ harness: "codex", model: "gpt-5.6-luna", source: "chat_default", reason: "the app-server protocol has no per-tool authority" }],
+    };
+    mount({ adapters: memoryAdapters });
+    await flush();
+    click(tab("Review"));
+    expect(sourceLine()).toBe("Using Claude Opus, Bridge's standard choice.");
+    expect(container.textContent).toContain("Skipped GPT Luna, your new-chat model: the app-server protocol has no per-tool authority.");
+  });
+
+  it("picking a model saves the pin once, and the new-chat option clears it", async () => {
     const onError = vi.fn();
-    mount({
-      onError,
-      adapters: [{ id: "claude", label: "Claude", available: true, authState: "authenticated", capabilities: [], models: [] } as never],
-    });
+    mount({ onError, adapters: memoryAdapters });
     await flush();
     click(tab("Review"));
-    await choose("Extraction harness", "Claude");
-    click(buttonByText("Review first"));
+    await pick("Memory harness", "claude");
     await flush();
-    expect(onError).toHaveBeenCalledWith(expect.stringContaining("both a helper and a model"));
-    expect(buttonByText("Manual only").getAttribute("aria-pressed")).toBe("true");
+    expect(bridgeApi.setMemoryModel).not.toHaveBeenCalled();
+    await pick("Memory model", "haiku");
+    await flush();
+    expect(bridgeApi.setMemoryModel).toHaveBeenCalledTimes(1);
+    expect(bridgeApi.setMemoryModel).toHaveBeenCalledWith("claude", "haiku");
+    expect(sourceLine()).toBe("Using Claude Haiku, your pick.");
+
+    await pick("Memory harness", "");
+    await flush();
+    expect(bridgeApi.setMemoryModel).toHaveBeenLastCalledWith();
+    expect(sourceLine()).toBe("Using Claude Opus, your new-chat model.");
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("a harness that cannot run tool-free is refused and the pickers reset", async () => {
+    const onError = vi.fn();
+    mount({ onError, adapters: memoryAdapters });
+    await flush();
+    click(tab("Review"));
+    await pick("Memory harness", "codex");
+    await pick("Memory model", "gpt-5.6-luna");
+    await flush();
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining("tool-free"));
+    expect(pickerValue("Memory harness")).toBe("Use my new-chat model");
+    expect(sourceLine()).toBe("Using Claude Opus, your new-chat model.");
+  });
+
+  it("the pickers follow a pin changed or cleared elsewhere", async () => {
+    memoryModel = { pinned: { harness: "claude", model: "haiku" }, resolved: { harness: "claude", model: "haiku", source: "user" }, skipped: [] };
+    mount({ adapters: memoryAdapters });
+    await flush();
+    click(tab("Review"));
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["Claude", "Claude Haiku"]);
+
+    // Changed through the settings tool in another chat.
+    memoryModel = { pinned: { harness: "claude", model: "opus" }, resolved: { harness: "claude", model: "opus", source: "user" }, skipped: [] };
+    await act(async () => { memoryHandler?.({ scopeKey: "account:local" }); });
+    await flush();
+    expect(sourceLine()).toBe("Using Claude Opus, your pick.");
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["Claude", "Claude Opus"]);
+
+    // Cleared elsewhere: back to the new-chat model.
+    memoryModel = { resolved: { harness: "claude", model: "opus", source: "chat_default" }, skipped: [] };
+    await act(async () => { memoryHandler?.({ scopeKey: "account:local" }); });
+    await flush();
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["Use my new-chat model", "Model…"]);
+  });
+
+  it("a harness picked without a model stays a local draft until a model is chosen", async () => {
+    memoryModel = { pinned: { harness: "claude", model: "haiku" }, resolved: { harness: "claude", model: "haiku", source: "user" }, skipped: [] };
+    mount({ adapters: memoryAdapters });
+    await flush();
+    click(tab("Review"));
+    await pick("Memory harness", "codex");
+    await flush();
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["Codex", "Model…"]);
+    await act(async () => { memoryHandler?.({ scopeKey: "account:local" }); });
+    await flush();
+    expect(pickerValue("Memory harness"), "an unrelated reload keeps the draft").toBe("Codex");
+    expect(sourceLine(), "the stored pin is still what runs").toBe("Using Claude Haiku, your pick.");
+    expect(bridgeApi.setMemoryModel).not.toHaveBeenCalled();
+  });
+
+  it("a read that started before a memory-model write cannot undo it", async () => {
+    let release: () => void = () => {};
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const list = vi.mocked(bridgeApi.listMemoryRecords).getMockImplementation()!;
+    let first = true;
+    vi.mocked(bridgeApi.listMemoryRecords).mockImplementation(async (...args) => {
+      if (first) { first = false; await held; }
+      return list(...args);
+    });
+    mount({ adapters: memoryAdapters });
+    await flush();
+    click(tab("Review"));
+    await pick("Memory harness", "claude");
+    await pick("Memory model", "haiku");
+    await flush();
+    expect(sourceLine()).toBe("Using Claude Haiku, your pick.");
+
+    // The first read captured the unpinned model before the write.
+    await act(async () => { release(); });
+    await flush();
+    expect(sourceLine()).toBe("Using Claude Haiku, your pick.");
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["Claude", "Claude Haiku"]);
+
+    await pick("Memory harness", "");
+    await flush();
+    expect(bridgeApi.setMemoryModel).toHaveBeenLastCalledWith();
+    expect(memoryModel.pinned, "the clear reached the store").toBeUndefined();
   });
 
   it("the last run's observed spend is on screen", async () => {
     extractionSettings = {
       scopeKey: "account:local",
       mode: "propose",
-      harness: "codex",
-      model: "gpt-5.6-luna",
       lastRun: { status: "completed", proposalCount: 2, observedTokens: 420, spendMicrousd: 1700, updatedAt: "2026-08-21T00:00:00Z" },
     };
     mount();

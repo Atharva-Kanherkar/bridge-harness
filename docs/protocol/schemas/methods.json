@@ -982,6 +982,20 @@
       "resultSchema": "memory-consolidation-settings.json"
     },
     {
+      "command": "get_memory_model",
+      "domain": "memory",
+      "method": "memory/get_memory_model",
+      "paramsSchema": null,
+      "resultSchema": "memory-model-settings.json"
+    },
+    {
+      "command": "set_memory_model",
+      "domain": "memory",
+      "method": "memory/set_memory_model",
+      "paramsSchema": "set-memory-model-params.json",
+      "resultSchema": "memory-model-settings.json"
+    },
+    {
       "command": "resolve_approval",
       "domain": "approvals",
       "method": "approvals/resolve_approval",
@@ -2608,7 +2622,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 58
+    "minor": 59
   },
   "reserved": {
     "cancel": "$/cancel",
