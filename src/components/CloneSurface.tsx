@@ -15,9 +15,8 @@ import { Tip } from "@/components/ui/tooltip";
 
 // The dock tenant for a throwaway browser clone: the agent drives a private
 // copy of the browser, and this is where the person watches it, takes it over
-// for a login or 2FA, or destroys it. It mirrors BrowserSurface (a root that
-// fills its host, a poll that runs hot while visible, and a supervision report
-// upward) but reads clone state, not a lease on one of your own tabs.
+// for a login or 2FA, or destroys it: a root that fills its host, a poll that
+// runs hot while visible, and a supervision report upward.
 
 const statusLabel: Record<BrowserCloneStatus, string> = {
   none: "No clone", requested: "Awaiting your approval", starting: "Starting", acting: "Acting", waiting_for_you: "Waiting for you", taken_over: "You’re in control", destroyed: "Destroyed",

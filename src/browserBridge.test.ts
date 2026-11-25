@@ -103,7 +103,6 @@ describe("authenticated browser bridge artifacts", () => {
   it("streams backpressured pre-redacted WebP frames without double encoding", () => {
     const offscreen = read("browser-extension/offscreen.js");
     const background = read("browser-extension/background.js");
-    const surface = read("src/components/BrowserSurface.tsx");
     expect(offscreen).toContain("const FRAME_INTERVAL_MS = 100");
     expect(offscreen).toContain("if (!stream?.active || encoding)");
     expect(offscreen).toContain('canvas.toBlob(resolve, "image/webp", 0.52)');
@@ -119,7 +118,6 @@ describe("authenticated browser bridge artifacts", () => {
     expect(background).toContain("expectedSnapshotGeneration !== snapshotGeneration");
     expect(background).toContain('action.kind === "snapshot"');
     expect(background).toContain("result = await sendSnapshot(Boolean(action.delta))");
-    expect(surface).toContain("bridgeApi.browserFrame(frameRevision.current)");
   });
 
   it("exposes a session and lease scoped agent browser tool through application context", () => {

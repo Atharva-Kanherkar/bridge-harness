@@ -48,7 +48,7 @@ describe("ViewTabs", () => {
     const [status, due] = made.database!.properties;
     for (const [type, name] of [["Board", ""], ["Calendar", "Due dates"], ["List", "Plain"]]) {
       await click("New view");
-      await act(async () => { [...document.querySelectorAll<HTMLButtonElement>("[role=radio]")].find(radio => radio.textContent === type)!.click(); });
+      await act(async () => { [...document.querySelectorAll<HTMLButtonElement>('[role=group][aria-label="View type"] button')].find(radio => radio.textContent === type)!.click(); });
       if (name) nameNewView(name);
       await submit("New view name");
     }
