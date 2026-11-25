@@ -4138,6 +4138,108 @@ mod tests {
         assert!(!reviewer_called, "a reviewer session never runs the PR's plugin");
     }
 
+    /// A research worker's first web search, as it ran on 2026-11-25: a
+    /// read-only sandbox, so a data home where OpenCode has never stored a
+    /// search provider choice. OpenCode raises its consent form; answering it
+    /// the way Full access does lets the search run.
+    #[test]
+    #[ignore = "requires OpenCode 2.x with an authenticated OpenCode Go subscription and network"]
+    fn live_v2_web_search_consent_is_recognised_and_allow_lets_the_search_run() {
+        let executable = std::env::var("BRIDGE_OPENCODE_LIVE_BINARY")
+            .expect("set BRIDGE_OPENCODE_LIVE_BINARY to the OpenCode executable");
+        let model = std::env::var("BRIDGE_OPENCODE_LIVE_MODEL")
+            .unwrap_or_else(|_| "opencode-go/minimax-m3.1-flash-free".into());
+        let project = tempfile::tempdir().unwrap();
+        let request = crate::delegation::DelegationRequest {
+            schema_version: 1,
+            role: crate::delegation::WorkerRole::Research,
+            objective: "search".into(),
+            acceptance_criteria: vec!["report".into()],
+            known_facts: vec![],
+            decisions: vec![],
+            evidence_ids: vec![],
+            relevant_files: vec![],
+            owned_paths: vec![],
+            write_mode: WriteMode::ReadOnly,
+            capability_tier: crate::model::CapabilityTier::Fast,
+            effort: crate::delegation::Effort::Low,
+            network_access: true,
+            writable_output_paths: vec![],
+            verification: vec![],
+            output_contract: crate::delegation::OutputContract::ResearchResult,
+            harness: None,
+            model: None,
+        };
+        let sandbox = crate::worker_sandbox::ReadOnlySandbox::create("live", project.path(), &request).unwrap();
+        let started = start_with_settings(
+            StartRequest {
+                session_id: None,
+                cwd: project.path().to_str().unwrap(),
+                model: Some(&model),
+                effort: None,
+                speed: None,
+                instructions: None,
+                write_mode: Some(WriteMode::ReadOnly),
+                read_only_sandbox: Some(&sandbox),
+                briefing: None,
+                interactive: false,
+                account: None,
+                on_progress: None,
+            },
+            &OpenCodeSettings { executable_path: Some(executable), visible_models: Vec::new() },
+        )
+        .unwrap();
+        let mut runtime = started.runtime;
+        let mut reader = started.reader;
+        let (sender, events) = mpsc::channel::<crate::agent::NormalizedEvent>();
+        thread::spawn(move || {
+            let mut state = crate::agent::OpenCodeStreamState::default();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or_default() == 0 {
+                    break;
+                }
+                let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
+                for event in crate::agent::normalize_opencode_message_with_state(&value, &mut state) {
+                    if sender.send(event).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        runtime
+            .send_turn("Use your websearch tool once to search for \"SQLite WAL mode\", then reply with the title of the first result.")
+            .unwrap();
+        let mut consent = None;
+        let mut searched = None;
+        let mut kinds = Vec::new();
+        loop {
+            let event = events.recv_timeout(Duration::from_secs(180)).expect("OpenCode stalled mid-turn");
+            kinds.push(event.kind.clone());
+            match event.kind.as_str() {
+                "permission.requested" => runtime.respond(event.data["requestId"].clone(), "acceptForSession").unwrap(),
+                "question.requested" => {
+                    let label = crate::api::websearch_consent_allow_label(&event.data)
+                        .unwrap_or_else(|| panic!("not the web search consent: {}", event.data));
+                    runtime.answer_question(event.data["requestId"].clone(), json!([[label]])).unwrap();
+                    consent = Some(event.data.clone());
+                }
+                "tool.completed" if event.title.as_deref() == Some("websearch") => {
+                    searched = Some((event.status.clone(), event.text.clone()));
+                }
+                "turn.completed" => break,
+                _ => {}
+            }
+        }
+        runtime.stop(ShutdownReason::Completed);
+        sandbox.cleanup();
+        let consent = consent.unwrap_or_else(|| panic!("a fresh data home asks for consent: {kinds:?}"));
+        assert_eq!(consent["formKind"], "websearch.provider");
+        let (status, text) = searched.unwrap_or_else(|| panic!("no websearch ran: {kinds:?}"));
+        assert_eq!(status.as_deref(), Some("completed"), "{text:?}");
+        assert!(!text.unwrap_or_default().contains("Web search cancelled"));
+    }
+
     #[test]
     #[ignore = "requires OpenCode 2.x and BRIDGE_OPENCODE_LIVE_ISOLATED=1 with throwaway XDG_DATA_HOME/XDG_CONFIG_HOME"]
     fn live_v2_saves_and_removes_a_provider_key() {
