@@ -259,6 +259,10 @@ impl Translator {
                         "id": id,
                         "sessionID": owner,
                         "questions": questions,
+                        // Who raised the form: the `question` tool, or OpenCode
+                        // itself (its web search consent is `websearch.provider`).
+                        // Set by OpenCode's server, never by the model.
+                        "formKind": form.pointer("/metadata/kind"),
                         "tool": {
                             "callID": form.pointer("/metadata/tool/id"),
                             "messageID": form.pointer("/metadata/tool/messageID"),
@@ -452,6 +456,7 @@ fn field_question(field: &Value, form_title: &str) -> Value {
                     json!({
                         "label": option.get("label").or_else(|| option.get("value")),
                         "description": option.get("description").cloned().unwrap_or(json!("")),
+                        "value": option.get("value"),
                     })
                 })
                 .collect::<Vec<_>>()
@@ -969,6 +974,37 @@ mod tests {
         assert_eq!(events[0].data["questions"][0]["options"][1]["label"], "Blue");
         assert_eq!(events[1].data["requestId"], "frm_1");
         assert!(pending.lock().unwrap().is_empty(), "a settled form is forgotten");
+    }
+
+    /// OpenCode's web search consent is a form its server raises, not the
+    /// model. Its kind and option values travel with the card so Full access
+    /// can recognise it and answer `allow`.
+    #[test]
+    fn web_search_consent_keeps_its_kind_and_option_values() {
+        let form = json!({"type":"form.created","data":{"form":{
+            "id":"frm_ws","sessionID":"ses_1","title":"Web Search",
+            "metadata":{"kind":"websearch.provider"},
+            "fields":[{"key":"choice","description":"Allow OpenCode to search the web for up-to-date information?",
+                "type":"string","required":true,"custom":false,
+                "options":[{"value":"allow","label":"Allow search via Exa, Tavily"},
+                    {"value":"choose","label":"Choose another provider"},
+                    {"value":"disable","label":"Disable web search"}]}]}}});
+        let (events, pending) = replay(&[form]);
+        assert_eq!(kinds(&events), ["question.requested"]);
+        assert_eq!(events[0].data["formKind"], "websearch.provider");
+        assert_eq!(events[0].data["questions"][0]["options"][0]["value"], "allow");
+        assert_eq!(
+            crate::api::websearch_consent_allow_label(&events[0].data).as_deref(),
+            Some("Allow search via Exa, Tavily")
+        );
+        let Some(PendingRequest::Form { fields, .. }) = pending.lock().unwrap().get("frm_ws").cloned() else {
+            panic!("the form is pending");
+        };
+        assert_eq!(
+            form_answer(&fields, &json!([["Allow search via Exa, Tavily"]])).unwrap(),
+            json!({"choice":"allow"}),
+            "the label goes back to OpenCode as its value"
+        );
     }
 
     #[test]
