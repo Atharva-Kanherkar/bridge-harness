@@ -166,8 +166,9 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                 const chord = dockPaneChord(pane.id);
                 return (
                   <Tip key={pane.id} label={`${pane.label}${chord ? `  ${formatShortcut({ meta: true, alt: true }, chord)}` : ""}${pane.available ? "" : ` — ${pane.unavailableReason ?? "unavailable"}`}`}>
-                  <button
-                    type="button"
+                  <Button
+                    variant="quiet"
+                    size={active && showActiveLabel ? "xs" : "icon-xs"}
                     role="tab"
                     id={`${dockId}-tab-${pane.id}`}
                     aria-controls={`${dockId}-pane-${pane.id}`}
@@ -186,17 +187,9 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                       onAction({ type: "open-pane", pane: strip[next].id });
                       document.getElementById(`${dockId}-tab-${strip[next].id}`)?.focus();
                     }}
-                    className={cn(
-                      "relative flex h-7 min-w-7 shrink-0 items-center justify-center gap-1.5 rounded-md text-meta font-medium transition-colors",
-                      // Icon-only mode is the narrow one, and the badges still
-                      // ride along, so the tabs give up a little padding there
-                      // to keep the last one inside the strip at the minimum width.
-                      showActiveLabel ? "px-1.5" : "px-1",
-                      active ? "bg-selection text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                      !pane.available && !active && "opacity-40",
-                    )}
                   >
-                    <Icon size={13} strokeWidth={1.7} aria-hidden="true" />
+                    {/* Unavailable panes stay reachable (they explain why) but recede. */}
+                    <Icon size={13} strokeWidth={1.7} aria-hidden="true" className={!pane.available && !active ? "opacity-40" : undefined} />
                     {active && showActiveLabel && <span className="min-w-0 truncate pr-0.5">{pane.label}</span>}
                     {!!pane.badge && pane.available && (
                       <span className="rounded-full bg-accent px-1 font-mono text-caption leading-4 text-muted-foreground">{pane.badge}</span>
@@ -204,7 +197,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                     {pane.alert && pane.available && (
                       <span data-testid={`dock-alert-${pane.id}`} className="mission-live-accent pointer-events-none absolute right-0 top-0 h-[5px] w-[5px] rounded-full bg-warning" />
                     )}
-                  </button>
+                  </Button>
                   </Tip>
                 );
               })}

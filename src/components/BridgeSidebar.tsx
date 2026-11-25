@@ -325,7 +325,6 @@ function ChatRowMenu({
 }) {
   const menu = useMenuPanel<HTMLButtonElement>({ width: ROW_MENU_WIDTH, height: ROW_MENU_HEIGHT_ESTIMATE });
   const alias = toPublicAlias(chat.id);
-  const item = "flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-ui transition-colors hover:bg-accent";
   const run = (action: () => void) => () => { action(); menu.close(); };
   return (
     <>
@@ -375,14 +374,11 @@ function ChatRowMenu({
           <MenuItem label={`Open parent: ${forkLabel}`} onClick={run(onJumpToParent)} leading={<GitFork size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />} />
         )}
         <ChatEarlyCompaction chatId={chat.id} />
-        {chat.kind !== "worker" && <ChatNoticeLevel chatId={chat.id} item={item} />}
+        {chat.kind !== "worker" && <ChatNoticeLevel chatId={chat.id} />}
         {onArchive && (
           <>
             <MenuSeparator />
-            <button type="button" role="menuitem" aria-label={`Archive ${name}`} className={item} onClick={run(onArchive)}>
-              <Archive size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-              <span className="min-w-0 flex-1 truncate">Archive</span>
-            </button>
+            <MenuItem label="Archive" ariaLabel={`Archive ${name}`} onClick={run(onArchive)} leading={<Archive size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />} />
           </>
         )}
       </MenuPanel>
@@ -420,7 +416,7 @@ function ChatEarlyCompaction({ chatId }: { chatId: string }) {
 }
 
 /** Per-orchestrator override of which worker notices cost it a model turn. */
-function ChatNoticeLevel({ chatId, item }: { chatId: string; item: string }) {
+function ChatNoticeLevel({ chatId }: { chatId: string }) {
   const { view, set } = useDelegationNotify(chatId);
   return (
     <>
@@ -430,20 +426,17 @@ function ChatNoticeLevel({ chatId, item }: { chatId: string; item: string }) {
         const current = view?.level === option.value;
         const inherited = current && view?.sessionOverride == null;
         return (
-          <button
+          <MenuItem
             key={option.value}
-            type="button"
             role="menuitemradio"
-            aria-checked={current}
+            checked={current}
             disabled={!view}
-            className={item}
-            title={option.description}
+            label={option.label}
+            hint={option.description}
             onClick={() => set(inherited ? null : option.value)}
-          >
-            <Check size={12} strokeWidth={1.7} className={cn("shrink-0", current ? "text-foreground" : "opacity-0")} aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate">{option.label}</span>
-            {inherited && <span className="shrink-0 text-caption text-muted-foreground">default</span>}
-          </button>
+            leading={<Check size={12} strokeWidth={1.7} className={cn("shrink-0", current ? "text-foreground" : "opacity-0")} aria-hidden="true" />}
+            trailing={inherited && <span className="shrink-0 text-caption text-muted-foreground">default</span>}
+          />
         );
       })}
     </>

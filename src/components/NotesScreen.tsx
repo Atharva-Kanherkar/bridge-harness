@@ -33,6 +33,7 @@ import { chatName } from "./sidebarChats";
 import { NotePageView } from "./notes/NotePageView";
 import { NoteListSkeleton, NotePageSkeleton, NoteTabsSkeleton, readListOpen, writeListOpen } from "./notes/NotesSkeleton";
 import type { StartChoice } from "./notes/NotePickers";
+import { Textarea } from "@/components/ui/textarea";
 
 export const JOB_POLL_MS = 1500;
 
@@ -627,11 +628,12 @@ function NotesCapture({ focusRequest, onCapture }: { focusRequest?: number; onCa
     onCapture(body);
   };
   return <div className="shrink-0 px-3 pt-3">
-    <div className="rounded-2xl bg-card px-3 pb-2 pt-2.5 shadow-sm ring-1 ring-border transition-shadow focus-within:ring-2 focus-within:ring-ring">
-      <textarea
+    <div className="rounded-2xl bg-card px-3 pb-2 pt-2.5 text-body leading-relaxed shadow-sm ring-1 ring-border transition-shadow focus-within:ring-2 focus-within:ring-ring">
+      <Tip label={`Capture from anywhere with ${chordLabel("capture-note")}`}><Textarea
+        unstyled
+        size="bare"
         ref={box}
         aria-label="Capture a note"
-        title={`Capture from anywhere with ${chordLabel("capture-note")}`}
         value={text}
         rows={2}
         placeholder="Capture a thought…"
@@ -641,8 +643,8 @@ function NotesCapture({ focusRequest, onCapture }: { focusRequest?: number; onCa
           event.preventDefault();
           submit();
         }}
-        className="block w-full resize-none bg-transparent text-body leading-relaxed text-foreground outline-none placeholder:text-faint"
-      />
+        className="block w-full"
+      /></Tip>
       <div className="mt-1 flex items-center justify-between gap-2 text-caption text-faint">
         <span>Kept exactly as typed</span>
         <span className="flex items-center gap-1"><Kbd className="h-4 min-w-4">↵</Kbd>save</span>

@@ -9,6 +9,7 @@ import type { TrailSummary } from "../protocol/generated/protocol";
 import { SidebarTrailButton } from "./trails/SidebarTrailButton";
 import { Tip } from "@/components/ui/tooltip";
 import { RowButton } from "@/components/ui/row";
+import { Button } from "@/components/ui/button";
 
 /**
  * One clock for the whole group, ticking once a second: every row's timer
@@ -119,20 +120,17 @@ export function SidebarRunning({ rows, activeSessionId, onOpenSession, onOpenMis
           <ChevronRight size={12} strokeWidth={1.7} aria-hidden="true" className={clsx("ml-auto shrink-0 text-muted-foreground/70 transition-transform", !collapsed && "rotate-90")} />
         </span></RowButton></Tip>
         {onOpenMissionControl && (
-          <button
-            type="button"
+          <Button
+            variant="quiet"
+            size="icon-2xs"
             onClick={onOpenMissionControl}
-            title="Open Mission Control"
+            tooltip="Open Mission Control"
             aria-label="Open Mission Control"
             aria-current={missionControlActive ? "page" : undefined}
             data-open-mission-control
-            className={clsx(
-              "grid size-6 shrink-0 place-items-center rounded-md transition-colors",
-              missionControlActive ? "bg-selection text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-            )}
           >
             <LayoutGrid size={13} strokeWidth={1.6} aria-hidden="true" />
-          </button>
+          </Button>
         )}
       </div>
       {/* Capped, so a busy afternoon cannot push the project tree off the rail. */}

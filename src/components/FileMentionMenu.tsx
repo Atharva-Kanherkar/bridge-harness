@@ -5,6 +5,7 @@ import type { ChatFileChange } from "../chatChangedFiles";
 import { markSegments, mentionMatch, splitMentionPath, type MatchRange } from "../fileMentionRows";
 import { glyphFor } from "./fileGlyph";
 import { Tip } from "@/components/ui/tooltip";
+import { RowButton } from "@/components/ui/row";
 
 /** Another composer trigger, taught in the footer: `#` agents, `/` commands. */
 export interface MentionTrigger {
@@ -96,23 +97,22 @@ function FileMentionRow({ id, index, path, query, active, change, onHover, onPic
   const { name, folder } = splitMentionPath(path);
   const match = mentionMatch(path, query);
   const { Icon } = glyphFor(path);
-  return <button
+  return <Tip label={path} side="right"><RowButton
+    size="bare"
+    shape="flush"
     id={id}
     role="option"
     aria-selected={active}
     aria-label={change ? `${path}, ${CHANGE_WORDS[change]}` : path}
-    title={path}
-    type="button"
     data-mention-index={index}
     onMouseEnter={() => onHover(index)}
     onMouseDown={event => { event.preventDefault(); onPick(path); }}
-    className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${active ? "bg-accent" : "hover:bg-accent"}`}
-  >
+  ><span className="flex w-full min-w-0 items-center gap-2 px-3 py-2">
     <Icon size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
     <span data-mention-name className="min-w-0 max-w-[70%] shrink-0 truncate font-mono text-meta text-foreground"><Marked text={name} range={match.name} /></span>
     {folder && <span data-mention-folder className="min-w-0 flex-1 truncate text-caption text-faint"><Marked text={folder} range={match.folder} /></span>}
     {change && <Tip label={CHANGE_WORDS[change]}><span data-mention-change={change} className={`ml-auto shrink-0 pl-2 font-mono text-caption ${CHANGE_INK[change]}`}>{change}</span></Tip>}
-  </button>;
+  </span></RowButton></Tip>;
 }
 
 /** The matched run underlined and weighted, never coloured: the row's ink stays its own. */

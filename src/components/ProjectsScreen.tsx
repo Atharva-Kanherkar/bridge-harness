@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { chatName, chatTimestamp } from "./sidebarChats";
 import { Tip } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
 
 // Projects are their own entity, not a second kind of row in the chat rail. This
 // screen is where a repo's identity lives: where it is on disk, what branch it is
@@ -111,22 +112,16 @@ export function ProjectsScreen({
 
                   <div className="mb-4 mt-3 min-h-0 flex-1 border-t border-border pt-2">
                     {shown.map(chat => (
-                      <button
-                        key={chat.id}
-                        type="button"
+                      <Tip key={chat.id} label={chatName(chat)}><RowButton
+                        tone="muted"
+                        active={chat.id === activeSessionId}
                         onClick={() => onOpenSession(chat.id)}
-                        title={chatName(chat)}
-                        className={cn(
-                          "flex h-9 w-full items-center gap-2 rounded-md px-1.5 text-left text-ui transition-colors",
-                          chat.id === activeSessionId
-                            ? "bg-accent font-medium text-foreground"
-                            : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                        )}
+                        className="h-9"
                       >
                         <StatusDot status={chat.status} />
                         <span className="min-w-0 flex-1 truncate">{chatName(chat)}</span>
                         <span className="shrink-0 text-caption text-muted-foreground">{chat.status === "working" ? "Working" : chat.status === "waiting" ? "Needs you" : chat.status === "failed" ? "Failed" : ""}</span>
-                      </button>
+                      </RowButton></Tip>
                     ))}
                     {own.length > CHATS_PER_CARD && (
                       <p className="px-1.5 pt-1 text-caption text-muted-foreground">+{own.length - CHATS_PER_CARD} more</p>

@@ -57,9 +57,11 @@ export const buttonVariants = cva(
           "border-transparent text-foreground hover:bg-accent data-pressed:bg-accent *:data-[slot=button-loading-indicator]:text-foreground",
         // Toolbar and row actions: recedes until hovered.
         quiet:
-          "border-transparent text-muted-foreground hover:bg-accent hover:text-foreground data-pressed:bg-accent data-pressed:text-foreground aria-pressed:bg-accent aria-pressed:text-foreground aria-expanded:bg-accent aria-expanded:text-foreground aria-[current=true]:bg-accent aria-[current=true]:text-foreground aria-selected:bg-accent aria-selected:text-foreground *:data-[slot=button-loading-indicator]:text-foreground",
+          "border-transparent text-muted-foreground hover:bg-accent hover:text-foreground data-pressed:bg-accent data-pressed:text-foreground aria-pressed:bg-accent aria-pressed:text-foreground aria-expanded:bg-accent aria-expanded:text-foreground aria-[current=true]:bg-accent aria-[current=true]:text-foreground aria-[current=page]:bg-accent aria-[current=page]:text-foreground aria-selected:bg-accent aria-selected:text-foreground *:data-[slot=button-loading-indicator]:text-foreground",
         // A filter pill: outlined at rest, filled while pressed. Pair with size="2xs" and aria-pressed.
         chip: "rounded-full border-border text-muted-foreground before:rounded-full hover:bg-accent hover:text-foreground aria-pressed:border-foreground/25 aria-pressed:bg-accent aria-pressed:text-foreground",
+        // An underlined tab strip's tab: text only; the caller draws the underline.
+        tab: "rounded-none border-transparent text-muted-foreground hover:text-foreground aria-selected:font-medium aria-selected:text-foreground aria-pressed:font-medium aria-pressed:text-foreground",
         // An empty slot's "add" action: a dashed outline that fills on hover.
         dashed:
           "border-dashed border-border text-muted-foreground hover:bg-accent hover:text-foreground data-pressed:bg-accent",

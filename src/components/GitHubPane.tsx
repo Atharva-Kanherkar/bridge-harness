@@ -89,6 +89,7 @@ import type {
   ReviewDecision,
   ReviewJob,
 } from "../protocol/generated/protocol";
+import { SegmentedItem } from "@/components/ui/segmented";
 
 // The GitHub surface: a dock pane, not a popover. Lives beside the
 // conversation with real height, survives pane switches, and — unlike the old
@@ -207,8 +208,6 @@ function CopyButton({ value, label, variant = "quiet", className, children }: {
   </Button>;
 }
 
-const HEADER_ICON =
-  "inline-flex size-7 shrink-0 items-center justify-center rounded-md p-0 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
 
 /** Open something on github.com. Always an anchor, never a button dressed as
  * one, so the webview's own "copy link" still works. */
@@ -726,22 +725,21 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
         {/* Labelled tabs with live counts: at full width there is room to say
             what each surface is instead of making the reader decode icons. */}
         <div className="flex min-w-0 items-end gap-1" role="toolbar" aria-label="GitHub repository actions">
-          {surfaces.map(([id, label, Icon, count]) => <button
+          {surfaces.map(([id, label, Icon, count]) => <Button
             key={id}
-            type="button"
+            variant="tab"
+            size="sm"
             aria-label={label}
             aria-pressed={surfaceTab === id}
             data-active={surfaceTab === id}
             onClick={() => pickSurface(id)}
-            className={cn(
-              "relative -mb-px flex h-10 items-center gap-1.5 border-b-2 px-2.5 text-ui transition-colors",
-              surfaceTab === id ? "border-foreground font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
-            )}
+            className="-mb-px h-10"
           >
             <Icon size={14} strokeWidth={1.7} aria-hidden="true" />
             {label}
             {count !== undefined && <span className={cn("rounded-full px-1.5 font-mono text-micro tabular-nums", surfaceTab === id ? "bg-foreground text-background" : "bg-muted text-muted-foreground")}>{count}</span>}
-          </button>)}
+            {surfaceTab === id && <span className="absolute inset-x-0 bottom-0 h-0.5 bg-foreground" aria-hidden="true" />}
+          </Button>)}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-0.5 self-center">
           {repoLabel && <CopyButton value={repoLabel} label={`Copy ${repoLabel}`}>
@@ -766,14 +764,12 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
           </CopyButton>}
         </div>
         <div className="u-segmented flex shrink-0 items-center p-0.5" role="toolbar" aria-label="GitHub repository actions">
-          {surfaces.map(([id, label, Icon]) => <Tip key={id} label={label}><button
-            type="button"
+          {surfaces.map(([id, label, Icon]) => <Tip key={id} label={label}><SegmentedItem
             aria-label={label}
-            aria-pressed={surfaceTab === id}
-            data-active={surfaceTab === id}
+            active={surfaceTab === id}
             onClick={() => pickSurface(id)}
-            className={cn("u-segmented-item", HEADER_ICON)}
-          ><Icon size={13} strokeWidth={1.7} aria-hidden="true" /></button></Tip>)}
+            icon
+          ><Icon size={13} strokeWidth={1.7} aria-hidden="true" /></SegmentedItem></Tip>)}
           {repositoryUrl && <OpenOnGithub url={repositoryUrl} what={repoLabel ?? "the repository"} />}
           {refreshButton}
         </div>
@@ -1282,9 +1278,10 @@ function DetailTabs<T extends string>({ id, tabs, active, onSelect, label }: {
   label: string;
 }) {
   return <div className="sticky top-0 z-[1] flex border-b border-border bg-background/95 px-3.5 backdrop-blur" role="tablist" aria-label={label}>
-    {tabs.map((tab, index) => <button
+    {tabs.map((tab, index) => <Button
       key={tab.value}
-      type="button"
+      variant="tab"
+      size="sm"
       role="tab"
       id={`${id}-${tab.value}`}
       aria-controls={`${id}-panel`}
@@ -1302,11 +1299,11 @@ function DetailTabs<T extends string>({ id, tabs, active, onSelect, label }: {
         onSelect(tabs[next].value);
         document.getElementById(`${id}-${tabs[next].value}`)?.focus();
       }}
-      className={cn("relative px-2.5 py-2.5 text-meta capitalize transition-colors", active === tab.value ? "font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}
+      className="h-9"
     >
-      {tab.label}
+      <span className="capitalize">{tab.label}</span>
       {active === tab.value && <motion.span layoutId={`${id}-underline`} className="absolute inset-x-1.5 -bottom-px h-0.5 rounded-full bg-foreground" aria-hidden="true" />}
-    </button>)}
+    </Button>)}
   </div>;
 }
 

@@ -25,6 +25,7 @@ import { cn } from "@/lib/utils";
 import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session, SlashCommand } from "../types";
 import type { ChatSessionSettings, InteractionResolutionResult, QuestionAction, SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
 import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
 
 // An aside: a standalone chat the user delegated to another agent from inside
 // a conversation, shown as a panel floating over that conversation instead of
@@ -369,11 +370,11 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
                 <span className="normal-case tracking-normal text-muted-foreground">{slashMatches.length}</span>
               </div>
               <div ref={slashListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-                {slashMatches.map((command, index) => <button id={`aside-slash-option-${index}`} key={`${command.harness}:${command.kind}:${command.name}`} type="button" role="option" aria-selected={index === slashIndex} data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); applySlash(command); }} className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-accent" : "hover:bg-accent"}`}>
+                {slashMatches.map((command, index) => <RowButton size="bare" shape="flush" id={`aside-slash-option-${index}`} key={`${command.harness}:${command.kind}:${command.name}`} role="option" aria-selected={index === slashIndex} data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); applySlash(command); }}><span className="flex w-full min-w-0 items-center gap-2 px-3 py-2">
                   <span className="whitespace-nowrap font-mono text-meta text-foreground">/{command.name}</span>
                   <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-caption text-muted-foreground">{command.description}</span>
                   <span className="shrink-0 rounded border border-border px-1 py-px text-caption text-muted-foreground font-medium">{slashOwnershipBadge(command.harness)}</span>
-                </button>)}
+                </span></RowButton>)}
               </div>
             </div>}
             <ComposerPill

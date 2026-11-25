@@ -12,6 +12,7 @@ import { PaneState } from "./ui/pane";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
 import { Tip } from "@/components/ui/tooltip";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 
 // The dock tenant for a throwaway browser clone: the agent drives a private
 // copy of the browser, and this is where the person watches it, takes it over
@@ -137,13 +138,14 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
             <div className="grid size-10 place-items-center rounded-xl border border-border bg-muted/50"><Globe size={18} className="text-foreground" aria-hidden="true" /></div>
             <h2 className="mt-4 font-display text-message font-medium text-foreground">Open a browser for this chat</h2>
             <p className="mt-1.5 text-meta leading-5 text-muted-foreground">A throwaway copy of your browser for one site. The agent can see it and use it, and you can step in any time. It is wiped when the work is done.</p>
-            <form className="mt-4 flex h-9 items-center gap-2 rounded-lg border border-input bg-background pl-3 pr-1 transition-shadow focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/24" onSubmit={event => { event.preventDefault(); start(); }}>
-              <Globe size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-              <input aria-label="Site to clone" value={domainDraft} onChange={event => setDomainDraft(event.target.value)} placeholder="app.example.com" autoCapitalize="off" autoCorrect="off" spellCheck={false}
-                className="h-full min-w-0 flex-1 bg-transparent font-mono text-meta text-foreground outline-none placeholder:font-sans placeholder:text-muted-foreground" />
-              <Button type="submit" size="xs" disabled={busy || !domainDraft.trim()}>Start clone<ArrowRight size={12} /></Button>
+            <form className="mt-4" onSubmit={event => { event.preventDefault(); start(); }}>
+              <InputGroup>
+                <InputGroupAddon><Globe size={14} aria-hidden="true" /></InputGroupAddon>
+                <InputGroupInput mono aria-label="Site to clone" value={domainDraft} onChange={event => setDomainDraft(event.target.value)} placeholder="app.example.com" autoCapitalize="off" autoCorrect="off" spellCheck={false} />
+                <InputGroupAddon align="inline-end"><Button type="submit" size="xs" disabled={busy || !domainDraft.trim()}>Start clone<ArrowRight size={12} /></Button></InputGroupAddon>
+              </InputGroup>
             </form>
-            {onCancelStart && <Button type="button" variant="ghost" size="xs" className="mt-2 text-muted-foreground" onClick={onCancelStart}>Back to browser</Button>}
+            {onCancelStart && <Button variant="quiet" size="xs" className="mt-2" onClick={onCancelStart}>Back to browser</Button>}
             <div className="mt-3"><Select label="Source browser" value={startBrowser} options={CLONE_BROWSERS} disabled={busy} onChange={browser => setStartBrowser(browser as typeof startBrowser)} /></div>
             {startBrowser === "safari" && <p className="mt-2 text-caption text-muted-foreground">{SAFARI_SIGN_IN_HINT}</p>}
             <div className="mt-3 flex items-center justify-between gap-3">
@@ -188,7 +190,7 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
               <Button variant="destructive" size="xs" disabled={busy} onClick={() => void run(() => bridgeApi.destroyBrowserClone(sessionId))}><Trash2 size={12} />Destroy clone</Button>
             </div>
             : <div className="ml-auto flex items-center gap-1.5">
-              <Button variant="ghost" size="xs" disabled={busy} onClick={() => setConfirmingDestroy(true)} className="text-muted-foreground"><Trash2 size={12} />Destroy</Button>
+              <Button variant="destructive-quiet" size="xs" disabled={busy} onClick={() => setConfirmingDestroy(true)}><Trash2 size={12} />Destroy</Button>
               {status === "taken_over"
                 ? <Button size="xs" disabled={busy} onClick={() => void run(() => bridgeApi.handBackBrowserClone(sessionId))}><Bot size={12} />Hand back</Button>
                 : <Button variant={status === "waiting_for_you" ? "default" : "outline"} size="xs" disabled={busy || status === "starting"} onClick={() => void run(() => bridgeApi.takeoverBrowserClone(sessionId))}><Hand size={12} />Take over</Button>}

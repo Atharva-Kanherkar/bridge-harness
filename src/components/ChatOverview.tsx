@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CircleAlert, CircleCheck, CircleDashed, CircleX, Code2, FileDiff, FolderGit2, GitBranch } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { clsx } from "clsx";
 import { bridgeApi } from "../api";
 import { chatConversationItems, chatOverview, formatTurnDuration, type ChatOverviewModel, type OverviewRow, type OverviewTone, type TurnChanges, type TurnHistoryEntry } from "../chatOverview";
 import { dockPaneChord, type DockPaneId } from "../dockLayout";
@@ -11,6 +10,7 @@ import { HarnessMark } from "./harnessMarks";
 import { Kbd } from "./ui/kbd";
 import { Tip } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
 
 // The head of the dock's Work pane: where this chat runs, which branch, what
 // it has not committed, how its last checks went, and what each turn did. It
@@ -19,7 +19,6 @@ import { Button } from "@/components/ui/button";
 // button: Bridge has no path that commits or opens a pull request for a chat's
 // worktree, and a button that only pretends would be worse than none.
 
-const ACTION = "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-2 text-caption text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 const TURNS_SHOWN = 5;
 
 const ROW_LABEL: Record<OverviewRow["kind"], string> = { where: "Where", branch: "Branch", changes: "Changes", checks: "Checks" };
@@ -50,11 +49,11 @@ function fileCount(files: number): string {
 
 function PaneButton({ label, pane, ariaLabel, icon: Icon, onClick }: { label: string; pane: DockPaneId; ariaLabel: string; icon?: LucideIcon; onClick: () => void }) {
   const chord = paneChord(pane);
-  return <button type="button" onClick={onClick} aria-label={ariaLabel} title={chord ? `${ariaLabel}  ${chord}` : ariaLabel} className={ACTION}>
+  return <Button variant="outline" size="2xs" onClick={onClick} aria-label={ariaLabel} tooltip={chord ? `${ariaLabel}  ${chord}` : ariaLabel}>
     {Icon && <Icon size={12} aria-hidden="true" />}
     {label}
     {chord && <Kbd>{chord}</Kbd>}
-  </button>;
+  </Button>;
 }
 
 function Row({ row, onReview, onOpenCode }: { row: OverviewRow; onReview?: () => void; onOpenCode?: () => void }) {
@@ -128,7 +127,7 @@ function TurnRow({ turn, harness, onOpen }: { turn: TurnHistoryEntry; harness?: 
   if (onOpen && turn.entryId) {
     const entryId = turn.entryId;
     return <li data-overview-turn={turn.turn} className="min-w-0">
-      <button type="button" onClick={() => onOpen(entryId)} aria-label={`Show turn: ${turn.title}`} className={clsx(row, "transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring")}>{body}</button>
+      <RowButton size="bare" onClick={() => onOpen(entryId)} aria-label={`Show turn: ${turn.title}`}><span className={row}>{body}</span></RowButton>
     </li>;
   }
   return <li data-overview-turn={turn.turn} className={row}>{body}</li>;

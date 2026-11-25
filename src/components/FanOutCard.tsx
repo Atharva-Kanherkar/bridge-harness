@@ -1,5 +1,4 @@
 import { useState, type ReactNode } from "react";
-import { clsx } from "clsx";
 import { ChevronRight, LoaderCircle } from "lucide-react";
 import { HarnessMark } from "./harnessMarks";
 import { dockPaneChord } from "../dockLayout";
@@ -67,13 +66,14 @@ export function FanOutCard({ summary, rows, readOnly = false, onOpenAgents, onSt
         </span>)}
       </span>
       {elapsed !== undefined && <span data-fan-out-clock className="ml-auto shrink-0 text-caption tabular-nums text-muted-foreground">{formatWorkerClock(elapsed)}</span>}
-      {onOpenAgents && <button
-        type="button"
+      {onOpenAgents && <Button
+        variant="quiet"
+        size="icon-2xs"
         onClick={onOpenAgents}
         aria-label="Open the Agents pane"
-        title={agentsPaneHint()}
-        className={clsx("grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground", elapsed === undefined && "ml-auto")}
-      ><ChevronRight size={14} aria-hidden="true"/></button>}
+        tooltip={agentsPaneHint()}
+        className={elapsed === undefined ? "ml-auto" : undefined}
+      ><ChevronRight size={14} aria-hidden="true"/></Button>}
     </div>
     {rows && <div className="border-t border-border px-3.5 py-1">{rows}</div>}
     {live && summary.waiting.length > 0 && <div data-fan-out-waiting className="flex min-w-0 items-center gap-3 border-t border-border px-3.5 py-2 text-meta text-muted-foreground">

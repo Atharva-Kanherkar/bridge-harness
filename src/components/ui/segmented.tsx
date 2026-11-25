@@ -71,17 +71,19 @@ type SegmentedItemProps = Omit<React.ComponentProps<"button">, "type"> & {
   tab?: boolean;
   /** Inside a `SegmentedRadio`: a radio, checked rather than pressed. */
   radio?: boolean;
+  /** A square, icon-only item. */
+  icon?: boolean;
 };
 
 export const SegmentedItem = React.forwardRef<HTMLButtonElement, SegmentedItemProps>(function SegmentedItem(
-  { active, tab = false, radio = false, className, ...props },
+  { active, tab = false, radio = false, icon = false, className, ...props },
   ref,
 ): React.ReactElement {
   return (
     <button
       ref={ref}
       type="button"
-      className={cn("u-segmented-item inline-flex items-center justify-center gap-1 disabled:opacity-45", className)}
+      className={cn("u-segmented-item inline-flex items-center justify-center gap-1 disabled:opacity-45", icon && "size-7 p-0", className)}
       data-active={active}
       role={tab ? "tab" : radio ? "radio" : undefined}
       aria-selected={tab ? active : undefined}
