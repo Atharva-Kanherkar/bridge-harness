@@ -16,7 +16,11 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Select as SelectPrimitive } from "@base-ui/react/select";
 import { ChevronDown as CaretDown, ChevronRight as CaretRight, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Switch as SwitchControl } from "@/components/ui/switch";
 import { SETTINGS_COLUMN } from "./layout";
+
+export { Segmented } from "@/components/ui/segmented";
 
 /* ── page ─────────────────────────────────────────────────────────────────── */
 
@@ -244,30 +248,13 @@ export function useSavedFlash(): [(key: string) => boolean, (key: string) => voi
 
 /* ── controls ─────────────────────────────────────────────────────────────── */
 
-/** 32x18. On is a foreground track with a background knob; there is no hue. */
 export function Switch({ checked, onChange, disabled, label }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   disabled?: boolean;
   label: string;
 }) {
-  return <button
-    type="button"
-    role="switch"
-    aria-checked={checked}
-    aria-label={label}
-    disabled={disabled}
-    onClick={() => onChange(!checked)}
-    className={cn(
-      "relative h-[18px] w-8 shrink-0 rounded-full transition-colors disabled:opacity-40",
-      checked ? "bg-foreground" : "bg-foreground/15",
-    )}
-  >
-    <span className={cn(
-      "absolute top-[2px] size-[14px] rounded-full transition-[left] duration-150",
-      checked ? "left-4 bg-background" : "left-[2px] bg-background",
-    )} />
-  </button>;
+  return <SwitchControl checked={checked} disabled={disabled} aria-label={label} onCheckedChange={onChange} />;
 }
 
 export type SelectOption = {
@@ -279,27 +266,6 @@ export type SelectOption = {
   /** Options sharing a group are listed under that label. */
   group?: string;
 };
-
-/** Two or three short choices, all visible at once. Saves on click. */
-export function Segmented<T extends string>({ value, options, onChange, disabled, label }: {
-  value: T;
-  options: { value: T; label: string }[];
-  onChange: (next: T) => void;
-  disabled?: boolean;
-  label: string;
-}) {
-  return <div role="group" aria-label={label} className="u-segmented flex shrink-0">
-    {options.map(option => <button
-      key={option.value}
-      type="button"
-      className="u-segmented-item disabled:opacity-45"
-      disabled={disabled}
-      data-active={value === option.value}
-      aria-pressed={value === option.value}
-      onClick={() => { if (option.value !== value) onChange(option.value); }}
-    >{option.label}</button>)}
-  </div>;
-}
 
 const CONTROL = "h-7 rounded-lg border border-border-card bg-popover px-2.5 text-xs text-foreground outline-none transition-colors disabled:opacity-45";
 
@@ -481,33 +447,25 @@ export function TextArea({ value, onChange, disabled, label, placeholder, rows =
 
 /* ── buttons ──────────────────────────────────────────────────────────────── */
 
-const BUTTON = "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs transition-colors disabled:opacity-40";
-
 /** Foreground fill. Reserved for Save and Connect, and nothing else. */
 export function PrimaryButton({ children, onClick, disabled, type = "button" }: {
   children: ReactNode; onClick?: () => void; disabled?: boolean; type?: "button" | "submit";
 }) {
-  return <button type={type} disabled={disabled} onClick={onClick} className={cn(BUTTON, "bg-foreground font-medium text-background hover:opacity-90")}>{children}</button>;
+  return <Button size="xs" type={type} disabled={disabled} onClick={onClick}>{children}</Button>;
 }
 
 /** Bordered. Install, Repair, Retry, and the wizard's step actions. */
 export function GhostButton({ children, onClick, disabled, ariaLabel }: {
   children: ReactNode; onClick?: () => void; disabled?: boolean; ariaLabel?: string;
 }) {
-  return <button type="button" aria-label={ariaLabel} disabled={disabled} onClick={onClick} className={cn(BUTTON, "border border-border-card bg-popover text-foreground hover:bg-accent")}>{children}</button>;
+  return <Button size="xs" variant="outline" aria-label={ariaLabel} disabled={disabled} onClick={onClick}>{children}</Button>;
 }
 
 /** Text only. `tone="destructive"` is Remove; the default muted tone is Reset. */
 export function TextButton({ children, onClick, disabled, tone = "muted", ariaLabel }: {
   children: ReactNode; onClick?: () => void; disabled?: boolean; tone?: "muted" | "destructive"; ariaLabel?: string;
 }) {
-  return <button
-    type="button"
-    aria-label={ariaLabel}
-    disabled={disabled}
-    onClick={onClick}
-    className={cn(BUTTON, tone === "destructive" ? "text-destructive hover:bg-destructive/10" : "text-muted-foreground hover:bg-accent hover:text-foreground")}
-  >{children}</button>;
+  return <Button size="xs" variant={tone === "destructive" ? "destructive-ghost" : "quiet"} aria-label={ariaLabel} disabled={disabled} onClick={onClick}>{children}</Button>;
 }
 
 /* ── pills ────────────────────────────────────────────────────────────────── */
