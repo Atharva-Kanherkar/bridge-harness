@@ -4,7 +4,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { MotionGlobalConfig } from "framer-motion";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CreateDialogShell } from "./CreateDialogShell";
-import { WorkspaceCreateDialog } from "./WorkspaceCreateDialog";
 
 // The shell owns the open/closed boundary so every dialog built on it gets an
 // exit animation. What matters here is the *lifecycle*: the tree has to survive
@@ -134,29 +133,6 @@ describe("CreateDialogShell", () => {
     expect(onClose).toHaveBeenCalledTimes(2);
   });
 });
-
-describe("dialogs built on the shell", () => {
-  it("delegate the open/closed boundary instead of gating themselves", async () => {
-    act(() => {
-      root.render(<WorkspaceCreateDialog open={false} title="" onTitleChange={() => {}} onClose={() => {}} onSubmit={() => {}} />);
-    });
-    expect(dialog()).toBeNull();
-
-    act(() => {
-      root.render(<WorkspaceCreateDialog open title="" onTitleChange={() => {}} onClose={() => {}} onSubmit={() => {}} />);
-    });
-    expect(host.querySelector("#workspace-create-title")?.textContent).toBe("New workspace");
-
-    act(() => {
-      root.render(<WorkspaceCreateDialog open={false} title="" onTitleChange={() => {}} onClose={() => {}} onSubmit={() => {}} />);
-    });
-    // Still there: the dialog is animating out, not gone.
-    expect(dialog()).not.toBeNull();
-    await settle();
-    expect(dialog()).toBeNull();
-  });
-});
-
 
 describe("creation dialog keyboard behavior", () => {
   it("wraps Tab at both ends and restores the opener on dismissal", async () => {

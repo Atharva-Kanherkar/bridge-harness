@@ -10,7 +10,7 @@
 // dirties the draft and the bar reads "Create agent". On an existing preset,
 // switches and selects write the stored record with exactly one field replaced.
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Plus } from "lucide-react";
 import type { AdapterDescriptor, AgentDefinition, AgentRole, ReasoningEffort } from "../../types";
 import { HarnessMark } from "../harnessMarks";

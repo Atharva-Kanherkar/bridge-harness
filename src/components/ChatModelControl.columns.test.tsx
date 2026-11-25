@@ -163,8 +163,8 @@ describe("ChatModelControl columns", () => {
     await typeSearch("terra");
     expect(groups()).toEqual(["Codex"]);
     expect(lit()).toEqual(["Codex"]);
-    expect(railItem("Claude").className).toContain("opacity-40");
-    expect(railItem("Codex").className).not.toContain("opacity-40");
+    expect(railItem("Claude").innerHTML).toContain("opacity-40");
+    expect(railItem("Codex").innerHTML).not.toContain("opacity-40");
     await typeSearch("");
     expect(groups()).toEqual(["Claude", "Codex"]);
     expect(lit()).toEqual(["Claude"]);
@@ -396,15 +396,16 @@ describe("ChatModelControl clean list", () => {
     expect(others.length).toBeGreaterThan(0);
     for (const row of selected) {
       expect(row.className).toContain("bg-selection");
-      expect(row.className).not.toContain("hover:bg-accent");
+      // Selected rows keep the selection ground under the pointer.
+      expect(row.className).toContain("aria-selected:hover:bg-selection");
       expect(row.querySelector("svg")).not.toBeNull();
     }
     for (const row of others) {
-      expect(row.className).toContain("hover:bg-accent/50");
-      expect(row.className).not.toContain("bg-selection");
+      expect(row.getAttribute("aria-selected")).toBe("false");
+      expect(row.querySelector("svg")).toBeNull();
       // The gutter is there, empty: labels line up with the checked row.
-      expect(row.firstElementChild!.className).toContain("size-4");
-      expect(row.firstElementChild!.childElementCount).toBe(0);
+      expect(row.firstElementChild!.firstElementChild!.className).toContain("size-4");
+      expect(row.firstElementChild!.firstElementChild!.childElementCount).toBe(0);
     }
   });
 

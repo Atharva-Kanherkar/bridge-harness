@@ -4,6 +4,7 @@ import { TasksPane, type AgentFocus } from "../components/TasksPane";
 import { bridgeApi } from "../api";
 import { asWireKind } from "../transcript/wire";
 import type { AgentEvent, Session, SessionEntry, SessionForestSnapshot } from "../types";
+import { Button } from "@/components/ui/button";
 
 // Development-only component fixture: real conversation/pane components,
 // deterministic provider-shaped data, and controls with local effects only.
@@ -58,7 +59,7 @@ export function HarnessSubagentsPreview() {
   const live = sessions.slice(1).map((child, index) => event(2, child.id, "tool.progress", { title: ["Reading the event router", "Waiting for permission", "Checking turn/interrupt"][index] }));
   const show = (sessionId: string) => setFocus({ sessionId, nonce: Date.now() });
   return <div className="flex h-screen flex-col bg-background text-foreground">
-    <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-5 text-ui"><b className="font-display text-base">Bridge</b><span className="text-muted-foreground">Harness subagents · component fixture</span><span className="ml-auto flex gap-3"><button onClick={() => document.documentElement.classList.remove("dark")}>Light</button><button onClick={() => document.documentElement.classList.add("dark")}>Dark</button></span></header>
+    <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-5 text-ui"><b className="font-display text-base">Bridge</b><span className="text-muted-foreground">Harness subagents · component fixture</span><span className="ml-auto flex gap-3"><Button variant="quiet" size="xs" onClick={() => document.documentElement.classList.remove("dark")}>Light</Button><Button variant="quiet" size="xs" onClick={() => document.documentElement.classList.add("dark")}>Dark</Button></span></header>
     <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_420px]">
       <main className="flex min-h-0 flex-col"><div className="border-b border-border px-6 py-3"><h1 className="font-display text-lg">Make harness subagents observable</h1><p className="mt-1 text-xs text-muted-foreground">Direct · Codex · Parent working</p></div><div className="relative min-h-0 flex-1"><AgentConversation session={parent} events={rootEvents} onResolve={() => undefined} onOpenAgent={show} working /></div></main>
       <aside aria-label="Agents pane" className="flex min-h-0 flex-col border-l border-border bg-card"><div className="border-b border-border px-3 py-3 text-ui font-medium">Agents</div><div className="min-h-0 flex-1"><TasksPane chatSessionId={parent.id} sessions={sessions} liveEvents={live} pinned={pinned} focus={focus} onTogglePin={id => setPinned(old => { const next = new Set(old); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onOpenSession={show} onStopWorker={async id => setSessions(items => items.map(item => item.id === id ? { ...item, status: "stopped", endedAt: new Date().toISOString() } : item))} /></div></aside>

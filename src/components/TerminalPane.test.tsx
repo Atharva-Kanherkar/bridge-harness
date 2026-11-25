@@ -79,7 +79,7 @@ const click = async (element: Element) => {
 };
 
 const opened = () => api.createTerminal.mock.calls.map(call => call[0].terminalId);
-const tabButtons = () => [...container.querySelectorAll<HTMLButtonElement>("button[title*='double-click to rename']")];
+const tabButtons = () => [...container.querySelectorAll<HTMLButtonElement>("button[data-tip*='double-click to rename']")];
 const hostFor = (terminalId: string) => container.querySelector<HTMLElement>(`[data-shell-host="${terminalId}"]`);
 
 const emitChunk = async (terminalId: string, data: string) => {

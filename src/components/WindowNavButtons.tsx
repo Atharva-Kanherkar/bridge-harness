@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { ChevronLeft, ChevronRight, PanelLeft } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 
 export type WindowNavButtonsProps = {
   collapsed: boolean;
@@ -25,19 +25,9 @@ function NavButton({
   children: ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      disabled={disabled}
-      onClick={onClick}
-      className={cn(
-        "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors",
-        "hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-35",
-      )}
-    >
+    <Button variant="quiet" size="icon-xs" tooltip={label} aria-label={label} disabled={disabled} onClick={onClick}>
       {children}
-    </button>
+    </Button>
   );
 }
 

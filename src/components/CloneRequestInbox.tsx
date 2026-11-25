@@ -15,7 +15,7 @@ const lifetimeLabel = (minutes: number) => minutes < 60 ? `${minutes} min` : min
 export function SignInToggle({ value, onChange, disabled }: { value: CloneSignInPath; onChange: (next: CloneSignInPath) => void; disabled?: boolean }) {
   return <div className="u-segmented w-fit" role="radiogroup" aria-label="Sign-in">
     {([["import", "Signed in as you"], ["sign_in_inside", "Blank"]] as const).map(([path, label]) =>
-      <button key={path} type="button" role="radio" aria-checked={value === path} data-active={value === path} disabled={disabled} onClick={() => onChange(path)} className="u-segmented-item">{label}</button>)}
+      <Button variant="quiet" size="xs" key={path} role="radio" aria-checked={value === path} data-active={value === path} disabled={disabled} onClick={() => onChange(path)}>{label}</Button>)}
   </div>;
 }
 
@@ -85,7 +85,7 @@ export function CloneConsentCard({ request, label, onOpen, onResolved, onError }
       </OptionRow>
     </div>}
     <div className="mt-4 flex items-center gap-2">
-      {onOpen && <Button variant="ghost" size="sm" onClick={onOpen} className="text-muted-foreground">Open chat</Button>}
+      {onOpen && <Button variant="quiet" size="sm" onClick={onOpen}>Open chat</Button>}
       <div className="ml-auto flex gap-2">
         <Button variant="outline" size="sm" disabled={busy || !settings} onClick={() => void resolve(false)}>Deny</Button>
         <Button size="sm" loading={busy} disabled={!settings} onClick={() => void resolve(true)}>Allow</Button>

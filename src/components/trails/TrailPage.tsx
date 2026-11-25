@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Chip, KIND_ICON, KIND_LABEL, RailSection, StageBar, TONE_INK, TrailScroll, riseDelay } from "./TrailParts";
 import { TrailBriefSkeleton, TrailHeaderSkeleton, TrailRailSkeleton, TrailTimelineSkeleton } from "./TrailSkeletons";
 import { clsx as cn } from "clsx";
+import { Tip } from "@/components/ui/tooltip";
 
 const BRIEF_ICON: Record<BriefKind, ComponentType<{ className?: string }>> = {
   issue: CircleDot,
@@ -48,21 +49,18 @@ function EventRow({ event, last, order, onOpen, onRemove }: { event: TrailEvent;
         <div className="min-w-0 flex-1 pt-1">
           <div className="flex items-center gap-3">
             {onOpen ? (
-              <button type="button" onClick={onOpen} className="flex min-w-0 flex-1 rounded-sm text-left underline-offset-4 hover:underline focus-visible:underline focus-visible:outline-none">{title}</button>
+              <Button variant="link" size="inline" onClick={onOpen} className="min-w-0 flex-1 justify-start">{title}</Button>
             ) : title}
             <time dateTime={event.at} className="w-10 shrink-0 text-right text-caption tabular-nums text-faint">{timeLabel(event.at)}</time>
             {/* Always the slot, so every time sits in one column; checks have no button in it. */}
-            <span data-remove-slot="" className="flex size-5 shrink-0 items-center justify-center">
+            <span data-remove-slot="" className="flex size-6 shrink-0 items-center justify-center opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
               {onRemove && (
-                <button
-                  type="button"
+                <Button variant="quiet" size="icon-2xs" tooltip="Remove from trail"
                   onClick={onRemove}
                   aria-label={`Remove this ${memberNoun(event.member)} from the trail`}
-                  title="Remove from trail"
-                  className="rounded p-0.5 text-faint opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
                 >
                   <X className="size-3.5" aria-hidden="true" />
-                </button>
+                </Button>
               )}
             </span>
           </div>
@@ -117,9 +115,9 @@ export function TrailPage({ trail, summary: knownSummary, workspaceTitle, loadin
   }, [trail?.summary.id, trail?.summary.updatedAt, memberCount]);
 
   const back = (
-    <button type="button" onClick={onBack} className="inline-flex items-center gap-1 rounded-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+    <Button variant="text" size="inline" onClick={onBack}>
       <Route className="size-3.5" aria-hidden="true" />Trails
-    </button>
+    </Button>
   );
 
   if (!summary) {
@@ -172,6 +170,7 @@ export function TrailPage({ trail, summary: knownSummary, workspaceTitle, loadin
           </div>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             {editing ? (
+              // oxlint-disable-next-line bridge/no-raw-controls -- an in-place heading editor keeps the heading's own type
               <input
                 autoFocus
                 value={draftTitle}
@@ -184,23 +183,21 @@ export function TrailPage({ trail, summary: knownSummary, workspaceTitle, loadin
               />
             ) : (
               <h1 className="min-w-0 flex-1 text-balance font-display text-title font-semibold tracking-tight text-foreground">
-                <button type="button" onClick={() => { setDraftTitle(summary.title); setEditing(true); }} title="Rename" className="rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{summary.title}</button>
+                {/* oxlint-disable-next-line bridge/no-raw-controls -- the heading is its own rename control and keeps the heading's type */}
+                <Tip label="Rename"><button type="button" onClick={() => { setDraftTitle(summary.title); setEditing(true); }} className="rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{summary.title}</button></Tip>
               </h1>
             )}
             <div className="flex shrink-0 items-center gap-1">
-              <Button variant="ghost" size="sm" onClick={onAdd} aria-haspopup="dialog" title="Add a note, chat, pull request, draft or issue"><Plus aria-hidden="true" />Add</Button>
-              <Button loading={refreshing}
+              <Button tooltip="Add a note, chat, pull request, draft or issue" variant="ghost" size="sm" onClick={onAdd} aria-haspopup="dialog"><Plus aria-hidden="true" />Add</Button>
+              <Button tooltip="Refresh from GitHub" loading={refreshing}
                 variant="ghost"
                 size="icon-sm"
                 onClick={onRefresh}
-                disabled={refreshing}
-                aria-busy={refreshing}
                 aria-label="Refresh from GitHub"
-                title={refreshing ? "Refreshing from GitHub" : "Refresh from GitHub"}
               >
                 <RefreshCw aria-hidden="true" />
               </Button>
-              <Button variant="ghost" size="icon-sm" onClick={() => onArchive(!summary.archivedAt)} aria-label={summary.archivedAt ? "Unarchive trail" : "Archive trail"} title={summary.archivedAt ? "Unarchive" : "Archive"}>
+              <Button tooltip={summary.archivedAt ? "Unarchive" : "Archive"} variant="ghost" size="icon-sm" onClick={() => onArchive(!summary.archivedAt)} aria-label={summary.archivedAt ? "Unarchive trail" : "Archive trail"}>
                 {summary.archivedAt ? <ArchiveRestore aria-hidden="true" /> : <Archive aria-hidden="true" />}
               </Button>
               <Button className="ml-1" onClick={onContinue}><Plus aria-hidden="true" />Continue this trail</Button>

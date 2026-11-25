@@ -5,10 +5,13 @@ import { browserWorkspaceReducer, defaultBrowserWorkspace, normalizeBrowserUrl, 
 import { sanitizeBrowserSelection, type BrowserSelectionContext } from "../browserSelection";
 import { hasNativeBrowser, type BrowserAction, type BrowserPageSnapshot } from "../browserRuntime";
 import { BrowserPage, type BrowserPageHandle } from "./BrowserPage";
+import { Button } from "./ui/button";
 import { PaneState } from "./ui/pane";
+import { Textarea } from "./ui/textarea";
 import { cn } from "../lib/utils";
 import { formatShortcut, modKey } from "../lib/platform";
-import { SkeletonDot, pendingClass } from "@/components/ui/skeleton";
+import { Input } from "@/components/ui/input";
+import { SkeletonDot } from "@/components/ui/skeleton";
 
 export type SimpleBrowserProps = {
   sessionId?: string;
@@ -17,8 +20,6 @@ export type SimpleBrowserProps = {
   onAttachSelection?: (context: BrowserSelectionContext) => void;
   onInvalidateSelection?: (tabId: string, navigationId?: number) => void;
 };
-const control = "grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40";
-const tabButton = "flex h-7 min-w-0 max-w-40 items-center gap-1.5 rounded-md px-2 text-xs";
 
 export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible = true, onAttachSelection, onInvalidateSelection }: SimpleBrowserProps) {
   const [workspace, dispatch] = useReducer(browserWorkspaceReducer, undefined, () => initialUrl ? defaultBrowserWorkspace(initialUrl) : readBrowserWorkspace(sessionId));
@@ -62,6 +63,7 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
       if (select) address.current?.select();
     });
   }, [cancelAddressFocus]);
+  // oxlint-disable-next-line react-hooks/exhaustive-deps -- selectionRevision is a counter, not a DOM ref: unmount must bump its latest value
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; selectionRevision.current++; cancelAddressFocus(); }; }, [cancelAddressFocus]);
   useEffect(() => { writeBrowserWorkspace(sessionId, workspace); }, [sessionId, workspace]);
   useEffect(() => { selectionRevision.current++; setDraft(active.url); setError(undefined); setSelection(undefined); setInspecting(false); setAttaching(false); }, [active.id, active.url]);
@@ -225,7 +227,7 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
         {workspace.tabs.map((tab, index) => {
           const selected = tab.id === active.id;
           return <div key={tab.id} className={cn("group/tab flex shrink-0 items-center rounded-md transition-colors", selected ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50 hover:text-foreground")}>
-            <button type="button" role="tab" id={`browser-tab-${tab.id}`} aria-controls={`browser-page-${tab.id}`} aria-selected={selected} tabIndex={selected ? 0 : -1} className={tabButton} title={tab.url || "New tab"} onClick={() => selectTab(tab.id)} onKeyDown={event => {
+            <Button variant={selected ? "ghost" : "text"} size="xs" role="tab" id={`browser-tab-${tab.id}`} aria-controls={`browser-page-${tab.id}`} aria-selected={selected} tabIndex={selected ? 0 : -1} className="min-w-0 max-w-40 shrink" tooltip={tab.url || "New tab"} onClick={() => selectTab(tab.id)} onKeyDown={event => {
               let target = index;
               if (event.key === "ArrowRight") target = (index + 1) % workspace.tabs.length;
               else if (event.key === "ArrowLeft") target = (index + workspace.tabs.length - 1) % workspace.tabs.length;
@@ -235,40 +237,40 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
               else return;
               event.preventDefault(); selectTab(workspace.tabs[target].id);
               document.getElementById(`browser-tab-${workspace.tabs[target].id}`)?.focus();
-            }}>{snapshots[tab.id]?.loading ? <SkeletonDot label="Loading page" /> : <Globe size={12} className="shrink-0" aria-hidden="true" />}<span className="truncate">{tab.title || (tab.url ? new URL(tab.url).hostname : "New tab")}</span></button>
-            <button type="button" aria-label={`Close ${tab.title || "browser tab"}`} title="Close tab" className={cn("mr-0.5 grid size-5 shrink-0 place-items-center rounded-sm text-muted-foreground transition-opacity hover:text-foreground", selected ? "opacity-100 hover:bg-accent" : "opacity-0 group-focus-within/tab:opacity-100 group-hover/tab:opacity-100")} onClick={() => closeTab(tab.id)}><X size={11} /></button>
+            }}>{snapshots[tab.id]?.loading ? <SkeletonDot label="Loading page" /> : <Globe size={12} className="shrink-0" aria-hidden="true" />}<span className="truncate">{tab.title || (tab.url ? new URL(tab.url).hostname : "New tab")}</span></Button>
+            <span className={cn("mr-0.5 flex transition-opacity", !selected && "opacity-0 group-focus-within/tab:opacity-100 group-hover/tab:opacity-100")}><Button variant="quiet" size="icon-2xs" aria-label={`Close ${tab.title || "browser tab"}`} tooltip="Close tab" onClick={() => closeTab(tab.id)}><X /></Button></span>
           </div>;
         })}
       </div>
-      <button type="button" className={control} aria-label="New browser tab" title={`New tab  ${modKey("T")}`} disabled={workspace.tabs.length >= 20} onClick={() => createTab()}><Plus size={14} /></button>
-      <button type="button" className={control} aria-label="Reopen closed browser tab" title={`Reopen closed tab  ${formatShortcut({ meta: true, shift: true }, "T")}`} disabled={!workspace.recentlyClosed.length || workspace.tabs.length >= 20} onClick={reopenTab}><Undo2 size={13} /></button>
+      <Button variant="quiet" size="icon-xs" aria-label="New browser tab" tooltip={`New tab  ${modKey("T")}`} disabled={workspace.tabs.length >= 20} onClick={() => createTab()}><Plus /></Button>
+      <Button variant="quiet" size="icon-xs" aria-label="Reopen closed browser tab" tooltip={`Reopen closed tab  ${formatShortcut({ meta: true, shift: true }, "T")}`} disabled={!workspace.recentlyClosed.length || workspace.tabs.length >= 20} onClick={reopenTab}><Undo2 /></Button>
     </div>
     <form className="flex min-h-9 shrink-0 items-center gap-1 border-b border-border py-1 pl-1.5 pr-2" onSubmit={event => { event.preventDefault(); navigate(draft); }}>
-      <button type="button" className={control} aria-label="Back" title="Back" disabled={!canBack} onClick={() => act("back")}><ArrowLeft size={13} /></button>
-      <button type="button" className={control} aria-label="Forward" title="Forward" disabled={!canForward} onClick={() => act("forward")}><ArrowRight size={13} /></button>
-      <button type="button" className={control} aria-label={live?.loading ? "Stop loading" : "Reload"} title={live?.loading ? "Stop loading" : "Reload"} disabled={!active.url} onClick={() => act(live?.loading ? "stop" : "reload")}>{live?.loading ? <Square size={11} /> : <RotateCw size={12} />}</button>
-      <input ref={address} value={draft} onChange={event => setDraft(event.target.value)} aria-label="Address" placeholder="Search or enter address" spellCheck={false} autoComplete="off" className="h-8 min-w-0 flex-1 rounded-full border border-input bg-muted/40 px-3.5 text-xs outline-none transition-colors placeholder:text-muted-foreground/70 focus-visible:border-ring focus-visible:bg-background" />
-      <button type="button" className={cn(control, inspecting && "bg-selection text-selection-foreground")} aria-label="Select page element" aria-pressed={inspecting} disabled={!active.url || !!pageError} title="Select an element to edit" onClick={() => inspecting ? cancelSelection() : act("inspect")}><MousePointer2 size={14} /></button>
-      <button type="button" className={control} aria-label="Open in system browser" title="Open in system browser" disabled={!active.url} onClick={() => void run(() => openExternalUrl(live?.url || active.url))}><ExternalLink size={13} /></button>
+      <Button variant="quiet" size="icon-xs" aria-label="Back" tooltip="Back" disabled={!canBack} onClick={() => act("back")}><ArrowLeft /></Button>
+      <Button variant="quiet" size="icon-xs" aria-label="Forward" tooltip="Forward" disabled={!canForward} onClick={() => act("forward")}><ArrowRight /></Button>
+      <Button variant="quiet" size="icon-xs" aria-label={live?.loading ? "Stop loading" : "Reload"} tooltip={live?.loading ? "Stop loading" : "Reload"} disabled={!active.url} onClick={() => act(live?.loading ? "stop" : "reload")}>{live?.loading ? <Square size={11} className="size-3" /> : <RotateCw />}</Button>
+      <Input size="sm" ref={address} className="min-w-0 flex-1" value={draft} onChange={event => setDraft(event.target.value)} aria-label="Address" placeholder="Search or enter address" spellCheck={false} autoComplete="off"/>
+      <Button variant="quiet" size="icon-xs" aria-label="Select page element" aria-pressed={inspecting} disabled={!active.url || !!pageError} tooltip="Select an element to edit" onClick={() => inspecting ? cancelSelection() : act("inspect")}><MousePointer2 /></Button>
+      <Button variant="quiet" size="icon-xs" aria-label="Open in system browser" tooltip="Open in system browser" disabled={!active.url} onClick={() => void run(() => openExternalUrl(live?.url || active.url))}><ExternalLink /></Button>
     </form>
     {!hasNativeBrowser() && <p className="border-b border-border px-3 py-1.5 text-caption leading-4 text-muted-foreground">Web preview: some pages cannot be embedded. Full navigation and element selection are available in the desktop app.</p>}
-    {error && <div role="alert" className="flex items-start gap-2 border-b border-border px-3 py-1.5 text-xs text-destructive"><span className="flex-1 leading-4">{error}</span><button type="button" className="grid size-5 shrink-0 place-items-center rounded-sm text-destructive/70 transition-colors hover:text-destructive" onClick={() => setError(undefined)} aria-label="Dismiss browser error"><X size={12} /></button></div>}
+    {error && <div role="alert" className="flex items-start gap-2 border-b border-border px-3 py-1.5 text-xs text-destructive"><span className="flex-1 leading-4">{error}</span><Button variant="destructive-ghost" size="icon-2xs" onClick={() => setError(undefined)} aria-label="Dismiss browser error"><X /></Button></div>}
     {slow && <div role="status" className="border-b border-border px-3 py-1.5 text-caption leading-4 text-muted-foreground">Still loading. You can wait, stop loading, or open this page in your browser.</div>}
-    {inspecting && <div role="status" className="flex items-center justify-between gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground"><span>Select an element in the page. Escape cancels.</span><button type="button" onClick={cancelSelection} className="shrink-0 rounded-sm px-1.5 py-0.5 transition-colors hover:bg-accent hover:text-foreground">Cancel</button></div>}
+    {inspecting && <div role="status" className="flex items-center justify-between gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground"><span>Select an element in the page. Escape cancels.</span><Button variant="quiet" size="2xs" onClick={cancelSelection}>Cancel</Button></div>}
     <div className="relative min-h-0 flex-1">
       {workspace.tabs.map(tab => <div key={tab.id} id={`browser-page-${tab.id}`} role="tabpanel" aria-labelledby={`browser-tab-${tab.id}`} className={cn("h-full", tab.id !== active.id && "hidden")}>
         <BrowserPage ref={page => { if (page) pages.current.set(tab.id, page); else pages.current.delete(tab.id); }} sessionId={sessionId} tabId={tab.id} initialUrl={tab.url} visible={visible && tab.id === active.id && !!tab.url && !snapshots[tab.id]?.error && !selection} onSnapshot={next => acceptSnapshot(tab.id, next)} onError={message => { if (stateRef.current.activeTabId === tab.id) setError(message); }} />
       </div>)}
       {!active.url && <div className="absolute inset-0 bg-background"><PaneState icon={Globe} title="New browser tab">Enter an address above to open a page.</PaneState></div>}
-      {pageError && <div className="absolute inset-0 overflow-auto bg-background"><PaneState role="alert" icon={Globe} title="Page could not load" action={<><button type="button" className="u-glass-soft rounded-md px-3 py-2 text-xs transition-colors hover:bg-accent" onClick={() => act("reload")}>Retry</button><button type="button" className="u-glass-soft rounded-md px-3 py-2 text-xs transition-colors hover:bg-accent" onClick={() => void run(() => openExternalUrl(active.url))}>Open in system browser</button></>}>{pageError}</PaneState></div>}
+      {pageError && <div className="absolute inset-0 overflow-auto bg-background"><PaneState role="alert" icon={Globe} title="Page could not load" action={<><Button variant="outline" size="sm" onClick={() => act("reload")}>Retry</Button><Button variant="outline" size="sm" onClick={() => void run(() => openExternalUrl(active.url))}>Open in system browser</Button></>}>{pageError}</PaneState></div>}
       {selection && <section aria-label="Selected page element" className="absolute inset-0 flex flex-col gap-3 overflow-auto bg-background p-4">
         <h3 className="font-display text-sm font-semibold">Selected element</h3>
         <p className="break-all text-xs leading-4 text-muted-foreground">{selection.url}</p>
         <code className="whitespace-pre-wrap break-words rounded-lg bg-muted px-2.5 py-2 font-mono text-caption leading-4">{selection.selector}</code>
         <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted px-2.5 py-2 font-mono text-caption leading-4">{selection.snippet}</pre>
         <p className="text-xs leading-4 text-muted-foreground">Describe the change in the composer.</p>
-        <label className="flex flex-col gap-1.5 text-xs">Annotation<textarea aria-label="Selection annotation" maxLength={1000} value={annotation} onChange={event => setAnnotation(event.target.value)} placeholder="Describe the area or mark what should change…" className="u-glass-soft min-h-24 resize-y rounded-lg p-2.5 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring" /></label>
-        <div className="flex gap-2"><button aria-busy={attaching || undefined} type="button" disabled={!onAttachSelection || attaching} onClick={() => void attach()} className={cn("rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40", pendingClass(attaching))}>Attach to prompt</button><button type="button" onClick={cancelSelection} className="u-glass-soft rounded-md px-3 py-2 text-xs transition-colors hover:bg-accent">Cancel</button></div>
+        <label className="flex flex-col gap-1.5 text-xs">Annotation<Textarea size="sm" aria-label="Selection annotation" maxLength={1000} value={annotation} onChange={event => setAnnotation(event.target.value)} placeholder="Describe the area or mark what should change…" className="min-h-24" /></label>
+        <div className="flex gap-2"><Button size="sm" disabled={!onAttachSelection || attaching} loading={attaching} onClick={() => void attach()}>Attach to prompt</Button><Button variant="outline" size="sm" onClick={cancelSelection}>Cancel</Button></div>
         <p className="text-caption text-muted-foreground">Select the element again after navigating to a different page.</p>
       </section>}
     </div>

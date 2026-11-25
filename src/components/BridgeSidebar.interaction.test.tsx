@@ -63,6 +63,13 @@ function mount(overrides: Partial<BridgeSidebarProps> = {}) {
 const text = () => container.textContent ?? "";
 const groupHeader = (label: string) =>
   [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.getAttribute("aria-expanded") !== null && button.textContent?.includes(label))!;
+/** The hint a control shows on keyboard focus. */
+const hint = (element: HTMLElement) => {
+  act(() => element.focus());
+  const shown = document.querySelector('[data-slot="tooltip-popup"]')?.textContent ?? "";
+  act(() => element.blur());
+  return shown;
+};
 const click = (element: Element) => {
   act(() => {
     element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -242,7 +249,7 @@ describe("BridgeSidebar action rows", () => {
   it("exports idle chats for Mission Control without opening the chat", () => {
     const onOpenSession = vi.fn();
     mount({ onOpenSession });
-    const row = container.querySelector<HTMLButtonElement>("button[title^='Japan relocation']")!;
+    const row = container.querySelector<HTMLButtonElement>("button[data-tip^='Japan relocation']")!;
     expect(row.draggable).toBe(true);
     const dataTransfer = { setData: vi.fn(), effectAllowed: "none" };
     const event = new Event("dragstart", { bubbles: true });
@@ -401,7 +408,7 @@ describe("BridgeSidebar pinned Notes", () => {
     const rows = [...container.querySelectorAll<HTMLButtonElement>("nav[aria-label='Main navigation'] button")].map(button => button.getAttribute("aria-label"));
     expect(rows).toEqual(["Apps", "Notes"]);
     const notes = container.querySelector<HTMLButtonElement>("button[aria-label='Notes']")!;
-    expect(notes.title).toContain("Notes");
+    expect(hint(notes)).toContain("Notes");
     expect(notes.getAttribute("aria-current")).toBeNull();
     click(notes);
     expect(onOpenApp).toHaveBeenCalledWith("notes");

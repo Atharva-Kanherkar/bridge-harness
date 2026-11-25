@@ -10,6 +10,7 @@ import { WorkflowRunView, queuedLine } from "./WorkflowRunView";
 import { templateBlocker } from "./WorkflowTemplates";
 import { costLine, formatCost, ordinal, presetFor, triggerSummary } from "./format";
 import * as externalLinks from "../../externalLinks";
+import { chooseOption, selectValue } from "@/testing/select";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -85,7 +86,7 @@ describe("the editor's event trigger", () => {
     await act(async () => root.render(<WorkflowEditor open workflow={null} options={options} projects={[]} busy={false} error={null} onCancel={() => {}} onSubmit={onSubmit}/>));
     change(field<HTMLInputElement>("Workflow name"), "Mentions");
     change(field<HTMLTextAreaElement>("Workflow instructions"), "Tell me what they need.");
-    change(field<HTMLSelectElement>("Workflow schedule"), "event");
+    await chooseOption(field("Workflow schedule")!, "event");
     await settle(500);
     expect(preview).toHaveBeenCalledWith(expect.objectContaining({ kind: "event", event: "slack_mention" }));
     expect(document.body.textContent).toContain("Would have run 4 times in the last 7 days.");
@@ -109,10 +110,10 @@ describe("the editor's event trigger", () => {
     await act(async () => root.render(<WorkflowEditor open workflow={null} options={options} projects={[]} busy={false} error={null} onCancel={() => {}} onSubmit={onSubmit}/>));
     change(field<HTMLInputElement>("Workflow name"), "Messages");
     change(field<HTMLTextAreaElement>("Workflow instructions"), "Tell me what they need.");
-    change(field<HTMLSelectElement>("Workflow schedule"), "event");
+    await chooseOption(field("Workflow schedule")!, "event");
     await settle(500);
     expect(button("Dry run on the latest event")).toBeTruthy();
-    change(field<HTMLSelectElement>("Event"), "slack_direct_message");
+    await chooseOption(field("Event")!, "slack_direct_message");
     await settle(0);
     // The mention's sample is not offered for the DM trigger while its own preview loads.
     expect(button("Dry run on the latest event")).toBeUndefined();
@@ -128,7 +129,7 @@ describe("the editor's event trigger", () => {
   it("counts collected events in the editor's preview", async () => {
     const options = await bridgeApi.workflowOptions();
     await act(async () => root.render(<WorkflowEditor open workflow={null} options={options} projects={[]} busy={false} error={null} onCancel={() => {}} onSubmit={() => {}}/>));
-    change(field<HTMLSelectElement>("Workflow schedule"), "event");
+    await chooseOption(field("Workflow schedule")!, "event");
     await settle(500);
     expect(document.body.textContent).toContain("Would have run 4 times in the last 7 days.");
     await act(async () => field<HTMLInputElement>("Collect them and run at a set time").click());
@@ -157,8 +158,8 @@ describe("the editor's event trigger", () => {
     await act(async () => root.render(<WorkflowEditor open workflow={null} options={options} projects={[]} busy={false} error={null} onCancel={() => {}} onSubmit={() => {}}/>));
     change(field<HTMLInputElement>("Workflow name"), "PRs");
     change(field<HTMLTextAreaElement>("Workflow instructions"), "Summarise it.");
-    change(field<HTMLSelectElement>("Workflow schedule"), "event");
-    change(field<HTMLSelectElement>("Event"), "github_pull_request_opened");
+    await chooseOption(field("Workflow schedule")!, "event");
+    await chooseOption(field("Event")!, "github_pull_request_opened");
     await settle(500);
     expect(button("Approve and save")!.disabled).toBe(true);
     expect(document.body.textContent).toContain("Choose the repository to watch");
@@ -178,7 +179,7 @@ describe("the editor's event trigger", () => {
     expect(document.body.textContent).toContain("Loading agents and connectors");
     expect(button("Approve and save")!.disabled).toBe(true);
     await act(async () => render(options));
-    expect(field<HTMLSelectElement>("Workflow model").value).toBe(claude.defaultModel ?? claude.models[0].id);
+    expect(selectValue(field("Workflow model"))).toBe(claude.defaultModel ?? claude.models[0].id);
     expect(document.body.textContent).not.toContain("Loading agents and connectors");
     expect(button("Approve and save")!.disabled).toBe(false);
   });
@@ -189,9 +190,9 @@ describe("the editor's event trigger", () => {
     const claude = bare.harnesses.find(harness => harness.id === "claude")!;
     const workflow = { id: "wf", revisionId: "r1", approved: false, enabled: true, disabledReason: null, definition: { name: "Old", projectId: null, steps: [{ harness: "claude", model: "claude-retired-1", instructions: "Do it." }], trigger: { kind: "manual" as const }, grants: [], alwaysAllow: [], files: "none" as const, budget: { maxWallSeconds: 600, maxTurns: 24, maxToolCalls: 64, maxOutputTokens: null, costCeilingMicrousd: null }, expectedResult: "", notify: { onSuccess: false } } };
     await act(async () => root.render(<WorkflowEditor open workflow={workflow as never} options={bare} projects={[]} busy={false} error={null} onCancel={() => {}} onSubmit={() => {}}/>));
-    const select = field<HTMLSelectElement>("Workflow model");
-    expect(select.value).toBe("claude-retired-1");
-    expect(select.selectedOptions[0].textContent).toBe("claude-retired-1");
+    const select = field("Workflow model");
+    expect(selectValue(select)).toBe("claude-retired-1");
+    expect(select.textContent).toBe("claude-retired-1");
     expect(claude.models.some(model => model.id === "claude-retired-1")).toBe(false);
   });
 });

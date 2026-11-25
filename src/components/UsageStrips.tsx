@@ -5,6 +5,7 @@ import { harnessChartDot, harnessChartText } from "./harnessMarks";
 import { chartY, formatPercent, formatPeriodLabel, formatTokens, formatUsd, type ChartGeometry } from "../usageReport";
 import { axisFraction, harnessesByMetric, harnessValue, modelValue, periodHarnessValue, periodValue, straightPaths } from "../usageGeometry";
 import { AxisLabels, EstimateMark, formatMetric, HarnessName, HeroCaption, LAYOUT_CARD, periodNoun, useScrub, type UsageLayoutProps } from "./UsageLayoutParts";
+import { Button } from "@/components/ui/button";
 
 // Layout B: small multiples. One strip per harness on one shared clock, so
 // no series is ever drawn over another. A single rule scrubs every strip at
@@ -23,7 +24,7 @@ function Strip({ values, max, geometry, index, harness, gradientId }: { values: 
     <svg viewBox={`0 0 ${geometry.width} ${geometry.height}`} preserveAspectRatio="none" className="block h-full w-full overflow-visible" aria-hidden="true">
       <defs><linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="currentColor" stopOpacity={0.36} /><stop offset="1" stopColor="currentColor" stopOpacity={0.02} /></linearGradient></defs>
       <line x1={0} x2={geometry.width} y1={geometry.height} y2={geometry.height} className="stroke-border" vectorEffect="non-scaling-stroke" />
-      <path d={paths.area} fill={`url(#${gradientId})`} className="motion-safe:animate-[chart-rise_600ms_ease-out_both] origin-bottom" />
+      <path d={paths.area} fill={`url(#${gradientId})`} className="motion-safe:animate-chart-rise origin-bottom" />
       <path d={paths.line} fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
     </svg>
     {index !== null && <>
@@ -54,7 +55,7 @@ export function UsageStrips({ report, window, metric }: UsageLayoutProps) {
   return <div className="space-y-5">
     <section aria-label="Summary" className="flex flex-wrap items-end justify-between gap-6">
       <div>
-        <div className="text-[2.75rem] font-light leading-none tracking-[-0.04em] tabular-nums text-foreground">{format(metric === "cost" ? report.totals.costMicrousd : report.totals.processedTokens)}{metric === "cost" && <EstimateMark report={report} large />}</div>
+        <div className="text-5xl font-light leading-none tracking-display tabular-nums text-foreground">{format(metric === "cost" ? report.totals.costMicrousd : report.totals.processedTokens)}{metric === "cost" && <EstimateMark report={report} large />}</div>
         <p className="mt-2.5 text-body text-muted-foreground">{metric === "cost"
           ? <>at API rates · <span className="font-medium tabular-nums text-foreground">{formatTokens(report.totals.processedTokens)}</span> tokens processed</>
           : <>tokens processed · <span className="font-medium tabular-nums text-foreground">{formatUsd(report.totals.costMicrousd)}</span><EstimateMark report={report} /> at API rates</>}</p>
@@ -68,7 +69,7 @@ export function UsageStrips({ report, window, metric }: UsageLayoutProps) {
           ["Cache saved", formatUsd(report.totals.cacheSavingsMicrousd)],
         ].map(([label, value]) => <div key={label} className="px-5 first:pl-0 last:pr-0">
           <dt className="text-caption text-muted-foreground">{label}</dt>
-          <dd className="mt-1 text-[17px] tracking-tight tabular-nums text-foreground">{value}</dd>
+          <dd className="mt-1 text-lg tracking-tight tabular-nums text-foreground">{value}</dd>
         </div>)}
       </dl>
     </section>
@@ -77,7 +78,7 @@ export function UsageStrips({ report, window, metric }: UsageLayoutProps) {
       <div className="mb-2 flex items-center gap-3">
         <h2 className="text-ui font-medium text-foreground">{title}</h2>
         <div role="radiogroup" aria-label="Strip scale" className="u-segmented ml-auto">
-          {(["shared", "own"] as const).map(option => <button key={option} type="button" role="radio" aria-checked={scale === option} data-active={scale === option} className="u-segmented-item" onClick={() => setScale(option)}>{option === "shared" ? "Shared scale" : "Own scale"}</button>)}
+          {(["shared", "own"] as const).map(option => <Button variant="quiet" size="xs" key={option} role="radio" aria-checked={scale === option} data-active={scale === option} onClick={() => setScale(option)}>{option === "shared" ? "Shared scale" : "Own scale"}</Button>)}
         </div>
       </div>
       {count === 0 || harnesses.length === 0 ? <p className="py-10 text-center text-caption text-muted-foreground">No activity in this window.</p> : <div

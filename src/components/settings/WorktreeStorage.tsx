@@ -16,6 +16,9 @@ import { cn } from "@/lib/utils";
 import { bridgeApi as api } from "../../api";
 import type { WorktreeInventoryEntry, WorktreeUsage } from "../../types";
 import { GhostButton, Select, StatusPill, TextButton, type PillTone } from "./kit";
+import { Tip } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 // Repositories have no identity colour of their own, so the breakdown wears
 // the same achromatic lightness ramp as the disk summary above it.
@@ -41,19 +44,18 @@ function RepoBreakdown({ repositories, totalBytes, onSelect }: {
   const rawTotal = raw.reduce((sum, value) => sum + value, 0);
   const scale = rawTotal > 100 ? 100 / rawTotal : 1;
   return <div className="py-3">
-    <div className="relative flex h-1.5 w-full overflow-hidden rounded-full bg-muted">
+    {/* The bar is a picture of the legend below; the legend is what the
+        keyboard and assistive tech use. */}
+    <div aria-hidden="true" className="relative flex h-1.5 w-full overflow-hidden rounded-full bg-muted">
       {sorted.map((repo, index) => {
         const width = raw[index] * scale;
-        return <button
+        return <div
           key={repo.repoRoot}
-          type="button"
-          aria-label={`${repoName(repo.repoRoot)}: ${bytes(repo.sizeBytes)}`}
+          data-repo={repo.repoRoot}
           onMouseEnter={() => setHover(index)}
           onMouseLeave={() => setHover(current => (current === index ? null : current))}
-          onFocus={() => setHover(index)}
-          onBlur={() => setHover(current => (current === index ? null : current))}
           onClick={() => onSelect(repo.repoRoot)}
-          className={cn("h-full origin-left cursor-pointer outline-none motion-safe:animate-[meter-fill_600ms_ease-out] first:rounded-l-full last:rounded-r-full", swatch(index), hover === index && "brightness-110")}
+          className={cn("h-full origin-left cursor-pointer outline-none motion-safe:animate-meter-fill first:rounded-l-full last:rounded-r-full", swatch(index), hover === index && "brightness-110")}
           style={{ width: `${width}%` }}
         />;
       })}
@@ -65,17 +67,21 @@ function RepoBreakdown({ repositories, totalBytes, onSelect }: {
     </div>}
     <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
       {sorted.map((repo, index) => <li key={repo.repoRoot}>
-        <button
-          type="button"
+        <Button
+          variant="quiet"
+          size="2xs"
+          aria-label={`${repoName(repo.repoRoot)}: ${bytes(repo.sizeBytes)}`}
+          data-pressed={hover === index ? "" : undefined}
           onClick={() => onSelect(repo.repoRoot)}
           onMouseEnter={() => setHover(index)}
           onMouseLeave={() => setHover(current => (current === index ? null : current))}
-          className={cn("flex items-center gap-1.5 rounded-md px-1 py-0.5 text-meta outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring", hover === index && "bg-accent")}
+          onFocus={() => setHover(index)}
+          onBlur={() => setHover(current => (current === index ? null : current))}
         >
           <span className={cn("size-2 shrink-0 rounded-full", swatch(index))} />
-          <span className="truncate text-foreground" title={repo.repoRoot}>{repoName(repo.repoRoot)}</span>
+          <Tip label={repo.repoRoot}><span className="truncate text-foreground">{repoName(repo.repoRoot)}</span></Tip>
           <span className="shrink-0 tabular-nums text-muted-foreground">{repo.count} · {bytes(repo.sizeBytes)}{repo.overBudget ? " · Over limit" : ""}</span>
-        </button>
+        </Button>
       </li>)}
     </ul>
   </div>;
@@ -253,7 +259,7 @@ export function WorktreeStorage({ onError }: { onError?: (message: string) => vo
       </div>
     </div>}
     {entries.length > 0 && <div className="flex flex-wrap items-center gap-2">
-      <input type="search" aria-label="Search worktrees" placeholder="Search branch, path, or reason" value={query} onChange={event => setQuery(event.target.value)} className="h-8 min-w-48 flex-1 rounded-md bg-muted/50 px-3 text-caption text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring" />
+      <Input type="search" aria-label="Search worktrees" placeholder="Search branch, path, or reason" value={query} onChange={event => setQuery(event.target.value)} className="min-w-48 flex-1" />
       <Select label="Repository" value={repository} onChange={setRepository} width="w-44" options={[{ value: "", label: "All repositories" }, ...[...new Set(entries.map(entry => entry.repoRoot))].map(repo => ({ value: repo, label: repoName(repo), description: repo }))]} />
       <Select label="Worktree status" value={filter} onChange={setFilter} width="w-36" options={[{ value: "all", label: "All checkouts" }, { value: "reclaimable", label: "Reclaimable" }, { value: "protected", label: "Protected" }, { value: "external", label: "External" }]} />
       <Select label="Sort worktrees" value={sort} onChange={setSort} width="w-36" options={[{ value: "size", label: "Largest first" }, { value: "idle", label: "Longest idle" }, { value: "name", label: "Branch name" }]} />
@@ -272,12 +278,12 @@ export function WorktreeStorage({ onError }: { onError?: (message: string) => vo
         return <li key={entry.id} className="group flex items-center gap-4 py-2.5">
           <div className="min-w-0 flex-1">
             <p className="flex min-w-0 items-baseline gap-2">
-              <span className="truncate text-ui text-foreground" title={entry.path}>{entry.branch ?? repoName(entry.path)}</span>
+              <Tip label={entry.path}><span className="truncate text-ui text-foreground">{entry.branch ?? repoName(entry.path)}</span></Tip>
               <span className="shrink-0 text-caption text-muted-foreground">{repoName(entry.repoRoot)} · {entry.kind} · {age(entry.idleSeconds)}</span>
             </p>
-            <p className="truncate text-caption text-muted-foreground" title={entry.path}>
+            <Tip label={entry.path}><p className="truncate text-caption text-muted-foreground">
               {external ? "Not created by Bridge — shown for context, never reclaimed." : entry.retainedReason ?? entry.path}
-            </p>
+            </p></Tip>
           </div>
           {disposition && <StatusPill tone={DISPOSITION_TONE[disposition] ?? "neutral"}>{DISPOSITION_LABEL[disposition] ?? disposition}</StatusPill>}
           <span className="w-20 shrink-0 text-right text-ui tabular-nums text-foreground">{bytes(entry.sizeBytes)}</span>

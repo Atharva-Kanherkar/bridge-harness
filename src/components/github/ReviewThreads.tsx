@@ -9,7 +9,10 @@ import { Composer } from "./Composer";
 import { GithubMarkdown } from "./GithubMarkdown";
 import { hunkTail } from "./patch";
 import type { GithubAction, ReviewThread } from "../../protocol/generated/protocol";
-import { pendingClass } from "@/components/ui/skeleton";
+import { Tip } from "@/components/ui/tooltip";
+import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
+import { RowButton } from "@/components/ui/row";
+import { Button } from "@/components/ui/button";
 
 // Review conversations: the part of a pull request a reviewer works through
 // and closes. Each one is a card that says where it is, shows the lines it is
@@ -26,7 +29,7 @@ const EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
 function Timestamp({ iso }: { iso: string }) {
   if (Number.isNaN(Date.parse(iso))) return null;
-  return <time dateTime={iso} title={new Date(iso).toLocaleString()} className="text-caption text-muted-foreground">{relativeTime(iso, new Date())}</time>;
+  return <Tip label={new Date(iso).toLocaleString()}><time dateTime={iso} className="text-caption text-muted-foreground">{relativeTime(iso, new Date())}</time></Tip>;
 }
 
 /** The lines a conversation was opened on. */
@@ -96,24 +99,22 @@ function ThreadCard({ thread, index, number, repositoryUrl, headBranch, checkedO
     className={cn("overflow-hidden rounded-lg border bg-card transition-[border-color,box-shadow] duration-500", justResolved ? "border-success/50 ring-2 ring-success/15" : "border-border ring-0 ring-transparent", resolved && !justResolved && "bg-card/60")}
   >
     <div className={cn("flex items-center gap-1.5 px-2 py-1.5", open && "border-b border-border/70")}>
-      <button
-        type="button"
+      <Button variant="quiet" size="icon-2xs"
         onClick={() => setOpen(value => !value)}
         aria-expanded={open}
         aria-label={open ? "Collapse conversation" : "Expand conversation"}
-        className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
       >
         <ChevronRight size={12} aria-hidden="true" className={cn("transition-transform duration-200", open && "rotate-90")} />
-      </button>
-      <button
-        type="button"
+      </Button>
+      <Tip label={checkedOutHere ? "Open in the editor at this line" : `Open in the editor — ${headBranch} isn’t checked out here`}><RowButton
+        size="sm"
+        tone="muted"
         onClick={() => onJumpToFile(thread.path, line === undefined ? undefined : Number(line), headBranch)}
-        title={checkedOutHere ? "Open in the editor at this line" : `Open in the editor — ${headBranch} isn’t checked out here`}
-        className="group inline-flex min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 font-mono text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        className="group w-auto min-w-0"
       >
-        <span className="truncate">{thread.path}{line !== undefined ? `:${line}` : ""}</span>
+        <span className="truncate font-mono">{thread.path}{line !== undefined ? `:${line}` : ""}</span>
         <SquareArrowOutUpRight size={11} className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true" />
-      </button>
+      </RowButton></Tip>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         {thread.isOutdated && <Badge variant="outline" size="sm">Outdated</Badge>}
         <AnimatePresence initial={false}>
@@ -125,25 +126,22 @@ function ThreadCard({ thread, index, number, repositoryUrl, headBranch, checkedO
             transition={{ type: "spring", stiffness: 520, damping: 22 }}
           ><Badge variant="success" size="sm"><Check size={10} aria-hidden="true" />Resolved</Badge></motion.span>}
         </AnimatePresence>
-        {canToggle && <button
-          type="button"
-          disabled={busy}
-          aria-busy={busy || undefined}
+        {canToggle && <Button variant="outline" size="2xs"
+          loading={busy}
           onClick={() => void toggle()}
-          className={cn("inline-flex min-h-6 items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 text-caption font-medium text-foreground shadow-xs transition-[background-color,transform] hover:bg-accent active:scale-[0.97] disabled:opacity-60", pendingClass(busy))}
         >
           {resolved ? <RotateCcw size={11} aria-hidden="true" /> : <CircleCheck size={11} aria-hidden="true" />}
           {resolved ? "Unresolve" : "Resolve"}
-        </button>}
+        </Button>}
       </span>
     </div>
 
-    {!open && first && <button type="button" onClick={() => setOpen(true)} className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-meta text-muted-foreground transition-colors hover:bg-accent/40">
+    {!open && first && <RowButton size="sm" tone="muted" shape="flush" onClick={() => setOpen(true)}>
       <Avatar login={first.author?.login} className="size-4 text-micro" />
       <span className="shrink-0 font-medium text-foreground">{first.author?.login ?? "ghost"}</span>
       <span className="min-w-0 flex-1 truncate">{first.body.replace(/\s+/g, " ").slice(0, 160)}</span>
       {thread.comments.length > 1 && <span className="shrink-0 tabular-nums">{thread.comments.length - 1} {thread.comments.length === 2 ? "reply" : "replies"}</span>}
-    </button>}
+    </RowButton>}
 
     <AnimatePresence initial={false}>
       {open && <motion.div
@@ -210,19 +208,11 @@ export function ReviewThreads({ threads, number, repositoryUrl, headBranch, chec
         Review threads
         <span className="font-mono text-caption tabular-nums tracking-normal text-muted-foreground">{threads.length}</span>
       </h3>
-      {threads.length > 0 && <div role="radiogroup" aria-label="Filter conversations" className="ml-auto flex items-center gap-0.5 rounded-md border border-border bg-background/60 p-0.5">
-        {(["all", "open", "resolved"] as const).map(value => <button
-          key={value}
-          type="button"
-          role="radio"
-          aria-checked={filter === value}
-          onClick={() => setFilter(value)}
-          className={cn("relative rounded-sm px-2 py-0.5 text-caption transition-colors", filter === value ? "font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}
-        >
-          {filter === value && <motion.span layoutId={`thread-filter-${number}`} className="absolute inset-0 rounded-sm bg-card shadow-xs" transition={{ duration: 0.22, ease: EASE }} aria-hidden="true" />}
-          <span className="relative">{FILTER_LABEL[value]} <span className="tabular-nums opacity-70">{counts[value]}</span></span>
-        </button>)}
-      </div>}
+      {threads.length > 0 && <SegmentedGroup label="Filter conversations" className="ml-auto">
+        {(["all", "open", "resolved"] as const).map(value => <SegmentedItem key={value} active={filter === value} onClick={() => setFilter(value)}>
+          {FILTER_LABEL[value]} <span className="tabular-nums opacity-70">{counts[value]}</span>
+        </SegmentedItem>)}
+      </SegmentedGroup>}
     </div>
     {threads.length === 0
       ? <p className="text-meta text-muted-foreground">No review threads.</p>

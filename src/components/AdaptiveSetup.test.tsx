@@ -8,6 +8,7 @@ import { evaluatorExecutionLabel, LearningRunSummary, RouterSettingsDialog, sche
 import type { AdapterDescriptor, LearningRun, LearningSchedule, LearningState } from "../types";
 import { ModelProfileEditor } from "./ModelProfileEditor";
 import { recommendedProfileDrafts } from "../modelProfiles";
+import { chooseOption } from "@/testing/select";
 
 const adapters: AdapterDescriptor[] = [{
   id: "catalog", label: "Catalog", available: true, authState: "signed_in", version: "1", capabilities: [], unavailableReason: null, defaultModel: "balanced",
@@ -95,12 +96,9 @@ describe("adaptive setup surfaces", () => {
     const root = createRoot(host);
     await act(async () => root.render(<ModelProfileEditor profiles={recommendedProfileDrafts(adapters)} adapters={[...adapters, other]} onChange={onChange} />));
     const implementer = [...host.querySelectorAll("section")].find(section => section.querySelector("h3")?.textContent === "Implementer");
-    const model = implementer?.querySelectorAll("select")[1];
-    expect(model?.disabled).toBe(false);
-    await act(async () => {
-      model!.value = "other:deep";
-      model!.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    const model = implementer?.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="Provider & model"]');
+    expect(model?.hasAttribute("data-disabled")).toBe(false);
+    await chooseOption(model!, "other:deep");
     expect(onChange).toHaveBeenCalledOnce();
     expect(onChange.mock.calls[0][0].find((profile: { purpose: string }) => profile.purpose === "implementer")).toMatchObject({
       provider: "other", model: "deep", effort: "high",

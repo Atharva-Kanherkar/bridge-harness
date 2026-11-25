@@ -18,6 +18,8 @@ import { CHAT_SEARCH_MIN_CHARS } from "../chatSearch";
 import { DOCK_PANES, dockPaneChord, type DockPaneId } from "../dockLayout";
 import { chordLabel, shortcutFor, type CommandId } from "../keymap";
 import { formatShortcut } from "../lib/platform";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 export type LauncherChat = { id: string; title: string; detail?: string };
 export type LauncherDockPane = { id: DockPaneId; label: string; icon: LucideIcon };
@@ -376,23 +378,22 @@ function LauncherPanel({ onClose, apps, personal, badges, pins, chats, chatOpen,
 
   return (
     <DialogPopup showCloseButton={false} initialFocus={inputRef} aria-label="Apps" className="max-h-[min(640px,80dvh)] max-w-[680px] overflow-hidden">
-      <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4">
+      <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4 text-message">
         <Search size={17} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
         {/* Where the submenu came from, and the pointer's way back to it. The
             box keeps focus: ⌫ is the keyboard's way. */}
-        {submenu && <button
-          type="button"
+        {submenu && <Button variant="quiet" size="xs" className="-mx-1 shrink-0" tooltip="Back"
           tabIndex={-1}
           aria-label={`Back from ${submenuLabel}`}
-          title="Back"
           onMouseDown={event => event.preventDefault()}
           onClick={back}
-          className="-mx-1 flex h-7 shrink-0 items-center gap-1 rounded-md px-1 text-message text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
           {submenuLabel}
           <ChevronRight size={15} strokeWidth={1.6} aria-hidden="true" />
-        </button>}
-        <input
+        </Button>}
+        <Input
+          unstyled
+          size="bare"
           ref={inputRef}
           value={query}
           onChange={event => search(event.target.value)}
@@ -404,7 +405,7 @@ function LauncherPanel({ onClose, apps, personal, badges, pins, chats, chatOpen,
           aria-label={submenu ? `Search ${submenuLabel}` : "Search apps and chats"}
           placeholder={submenu ? SUBMENUS[submenu.id].placeholder : context ? "Search apps, chats and actions…" : "Search apps and chats…"}
           spellCheck={false}
-          className="min-w-0 flex-1 bg-transparent text-message text-foreground outline-none placeholder:text-muted-foreground/70"
+          className="min-w-0 flex-1"
         />
         <Kbd>esc</Kbd>
       </div>
@@ -454,17 +455,15 @@ function AppTile({ app, pinned, badge, active, onPin, ...option }: { app: Launch
       {/* The pin for a pointer. The tile stays the listbox option and ⌘P the
           keyboard path, so the button is no tab stop, keeps focus in the
           search box, and never opens the app it sits on. */}
-      <button
-        type="button"
+      <span className={cn("absolute right-1.5 top-1.5 transition-opacity", pinned || active ? "opacity-100" : "opacity-0 group-hover/tile:opacity-100")}><Button
+        variant="quiet"
+        size="icon-2xs"
         tabIndex={-1}
         aria-label={pinned ? `Unpin ${app.name}` : `Pin ${app.name} to the sidebar`}
-        title={pinned ? `Unpin ${app.name}` : `Pin to sidebar  ${PIN_CHORD}`}
+        tooltip={pinned ? `Unpin ${app.name}` : `Pin to sidebar  ${PIN_CHORD}`}
         onMouseDown={event => event.preventDefault()}
         onClick={event => { event.stopPropagation(); onPin(); }}
-        className={cn(
-          "group/pin absolute right-1.5 top-1.5 grid size-6 place-items-center rounded-md text-muted-foreground transition-opacity hover:bg-foreground/10 hover:text-foreground",
-          pinned || active ? "opacity-100" : "opacity-0 group-hover/tile:opacity-100",
-        )}
+        className="group/pin"
       >
         {pinned
           ? <>
@@ -472,7 +471,7 @@ function AppTile({ app, pinned, badge, active, onPin, ...option }: { app: Launch
               <PinOff size={11} aria-hidden="true" className="hidden group-hover/pin:block" />
             </>
           : <Pin size={11} aria-hidden="true" />}
-      </button>
+      </Button></span>
     </div>
   );
 }

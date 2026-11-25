@@ -132,7 +132,7 @@ describe("PropertyCell", () => {
 
     rerender({ value: { start: "2026-11-12" } });
     open("Due");
-    act(() => [...document.querySelectorAll("label")].find(label => label.textContent === "End date")!.querySelector("input")!.click());
+    act(() => [...document.querySelectorAll("label")].find(label => label.textContent === "End date")!.querySelector<HTMLElement>('[data-slot="checkbox"]')!.click());
     type(input("Due end"), "2026-11-10");
     expect(document.querySelector("[role=alert]")?.textContent).toBe("The end is before the start.");
     key(input("Due end"), "Enter");
@@ -143,7 +143,7 @@ describe("PropertyCell", () => {
 
     rerender({ value: { start: "2026-11-12" } });
     open("Due");
-    act(() => [...document.querySelectorAll("label")].find(label => label.textContent === "Include time")!.querySelector("input")!.click());
+    act(() => [...document.querySelectorAll("label")].find(label => label.textContent === "Include time")!.querySelector<HTMLElement>('[data-slot="checkbox"]')!.click());
     expect(input("Due start").type).toBe("datetime-local");
     type(input("Due start"), "2026-11-12T15:30");
     key(input("Due start"), "Enter");

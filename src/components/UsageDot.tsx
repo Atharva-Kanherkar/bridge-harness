@@ -5,7 +5,7 @@
 // Quota semantics (real zero, stale, unavailable) come from the backend; this
 // file draws them and never infers a value.
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { SkeletonRows, pendingClass } from "@/components/ui/skeleton";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { createPortal } from "react-dom";
 import { BarChart3, RefreshCw, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -18,6 +18,7 @@ import { HarnessMark, harnessChartDot } from "./harnessMarks";
 import { harnessLabel } from "../utils";
 import { useMeterClock } from "./meter/MeterReadings";
 import { UsageResetRow } from "./UsageResetRow";
+import { Button } from "@/components/ui/button";
 
 export const PROVIDER_ORDER: UsageProvider[] = ["codex", "claude", "cursor", "opencode"];
 
@@ -136,7 +137,7 @@ function percentLabel(value: number): string {
  *  read at any value. Null fill means unavailable, never an observed zero. */
 export function QuotaBar({ provider, fill }: { provider: UsageProvider; fill: number | null }) {
   return <div className="relative mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted" aria-hidden="true">
-    {fill != null && fill > 0 && <span className={cn("absolute inset-y-0 left-0 rounded-full motion-safe:animate-[meter-fill_600ms_ease-out] origin-left", harnessChartDot(provider))} style={{ width: `${clamp(fill)}%` }} />}
+    {fill != null && fill > 0 && <span className={cn("absolute inset-y-0 left-0 rounded-full motion-safe:animate-meter-fill origin-left", harnessChartDot(provider))} style={{ width: `${clamp(fill)}%` }} />}
     {[50, 75].map(mark => <span key={mark} data-quota-marker={mark} className="absolute inset-y-0 w-[5px] -translate-x-1/2 bg-popover" style={{ left: `${mark}%` }}>
       <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-foreground/60" />
     </span>)}
@@ -188,9 +189,9 @@ function adapterState(adapter?: AdapterDescriptor): "not_installed" | "signed_ou
 function ProviderError({ message, refreshing, onRefresh }: { message: string; refreshing: boolean; onRefresh?: () => void }) {
   return <div className="mt-1 flex items-start gap-2">
     <p className="min-w-0 flex-1 text-caption leading-relaxed text-muted-foreground">{message}</p>
-    {onRefresh && <button aria-busy={refreshing || undefined} type="button" onClick={onRefresh} disabled={refreshing} className={cn("inline-flex min-h-6 shrink-0 items-center gap-1 rounded-md border border-border px-2 text-caption font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-40", pendingClass(refreshing))}>
+    {onRefresh && <Button variant="outline" size="2xs" onClick={onRefresh} disabled={refreshing} loading={refreshing}>
       <RefreshCw size={11} aria-hidden="true" />Refresh
-    </button>}
+    </Button>}
   </div>;
 }
 
@@ -209,7 +210,7 @@ function ProviderSection({ snapshot, adapter, nowSeconds, refreshing, onSignIn, 
       <span className="min-w-0 truncate font-medium text-foreground">{title}</span>
       <span className="ml-auto min-w-0 truncate text-caption text-muted-foreground">
         {state === "not_installed" ? "Not installed"
-          : state === "signed_out" ? <button type="button" onClick={() => onSignIn?.(provider)} className="min-h-6 rounded-md border border-border px-2 text-caption font-medium text-foreground transition-colors hover:bg-accent">Sign in</button>
+          : state === "signed_out" ? <Button variant="outline" size="2xs" onClick={() => onSignIn?.(provider)}>Sign in</Button>
           : meta}
       </span>
     </div>
@@ -338,14 +339,14 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
           <h2 className="font-display text-sm font-semibold text-foreground">Usage</h2>
           <span className="truncate text-caption tabular-nums text-muted-foreground">{worst == null ? "no live limits" : `${percentLabel(worst.used)} · ${worstName} ${worst.window.label}`}</span>
           <span className="ml-auto flex shrink-0 items-center gap-1">
-            {onOpenUsage && <button type="button" onClick={() => { setOpen(false); onOpenUsage(); }} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><BarChart3 size={11} aria-hidden="true" />Open Usage</button>}
-            {onRefresh && <button aria-busy={refreshing || undefined} type="button" onClick={onRefresh} disabled={refreshing} aria-label="Refresh usage" className={cn("grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40", pendingClass(refreshing))}><RefreshCw size={13} aria-hidden="true" /></button>}
-            <button type="button" onClick={() => setOpen(false)} aria-label="Close usage" className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><X size={13} aria-hidden="true" /></button>
+            {onOpenUsage && <Button variant="quiet" size="xs" onClick={() => { setOpen(false); onOpenUsage(); }}><BarChart3 size={11} aria-hidden="true" />Open Usage</Button>}
+            {onRefresh && <Button variant="quiet" size="icon-xs" onClick={onRefresh} disabled={refreshing} loading={refreshing} aria-label="Refresh usage"><RefreshCw size={13} aria-hidden="true" /></Button>}
+            <Button variant="quiet" size="icon-xs" onClick={() => setOpen(false)} aria-label="Close usage"><X size={13} aria-hidden="true" /></Button>
           </span>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-1">
           {error && <p role="alert" className="my-2 rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-caption leading-relaxed text-destructive">{error}</p>}
-          {overviews == null && !error && <SkeletonRows label="Loading usage" rows={2} framed={false} rowClassName="px-0 py-3" />}
+          {overviews == null && !error && <SkeletonRows label="Loading usage" rows={2} framed={false} density="flush" />}
           {snapshots.map(snapshot => <ProviderSection key={snapshotKey(snapshot)} snapshot={snapshot} adapter={adapterFor(snapshot.provider)} nowSeconds={now} refreshing={refreshing} onSignIn={onSignIn} onRefresh={onRefresh} />)}
           {overviews != null && snapshots.length === 0 && <p className="py-5 text-center text-caption text-muted-foreground">No providers report usage yet.</p>}
         </div>
@@ -354,24 +355,18 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
   );
 
   return <div ref={rootRef} className="relative">
-    <button
-      type="button"
-      className={cn(
-        rail
-          ? "relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
-          : compact
-          ? "relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95"
-          : "relative grid size-8 shrink-0 cursor-pointer place-items-center rounded-full border border-border bg-card transition-colors hover:bg-accent",
-        open && "bg-accent",
-      )}
+    <Button
+      variant={rail || compact ? "quiet" : "outline"}
+      size="icon-sm"
+      shape={rail ? "default" : "round"}
       aria-label={`${open ? "Close" : "Open"} usage — ${stateLabel}`}
       aria-expanded={open}
       aria-controls="usage-dot-panel"
-      title={`Usage — ${stateLabel}`}
+      tooltip={open ? undefined : `Usage — ${stateLabel}`}
       onClick={() => setOpen(value => !value)}
     >
       <UsageRing percent={worst?.used ?? null} tier={tier} />
-    </button>
+    </Button>
     {rail ? (typeof document === "undefined" ? panel : createPortal(panel, document.body)) : compact && frame ? createPortal(panel, frame) : panel}
   </div>;
 });

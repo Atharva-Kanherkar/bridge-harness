@@ -4,13 +4,13 @@
 // Pace math is the shared `src/meter.ts` port; styling is Tailwind utilities
 // plus `.u-glass-popover` only. Series colour follows the harness.
 import { useEffect, useRef } from "react";
-import { SkeletonRows, pendingClass } from "@/components/ui/skeleton";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { Gauge, RefreshCw, X } from "lucide-react";
 import type { UsageProvider, UsageSnapshot } from "../../usage";
 import type { MeterRegistry } from "../../types";
 import { HarnessMark } from "../harnessMarks";
 import { MeterReadings, providerSnapshots, useMeterClock } from "./MeterReadings";
-import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 
 export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose, onOpenBridge }: {
   usage: Partial<Record<UsageProvider, UsageSnapshot>>;
@@ -42,17 +42,17 @@ export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose, 
           terse because the header has to survive a 360pt panel. */}
       <span className="truncate text-caption tabular-nums text-muted-foreground">{worst == null ? "no limits" : `${Math.round(worst)}% worst`}</span>
       <span className="ml-auto flex shrink-0 items-center gap-1">
-        {onOpenBridge && <button type="button" onClick={onOpenBridge} className="rounded-md px-2 py-1 text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Open Bridge</button>}
-        <button aria-busy={refreshing || undefined} type="button" onClick={onRefresh} disabled={refreshing} aria-label="Refresh meter" className={cn("grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40", pendingClass(refreshing))}>
+        {onOpenBridge && <Button variant="quiet" size="xs" onClick={onOpenBridge}>Open Bridge</Button>}
+        <Button variant="quiet" size="icon-xs" onClick={onRefresh} disabled={refreshing} loading={refreshing} aria-label="Refresh meter">
           <RefreshCw size={13} aria-hidden="true" />
-        </button>
-        <button type="button" onClick={onClose} aria-label="Close meter" className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+        </Button>
+        <Button variant="quiet" size="icon-xs" onClick={onClose} aria-label="Close meter">
           <X size={13} aria-hidden="true" />
-        </button>
+        </Button>
       </span>
     </div>
     <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-2">
-      {registry == null && live.length === 0 && <SkeletonRows label="Loading meter" rows={2} framed={false} rowClassName="px-0 py-3" />}
+      {registry == null && live.length === 0 && <SkeletonRows label="Loading meter" rows={2} framed={false} density="flush" />}
       <MeterReadings usage={usage} nowMs={nowMs} />
       {awaiting.map(entry => <section key={entry.id} aria-label={`${entry.label} usage`} className="flex items-center gap-2 border-b border-border py-3 last:border-0">
         <HarnessMark harness={entry.id} size={12} />

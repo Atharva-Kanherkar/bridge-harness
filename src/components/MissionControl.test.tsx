@@ -462,7 +462,7 @@ it("names each tile by project and drops the repo from its own link heading", as
   const header = (id: string) => host.querySelector(`[data-session-id='${id}'] header`)!;
   expect(header("a").textContent).toContain("kairo");
   expect(header("a").querySelector("h2")?.textContent).toBe("PR #43");
-  expect(header("a").querySelector("h2")?.getAttribute("title")).toBe("kairo PR #43");
+  expect(header("a").querySelector("h2")?.getAttribute("data-tip")).toBe("kairo PR #43");
   expect(header("b").textContent).toContain("Bridge");
   expect(header("b").querySelector("h2")?.textContent).toBe("Session supervisor");
 });

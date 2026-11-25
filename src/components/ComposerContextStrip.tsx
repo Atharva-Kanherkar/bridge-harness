@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Bot, ChevronDown, FolderGit2, GitBranch, GitFork, Plus } from "lucide-react";
 import { SkeletonRows } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { MenuItem, MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
 import type { AgentDefinition, Workspace } from "../types";
@@ -31,9 +32,6 @@ export type ComposerContextStripProps = {
   /** Drawn at the strip's right end, from a medium width up: the composer's key hints. */
   trailing?: ReactNode;
 };
-
-const CHIP =
-  "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-meta tracking-[-0.01em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
 
 function ContextHelp({ text, onNewChat }: { text: string; onNewChat?: () => void }) {
   return <>
@@ -76,19 +74,20 @@ export function ComposerContextStrip({
 
   return (
     <div className="@container/composer-context flex min-h-7 items-center gap-0.5 text-muted-foreground" aria-label="Chat context">
-      <button
-        type="button"
+      <Button
+        variant="quiet"
+        size="xs"
         ref={repoMenu.triggerRef}
         aria-haspopup="menu"
         aria-expanded={repoMenu.open}
-        title={workspace?.title ?? "No project"}
+        tooltip={repoMenu.open ? undefined : workspace?.title ?? "No project"}
         onClick={repoMenu.toggle}
-        className={cn(CHIP, "min-w-0 max-w-[16rem]", repoMenu.open && "bg-accent text-foreground")}
+        className="min-w-0 max-w-[16rem]"
       >
         <FolderGit2 size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 truncate">{workspace?.title ?? "No project"}</span>
         <ChevronDown size={10} className="shrink-0 opacity-60" aria-hidden="true" />
-      </button>
+      </Button>
       <MenuPanel controller={repoMenu} label="Repository">
         {(locked ? workspace ? [workspace] : [] : workspaces).map(item => (
           <MenuItem
@@ -105,22 +104,24 @@ export function ComposerContextStrip({
         {!locked && workspaces.length === 0 && <ContextHelp text="Add a project to choose a repository for this chat." />}
       </MenuPanel>
 
-      <button
-        type="button"
+      <Button
+        variant="quiet"
+        size="xs"
         ref={branchMenu.triggerRef}
         aria-haspopup="menu"
         aria-expanded={branchMenu.open}
-        title={displayedBranch}
+        aria-busy={branchBusy || undefined}
+        tooltip={branchMenu.open ? undefined : displayedBranch}
         onClick={() => {
           if (!locked && branchAvailable && !branchBusy) onRequestBranches();
           branchMenu.toggle();
         }}
-        className={cn(CHIP, "min-w-0 max-w-[16rem]", branchMenu.open && "bg-accent text-foreground", branchBusy && "opacity-70")}
+        className="min-w-0 max-w-[16rem]"
       >
         <GitBranch size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 truncate">{displayedBranch}</span>
         <ChevronDown size={10} className="shrink-0 opacity-60" aria-hidden="true" />
-      </button>
+      </Button>
       <MenuPanel controller={branchMenu} label="Branch">
         {locked || !branchAvailable ? <>
           <MenuItem label={displayedBranch} role="menuitemradio" checked disabled onClick={() => {}} leading={<GitBranch size={13} aria-hidden="true" />} />
@@ -129,7 +130,7 @@ export function ComposerContextStrip({
             onNewChat={locked && onNewChat ? () => { branchMenu.close(); onNewChat(); } : undefined}
           />
         </> : <>
-          {branchBusy && <SkeletonRows label="Loading branches" rows={3} meta={false} framed={false} className="divide-y-0" rowClassName="min-h-8 px-3 py-1.5" />}
+          {branchBusy && <SkeletonRows label="Loading branches" rows={3} meta={false} framed={false} density="menu" />}
           {!branchBusy && branchError && <p role="status" aria-live="polite" className="px-3 py-2 text-meta text-destructive">{branchError}</p>}
           {!branchBusy && !branchError && branches.map(branch => (
             <MenuItem
@@ -150,20 +151,20 @@ export function ComposerContextStrip({
         </>}
       </MenuPanel>
 
-      <button
-        type="button"
+      <Button
+        variant="quiet"
+        size="xs"
         ref={worktreeMenu.triggerRef}
         aria-label={worktree ? "Work mode: Isolated worktree" : "Work mode: Work on branch"}
         aria-haspopup="menu"
         aria-expanded={worktreeMenu.open}
-        title={worktree ? "Isolated worktree" : "Work on branch"}
+        tooltip={worktreeMenu.open ? undefined : worktree ? "Isolated worktree" : "Work on branch"}
         onClick={worktreeMenu.toggle}
-        className={cn(CHIP, "shrink-0", worktreeMenu.open && "bg-accent text-foreground")}
       >
         <GitFork size={13} strokeWidth={1.7} aria-hidden="true" />
         <span className="hidden @xl/composer-context:inline">{worktree ? "Isolated worktree" : "Work on branch"}</span>
         <ChevronDown size={10} className="shrink-0 opacity-60" aria-hidden="true" />
-      </button>
+      </Button>
       <MenuPanel controller={worktreeMenu} label="Work mode">
         {[false, true].map(isolated => <MenuItem
           key={String(isolated)}
@@ -184,21 +185,22 @@ export function ComposerContextStrip({
       </MenuPanel>
 
       {onSelectAgent && <>
-        <button
-          type="button"
+        <Button
+          variant="quiet"
+          size="xs"
           ref={agentMenu.triggerRef}
           aria-label={`Agent: ${agent?.name ?? "None"}`}
           aria-haspopup="menu"
           aria-expanded={agentMenu.open}
-          title={agent?.name ?? "No agent"}
+          tooltip={agentMenu.open ? undefined : agent?.name ?? "No agent"}
           onClick={agentMenu.toggle}
-          className={cn(CHIP, "ml-auto min-w-0 max-w-[12rem] shrink-0", agentMenu.open && "bg-accent text-foreground")}
+          className="ml-auto min-w-0 max-w-[12rem]"
         >
           <Bot size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
           {/* "No agent" is the default; spelling it out only crowded the row. */}
           {agent && <span className="hidden min-w-0 truncate @xl/composer-context:inline">{agent.name}</span>}
           <ChevronDown size={10} className="shrink-0 opacity-60" aria-hidden="true" />
-        </button>
+        </Button>
         <MenuPanel controller={agentMenu} label="Agent">
           <MenuItem
             label="No agent"

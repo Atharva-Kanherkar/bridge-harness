@@ -16,6 +16,9 @@ import { parseVisualSpec, type VisualSpec } from "../mcp-apps/spec";
 import type { ConversationItem } from "../conversation";
 import { visualCallInput, visualCallRefusal, visualCallState } from "../transcript/visual";
 import { useDarkTheme } from "./Markdown";
+import { BlockAction } from "@/components/ui/block-action";
+import { Tip } from "@/components/ui/tooltip";
+import { RowButton } from "@/components/ui/row";
 
 /** What a visual may do in this transcript: propose a follow-up, open a source. */
 export const VisualActionsContext = createContext<FrameActions | null>(null);
@@ -38,9 +41,10 @@ function QuietRow({ label, detail }: { label: string; detail?: string }) {
   const [open, setOpen] = useState(false);
   return (
     <div data-visual-state="refused" className="min-w-0 text-meta text-muted-foreground">
-      <button
-        type="button"
-        className="flex min-h-7 items-center gap-2 rounded-md px-1.5 text-left transition-colors hover:bg-accent/50 disabled:cursor-default"
+      <RowButton
+        size="sm"
+        tone="muted"
+        className="w-auto"
         aria-expanded={detail ? open : undefined}
         disabled={!detail}
         onClick={() => setOpen(!open)}
@@ -48,7 +52,7 @@ function QuietRow({ label, detail }: { label: string; detail?: string }) {
         <ChartColumn size={13} aria-hidden="true" />
         <span>{label}</span>
         {detail && <ChevronRight size={12} className={cn("transition-transform", open && "rotate-90")} aria-hidden="true" />}
-      </button>
+      </RowButton>
       {open && detail && <pre className="ml-6 mt-1 max-h-60 overflow-auto whitespace-pre-wrap rounded-lg bg-code p-3 font-mono text-caption leading-relaxed">{detail}</pre>}
     </div>
   );
@@ -68,20 +72,18 @@ function VisualCard({ spec, input }: { spec: VisualSpec; input: Record<string, u
       <span className="truncate text-ui font-medium text-foreground">{spec.title}</span>
       {spec.subtitle && <span className="hidden truncate text-meta text-muted-foreground sm:inline">{spec.subtitle}</span>}
       <span className="flex-1" />
-      <span className="hidden shrink-0 items-center gap-1.5 rounded-full border border-border px-2 py-0.5 font-mono text-micro text-muted-foreground sm:inline-flex" title="Drawn by Bridge's visualize tool from data the model sent">
+      <Tip label="Drawn by Bridge's visualize tool from data the model sent"><span className="hidden shrink-0 items-center gap-1.5 rounded-full border border-border px-2 py-0.5 font-mono text-micro text-muted-foreground sm:inline-flex">
         <svg width="6" height="6" aria-hidden="true"><circle cx="3" cy="3" r="3" fill="var(--success)" /></svg>
         bridge.visualize
-      </span>
-      <button
-        type="button"
-        className="code-block-copy shrink-0"
+      </span></Tip>
+      <Tip label={fullscreen ? "Exit fullscreen" : "Expand"} shortcut={fullscreen ? "Esc" : undefined}><BlockAction
+        className="shrink-0"
         onClick={() => setExpanded(!fullscreen)}
         aria-label={fullscreen ? "Exit fullscreen" : "Expand visual"}
-        title={fullscreen ? "Exit fullscreen (Esc)" : "Expand"}
       >
         {fullscreen ? <Minimize2 size={12} aria-hidden="true" /> : <Maximize2 size={12} aria-hidden="true" />}
         {fullscreen ? "Close" : "Expand"}
-      </button>
+      </BlockAction></Tip>
     </div>
   );
 

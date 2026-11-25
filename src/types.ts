@@ -30,8 +30,7 @@ import type {
   SkillProvider,
   AutomationAction,
   AutomationProvider,
-  SaveAutomationParams,
-} from "./protocol/generated/protocol";
+  } from "./protocol/generated/protocol";
 import type { WireKind } from "./transcript/wire";
 
 // ---------------------------------------------------------------------------

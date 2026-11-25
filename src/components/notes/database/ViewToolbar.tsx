@@ -7,6 +7,8 @@ import { ArrowDown, ArrowUp, ArrowUpDown, Filter, Layers, Plus, X } from "lucide
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
 import { clsx } from "clsx";
+import { Button } from "@/components/ui/button";
+import { SelectField } from "@/components/ui/select";
 import type { NoteDatabase, NoteDatabaseView, NoteGroupBy, NoteSort, Workspace } from "../../../types";
 import { Floating } from "./Floating";
 import { FilterBuilder } from "./FilterBuilder";
@@ -26,7 +28,6 @@ export interface ViewToolbarProps {
   workspaces?: Workspace[];
 }
 
-const control = "h-7 min-w-0 rounded-md bg-muted px-1.5 text-meta text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 export function ViewToolbar({ database, view, query, dirty, onChange, onSave, onReset, workspaces }: ViewToolbarProps) {
   // A reset reloads the filter builder from the saved view.
@@ -43,8 +44,8 @@ export function ViewToolbar({ database, view, query, dirty, onChange, onSave, on
       <GroupEditor database={database} groupBy={query.groupBy} required={view.type === "board"} onChange={groupBy => onChange({ groupBy })} />
     </Control>}
     {dirty && <span className="ml-auto flex items-center gap-1">
-      <button type="button" onClick={() => { onReset(); setGeneration(current => current + 1); }} className="inline-flex h-7 items-center rounded-full px-2.5 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Reset</button>
-      <button type="button" onClick={() => { onSave(); setGeneration(current => current + 1); }} className="inline-flex h-7 items-center rounded-full bg-primary px-3 text-meta font-medium text-primary-foreground transition-opacity hover:opacity-90">Save for everyone</button>
+      <Button variant="quiet" size="xs" onClick={() => { onReset(); setGeneration(current => current + 1); }}>Reset</Button>
+      <Button size="xs" onClick={() => { onSave(); setGeneration(current => current + 1); }}>Save for everyone</Button>
     </span>}
   </div>;
 }
@@ -53,9 +54,9 @@ function Control({ label, count, icon, width, children }: { label: string; count
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLDivElement>(null);
   return <div ref={anchor} className="relative">
-    <button type="button" aria-expanded={open} aria-label={count ? `${label}, ${count}` : label} onClick={() => setOpen(current => !current)} className={clsx("inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-meta transition-colors hover:bg-accent", count ? "text-foreground" : "text-muted-foreground", open && "bg-accent")}>
-      {icon}{label}{count > 0 && <span className="rounded bg-muted px-1 text-caption tabular-nums">{count}</span>}
-    </button>
+    <Button variant="quiet" size="xs" aria-expanded={open} aria-label={count ? `${label}, ${count}` : label} onClick={() => setOpen(current => !current)}>
+      {icon}<span className={clsx(count > 0 && "text-foreground")}>{label}</span>{count > 0 && <span className="rounded bg-muted px-1 text-caption tabular-nums text-foreground">{count}</span>}
+    </Button>
     {open && <Floating anchor={anchor} label={`${label} options`} onClose={() => setOpen(false)} width={width}>{children}</Floating>}
   </div>;
 }
@@ -73,19 +74,14 @@ function SortEditor({ database, sorts, onChange }: { database: NoteDatabase; sor
     {!sorts.length && <p className="m-0 px-1 py-1.5 text-meta text-muted-foreground">No sorts. Newest edits first.</p>}
     <ol className="m-0 flex list-none flex-col gap-1 p-0">
       {sorts.map((sort, index) => <li key={`${sort.property}-${index}`} role="group" aria-label={`Sort ${index + 1}`} className="flex items-center gap-1">
-        <select aria-label={`Sort ${index + 1} property`} value={sort.property} onChange={event => onChange(sorts.map((item, at) => at === index ? { ...item, property: event.target.value } : item))} className={clsx(control, "flex-1")}>
-          {columns.map(column => <option key={column.id} value={column.id}>{column.name}</option>)}
-        </select>
-        <select aria-label={`Sort ${index + 1} direction`} value={sort.direction} onChange={event => onChange(sorts.map((item, at) => at === index ? { ...item, direction: event.target.value } : item))} className={clsx(control, "w-28")}>
-          <option value="asc">Ascending</option>
-          <option value="desc">Descending</option>
-        </select>
+        <SelectField size="sm" label={`Sort ${index + 1} property`} className="min-w-0 flex-1" value={sort.property} onChange={property => onChange(sorts.map((item, at) => at === index ? { ...item, property } : item))} options={columns.map(column => ({ value: column.id, label: column.name }))} />
+        <SelectField size="sm" label={`Sort ${index + 1} direction`} className="w-28 min-w-0" value={sort.direction} onChange={direction => onChange(sorts.map((item, at) => at === index ? { ...item, direction } : item))} options={[{ value: "asc", label: "Ascending" }, { value: "desc", label: "Descending" }]} />
         <IconButton label={`Move sort ${index + 1} up`} disabled={index === 0} onClick={() => move(index, -1)}><ArrowUp size={12} aria-hidden="true" /></IconButton>
         <IconButton label={`Move sort ${index + 1} down`} disabled={index === sorts.length - 1} onClick={() => move(index, 1)}><ArrowDown size={12} aria-hidden="true" /></IconButton>
         <IconButton label={`Remove sort ${index + 1}`} onClick={() => onChange(sorts.filter((_, at) => at !== index))}><X size={12} aria-hidden="true" /></IconButton>
       </li>)}
     </ol>
-    {sorts.length < MAX_SORTS && unused && <button type="button" onClick={() => onChange([...sorts, { property: unused.id, direction: "asc" }])} className="inline-flex h-7 w-fit items-center gap-1 rounded-md px-1.5 text-meta text-foreground transition-colors hover:bg-accent"><Plus size={13} aria-hidden="true" />Add a sort</button>}
+    {sorts.length < MAX_SORTS && unused && <Button variant="ghost" size="xs" className="w-fit" onClick={() => onChange([...sorts, { property: unused.id, direction: "asc" }])}><Plus aria-hidden="true" />Add a sort</Button>}
   </div>;
 }
 
@@ -93,18 +89,11 @@ function GroupEditor({ database, groupBy, required, onChange }: { database: Note
   const columns = groupableColumns(database);
   const chosen = columns.find(column => column.id === groupBy?.property);
   return <div aria-label="Grouping" className="flex flex-col gap-1.5 p-1">
-    <select aria-label="Group by" value={groupBy?.property ?? ""} onChange={event => onChange(event.target.value ? { property: event.target.value, dateBucket: columns.find(column => column.id === event.target.value)?.type === "date" ? "month" : null } : null)} className={clsx(control, "w-full")}>
-      {(!required || !groupBy) && <option value="">{required ? "Choose a property" : "None"}</option>}
-      {columns.map(column => <option key={column.id} value={column.id}>{column.name}</option>)}
-    </select>
-    {chosen?.type === "date" && <select aria-label="Date bucket" value={groupBy?.dateBucket ?? "month"} onChange={event => onChange({ property: chosen.id, dateBucket: event.target.value })} className={clsx(control, "w-full")}>
-      <option value="day">By day</option>
-      <option value="week">By week</option>
-      <option value="month">By month</option>
-    </select>}
+    <SelectField size="sm" label="Group by" value={groupBy?.property ?? ""} onChange={property => onChange(property ? { property, dateBucket: columns.find(column => column.id === property)?.type === "date" ? "month" : null } : null)} options={[...(!required || !groupBy ? [{ value: "", label: required ? "Choose a property" : "None" }] : []), ...columns.map(column => ({ value: column.id, label: column.name }))]} />
+    {chosen?.type === "date" && <SelectField size="sm" label="Date bucket" value={groupBy?.dateBucket ?? "month"} onChange={dateBucket => onChange({ property: chosen.id, dateBucket })} options={[{ value: "day", label: "By day" }, { value: "week", label: "By week" }, { value: "month", label: "By month" }]} />}
   </div>;
 }
 
 function IconButton({ label, disabled, onClick, children }: { label: string; disabled?: boolean; onClick: () => void; children: ReactNode }) {
-  return <button type="button" aria-label={label} title={label} disabled={disabled} onClick={onClick} className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-30">{children}</button>;
+  return <Button variant="quiet" size="icon-xs" aria-label={label} tooltip={label} disabled={disabled} onClick={onClick}>{children}</Button>;
 }

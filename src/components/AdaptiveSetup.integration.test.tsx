@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
 import type { AdapterDescriptor } from "../types";
 import { RouterSettingsDialog } from "./RouterSettingsDialog";
+import { chooseOption, selectValue } from "@/testing/select";
 
 const adapters: AdapterDescriptor[] = [{
   id: "catalog", label: "Catalog", available: true, authState: "signed_in", version: "1", capabilities: [], unavailableReason: null, defaultModel: "balanced",
@@ -211,27 +212,13 @@ describe("adaptive setup journeys", () => {
       root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
       await flush();
     });
-    const select = (label: string) => [...document.body.querySelectorAll("label")].find(candidate => candidate.textContent?.includes(label))!.querySelector("select") as HTMLSelectElement;
-    const harnessSelect = select("Pin harness");
-    const modelSelect = select("Pin model");
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!.set!;
-    await act(async () => {
-      setter.call(harnessSelect, "catalog");
-      harnessSelect.dispatchEvent(new Event("change", { bubbles: true }));
-      await flush();
-    });
-    await act(async () => {
-      setter.call(modelSelect, "balanced");
-      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
-      await flush();
-    });
-    expect(modelSelect.value).toBe("balanced");
-    await act(async () => {
-      setter.call(harnessSelect, "");
-      harnessSelect.dispatchEvent(new Event("change", { bubbles: true }));
-      await flush();
-    });
-    expect(modelSelect.value).toBe("");
+    const select = (label: string) => document.body.querySelector<HTMLElement>(`[role="combobox"][aria-label="${label}"]`)!;
+    const choose = async (label: string, value: string) => { await chooseOption(select(label), value); await act(async () => { await flush(); }); };
+    await choose("Pin harness", "catalog");
+    await choose("Pin model", "balanced");
+    expect(selectValue(select("Pin model"))).toBe("balanced");
+    await choose("Pin harness", "");
+    expect(selectValue(select("Pin model"))).toBe("");
   });
 
   it("does not rewrite the learning schedule when save has no schedule edits", async () => {

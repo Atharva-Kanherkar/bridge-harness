@@ -5,6 +5,8 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import type { Editor } from "@tiptap/core";
 import { NodeSelection } from "@tiptap/pm/state";
 import { ArrowDown, ArrowUp, Copy, GripVertical, Plus, Trash2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
 
 interface Hover { index: number; pos: number; top: number; element: HTMLElement }
 
@@ -97,29 +99,26 @@ export function BlockHandle({ editor, area }: { editor: Editor; area: RefObject<
   ];
 
   return <div data-block-handle="" style={{ top: hover.top }} className="absolute left-0 z-10 flex items-center" onMouseDown={event => { if ((event.target as HTMLElement).closest("button")) event.stopPropagation(); }}>
-    <button type="button" aria-label="Add a block below" title="Add a block below" onClick={add} className="grid size-6 place-items-center rounded-md text-faint transition-colors hover:bg-accent hover:text-foreground">
+    <Button variant="quiet" size="icon-2xs" tooltip="Add a block below" aria-label="Add a block below" onClick={add}>
       <Plus size={15} aria-hidden="true" />
-    </button>
+    </Button>
     <div className="relative">
-      <button
-        type="button"
+      <Button variant="quiet" size="icon-2xs" tooltip="Drag to move · click for options"
         draggable
         aria-label="Drag to move, or click for options"
-        title="Drag to move · click for options"
         aria-expanded={menu}
         onDragStart={dragStart}
         onDragEnd={() => setHover(null)}
         onClick={() => { select(); setMenu(open => !open); }}
-        className="grid h-6 w-5 cursor-grab place-items-center rounded-md text-faint transition-colors hover:bg-accent hover:text-foreground active:cursor-grabbing"
       >
         <GripVertical size={15} aria-hidden="true" />
-      </button>
+      </Button>
       {menu && <>
         <div aria-hidden="true" className="fixed inset-0 z-40" onClick={() => { setMenu(false); setHover(null); }} />
         <div role="menu" aria-label="Block actions" className="absolute left-0 top-full z-50 mt-1 w-44 rounded-xl bg-popover p-1 shadow-lg ring-1 ring-border">
-          {actions.map(action => <button key={action.label} type="button" role="menuitem" disabled={action.disabled} onClick={action.run} className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-ui text-foreground transition-colors hover:bg-accent disabled:opacity-40">
+          {actions.map(action => <RowButton size="bare" tone="default" shape="card" key={action.label} role="menuitem" disabled={action.disabled} onClick={action.run}><span className="flex h-8 w-full items-center gap-2 px-2 text-ui">
             <action.icon size={14} aria-hidden="true" className="text-muted-foreground" />{action.label}
-          </button>)}
+          </span></RowButton>)}
         </div>
       </>}
     </div>

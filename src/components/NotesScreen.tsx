@@ -18,7 +18,12 @@ import { SEEDED_VIEWS, seededKind, type SeededKind } from "../notesSystemViews";
 import { clsx } from "clsx";
 import { chordLabel } from "../keymap";
 import { relativeTime } from "../connectorSurface";
+import { Button } from "./ui/button";
+import { Checkbox } from "./ui/checkbox";
+import { Input } from "./ui/input";
 import { Kbd } from "./ui/kbd";
+import { RowButton } from "./ui/row";
+import { Tip } from "./ui/tooltip";
 import { HarnessMark } from "./harnessMarks";
 import { MenuDivider, Pill, Popover, PrimaryButton, StatusGlyph } from "./notes/NotesUi";
 import { viewInputOf } from "./notes/database/formatValue";
@@ -28,6 +33,7 @@ import { chatName } from "./sidebarChats";
 import { NotePageView } from "./notes/NotePageView";
 import { NoteListSkeleton, NotePageSkeleton, NoteTabsSkeleton, readListOpen, writeListOpen } from "./notes/NotesSkeleton";
 import type { StartChoice } from "./notes/NotePickers";
+import { Textarea } from "@/components/ui/textarea";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 export const JOB_POLL_MS = 1500;
@@ -492,20 +498,20 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
     <aside aria-label="Notes list" className={clsx("min-h-0 w-full shrink-0 flex-col border-r border-border md:w-[18.5rem]", selectedId ? "hidden" : "flex", listOpen ? "md:flex" : "md:hidden")}>
       <div className="flex h-12 shrink-0 items-center gap-1 pl-4 pr-2">
         <h2 className="m-0 flex-1 text-ui font-semibold text-foreground">Notes</h2>
-        <button type="button" aria-label="Hide the notes list" title={`Hide the notes list (${chordLabel("toggle-notes-list")})`} onClick={toggleList} className="hidden size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:grid"><PanelLeft size={15} aria-hidden="true" /></button>
+        <Button variant="quiet" size="icon-xs" aria-label="Hide the notes list" tooltip={`Hide the notes list (${chordLabel("toggle-notes-list")})`} onClick={toggleList} className="hidden md:inline-flex"><PanelLeft size={15} aria-hidden="true" /></Button>
       </div>
       <NotesCapture focusRequest={(captureRequest ?? 0) + focusCapture} onCapture={capture} />
       <div className="shrink-0 px-3 pt-3">
-        <label className="flex h-8 items-center gap-2 rounded-lg bg-muted px-2.5 focus-within:ring-2 focus-within:ring-ring">
+        <label className="flex h-8 items-center gap-2 rounded-lg bg-muted pl-2.5 text-ui text-foreground focus-within:ring-2 focus-within:ring-ring">
           <Search size={13} className="shrink-0 text-faint" aria-hidden="true" />
-          <input aria-label="Search notes" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search notes" className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-faint" />
+          <Input unstyled size="sm" aria-label="Search notes" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search notes" className="min-w-0 flex-1" />
         </label>
         {!system && listWaiting && <NoteTabsSkeleton className="mt-2" />}
         <div role="tablist" aria-label="Filter notes" className={clsx("flex flex-wrap gap-0.5", tabViews.length > 0 && "mt-2")}>
           {tabViews.map(view => {
             const active = view.id === activeView?.id;
             return <span key={view.id} className={clsx("inline-flex items-center rounded-md", active && "bg-accent")}>
-              <button type="button" role="tab" aria-selected={active} onClick={() => { setActiveViewId(view.id); setEditingView(false); }} className={clsx("h-7 rounded-md px-2 text-meta transition-colors", active ? "font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}>{view.name}</button>
+              <Button variant={active ? "ghost" : "text"} size="xs" role="tab" aria-selected={active} onClick={() => { setActiveViewId(view.id); setEditingView(false); }}>{view.name}</Button>
               {active && system && <TabMenu view={view} last={tabViews.length <= 1} onEdit={() => setEditingView(current => !current)} onRename={name => void saveTab(view, { name })} onHide={() => void hideTab(view)} />}
             </span>;
           })}
@@ -528,9 +534,9 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
           <p className="m-0 truncate text-ui font-medium text-foreground">{noteDisplayTitle({ title: null, preview: item.body })}</p>
           {item.failed
             ? <div className="mt-1 flex items-center gap-1 text-meta">
-              <span className="min-w-0 flex-1 truncate text-destructive" title={item.failed}>Couldn't save</span>
-              <button type="button" onClick={() => retry(item.key, item.body)} className="rounded-md px-1.5 py-0.5 text-foreground transition-colors hover:bg-accent">Retry</button>
-              <button type="button" onClick={() => setPending(current => current.filter(other => other.key !== item.key))} className="rounded-md px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Discard</button>
+              <Tip label={item.failed}><span className="min-w-0 flex-1 truncate text-destructive">Couldn't save</span></Tip>
+              <Button variant="ghost" size="2xs" onClick={() => retry(item.key, item.body)}>Retry</Button>
+              <Button variant="quiet" size="2xs" onClick={() => setPending(current => current.filter(other => other.key !== item.key))}>Discard</Button>
             </div>
             : <SkeletonRegion label="Saving" className="mt-1.5"><Skeleton className="h-2.5 w-16" /></SkeletonRegion>}
         </li>)}
@@ -550,7 +556,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
         {rows === null && listFailure && <li role="alert" className="px-3 py-8 text-center">
           <p className="m-0 text-ui font-medium text-foreground">Notes didn't load</p>
           <p className="m-0 mx-auto mt-1 max-w-56 break-words text-meta leading-relaxed text-muted-foreground">{listFailure}</p>
-          <button type="button" onClick={() => { setListFailure(null); void refreshList(); }} className="mt-3 inline-flex h-7 items-center gap-1.5 rounded-full px-3 text-meta text-foreground ring-1 ring-border transition-colors hover:bg-accent"><RotateCw size={12} aria-hidden="true" />Try again</button>
+          <Button variant="outline" size="xs" onClick={() => { setListFailure(null); void refreshList(); }} className="mt-3"><RotateCw aria-hidden="true" />Try again</Button>
         </li>}
         {rows && !visible.length && !pending.length && <li className="px-3 py-8 text-center text-meta leading-relaxed text-muted-foreground">
           {query ? "No notes match." : (kind && EMPTY[kind]) ?? "Nothing matches this view."}
@@ -623,11 +629,12 @@ function NotesCapture({ focusRequest, onCapture }: { focusRequest?: number; onCa
     onCapture(body);
   };
   return <div className="shrink-0 px-3 pt-3">
-    <div className="rounded-2xl bg-card px-3 pb-2 pt-2.5 shadow-sm ring-1 ring-border transition-shadow focus-within:ring-2 focus-within:ring-ring">
-      <textarea
+    <div className="rounded-2xl bg-card px-3 pb-2 pt-2.5 text-body leading-relaxed shadow-sm ring-1 ring-border transition-shadow focus-within:ring-2 focus-within:ring-ring">
+      <Tip label={`Capture from anywhere with ${chordLabel("capture-note")}`}><Textarea
+        unstyled
+        size="bare"
         ref={box}
         aria-label="Capture a note"
-        title={`Capture from anywhere with ${chordLabel("capture-note")}`}
         value={text}
         rows={2}
         placeholder="Capture a thought…"
@@ -637,11 +644,11 @@ function NotesCapture({ focusRequest, onCapture }: { focusRequest?: number; onCa
           event.preventDefault();
           submit();
         }}
-        className="block w-full resize-none bg-transparent text-body leading-relaxed text-foreground outline-none placeholder:text-faint"
-      />
+        className="block w-full"
+      /></Tip>
       <div className="mt-1 flex items-center justify-between gap-2 text-caption text-faint">
         <span>Kept exactly as typed</span>
-        <span className="flex items-center gap-1"><Kbd className="h-4 min-w-4 text-micro">↵</Kbd>save</span>
+        <span className="flex items-center gap-1"><Kbd className="h-4 min-w-4">↵</Kbd>save</span>
       </div>
     </div>
   </div>;
@@ -653,17 +660,19 @@ function NoteRow({ note, active, parent, project, onOpen }: { note: Note; active
   const firstLine = preview.startsWith(title) ? preview.slice(title.length).trim() : preview;
   const harness = agentHarness(note);
   const meta = [parent && `from ${noteDisplayTitle(parent)}`, project, ...note.tags.slice(0, 2).map(tag => `#${tag}`)].filter(Boolean);
-  return <button type="button" aria-current={active ? "true" : undefined} onClick={onOpen} className={clsx("block w-full rounded-lg px-2.5 py-2 text-left transition-colors", active ? "bg-selection" : "hover:bg-accent")}>
+  return <RowButton size="bare" tone="selection" shape="card" active={active} aria-current={active ? "true" : undefined} onClick={onOpen}>
+    <span className="block min-w-0 flex-1 px-2.5 py-2">
     <span className="flex min-w-0 items-center gap-1.5">
       {note.kind === "task" && <StatusGlyph state={note.state} size={12} />}
       {note.kind === "database" && <Table2 size={13} aria-label="Database" className="shrink-0 text-muted-foreground" />}
       <span className={clsx("min-w-0 flex-1 truncate text-ui font-medium", note.state === "done" ? "text-muted-foreground line-through" : "text-foreground")}>{title}</span>
-      {harness && <span title={`Written by ${harness}`} className="shrink-0"><HarnessMark harness={harness} size={12} /></span>}
+      {harness && <Tip label={`Written by ${harness}`}><span className="shrink-0"><HarnessMark harness={harness} size={12} /></span></Tip>}
       <span className="shrink-0 text-caption tabular-nums text-faint">{relativeTime(note.updatedAt)}</span>
     </span>
     {firstLine && <span className="mt-0.5 block truncate text-meta text-muted-foreground">{firstLine}</span>}
     {meta.length > 0 && <span className="mt-1 block truncate text-caption text-faint">{meta.join(" · ")}</span>}
-  </button>;
+    </span>
+  </RowButton>;
 }
 
 /** The list's nested pages: one row per page, its children indented beneath
@@ -685,17 +694,18 @@ function PageTree({ roots, visibleIds, childrenOf, expanded, activeId, workspace
     return <li key={note.id}>
       <div className="flex items-stretch" style={depth ? { paddingLeft: depth * 14 } : undefined}>
         {kids.length
-          ? <button
-            type="button"
+          ? <Button
+            variant="quiet"
+            size="icon-2xs"
             aria-label={`Expand the pages under ${noteDisplayTitle(note)}`}
             aria-expanded={openNow}
-            title={openNow ? "Hide the pages under it" : "Show the pages under it"}
+            tooltip={openNow ? "Hide the pages under it" : "Show the pages under it"}
             onClick={() => onToggle(note.id)}
-            className="grid w-5 shrink-0 place-items-center text-faint transition-colors hover:bg-accent hover:text-foreground"
+            className="self-center"
           >
-            <ChevronRight size={14} aria-hidden="true" className={clsx("transition-transform", openNow && "rotate-90")} />
-          </button>
-          : <span aria-hidden="true" className="w-5 shrink-0" />}
+            <ChevronRight aria-hidden="true" className={clsx("transition-transform", openNow && "rotate-90")} />
+          </Button>
+          : <span aria-hidden="true" className="w-6 shrink-0" />}
         <div className="min-w-0 flex-1">
           <NoteRow note={note} active={note.id === activeId} project={workspaces.find(workspace => workspace.id === note.workspaceId)?.title} onOpen={() => onOpen(note.id)} />
         </div>
@@ -727,16 +737,16 @@ function NotesFooter({ root, onNewPage, onNewDatabase, onResetTabs, onError }: {
     try { setSettings(await bridgeApi.saveNotesSettings({ autoStructure: !settings.autoStructure })); } catch (error) { onError(error); }
   };
   return <div className="flex shrink-0 items-center gap-1 px-2 py-2">
-    <button type="button" onClick={onNewPage} className="inline-flex h-8 flex-1 items-center gap-2 rounded-lg px-2 text-ui text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={14} aria-hidden="true" />New page</button>
-    <button type="button" aria-label="New database" title="New database" onClick={onNewDatabase} className="grid size-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Table2 size={14} aria-hidden="true" /></button>
+    <Button variant="quiet" size="sm" onClick={onNewPage} className="flex-1 justify-start"><Plus aria-hidden="true" />New page</Button>
+    <Button variant="quiet" size="icon-sm" aria-label="New database" tooltip="New database" onClick={onNewDatabase}><Table2 aria-hidden="true" /></Button>
     <div className="relative">
-      <button type="button" aria-label="Notes settings" aria-expanded={open} onClick={() => setOpen(current => !current)} className="grid size-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Settings2 size={14} aria-hidden="true" /></button>
+      <Button variant="quiet" size="icon-sm" aria-label="Notes settings" aria-expanded={open} onClick={() => setOpen(current => !current)}><Settings2 aria-hidden="true" /></Button>
       <Popover open={open} onClose={() => setOpen(false)} label="Notes settings" side="top" align="end" width="w-72">
         <label className="flex cursor-pointer items-start gap-2.5 rounded-lg p-2.5 text-ui text-foreground hover:bg-accent">
-          <input type="checkbox" checked={settings?.autoStructure ?? false} disabled={!settings} onChange={() => void toggle()} className="mt-0.5 accent-foreground" />
+          <Checkbox checked={settings?.autoStructure ?? false} disabled={!settings} onCheckedChange={() => void toggle()} className="mt-0.5" />
           <span>Auto-structure new captures<span className="mt-0.5 block text-meta leading-snug text-muted-foreground">Runs Structure on the default harness after each capture. Off unless you turn it on.</span></span>
         </label>
-        {onResetTabs && <button type="button" onClick={() => { setOpen(false); onResetTabs(); }} className="flex h-8 w-full items-center rounded-lg px-2.5 text-left text-ui text-foreground hover:bg-accent">Reset tabs to defaults</button>}
+        {onResetTabs && <RowButton shape="card" onClick={() => { setOpen(false); onResetTabs(); }}>Reset tabs to defaults</RowButton>}
         <div className="px-2.5 pb-2 pt-1">
           <p className="m-0 text-caption text-muted-foreground">Markdown files</p>
           <p className="m-0 mt-0.5 break-all font-mono text-caption text-foreground">{settings?.root ?? root ?? "…"}</p>
@@ -755,9 +765,9 @@ function NotesFooter({ root, onNewPage, onNewDatabase, onResetTabs, onError }: {
 function PaneHeader({ crumb, chatOpen, onToggleChat, onShowList, onBack }: { crumb?: string; chatOpen: boolean; onToggleChat?: () => void; onShowList?: () => void; onBack: () => void }) {
   return <header className="flex h-12 shrink-0 items-center gap-1 px-3">
     <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-0.5 text-ui">
-      {onShowList && <button type="button" aria-label="Show the notes list" title={`Show the notes list (${chordLabel("toggle-notes-list")})`} onClick={onShowList} className="mr-1 hidden size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:grid"><PanelLeft size={15} aria-hidden="true" /></button>}
+      {onShowList && <Button variant="quiet" size="icon-xs" aria-label="Show the notes list" tooltip={`Show the notes list (${chordLabel("toggle-notes-list")})`} onClick={onShowList} className="mr-1 hidden md:inline-flex"><PanelLeft size={15} aria-hidden="true" /></Button>}
       {crumb !== undefined && <>
-        <button type="button" onClick={onBack} className="shrink-0 rounded-md px-1.5 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Notes</button>
+        <Button variant="quiet" size="xs" onClick={onBack}>Notes</Button>
         {crumb && <>
           <ChevronRight size={13} className="shrink-0 text-faint" aria-hidden="true" />
           <span aria-current="page" className="min-w-0 truncate px-1.5 text-foreground">{crumb}</span>
@@ -771,7 +781,7 @@ function PaneHeader({ crumb, chatOpen, onToggleChat, onShowList, onBack }: { cru
 function EmptyPage({ onNewPage, onCapture }: { onNewPage: () => void; onCapture: () => void }) {
   return <div className="grid flex-1 place-items-center px-8 pb-24">
     <div className="max-w-sm text-center">
-      <h2 className="m-0 text-[1.375rem] font-semibold tracking-[-0.015em] text-foreground">Your words, kept as typed</h2>
+      <h2 className="m-0 text-xl font-semibold tracking-tight text-foreground">Your words, kept as typed</h2>
       <div className="mt-6 flex items-center justify-center gap-1">
         <PrimaryButton onClick={onNewPage}>New page</PrimaryButton>
         <Pill onClick={onCapture}>Capture <span className="text-faint">{chordLabel("capture-note")}</span></Pill>
@@ -786,7 +796,7 @@ function PageUnavailable({ detail, onRetry, onBack }: { detail: string; onRetry:
   return <div role="alert" className="grid flex-1 place-items-center px-8 pb-24">
     <div className="max-w-sm text-center">
       <span aria-hidden="true" className="mx-auto grid size-10 place-items-center rounded-xl bg-muted text-muted-foreground"><FileQuestion size={18} strokeWidth={1.75} /></span>
-      <h2 className="m-0 mt-4 text-[1.125rem] font-semibold tracking-[-0.01em] text-foreground">{gone ? "This page is gone" : "This page didn't open"}</h2>
+      <h2 className="m-0 mt-4 text-heading font-semibold text-foreground">{gone ? "This page is gone" : "This page didn't open"}</h2>
       <p className="m-0 mt-1.5 break-words text-ui leading-relaxed text-muted-foreground">{gone ? "It was deleted, in Bridge or by an agent." : detail}</p>
       <div className="mt-5 flex items-center justify-center gap-1">
         {gone
@@ -803,19 +813,18 @@ function TabMenu({ view, last, onEdit, onRename, onHide }: { view: NoteDatabaseV
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(view.name);
   const close = () => { setOpen(false); setRenaming(false); };
-  const item = "flex h-8 w-full items-center rounded-lg px-2.5 text-left text-ui text-foreground transition-colors enabled:hover:bg-accent disabled:opacity-40";
   return <span className="relative">
-    <button type="button" aria-label={`${view.name} tab menu`} aria-expanded={open} onClick={() => { setName(view.name); setOpen(current => !current); }} className="grid size-6 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground"><MoreHorizontal size={13} aria-hidden="true" /></button>
+    <Button variant="text" size="icon-2xs" aria-label={`${view.name} tab menu`} aria-expanded={open} onClick={() => { setName(view.name); setOpen(current => !current); }}><MoreHorizontal aria-hidden="true" /></Button>
     <Popover open={open} onClose={close} label={`${view.name} tab`} width="w-56">
       {renaming
         ? <form onSubmit={event => { event.preventDefault(); if (name.trim() && name.trim() !== view.name) onRename(name.trim()); close(); }} className="p-1">
-          <input aria-label="Tab name" autoFocus value={name} onChange={event => setName(event.target.value)} className="h-8 w-full rounded-lg bg-muted px-2.5 text-ui text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+          <Input size="sm" aria-label="Tab name" autoFocus value={name} onChange={event => setName(event.target.value)} />
         </form>
         : <div role="menu" aria-label={`${view.name} tab actions`}>
-          <button type="button" role="menuitem" onClick={() => { close(); onEdit(); }} className={item}>Edit view</button>
-          <button type="button" role="menuitem" onClick={() => setRenaming(true)} className={item}>Rename</button>
+          <RowButton shape="card" role="menuitem" onClick={() => { close(); onEdit(); }}>Edit view</RowButton>
+          <RowButton shape="card" role="menuitem" onClick={() => setRenaming(true)}>Rename</RowButton>
           <MenuDivider />
-          <button type="button" role="menuitem" disabled={last} onClick={() => { close(); onHide(); }} className={item}>{last ? "Hide (the last tab stays)" : "Hide"}</button>
+          <RowButton shape="card" role="menuitem" disabled={last} onClick={() => { close(); onHide(); }}>{last ? "Hide (the last tab stays)" : "Hide"}</RowButton>
         </div>}
     </Popover>
   </span>;

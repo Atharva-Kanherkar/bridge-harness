@@ -314,7 +314,8 @@ describe("SettingsScreen", () => {
       for (const section of ALL_PAGES) {
         await render({ initialSection: section });
         expect(container.querySelectorAll("select"), PAGES[section].label).toHaveLength(0);
-        expect(container.querySelectorAll('input[type="checkbox"]'), PAGES[section].label).toHaveLength(0);
+        // The Checkbox primitive keeps a hidden, aria-hidden native input for forms.
+        expect(container.querySelectorAll('input[type="checkbox"]:not([aria-hidden="true"])'), PAGES[section].label).toHaveLength(0);
         await act(async () => root.unmount());
         container.remove();
         container = document.createElement("div");

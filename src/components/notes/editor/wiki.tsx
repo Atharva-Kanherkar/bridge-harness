@@ -3,13 +3,11 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Extension, type Editor, type Range } from "@tiptap/core";
+import { Extension, type Range } from "@tiptap/core";
 import Suggestion, { type SuggestionKeyDownProps, type SuggestionProps } from "@tiptap/suggestion";
 import { PluginKey } from "@tiptap/pm/state";
 import { FileText, Plus } from "lucide-react";
-// clsx rather than cn: tailwind-merge does not know the text-ui and
-// text-caption sizes, and drops them beside a text color.
-import { clsx } from "clsx";
+import { RowButton } from "@/components/ui/row";
 
 export interface WikiPage {
   id: string;
@@ -147,21 +145,21 @@ export const WikiMenu = forwardRef<WikiMenuHandle, { state: WikiState }>(functio
     onMouseDown={event => event.preventDefault()}
   >
     {choices.length
-      ? choices.map((choice, index) => <button
+      ? choices.map((choice, index) => <RowButton
+        size="bare"
+        shape="card"
         key={choice.id ?? `make-${choice.target}`}
-        type="button"
         role="option"
         data-index={index}
         aria-selected={index === active}
         onMouseEnter={() => setActive(index)}
         onClick={() => state.choose(choice)}
-        className={clsx("flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left", index === active ? "bg-accent" : "")}
-      >
+      ><span className="flex w-full items-center gap-2.5 px-2 py-1.5">
         <span className="grid size-7 shrink-0 place-items-center rounded-md bg-card text-muted-foreground ring-1 ring-border">
           {choice.create ? <Plus size={15} strokeWidth={1.75} aria-hidden="true" /> : <FileText size={15} strokeWidth={1.75} aria-hidden="true" />}
         </span>
         <span className="min-w-0 truncate text-ui text-foreground">{choice.create ? `Make "${choice.target}"` : choice.target}</span>
-      </button>)
+      </span></RowButton>)
       : <p className="m-0 px-2.5 py-2 text-meta text-muted-foreground">No pages match “{state.query}”.</p>}
   </div>, document.body);
 });

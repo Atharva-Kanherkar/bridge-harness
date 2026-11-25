@@ -12,6 +12,7 @@ import { addOption } from "./schemaWrites";
 import { useLatestOnly } from "./useLatestOnly";
 import { typeIcon } from "./DatabaseTable";
 import { TYPE_LABELS } from "./formatValue";
+import { Button } from "@/components/ui/button";
 
 export interface RowPropertiesProps {
   page: NotePage;
@@ -114,9 +115,9 @@ export function RowProperties({ page, workspaces, notes, chatTitle, onOpenChat, 
       </dd>
     </div>)}
     <div ref={addAnchor} className="relative">
-      <button type="button" onClick={() => setAdding(current => !current)} aria-expanded={adding} className="-ml-1.5 mt-0.5 inline-flex h-8 items-center gap-1.5 rounded-md px-1.5 text-ui text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+      <Button variant="quiet" size="sm" className="-ml-1.5 mt-0.5" onClick={() => setAdding(current => !current)} aria-expanded={adding}>
         <Plus size={14} aria-hidden="true" />Add a property
-      </button>
+      </Button>
       {adding && <Floating anchor={addAnchor} label="Add a property" onClose={() => setAdding(false)}>
         <AddProperty hidden={[]} onAdd={(name, type) => { setAdding(false); void change([{ op: "add", property: { name, type, ...(type === "status" ? { options: [{ name: "To do", group: "todo" }, { name: "In progress", group: "inProgress" }, { name: "Done", group: "done" }] } : {}) } }]); }} />
       </Floating>}

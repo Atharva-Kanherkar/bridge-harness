@@ -8,6 +8,10 @@ import { HarnessMark } from "@/components/harnessMarks";
 import { SkeletonText } from "@/components/ui/skeleton";
 import { whenLabel } from "@/trails";
 import { clsx as cn } from "clsx";
+import { RowButton } from "@/components/ui/row";
+import { Input } from "@/components/ui/input";
+import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 
 const KINDS: { kind: TrailMemberKind; label: string; plural: string; icon: ComponentType<{ className?: string }> }[] = [
   { kind: "note", label: "Note", plural: "notes", icon: FileText },
@@ -17,7 +21,6 @@ const KINDS: { kind: TrailMemberKind; label: string; plural: string; icon: Compo
   { kind: "issue", label: "Issue", plural: "issues", icon: CircleDot },
 ];
 
-const INPUT = "h-8 min-w-0 flex-1 rounded-lg border border-input bg-background px-3 text-ui text-foreground outline-none placeholder:text-faint focus-visible:ring-2 focus-visible:ring-ring";
 
 function message(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
@@ -41,13 +44,13 @@ function AddIssueForm({ hasProject, onAdd }: { hasProject: boolean; onAdd: (refe
   return (
     <form onSubmit={submit} aria-label="Add issue">
       <div className="flex items-center gap-2">
-        <input
+        <Input
+          className="min-w-0 flex-1"
           autoFocus
           value={reference}
           onChange={event => setReference(event.target.value)}
           placeholder={hasProject ? "Issue link, owner/repo#12, or #12" : "Issue link or owner/repo#12"}
           aria-label="Issue"
-          className={INPUT}
         />
         <Button loading={busy} type="submit" size="sm" disabled={!reference.trim() || busy}>Add</Button>
       </div>
@@ -73,7 +76,7 @@ function NewNoteForm({ onCreate }: { onCreate: (title: string) => Promise<void> 
   return (
     <form onSubmit={submit} aria-label="New note on this trail" className="rounded-xl bg-card p-3">
       <div className="flex items-center gap-2">
-        <input value={title} maxLength={120} onChange={event => setTitle(event.target.value)} placeholder="New note title" aria-label="New note title" className={INPUT} />
+        <Input className="min-w-0 flex-1" value={title} maxLength={120} onChange={event => setTitle(event.target.value)} placeholder="New note title" aria-label="New note title" />
         <Button type="submit" size="sm" disabled={!title.trim() || busy}><Plus aria-hidden="true" />New note</Button>
       </div>
       <p className="mt-2 text-caption text-muted-foreground">Makes a page on this trail and opens it in Notes.</p>
@@ -86,13 +89,10 @@ function CandidateRow({ candidate, icon: Icon, busy, onPick }: { candidate: Trai
   const elsewhere = candidate.onTrailTitle ?? (candidate.onTrailId ? "another trail" : undefined);
   return (
     <li>
-      <button
-        type="button"
+      <RowButton size="bare" tone="default" shape="card"
         disabled={busy || Boolean(elsewhere)}
         onClick={onPick}
-        aria-label={elsewhere ? `${candidate.title}, on the trail “${elsewhere}”` : `Add ${candidate.title}`}
-        className="group flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left enabled:hover:bg-card focus-visible:bg-card focus-visible:outline-none disabled:cursor-default"
-      >
+        aria-label={elsewhere ? `${candidate.title}, on the trail “${elsewhere}”` : `Add ${candidate.title}`}><span className="group flex w-full items-center gap-3 px-3 py-2">
         <span className="flex size-5 shrink-0 items-center justify-center">
           {candidate.harness ? <HarnessMark harness={candidate.harness} size={13} /> : <Icon className="size-3.5 text-muted-foreground" />}
         </span>
@@ -103,7 +103,7 @@ function CandidateRow({ candidate, icon: Icon, busy, onPick }: { candidate: Trai
           </span>
         </span>
         {!elsewhere && <Plus className="size-3.5 shrink-0 text-faint opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" aria-hidden="true" />}
-      </button>
+      </span></RowButton>
     </li>
   );
 }
@@ -172,23 +172,13 @@ export function TrailAddDialog({ trail, initialKind = "note", onAdd, onAddIssue,
             <Route className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
             <h2 className="truncate text-ui font-medium text-foreground">Add to “{trail.title}”</h2>
           </div>
-          <div role="tablist" aria-label="What to add" className="flex flex-wrap gap-1">
+          <SegmentedGroup tabs label="What to add" className="self-start">
             {KINDS.map(item => (
-              <button
-                key={item.kind}
-                type="button"
-                role="tab"
-                aria-selected={kind === item.kind}
-                onClick={() => choose(item.kind)}
-                className={cn(
-                  "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-caption font-medium transition-colors",
-                  kind === item.kind ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60",
-                )}
-              >
+              <SegmentedItem key={item.kind} tab active={kind === item.kind} onClick={() => choose(item.kind)}>
                 <item.icon className="size-3" aria-hidden="true" />{item.label}
-              </button>
+              </SegmentedItem>
             ))}
-          </div>
+          </SegmentedGroup>
 
           <div role="tabpanel" aria-label={meta.label} className="flex min-h-80 flex-col gap-3">
             {kind === "issue" ? (
@@ -196,17 +186,16 @@ export function TrailAddDialog({ trail, initialKind = "note", onAdd, onAddIssue,
             ) : (
               <>
                 {kind === "note" && <NewNoteForm onCreate={onCreateNote} />}
-                <label className="flex items-center gap-2 rounded-lg border border-input bg-background px-3 focus-within:ring-2 focus-within:ring-ring">
-                  <Search className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
-                  <input
+                <InputGroup>
+                  <InputGroupAddon><Search className="size-3.5" aria-hidden="true" /></InputGroupAddon>
+                  <InputGroupInput
                     autoFocus={kind !== "note"}
                     value={query}
                     onChange={event => setQuery(event.target.value)}
                     placeholder={`Search ${meta.plural}`}
                     aria-label={`Search ${meta.plural}`}
-                    className="h-8 min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-faint"
                   />
-                </label>
+                </InputGroup>
                 {!candidates && <SkeletonText lines={4} />}
                 {candidates && candidates.length === 0 && !error && (
                   <p className="px-1 py-2 text-ui text-muted-foreground">{query.trim() ? `No ${meta.plural} match “${query.trim()}”.` : `No ${meta.plural} to add.`}</p>

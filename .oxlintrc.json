@@ -1,0 +1,60 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["eslint", "oxc", "react", "typescript", "unicorn"],
+  "jsPlugins": ["@shadcn/lint", "./scripts/oxlint-plugin-bridge/index.js"],
+  "categories": { "correctness": "error" },
+  "ignorePatterns": [
+    "dist",
+    "node_modules",
+    "src-tauri",
+    "landing",
+    "docs-site",
+    "launch-video",
+    "runtimes",
+    ".worktrees"
+  ],
+  "settings": {
+    "shadcn": {
+      "ui": "@/components/ui",
+      "note": "Rules and approved exceptions: docs/design/ui-rules.md."
+    }
+  },
+  "rules": {
+    "eslint/no-unused-vars": [
+      "error",
+      { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_", "caughtErrorsIgnorePattern": "^_" }
+    ],
+    "eslint/no-control-regex": "off",
+    "react/react-in-jsx-scope": "off",
+    "unicorn/no-useless-spread": "off"
+  },
+  "overrides": [
+    {
+      "files": ["src/**/*.{ts,tsx}"],
+      "rules": {
+        "shadcn/no-raw-colors": "error",
+        "shadcn/no-unknown-classes": "error"
+      }
+    },
+    {
+      "files": ["src/**/*.tsx"],
+      "excludeFiles": ["src/components/ui/**", "src/**/*.test.tsx"],
+      "rules": {
+        "shadcn/require-static-classes": "error",
+        "shadcn/no-arbitrary-values": ["error", { "allow": ["layout", "transition"] }],
+        "shadcn/no-restyle": [
+          "error",
+          {
+            "allow": ["layout"],
+            "contracts": [
+              { "pattern": "^Skeleton$", "allow": ["layout", "shape"] },
+              { "pattern": "^SkeletonRegion$", "allow": ["layout", "spacing"] }
+            ]
+          }
+        ],
+        "bridge/no-native-title-tooltip": "error",
+        "bridge/no-raw-controls": "error"
+      }
+    }
+  ]
+}

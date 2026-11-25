@@ -7,7 +7,6 @@ import type { AdapterDescriptor, Workspace } from "../../types";
 import { harnessLabel } from "../../utils";
 import { HarnessMark } from "../harnessMarks";
 import { MenuDivider, MenuLabel, Option, OptionList, Pill, Popover, PrimaryButton } from "./NotesUi";
-import { pendingClass } from "@/components/ui/skeleton";
 
 /** Harnesses that can run a note pass: hidden, tool-less generations. */
 export const PASS_HARNESSES = ["claude", "codex", "opencode"];
@@ -50,7 +49,7 @@ export function PopoverAction({ label, triggerLabel, busy = false, panelLabel, a
   const [open, setOpen] = useState(false);
   const close = () => setOpen(false);
   return <div className="relative">
-    <Pill aria-label={triggerLabel} aria-expanded={open} aria-haspopup="dialog" aria-busy={busy || undefined} active={open} disabled={busy} className={pendingClass(busy) || undefined} onClick={() => setOpen(current => !current)}>
+    <Pill aria-label={triggerLabel} aria-expanded={open} aria-haspopup="dialog" active={open} loading={busy} onClick={() => setOpen(current => !current)}>
       {label}
     </Pill>
     <Popover open={open} onClose={close} label={panelLabel} align={align} width={width}>{children(close)}</Popover>

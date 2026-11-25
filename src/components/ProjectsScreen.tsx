@@ -3,6 +3,9 @@ import { FolderGit2, FolderOpen, GitBranch, Plus, Sparkles } from "lucide-react"
 import type { Session, SessionStatus, Workspace } from "../types";
 import { cn } from "@/lib/utils";
 import { chatName, chatTimestamp } from "./sidebarChats";
+import { Tip } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
 
 // Projects are their own entity, not a second kind of row in the chat rail. This
 // screen is where a repo's identity lives: where it is on disk, what branch it is
@@ -53,13 +56,11 @@ export function ProjectsScreen({
     <div className="@container/projects h-full overflow-y-auto">
       <div className={SCREEN_CONTENT}>
         <ScreenHeading title="Projects" action={
-          <button
-            type="button"
+          <Button variant="default" size="sm" className="shrink-0"
             onClick={onNewWorkspace}
-            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-opacity hover:opacity-90 active:scale-[0.98]"
           >
             <Plus size={14} strokeWidth={1.9} aria-hidden="true" /> New project
-          </button>
+          </Button>
         } />
 
         {!workspaces.length ? (
@@ -82,19 +83,18 @@ export function ProjectsScreen({
                 <section key={workspace.id} className="flex min-w-0 flex-col rounded-xl border border-border bg-card p-4">
                   <div className="flex min-w-0 items-center gap-2">
                     <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-accent text-muted-foreground"><FolderGit2 size={19} strokeWidth={1.6} aria-hidden="true" /></span>
-                    <h2 title={workspace.title} className="m-0 min-w-0 flex-1 truncate text-message font-semibold tracking-[-0.01em] text-foreground">{workspace.title}</h2>
+                    <Tip label={workspace.title}><h2 className="m-0 min-w-0 flex-1 truncate text-message font-semibold tracking-snug text-foreground">{workspace.title}</h2></Tip>
                   </div>
 
-                  <p
+                  <Tip label={workspace.path ?? undefined}><p
                     className="mt-3 truncate text-caption text-muted-foreground"
-                    title={workspace.path ?? undefined}
                   >
                     {workspace.path ? shortPath(workspace.path) : "No folder connected"}
-                  </p>
+                  </p></Tip>
 
                   <p className="mt-1 flex min-w-0 items-center gap-1.5 text-caption text-muted-foreground">
                     <GitBranch size={11} strokeWidth={1.6} className="shrink-0" aria-hidden="true" />
-                    <span className="truncate" title={workspace.branch ?? undefined}>{workspace.branch ?? "folder"}</span>
+                    <Tip label={workspace.branch ?? undefined}><span className="truncate">{workspace.branch ?? "folder"}</span></Tip>
                   </p>
                   <p className="mt-2 flex flex-wrap items-center gap-1.5 text-caption text-muted-foreground">
                     <span>{own.length} {own.length === 1 ? "chat" : "chats"}</span>
@@ -112,22 +112,16 @@ export function ProjectsScreen({
 
                   <div className="mb-4 mt-3 min-h-0 flex-1 border-t border-border pt-2">
                     {shown.map(chat => (
-                      <button
-                        key={chat.id}
-                        type="button"
+                      <Tip key={chat.id} label={chatName(chat)}><RowButton
+                        tone="muted"
+                        active={chat.id === activeSessionId}
                         onClick={() => onOpenSession(chat.id)}
-                        title={chatName(chat)}
-                        className={cn(
-                          "flex h-9 w-full items-center gap-2 rounded-md px-1.5 text-left text-ui transition-colors",
-                          chat.id === activeSessionId
-                            ? "bg-accent font-medium text-foreground"
-                            : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                        )}
+                        className="h-9"
                       >
                         <StatusDot status={chat.status} />
                         <span className="min-w-0 flex-1 truncate">{chatName(chat)}</span>
                         <span className="shrink-0 text-caption text-muted-foreground">{chat.status === "working" ? "Working" : chat.status === "waiting" ? "Needs you" : chat.status === "failed" ? "Failed" : ""}</span>
-                      </button>
+                      </RowButton></Tip>
                     ))}
                     {own.length > CHATS_PER_CARD && (
                       <p className="px-1.5 pt-1 text-caption text-muted-foreground">+{own.length - CHATS_PER_CARD} more</p>
@@ -137,22 +131,18 @@ export function ProjectsScreen({
                     )}
                   </div>
                   <div className="mt-auto flex flex-wrap items-center gap-1.5 border-t border-border pt-3">
-                    <button
-                      type="button"
+                    <Button variant="quiet" size="sm"
                       disabled={busy}
                       onClick={() => onNewWorkspaceSession(workspace.id)}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-secondary px-2.5 text-meta font-medium text-secondary-foreground transition-colors hover:bg-accent disabled:opacity-40"
                     >
                       <Sparkles size={13} strokeWidth={1.75} aria-hidden="true" /> New agent
-                    </button>
+                    </Button>
                     {!workspace.path && (
-                      <button
-                        type="button"
+                      <Button variant="quiet" size="sm"
                         onClick={() => onConnectFolder(workspace.id)}
-                        className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-meta font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                       >
                         <FolderOpen size={13} strokeWidth={1.75} aria-hidden="true" /> Connect folder
-                      </button>
+                      </Button>
                     )}
                   </div>
                 </section>

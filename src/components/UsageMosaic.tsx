@@ -35,7 +35,7 @@ export function UsageMosaic({ report, window, metric }: UsageLayoutProps) {
   return <div className="space-y-4">
     <section aria-label="Summary" className="flex flex-wrap items-end gap-x-10 gap-y-4 pb-2">
       <div>
-        <div className="text-[2.75rem] font-light leading-none tracking-[-0.04em] tabular-nums text-foreground">{format(metric === "cost" ? report.totals.costMicrousd : report.totals.processedTokens)}{metric === "cost" && <EstimateMark report={report} large />}</div>
+        <div className="text-5xl font-light leading-none tracking-display tabular-nums text-foreground">{format(metric === "cost" ? report.totals.costMicrousd : report.totals.processedTokens)}{metric === "cost" && <EstimateMark report={report} large />}</div>
         <p className="mt-2 text-ui text-muted-foreground">{metric === "cost"
           ? <>at API rates · <span className="font-medium tabular-nums text-foreground">{formatTokens(report.totals.processedTokens)}</span> tokens</>
           : <>tokens · <span className="font-medium tabular-nums text-foreground">{formatUsd(report.totals.costMicrousd)}</span><EstimateMark report={report} /> at API rates</>}</p>
@@ -44,7 +44,7 @@ export function UsageMosaic({ report, window, metric }: UsageLayoutProps) {
       <ul className="flex flex-wrap gap-x-7 gap-y-3 pb-1" aria-label="By harness">
         {harnesses.map(entry => <li key={entry.harness}>
           <span className="flex items-center gap-1.5 text-caption text-muted-foreground"><span className={cn("size-2 rounded-full", harnessChartDot(entry.harness))} aria-hidden="true" /><HarnessName harness={entry.harness} size={11} /></span>
-          <span className="mt-0.5 block text-[17px] tabular-nums text-foreground">{format(harnessValue(entry, metric))} <span className="text-caption text-muted-foreground">{formatPercent(metric === "cost" ? entry.costShare : entry.tokenShare, 0)}</span></span>
+          <span className="mt-0.5 block text-lg tabular-nums text-foreground">{format(harnessValue(entry, metric))} <span className="text-caption text-muted-foreground">{formatPercent(metric === "cost" ? entry.costShare : entry.tokenShare, 0)}</span></span>
         </li>)}
       </ul>
     </section>

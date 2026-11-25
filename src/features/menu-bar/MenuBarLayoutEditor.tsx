@@ -2,13 +2,11 @@ import { useState } from "react";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import type { MenuBarLayoutToken } from "../../protocol/generated/protocol";
 import { GhostButton, PrimaryButton, SettingsBlockRow, TextArea, TextButton } from "../../components/settings/kit";
-import { cn } from "@/lib/utils";
 import { layoutExample, layoutTokens, parseLayout } from "./layout";
+import { Button } from "@/components/ui/button";
 
 type Props = { layout: MenuBarLayoutToken[][]; busy: boolean; onSave: (layout: MenuBarLayoutToken[][]) => Promise<void> };
 /** A token you can add: smaller than a GhostButton because there are fourteen. */
-const CHIP = "inline-flex h-6 items-center rounded-md border border-border-card px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40";
-const TOKEN_ACTION = "grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:opacity-30";
 
 // A bounded token compositor, following CodexBar's array-of-lines model.
 // Layout content is data: it never evaluates scripts or provider expressions.
@@ -46,22 +44,22 @@ export function MenuBarLayoutEditor({ layout, busy, onSave }: Props) {
     </SettingsBlockRow>
     <SettingsBlockRow label="Add items" description={draft.length > 1 ? `Items go on line ${activeLine + 1}. Choose a line below to switch.` : "Up to twelve items per line, and two lines."}>
       <div className="flex flex-wrap gap-1.5" aria-label="Available layout items">
-        {layoutTokens.map(token => <button key={token.value} type="button" className={CHIP}
+        {layoutTokens.map(token => <Button variant="chip" size="2xs" key={token.value}
           disabled={busy || (draft[activeLine]?.length ?? 0) >= 12 || (token.value === "icon" && draft.flat().includes("icon"))}
-          onClick={() => append(token.value)}>+ {token.label}</button>)}
-        <button type="button" className={CHIP} disabled={busy || draft.length >= 2}
-          onClick={() => { setDraft(draft.length ? [...draft, []] : [[], []]); setActiveLine(1); }}>+ Line break</button>
+          onClick={() => append(token.value)}>+ {token.label}</Button>)}
+        <Button variant="chip" size="2xs" disabled={busy || draft.length >= 2}
+          onClick={() => { setDraft(draft.length ? [...draft, []] : [[], []]); setActiveLine(1); }}>+ Line break</Button>
       </div>
       {draft.length > 0 && <div className="mt-3 space-y-2">
         {draft.map((line, lineIndex) => <div key={lineIndex} className="flex flex-wrap items-center gap-1.5 rounded-lg border border-border-card bg-popover p-1.5">
-          <button type="button" aria-pressed={activeLine === lineIndex} className={cn(CHIP, "aria-pressed:border-foreground/40 aria-pressed:text-foreground")} disabled={busy}
-            onClick={() => setActiveLine(lineIndex)}>Line {lineIndex + 1}</button>
+          <Button variant="chip" size="2xs" aria-pressed={activeLine === lineIndex} disabled={busy}
+            onClick={() => setActiveLine(lineIndex)}>Line {lineIndex + 1}</Button>
           {line.length === 0 && <span className="px-1 text-caption text-muted-foreground">Empty</span>}
           {line.map((token, index) => <span key={`${index}-${token}`} className="inline-flex h-6 items-center gap-0.5 rounded-md bg-accent pl-2 pr-0.5 text-caption text-foreground">
             {layoutTokens.find(item => item.value === token)!.label}
-            <button type="button" disabled={busy || index === 0} aria-label={`Move ${token} left on line ${lineIndex + 1}`} className={TOKEN_ACTION} onClick={() => move(lineIndex, index, -1)}><ChevronLeft size={12} aria-hidden="true" /></button>
-            <button type="button" disabled={busy || index === line.length - 1} aria-label={`Move ${token} right on line ${lineIndex + 1}`} className={TOKEN_ACTION} onClick={() => move(lineIndex, index, 1)}><ChevronRight size={12} aria-hidden="true" /></button>
-            <button type="button" disabled={busy} aria-label={`Remove ${token} from line ${lineIndex + 1}`} className={TOKEN_ACTION} onClick={() => remove(lineIndex, index)}><X size={12} aria-hidden="true" /></button>
+            <Button variant="quiet" size="icon-3xs" disabled={busy || index === 0} aria-label={`Move ${token} left on line ${lineIndex + 1}`} onClick={() => move(lineIndex, index, -1)}><ChevronLeft size={12} aria-hidden="true" /></Button>
+            <Button variant="quiet" size="icon-3xs" disabled={busy || index === line.length - 1} aria-label={`Move ${token} right on line ${lineIndex + 1}`} onClick={() => move(lineIndex, index, 1)}><ChevronRight size={12} aria-hidden="true" /></Button>
+            <Button variant="quiet" size="icon-3xs" disabled={busy} aria-label={`Remove ${token} from line ${lineIndex + 1}`} onClick={() => remove(lineIndex, index)}><X size={12} aria-hidden="true" /></Button>
           </span>)}
           {draft.length > 1 && <span className="ml-auto"><TextButton disabled={busy} onClick={() => { setDraft(draft.filter((_, i) => i !== lineIndex)); setActiveLine(0); }}>Remove line</TextButton></span>}
         </div>)}

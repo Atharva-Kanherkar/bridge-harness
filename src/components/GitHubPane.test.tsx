@@ -164,9 +164,10 @@ describe("GitHubPane", () => {
     ]);
     expect([...toolbar.children].every(node => node.className.includes("size-7"))).toBe(true);
     const copy = host!.querySelector('button[aria-label="Copy bridge/harness"]')!;
-    expect(copy.className).toMatch(/\bmin-w-0\b/);
-    expect(copy.className).toMatch(/\bshrink\b/);
-    expect(copy.className).not.toMatch(/\bshrink-0\b/);
+    const copyClasses = copy.className.split(/\s+/);
+    expect(copyClasses).toContain("min-w-0");
+    expect(copyClasses).toContain("shrink");
+    expect(copyClasses).not.toContain("shrink-0");
     expect(host!.querySelector("header")!.className).toContain("p-1.5");
     expect(host!.querySelector("header")!.className).not.toContain("u-glass");
   });
@@ -892,7 +893,7 @@ describe("GitHubPane", () => {
       defaultStrategy: "squash" as const,
       strategies: { merge: true, squash: true, rebase: false },
     });
-    const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: false, message: 'Required status check "build" is expected.' });
+    vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: false, message: 'Required status check "build" is expected.' });
     await mount();
     await click(buttonByText("Safe GitHub surface"));
     await click(buttonByText("Squash and merge"));
@@ -1055,11 +1056,11 @@ describe("GitHubPane", () => {
     ]));
     await mount();
     await click(buttonByText("Safe GitHub surface"));
-    const radio = (name: string) => [...host!.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(button => button.textContent?.startsWith(name))!;
+    const radio = (name: string) => [...host!.querySelectorAll<HTMLButtonElement>('[aria-label="Filter conversations"] button')].find(button => button.textContent?.startsWith(name))!;
     expect(radio("Open").textContent).toContain("1");
     await click(radio("Resolved"));
     expect(host!.querySelector('[data-thread="done-one"]')).not.toBeNull();
-    expect(radio("Resolved").getAttribute("aria-checked")).toBe("true");
+    expect(radio("Resolved").getAttribute("aria-pressed")).toBe("true");
     await click(radio("Open"));
     expect(host!.querySelector('[data-thread="open-one"]')).not.toBeNull();
   });

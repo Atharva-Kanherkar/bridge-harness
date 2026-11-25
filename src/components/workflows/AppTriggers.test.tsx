@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../../api";
 import { WorkflowEditor, composeEventTrigger } from "./WorkflowEditor";
 import { eventFilters, triggerSummary } from "./format";
+import { chooseOption, openSelect } from "@/testing/select";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -52,24 +53,25 @@ describe("app triggers", () => {
     await act(async () => root.render(<WorkflowEditor open workflow={null} options={options} projects={[]} busy={false} error={null} onCancel={() => {}} onSubmit={() => {}}/>));
     change(field<HTMLInputElement>("Workflow name")!, "Roadmap pages");
     change(field<HTMLTextAreaElement>("Workflow instructions")!, "Summarise the new page.");
-    change(field<HTMLSelectElement>("Workflow schedule")!, "event");
+    await chooseOption(field("Workflow schedule")!, "event");
     await settle(0);
-    const groups = [...document.querySelectorAll('[aria-label="Event"] optgroup')].map(group => group.getAttribute("label"));
+    const events = await openSelect(field("Event")!);
+    const groups = [...events!.querySelectorAll('[data-slot="select-group-label"]')].map(group => group.textContent);
     expect(groups).toEqual(["Slack", "GitHub", "Gmail", "Linear", "Notion"]);
 
-    change(field<HTMLSelectElement>("Event")!, "gmail_message_received");
+    await chooseOption(field("Event")!, "gmail_message_received");
     await settle(500);
     expect(field("Channel filter")).toBeNull();
     expect(field("Repository")).toBeNull();
     expect(field("Sender filter")?.closest("label")?.textContent).toContain("From (optional)");
     expect(document.body.textContent).toContain("Bridge has not read Gmail yet");
 
-    change(field<HTMLSelectElement>("Event")!, "linear_issue_assigned");
+    await chooseOption(field("Event")!, "linear_issue_assigned");
     await settle(0);
     expect(field("Channel filter")?.closest("label")?.textContent).toContain("Team (optional)");
     expect(field("Sender filter")).toBeNull();
 
-    change(field<HTMLSelectElement>("Event")!, "notion_page_created");
+    await chooseOption(field("Event")!, "notion_page_created");
     await settle(500);
     expect(field("Channel filter")?.closest("label")?.textContent).toMatch(/^Database(?! \(optional\))/);
     expect(button("Approve and save")!.disabled).toBe(true);

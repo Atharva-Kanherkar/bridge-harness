@@ -397,7 +397,7 @@ describe("deferred new-chat creation (#350)", () => {
     expect((await bridgeApi.getChatDefaults(projectId)).project?.defaults.access).toBe("ask");
   });
   it("switches inherited project defaults without discarding the typed message",async()=>{
-    const state=await bridgeApi.state();const first=state.workspaces.find(w=>w.id==="demo-1")!;const next=await bridgeApi.cloneWorkspaceRepo("owner/project-defaults-test");const other=next.workspaces.find(w=>!state.workspaces.some(old=>old.id===w.id))!;
+    const state=await bridgeApi.state();const next=await bridgeApi.cloneWorkspaceRepo("owner/project-defaults-test");const other=next.workspaces.find(w=>!state.workspaces.some(old=>old.id===w.id))!;
     const view=await bridgeApi.getChatDefaults(other.projectId);
     await bridgeApi.saveChatDefaults({projectId:other.projectId,expectedRevision:view.project?.revision??0,defaults:{target:{kind:"direct"},createWorktree:false}});
     await act(async()=>byLabel("New Chat")!.click());await type(composerField()!,"keep these words");

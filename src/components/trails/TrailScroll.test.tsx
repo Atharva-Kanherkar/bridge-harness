@@ -144,7 +144,7 @@ describe("the condensed bar", () => {
     try {
       trailPage();
       scrollTo(800);
-      act(() => bar().querySelector<HTMLButtonElement>("button[title='Back to top']")!.click());
+      act(() => bar().querySelector<HTMLButtonElement>("button[data-tip='Back to top']")!.click());
       expect(spy).toHaveBeenCalledWith({ top: 0, behavior });
     } finally {
       delete (HTMLElement.prototype as { scrollTo?: unknown }).scrollTo;

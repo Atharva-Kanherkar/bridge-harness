@@ -54,6 +54,15 @@ const setBody = (value: string) => {
     textarea().dispatchEvent(new Event("input", { bubbles: true }));
   });
 };
+/** Opens the named list and picks the option with that label. */
+const choose = async (label: string, option: string) => {
+  await act(async () => { document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click(); });
+  const item = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent?.trim() === option)!;
+  await act(async () => {
+    item.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    item.click();
+  });
+};
 const setSearch = (value: string) => {
   const input = document.querySelector<HTMLInputElement>('input[aria-label="Search memory"]')!;
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
@@ -450,13 +459,13 @@ describe("MemoryDialog injection toggle", () => {
     });
     mount();
     await flush();
-    const toggle = document.querySelector<HTMLInputElement>('[aria-label="Use active memory in new chats"]')!;
-    expect(toggle.checked).toBe(true);
+    const toggle = document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Use active memory in new chats"]')!;
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
     expect(container.textContent).toContain("Use in new chats");
     act(() => { toggle.click(); });
     await flush();
     expect(bridgeApi.setMemoryInjection).toHaveBeenCalledWith(false);
-    expect(toggle.checked).toBe(false);
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
   });
 });
 
@@ -551,18 +560,8 @@ describe("MemoryDialog review queue", () => {
     });
     await flush();
     click(tab("Review"));
-    const harness = container.querySelector<HTMLSelectElement>('select[aria-label="Extraction harness"]')!;
-    act(() => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
-      setter.call(harness, "claude");
-      harness.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    const model = container.querySelector<HTMLSelectElement>('select[aria-label="Extraction model"]')!;
-    act(() => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
-      setter.call(model, "sonnet");
-      model.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await choose("Extraction harness", "Claude");
+    await choose("Extraction model", "Claude Sonnet");
     click(buttonByText("Automatic"));
     await flush();
     expect(bridgeApi.updateExtractionSettings).toHaveBeenCalledWith("auto_apply", "claude", "sonnet");
@@ -577,12 +576,7 @@ describe("MemoryDialog review queue", () => {
     });
     await flush();
     click(tab("Review"));
-    const harness = container.querySelector<HTMLSelectElement>('select[aria-label="Extraction harness"]')!;
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
-      setter.call(harness, "claude");
-      harness.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await choose("Extraction harness", "Claude");
     click(buttonByText("Review first"));
     await flush();
     expect(onError).toHaveBeenCalledWith(expect.stringContaining("both a helper and a model"));
@@ -688,9 +682,9 @@ describe("MemoryDialog paging and bulk review", () => {
       ...(end < matching.length ? { nextCursor: String(end) } : {}),
     };
   });
-  const cards = () => container.querySelectorAll('input[aria-label^="Select proposal"]');
+  const cards = () => container.querySelectorAll('[role="checkbox"][aria-label^="Select proposal"]');
   const toggle = (element: Element) => {
-    act(() => { (element as HTMLInputElement).click(); });
+    act(() => { (element as HTMLElement).click(); });
   };
 
   beforeEach(() => {
@@ -745,7 +739,7 @@ describe("MemoryDialog paging and bulk review", () => {
     mount();
     await flush();
     click(tab("Review"));
-    toggle(document.querySelector('input[aria-label="Select all shown proposals"]')!);
+    toggle(document.querySelector('[role="checkbox"][aria-label="Select all shown proposals"]')!);
     expect(container.textContent).toContain("50 selected");
     click(buttonByText("Reject selected"));
     await flush();
@@ -767,7 +761,7 @@ describe("MemoryDialog paging and bulk review", () => {
     mount({ onError });
     await flush();
     click(tab("Review"));
-    toggle(document.querySelector('input[aria-label="Select all shown proposals"]')!);
+    toggle(document.querySelector('[role="checkbox"][aria-label="Select all shown proposals"]')!);
     click(buttonByText("Approve selected"));
     await flush();
     expect(onError).toHaveBeenCalledWith(expect.stringContaining("1 of 2 could not be approved"));
@@ -807,8 +801,8 @@ describe("MemoryDialog paging and bulk review", () => {
     expect(labels).toContain(ticked);
     expect(cards()).toHaveLength(105);
     expect(container.textContent).toContain("1 selected");
-    const kept = [...cards()].find(input => input.getAttribute("aria-label") === ticked) as HTMLInputElement;
-    expect(kept.checked).toBe(true);
+    const kept = [...cards()].find(input => input.getAttribute("aria-label") === ticked)!;
+    expect(kept.getAttribute("aria-checked")).toBe("true");
   });
 
   it("reads the rest of the memories before a search, so nothing unloaded is missed", async () => {

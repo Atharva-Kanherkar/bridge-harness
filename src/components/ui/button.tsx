@@ -6,6 +6,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import * as React from "react";
 import { cn } from "@/lib/utils";
 import { pendingClass } from "@/components/ui/skeleton";
+import { Tip } from "@/components/ui/tooltip";
 
 export const buttonVariants = cva(
   "relative inline-flex shrink-0 cursor-default items-center justify-center gap-2 whitespace-nowrap rounded-lg border font-medium text-ui outline-none transition-shadow before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] pointer-coarse:after:absolute pointer-coarse:after:size-full pointer-coarse:after:min-h-11 pointer-coarse:after:min-w-11 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-64 data-loading:select-none sm:text-ui [&_svg:not([class*='opacity-'])]:opacity-80 [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:-mx-0.5 [&_svg]:shrink-0",
@@ -13,6 +14,7 @@ export const buttonVariants = cva(
     defaultVariants: {
       size: "default",
       variant: "default",
+      shape: "default",
     },
     variants: {
       size: {
@@ -22,6 +24,16 @@ export const buttonVariants = cva(
         "icon-sm": "size-8 sm:size-7",
         "icon-xl":
           "size-11 sm:size-10 [&_svg:not([class*='size-'])]:size-5 sm:[&_svg:not([class*='size-'])]:size-4.5",
+        "2xs":
+          "h-6 gap-1 rounded-md px-[calc(--spacing(1.5)-1px)] text-caption before:rounded-[calc(var(--radius-md)-1px)] [&_svg:not([class*='size-'])]:size-3.5",
+        // Inside a 24px pill or chip.
+        "icon-3xs":
+          "size-5 rounded-sm before:rounded-[calc(var(--radius-sm)-1px)] [&_svg:not([class*='size-'])]:size-3",
+        "icon-2xs":
+          "size-6 rounded-md before:rounded-[calc(var(--radius-md)-1px)] [&_svg:not([class*='size-'])]:size-3.5",
+        // Sits in a line of text: no box of its own, so it takes the text's size.
+        inline:
+          "h-auto gap-1 rounded-sm border-0 p-0 font-normal text-[length:inherit] [&_svg:not([class*='size-'])]:size-[1em]",
         "icon-xs":
           "size-7 rounded-md before:rounded-[calc(var(--radius-md)-1px)] sm:size-7 not-in-data-[slot=input-group]:[&_svg:not([class*='size-'])]:size-4 sm:not-in-data-[slot=input-group]:[&_svg:not([class*='size-'])]:size-3.5",
         lg: "h-10 px-[calc(--spacing(3.5)-1px)] sm:h-9",
@@ -36,13 +48,35 @@ export const buttonVariants = cva(
           "not-disabled:inset-shadow-[0_1px_--theme(--color-white/16%)] border-destructive bg-destructive text-destructive-foreground shadow-destructive/24 shadow-xs hover:bg-destructive/90 data-pressed:bg-destructive/90 [:active,[data-pressed]]:inset-shadow-[0_1px_--theme(--color-black/8%)] [:disabled,:active,[data-pressed]]:shadow-none",
         "destructive-outline":
           "border-input bg-popover not-dark:bg-clip-padding text-destructive shadow-xs/5 not-disabled:not-active:not-data-pressed:before:shadow-[0_1px_--theme(--color-black/4%)] hover:border-destructive/32 hover:bg-destructive/4 data-pressed:border-destructive/32 data-pressed:bg-destructive/4 dark:bg-input/32 dark:not-disabled:before:shadow-[0_-1px_--theme(--color-white/2%)] dark:not-disabled:not-active:not-data-pressed:before:shadow-[0_-1px_--theme(--color-white/6%)] [:disabled,:active,[data-pressed]]:shadow-none",
+        // A row's delete: recedes like quiet until hovered, then reads as destructive.
+        "destructive-quiet":
+          "border-transparent text-muted-foreground hover:bg-destructive/10 hover:text-destructive data-pressed:bg-destructive/10",
+        "destructive-ghost":
+          "border-transparent text-destructive hover:bg-destructive/10 data-pressed:bg-destructive/10",
         ghost:
           "border-transparent text-foreground hover:bg-accent data-pressed:bg-accent",
+        // Toolbar and row actions: recedes until hovered.
+        quiet:
+          "border-transparent text-muted-foreground hover:bg-accent hover:text-foreground data-pressed:bg-accent data-pressed:text-foreground aria-pressed:bg-accent aria-pressed:text-foreground aria-expanded:bg-accent aria-expanded:text-foreground aria-[current=true]:bg-accent aria-[current=true]:text-foreground aria-[current=page]:bg-accent aria-[current=page]:text-foreground aria-selected:bg-accent aria-selected:text-foreground",
+        // A filter pill: outlined at rest, filled while pressed. Pair with size="2xs" and aria-pressed.
+        chip: "rounded-full border-border text-muted-foreground before:rounded-full hover:bg-accent hover:text-foreground aria-pressed:border-foreground/25 aria-pressed:bg-accent aria-pressed:text-foreground",
+        // An underlined tab strip's tab: text only; the caller draws the underline.
+        tab: "rounded-none border-transparent text-muted-foreground hover:text-foreground aria-selected:font-medium aria-selected:text-foreground aria-pressed:font-medium aria-pressed:text-foreground",
+        // An empty slot's "add" action: a dashed outline that fills on hover.
+        dashed:
+          "border-dashed border-border text-muted-foreground hover:bg-accent hover:text-foreground data-pressed:bg-accent",
+        // Words that act: no fill at rest or on hover. Pair with size="inline" inside a sentence.
+        text: "border-transparent text-muted-foreground hover:text-foreground data-pressed:text-foreground",
         link: "border-transparent text-foreground underline-offset-4 hover:underline data-pressed:underline",
         outline:
           "border-input bg-popover not-dark:bg-clip-padding text-foreground shadow-xs/5 not-disabled:not-active:not-data-pressed:before:shadow-[0_1px_--theme(--color-black/4%)] hover:bg-accent/50 data-pressed:bg-accent/50 dark:bg-input/32 dark:data-pressed:bg-input/64 dark:hover:bg-input/64 dark:not-disabled:before:shadow-[0_-1px_--theme(--color-white/2%)] dark:not-disabled:not-active:not-data-pressed:before:shadow-[0_-1px_--theme(--color-white/6%)] [:disabled,:active,[data-pressed]]:shadow-none",
         secondary:
           "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/90 data-pressed:bg-secondary/90 [:active,[data-pressed]]:bg-secondary/80",
+      },
+      // Round: the composer's send and stop, and pills that sit on media.
+      shape: {
+        default: "",
+        round: "rounded-full before:rounded-full",
       },
     },
   },
@@ -51,23 +85,37 @@ export const buttonVariants = cva(
 export interface ButtonProps extends useRender.ComponentProps<"button"> {
   variant?: VariantProps<typeof buttonVariants>["variant"];
   size?: VariantProps<typeof buttonVariants>["size"];
+  shape?: VariantProps<typeof buttonVariants>["shape"];
   loading?: boolean;
+  /**
+   * Hover and focus hint, shown in the app's Tooltip. A string also names an
+   * icon-only button for assistive tech when it has no `aria-label`.
+   */
+  tooltip?: React.ReactNode;
+  tooltipSide?: React.ComponentProps<typeof Tip>["side"];
 }
 
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   function Button(
-    {
+    allProps,
+    forwardedRef,
+  ): React.ReactElement {
+    // A button that can carry a hint keeps the tooltip wrapper even while the
+    // hint is empty, so toggling it never remounts the button (and drops focus).
+    const hintable = "tooltip" in allProps;
+    const {
       className,
       variant,
       size,
+      shape,
       render,
       children,
       loading = false,
+      tooltip,
+      tooltipSide,
       disabled: disabledProp,
       ...props
-    },
-    forwardedRef,
-  ): React.ReactElement {
+    } = allProps;
     const isDisabled: boolean = Boolean(loading || disabledProp);
     const typeValue: React.ButtonHTMLAttributes<HTMLButtonElement>["type"] =
       render ? undefined : "button";
@@ -75,20 +123,27 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     const defaultProps = {
       children,
       // A busy button keeps its label and wears the skeleton's sweep.
-      className: cn(buttonVariants({ className, size, variant }), pendingClass(loading)),
+      className: cn(buttonVariants({ className, shape, size, variant }), pendingClass(loading)),
       "aria-busy": loading || undefined,
       "aria-disabled": loading || undefined,
+      // An icon-only button has no text to be named by, so the hint names it.
+      "aria-label":
+        typeof tooltip === "string" && size?.startsWith("icon")
+          ? tooltip
+          : undefined,
       "data-loading": loading ? "" : undefined,
       "data-slot": "button",
       disabled: isDisabled,
       type: typeValue,
     };
 
-    return useRender({
+    const element = useRender({
       defaultTagName: "button",
       props: mergeProps<"button">(defaultProps, props),
       ref: forwardedRef,
       render,
     });
+    if (!hintable || !element) return element as React.ReactElement;
+    return <Tip label={tooltip} side={tooltipSide}>{element}</Tip>;
   },
 );

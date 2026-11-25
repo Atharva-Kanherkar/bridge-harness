@@ -237,7 +237,7 @@ describe("SessionDock", () => {
     mount({ state: open({ pane: "github", visited: ["github"], width: MIN_DOCK_WIDTH }), panes: ALL_PANES });
     expect(activeTab().textContent).toBe("");
     expect(activeTab().getAttribute("aria-label")).toBe("GitHub");
-    expect(activeTab().title).toContain("GitHub");
+    expect(activeTab().dataset.tip).toContain("GitHub");
   });
 
   it("shows the active tab's inline label at the default width", () => {
@@ -273,7 +273,7 @@ describe("SessionDock", () => {
 describe("dock keyboard navigation", () => {
   it("takes each tab's chord from DOCK_PANES, so a pane drawn first borrows no digit", () => {
     mount({ panes: [{ id: "work", label: "Work", icon: Code2, available: true }, ...ALL_PANES] });
-    const title = (label: string) => tabs().find(tab => tab.getAttribute("aria-label") === label)!.title;
+    const title = (label: string) => tabs().find(tab => tab.getAttribute("aria-label") === label)!.dataset.tip;
     expect(title("Work")).toBe("Work");
     expect(title("Changes")).toMatch(/^Changes\s+\S*1$/);
     expect(title("GitHub")).toMatch(/^GitHub\s+\S*7$/);
@@ -316,7 +316,7 @@ describe("SessionDock + menu", () => {
     act(() => plus()!.click());
     const items = [...document.body.querySelectorAll<HTMLButtonElement>('[role="menu"][aria-label="Add a pane to this chat"] [role="menuitem"]')];
     expect(items.map(item => item.textContent)).toEqual(["Transcript", "GitHubUnavailable here"]);
-    expect(items[1].title).toBe("GitHub needs a repository.");
+    expect(items[1].dataset.tip).toBe("GitHub needs a repository.");
     act(() => items[0].click());
     expect(onAddPane).toHaveBeenCalledWith("transcript");
     expect(document.body.querySelector('[role="menu"][aria-label="Add a pane to this chat"]')).toBeNull();

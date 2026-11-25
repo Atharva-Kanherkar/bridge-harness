@@ -131,7 +131,7 @@ describe("App attention wiring", () => {
     await wait(20);
 
     expect(container.querySelector('[aria-label="Attention notifications"] button[aria-label*="open the chat"]')).toBeFalsy();
-    expect(container.querySelector('button[title^="Title b"]')?.getAttribute("aria-current")).toBe("page");
+    expect(container.querySelector('button[data-tip^="Title b"]')?.getAttribute("aria-current")).toBe("page");
     expect(seen).toHaveBeenCalledWith("b");
   });
 
@@ -156,7 +156,7 @@ describe("App attention wiring", () => {
   it("marks the chat seen when its toast reopens the retained selection", async () => {
     const seen = vi.spyOn(bridgeApi, "markAttentionSeen");
     await mountApp();
-    await act(async () => { (container.querySelector('button[title^="Title b"]') as HTMLButtonElement).click(); });
+    await act(async () => { (container.querySelector('button[data-tip^="Title b"]') as HTMLButtonElement).click(); });
     await wait(20);
     // Away to Memory, through the launcher; the chat stays selected underneath.
     const apps = container.querySelector<HTMLButtonElement>('nav[aria-label="Main navigation"] button[aria-label^="Apps"]');
@@ -200,7 +200,7 @@ describe("App attention wiring", () => {
   });
 
   describe("unread", () => {
-    const row = (container: HTMLElement, id: string) => container.querySelector(`button[title^="Title ${id}"]`) as HTMLButtonElement;
+    const row = (container: HTMLElement, id: string) => container.querySelector(`button[data-tip^="Title ${id}"]`) as HTMLButtonElement;
     const open = async (container: HTMLElement, id: string) => {
       await act(async () => { row(container, id).click(); });
       await wait(20);
@@ -362,7 +362,7 @@ describe("App attention wiring", () => {
 
   describe("policy", () => {
     const openChat = async (id: string) => {
-      await act(async () => { (container.querySelector(`button[title^="Title ${id}"]`) as HTMLButtonElement).click(); });
+      await act(async () => { (container.querySelector(`button[data-tip^="Title ${id}"]`) as HTMLButtonElement).click(); });
       await wait(20);
     };
 
@@ -458,7 +458,7 @@ describe("App attention wiring", () => {
     await mountApp();
     await act(async () => { window.dispatchEvent(new CustomEvent("bridge:web-notification-open", { detail: { sessionId: "b" } })); });
     await wait(20);
-    expect(container.querySelector('button[title^="Title b"]')?.getAttribute("aria-current")).toBe("page");
+    expect(container.querySelector('button[data-tip^="Title b"]')?.getAttribute("aria-current")).toBe("page");
   });
 
   it("shows an agent's post in its own words and opens its chat", async () => {
@@ -469,6 +469,6 @@ describe("App attention wiring", () => {
     expect(notifyAttention).toHaveBeenCalledWith("Postgres or SQLite?", "Both work; pick one.", { sessionId: "b", approvalEventId: null });
     await act(async () => { (container.querySelector('[aria-label="Attention notifications"] button[aria-label*="open the chat"]') as HTMLButtonElement).click(); });
     await wait(20);
-    expect(container.querySelector('button[title^="Title b"]')?.getAttribute("aria-current")).toBe("page");
+    expect(container.querySelector('button[data-tip^="Title b"]')?.getAttribute("aria-current")).toBe("page");
   });
 });

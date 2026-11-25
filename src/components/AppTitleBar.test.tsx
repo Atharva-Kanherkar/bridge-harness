@@ -64,12 +64,12 @@ describe("AppTitleBar", () => {
 
   it("insets trailing chrome so nested controls can be concentric with the window", () => {
     mount();
-    expect(header().className).toContain("pr-[var(--window-control-inset)]");
+    expect(header().className).toContain("pr-window-control");
   });
 
   it("drops the trailing window-control inset when flush, because the right edge is the rail seam", () => {
     mount({ flush: true });
-    expect(header().className).not.toContain("pr-[var(--window-control-inset)]");
+    expect(header().className).not.toContain("pr-window-control");
     expect(header().className).toContain("pr-3");
   });
 

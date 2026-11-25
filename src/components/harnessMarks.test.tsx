@@ -52,7 +52,7 @@ describe("HarnessMark", () => {
   it("draws Cursor from its own facet tokens, with no Bridge hue", () => {
     const cursor = markup("cursor");
     expect(cursor.match(/<polygon/g)).toHaveLength(6);
-    expect(cursor).toContain("--cursor-facet-lightest");
+    expect(cursor).toContain("fill-cursor-facet-lightest");
     expect(cursor).not.toContain("text-harness-");
   });
 

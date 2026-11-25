@@ -48,6 +48,7 @@ export function ChatDefaultsPage({ adapters, agents }: { adapters: AdapterDescri
       if (!scope) acceptApplicationChatDefaults(next);
     }).catch(error => { if (generation.current === request) setError(String(error)); })
       .finally(() => { if (generation.current === request) setBusy(false); });
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- a request generation counter, not a DOM ref: cleanup must bump its latest value
     return () => { generation.current++; };
   }, [scope, reload]);
   // Every control saves on change, against the revision it was loaded at, so

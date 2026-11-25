@@ -30,6 +30,7 @@ export function useResolvedChatDraft(workspaceId: string | null, overrides: Chat
     }).catch(error => {
       if (generation.current === request) setResult({ key, workspaceId, error: error instanceof Error ? error.message : String(error) });
     });
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- a request generation counter, not a DOM ref: cleanup must bump its latest value
     return () => { generation.current++; };
     // The serialized key covers the complete typed request without object-identity churn.
   }, [key, enabled, refresh, workspaceId]);

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CircleAlert, CircleCheck, CircleDashed, CircleX, Code2, FileDiff, FolderGit2, GitBranch } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { clsx } from "clsx";
 import { bridgeApi } from "../api";
 import { chatConversationItems, chatOverview, formatTurnDuration, type ChatOverviewModel, type OverviewRow, type OverviewTone, type TurnChanges, type TurnHistoryEntry } from "../chatOverview";
 import { dockPaneChord, type DockPaneId } from "../dockLayout";
@@ -9,6 +8,9 @@ import { formatShortcut } from "@/lib/platform";
 import type { AgentEvent, BaseBranchDivergence, CompletionSummary, Session, SessionEntry, Workspace } from "../types";
 import { HarnessMark } from "./harnessMarks";
 import { Kbd } from "./ui/kbd";
+import { Tip } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
 
 // The head of the dock's Work pane: where this chat runs, which branch, what
 // it has not committed, how its last checks went, and what each turn did. It
@@ -17,7 +19,6 @@ import { Kbd } from "./ui/kbd";
 // button: Bridge has no path that commits or opens a pull request for a chat's
 // worktree, and a button that only pretends would be worse than none.
 
-const ACTION = "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-2 text-caption text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 const TURNS_SHOWN = 5;
 
 const ROW_LABEL: Record<OverviewRow["kind"], string> = { where: "Where", branch: "Branch", changes: "Changes", checks: "Checks" };
@@ -48,11 +49,11 @@ function fileCount(files: number): string {
 
 function PaneButton({ label, pane, ariaLabel, icon: Icon, onClick }: { label: string; pane: DockPaneId; ariaLabel: string; icon?: LucideIcon; onClick: () => void }) {
   const chord = paneChord(pane);
-  return <button type="button" onClick={onClick} aria-label={ariaLabel} title={chord ? `${ariaLabel}  ${chord}` : ariaLabel} className={ACTION}>
+  return <Button variant="outline" size="2xs" onClick={onClick} aria-label={ariaLabel} tooltip={chord ? `${ariaLabel}  ${chord}` : ariaLabel}>
     {Icon && <Icon size={12} aria-hidden="true" />}
     {label}
     {chord && <Kbd>{chord}</Kbd>}
-  </button>;
+  </Button>;
 }
 
 function Row({ row, onReview, onOpenCode }: { row: OverviewRow; onReview?: () => void; onOpenCode?: () => void }) {
@@ -102,8 +103,8 @@ function Row({ row, onReview, onOpenCode }: { row: OverviewRow; onReview?: () =>
     <span className="grid w-3.5 shrink-0 place-items-center text-muted-foreground">{icon}</span>
     <span className="w-14 shrink-0 text-meta text-muted-foreground">{ROW_LABEL[row.kind]}</span>
     <span className="min-w-0 flex-1">
-      <span className="block truncate text-meta text-foreground" title={title}>{main}</span>
-      {detail && <span className="block truncate text-caption text-faint" title={detail}>{detail}</span>}
+      <Tip label={title}><span className="block truncate text-meta text-foreground">{main}</span></Tip>
+      {detail && <Tip label={detail}><span className="block truncate text-caption text-faint">{detail}</span></Tip>}
     </span>
     {action}
   </div>;
@@ -117,7 +118,7 @@ function TurnOutcome({ changes }: { changes: TurnChanges | null }) {
 function TurnRow({ turn, harness, onOpen }: { turn: TurnHistoryEntry; harness?: string | null; onOpen?: (entryId: string) => void }) {
   const body = <>
     <HarnessMark harness={turn.harness ?? harness} size={12} />
-    <span className="min-w-0 truncate text-foreground" title={turn.title}>{turn.title}</span>
+    <Tip label={turn.title}><span className="min-w-0 truncate text-foreground">{turn.title}</span></Tip>
     {turn.durationMs !== undefined && <span className="shrink-0 tabular-nums text-faint">{formatTurnDuration(turn.durationMs)}</span>}
     <span className="ml-auto pl-2" />
     {turn.live ? <span className="shrink-0 text-info">Working</span> : <TurnOutcome changes={turn.changes} />}
@@ -126,7 +127,7 @@ function TurnRow({ turn, harness, onOpen }: { turn: TurnHistoryEntry; harness?: 
   if (onOpen && turn.entryId) {
     const entryId = turn.entryId;
     return <li data-overview-turn={turn.turn} className="min-w-0">
-      <button type="button" onClick={() => onOpen(entryId)} aria-label={`Show turn: ${turn.title}`} className={clsx(row, "transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring")}>{body}</button>
+      <RowButton size="bare" onClick={() => onOpen(entryId)} aria-label={`Show turn: ${turn.title}`}><span className={row}>{body}</span></RowButton>
     </li>;
   }
   return <li data-overview-turn={turn.turn} className={row}>{body}</li>;
@@ -163,11 +164,9 @@ export function ChatOverviewView({ model, harness, onReview, onOpenCode, onOpenT
       <ul aria-label="Turn history" className="grid grid-cols-1 gap-px">
         {turns.map(turn => <TurnRow key={turn.key} turn={turn} harness={harness} onOpen={onOpenTurn} />)}
       </ul>
-      {(hidden > 0 || allTurns) && model.turns.length > TURNS_SHOWN && <button
-        type="button"
+      {(hidden > 0 || allTurns) && model.turns.length > TURNS_SHOWN && <Button variant="quiet" size="xs" className="mt-0.5"
         onClick={() => setAllTurns(value => !value)}
-        className="mt-0.5 h-7 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >{allTurns ? "Show fewer" : `Show ${hidden} more`}</button>}
+      >{allTurns ? "Show fewer" : `Show ${hidden} more`}</Button>}
     </div>}
   </section>;
 }

@@ -7,6 +7,9 @@
 import { useState, type ReactNode } from "react";
 import { ArrowUp, Boxes, ChevronRight, Container, FolderSearch, HardDrive, ListChecks, MessageSquare, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
+import { Textarea } from "@/components/ui/textarea";
 
 export interface StorageQuickAsk { label: string; prompt: string; icon: typeof Sparkles; series: string }
 
@@ -73,11 +76,11 @@ function QuickAsks({ selectedCount, disabled, onAsk }: { selectedCount: number; 
     {asks.map(ask => {
       const Icon = ask.icon;
       return <li key={ask.label}>
-        <button type="button" disabled={disabled} onClick={() => onAsk(ask.prompt)} className="group flex w-full items-center gap-2.5 px-2.5 py-2 text-left text-caption text-foreground outline-none transition-colors hover:bg-accent focus-visible:bg-accent disabled:opacity-40">
+        <RowButton size="bare" tone="default" shape="card" disabled={disabled} onClick={() => onAsk(ask.prompt)}><span className="group flex w-full items-center gap-2.5 px-2.5 py-2 text-caption">
           <span aria-hidden="true" className={cn("grid size-6 shrink-0 place-items-center rounded-md text-background", ask.series)}><Icon size={13} /></span>
           <span className="min-w-0 flex-1 truncate">{ask.label}</span>
           <ChevronRight size={13} aria-hidden="true" className="shrink-0 text-muted-foreground/60 transition-transform group-hover:translate-x-0.5" />
-        </button>
+        </span></RowButton>
       </li>;
     })}
   </ul>;
@@ -107,28 +110,28 @@ function StorageCopilotIntro({ selectedCount, starting, recent, onOpenRecent, on
         <p className="mb-1.5 mt-5 px-1 text-caption font-medium text-muted-foreground">Recent</p>
         <ul aria-label="Recent storage chats" className="divide-y divide-border/60 overflow-hidden rounded-xl bg-muted/40 ring-1 ring-inset ring-border/60">
           {recent.map(item => <li key={item.id}>
-            <button type="button" onClick={() => onOpenRecent(item.id)} className="flex w-full items-center gap-2.5 px-2.5 py-2 text-left text-caption outline-none transition-colors hover:bg-accent focus-visible:bg-accent">
+            <RowButton size="bare" tone="default" shape="card" onClick={() => onOpenRecent(item.id)}><span className="flex w-full items-center gap-2.5 px-2.5 py-2 text-caption">
               <MessageSquare size={13} aria-hidden="true" className="shrink-0 text-muted-foreground" />
               <span className="min-w-0 flex-1 truncate text-foreground">{item.title}</span>
               <span className="shrink-0 tabular-nums text-muted-foreground">{when(item.at)}</span>
-            </button>
+            </span></RowButton>
           </li>)}
         </ul>
       </>}
     </div>
-    <form onSubmit={event => { event.preventDefault(); submit(question); }} className="m-3 mt-0 flex shrink-0 items-end gap-2 rounded-xl border border-border bg-background p-1.5 transition-shadow focus-within:border-ring/60 focus-within:ring-3 focus-within:ring-ring/20">
-      <textarea
+    <form onSubmit={event => { event.preventDefault(); submit(question); }} className="m-3 mt-0 flex shrink-0 items-end gap-2 rounded-xl border border-border bg-background p-1.5 text-ui transition-shadow focus-within:border-ring/60 focus-within:ring-3 focus-within:ring-ring/20">
+      <Textarea unstyled size="bare"
         aria-label="Ask about your storage"
         value={question}
         rows={2}
         placeholder="Ask about your storage…"
         onChange={event => setQuestion(event.target.value)}
         onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(question); } }}
-        className="min-w-0 flex-1 resize-none bg-transparent px-1.5 py-1 text-ui text-foreground outline-none placeholder:text-muted-foreground"
+        className="mx-1.5 my-1 min-w-0 flex-1"
       />
-      <button type="submit" aria-label={starting ? "Starting" : "Ask"} disabled={!question.trim() || starting} className="grid size-7 shrink-0 place-items-center rounded-full bg-foreground text-background transition-opacity hover:opacity-90 disabled:opacity-30">
+      <Button variant="default" size="icon-xs" className="shrink-0" type="submit" aria-label={starting ? "Starting" : "Ask"} disabled={!question.trim() || starting}>
         <ArrowUp size={14} aria-hidden="true" />
-      </button>
+      </Button>
     </form>
   </aside>;
 }

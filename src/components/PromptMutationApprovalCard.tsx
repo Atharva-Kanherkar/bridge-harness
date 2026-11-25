@@ -3,10 +3,8 @@ import { Check, X } from "lucide-react";
 import type { ConversationItem } from "../conversation";
 import type { ApprovalDecision } from "../types";
 import type { InteractionResolutionResult } from "../protocol/generated/protocol";
-import { pendingClass } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 
-const BUTTON = "inline-flex min-h-8 items-center gap-1.5 rounded-lg px-3 py-1 text-ui font-medium transition-colors disabled:opacity-50";
 
 function text(data: Record<string, unknown>, key: string): string {
   return typeof data[key] === "string" ? data[key] : "";
@@ -85,8 +83,8 @@ export function PromptMutationApprovalCard({ item, onResolve }: {
       </div>
     </div>
     {pending ? <div className="flex flex-wrap justify-end gap-2 px-3.5 py-3 sm:px-4" aria-busy={busy !== null}>
-      <button aria-busy={(busy === "decline") || undefined} type="button" disabled={busy !== null} className={cn(`${BUTTON} border border-input text-foreground hover:bg-accent`, pendingClass(busy === "decline"))} onClick={() => void resolve("decline")}><X size={12} aria-hidden="true" />Decline</button>
-      <button aria-busy={(busy === "accept") || undefined} type="button" disabled={busy !== null} className={cn(`${BUTTON} bg-primary text-primary-foreground hover:bg-primary/90`, pendingClass(busy === "accept"))} onClick={() => void resolve("accept")}><Check size={12} aria-hidden="true" />Approve change</button>
+      <Button variant="outline" size="sm" disabled={busy !== null} loading={busy === "decline"} onClick={() => void resolve("decline")}><X size={12} aria-hidden="true" />Decline</Button>
+      <Button size="sm" disabled={busy !== null} loading={busy === "accept"} onClick={() => void resolve("accept")}><Check size={12} aria-hidden="true" />Approve change</Button>
     </div> : <div role="status" className="space-y-1 px-3.5 py-3 text-meta text-muted-foreground sm:px-4">
       <p className="flex items-start gap-1.5">{accepted ? <Check size={12} className="mt-0.5 shrink-0" aria-hidden="true" /> : <X size={12} className="mt-0.5 shrink-0" aria-hidden="true" />}{outcomeCopy(status)}</p>
       {result?.disposition === "alreadyResolved" && <p>This request was already resolved.</p>}

@@ -3,7 +3,8 @@ import { Mic, Square, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { VoiceState, VoiceView } from "@/voiceDictation";
 import type { VoiceRecoveryAction } from "@/protocol/generated/protocol";
-import { Skeleton, SkeletonRegion, pendingClass } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 export function voiceIsBusy(state: VoiceState): boolean {
   return state === "starting" || state === "recording" || state === "stopping";
@@ -55,12 +56,12 @@ export function VoiceControls({ state, available, disabled, unavailableReason, p
   const pending = state === "starting" || state === "stopping";
 
   return <>
-    {!busy && recover && <button type="button" onClick={recover.run} disabled={disabled} title={unavailableReason}
-      className="rounded-lg px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-40">{recover.label}</button>}
-    <button type="button" data-voice-control disabled={disabled || (!available && !busy) || state === "stopping"}
-      aria-label={busy ? "Stop dictating" : "Hold to dictate"} aria-pressed={busy}
+    {!busy && recover && <Button variant="quiet" size="xs" tooltip={unavailableReason} onClick={recover.run} disabled={disabled}
+     >{recover.label}</Button>}
+    <Button variant="quiet" size="icon-sm" data-voice-control disabled={disabled || (!available && !busy) || state === "stopping"}
+      aria-label={busy ? "Stop dictating" : "Hold to dictate"} aria-pressed={busy} loading={pending}
       aria-description={!available && !busy ? unavailableReason : providerLabel}
-      title={!available && !busy ? unavailableReason ?? "Dictation unavailable" : [providerLabel, busy ? "Finish dictation" : "Click to dictate, or hold to talk"].filter(Boolean).join(". ")}
+      tooltip={!available && !busy ? unavailableReason ?? "Dictation unavailable" : [providerLabel, busy ? "Finish dictation" : "Click to dictate, or hold to talk"].filter(Boolean).join(". ")}
       onPointerDown={event => {
         if (event.button !== 0) return;
         event.preventDefault();
@@ -89,12 +90,9 @@ export function VoiceControls({ state, available, disabled, unavailableReason, p
           if (heldKey.current) { heldKey.current = false; onStop(); }
         }
       }}
-      aria-busy={pending || undefined}
-      className={cn("inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors active:scale-95 focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-40",
-        busy ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground", pendingClass(pending))}
-    >{state === "recording" ? <Square className="h-3 w-3 fill-current" aria-hidden="true" /> : <Mic className="h-4 w-4" aria-hidden="true" />}</button>
-    {busy && onCancel && <button type="button" data-voice-control onClick={onCancel} aria-label="Cancel dictation" title="Cancel dictation (Esc)"
-      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"><X className="h-4 w-4" aria-hidden="true" /></button>}
+    >{state === "recording" ? <Square className="h-3 w-3 fill-current" aria-hidden="true" /> : <Mic className="h-4 w-4" aria-hidden="true" />}</Button>
+    {busy && onCancel && <Button variant="quiet" size="icon-sm" tooltip="Cancel dictation (Esc)" data-voice-control onClick={onCancel} aria-label="Cancel dictation"
+     ><X className="h-4 w-4" aria-hidden="true" /></Button>}
   </>;
 }
 

@@ -4,6 +4,7 @@ import { ciNotificationText, type GithubCiFinishedPayload } from "../githubSurfa
 import type { ReviewJob } from "../protocol/generated/protocol";
 import type { ReviewNotice } from "../reviewAttention";
 import { ToastCard, ToastOverflow, TOASTS_SHOWN } from "./ToastCard";
+import { Button } from "@/components/ui/button";
 
 // The CI-finished notification stack. One card per terminal rollup, dedup'd
 // upstream by `ciToastKey`; the card body deep-links to the PR, the X only
@@ -70,7 +71,7 @@ export function GithubToasts({ toasts, reviewToasts = [], hint, onOpen, onOpenRe
   return <div className="pointer-events-none flex flex-col items-end gap-2">
     {hint && <div className="u-glass-popover pointer-events-auto flex max-w-[min(22rem,calc(100vw-1.5rem))] items-start gap-2 rounded-xl border border-border px-3 py-2 shadow-2xl animate-page-mount">
       <span className="min-w-0 flex-1 text-meta leading-relaxed text-muted-foreground">{hint}</span>
-      <button type="button" onClick={onDismissHint} aria-label="Dismiss hint" className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><X size={12} aria-hidden="true" /></button>
+      <Button variant="quiet" size="icon-xs" className="shrink-0" onClick={onDismissHint} aria-label="Dismiss hint"><X size={12} aria-hidden="true" /></Button>
     </div>}
     {reviews.map(toast => <ReviewCard key={toast.key} toast={toast} onOpen={item => onOpenReview?.(item)} onDismiss={onDismiss} />)}
     {shown.map(toast => <CiCard key={toast.key} toast={toast} onOpen={onOpen} onDismiss={onDismiss} />)}

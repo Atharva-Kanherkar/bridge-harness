@@ -7,15 +7,15 @@ import type { ConversationItem } from "../conversation";
 import type { InteractionResolutionResult, QuestionAction } from "../protocol/generated/protocol";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
 import { answerSummary, canSubmit, cleanAnswers, fieldAnswered, initialAnswers, questionFields, type QuestionField, type QuestionOption } from "../questionFields";
-import { pendingClass } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 
 export type ResolveQuestion = (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => Promise<InteractionResolutionResult | void> | void;
 
 const PANEL = "min-w-0 overflow-hidden rounded-xl border border-border bg-card";
 const WELL = "block max-h-72 overflow-auto rounded-md border border-border bg-code px-3 py-2.5 font-mono text-meta leading-relaxed whitespace-pre text-foreground";
-const BTN_PRIMARY = "inline-flex min-h-8 items-center gap-1.5 rounded-lg bg-primary px-3 py-1 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50";
-const BTN_SECONDARY = "inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-input px-3 py-1 text-ui font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50";
-const INPUT = "w-full rounded-lg border border-input bg-background px-3 py-2 text-ui text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring disabled:opacity-60";
 
 /** The typed "Other" answer, kept apart from the listed choices. */
 type Other = { on: boolean; text: string };
@@ -132,8 +132,8 @@ export function QuestionCard({ item, onResolve, resolvedCopy }: { item: Conversa
                 {fields.length > 1 && <span aria-hidden="true">·</span>}
                 <kbd className="rounded border border-border px-1 font-sans text-micro">{modKey("↵")}</kbd> to send
               </span>
-              <button aria-busy={(busy === "decline") || undefined} type="button" disabled={!!busy} className={cn(BTN_SECONDARY, pendingClass(busy === "decline"))} onClick={() => void act("decline")}><X size={12} aria-hidden="true" />Skip</button>
-              <button aria-busy={(busy === "answer") || undefined} type="button" disabled={!!busy || !ready} className={cn(BTN_PRIMARY, pendingClass(busy === "answer"))} onClick={() => void act("answer")}><Check size={12} aria-hidden="true" />{fields.length > 1 ? "Send answers" : "Send answer"}</button>
+              <Button variant="outline" size="sm" disabled={!!busy} loading={busy === "decline"} onClick={() => void act("decline")}><X size={12} aria-hidden="true" />Skip</Button>
+              <Button variant="default" size="sm" disabled={!!busy || !ready} loading={busy === "answer"} onClick={() => void act("answer")}><Check size={12} aria-hidden="true" />{fields.length > 1 ? "Send answers" : "Send answer"}</Button>
             </footer>
           </div>
         // The settled card fades in where the form was, so it reads as the
@@ -213,16 +213,15 @@ function FieldView({ field, position, values, other, disabled, shortcuts, onPick
               other.on ? "border-info/60 bg-info/10" : "border-dashed border-border hover:border-foreground/25",
             )}
           >
-            <button
-              type="button"
+            <Button variant="text" size="icon-2xs"
               role={field.multiple ? "checkbox" : "radio"}
               aria-checked={other.on}
               aria-label="Something else"
               disabled={disabled}
               onClick={() => { const on = !other.on; onOther({ on }); if (on) otherInput.current?.focus(); }}
-              className="shrink-0 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            ><Indicator multiple={field.multiple} selected={other.on} /></button>
-            <input
+            ><Indicator multiple={field.multiple} selected={other.on} /></Button>
+            <Input
+              unstyled
               ref={otherInput}
               aria-label={`${field.prompt}: something else`}
               disabled={disabled}
@@ -230,7 +229,6 @@ function FieldView({ field, position, values, other, disabled, shortcuts, onPick
               onChange={event => onOther({ text: event.target.value, on: event.target.value.trim().length > 0 || other.on })}
               onKeyDown={event => { if (event.key === "Enter" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); onSubmit(); } }}
               placeholder="Something else…"
-              className="min-h-7 w-full bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground"
             />
           </div>}
           {previewOption?.preview && <div className="mt-1">
@@ -240,7 +238,7 @@ function FieldView({ field, position, values, other, disabled, shortcuts, onPick
         </div>
       : <div className="mt-2.5">
           {field.kind === "text" && !field.secret
-            ? <textarea
+            ? <Textarea
                 aria-labelledby={promptId}
                 rows={2}
                 disabled={disabled}
@@ -248,9 +246,8 @@ function FieldView({ field, position, values, other, disabled, shortcuts, onPick
                 onChange={event => onText(event.target.value)}
                 onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey) { event.preventDefault(); onSubmit(); } }}
                 placeholder="Type your answer"
-                className={cn(INPUT, "min-h-[4.25rem] resize-y leading-relaxed")}
               />
-            : <input
+            : <Input
                 aria-labelledby={promptId}
                 type={field.secret ? "password" : field.kind === "number" ? "number" : "text"}
                 inputMode={field.kind === "number" ? (field.integer ? "numeric" : "decimal") : undefined}
@@ -261,7 +258,6 @@ function FieldView({ field, position, values, other, disabled, shortcuts, onPick
                 onChange={event => onText(event.target.value)}
                 onKeyDown={event => { if (event.key === "Enter" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); onSubmit(); } }}
                 placeholder={field.secret ? "Hidden after you send it" : field.kind === "number" ? "Enter a number" : "Type your answer"}
-                className={INPUT}
               />}
           {!field.required && <small className="mt-1 block text-caption text-muted-foreground">Optional</small>}
         </div>}
@@ -277,26 +273,24 @@ function OptionRow({ option, multiple, selected, disabled, shortcut, onSelect, o
   onSelect: () => void;
   onPreview?: () => void;
 }) {
-  return <button
-    type="button"
+  return <RowButton
+    size="bare"
+    tone="choice"
+    shape="card"
     role={multiple ? "checkbox" : "radio"}
     aria-checked={selected}
     disabled={disabled}
     onClick={onSelect}
     onMouseEnter={onPreview}
     onFocus={onPreview}
-    className={cn(
-      "flex w-full items-start gap-3 rounded-lg border px-3 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60",
-      selected ? "border-info/60 bg-info/10" : "border-border hover:border-foreground/25 hover:bg-accent",
-    )}
-  >
+  ><span className="flex w-full items-start gap-3 px-3 py-2">
     <span className="mt-0.5"><Indicator multiple={multiple} selected={selected} /></span>
     <span className="min-w-0 flex-1">
       <span className="block text-ui font-medium leading-snug text-foreground">{option.label}</span>
       {option.description && <span className="mt-0.5 block text-meta leading-relaxed text-muted-foreground">{option.description}</span>}
     </span>
     {shortcut && <kbd aria-hidden="true" className="mt-0.5 shrink-0 rounded border border-border px-1.5 font-mono text-micro text-muted-foreground">{shortcut}</kbd>}
-  </button>;
+  </span></RowButton>;
 }
 
 function Indicator({ multiple, selected }: { multiple: boolean; selected: boolean }) {

@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { Skeleton, SkeletonRows, pendingClass } from "@/components/ui/skeleton";
+import { Skeleton, SkeletonRows } from "@/components/ui/skeleton";
 import { Check, ChevronDown, RefreshCw, Search, Star } from "lucide-react";
 import type { AdapterDescriptor, Harness, ModelOption } from "../types";
 import { harnessLabel } from "../utils";
@@ -10,6 +10,10 @@ import { effortIndex, effortLevelsFrom, effortMeaning } from "./effort/effortLev
 import { EffortControl } from "./effort/EffortControl";
 import { SpeedControl } from "./effort/SpeedControl";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { RowButton } from "@/components/ui/row";
+import { Tip } from "@/components/ui/tooltip";
 
 // Vendor noise at the tail of a catalog label. OpenCode Zen's free tier
 // suffixes "(Unlimited)": it names the plan, not the model. Cursor reports a
@@ -557,45 +561,39 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
     const favorite: ModelFavorite | null = option.id ? { harness: adapter.id, model: option.id, account: groupAccount } : null;
     const starred = !!favorite && isModelFavorite(favorites, favorite);
     return <div key={`${extra.favoritesRow ? "favorite" : "row"}:${adapter.id}:${groupAccount ?? ""}:${option.id || "default"}`} className="group/row relative">
-      <button
-        type="button" role="option" aria-selected={selected} disabled={!selectable} tabIndex={-1}
+      <RowButton
+        role="option" aria-selected={selected} disabled={!selectable} tabIndex={-1}
         data-model-row="" data-favorite-row={extra.favoritesRow ? "" : undefined}
         onClick={() => pickModel(adapter.id as Harness, option.id || null, groupAccount)}
-        className={cn(
-          "flex h-8 w-full items-center gap-2.5 rounded-md pl-1.5 text-left text-ui outline-none transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-40",
-          favorite ? "pr-9" : "pr-2",
-          // Selected and hover never share a ground: the chat's own model is
-          // the selection color, a row under the pointer only a faint wash.
-          selected ? "bg-selection font-medium text-selection-foreground" : "text-foreground hover:bg-accent/50 focus-visible:bg-accent/50",
-          !selectable && "opacity-60",
-        )}
-      >
+        tone="selection"
+      ><span className={cn("flex min-w-0 flex-1 items-center gap-2.5", favorite && "pr-7", selected && "font-medium")}>
         {/* A fixed gutter, so the check never shifts the labels. */}
         <span aria-hidden="true" className="grid size-4 shrink-0 place-items-center">{selected && <Check size={13} strokeWidth={2.2} />}</span>
         {extra.favoritesRow && <HarnessMark harness={adapter.id} size={13} className={adapter.available ? undefined : "opacity-40"} />}
         <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{label}</span>
         {extra.accountName && <span className="min-w-0 shrink truncate text-caption font-normal text-faint">{extra.accountName}</span>}
         {option.lifecycle === "preview" && <span className="shrink-0 rounded-full border border-border px-1.5 py-0.5 font-mono text-caption font-medium text-muted-foreground">preview</span>}
-      </button>
-      {favorite && <button
-        type="button" tabIndex={-1} aria-pressed={starred}
+      </span></RowButton>
+      {/* The star waits for the row's hover unless it is already set. */}
+      {favorite && <span className={cn("absolute right-1.5 top-1/2 -translate-y-1/2", !starred && "opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100")}><Button
+        variant="text" size="icon-2xs" tabIndex={-1}
         aria-label={starred ? `Remove ${label} from favorites` : `Add ${label} to favorites`}
-        title={starred ? "Remove from favorites" : "Add to favorites"}
+        tooltip={starred ? "Remove from favorites" : "Add to favorites"}
         onClick={() => toggleFavorite(favorite)}
-        className={cn("absolute right-1.5 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-md transition-[opacity,color] hover:text-foreground", starred ? "text-muted-foreground opacity-100" : "text-muted-foreground/60 opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100")}
+        aria-pressed={starred}
       >
-        <Star size={13} aria-hidden="true" className={starred ? "fill-current" : undefined} />
-      </button>}
+        <Star aria-hidden="true" className={starred ? "fill-current" : undefined} />
+      </Button></span>}
     </div>;
   };
 
-  return <div ref={wrapper} className="relative">
-    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={cn("flex min-w-0 items-center gap-1.5 rounded-md transition-colors disabled:cursor-default", maxWidthClassName, compact ? "h-8 px-2 text-xs text-muted-foreground enabled:hover:bg-accent" : "h-[28px] px-2 text-meta text-foreground/90 enabled:hover:bg-accent")} title={showAwaiting ? "Loading models" : disabled ? disabledReason ?? "Model selection is temporarily unavailable" : compactLabel} aria-expanded={open} aria-haspopup="dialog" aria-busy={showAwaiting || undefined} aria-label={showAwaiting ? `${roleLabel} model: loading` : `${roleLabel} model: ${harnessName} ${modelLabel}`}>
+  return <div ref={wrapper} className={cn("relative min-w-0", maxWidthClassName)}>
+    <Button variant={compact ? "quiet" : "ghost"} size={compact ? "sm" : "xs"} className="max-w-full" disabled={disabled} onClick={() => setOpen(value => !value)} tooltip={open ? undefined : showAwaiting ? "Loading models" : disabled ? disabledReason ?? "Model selection is temporarily unavailable" : compactLabel} aria-expanded={open} aria-haspopup="dialog" aria-busy={showAwaiting || undefined} aria-label={showAwaiting ? `${roleLabel} model: loading` : `${roleLabel} model: ${harnessName} ${modelLabel}`}>
       {showAwaiting
         ? <><Skeleton className="size-3.5 shrink-0 rounded-full" /><Skeleton className="h-2.5 w-20" /></>
         : <><HarnessMark harness={activeHarness} size={14} /><span className="whitespace-nowrap overflow-hidden text-ellipsis">{compactLabel}</span></>}
       <ChevronDown size={compact ? 14 : 12} className={cn("shrink-0 text-muted-foreground transition-transform", open && "rotate-180", disabled && "opacity-40")} aria-hidden="true" />
-    </button>
+    </Button>
     {open && <>
       <div className="fixed inset-0 z-30" onClick={closePicker} />
       <div
@@ -612,42 +610,42 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
         <div role="toolbar" aria-label="Harnesses" aria-orientation="horizontal" data-picker-zone="rail" className="order-2 flex h-11 shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border px-3">
           {railItems.map(item => {
             const lit = item.section === railSection;
-            return <button
-              key={item.section} type="button" data-rail={item.section}
+            return <Tip key={item.section} label={item.title} side="bottom"><Button
+              variant="quiet" size="icon-sm" data-rail={item.section}
               tabIndex={item.section === railTabStop ? 0 : -1}
-              aria-label={item.label} aria-current={lit || undefined} title={item.title}
+              aria-label={item.label} aria-current={lit || undefined}
               onClick={() => jumpTo(item.section)}
-              className={cn("relative grid size-8 shrink-0 place-items-center rounded-md outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring", lit ? "bg-accent" : "hover:bg-accent/50", item.dim && "opacity-40")}
             >
               {lit && <span aria-hidden="true" className="absolute -bottom-1.5 h-0.5 w-4 rounded-full bg-foreground" />}
-              {item.icon}
-            </button>;
+              <span className={cn("grid place-items-center", item.dim && "opacity-40")}>{item.icon}</span>
+            </Button></Tip>;
           })}
         </div>
         <div data-picker-zone="models" className="contents">
           <div className="order-1 flex h-11 shrink-0 items-center gap-2.5 border-b border-border pl-3.5 pr-2.5">
             <Search size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-            <input
+            <Input
+              unstyled
+              className="min-w-0 flex-1"
               ref={searchRef}
               type="text"
               value={query}
               onChange={event => setQuery(event.target.value)}
               placeholder="Search models…"
               aria-label="Search models"
-              className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground/70"
             />
-            {onRefresh && <button type="button" disabled={refreshing} aria-busy={refreshing || undefined} aria-label="Refresh model catalogues" title="Refresh model catalogues" onClick={() => {
+            {onRefresh && <Button variant="quiet" size="icon-xs" disabled={refreshing} loading={refreshing} aria-label="Refresh model catalogues" tooltip="Refresh model catalogues" onClick={() => {
               setRefreshing(true);
               setRefreshError(null);
               Promise.resolve().then(onRefresh).catch(() => setRefreshError("Could not refresh models. Try again.")).finally(() => setRefreshing(false));
-            }} className={cn("grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50", pendingClass(refreshing))}>
-              <RefreshCw size={13} aria-hidden="true" />
-            </button>}
+            }}>
+              <RefreshCw aria-hidden="true" />
+            </Button>}
           </div>
           {refreshError && <p role="alert" className="order-2 px-3 py-2 text-xs text-destructive">{refreshError}</p>}
           <div ref={listRef} onScroll={onListScroll} role="listbox" aria-label={`${roleLabel} models`} aria-busy={switchInFlight || showAwaiting || undefined} className={cn("relative order-3 min-h-0 flex-1 overflow-y-auto px-2 pb-2", tight && "min-h-24 shrink-0", switchInFlight && "cursor-progress")}>
                 {showAwaiting
-                  ? <SkeletonRows label="Loading models" rows={4} meta={false} framed={false} className="divide-y-0" rowClassName="min-h-8 px-2 py-1.5" />
+                  ? <SkeletonRows label="Loading models" rows={4} meta={false} framed={false} density="menu" />
                   : <>
                     {showFavorites && <div role="group" aria-label="Favorites" data-section={FAVORITES_SECTION}>
                       <div className={GROUP_HEADER}>

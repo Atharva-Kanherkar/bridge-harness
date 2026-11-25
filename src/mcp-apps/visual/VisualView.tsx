@@ -13,6 +13,8 @@ import type { DiagramSpec } from "@/components/DiagramFigure";
 import type { VisualBlock, VisualSource, VisualSpec } from "../spec";
 import { ChartHeight, ChartView } from "./charts";
 import { Cites, DocumentView } from "./documents";
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
 
 export interface VisualActions {
   ask?: (text: string) => void;
@@ -69,7 +71,7 @@ export function VisualView({ spec, actions = {}, showTitle = true, fullscreen = 
       <div className="px-5 pt-4 pb-4">
         {showTitle && (
           <header className="mb-4">
-            <h2 className="text-message font-semibold tracking-[-0.01em]">{spec.title}</h2>
+            <h2 className="text-message font-semibold tracking-snug">{spec.title}</h2>
             {spec.subtitle && <p className="mt-0.5 text-meta text-muted-foreground">{spec.subtitle}</p>}
           </header>
         )}
@@ -100,18 +102,18 @@ export function VisualView({ spec, actions = {}, showTitle = true, fullscreen = 
                 );
                 const chip = "inline-flex max-w-full items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-meta";
                 return link
-                  ? <button key={source.id} type="button" onClick={link} className={cn(chip, "transition-colors hover:bg-accent")} title={source.ref}>{body}</button>
-                  : <span key={source.id} className={chip} title={source.ref}>{body}</span>;
+                  ? <Button key={source.id} variant="chip" size="2xs" onClick={link} tooltip={source.ref} className="max-w-full">{body}</Button>
+                  : <Tip key={source.id} label={source.ref}><span className={chip}>{body}</span></Tip>;
               })}
             </div>
           )}
           {spec.followUps && spec.followUps.length > 0 && actions.ask && (
             <div className="flex flex-wrap gap-1.5" aria-label="Follow-up questions">
               {spec.followUps.map(question => (
-                <button key={question} type="button" onClick={() => actions.ask!(question)} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-meta text-foreground transition-colors hover:bg-accent">
-                  <MessageCircle size={12} className="text-muted-foreground" aria-hidden="true" />
-                  {question}
-                </button>
+                <Button key={question} variant="chip" size="2xs" onClick={() => actions.ask!(question)}>
+                  <MessageCircle size={12} aria-hidden="true" />
+                  <span className="text-foreground">{question}</span>
+                </Button>
               ))}
             </div>
           )}

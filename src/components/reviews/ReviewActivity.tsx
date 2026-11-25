@@ -6,6 +6,8 @@ import { bridgeApi } from "../../api";
 import { GithubMarkdown } from "../github/GithubMarkdown";
 import { harnessLabel } from "../github/reviewLabels";
 import type { ReviewActivityEntry, ReviewPass } from "../../protocol/generated/protocol";
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
 
 // What each reviewer pass did, as a chat: Bridge's request, then the
 // reviewer's messages, tools and commands in order. Live while the review
@@ -24,10 +26,10 @@ function PromptBubble({ entry }: { entry: ReviewActivityEntry }) {
   const [open, setOpen] = useState(false);
   return <li className="flex justify-end">
     <div className="max-w-[85%] rounded-xl rounded-tr-sm border border-border bg-muted/50 px-3 py-2 text-meta">
-      <button type="button" aria-expanded={open} onClick={() => setOpen(value => !value)} className="flex items-center gap-1 font-medium text-foreground">
+      <Button variant="link" size="inline" aria-expanded={open} onClick={() => setOpen(value => !value)}>
         <ChevronRight size={12} aria-hidden="true" className={cn("transition-transform", open && "rotate-90")} />
         {entry.title ?? "Bridge's request"}
-      </button>
+      </Button>
       {open && <pre className="mt-1.5 max-h-64 overflow-auto whitespace-pre-wrap font-mono text-caption text-muted-foreground">{entry.text}</pre>}
     </div>
   </li>;
@@ -39,7 +41,7 @@ function Step({ entry }: { entry: ReviewActivityEntry }) {
     entry.kind === "error" ? "text-destructive" : entry.kind === "denied" ? "text-warning" : "text-muted-foreground")}>
     <Icon size={12} aria-hidden="true" className="shrink-0 translate-y-0.5" />
     <span className={cn("shrink-0 font-medium", entry.kind === "command" && "font-mono")}>{entry.kind === "error" ? "Error" : entry.title}</span>
-    {entry.text && <span className="min-w-0 truncate font-mono" title={entry.text}>{entry.text}</span>}
+    {entry.text && <Tip label={entry.text}><span className="min-w-0 truncate font-mono">{entry.text}</span></Tip>}
   </li>;
 }
 

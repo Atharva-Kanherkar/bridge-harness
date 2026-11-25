@@ -9,6 +9,7 @@ import {
 } from "../screenTime";
 import { LAYOUT_CARD, UsageLoadingState, useScrub } from "./UsageLayoutParts";
 import { Switch } from "./settings/kit";
+import { Button } from "@/components/ui/button";
 
 // The Time tab: Screen Time for Bridge. Your time is minutes the window was
 // focused and in use; agent time is minutes your chats spent working, added
@@ -93,8 +94,8 @@ function DailyChart({ result, range }: { result: UsageScreenTimeResult; range: S
             onPointerEnter={() => scrub.setIndex(index)}
             className={cn("flex h-full min-w-0 flex-1 items-end justify-center gap-0.5 rounded-sm px-0.5", scrub.index === index && "bg-accent/70")}
           >
-            <span data-series="you" className={cn("w-full max-w-3.5 rounded-t-xs motion-safe:animate-[chart-rise_600ms_ease-out_both] origin-bottom", YOU)} style={{ height: height(day.humanSeconds) }} />
-            <span data-series="agents" className={cn("w-full max-w-3.5 rounded-t-xs motion-safe:animate-[chart-rise_600ms_ease-out_both] origin-bottom", AGENTS)} style={{ height: height(day.agentSeconds) }} />
+            <span data-series="you" className={cn("w-full max-w-3.5 rounded-t-xs motion-safe:animate-chart-rise origin-bottom", YOU)} style={{ height: height(day.humanSeconds) }} />
+            <span data-series="agents" className={cn("w-full max-w-3.5 rounded-t-xs motion-safe:animate-chart-rise origin-bottom", AGENTS)} style={{ height: height(day.agentSeconds) }} />
           </div>)}
         </div>
       </div>
@@ -196,7 +197,7 @@ export function UsageScreenTime({ onError, refreshKey = 0 }: { onError: (message
   return <div className="space-y-5">
     <div className="flex flex-wrap items-center gap-3">
       <div role="radiogroup" aria-label="Range" className="u-segmented">
-        {([7, 30] as const).map(option => <button key={option} type="button" role="radio" aria-checked={range === option} data-active={range === option} className="u-segmented-item" onClick={() => setRange(option)}>{RANGE_LABELS[option]}</button>)}
+        {([7, 30] as const).map(option => <Button variant="quiet" size="xs" key={option} role="radio" aria-checked={range === option} data-active={range === option} onClick={() => setRange(option)}>{RANGE_LABELS[option]}</Button>)}
       </div>
       {result && !stale && <span className="text-caption tabular-nums text-muted-foreground">{formatDayShort(result.sinceDay)} to {formatDayShort(result.untilDay)}</span>}
       <label className="ml-auto inline-flex items-center gap-2 text-caption text-muted-foreground">
@@ -214,7 +215,7 @@ export function UsageScreenTime({ onError, refreshKey = 0 }: { onError: (message
     {!result || !summary ? loading ? <UsageLoadingState /> : null : <div aria-busy={loading} className={cn("space-y-5 transition-opacity", stale && "opacity-50")}>
       <section aria-label="Summary" className="flex flex-wrap items-end justify-between gap-6">
         <div>
-          <div data-testid="screen-time-today" className="text-[2.75rem] font-light leading-none tracking-[-0.04em] tabular-nums text-foreground">{formatDuration(summary.today.humanSeconds)}</div>
+          <div data-testid="screen-time-today" className="text-5xl font-light leading-none tracking-display tabular-nums text-foreground">{formatDuration(summary.today.humanSeconds)}</div>
           <p className="mt-2.5 text-body text-muted-foreground">in Bridge today · agents worked <span className="font-medium tabular-nums text-foreground">{formatDuration(summary.today.agentSeconds)}</span></p>
         </div>
         <dl className="flex flex-wrap divide-x divide-border">
@@ -225,7 +226,7 @@ export function UsageScreenTime({ onError, refreshKey = 0 }: { onError: (message
             { label: "Agent time", value: formatDuration(summary.agentSeconds), detail: summary.leverage !== null ? `${formatLeverage(summary.leverage)} yours` : RANGE_TOTALS[shownRange].toLowerCase() },
           ].map(tile => <div key={tile.label} className="px-5 first:pl-0 last:pr-0">
             <dt className="text-caption text-muted-foreground">{tile.label}</dt>
-            <dd className="mt-1 text-[17px] tracking-tight tabular-nums text-foreground">{tile.value}</dd>
+            <dd className="mt-1 text-lg tracking-tight tabular-nums text-foreground">{tile.value}</dd>
             <dd className="text-caption tabular-nums text-muted-foreground">{tile.detail}</dd>
           </div>)}
         </dl>

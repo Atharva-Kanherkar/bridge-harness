@@ -1,8 +1,7 @@
 import { GitBranch, GitFork } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { CreateDialogShell } from "./CreateDialogShell";
-import { pendingClass } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 
 export type OrchestratorCreateDialogProps = {
   open: boolean;
@@ -58,15 +57,15 @@ export function OrchestratorCreateDialog({
       {!canCreateWorktree && <p role="status" className="mt-3 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2.5 text-ui leading-4 text-warning">Connect a Git repository to this workspace to enable isolated worktrees.</p>}
 
       <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-border pt-4">
-        <button type="button" disabled={busy} onClick={onClose} className="mr-auto min-h-8 rounded-lg px-3 text-ui text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30">Cancel</button>
-        <button ref={sharedRef} type="button" disabled={busy} onClick={onUseCurrentFolder} className="flex items-center justify-center gap-2 min-h-8 rounded-lg border border-border bg-card px-3 text-ui text-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30">
+        <Button variant="quiet" size="sm" className="mr-auto" disabled={busy} onClick={onClose}>Cancel</Button>
+        <Button variant="outline" size="sm" ref={sharedRef} disabled={busy} onClick={onUseCurrentFolder}>
           <GitBranch className="h-4 w-4" aria-hidden="true" />
           Use current folder
-        </button>
-        <button aria-busy={busy || undefined} ref={primaryRef} type="button" disabled={busy || !canCreateWorktree} onClick={onCreateWorktree} className={cn("flex items-center justify-center gap-2 min-h-8 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-30", pendingClass(busy))}>
+        </Button>
+        <Button variant="default" size="sm" ref={primaryRef} disabled={busy || !canCreateWorktree} loading={busy} onClick={onCreateWorktree}>
           <GitFork className="h-4 w-4" aria-hidden="true" />
           Create worktree
-        </button>
+        </Button>
       </div>
       <p className="mt-3 text-meta leading-4 text-muted-foreground">The worktree starts from the repository’s current HEAD. Uncommitted changes are not copied.</p>
     </CreateDialogShell>

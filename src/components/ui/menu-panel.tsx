@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils";
+import { Tip } from "@/components/ui/tooltip";
 
 // A small floating panel anchored under its trigger. It is portalled to the body
 // on fixed coordinates because both callers sit inside a scrolling container that
@@ -166,9 +167,15 @@ export function MenuItem({
   checked,
   destructive,
   disabled,
+  ariaLabel,
+  hint,
 }: {
   label: string;
   onClick: () => void;
+  /** Names the item when the visible label needs its subject, e.g. "Archive <chat>". */
+  ariaLabel?: string;
+  /** Hover hint: what the choice means. */
+  hint?: string;
   leading?: ReactNode;
   trailing?: ReactNode;
   role?: "menuitem" | "menuitemradio" | "menuitemcheckbox";
@@ -177,9 +184,11 @@ export function MenuItem({
   disabled?: boolean;
 }) {
   return (
+    <Tip label={hint} side="right">
     <button
       type="button"
       role={role}
+      aria-label={ariaLabel}
       aria-checked={role === "menuitem" ? undefined : !!checked}
       disabled={disabled}
       tabIndex={-1}
@@ -193,6 +202,7 @@ export function MenuItem({
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {trailing}
     </button>
+    </Tip>
   );
 }
 

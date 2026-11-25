@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppLauncher, launcherSections, type AppLauncherProps } from "./AppLauncher";
 import { PIN_LIMIT_MESSAGE, type PinResult } from "../apps/pins";
-import { BUILTIN_APPS, personalEntry, type AppId, type AppKey } from "../apps/registry";
+import { BUILTIN_APPS, personalEntry, type AppKey } from "../apps/registry";
 
 let container: HTMLDivElement;
 let root: Root;

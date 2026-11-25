@@ -4,6 +4,7 @@ import { bridgeApi } from "../api";
 import type { AdapterDescriptor } from "../types";
 import type { LimitRecoveryView } from "../protocol/generated/protocol";
 import { limitRecoveryNotice } from "../limitRecovery";
+import { Button } from "@/components/ui/button";
 
 /** How often the banner rereads its row while Bridge is waiting. The
  * countdown is minutes, and the row changes state on its own. */
@@ -47,9 +48,9 @@ export function LimitRecoveryBanner({ sessionId, sessionStatus, adapters, onErro
       <Icon size={12} aria-hidden="true" className="shrink-0" />
       <span className="min-w-0">{notice.text}</span>
       {notice.actionable ? <span className="flex items-center gap-2">
-        <button type="button" disabled={busy} onClick={() => void act("resume")} className="font-medium text-foreground hover:underline disabled:opacity-45">Resume now</button>
-        <button type="button" disabled={busy} onClick={() => void act("cancel")} className="hover:text-foreground hover:underline disabled:opacity-45">Cancel</button>
-      </span> : notice.tone === "problem" && <button type="button" aria-label="Dismiss" onClick={() => setDismissed(`${view.state}:${view.updatedAt}`)} className="grid size-5 place-items-center rounded-full hover:bg-accent hover:text-foreground"><X size={11} aria-hidden="true" /></button>}
+        <Button variant="link" size="inline" disabled={busy} onClick={() => void act("resume")}>Resume now</Button>
+        <Button variant="link" size="inline" disabled={busy} onClick={() => void act("cancel")}>Cancel</Button>
+      </span> : notice.tone === "problem" && <Button variant="quiet" size="icon-3xs" aria-label="Dismiss" onClick={() => setDismissed(`${view.state}:${view.updatedAt}`)}><X size={11} aria-hidden="true" /></Button>}
     </div>
   </div>;
 }

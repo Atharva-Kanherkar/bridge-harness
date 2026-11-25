@@ -249,8 +249,8 @@ describe("ChangesPanel in the dock", () => {
     ]));
 
     await mount(<ChangesPanel workspace={workspace()} />);
-    expect(container.querySelector('[title="Path label: auth"]')?.textContent).toBe("auth");
-    expect(container.querySelector('[title="Path label: rust"]')?.textContent).toBe("rust");
+    expect(container.querySelector('[data-tip="Path label: auth"]')?.textContent).toBe("auth");
+    expect(container.querySelector('[data-tip="Path label: rust"]')?.textContent).toBe("rust");
   });
 
   it("renders a rename as one old-to-new row", async () => {

@@ -75,7 +75,7 @@ afterEach(() => {
 const pause = (ms: number) => act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); });
 
 async function openChat() {
-  const row = container.querySelector<HTMLButtonElement>('button[title*=" — "]');
+  const row = container.querySelector<HTMLButtonElement>('button[data-tip*=" — "]');
   expect(row).toBeTruthy();
   await act(async () => row!.click());
   await pause(80);

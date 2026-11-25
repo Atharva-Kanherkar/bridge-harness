@@ -8,6 +8,9 @@ grammar: elevation as a lightness ladder rather than borders and shadows, near-z
 chrome, a pill composer, monospace reserved for code and paths, tool calls collapsed into labelled
 rows, and no glass anywhere.
 
+How feature code may use these tokens, and the primitives built on them, is in
+[`ui-rules.md`](ui-rules.md). `bun run lint` enforces it.
+
 ## Tokens
 
 Both modes are renderings of the same token names, defined in [`src/index.css`](../../src/index.css).

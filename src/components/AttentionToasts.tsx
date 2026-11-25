@@ -2,6 +2,7 @@ import { CircleAlert, CircleCheck, Hand } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AttentionCopy } from "../attentionCopy";
 import { ToastCard, ToastOverflow, TOASTS_SHOWN } from "./ToastCard";
+import { Button } from "@/components/ui/button";
 
 // Attention toasts, first in the shared top-right stack: "Bridge needs you"
 // reads near the window chrome the person already glances at.
@@ -53,13 +54,11 @@ function AttentionCard({ toast, onOpen, onDismiss, onAction }: {
       {/* A remedy needs its reason read in full, so that detail may wrap. */}
       <span className={cn("mt-0.5 block text-meta text-muted-foreground", toast.actionLabel ? "line-clamp-2" : "truncate")}>{toast.copy.detail}</span>
     </>}
-    footer={toast.actionLabel && onAction && <button
-      type="button"
+    footer={toast.actionLabel && onAction && <Button variant="outline" size="xs" className="mt-2"
       onClick={() => onAction(toast)}
-      className="mt-2 h-7 rounded-md border border-border px-2 text-meta font-medium text-foreground transition-colors hover:bg-accent"
     >
       {toast.actionLabel}
-    </button>}
+    </Button>}
   />;
 }
 

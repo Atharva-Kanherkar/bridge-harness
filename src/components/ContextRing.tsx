@@ -1,6 +1,7 @@
 // The chat's context ring: how full the selected session's live window is,
 // beside the send button where the usage dot used to sit. Quota lives in the
 // sidebar rail now; this ring is only ever about the model's window.
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { contextTone, TONE_TEXT, type ContextTone } from "../contextWindows";
 
@@ -29,20 +30,18 @@ export function ContextRing({ percent, model, active = false, onOpen }: { percen
   const known = percent != null;
   const tone = contextTone(percent);
   const label = known ? `Context window: ${Math.round(percent)}% used` : "Context window: no reading yet";
-  return <button
-    type="button"
+  return <Button
+    variant="quiet"
+    size="sm"
+    shape="round"
     onClick={onOpen}
     aria-label={label}
     aria-pressed={active}
-    title={known ? `${Math.round(percent)}% of ${model ?? "this model"}'s context window` : "No context reading yet"}
-    className={cn(
-      "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-1.5 transition-colors duration-150 hover:bg-accent active:scale-95",
-      active && "bg-accent",
-    )}
+    tooltip={known ? `${Math.round(percent)}% of ${model ?? "this model"}'s context window` : "No context reading yet"}
   >
     <ContextGauge percent={percent} />
     <span className={cn("min-w-[2.25rem] pr-0.5 text-left font-mono text-caption tabular-nums", known ? TONE_TEXT[tone] : "text-muted-foreground")}>
       {known ? `${Math.round(percent)}%` : "–"}
     </span>
-  </button>;
+  </Button>;
 }

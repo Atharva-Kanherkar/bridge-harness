@@ -21,6 +21,11 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { WindowHistoryChevrons } from "../components/WindowNavButtons";
+import { Button } from "@/components/ui/button";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { RowButton } from "@/components/ui/row";
+import { Segmented } from "@/components/ui/segmented";
+import { Tip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 type HostId = "local" | "cloud" | "ssh";
@@ -66,9 +71,9 @@ const INITIAL_REPOS: Repo[] = [
   },
 ];
 
-function StatusDot({ status }: { status: Repo["chats"][number]["status"] }) {
+function StatusDot({ status, className }: { status: Repo["chats"][number]["status"]; className?: string }) {
   const color = status === "working" ? "bg-success" : status === "waiting" ? "bg-warning" : "bg-muted-foreground/25";
-  return <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", color)} />;
+  return <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", color, className)} />;
 }
 
 function Chip({
@@ -85,20 +90,18 @@ function Chip({
   onClick: () => void;
 }) {
   return (
-    <button
-      type="button"
+    <Button
+      variant="quiet"
+      size="xs"
       aria-pressed={pressed}
       aria-expanded={expanded}
       onClick={onClick}
-      className={cn(
-        "inline-flex h-7 max-w-[16rem] items-center gap-1.5 rounded-md px-2 text-meta tracking-[-0.01em] transition-colors",
-        pressed || expanded ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-      )}
+      className="max-w-[16rem]"
     >
-      <Icon size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
+      <Icon strokeWidth={1.7} aria-hidden="true" />
       <span className="min-w-0 truncate">{label}</span>
-      {expanded !== undefined && <ChevronDown size={12} strokeWidth={1.7} className="shrink-0 opacity-70" aria-hidden="true" />}
-    </button>
+      {expanded !== undefined && <ChevronDown strokeWidth={1.7} className="size-3 opacity-70" aria-hidden="true" />}
+    </Button>
   );
 }
 
@@ -116,21 +119,19 @@ function ActionRow({
   onClick: () => void;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={label}
-      aria-label={label}
-      aria-current={active ? "page" : undefined}
-      className={cn(
-        "flex items-center rounded-md text-ui tracking-[-0.008em] transition-colors",
-        collapsed ? "mx-auto size-9 justify-center" : "h-7 w-full gap-2.5 px-2",
-        active ? "bg-accent font-medium text-foreground" : "text-foreground/85 hover:bg-accent hover:text-foreground",
-      )}
-    >
-      <Icon size={15} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-      {!collapsed && label}
-    </button>
+    <Tip label={label}>
+      <RowButton
+        size="sm"
+        active={active}
+        onClick={onClick}
+        aria-label={label}
+        aria-current={active ? "page" : undefined}
+        className={cn(collapsed && "mx-auto size-9 justify-center")}
+      >
+        <Icon size={15} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+        {!collapsed && <span className="min-w-0 truncate text-ui">{label}</span>}
+      </RowButton>
+    </Tip>
   );
 }
 
@@ -158,17 +159,9 @@ function MenuItem({
   children: ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      role="menuitem"
-      onClick={onClick}
-      className={cn(
-        "flex w-full items-center gap-2 px-3 py-2 text-left text-ui transition-colors",
-        active ? "bg-accent text-foreground" : "text-foreground/85 hover:bg-accent",
-      )}
-    >
+    <RowButton role="menuitem" shape="flush" active={active} onClick={onClick}>
       {children}
-    </button>
+    </RowButton>
   );
 }
 
@@ -231,10 +224,15 @@ export function RightRailPreview() {
         <p className="min-w-0 flex-1 truncate text-meta text-muted-foreground">
           Look-at preview — not the real app. Click through, then tell me what to change.
         </p>
-        <div className="u-segmented" aria-label="Window frame">
-          <button type="button" className="u-segmented-item" data-active={frame === "windowed"} onClick={() => setFrame("windowed")}>Windowed</button>
-          <button type="button" className="u-segmented-item" data-active={frame === "fullscreen"} onClick={() => setFrame("fullscreen")}>Fullscreen</button>
-        </div>
+        <Segmented
+          label="Window frame"
+          value={frame}
+          onChange={setFrame}
+          options={[
+            { value: "windowed", label: "Windowed" },
+            { value: "fullscreen", label: "Fullscreen" },
+          ]}
+        />
       </header>
 
       <div className={cn("flex min-h-0 flex-1", fullscreen ? "p-0" : "items-center justify-center p-5")}>
@@ -302,14 +300,14 @@ export function RightRailPreview() {
             )}
           >
             <div className={cn("flex h-11 shrink-0 items-center gap-0.5", collapsed ? "justify-center" : "px-1.5")}>
-              <button
-                type="button"
+              <Button
+                variant="quiet"
+                size="icon-xs"
                 aria-label={collapsed ? "Show sidebar" : "Hide sidebar"}
                 onClick={() => setCollapsed(value => !value)}
-                className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
-                <PanelRight size={15} strokeWidth={1.5} aria-hidden="true" />
-              </button>
+                <PanelRight strokeWidth={1.5} aria-hidden="true" />
+              </Button>
               {!collapsed && (
                 <div className="ml-auto">
                   <WindowHistoryChevrons canBack={false} canForward={false} onBack={() => {}} onForward={() => {}} />
@@ -328,26 +326,28 @@ export function RightRailPreview() {
               </div>
 
               {!collapsed && searchOpen && (
-                <div className="relative mb-2 shrink-0">
-                  <Search size={13} strokeWidth={1.7} aria-hidden="true" className="pointer-events-none absolute left-2 top-2 text-muted-foreground" />
-                  <input
+                <InputGroup className="mb-2 shrink-0">
+                  <InputGroupAddon>
+                    <Search strokeWidth={1.7} aria-hidden="true" />
+                  </InputGroupAddon>
+                  <InputGroupInput
                     type="text"
+                    size="sm"
                     value={query}
                     onChange={event => setQuery(event.target.value)}
                     placeholder="Filter repositories…"
                     aria-label="Filter repositories"
-                    className="h-7 w-full rounded-lg border border-border bg-background pl-7 pr-2 text-ui text-foreground outline-none placeholder:text-muted-foreground/70 focus:border-ring"
                   />
-                </div>
+                </InputGroup>
               )}
 
               <div className="min-h-0 flex-1 overflow-y-auto">
                 {!collapsed && (
                   <div className="mb-1 flex h-7 items-center justify-between px-2">
                     <span className="text-caption font-medium text-muted-foreground">Repositories</span>
-                    <button type="button" aria-label="New folder" onClick={() => setSurface("projects")} className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground">
-                      <FolderPlus size={13} strokeWidth={1.5} aria-hidden="true" />
-                    </button>
+                    <Button variant="quiet" size="icon-2xs" aria-label="New folder" onClick={() => setSurface("projects")}>
+                      <FolderPlus strokeWidth={1.5} aria-hidden="true" />
+                    </Button>
                   </div>
                 )}
                 {filtered.map(item => (
@@ -360,45 +360,42 @@ export function RightRailPreview() {
                       </div>
                     )}
                     {item.chats.map(chat => (
-                      <button
+                      <RowButton
                         key={chat.id}
-                        type="button"
+                        size="sm"
+                        active={activeChatId === chat.id && surface === "chat"}
                         onClick={() => openChat(item.id, chat.id)}
-                        className={cn(
-                          "flex w-full items-center text-left text-ui tracking-[-0.008em] transition-colors",
-                          collapsed ? "h-9 justify-center" : "h-[26px] gap-1.5 rounded-md py-0 pr-2 pl-7",
-                          activeChatId === chat.id && surface === "chat" ? "bg-accent font-medium text-foreground" : "text-foreground/80 hover:bg-accent/70",
-                        )}
+                        className={cn(collapsed && "h-9 justify-center")}
                       >
-                        <StatusDot status={chat.status} />
+                        <StatusDot status={chat.status} className={cn(!collapsed && "ml-5.5")} />
                         {!collapsed && (
                           <>
-                            <span className="min-w-0 flex-1 truncate">{chat.title}</span>
+                            <span className="min-w-0 flex-1 truncate text-ui">{chat.title}</span>
                             <GitBranch size={11} strokeWidth={1.7} className="shrink-0 text-ring" aria-hidden="true" />
                             <span className="shrink-0 text-caption tabular-nums text-muted-foreground/65">{chat.time}</span>
                           </>
                         )}
-                      </button>
+                      </RowButton>
                     ))}
                   </div>
                 ))}
               </div>
 
-              <button
-                type="button"
-                onClick={() => setSurface("settings")}
-                aria-label="Open settings for cestercian"
-                className={cn(
-                  "mt-1 flex shrink-0 items-center border-t border-sidebar-border pt-1.5 text-foreground/85 transition-colors hover:text-foreground",
-                  collapsed ? "size-10 justify-center" : "h-12 w-full gap-2.5 px-2",
-                )}
-              >
-                <span className="grid size-7 shrink-0 place-items-center rounded-full bg-foreground text-caption font-semibold text-background">C</span>
-                {!collapsed && <>
-                  <span className="min-w-0 flex-1 truncate text-left text-ui font-medium">cestercian</span>
-                  <Settings2 size={16} strokeWidth={1.6} className="text-muted-foreground" aria-hidden="true" />
-                </>}
-              </button>
+              <div className="mt-1 shrink-0 border-t border-sidebar-border pt-1.5">
+                <RowButton
+                  size="lg"
+                  tone="plain"
+                  onClick={() => setSurface("settings")}
+                  aria-label="Open settings for cestercian"
+                  className={cn(collapsed && "size-10 justify-center")}
+                >
+                  <span className="grid size-7 shrink-0 place-items-center rounded-full bg-foreground text-caption font-semibold text-background">C</span>
+                  {!collapsed && <>
+                    <span className="min-w-0 flex-1 truncate text-left text-ui font-medium text-foreground">cestercian</span>
+                    <Settings2 size={16} strokeWidth={1.6} className="shrink-0" aria-hidden="true" />
+                  </>}
+                </RowButton>
+              </div>
             </div>
           </aside>
         </div>
@@ -410,7 +407,7 @@ export function RightRailPreview() {
 function Placeholder({ title, body }: { title: string; body: string }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
-      <h1 className="font-display text-[1.6rem] font-medium tracking-[-0.03em] text-foreground">{title}</h1>
+      <h1 className="font-display text-title font-medium text-foreground">{title}</h1>
       <p className="mt-2 max-w-sm text-ui leading-relaxed text-muted-foreground">{body}</p>
     </div>
   );
@@ -423,7 +420,7 @@ function AutomationsCanvas() {
   ];
   return (
     <main className="mx-auto w-full max-w-3xl flex-1 overflow-y-auto px-6 pb-16 pt-10">
-      <h1 className="font-display text-[28px] font-semibold tracking-[-0.03em] text-foreground">Automations</h1>
+      <h1 className="font-display text-3xl font-semibold tracking-tight text-foreground">Automations</h1>
       <p className="mt-1.5 text-ui leading-relaxed text-muted-foreground">
         Scheduled jobs only. The catalog tabs are not part of this view.
       </p>
@@ -489,7 +486,7 @@ function ComposerCanvas({
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", hero ? "items-center justify-center px-6 pb-16" : "px-6")}>
       {hero && (
-        <h1 className="mb-8 max-w-xl text-center font-display text-[1.85rem] font-medium leading-[1.15] tracking-[-0.03em] text-foreground">
+        <h1 className="mb-8 max-w-xl text-center font-display text-3xl font-medium leading-tight tracking-tight text-foreground">
           What should we work on in {repo.name}?
         </h1>
       )}
@@ -553,40 +550,41 @@ function ComposerCanvas({
         </div>
 
         <form
-          className="relative flex flex-col gap-2 rounded-[1.4rem] border border-input bg-card px-4 py-3 focus-within:border-ring"
+          className="relative flex flex-col gap-2 rounded-4xl border border-input bg-card px-4 py-3 focus-within:border-ring"
           onSubmit={event => event.preventDefault()}
         >
+          {/* oxlint-disable-next-line bridge/no-raw-controls -- mock of the composer editing surface, which draws its own bare field */}
           <textarea
             value={draft}
             rows={hero ? 3 : 2}
             onChange={event => onDraft(event.target.value)}
             placeholder="Plan, build, / for skills, @ for context"
             aria-label="Message"
-            className="min-h-12 w-full resize-none bg-transparent text-message leading-relaxed tracking-[-0.006em] text-foreground outline-none placeholder:text-muted-foreground/70"
+            className="min-h-12 w-full resize-none bg-transparent text-message leading-relaxed text-foreground outline-none placeholder:text-muted-foreground/70"
           />
           <div className="flex items-center gap-1.5">
-            <button type="button" aria-label="Add context" className="inline-flex size-7 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-accent hover:text-foreground">
+            <Button variant="outline" size="icon-xs" shape="round" aria-label="Add context">
               <Plus size={14} strokeWidth={1.7} aria-hidden="true" />
-            </button>
+            </Button>
             <span className="inline-flex h-7 items-center rounded-full px-2.5 text-meta text-muted-foreground">High</span>
-            <button type="button" aria-label="Voice input" className="ml-auto inline-flex size-8 items-center justify-center rounded-full bg-foreground text-background">
+            <Button size="icon-sm" shape="round" aria-label="Voice input" className="ml-auto">
               <Mic size={14} strokeWidth={1.8} aria-hidden="true" />
-            </button>
+            </Button>
           </div>
         </form>
 
         {hero && (
           <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-            <button type="button" className="inline-flex h-8 items-center rounded-full border border-border bg-card px-3 text-meta text-foreground hover:bg-accent">
+            <Button variant="outline" size="sm" shape="round">
               Plan new idea
-            </button>
-            <button type="button" className="inline-flex h-8 items-center rounded-full border border-border bg-card px-3 text-meta text-foreground hover:bg-accent">
+            </Button>
+            <Button variant="outline" size="sm" shape="round">
               Multitask
-            </button>
-            <button type="button" onClick={onCloudShortcut} className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border bg-card px-3 text-meta text-foreground hover:bg-accent">
+            </Button>
+            <Button variant="outline" size="sm" shape="round" onClick={onCloudShortcut}>
               <Cloud size={13} aria-hidden="true" />
               Run in Cloud
-            </button>
+            </Button>
           </div>
         )}
       </div>

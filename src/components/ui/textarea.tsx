@@ -2,22 +2,23 @@
 
 import { Field as FieldPrimitive } from "@base-ui/react/field";
 import { mergeProps } from "@base-ui/react/merge-props";
-import type * as React from "react";
+import * as React from "react";
 import { cn } from "@/lib/utils";
 
 export type TextareaProps = React.ComponentPropsWithoutRef<"textarea"> &
   React.RefAttributes<HTMLTextAreaElement> & {
-    size?: "sm" | "default" | "lg" | number;
+    /** `bare`: no box of its own, for a field drawn inside a composer or popover frame. */
+    size?: "sm" | "default" | "lg" | "bare" | number;
     unstyled?: boolean;
   };
 
-export function Textarea({
+// forwardRef: React 18 drops `ref` from a function component's props.
+export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(function Textarea({
   className,
   size = "default",
   unstyled = false,
-  ref,
   ...props
-}: TextareaProps): React.ReactElement {
+}, ref): React.ReactElement {
   return (
     <span
       className={
@@ -40,7 +41,11 @@ export function Textarea({
         render={(defaultProps: React.ComponentProps<"textarea">) => (
           <textarea
             className={cn(
-              "field-sizing-content min-h-17.5 w-full rounded-[inherit] px-[calc(--spacing(3)-1px)] py-[calc(--spacing(1.5)-1px)] outline-none max-sm:min-h-20.5",
+              unstyled && size !== "bare" && "text-ui",
+              "field-sizing-content w-full rounded-[inherit] outline-none placeholder:text-muted-foreground",
+              size !== "bare" &&
+                "min-h-17.5 px-[calc(--spacing(3)-1px)] py-[calc(--spacing(1.5)-1px)] max-sm:min-h-20.5",
+              size === "bare" && "h-full resize-none bg-transparent",
               size === "sm" &&
                 "min-h-16.5 px-[calc(--spacing(2.5)-1px)] py-[calc(--spacing(1)-1px)] max-sm:min-h-19.5",
               size === "lg" &&
@@ -53,6 +58,6 @@ export function Textarea({
       />
     </span>
   );
-}
+});
 
 export { FieldPrimitive };

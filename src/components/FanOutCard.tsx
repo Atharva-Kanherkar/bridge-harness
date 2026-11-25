@@ -1,5 +1,4 @@
 import { useState, type ReactNode } from "react";
-import { clsx } from "clsx";
 import { ChevronRight } from "lucide-react";
 import { HarnessMark } from "./harnessMarks";
 import { dockPaneChord } from "../dockLayout";
@@ -13,8 +12,9 @@ import {
   useTickingNow,
   type FanOutSummary,
 } from "./workerFanOut";
-import { SkeletonDot, pendingClass } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
+import { Tip } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
+import { SkeletonDot } from "@/components/ui/skeleton";
 
 // One card per delegation: who the orchestrator handed work to, how each of
 // them is doing, and how long it has taken. The worker rows themselves are the
@@ -54,9 +54,9 @@ export function FanOutCard({ summary, rows, readOnly = false, onOpenAgents, onSt
   return <div data-fan-out role="group" aria-label={`${summary.total} ${summary.total === 1 ? "worker" : "workers"}`} className="my-1 min-w-0 overflow-hidden rounded-xl border border-border bg-card">
     <div className="flex min-w-0 items-center gap-2.5 px-3.5 py-2.5">
       <span className="flex shrink-0 -space-x-1.5" aria-hidden="true">
-        {summary.marks.map(worker => <span key={worker.childSessionId} title={harnessLabel(worker.harness)} className="grid size-6 place-items-center rounded-full border border-border bg-background">
+        {summary.marks.map(worker => <Tip key={worker.childSessionId} label={harnessLabel(worker.harness)}><span className="grid size-6 place-items-center rounded-full border border-border bg-background">
           <HarnessMark harness={worker.harness} size={12}/>
-        </span>)}
+        </span></Tip>)}
         {summary.overflow > 0 && <span data-fan-out-overflow className="grid size-6 place-items-center rounded-full border border-border bg-background text-micro font-medium tabular-nums text-muted-foreground">+{summary.overflow}</span>}
       </span>
       <span className="shrink-0 text-ui font-medium text-foreground">{summary.total} {summary.total === 1 ? "worker" : "workers"}</span>
@@ -67,13 +67,14 @@ export function FanOutCard({ summary, rows, readOnly = false, onOpenAgents, onSt
         </span>)}
       </span>
       {elapsed !== undefined && <span data-fan-out-clock className="ml-auto shrink-0 text-caption tabular-nums text-muted-foreground">{formatWorkerClock(elapsed)}</span>}
-      {onOpenAgents && <button
-        type="button"
+      {onOpenAgents && <Button
+        variant="quiet"
+        size="icon-2xs"
         onClick={onOpenAgents}
         aria-label="Open the Agents pane"
-        title={agentsPaneHint()}
-        className={clsx("grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground", elapsed === undefined && "ml-auto")}
-      ><ChevronRight size={14} aria-hidden="true"/></button>}
+        tooltip={agentsPaneHint()}
+        className={elapsed === undefined ? "ml-auto" : undefined}
+      ><ChevronRight size={14} aria-hidden="true"/></Button>}
     </div>
     {rows && <div className="border-t border-border px-3.5 py-1">{rows}</div>}
     {live && summary.waiting.length > 0 && <div data-fan-out-waiting className="flex min-w-0 items-center gap-3 border-t border-border px-3.5 py-2 text-meta text-muted-foreground">
@@ -84,13 +85,11 @@ export function FanOutCard({ summary, rows, readOnly = false, onOpenAgents, onSt
           <span className="text-foreground">{worker.name}</span>
         </span>)}</span>
       </span>
-      {onStopWorkers && <button aria-busy={stopping || undefined}
-        type="button"
+      {onStopWorkers && <Button variant="quiet" size="2xs" className="shrink-0" tooltip={summary.waiting.length === 1 ? "Stop this worker" : `Stop these ${summary.waiting.length} workers`}
         disabled={stopping}
+        loading={stopping}
         onClick={stop}
-        title={summary.waiting.length === 1 ? "Stop this worker" : `Stop these ${summary.waiting.length} workers`}
-        className={cn("shrink-0 rounded-md px-1.5 py-0.5 font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50", pendingClass(stopping))}
-      >Stop</button>}
+      >Stop</Button>}
     </div>}
     {error && <p role="alert" className="border-t border-border px-3.5 py-2 text-meta text-destructive">{error}</p>}
   </div>;

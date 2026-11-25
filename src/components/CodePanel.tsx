@@ -6,7 +6,10 @@ import { ancestorPaths, buildFileTree, collapseChains, rankPaths, type TreeNode 
 import { glyphFor } from "./fileGlyph";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
+import { RowButton } from "@/components/ui/row";
+import { Tip } from "@/components/ui/tooltip";
 import { Dialog, DialogPopup } from "./ui/dialog";
 import { PaneState } from "./ui/pane";
 import { CodeEditor } from "./editor/CodeEditor";
@@ -64,15 +67,13 @@ const TreeRow = memo(function TreeRow({ row, active, onToggle, onOpen }: {
   const { Icon, tint } = isDir
     ? { Icon: row.expanded ? FolderOpen : Folder, tint: "text-muted-foreground" }
     : glyphFor(row.node.path);
-  return <button
-    type="button"
+  return <RowButton
+    size="bare"
+    active={active}
     onClick={() => (isDir ? onToggle(row.node.path) : onOpen(row.node.path))}
     aria-expanded={isDir ? row.expanded : undefined}
-    className={cn(
-      "group/row flex h-7 w-full items-stretch gap-0 truncate rounded-sm pr-2 text-left font-mono text-meta transition-colors",
-      active ? "bg-accent text-foreground" : "hover:bg-accent/60",
-    )}
-  >
+    className="group/row"
+  ><span className="flex h-7 w-full min-w-0 items-stretch truncate pr-2 font-mono text-meta">
     {Array.from({ length: row.depth }, (_, level) => <span
       key={level}
       // The guide is the indent. It sits at the *right* edge of each 11px
@@ -96,7 +97,7 @@ const TreeRow = memo(function TreeRow({ row, active, onToggle, onOpen }: {
         isDir ? "font-medium text-foreground/80" : active ? "text-foreground" : "text-muted-foreground group-hover/row:text-foreground",
       )}>{row.node.name}</span>
     </span>
-  </button>;
+  </span></RowButton>;
 });
 
 /** ⌘P. Ranked over the same path list the tree is built from. */
@@ -114,10 +115,14 @@ function FilePalette({ paths, onPick, onClose }: { paths: string[]; onPick: (pat
   }, [active]);
 
   return <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
-    <DialogPopup aria-label="Open file" showCloseButton={false} className="max-h-[70dvh] max-w-xl overflow-hidden p-0">
+    <DialogPopup aria-label="Open file" showCloseButton={false} className="max-h-[70dvh] max-w-xl overflow-hidden">
       <div className="flex items-center gap-2 border-b border-border px-3">
         <FileSearch size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-        <input
+        <Input
+          unstyled
+          mono
+          size="lg"
+          className="flex-1"
           autoFocus
           value={query}
           onChange={event => setQuery(event.target.value)}
@@ -129,7 +134,6 @@ function FilePalette({ paths, onPick, onClose }: { paths: string[]; onPick: (pat
           }}
           placeholder="Go to file…"
           aria-label="Go to file"
-          className="h-11 flex-1 bg-transparent font-mono text-meta text-foreground outline-none placeholder:text-muted-foreground"
         />
         <Kbd>esc</Kbd>
       </div>
@@ -139,24 +143,20 @@ function FilePalette({ paths, onPick, onClose }: { paths: string[]; onPick: (pat
           : results.map((path, position) => {
             const cut = path.lastIndexOf("/") + 1;
             const { Icon, tint } = glyphFor(path);
-            return <button
+            return <RowButton
               key={path}
-              type="button"
-              data-active={path === active}
+              tone="muted"
+              active={path === active}
               onMouseEnter={() => setIndex(position)}
               onClick={() => onPick(path)}
-              className={cn(
-                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left font-mono text-meta",
-                path === active ? "bg-accent text-foreground" : "text-muted-foreground",
-              )}
             >
               <Icon size={12} strokeWidth={1.75} className={cn("shrink-0", tint)} aria-hidden="true" />
-              <span className="truncate">
+              <span className="truncate font-mono text-meta">
                 <span className="text-foreground">{path.slice(cut)}</span>
                 {cut > 0 && <span className="ml-2 text-muted-foreground">{path.slice(0, cut - 1)}</span>}
               </span>
               {path === active && <CornerDownLeft size={11} className="ml-auto shrink-0 text-muted-foreground" aria-hidden="true" />}
-            </button>;
+            </RowButton>;
           })}
       </div>
     </DialogPopup>
@@ -447,6 +447,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
   const dirtyCount = open.filter(isDirty).length;
 
   return <div className="@container/code relative flex h-full min-h-0">
+    {/* oxlint-disable-next-line bridge/no-raw-controls -- a scrim, not a control: a click outside the drawer closes it */}
     {treeOpen && <button
       type="button"
       aria-label="Close file list"
@@ -464,10 +465,10 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
     >
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border pl-3 pr-1.5">
         <span className="flex-1 truncate text-meta font-medium text-muted-foreground">Files</span>
-        <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" onClick={() => setPaletteOpen(true)} aria-label="Go to file">
+        <Button variant="quiet" size="icon-sm" onClick={() => setPaletteOpen(true)} aria-label="Go to file" tooltip="Go to file">
           <FileSearch size={13} aria-hidden="true" />
         </Button>
-        <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" loading={loadingTree} onClick={() => void loadTree()} aria-label="Refresh file list">
+        <Button variant="quiet" size="icon-sm" loading={loadingTree} onClick={() => void loadTree()} aria-label="Refresh file list" tooltip="Refresh">
           <RefreshCw size={12} aria-hidden="true" />
         </Button>
       </div>
@@ -495,7 +496,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
           onClick={() => setTreeOpen(value => !value)}
           aria-label="Show file list"
           aria-expanded={treeOpen}
-          title="Files"
+          tooltip="Files"
         ><PanelLeft size={14} aria-hidden="true" /></Button>
         <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto">
           {open.map(file => {
@@ -513,16 +514,18 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
                   rule, so the tab strip reads as a set of folders over one
                   surface rather than a row of equal-weight buttons. */}
               {file.path === activePath && <span className="pointer-events-none absolute inset-x-0 top-0 h-[2px] bg-foreground/70" aria-hidden="true" />}
-              <button type="button" onClick={() => setActivePath(file.path)} className="flex min-h-8 max-w-[180px] items-center gap-1.5 truncate py-1" title={file.path}>
-                <Icon size={12} strokeWidth={1.75} className={cn("shrink-0", tint)} aria-hidden="true" />
-                <span className="truncate">{name}</span>
-              </button>
-              <button
-                type="button"
+              <Tip label={file.path}><RowButton size="bare" tone="plain" onClick={() => setActivePath(file.path)} className="max-w-[180px]">
+                <span className="flex min-h-8 min-w-0 items-center gap-1.5 py-1 text-inherit">
+                  <Icon size={12} strokeWidth={1.75} className={cn("shrink-0", tint)} aria-hidden="true" />
+                  <span className="truncate">{name}</span>
+                </span>
+              </RowButton></Tip>
+              <Button
+                variant="quiet"
+                size="icon-2xs"
                 onClick={() => closeFile(file.path)}
                 aria-label={marked ? `Close ${file.path}, discarding unsaved changes` : `Close ${file.path}`}
-                title={marked ? "Close and discard unsaved changes" : "Close"}
-                className="grid h-6 w-6 shrink-0 place-items-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+                tooltip={marked ? "Close and discard unsaved changes" : "Close"}
               >
                 {/* The dot is the unsaved marker; it becomes the close affordance on hover. */}
                 {marked
@@ -531,11 +534,11 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
                     <X size={11} className="hidden group-hover/tab:block group-focus-within/tab:block" aria-hidden="true" />
                   </>
                   : <X size={11} className="text-muted-foreground" aria-hidden="true" />}
-              </button>
+              </Button>
             </div>;
           })}
         </div>
-        <Button type="button" variant="ghost" size="icon-sm" className="my-auto mr-1.5 shrink-0" onClick={() => setPaletteOpen(true)} aria-label="Find a file" title={`Go to file · ${modKey("P")}`}><FileSearch size={15} aria-hidden="true" /></Button>
+        <Button variant="ghost" size="icon-sm" className="my-auto mr-1.5 shrink-0" onClick={() => setPaletteOpen(true)} aria-label="Find a file" tooltip="Go to file" tooltipSide="bottom"><FileSearch size={15} aria-hidden="true" /></Button>
       </div>
 
       <div className="relative flex min-h-0 flex-1 flex-col bg-code">
@@ -580,11 +583,11 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
             active.state === "dirty" && "text-foreground",
           )}>{statusLabel(active)}</span>
           {active.state === "conflict" && <>
-            <button type="button" onClick={() => void reload(active.path)} className="underline decoration-dotted underline-offset-2 hover:text-foreground">Reload</button>
-            <button type="button" onClick={() => void save(active.path, true)} className="underline decoration-dotted underline-offset-2 hover:text-foreground">Overwrite</button>
+            <Button variant="link" size="inline" onClick={() => void reload(active.path)}>Reload</Button>
+            <Button variant="link" size="inline" onClick={() => void save(active.path, true)}>Overwrite</Button>
           </>}
-          {(active.state === "dirty" || (active.state === "error" && active.baseSha)) && <button type="button" onClick={() => void save(active.path)} className="underline decoration-dotted underline-offset-2 hover:text-foreground">Save {modKey("S")}</button>}
-          {active.state === "error" && !active.baseSha && <button type="button" onClick={() => void reload(active.path)} className="underline decoration-dotted underline-offset-2 hover:text-foreground">Retry</button>}
+          {(active.state === "dirty" || (active.state === "error" && active.baseSha)) && <Button variant="link" size="inline" onClick={() => void save(active.path)}>Save {modKey("S")}</Button>}
+          {active.state === "error" && !active.baseSha && <Button variant="link" size="inline" onClick={() => void reload(active.path)}>Retry</Button>}
         </span>
       </div>}
     </div>
