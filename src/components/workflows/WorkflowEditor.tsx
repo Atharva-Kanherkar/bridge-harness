@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Select, SelectGroup, SelectGroupLabel, SelectItem, SelectPopup, SelectTrigger } from "@/components/ui/select";
+import { Radio, RadioGroup } from "@/components/ui/radio-group";
+import { SelectField, type SelectFieldOption } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -15,32 +16,7 @@ import { EVENT_APPS, EVENT_OPTIONS, eventFilters, localTimezone, presetCron, pre
 
 const FIELD = "block text-caption font-medium text-muted-foreground";
 
-type ChoiceOption = { value: string; label: string; group?: string; disabled?: boolean };
-
-/** One choice from a list. Options that name a group are listed under it. */
-function Choice({ label, value, options, onChange, size, className }: {
-  /** Names the control for assistive tech. */
-  label: string;
-  value: string;
-  options: ChoiceOption[];
-  onChange: (next: string) => void;
-  size?: "sm" | "default";
-  className?: string;
-}) {
-  const selected = options.find(option => option.value === value);
-  const groups = [...new Set(options.map(option => option.group))];
-  const item = (option: ChoiceOption) => <SelectItem key={option.value} value={option.value} disabled={option.disabled}>{option.label}</SelectItem>;
-  return <Select value={value} onValueChange={next => { if (next !== null) onChange(next); }}>
-    <SelectTrigger size={size} aria-label={label} className={className}>
-      <span className="min-w-0 flex-1 truncate">{selected?.label ?? value}</span>
-    </SelectTrigger>
-    <SelectPopup alignItemWithTrigger={false}>
-      {groups.map(group => group === undefined
-        ? options.filter(option => option.group === undefined).map(item)
-        : <SelectGroup key={group}><SelectGroupLabel>{group}</SelectGroupLabel>{options.filter(option => option.group === group).map(item)}</SelectGroup>)}
-    </SelectPopup>
-  </Select>;
-}
+type ChoiceOption = SelectFieldOption;
 
 const SCHEDULE_OPTIONS: ChoiceOption[] = [
   { value: "manual", label: "Only when I press Run now" },
@@ -234,36 +210,36 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
 
         <div className="grid gap-3 sm:grid-cols-2">
           <label className={FIELD}>Project
-            <Choice label="Workflow project" className="mt-1" value={definition.projectId ?? ""} options={[{ value: "", label: "No project (runs in a private folder)" }, ...projects.map(project => ({ value: project.id, label: project.name }))]} onChange={next => {
+            <SelectField label="Workflow project" className="mt-1" value={definition.projectId ?? ""} options={[{ value: "", label: "No project (runs in a private folder)" }, ...projects.map(project => ({ value: project.id, label: project.name }))]} onChange={next => {
               const projectId = next || null;
               update({ projectId, files: projectId ? definition.files : "none" });
             }}/>
           </label>
           <label className={FIELD}>When
-            <Choice label="Workflow schedule" className="mt-1" value={preset} options={SCHEDULE_OPTIONS} onChange={next => setPreset(next as SchedulePreset)}/>
+            <SelectField label="Workflow schedule" className="mt-1" value={preset} options={SCHEDULE_OPTIONS} onChange={next => setPreset(next as SchedulePreset)}/>
           </label>
         </div>
         {preset === "event" && <div className="space-y-3 rounded-xl border border-border px-3 py-2.5">
           <div className="grid gap-3 sm:grid-cols-2">
             <label className={FIELD}>When
-              <Choice label="Event" className="mt-1" value={eventKind} options={EVENT_CHOICES} onChange={next => setEventKind(next as WorkflowEventKind)}/>
+              <SelectField label="Event" className="mt-1" value={eventKind} options={EVENT_CHOICES} onChange={next => setEventKind(next as WorkflowEventKind)}/>
             </label>
-            {filters.repo && <label className={FIELD}>{filters.repo.label}{filters.repo.required ? "" : " (optional)"}<Input aria-label="Repository" className="mt-1 font-mono" placeholder={filters.repo.placeholder} value={repo} onChange={event => setRepo(event.target.value)}/></label>}
+            {filters.repo && <label className={FIELD}>{filters.repo.label}{filters.repo.required ? "" : " (optional)"}<Input mono aria-label="Repository" className="mt-1 " placeholder={filters.repo.placeholder} value={repo} onChange={event => setRepo(event.target.value)}/></label>}
             {filters.channel && <label className={FIELD}>{filters.channel.label}{filters.channel.required ? "" : " (optional)"}<Input aria-label="Channel filter" className="mt-1" placeholder={filters.channel.placeholder} value={channel} onChange={event => setChannel(event.target.value)}/></label>}
           </div>
           {filters.from && <label className={FIELD}>{filters.from.label} (optional)<Input aria-label="Sender filter" className="mt-1" placeholder={filters.from.placeholder} value={from} onChange={event => setFrom(event.target.value)}/></label>}
-          <div role="radiogroup" aria-label="How often" className="flex flex-wrap items-center gap-x-4 gap-y-2 text-caption text-muted-foreground">
-            <label className="flex items-center gap-1.5"><input type="radio" name="event-mode" aria-label="Run for each event" checked={!collect} onChange={() => setCollect(false)} className="accent-foreground"/>Run for each event</label>
-            <label className="flex items-center gap-1.5"><input type="radio" name="event-mode" aria-label="Collect them and run at a set time" checked={collect} onChange={() => setCollect(true)} className="accent-foreground"/>Collect them and run</label>
+          <RadioGroup aria-label="How often" value={collect ? "collect" : "each"} onValueChange={value => setCollect(value === "collect")}><div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-caption text-muted-foreground">
+            <label className="flex items-center gap-1.5"><Radio value="each" aria-label="Run for each event"/>Run for each event</label>
+            <label className="flex items-center gap-1.5"><Radio value="collect" aria-label="Collect them and run at a set time"/>Collect them and run</label>
             {collect && <>
-              <Choice label="Collect on" size="sm" className="w-auto" value={batchPreset} options={BATCH_OPTIONS} onChange={next => setBatchPreset(next as BatchPreset)}/>
-              {batchPreset === "weekly" && <Choice label="Collect weekday" size="sm" className="w-auto" value={String(weekday)} options={WEEKDAY_OPTIONS.map(day => ({ value: String(day.value), label: `on ${day.label}` }))} onChange={next => setWeekday(Number(next))}/>}
+              <SelectField label="Collect on" size="sm" className="w-auto" value={batchPreset} options={BATCH_OPTIONS} onChange={next => setBatchPreset(next as BatchPreset)}/>
+              {batchPreset === "weekly" && <SelectField label="Collect weekday" size="sm" className="w-auto" value={String(weekday)} options={WEEKDAY_OPTIONS.map(day => ({ value: String(day.value), label: `on ${day.label}` }))} onChange={next => setWeekday(Number(next))}/>}
               {batchPreset === "custom"
-                ? <Input aria-label="Collect cron" className="h-7 w-40 font-mono" placeholder="minute hour day month weekday" value={custom} onChange={event => setCustom(event.target.value)}/>
+                ? <Input mono aria-label="Collect cron" className="h-7 w-40" placeholder="minute hour day month weekday" value={custom} onChange={event => setCustom(event.target.value)}/>
                 : <><span>{batchPreset === "hourly" ? "at minute" : "at"}</span>
                   <Input aria-label="Collect at" type="time" className="h-7 w-28" value={time} onChange={event => setTime(event.target.value)}/></>}
             </>}
-          </div>
+          </div></RadioGroup>
           <div aria-live="polite" className="rounded-lg bg-muted px-2.5 py-2 text-caption text-muted-foreground">
             {!shown ? (previewing ? <span className="inline-flex items-center gap-1.5"><LoaderCircle className="animate-spin" size={11}/>Checking the last week…</span> : null)
               : <>
@@ -275,30 +251,30 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
         </div>}
         {preset !== "manual" && (preset !== "event" || collect) && <div className="grid gap-3 sm:grid-cols-3">
           {preset === "event" ? null : preset === "custom"
-            ? <label className={cn(FIELD, "sm:col-span-2")}>Cron (minute hour day month weekday)<Input aria-label="Cron expression" className="mt-1 font-mono" value={custom} onChange={event => setCustom(event.target.value)}/></label>
+            ? <label className={cn(FIELD, "sm:col-span-2")}>Cron (minute hour day month weekday)<Input mono aria-label="Cron expression" className="mt-1 " value={custom} onChange={event => setCustom(event.target.value)}/></label>
             : <>
-              {preset === "weekly" && <label className={FIELD}>Day<Choice label="Weekday" className="mt-1" value={String(weekday)} options={WEEKDAY_OPTIONS.map(day => ({ value: String(day.value), label: day.label }))} onChange={next => setWeekday(Number(next))}/></label>}
+              {preset === "weekly" && <label className={FIELD}>Day<SelectField label="Weekday" className="mt-1" value={String(weekday)} options={WEEKDAY_OPTIONS.map(day => ({ value: String(day.value), label: day.label }))} onChange={next => setWeekday(Number(next))}/></label>}
               <label className={FIELD}>{preset === "hourly" ? "Minute past the hour" : "Time"}<Input aria-label="Schedule time" type="time" className="mt-1" value={time} onChange={event => setTime(event.target.value)}/></label>
             </>}
           <label className={FIELD}>Timezone<Input aria-label="Timezone" className="mt-1" value={timezone} onChange={event => setTimezone(event.target.value)}/></label>
         </div>}
 
         <div className={FIELD}>Agent
-          <div className="mt-1 divide-y divide-border overflow-hidden rounded-lg border border-border">
+          <RadioGroup aria-label="Agent" value={step.harness} onValueChange={value => { const candidate = options?.harnesses.find(item => item.id === value); if (candidate) updateStep({ harness: candidate.id, model: candidate.defaultModel ?? candidate.models[0]?.id ?? "" }); }} className="mt-1"><div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
             {(options?.harnesses ?? []).map(candidate => {
               const reason = harnessRefusal(options, candidate.id, composed);
               const selected = candidate.id === step.harness;
               return <Tip key={candidate.id} label={reason}><label className={cn("flex min-w-0 items-center gap-2 px-2.5 py-1.5 text-ui", selected ? "bg-accent text-foreground" : reason ? "text-muted-foreground opacity-70" : "text-foreground")}>
-                <input type="radio" name="workflow-harness" aria-label={candidate.label} disabled={!!reason || !candidate.available} checked={selected} onChange={() => updateStep({ harness: candidate.id, model: candidate.defaultModel ?? candidate.models[0]?.id ?? "" })} className="accent-foreground"/>
+                <Radio value={candidate.id} aria-label={candidate.label} disabled={!!reason || !candidate.available}/>
                 <span className="shrink-0">{candidate.label}</span>
                 <span className="ml-auto min-w-0 line-clamp-2 text-right text-caption text-muted-foreground">{reason ?? (candidate.available ? "" : "not installed")}</span>
               </label></Tip>;
             })}
-          </div>
+          </div></RadioGroup>
         </div>
         <label className={FIELD}>Model
           {harness && harness.models.length > 0
-            ? <Choice label="Workflow model" className="mt-1" value={step.model} options={[...(harness.models.some(model => model.id === step.model) ? [] : [{ value: step.model, label: step.model || "Choose a model", disabled: true }]), ...harness.models.map(model => ({ value: model.id, label: model.label }))]} onChange={model => updateStep({ model })}/>
+            ? <SelectField label="Workflow model" className="mt-1" value={step.model} options={[...(harness.models.some(model => model.id === step.model) ? [] : [{ value: step.model, label: step.model || "Choose a model", disabled: true }]), ...harness.models.map(model => ({ value: model.id, label: model.label }))]} onChange={model => updateStep({ model })}/>
             : <Input aria-label="Workflow model" className="mt-1" value={step.model} onChange={event => updateStep({ model: event.target.value })}/>}
         </label>
 

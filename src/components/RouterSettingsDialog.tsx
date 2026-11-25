@@ -1,5 +1,9 @@
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "@/components/ui/input-group";
+import { SelectField } from "@/components/ui/select";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "@tanstack/react-form";
 import { BrainCircuit, CalendarClock, CircleCheck, Copy, ExternalLink, LoaderCircle, Play, RotateCcw, ShieldCheck, Undo2, X } from "lucide-react";
@@ -119,7 +123,7 @@ export function LearningRunSummary({ learning, running = false, onApprove, onCan
   const rollbackTarget = learning.rollbackTargetVersion;
   return <div className="mt-4 rounded-xl border border-border bg-muted/50 p-4 text-xs text-muted-foreground">
     <div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-accent px-2 py-1 block text-meta font-medium text-foreground">{run.duplicate ? "duplicate · no-op" : run.status}</span><span>{report?.reason ?? "Learning run queued"}</span></div>
-    {report && <><dl className="mt-3 grid gap-2 text-caption sm:grid-cols-3 lg:grid-cols-6"><div><dt className="text-muted-foreground">Evidence</dt><dd>{report.evidenceCount} runs · #{report.evidenceBoundary}</dd></div><div><dt className="text-muted-foreground">Quality</dt><dd>{report.qualityBps == null ? "Unknown" : `${(report.qualityBps / 100).toFixed(0)}%`}</dd></div><div><dt className="text-muted-foreground">Cost / success</dt><dd>{report.averageCostMicrousd == null ? "Unknown" : `$${(report.averageCostMicrousd / 1_000_000).toFixed(4)}`}</dd></div><div><dt className="text-muted-foreground">Confidence</dt><dd>{report.averageConfidenceBps == null ? "Unknown" : `${(report.averageConfidenceBps / 100).toFixed(0)}%`}</dd></div><div><dt className="text-muted-foreground">Replay</dt><dd>{report.replayPassed == null ? "Not run" : report.replayPassed ? "Passed" : "Blocked"}</dd></div><div><dt className="text-muted-foreground">Policy</dt><dd>v{report.basePolicyVersion} → {report.candidatePolicyVersion ? `v${report.candidatePolicyVersion} · ${run.promotionStatus.replaceAll("_", " ")}` : "unchanged"}</dd></div></dl><p className="mt-3 rounded-xl border border-border bg-card px-3 py-2 text-meta leading-relaxed text-foreground">Evaluator: <span className="font-medium">{evaluatorExecutionLabel(report.evaluationExecution)}</span>. Observed evaluator spend {`$${(report.evaluatedSpendMicrousd / 1_000_000).toFixed(4)}`} over {report.evaluatedTokens} tokens. A verdict scores confidence; it never restates what happened.</p>{!report.costComplete && <p className="mt-2 text-caption text-warning">Cost comparison is unknown because at least one provider did not report cost.</p>}<div className="mt-3 flex flex-wrap gap-2">{run.promotionStatus === "awaiting_approval" && <button type="button" disabled={running} onClick={onApprove} className="inline-flex items-center gap-1.5 rounded-lg bg-success px-2.5 py-1.5 text-caption font-medium text-success-foreground transition-colors hover:bg-success/90 disabled:opacity-40"><CircleCheck size={12} aria-hidden="true" />Approve replayed policy</button>}{["recommended", "awaiting_approval"].includes(run.promotionStatus) && <Button variant="outline" size="xs" disabled={running} onClick={onCancel}>Cancel candidate</Button>}{rollbackTarget != null && rollbackTarget > 0 && <button type="button" disabled={running} onClick={onRollback} className="inline-flex items-center gap-1.5 rounded-lg border border-warning/30 px-2.5 py-1.5 text-caption text-warning transition-colors hover:bg-warning/10 disabled:opacity-40"><Undo2 size={12} aria-hidden="true" />Roll back to v{rollbackTarget}</button>}</div></>}
+    {report && <><dl className="mt-3 grid gap-2 text-caption sm:grid-cols-3 lg:grid-cols-6"><div><dt className="text-muted-foreground">Evidence</dt><dd>{report.evidenceCount} runs · #{report.evidenceBoundary}</dd></div><div><dt className="text-muted-foreground">Quality</dt><dd>{report.qualityBps == null ? "Unknown" : `${(report.qualityBps / 100).toFixed(0)}%`}</dd></div><div><dt className="text-muted-foreground">Cost / success</dt><dd>{report.averageCostMicrousd == null ? "Unknown" : `$${(report.averageCostMicrousd / 1_000_000).toFixed(4)}`}</dd></div><div><dt className="text-muted-foreground">Confidence</dt><dd>{report.averageConfidenceBps == null ? "Unknown" : `${(report.averageConfidenceBps / 100).toFixed(0)}%`}</dd></div><div><dt className="text-muted-foreground">Replay</dt><dd>{report.replayPassed == null ? "Not run" : report.replayPassed ? "Passed" : "Blocked"}</dd></div><div><dt className="text-muted-foreground">Policy</dt><dd>v{report.basePolicyVersion} → {report.candidatePolicyVersion ? `v${report.candidatePolicyVersion} · ${run.promotionStatus.replaceAll("_", " ")}` : "unchanged"}</dd></div></dl><p className="mt-3 rounded-xl border border-border bg-card px-3 py-2 text-meta leading-relaxed text-foreground">Evaluator: <span className="font-medium">{evaluatorExecutionLabel(report.evaluationExecution)}</span>. Observed evaluator spend {`$${(report.evaluatedSpendMicrousd / 1_000_000).toFixed(4)}`} over {report.evaluatedTokens} tokens. A verdict scores confidence; it never restates what happened.</p>{!report.costComplete && <p className="mt-2 text-caption text-warning">Cost comparison is unknown because at least one provider did not report cost.</p>}<div className="mt-3 flex flex-wrap gap-2">{run.promotionStatus === "awaiting_approval" && <Button size="xs" disabled={running} onClick={onApprove}><CircleCheck size={12} aria-hidden="true" />Approve replayed policy</Button>}{["recommended", "awaiting_approval"].includes(run.promotionStatus) && <Button variant="outline" size="xs" disabled={running} onClick={onCancel}>Cancel candidate</Button>}{rollbackTarget != null && rollbackTarget > 0 && <Button variant="destructive-outline" size="xs" disabled={running} onClick={onRollback}><Undo2 size={12} aria-hidden="true" />Roll back to v{rollbackTarget}</Button>}</div></>}
   </div>;
 }
 
@@ -208,7 +212,6 @@ export function RouterSettingsDialog({
   }, [onError, open, workspaceId]);
 
   if (!open || !workspaceId) return null;
-  const fieldClass = "h-9 w-full min-w-0 rounded-lg border border-input bg-card px-3 text-sm text-foreground transition-colors disabled:opacity-45";
   const errorClass = "text-caption font-normal normal-case tracking-normal text-destructive";
   const applyLearning = (generation: number, fresh: LearningState) => {
     if (generation !== learningReadGeneration.current) return;
@@ -335,9 +338,7 @@ export function RouterSettingsDialog({
         <div className="grid gap-4 sm:grid-cols-2">
           <form.Field name="mode">{field => (
             <label className="space-y-2 block text-meta font-medium text-muted-foreground">Mode
-              <select className={fieldClass} value={field.state.value} disabled={busy} onChange={event => field.handleChange(event.target.value as RouterMode)}>
-                <option value="disabled">Disabled</option><option value="shadow">Shadow</option><option value="autonomous">Autonomous</option>
-              </select>
+              <SelectField label="Mode" value={field.state.value} disabled={busy} onChange={value => field.handleChange(value as RouterMode)} options={[{ value: "disabled", label: "Disabled" }, { value: "shadow", label: "Shadow" }, { value: "autonomous", label: "Autonomous" }]} />
             </label>
           )}</form.Field>
           <form.Field name="passFloorPercent" validators={{ onChange: ({ value }) => validatePercent(value) }} listeners={{
@@ -356,7 +357,7 @@ export function RouterSettingsDialog({
             },
           }}>{field => (
             <label className="space-y-2 block text-meta font-medium text-muted-foreground">Minimum pass probability
-              <div className="relative"><input className={fieldClass} type="number" min={0} max={100} step={1} value={field.state.value} disabled={busy} onChange={event => field.handleChange(event.target.value)} onBlur={field.handleBlur} /><span className="pointer-events-none absolute right-3 top-2.5 text-sm text-muted-foreground">%</span></div>
+              <InputGroup><InputGroupInput type="number" min={0} max={100} step={1} value={field.state.value} disabled={busy} onChange={event => field.handleChange(event.target.value)} onBlur={field.handleBlur} /><InputGroupAddon align="inline-end"><InputGroupText>%</InputGroupText></InputGroupAddon></InputGroup>
               {field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}
             </label>
           )}</form.Field>
@@ -364,26 +365,22 @@ export function RouterSettingsDialog({
             onChange: ({ fieldApi }) => fieldApi.form.setFieldValue("pinnedModel", ""),
           }}>{field => (
             <label className="space-y-2 block text-meta font-medium text-muted-foreground">Pin harness
-              <select className={fieldClass} value={field.state.value} disabled={busy} onChange={event => field.handleChange(event.target.value)}>
-                <option value="">Automatic</option>{adapters.map(adapter => <option key={adapter.id} value={adapter.id}>{adapter.label}{adapter.available ? "" : " (unavailable)"}</option>)}
-              </select>
+              <SelectField label="Pin harness" value={field.state.value} disabled={busy} onChange={field.handleChange} options={[{ value: "", label: "Automatic" }, ...adapters.map(adapter => ({ value: adapter.id, label: `${adapter.label}${adapter.available ? "" : " (unavailable)"}` }))]} />
             </label>
           )}</form.Field>
           <form.Subscribe selector={state => state.values.pinnedHarness}>{pinnedHarness => (
             <form.Field name="pinnedModel">{field => (
               <label className="space-y-2 block text-meta font-medium text-muted-foreground">Pin model
-                <select className={fieldClass} value={field.state.value} disabled={busy} onChange={event => field.handleChange(event.target.value)}>
-                  <option value="">Automatic</option>{models.filter(model => !pinnedHarness || model.harness === pinnedHarness).map(model => <option key={`${model.harness}:${model.id}`} value={model.id}>{model.harnessLabel} · {model.label}</option>)}
-                </select>
+                <SelectField label="Pin model" value={field.state.value} disabled={busy} onChange={field.handleChange} options={[{ value: "", label: "Automatic" }, ...models.filter(model => !pinnedHarness || model.harness === pinnedHarness).map(model => ({ value: model.id, label: `${model.harnessLabel} · ${model.label}` }))]} />
               </label>
             )}</form.Field>
           )}</form.Subscribe>
         </div>
         <form.Field name="excludedHarnesses">{field => (
-          <label className="block space-y-2 block text-meta font-medium text-muted-foreground">Exclude harnesses <span className="normal-case tracking-normal text-muted-foreground">comma-separated IDs</span><input className={fieldClass} value={field.state.value} disabled={busy} placeholder="e.g. claude" onChange={event => field.handleChange(event.target.value)} /></label>
+          <label className="block space-y-2 block text-meta font-medium text-muted-foreground">Exclude harnesses <span className="normal-case tracking-normal text-muted-foreground">comma-separated IDs</span><Input value={field.state.value} disabled={busy} placeholder="e.g. claude" onChange={event => field.handleChange(event.target.value)} /></label>
         )}</form.Field>
         <form.Field name="excludedModels">{field => (
-          <label className="block space-y-2 block text-meta font-medium text-muted-foreground">Exclude models <span className="normal-case tracking-normal text-muted-foreground">comma-separated IDs</span><input className={fieldClass} value={field.state.value} disabled={busy} placeholder="e.g. opus, gpt-5.3-codex" onChange={event => field.handleChange(event.target.value)} /></label>
+          <label className="block space-y-2 block text-meta font-medium text-muted-foreground">Exclude models <span className="normal-case tracking-normal text-muted-foreground">comma-separated IDs</span><Input value={field.state.value} disabled={busy} placeholder="e.g. opus, gpt-5.3-codex" onChange={event => field.handleChange(event.target.value)} /></label>
         )}</form.Field>
         <div className="flex gap-3 rounded-xl border border-success/20 bg-success/10 p-4"><ShieldCheck className="mt-0.5 shrink-0 text-success" size={17} aria-hidden="true" /><p className="text-meta leading-relaxed text-muted-foreground">Shadow mode measures recommendations without changing execution. Autonomous mode unlocks only after 20 completed shadow outcomes with fewer than 5% manual or no-route decisions. Pins never bypass permissions or budgets.</p></div>
 
@@ -404,28 +401,28 @@ export function RouterSettingsDialog({
                 }
               },
             }}>{field => (
-              <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={field.state.value} onChange={event => field.handleChange(event.target.checked)} /><CalendarClock size={14} aria-hidden="true" />In-app schedule</label>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground"><Checkbox checked={field.state.value} onCheckedChange={checked => field.handleChange(checked === true)} /><CalendarClock size={14} aria-hidden="true" />In-app schedule</label>
             )}</form.Field>
             <form.Field name="schedule.mode">{field => (
-              <label className="space-y-1 block text-meta font-medium text-muted-foreground">Learning mode<select aria-label="Learning mode" className={fieldClass} value={field.state.value} onChange={event => field.handleChange(event.target.value)}><option value="manual">Manual · recommend</option><option value="ask">Ask · approval required</option><option value="automatic">Automatic · guarded canary</option></select></label>
+              <label className="space-y-1 block text-meta font-medium text-muted-foreground">Learning mode<SelectField label="Learning mode" value={field.state.value} onChange={field.handleChange} options={[{ value: "manual", label: "Manual · recommend" }, { value: "ask", label: "Ask · approval required" }, { value: "automatic", label: "Automatic · guarded canary" }]} /></label>
             )}</form.Field>
             <form.Field name="schedule.cadenceMinutes" validators={{ onChange: ({ value }) => validateCadence(value) }}>{field => (
-              <label className="space-y-1 block text-meta font-medium text-muted-foreground">Cadence<input className={fieldClass} type="number" min={15} value={field.state.value} onChange={event => field.handleChange(Number(event.target.value))} onBlur={field.handleBlur} />{field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}</label>
+              <label className="space-y-1 block text-meta font-medium text-muted-foreground">Cadence<Input type="number" min={15} value={field.state.value} onChange={event => field.handleChange(Number(event.target.value))} onBlur={field.handleBlur} />{field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}</label>
             )}</form.Field>
             <form.Field name="schedule.runBudgetMicrousd" validators={{ onChange: ({ value }) => validateNonNegativeInteger(value) }}>{field => (
-              <label className="space-y-1 block text-meta font-medium text-muted-foreground">Spend ceiling (µUSD)<input className={fieldClass} type="number" min={0} value={field.state.value} onChange={event => field.handleChange(Number(event.target.value))} onBlur={field.handleBlur} />{field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}</label>
+              <label className="space-y-1 block text-meta font-medium text-muted-foreground">Spend ceiling (µUSD)<Input type="number" min={0} value={field.state.value} onChange={event => field.handleChange(Number(event.target.value))} onBlur={field.handleBlur} />{field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}</label>
             )}</form.Field>
             <form.Field name="schedule.runBudgetTokens" validators={{ onChange: ({ value }) => validateNonNegativeInteger(value) }}>{field => (
-              <label className="space-y-1 block text-meta font-medium text-muted-foreground">Token ceiling<input className={fieldClass} type="number" min={0} value={field.state.value} onChange={event => field.handleChange(Number(event.target.value))} onBlur={field.handleBlur} />{field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}</label>
+              <label className="space-y-1 block text-meta font-medium text-muted-foreground">Token ceiling<Input type="number" min={0} value={field.state.value} onChange={event => field.handleChange(Number(event.target.value))} onBlur={field.handleBlur} />{field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}</label>
             )}</form.Field>
             <form.Subscribe selector={state => state.values.schedule.mode}>{mode => mode === "automatic" && <p className="text-caption leading-relaxed text-warning sm:col-span-2 lg:col-span-3">Automatic mode is opt-in. It promotes only replay-approved candidates to a canary and creates an immutable rollback version on regression.</p>}</form.Subscribe>
             <p className="text-caption leading-relaxed text-muted-foreground sm:col-span-2 lg:col-span-3">Spend and token ceilings cap what one learning run's bounded evaluations may observe; once a run reaches either, its remaining evaluations are skipped. A zero ceiling makes the whole learning run an auditable no-op.</p>
           </div>}
 
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <article className="rounded-xl border border-border p-4"><h4 className="text-xs font-medium text-foreground">Codex Scheduled <span className="font-normal text-muted-foreground">· optional</span></h4><p className="mt-2 text-caption leading-relaxed text-muted-foreground">Managed in Codex/ChatGPT. Bridge cannot create or enumerate schedules. Registration copies a tested narrow local wake-up task; it never grants promotion authority.</p><div className="mt-3 flex flex-wrap gap-3 text-caption"><button type="button" disabled={running} onClick={() => void registerAndCopy("codex")} className="inline-flex items-center gap-1.5 text-caption text-info transition-colors hover:text-info/80"><Copy size={12} aria-hidden="true" />Register + copy task</button><Button variant="text" size="inline" onClick={() => void openExternalUrl("https://chatgpt.com/codex")}><ExternalLink size={12} aria-hidden="true" />Open Codex Scheduled setup</Button></div></article>
-            <article className="rounded-xl border border-border p-4"><h4 className="text-xs font-medium text-foreground">Claude Desktop schedule <span className="font-normal text-muted-foreground">· optional</span></h4><p className="mt-2 text-caption leading-relaxed text-muted-foreground">Prefer a local Desktop task for local evidence. Cloud Routines remain experimental and require a future Bridge-owned authenticated endpoint; local SQLite is never uploaded.</p><button type="button" disabled={running} onClick={() => void registerAndCopy("claude")} className="mt-3 inline-flex items-center gap-1.5 text-caption text-info transition-colors hover:text-info/80"><Copy size={12} aria-hidden="true" />Register + copy local task</button></article>
-            <article className="rounded-xl border border-border p-4"><h4 className="text-xs font-medium text-foreground">OpenCode schedule <span className="font-normal text-muted-foreground">· optional</span></h4><p className="mt-2 text-caption leading-relaxed text-muted-foreground">Register a narrow local OpenCode wake-up command. Bridge retains replay, approval, promotion, and rollback authority.</p><button type="button" disabled={running} onClick={() => void registerAndCopy("open_code")} className="mt-3 inline-flex items-center gap-1.5 text-caption text-info transition-colors hover:text-info/80"><Copy size={12} aria-hidden="true" />Register + copy local task</button></article>
+            <article className="rounded-xl border border-border p-4"><h4 className="text-xs font-medium text-foreground">Codex Scheduled <span className="font-normal text-muted-foreground">· optional</span></h4><p className="mt-2 text-caption leading-relaxed text-muted-foreground">Managed in Codex/ChatGPT. Bridge cannot create or enumerate schedules. Registration copies a tested narrow local wake-up task; it never grants promotion authority.</p><div className="mt-3 flex flex-wrap gap-3 text-caption"><Button variant="link" size="inline" disabled={running} onClick={() => void registerAndCopy("codex")}><Copy size={12} aria-hidden="true" />Register + copy task</Button><Button variant="text" size="inline" onClick={() => void openExternalUrl("https://chatgpt.com/codex")}><ExternalLink size={12} aria-hidden="true" />Open Codex Scheduled setup</Button></div></article>
+            <article className="rounded-xl border border-border p-4"><h4 className="text-xs font-medium text-foreground">Claude Desktop schedule <span className="font-normal text-muted-foreground">· optional</span></h4><p className="mt-2 text-caption leading-relaxed text-muted-foreground">Prefer a local Desktop task for local evidence. Cloud Routines remain experimental and require a future Bridge-owned authenticated endpoint; local SQLite is never uploaded.</p><Button variant="link" size="inline" disabled={running} onClick={() => void registerAndCopy("claude")} className="mt-3"><Copy size={12} aria-hidden="true" />Register + copy local task</Button></article>
+            <article className="rounded-xl border border-border p-4"><h4 className="text-xs font-medium text-foreground">OpenCode schedule <span className="font-normal text-muted-foreground">· optional</span></h4><p className="mt-2 text-caption leading-relaxed text-muted-foreground">Register a narrow local OpenCode wake-up command. Bridge retains replay, approval, promotion, and rollback authority.</p><Button variant="link" size="inline" disabled={running} onClick={() => void registerAndCopy("open_code")} className="mt-3"><Copy size={12} aria-hidden="true" />Register + copy local task</Button></article>
           </div>
         </section>
       </div>

@@ -258,3 +258,81 @@ export function SelectGroupLabel(
 }
 
 export { SelectPrimitive, SelectPopup as SelectContent };
+
+export type SelectFieldOption = {
+  value: string;
+  label: React.ReactNode;
+  disabled?: boolean;
+  /** Options sharing a group are listed under that label. */
+  group?: string;
+};
+
+/**
+ * The everyday select: a value, its options, a change handler. Use it where a
+ * native `<select>` would go; compose the parts above only when an option
+ * needs more than a label.
+ */
+export function SelectField({
+  label,
+  value,
+  options,
+  onChange,
+  disabled,
+  placeholder,
+  size,
+  className,
+}: {
+  /** Names the control for assistive tech. */
+  label: string;
+  value: string;
+  options: readonly SelectFieldOption[];
+  onChange: (next: string) => void;
+  disabled?: boolean;
+  placeholder?: string;
+  size?: VariantProps<typeof selectTriggerVariants>["size"];
+  className?: string;
+}): React.ReactElement {
+  const selected = options.find((option) => option.value === value);
+  const groups = [...new Set(options.map((option) => option.group))];
+  const item = (option: SelectFieldOption) => (
+    <SelectItem
+      key={option.value}
+      value={option.value}
+      disabled={option.disabled}
+    >
+      {option.label}
+    </SelectItem>
+  );
+  return (
+    <Select
+      value={value}
+      disabled={disabled}
+      onValueChange={(next) => {
+        if (next !== null) onChange(next as string);
+      }}
+    >
+      <SelectTrigger size={size} aria-label={label} className={className}>
+        <span
+          className={cn(
+            "min-w-0 flex-1 truncate",
+            !selected && placeholder && "text-muted-foreground",
+          )}
+        >
+          {selected?.label ?? (placeholder || value)}
+        </span>
+      </SelectTrigger>
+      <SelectPopup aria-label={label} alignItemWithTrigger={false}>
+        {groups.map((group) =>
+          group === undefined ? (
+            options.filter((option) => option.group === undefined).map(item)
+          ) : (
+            <SelectGroup key={group}>
+              <SelectGroupLabel>{group}</SelectGroupLabel>
+              {options.filter((option) => option.group === group).map(item)}
+            </SelectGroup>
+          ),
+        )}
+      </SelectPopup>
+    </Select>
+  );
+}

@@ -11,6 +11,8 @@ export type InputProps = Omit<
   size?: "sm" | "default" | "lg" | number;
   unstyled?: boolean;
   nativeInput?: boolean;
+  /** Code-like values: paths, ids, cron expressions. */
+  mono?: boolean;
 };
 
 export function Input({
@@ -18,6 +20,7 @@ export function Input({
   size = "default",
   unstyled = false,
   nativeInput = false,
+  mono = false,
   style,
   ...props
 }: InputProps): React.ReactElement {
@@ -26,6 +29,7 @@ export function Input({
     size === "sm" &&
       "h-7.5 px-[calc(--spacing(2.5)-1px)] leading-7.5 sm:h-6.5 sm:leading-6.5",
     size === "lg" && "h-9.5 leading-9.5 sm:h-8.5 sm:leading-8.5",
+    mono && "font-mono",
     props.type === "search" &&
       "[&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:appearance-none [&::-webkit-search-results-button]:appearance-none [&::-webkit-search-results-decoration]:appearance-none",
     props.type === "file" &&
