@@ -104,10 +104,9 @@ export function stepRefusal(options: WorkflowOptions | null, definition: Workflo
   return harnessRefusal(options, harnessId, { files: stepFiles(definition, index), grants: (definition.grants ?? []).filter(grant => servers.includes(grant.server)) });
 }
 
-/** What the steps' shares of connectors and files leave wrong, or null. */
+/** What the steps' shares of connectors and files leave wrong, or null. One
+ * step is checked too, as the daemon checks it. */
 export function stepsProblem(definition: WorkflowDefinition): string | null {
-  const count = definition.steps.length;
-  if (count < 2) return null;
   const indexes = definition.steps.map((_, index) => index);
   const used = new Set(indexes.flatMap(index => stepServers(definition, index)));
   const unused = (definition.grants ?? []).find(grant => !used.has(grant.server));
@@ -116,6 +115,24 @@ export function stepsProblem(definition: WorkflowDefinition): string | null {
   if (both !== undefined) return `Step ${both + 1} works in the worktree, so it cannot use connectors.`;
   if (definition.files === "worktree" && !indexes.some(index => stepFiles(definition, index) === "worktree")) return "No step works in the worktree. Choose one, or turn the worktree off.";
   return null;
+}
+
+/** A connector's name inside `mcp__<server>__<tool>`. */
+const wireServerName = (server: string) => server.replace(/[^A-Za-z0-9_-]/g, "_");
+
+/**
+ * The workflow left with its first step alone. That step keeps exactly what
+ * it had, with no settings of its own, since one step has no controls for
+ * them: in the worktree, the worktree and no connectors; otherwise the grants
+ * it used and their always-allowed tools.
+ */
+export function asOneStep(definition: WorkflowDefinition): WorkflowDefinition {
+  const files = stepFiles(definition, 0);
+  const servers = files === "worktree" ? [] : stepServers(definition, 0);
+  const grants = (definition.grants ?? []).filter(grant => servers.includes(grant.server));
+  const wire = grants.map(grant => wireServerName(grant.server));
+  const alwaysAllow = (definition.alwaysAllow ?? []).filter(identity => wire.some(name => identity.startsWith(`mcp__${name}__`)));
+  return { ...definition, files, grants, alwaysAllow, steps: [{ ...definition.steps[0], servers: null, files: null }] };
 }
 
 /** A new step: Claude when it may run one, with nothing granted yet. */
@@ -223,7 +240,10 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
   const updateStepAt = (index: number, change: Partial<WorkflowStep>) => setDefinition(current => ({ ...current, steps: current.steps.map((existing, at) => at === index ? { ...existing, ...change } : existing) }));
   const updateStep = (change: Partial<WorkflowStep>) => updateStepAt(0, change);
   const addStep = () => setDefinition(current => current.steps.length >= MAX_STEPS ? current : { ...current, steps: [...current.steps, newStep(options)] });
-  const removeStep = (index: number) => setDefinition(current => ({ ...current, steps: current.steps.filter((_, at) => at !== index) }));
+  const removeStep = (index: number) => setDefinition(current => {
+    const next = { ...current, steps: current.steps.filter((_, at) => at !== index) };
+    return next.steps.length === 1 ? asOneStep(next) : next;
+  });
 
   const composed = useMemo<WorkflowDefinition>(() => {
     if (preset === "event") {
@@ -300,7 +320,8 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
           <label className={FIELD}>Project
             <select aria-label="Workflow project" className={SELECT} value={definition.projectId ?? ""} onChange={event => {
               const projectId = event.target.value || null;
-              update({ projectId, files: projectId ? definition.files : "none" });
+              // No project, no worktree: every step goes back to the workflow's files.
+              setDefinition(current => projectId ? { ...current, projectId } : { ...current, projectId, files: "none", steps: current.steps.map(existing => ({ ...existing, files: null })) });
             }}>
               <option value="">No project (runs in a private folder)</option>
               {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}

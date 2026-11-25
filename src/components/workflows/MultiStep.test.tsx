@@ -67,8 +67,9 @@ describe("a workflow's steps", () => {
     expect(stepsProblem({ ...workflow, steps: workflow.steps.map((step, index) => index === 2 ? { ...step, servers: [] } : step) })).toBe("No step uses claude.ai Linear. Give it to a step, or remove it.");
     expect(stepsProblem({ ...workflow, steps: workflow.steps.map((step, index) => index === 1 ? { ...step, servers: ["claude.ai Slack"] } : step) })).toBe("Step 2 works in the worktree, so it cannot use connectors.");
     expect(stepsProblem({ ...workflow, steps: workflow.steps.map(step => ({ ...step, files: "none" })) })).toMatch(/No step works in the worktree/);
-    // One step is never a problem here: its own rules stay as they were.
-    expect(stepsProblem({ ...workflow, steps: [workflow.steps[0]] })).toBeNull();
+    // One step is checked as the daemon checks it.
+    expect(stepsProblem({ ...workflow, steps: [workflow.steps[0]] })).toBe("No step uses claude.ai Linear. Give it to a step, or remove it.");
+    expect(stepsProblem({ ...workflow, files: "none", steps: [{ ...workflow.steps[0], servers: null, files: null }] })).toBeNull();
     expect(stepServers({ ...workflow, steps: [{ ...workflow.steps[0], servers: null }] }, 0)).toEqual(["claude.ai Slack", "claude.ai Linear"]);
   });
 
@@ -141,6 +142,80 @@ describe("a workflow's steps", () => {
     const saved = submitted.at(-1)!.definition;
     expect(saved.grants?.map(grant => grant.server)).toEqual(["claude.ai Linear"]);
     expect(saved.steps[0].servers).toEqual([]);
+  });
+
+  it("leave one step with exactly what it had when the others are removed", async () => {
+    const options = await bridgeApi.workflowOptions();
+    const submitted: EditorSubmit[] = [];
+    await act(async () => root.render(<WorkflowEditor open workflow={null} options={options} projects={[]} busy={false} error={null} onCancel={() => {}} onSubmit={submit => submitted.push(submit)}/>));
+    change(field<HTMLInputElement>("Workflow name")!, "Back to one");
+    change(field<HTMLTextAreaElement>("Workflow instructions")!, "Read my mentions.");
+    await click(field<HTMLInputElement>("Read claude.ai Slack"));
+    await click(field<HTMLInputElement>("Read claude.ai Linear"));
+    await click(button("Add a step"));
+    change(field<HTMLTextAreaElement>("Step 2 instructions")!, "File them.");
+    // Step 1 keeps Slack, step 2 takes Linear.
+    await click(field<HTMLInputElement>("Step 1 uses claude.ai Linear"));
+    await click(field<HTMLInputElement>("Step 2 uses claude.ai Linear"));
+    await settle();
+    expect(button("Approve and save")!.disabled).toBe(false);
+
+    await click(button("Remove step 2"));
+    expect(field("Step 1 uses claude.ai Slack")).toBeNull();
+    // Linear was only step 2's: it goes with it. Granting a connector again
+    // gives it to the one step, as with any single-step workflow.
+    expect(field<HTMLInputElement>("Read claude.ai Linear")!.checked).toBe(false);
+    await click(field<HTMLInputElement>("Read claude.ai Gmail"));
+    await settle();
+    expect(document.body.textContent).not.toContain("No step uses");
+    expect(button("Approve and save")!.disabled).toBe(false);
+    await click(button("Approve and save"));
+    const saved = submitted.at(-1)!.definition;
+    expect(saved.steps).toHaveLength(1);
+    expect(saved.steps[0].servers ?? null).toBeNull();
+    expect(saved.steps[0].files ?? null).toBeNull();
+    expect(saved.grants?.map(grant => grant.server).sort()).toEqual(["claude.ai Gmail", "claude.ai Slack"]);
+  });
+
+  it("keep the worktree, and no connectors, for a remaining worktree step", async () => {
+    const options = await bridgeApi.workflowOptions();
+    const projects = [{ id: "proj-1", name: "app", path: "/repo/app" }] as never;
+    const full = threeSteps();
+    // Codex works in the worktree, then Claude files Linear issues.
+    const definition = { ...full, steps: [full.steps[1], full.steps[2]], grants: [full.grants![1]], alwaysAllow: ["mcp__claude_ai_Linear__save_issue"] };
+    const workflow = { id: "wf-1", enabled: true, disabledReason: null, revisionId: "r1", revision: 1, approved: true, approvedAt: null, definition, createdAt: "now", updatedAt: "now" } as Workflow;
+    const submitted: EditorSubmit[] = [];
+    await act(async () => root.render(<WorkflowEditor open workflow={workflow} options={options} projects={projects} busy={false} error={null} onCancel={() => {}} onSubmit={submit => submitted.push(submit)}/>));
+    await click(button("Remove step 2"));
+    await settle();
+    expect(document.body.textContent).not.toMatch(/cannot run|No step/);
+    expect(button("Approve and save")!.disabled).toBe(false);
+    await click(button("Approve and save"));
+    const kept = submitted.at(-1)!.definition;
+    expect(kept.steps).toHaveLength(1);
+    expect(kept.steps[0]).toMatchObject({ harness: "codex" });
+    expect(kept.steps[0].files ?? null).toBeNull();
+    expect(kept.steps[0].servers ?? null).toBeNull();
+    expect(kept.files).toBe("worktree");
+    expect(kept.grants).toEqual([]);
+    expect(kept.alwaysAllow).toEqual([]);
+  });
+
+  it("drop per-step worktree choices when the project is cleared", async () => {
+    const options = await bridgeApi.workflowOptions();
+    const projects = [{ id: "proj-1", name: "app", path: "/repo/app" }] as never;
+    const definition = threeSteps();
+    definition.steps[1] = { ...definition.steps[1], harness: "claude", model: "haiku" };
+    const workflow = { id: "wf-1", enabled: true, disabledReason: null, revisionId: "r1", revision: 1, approved: true, approvedAt: null, definition, createdAt: "now", updatedAt: "now" } as Workflow;
+    const submitted: EditorSubmit[] = [];
+    await act(async () => root.render(<WorkflowEditor open workflow={workflow} options={options} projects={projects} busy={false} error={null} onCancel={() => {}} onSubmit={submit => submitted.push(submit)}/>));
+    change(field<HTMLSelectElement>("Workflow project")!, "");
+    await settle();
+    expect(document.body.textContent).not.toMatch(/turn file access on|No step works/);
+    await click(button("Approve and save"));
+    const saved = submitted.at(-1)!.definition;
+    expect(saved.files).toBe("none");
+    expect(saved.steps.every(step => (step.files ?? null) === null)).toBe(true);
   });
 
   it("list a run's steps, and open each one's own transcript", async () => {
