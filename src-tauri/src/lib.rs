@@ -3177,8 +3177,13 @@ async fn get_extraction_settings(
 #[tauri::command]
 async fn update_extraction_settings(
     mode: String,
+    harness: Option<String>,
+    model: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::MemoryExtractionSettings, BridgeError> {
+    // Deprecated and ignored: extraction runs on the memory model. Kept so the
+    // command matches its wire contract for one release.
+    drop((harness, model));
     let core = state.inner().clone();
     blocking("Update extraction settings", move || {
         api::update_extraction_settings(&core, &mode)
@@ -3249,11 +3254,16 @@ async fn get_consolidation_settings(
 #[tauri::command]
 async fn update_consolidation_settings(
     mode: String,
+    harness: Option<String>,
+    model: Option<String>,
     max_records: Option<i64>,
     allow_removal: Option<bool>,
     debounce_seconds: Option<i64>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::MemoryConsolidationSettings, BridgeError> {
+    // Deprecated and ignored: consolidation runs on the memory model. Kept so
+    // the command matches its wire contract for one release.
+    drop((harness, model));
     let core = state.inner().clone();
     blocking("Update consolidation settings", move || {
         api::update_consolidation_settings(
