@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CircleAlert, CircleCheck, LoaderCircle, RefreshCw, Search, SquareArrowOutUpRight, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { RowButton } from "@/components/ui/row";
+import { Segmented } from "@/components/ui/segmented";
+import { SelectField } from "@/components/ui/select";
+import { Tip } from "@/components/ui/tooltip";
 import { SCREEN_CONTENT, ScreenHeading } from "@/components/ui/screen";
 import { bridgeApi } from "../../api";
 import { relativeTime } from "../workDashboard";
@@ -54,11 +60,6 @@ export function keptRate(stats: Pick<ReviewOverviewStats, "kept" | "edited" | "d
 const percent = (value: number | undefined) => value === undefined ? "–" : `${Math.round(value * 100)}%`;
 const seconds = (value: number | null | undefined) => value == null ? "–" : formatElapsed(value * 1000);
 
-function Segmented<T extends string | number>({ label, value, options, onChange }: { label: string; value: T; options: { value: T; label: string }[]; onChange: (value: T) => void }) {
-  return <div role="radiogroup" aria-label={label} className="u-segmented">
-    {options.map(option => <button key={String(option.value)} type="button" role="radio" aria-checked={option.value === value} data-active={option.value === value} className="u-segmented-item" onClick={() => onChange(option.value)}>{option.label}</button>)}
-  </div>;
-}
 
 function Tile({ label, value, sub, children }: { label: string; value: string; sub?: ReactNode; children?: ReactNode }) {
   return <div data-tile={label} className={cn(CARD, "flex min-w-0 flex-col gap-1 p-4")}>
@@ -111,7 +112,7 @@ function Counts({ job }: { job: ReviewJob }) {
 
 function PrName({ job }: { job: Pick<ReviewJob, "number" | "prTitle" | "repoOwner" | "repoName"> }) {
   return <span className="min-w-0 flex-1">
-    <span className="block truncate text-meta font-medium text-foreground" title={job.prTitle ?? undefined}>{job.prTitle ?? `Pull request #${job.number}`}</span>
+    <Tip label={job.prTitle ?? undefined}><span className="block truncate text-meta font-medium text-foreground">{job.prTitle ?? `Pull request #${job.number}`}</span></Tip>
     <span className="block truncate font-mono text-caption text-muted-foreground">{repoOf(job) ?? "Repository"} #{job.number}</span>
   </span>;
 }
@@ -122,13 +123,13 @@ function JobList({ title, jobs, empty, now, onOpen }: { title: string; jobs: Rev
     {jobs.length === 0
       ? <p className="text-meta text-muted-foreground">{empty}</p>
       : <ul className="-mx-2 grid grid-cols-1 gap-0.5">{jobs.map(job => <li key={job.id}>
-          <button type="button" data-open-job={job.id} onClick={() => onOpen(job)} className="flex w-full items-center gap-3 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none">
+          <RowButton shape="card" data-open-job={job.id} onClick={() => onOpen(job)}>
             <PrName job={job} />
             <span className="ml-auto flex shrink-0 flex-col items-end gap-0.5">
               <StatusLabel job={job} now={now} />
               <span className="flex items-center gap-1.5"><Reviewers harnesses={job.harnesses} />{job.status === "drafted" && <Counts job={job} />}</span>
             </span>
-          </button>
+          </RowButton>
         </li>)}</ul>}
   </section>;
 }
@@ -152,7 +153,7 @@ function ReviewersTable({ rows }: { rows: ReviewHarnessStats[] }) {
               <td className="py-2 pr-3 tabular-nums">{row.findings}</td>
               <td className="py-2 pr-3 tabular-nums">{percent(rate)}</td>
               <td className="py-2 pr-3 tabular-nums">{seconds(row.medianSeconds)}</td>
-              <td className="py-2 tabular-nums" title={row.spendMicrousd === 0 ? "This harness reports no cost" : undefined}>{row.spendMicrousd === 0 ? "Not reported" : formatUsd(row.spendMicrousd)}</td>
+              <td className="py-2 tabular-nums">{row.spendMicrousd === 0 ? <Tip label="This harness reports no cost"><span>Not reported</span></Tip> : formatUsd(row.spendMicrousd)}</td>
             </tr>;
           })}</tbody>
         </table>}
@@ -172,9 +173,9 @@ function ReviewsTable({ jobs, now, onOpen }: { jobs: ReviewJob[]; now: number; o
           </tr></thead>
           <tbody>{shown.map(job => <tr key={job.id} data-job-row={job.id} onClick={() => onOpen(job)} className="cursor-pointer border-b border-border/60 transition-colors last:border-0 hover:bg-accent/60">
             <td className="max-w-[320px] py-2 pr-3">
-              <button type="button" onClick={event => { event.stopPropagation(); onOpen(job); }} className="block w-full min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <RowButton size="bare" tone="plain" onClick={event => { event.stopPropagation(); onOpen(job); }}>
                 <PrName job={job} />
-              </button>
+              </RowButton>
             </td>
             <td className="py-2 pr-3"><Reviewers harnesses={job.harnesses} />
               {(job.trigger === "push" || job.incrementalFromSha) && <span className="mt-0.5 block text-caption text-muted-foreground">{[job.trigger === "push" && "On push", job.incrementalFromSha && "Re-review"].filter(Boolean).join(" · ")}</span>}
@@ -198,16 +199,16 @@ function FindingsTable({ findings, onOpenJob }: { findings: ReviewOverviewFindin
     && (!needle || [item.finding.title, item.finding.body, item.finding.path, repoOf(item) ?? "", item.prTitle ?? ""].some(text => text.toLowerCase().includes(needle))));
   return <div>
     <div className="mb-3 flex flex-wrap items-center gap-2">
-      <label className="flex h-8 min-w-[220px] flex-1 items-center gap-2 rounded-lg border border-border bg-background px-2.5 text-meta focus-within:ring-2 focus-within:ring-ring">
-        <Search size={13} aria-hidden="true" className="text-muted-foreground" />
-        <input aria-label="Search findings" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search titles, files and pull requests" className="min-w-0 flex-1 bg-transparent text-foreground outline-none placeholder:text-muted-foreground" />
-      </label>
+      <InputGroup className="min-w-[220px] flex-1">
+        <InputGroupAddon><Search aria-hidden="true" /></InputGroupAddon>
+        <InputGroupInput size="sm" aria-label="Search findings" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search titles, files and pull requests" />
+      </InputGroup>
       <Segmented<ReviewSeverity | "all"> label="Severity" value={severity} options={[{ value: "all", label: "All" }, ...SEVERITIES.map(value => ({ value, label: value.charAt(0).toUpperCase() + value.slice(1) }))]} onChange={setSeverity} />
     </div>
     {shown.length === 0
       ? <p className="py-6 text-center text-meta text-muted-foreground">{findings.length === 0 ? "No findings in this period." : "No findings match."}</p>
       : <ul className="grid grid-cols-1 gap-1">{shown.map(item => <li key={item.finding.id} className="min-w-0">
-          <button type="button" data-finding-row={item.finding.id} onClick={() => onOpenJob(item.finding.jobId)} className="grid w-full grid-cols-[72px_minmax(0,1fr)_auto] items-start gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none">
+          <RowButton size="bare" shape="card" data-finding-row={item.finding.id} onClick={() => onOpenJob(item.finding.jobId)}><span className="grid w-full grid-cols-[72px_minmax(0,1fr)_auto] items-start gap-3 px-2 py-2">
             <span className={cn("text-caption font-semibold", SEVERITY_TEXT[item.finding.severity])}>{item.finding.severity.charAt(0).toUpperCase() + item.finding.severity.slice(1)}</span>
             <span className="min-w-0">
               <span className="block truncate text-meta font-medium text-foreground">{item.finding.title}</span>
@@ -217,7 +218,7 @@ function FindingsTable({ findings, onOpenJob }: { findings: ReviewOverviewFindin
               <span className={cn(item.finding.decision !== "pending" && "font-medium text-foreground")}>{DECISION_LABEL[item.finding.decision]}</span>
               <span>{[item.harnesses.map(harnessLabel).join(" and "), item.finding.postedAt && "posted", item.finding.fixedInSha && "fixed later"].filter(Boolean).join(" · ")}</span>
             </span>
-          </button>
+          </span></RowButton>
         </li>)}</ul>}
   </div>;
 }
@@ -236,7 +237,7 @@ function JobDetail({ jobId, fallback, now, onClose }: { jobId: string; fallback?
   useEffect(() => {
     if (fallback && detail && fallback.status !== detail.job.status) load();
   }, [fallback?.status]); // eslint-disable-line react-hooks/exhaustive-deps
-  return <div className="fixed inset-0 z-40 flex justify-end bg-background/40 backdrop-blur-[1px]" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+  return <div className="fixed inset-0 z-40 flex justify-end bg-background/40 backdrop-blur-xs" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <aside role="dialog" aria-modal="true" aria-label="Review" data-review-detail={jobId} onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } }}
       className="flex h-full w-full max-w-[640px] flex-col border-l border-border bg-background shadow-xl">
       <header className="flex items-start gap-3 border-b border-border px-5 py-4">
@@ -250,7 +251,7 @@ function JobDetail({ jobId, fallback, now, onClose }: { jobId: string; fallback?
             {job.postedReviewUrl && <a href={job.postedReviewUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-meta text-foreground hover:underline">Posted review <SquareArrowOutUpRight size={11} aria-hidden="true" /></a>}
           </div>
         </div> : <p className="flex-1 text-meta text-muted-foreground">Loading…</p>}
-        <button ref={closeRef} type="button" onClick={onClose} aria-label="Close review" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"><X size={14} /></button>
+        <Button ref={closeRef} variant="quiet" size="icon-sm" onClick={onClose} aria-label="Close review" tooltip="Close"><X aria-hidden="true" /></Button>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         {error && <p role="alert" className="mb-3 text-meta text-destructive">{error}</p>}
@@ -348,11 +349,8 @@ export function ReviewsScreen() {
         description="Every pull request review Bridge ran: what needs you, how each reviewer does, and what was found."
         action={<>
           <Segmented<Period> label="Period" value={period} options={PERIODS} onChange={setPeriod} />
-          <select aria-label="Repository" value={repository} onChange={event => setRepository(event.target.value)} className="h-8 max-w-[220px] rounded-lg border border-border bg-background px-2 text-meta text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-            <option value="">All repositories</option>
-            {(overview?.repositories ?? []).map(repo => <option key={repo} value={repo}>{repo}</option>)}
-          </select>
-          <button type="button" onClick={read} disabled={loading} aria-label="Refresh reviews" aria-busy={loading} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={cn(loading && "animate-spin motion-reduce:animate-none")} /></button>
+          <SelectField label="Repository" size="sm" className="w-auto max-w-[220px]" value={repository} onChange={setRepository} options={[{ value: "", label: "All repositories" }, ...(overview?.repositories ?? []).map(repo => ({ value: repo, label: repo }))]} />
+          <Button variant="quiet" size="icon-sm" onClick={read} disabled={loading} aria-label="Refresh reviews" tooltip="Refresh" aria-busy={loading}><RefreshCw className={cn(loading && "animate-spin motion-reduce:animate-none")} aria-hidden="true" /></Button>
         </>}
       />
       {error && <p role="alert" className="mb-4 text-meta text-destructive">{error}</p>}

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi, emptyReviewOverview } from "../../api";
 import type { ReviewJob, ReviewOverview, ReviewOverviewFinding } from "../../protocol/generated/protocol";
 import { keptRate, ReviewsScreen } from "./ReviewsScreen";
+import { chooseOption, openSelect } from "@/testing/select";
 
 let root: Root | undefined;
 let host: HTMLDivElement | undefined;
@@ -63,7 +64,7 @@ async function mount(data: ReviewOverview | (() => ReviewOverview)) {
 
 const tile = (label: string) => host!.querySelector<HTMLElement>(`[data-tile="${label}"]`)!;
 const radio = (group: string, label: string) =>
-  [...host!.querySelectorAll<HTMLButtonElement>(`[role="radiogroup"][aria-label="${group}"] [role="radio"]`)].find(item => item.textContent?.startsWith(label))!;
+  [...host!.querySelectorAll<HTMLButtonElement>(`[role="group"][aria-label="${group}"] button`)].find(item => item.textContent?.startsWith(label))!;
 
 afterEach(() => {
   act(() => root?.unmount());
@@ -175,9 +176,11 @@ describe("ReviewsScreen", () => {
     expect(read).toHaveBeenCalledTimes(2);
     await act(async () => { radio("Period", "All").click(); await flush(); });
     expect(read).toHaveBeenLastCalledWith(undefined, undefined);
-    const select = host!.querySelector<HTMLSelectElement>('select[aria-label="Repository"]')!;
-    expect([...select.options].map(option => option.value)).toEqual(["", "octo/api", "octo/web"]);
-    await act(async () => { select.value = "octo/web"; select.dispatchEvent(new Event("change", { bubbles: true })); await flush(); });
+    const select = host!.querySelector<HTMLElement>('[role="combobox"][aria-label="Repository"]')!;
+    const listbox = await openSelect(select);
+    expect([...listbox!.querySelectorAll<HTMLElement>('[role="option"]')].map(option => option.dataset.value)).toEqual(["", "octo/api", "octo/web"]);
+    await chooseOption(select, "octo/web");
+    await act(async () => { await flush(); });
     expect(read).toHaveBeenLastCalledWith(undefined, "octo/web");
   });
 
