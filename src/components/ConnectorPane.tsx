@@ -37,6 +37,8 @@ import type {
   ConnectorInboxItem,
   ConnectorInboxResult,
 } from "../protocol/generated/protocol";
+import { RowButton } from "@/components/ui/row";
+import { Textarea } from "@/components/ui/textarea";
 
 // The connector inbox: a dock pane that renders one notification at a time and
 // lets you answer it without leaving Bridge.
@@ -144,13 +146,12 @@ export function ConnectorPane({ visible = true, focusItemKey, onClose, onUnreadC
       <Button tooltip={includeReadMentions
           ? "Including messages you have already read"
           : "Only unread messages — turn on to check this connector is being read"}
-        variant="ghost"
+        variant="quiet"
         size="icon-xs"
         role="switch"
         aria-checked={includeReadMentions}
+        aria-pressed={includeReadMentions}
         aria-label="Include messages you have already read"
-       
-        className={includeReadMentions ? "text-foreground" : "text-muted-foreground"}
         disabled={busy}
         onClick={() => void (async () => {
           setBusy(true);
@@ -255,17 +256,15 @@ function ItemRow({ item, index, active, onSelect }: {
 }) {
   const Icon = item.kind === "mention" ? AtSign : item.kind === "threadReply" ? CornerUpLeft : MessageSquare;
   const unresolved = item.state !== "resolved";
-  return <button
-    type="button"
+  return <div className="connector-row-enter" style={{ "--connector-row-delay": `${Math.min(index, 8) * 40}ms` } as React.CSSProperties}><RowButton
+    size="bare"
+    tone="selection"
+    shape="flush"
+    active={active}
     onClick={onSelect}
     aria-current={active ? "true" : undefined}
-    style={{ "--connector-row-delay": `${Math.min(index, 8) * 40}ms` } as React.CSSProperties}
-    className={cn(
-      "connector-row-enter flex w-full items-start gap-2.5 px-3 py-2 text-left transition-colors",
-      active ? "bg-selection text-selection-foreground" : "hover:bg-accent",
-      !unresolved && "opacity-55",
-    )}
-  >
+    className="items-start"
+  ><span className={cn("flex w-full items-start gap-2.5 px-3 py-2", !unresolved && "opacity-55")}>
     <span className="relative mt-0.5 shrink-0">
       <Icon size={13} aria-hidden="true" className={active ? "" : "text-muted-foreground"} />
       {item.state === "pending" && <span
@@ -281,8 +280,8 @@ function ItemRow({ item, index, active, onSelect }: {
         {itemSubtitle(item)}
       </span>
     </span>
-    {item.resolution && <Badge variant="outline" size="sm" className="mt-0.5 shrink-0 capitalize">{item.resolution}</Badge>}
-  </button>;
+    {item.resolution && <Badge variant="outline" size="sm" className="mt-0.5 shrink-0"><span className="capitalize">{item.resolution}</span></Badge>}
+  </span></RowButton></div>;
 }
 
 /**
@@ -301,7 +300,7 @@ function CardView({ item }: { item: ConnectorInboxItem }) {
       <h2 className="font-display text-message font-semibold leading-snug text-foreground">{card.headline}</h2>
       <div className="flex flex-wrap items-center gap-1.5 text-caption text-muted-foreground">
         <span>{itemSubtitle(item)}</span>
-        {card.harnessRendered && <Badge variant="outline" size="sm" className="gap-1">
+        {card.harnessRendered && <Badge variant="outline" size="sm">
           <Sparkles size={9} aria-hidden="true" />Rendered by your harness
         </Badge>}
         {item.permalink && <a
@@ -415,20 +414,22 @@ function Composer({ item, draft, busy, error, onDraft, onSend, onReact, onDismis
   const ready = !!item.card;
   return <div className="shrink-0 space-y-2 border-t border-border p-2.5">
     {!!suggestions.length && <div className="flex flex-wrap gap-1.5">
-      {suggestions.map(reply => <button
+      {suggestions.map(reply => <Button variant="chip" size="2xs"
         key={reply}
-        type="button"
+       
         onClick={() => onDraft(reply)}
-        className="max-w-full truncate rounded-full border border-border px-2.5 py-1 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-[0.98]"
+       
       >
         {reply}
-      </button>)}
+      </Button>)}
     </div>}
     {error && <p className="flex items-start gap-1.5 text-caption leading-4 text-destructive">
       <TriangleAlert size={11} aria-hidden="true" className="mt-0.5 shrink-0" />{error}
     </p>}
     <div className="flex items-end gap-1.5">
-      <textarea
+      <Textarea
+        size="sm"
+        className="min-w-0 flex-1"
         value={draft}
         disabled={!ready}
         onChange={event => onDraft(event.target.value)}
@@ -438,7 +439,6 @@ function Composer({ item, draft, busy, error, onDraft, onSend, onReact, onDismis
         rows={2}
         aria-label={`Reply to ${item.author}`}
         placeholder={ready ? `Reply to ${item.author}…` : "Waiting for the card…"}
-        className="min-h-[3.25rem] min-w-0 flex-1 resize-none rounded-lg border border-input bg-card px-2 py-1.5 text-meta leading-relaxed outline-none transition-colors focus:border-ring disabled:opacity-50"
       />
       <div className="flex shrink-0 flex-col gap-1.5">
         <Button size="icon-xs" disabled={!ready || !draft.trim()} loading={busy} onClick={onSend} aria-label="Send reply">
@@ -451,9 +451,9 @@ function Composer({ item, draft, busy, error, onDraft, onSend, onReact, onDismis
     </div>
     <div className="flex items-center justify-between text-micro text-muted-foreground">
       <span>Sending asks you to confirm first.</span>
-      <button type="button" onClick={onDismiss} className="underline-offset-2 hover:text-foreground hover:underline">
+      <Button variant="link" size="inline" onClick={onDismiss}>
         Dismiss
-      </button>
+      </Button>
     </div>
   </div>;
 }

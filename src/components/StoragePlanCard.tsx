@@ -12,6 +12,8 @@ import { cn } from "@/lib/utils";
 import { diskBytes, displayPath, parseStoragePlan, type StoragePlanCommand, type StoragePlanItem } from "../diskSpace";
 import { StatusPill } from "./settings/kit";
 import { Tip } from "@/components/ui/tooltip";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Button } from "@/components/ui/button";
 
 /** What the Storage page lends a plan card. */
 export interface StorageAgentHost {
@@ -31,7 +33,6 @@ export interface StorageAgentHost {
 
 export const StorageAgentContext = createContext<StorageAgentHost | null>(null);
 
-const ACTION = "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-caption outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40";
 
 export function StoragePlanCard({ body }: { body: string }) {
   const host = useContext(StorageAgentContext);
@@ -68,7 +69,7 @@ export function StoragePlanCard({ body }: { body: string }) {
   };
   const pendingCommands = plan.commands.filter(command => !approved.has(command.run));
 
-  return <section aria-label={`Plan: ${plan.title}`} className="not-prose my-3 overflow-hidden rounded-xl border border-border bg-card text-ui">
+  return <section aria-label={`Plan: ${plan.title}`} className="my-3 overflow-hidden rounded-xl border border-border bg-card text-ui">
     <header className="flex items-baseline gap-3 border-b border-border px-4 py-3">
       <h4 className="min-w-0 flex-1 truncate font-medium text-foreground">{plan.title}</h4>
       {planBytes > 0 && <span className="shrink-0 font-display text-lg font-semibold tabular-nums text-foreground">{diskBytes(planBytes)}</span>}
@@ -81,15 +82,13 @@ export function StoragePlanCard({ body }: { body: string }) {
         const name = item.path.split("/").filter(Boolean).at(-1) ?? item.path;
         return <li key={item.path} className={cn("flex items-start gap-3 px-4 py-2.5", gone && "opacity-50")}>
           {host
-            ? <button
-              type="button"
-              role="checkbox"
-              aria-checked={ticked}
+            ? <Checkbox
+              className="mt-0.5"
               aria-label={`Include ${name}`}
+              checked={ticked}
               disabled={gone}
-              onClick={() => toggle(item)}
-              className={cn("mt-0.5 grid size-4 shrink-0 place-items-center rounded-sm outline-none ring-1 ring-inset transition-colors focus-visible:ring-2 focus-visible:ring-ring", ticked ? (item.safety === "safe" ? "bg-success ring-success" : "bg-warning ring-warning") : "ring-border hover:ring-muted-foreground")}
-            >{ticked && <Check size={11} strokeWidth={3} className="text-background" aria-hidden="true" />}</button>
+              onCheckedChange={() => toggle(item)}
+            />
             : <span aria-hidden="true" className={cn("mt-1.5 size-2 shrink-0 rounded-full", item.safety === "safe" ? "bg-success" : "bg-warning")} />}
           <div className="min-w-0 flex-1">
             <p className="flex items-baseline gap-2">
@@ -103,7 +102,7 @@ export function StoragePlanCard({ body }: { body: string }) {
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1">
             <span className="tabular-nums text-foreground">{diskBytes(item.sizeBytes)}</span>
-            {host && <button type="button" onClick={() => host.reveal(item.path)} aria-label={`Show ${name} on the page`} className="rounded text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"><FolderOpen size={13} aria-hidden="true" /></button>}
+            {host && <Button variant="quiet" size="icon-2xs" onClick={() => host.reveal(item.path)} aria-label={`Show ${name} on the page`}><FolderOpen size={13} aria-hidden="true" /></Button>}
           </div>
         </li>;
       })}
@@ -122,7 +121,7 @@ export function StoragePlanCard({ body }: { body: string }) {
             {command.frees !== null && <span className="tabular-nums text-foreground">{diskBytes(command.frees)}</span>}
             {host && (done
               ? <span className="inline-flex items-center gap-1 text-caption text-success"><Check size={12} aria-hidden="true" />Approved</span>
-              : <button type="button" onClick={() => approve([command])} className={cn(ACTION, "h-6 px-2 text-info hover:bg-info/10")}>Run it</button>)}
+              : <Button variant="quiet" size="2xs" onClick={() => approve([command])}>Run it</Button>)}
           </div>
         </li>;
       })}
@@ -131,15 +130,15 @@ export function StoragePlanCard({ body }: { body: string }) {
     {host
       ? <footer className="flex flex-wrap items-center gap-2 border-t border-border bg-muted/40 px-3 py-2">
         {live.length > 0 && <>
-          <button type="button" disabled={working || host.busy || chosen.length === 0} onClick={() => void trash()} className={cn(ACTION, "bg-foreground font-medium text-background hover:opacity-90")}>
+          <Button variant="default" size="xs" disabled={working || host.busy || chosen.length === 0} onClick={() => void trash()}>
             <Trash2 size={13} aria-hidden="true" />
             {chosen.length === 0 ? "Nothing ticked" : `Move ${chosen.length} to Trash · ${diskBytes(chosenBytes)}`}
-          </button>
-          <button type="button" disabled={chosen.length === 0} onClick={() => host.select(chosen)} className={cn(ACTION, "text-muted-foreground hover:bg-accent hover:text-foreground")}>
+          </Button>
+          <Button variant="quiet" size="xs" disabled={chosen.length === 0} onClick={() => host.select(chosen)}>
             <MousePointerClick size={13} aria-hidden="true" />Select on page
-          </button>
+          </Button>
         </>}
-        {pendingCommands.length > 1 && <button type="button" onClick={() => approve(pendingCommands)} className={cn(ACTION, "text-info hover:bg-info/10")}>Run all {pendingCommands.length}</button>}
+        {pendingCommands.length > 1 && <Button variant="quiet" size="xs" onClick={() => approve(pendingCommands)}>Run all {pendingCommands.length}</Button>}
         {outcome && <p role="status" className="w-full px-1 pt-1 text-caption text-muted-foreground">{outcome}</p>}
       </footer>
       : <p className="border-t border-border px-4 py-2 text-caption text-muted-foreground">Open Settings → Data &amp; storage to act on this plan.</p>}
