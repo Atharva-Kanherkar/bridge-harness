@@ -579,6 +579,10 @@ mod tests {
             created_at: "2026-11-23T10:00:00.000Z".into(),
             started_at: Some("2026-11-23T10:00:01.000Z".into()),
             finished_at: None,
+            repo_owner: None,
+            repo_name: None,
+            pr_title: None,
+            pr_author: None,
         }
     }
 

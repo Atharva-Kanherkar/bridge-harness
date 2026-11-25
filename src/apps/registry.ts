@@ -4,7 +4,7 @@
 // cannot be reachable from one and missing from another. Later slices load
 // this from core as manifests; until then it is the frontend's own list.
 
-import { AppWindow, Bot, ChartNoAxesColumn, FolderGit2, GitPullRequest, LayoutGrid, Library, NotebookPen, Route, Send, Store, TerminalSquare, Workflow, type LucideIcon } from "lucide-react";
+import { AppWindow, Bot, ChartNoAxesColumn, FolderGit2, GitPullRequest, LayoutGrid, Library, ListChecks, NotebookPen, Route, Send, Store, TerminalSquare, Workflow, type LucideIcon } from "lucide-react";
 import type { AppView } from "../navigationHistory";
 import type { PersonalAppSummary } from "../protocol/generated/protocol";
 
@@ -12,6 +12,7 @@ export type AppId =
   | "notes"
   | "trails"
   | "pulls"
+  | "reviews"
   | "workflows"
   | "memory"
   | "mission-control"
@@ -39,6 +40,7 @@ export const BUILTIN_APPS: readonly BuiltinApp[] = [
   { id: "notes", name: "Notes", description: "Pages, tasks and quick captures", icon: NotebookPen, view: "notes", slots: ["screen"], keywords: ["pages", "tasks", "capture", "write"] },
   { id: "trails", name: "Trails", description: "One page per piece of work: its chats, notes, PRs and drafts", icon: Route, view: "trails", slots: ["screen"], keywords: ["work", "issue", "plan", "continuity"] },
   { id: "pulls", name: "Pulls", description: "Pull requests across your repositories", icon: GitPullRequest, view: "pulls", slots: ["screen", "dock"], keywords: ["github", "pr", "review", "source control"] },
+  { id: "reviews", name: "Reviews", description: "Every PR review, what needs you, and how each reviewer does", icon: ListChecks, view: "reviews", slots: ["screen"], keywords: ["code review", "pull request", "findings", "reviewer", "greptile"] },
   { id: "workflows", name: "Workflows", description: "Runs that repeat on a schedule", icon: Workflow, view: "workflows", slots: ["screen"], keywords: ["automation", "schedule", "runs"] },
   { id: "memory", name: "Memory", description: "What Bridge remembers about you", icon: Library, view: "memory", slots: ["screen"], keywords: ["remember", "proposals", "facts"] },
   { id: "mission-control", name: "Mission Control", description: "Every agent on one board", icon: LayoutGrid, view: "mission-control", slots: ["screen"], keywords: ["board", "grid", "overview"] },

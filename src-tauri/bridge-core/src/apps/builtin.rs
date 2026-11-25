@@ -66,6 +66,7 @@ const SPECS: &[Spec] = &[
     },
     Spec { id: "trails", name: "Trails", description: "One page per piece of work: its chats, notes, PRs and drafts", slots: SCREEN, tools: &[], events: &[], memory: &[], badge: BadgeSource::TrailsNeedingYou, can_disable: true },
     Spec { id: "pulls", name: "Pulls", description: "Pull requests across your repositories", slots: SCREEN_DOCK, tools: &[], events: &[], memory: &[], badge: BadgeSource::None, can_disable: true },
+    Spec { id: "reviews", name: "Reviews", description: "Every PR review, what needs you, and how each reviewer does", slots: SCREEN, tools: &[], events: &[], memory: &[], badge: BadgeSource::None, can_disable: true },
     Spec { id: "workflows", name: "Workflows", description: "Runs that repeat on a schedule", slots: SCREEN, tools: &[], events: &[], memory: &[], badge: BadgeSource::WorkflowRuns, can_disable: true },
     Spec {
         id: "memory",
@@ -140,11 +141,11 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
-    fn builtins_validate_and_list_twelve_apps_in_order() {
+    fn builtins_validate_and_list_thirteen_apps_in_order() {
         let ids: Vec<&str> = builtins().iter().map(|app| app.manifest.id.as_str()).collect();
         assert_eq!(
             ids,
-            ["notes", "trails", "pulls", "workflows", "memory", "mission-control", "terminals", "usage", "projects", "agents", "store", "outgoing"]
+            ["notes", "trails", "pulls", "reviews", "workflows", "memory", "mission-control", "terminals", "usage", "projects", "agents", "store", "outgoing"]
         );
         assert_eq!(builtins().iter().filter(|app| !app.can_disable).map(|app| app.manifest.id.as_str()).collect::<Vec<_>>(), ["store"]);
         assert_eq!(builtin("outgoing").unwrap().manifest.views, vec![AppView { slot: AppSlot::Card, title: None }]);

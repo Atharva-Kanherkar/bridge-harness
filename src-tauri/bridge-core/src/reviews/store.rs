@@ -180,12 +180,14 @@ pub struct JobRow {
     /// reviewer failed). Posted only while attribution is shown; `summary`
     /// names no reviewer. Absent when the two would be the same.
     pub named_summary: Option<String>,
+    pub pr_title: Option<String>,
+    pub pr_author: Option<String>,
 }
 
-const SELECT_JOB: &str = "SELECT id, workspace_id, repo_owner, repo_name, pr_number, head_sha, base_sha,
+pub(crate) const SELECT_JOB: &str = "SELECT id, workspace_id, repo_owner, repo_name, pr_number, head_sha, base_sha,
     incremental_from_sha, trigger_kind, post_mode, harnesses, status, error, summary, posted_review_id,
     posted_review_url, retry_of, attempts, lease_owner, lease_expires_at, created_at, started_at, finished_at,
-    publication_key, worktree_path, repo_host, named_summary
+    publication_key, worktree_path, repo_host, named_summary, pr_title, pr_author
     FROM review_jobs";
 
 fn invalid_column(index: usize, text: &str) -> rusqlite::Error {
@@ -196,7 +198,7 @@ fn invalid_column(index: usize, text: &str) -> rusqlite::Error {
     )
 }
 
-fn read_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
+pub(crate) fn read_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
     let trigger: String = row.get(8)?;
     let post_mode: String = row.get(9)?;
     let harnesses: String = row.get(10)?;
@@ -229,6 +231,8 @@ fn read_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
         worktree_path: row.get(24)?,
         repo_host: row.get(25)?,
         named_summary: row.get(26)?,
+        pr_title: row.get(27)?,
+        pr_author: row.get(28)?,
     })
 }
 
@@ -1470,7 +1474,17 @@ pub fn to_wire(db: &Connection, job: &JobRow) -> Result<wire::ReviewJob, BridgeE
         created_at: job.created_at.clone(),
         started_at: job.started_at.clone(),
         finished_at: job.finished_at.clone(),
+        repo_owner: Some(job.repo_owner.clone()),
+        repo_name: Some(job.repo_name.clone()),
+        pr_title: job.pr_title.clone(),
+        pr_author: job.pr_author.clone(),
     })
+}
+
+/// The PR's title and author, as `prepare` read them.
+pub fn set_pr_meta(db: &Connection, job_id: &str, title: &str, author: Option<&str>) -> Result<(), BridgeError> {
+    db.execute("UPDATE review_jobs SET pr_title=?2, pr_author=?3 WHERE id=?1", params![job_id, title, author])?;
+    Ok(())
 }
 
 #[cfg(test)]

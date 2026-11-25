@@ -292,6 +292,15 @@ fn context_files_describe_the_pr() {
     assert_eq!(context, fixture.layout().attempt_dir(&job).join("context"), "each attempt has its own context");
     let pr = read_json(&context.join("pr.json"));
     assert_pr_json(&pr, &fixture);
+    let stored = store::require_job(&fixture.core.db.lock().unwrap(), &job.id).unwrap();
+    assert_eq!(
+        (stored.pr_title.as_deref(), stored.pr_author.as_deref()),
+        (Some("Changes requested"), Some("review-author")),
+        "the dashboard names the PR"
+    );
+    let wire = store::to_wire(&fixture.core.db.lock().unwrap(), &stored).unwrap();
+    let json = serde_json::to_value(&wire).unwrap();
+    assert_eq!((json["prTitle"].as_str(), json["repoName"].as_str()), (Some("Changes requested"), Some("project")));
     assert_files_json(&read_json(&context.join("files.json")));
     let patch = std::fs::read_to_string(context.join("diff.patch")).unwrap();
     assert!(patch.contains("+three") && patch.contains("+only in the PR"));

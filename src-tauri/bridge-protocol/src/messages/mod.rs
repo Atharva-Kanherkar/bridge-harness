@@ -600,6 +600,7 @@ typed_methods![
     // reviews
     (StartReview, StartReviewParams, ReviewJobResult),
     (ListReviews, ListReviewsParams, ReviewJobList),
+    (ReviewOverview, ReviewOverviewParams, ReviewOverview),
     (GetReview, GetReviewParams, ReviewJobDetail),
     (CancelReview, CancelReviewParams, ReviewJobResult),
     (RetryReview, RetryReviewParams, ReviewJobResult),

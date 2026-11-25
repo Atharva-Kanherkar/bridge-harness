@@ -12,6 +12,8 @@ fn job(mode: ReviewPostMode) -> JobRow {
         workspace_id: "w".into(),
         repo_host: Some("github.com".into()),
         named_summary: None,
+        pr_title: None,
+        pr_author: None,
         repo_owner: "octo".into(),
         repo_name: "repo".into(),
         number: 7,

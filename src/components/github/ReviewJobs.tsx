@@ -1,31 +1,20 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CircleAlert, CircleCheck, LoaderCircle, RotateCcw, SquareArrowOutUpRight, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../../api";
 import { relativeTime } from "../workDashboard";
-import type { ReviewJob, ReviewJobStatus, ReviewSeverity } from "../../protocol/generated/protocol";
+import type { ReviewJob, ReviewJobStatus } from "../../protocol/generated/protocol";
 import { ReviewDraft } from "./ReviewDraft";
-import { harnessLabel, SEVERITY_TEXT } from "./reviewLabels";
+import { harnessLabel, REVIEW_STATUS, SEVERITIES, SEVERITY_TEXT } from "./reviewLabels";
 
 // The PR's review jobs, newest first, kept current by `reviews/job_updated`:
 // a review started here, from another window, or while another chat was open
 // shows where it is without a refresh. A draft opens its triage underneath.
 
-const STATUS: Record<ReviewJobStatus, { label: string; tone: "running" | "waiting" | "done" | "failed" | "quiet" }> = {
-  queued: { label: "Queued", tone: "running" },
-  preparing: { label: "Preparing the checkout", tone: "running" },
-  reviewing: { label: "Reviewing", tone: "running" },
-  drafted: { label: "Draft ready", tone: "waiting" },
-  posting: { label: "Posting", tone: "running" },
-  posted: { label: "Posted", tone: "done" },
-  failed: { label: "Failed", tone: "failed" },
-  cancelled: { label: "Cancelled", tone: "quiet" },
-  interrupted: { label: "Interrupted", tone: "failed" },
-};
+const STATUS = REVIEW_STATUS;
 
 const TERMINAL: ReadonlySet<ReviewJobStatus> = new Set(["posted", "failed", "cancelled", "interrupted"]);
 const RETRYABLE: ReadonlySet<ReviewJobStatus> = new Set(["failed", "interrupted", "cancelled"]);
-const SEVERITIES: ReadonlyArray<ReviewSeverity> = ["critical", "major", "minor", "nit"];
 
 /** Is the job still doing something on its own (not waiting for a person)? */
 const running = (job: ReviewJob) => !TERMINAL.has(job.status) && job.status !== "drafted";
@@ -38,6 +27,9 @@ export function formatElapsed(milliseconds: number): string {
   if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
+
+/** How long the status line keeps showing that the newest review failed. */
+const FAILURE_SHOWN_MS = 24 * 60 * 60 * 1000;
 
 /** Finished jobs past this many fold under "Show N more". */
 const FINISHED_SHOWN = 10;
@@ -105,18 +97,13 @@ function JobRow({ job, now, onChanged }: { job: ReviewJob; now: number; onChange
   </div>;
 }
 
-export function ReviewJobs({ workspaceId, number, repositoryUrl, started }: {
-  workspaceId: string;
-  number: number;
-  repositoryUrl?: string;
-  /** A job the pane just started (or got back from an idempotent start). */
-  started?: ReviewJob;
-}) {
+/** A PR's review jobs, newest first, live. One subscription per PR detail:
+ *  the status line under the actions and the Reviews section share it. */
+export function usePullRequestReviews(workspaceId: string, number: number, started?: ReviewJob) {
   const [jobs, setJobs] = useState<ReviewJob[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string>();
   const [now, setNow] = useState(() => Date.now());
-  const [showAll, setShowAll] = useState(false);
   // Every change re-reads the clock, so no time on screen is older than it.
   const update = useCallback((job: ReviewJob) => { setNow(Date.now()); setJobs(current => upsert(current, job)); }, []);
 
@@ -126,7 +113,7 @@ export function ReviewJobs({ workspaceId, number, repositoryUrl, started }: {
   // touched.
   useEffect(() => {
     let active = true;
-    setJobs([]); setLoaded(false); setError(undefined); setShowAll(false);
+    setJobs([]); setLoaded(false); setError(undefined);
     let unlisten: (() => void) | undefined;
     const live = new Set<string>();
     void (async () => {
@@ -163,6 +150,44 @@ export function ReviewJobs({ workspaceId, number, repositoryUrl, started }: {
     return () => window.clearInterval(timer);
   }, [ticking, hasJobs]);
 
+  return { jobs, loaded, error, now, update };
+}
+
+export type PullRequestReviews = ReturnType<typeof usePullRequestReviews>;
+
+export function ReviewJobs({ workspaceId, number, repositoryUrl, started }: {
+  workspaceId: string;
+  number: number;
+  repositoryUrl?: string;
+  /** A job the pane just started (or got back from an idempotent start). */
+  started?: ReviewJob;
+}) {
+  const reviews = usePullRequestReviews(workspaceId, number, started);
+  return <ReviewJobsView reviews={reviews} repositoryUrl={repositoryUrl} />;
+}
+
+/** The Reviews section: every job of the PR, a draft's triage under it. */
+export function ReviewJobsView({ reviews, repositoryUrl, reveal, sectionRef }: {
+  reviews: PullRequestReviews;
+  repositoryUrl?: string;
+  /** Changes when the status line asks to show this section. */
+  reveal?: number;
+  sectionRef?: React.RefObject<HTMLElement>;
+}) {
+  const { jobs, loaded, error, now, update } = reviews;
+  const [showAll, setShowAll] = useState(false);
+  const ownRef = useRef<HTMLElement>(null);
+  const ref = sectionRef ?? ownRef;
+  useEffect(() => {
+    if (!reveal) return;
+    // After the tab switch has mounted the section.
+    const frame = window.requestAnimationFrame(() => {
+      ref.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+      ref.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [reveal, ref]);
+
   // A job that still needs the person, or is still working, always shows;
   // finished ones past the first few fold away.
   const shown = useMemo(() => {
@@ -173,7 +198,7 @@ export function ReviewJobs({ workspaceId, number, repositoryUrl, started }: {
   const hidden = jobs.length - shown.length;
   if (!loaded && !jobs.length) return null;
   if (!jobs.length && !error) return null;
-  return <section aria-label="Reviews" className="mb-5">
+  return <section ref={ref} tabIndex={-1} aria-label="Reviews" className="mb-5 scroll-mt-14 outline-none">
     <h3 className="mb-2.5 flex items-center gap-2 text-caption font-medium text-muted-foreground">
       Reviews <span className="rounded-full bg-muted px-1.5 font-mono text-micro tabular-nums tracking-normal text-muted-foreground">{jobs.length}</span>
     </h3>
@@ -189,3 +214,63 @@ export function ReviewJobs({ workspaceId, number, repositoryUrl, started }: {
     </button>}
   </section>;
 }
+
+/** What the PR's reviews are doing, right under its actions and on every
+ *  tab: a start never goes unanswered, and a ready draft or a failure is
+ *  one click from where it is handled. */
+export function ReviewStatusLine({ reviews, onShow }: { reviews: PullRequestReviews; onShow: () => void }) {
+  const { jobs, now, update } = reviews;
+  const [busy, setBusy] = useState(false);
+  const active = jobs.filter(job => running(job));
+  const drafts = jobs.filter(job => job.status === "drafted");
+  // The newest job decides whether a failure is still news.
+  const latest = jobs[0];
+  // A failure stays news for a day, until another review starts.
+  const failedAt = latest ? Date.parse(latest.finishedAt ?? latest.createdAt) : NaN;
+  const failed = latest && STATUS[latest.status].tone === "failed" && now - failedAt < FAILURE_SHOWN_MS ? latest : undefined;
+  if (!active.length && !drafts.length && !failed) return null;
+  const who = (job: ReviewJob) => job.harnesses.map(harnessLabel).join(" and ");
+  const lines: { key: string; tone: "running" | "waiting" | "failed"; text: string; time?: string; action: string; onAction: () => void }[] = [];
+  for (const job of active) {
+    const status = job.status === "queued" ? "Queued: waits for a free review slot" : job.status === "preparing" ? `Preparing the checkout for ${who(job)}` : job.status === "posting" ? "Posting the review to GitHub" : `${who(job)} ${job.harnesses.length > 1 ? "are" : "is"} reviewing`;
+    lines.push({ key: job.id, tone: "running", text: status, time: elapsed(job, now), action: "Show", onAction: onShow });
+  }
+  const findings = (total: number) => total === 0 ? "no findings" : `${total} finding${total === 1 ? "" : "s"} to triage`;
+  if (drafts.length === 1) {
+    const [job] = drafts;
+    lines.push({ key: job.id, tone: "waiting", text: `Draft ready from ${who(job)}: ${findings(job.findingCounts.total)}`, action: "Triage", onAction: onShow });
+  } else if (drafts.length > 1) {
+    // One line for every waiting draft: the Reviews section lists them.
+    const total = drafts.reduce((sum, job) => sum + job.findingCounts.total, 0);
+    lines.push({ key: "drafts", tone: "waiting", text: `${drafts.length} drafts ready: ${findings(total)}`, action: "Triage", onAction: onShow });
+  }
+  if (failed && !active.length) {
+    lines.push({
+      key: failed.id, tone: "failed", text: `Review with ${who(failed)} ${failed.status === "interrupted" ? "was interrupted" : "failed"}${failed.error ? `: ${failed.error}` : ""}`, action: busy ? "Retrying…" : "Retry",
+      onAction: () => {
+        setBusy(true);
+        bridgeApi.retryReview(failed.id).then(result => update(result.job), () => onShow()).finally(() => setBusy(false));
+      },
+    });
+  }
+  return <div data-review-status className="mt-2 grid gap-1" aria-live="polite">
+    {lines.map(line => <div key={line.key} className={cn("flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-meta",
+      line.tone === "failed" ? "border-destructive/25 bg-destructive/10 text-destructive" : line.tone === "waiting" ? "border-border bg-card text-foreground" : "border-border bg-muted/40 text-muted-foreground")}>
+      {line.tone === "running" ? <LoaderCircle size={12} aria-hidden="true" className="shrink-0 animate-spin motion-reduce:animate-none" />
+        : line.tone === "failed" ? <CircleAlert size={12} aria-hidden="true" className="shrink-0" /> : <CircleCheck size={12} aria-hidden="true" className="shrink-0 text-success" />}
+      <span className="min-w-0 flex-1 truncate" title={line.text}>{line.text}</span>
+      {line.time && <span className="shrink-0 font-mono text-caption tabular-nums">{line.time}</span>}
+      <button type="button" disabled={line.tone === "failed" && busy} onClick={line.onAction} className="shrink-0 rounded px-1.5 py-0.5 text-meta font-medium text-foreground hover:bg-accent disabled:opacity-50">{line.action}</button>
+    </div>)}
+  </div>;
+}
+
+/** What starting `harnesses` again would hit: a job of this PR with that very
+ *  set that is still live (a start returns it rather than queue another). */
+export function activeJobFor(jobs: ReviewJob[], harnesses: string[]): ReviewJob | undefined {
+  const key = [...harnesses].sort().join(",");
+  return jobs.find(job => !TERMINAL.has(job.status) && [...job.harnesses].sort().join(",") === key);
+}
+
+/** Reviews of the PR still running on their own. */
+export const runningCount = (jobs: ReviewJob[]) => jobs.filter(running).length;

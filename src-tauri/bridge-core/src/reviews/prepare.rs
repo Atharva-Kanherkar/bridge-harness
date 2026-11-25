@@ -297,6 +297,14 @@ pub fn prepare(
     let remote = remote_for(&workspace, &job.repo_owner, &job.repo_name);
     let number = job.number;
     let detail = core.github_surface.pr_detail_in(&workspace, &repository, number).map_err(surface_error)?;
+    // For the Reviews dashboard: which PR this was, by name.
+    store::set_pr_meta(
+        &super::lock_db(core),
+        &job.id,
+        &detail.summary.title,
+        detail.summary.author.as_ref().map(|author| author.login.as_str()),
+    )
+    .map_err(fatal)?;
     let head_spec = format!("+refs/pull/{number}/head:{head_ref}");
     let base_spec = format!("+refs/heads/{}:{base_ref}", detail.base_branch);
     let head = git::fetch_ref(&workspace, &remote, &format!("refs/pull/{number}/head"), &head_ref)

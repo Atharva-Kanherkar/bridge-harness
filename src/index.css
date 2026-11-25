@@ -1180,12 +1180,19 @@ html[data-native-fullscreen] .u-traffic-inset {
 .u-collapse > div {
   min-height: 0;
   overflow: hidden;
+  transition: padding-block var(--duration-slow) var(--ease-out-bridge);
 }
 
 .u-collapse.shut {
   grid-template-rows: 0fr;
   opacity: 0;
   pointer-events: none;
+}
+
+/* A 0fr track still leaves the child's own padding showing: a shut confirm
+   or receipt left an empty band under the merge box's actions. */
+.u-collapse.shut > div {
+  padding-block: 0;
 }
 
 
