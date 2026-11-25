@@ -109,7 +109,7 @@ export function ReviewActivity({ jobId, passes, running, repositoryUrl }: {
       <h4 className="flex items-center gap-2 text-caption font-medium text-muted-foreground">
         <span className="rounded-sm border border-border bg-background px-1.5 py-px text-foreground">{pass ? harnessLabel(pass.harness) : "Reviewer"}</span>
         {pass && pass.attempt > 1 && <span>attempt {pass.attempt}</span>}
-        {pass?.model && <span className="font-mono">{pass.model}{pass.effort ? ` · ${pass.effort}` : ""}</span>}
+        {pass && (pass.model || pass.effort) && <span className="font-mono">{pass.model ?? "default model"} · {pass.effort ?? "default effort"}</span>}
         <span className="tabular-nums">{items.filter(item => item.kind === "tool" || item.kind === "command").length} steps</span>
       </h4>
       <ul className="grid gap-1.5">
