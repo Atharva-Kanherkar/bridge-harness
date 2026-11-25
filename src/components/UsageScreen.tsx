@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronDown, Gauge, LoaderCircle, RefreshCw, RotateCcw } from "lucide-react";
+import { ChevronDown, Gauge, RefreshCw, RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
 import { harnessLabel } from "../utils";
@@ -15,7 +15,7 @@ import { UsageMosaic } from "./UsageMosaic";
 import { UsageCalendar } from "./UsageCalendar";
 import type { UsageLayoutProps } from "./UsageLayoutParts";
 import { UsageLoadingState } from "./UsageLayoutParts";
-import { Skeleton } from "./ui/skeleton";
+import { Skeleton, pendingClass } from "@/components/ui/skeleton";
 import { useProviderUsageOverviews } from "./UsageDot";
 import { UsageResetRow } from "./UsageResetRow";
 import {
@@ -297,7 +297,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         action={<span className="inline-flex shrink-0 items-center gap-2">
           <Segmented<UsageTab> label="View" value={tab} options={[{ value: "usage", label: "Usage" }, { value: "insights", label: "Insights" }, { value: "time", label: "Time" }]} onChange={setTab} />
           {onOpenMeter && <button type="button" onClick={onOpenMeter} aria-label="Open usage meter" title="Usage meter" className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Gauge size={14} aria-hidden="true" /></button>}
-          <button type="button" onClick={() => { setRefreshTick(tick => tick + 1); providerUsage.refresh(); }} disabled={loading || scanning} aria-label="Refresh usage" aria-busy={loading || scanning} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading || scanning ? "animate-spin" : ""} /></button>
+          <button type="button" onClick={() => { setRefreshTick(tick => tick + 1); providerUsage.refresh(); }} disabled={loading || scanning} aria-label="Refresh usage" aria-busy={loading || scanning} className={cn("inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40", pendingClass(loading || scanning))}><RefreshCw size={14} /></button>
         </span>}
       />
 
@@ -339,8 +339,8 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
             <div>
               <h2 className="text-ui font-medium text-foreground">History sources</h2>
             </div>
-            <button type="button" onClick={() => void scan()} disabled={scanning} className="inline-flex h-8 items-center gap-2 rounded-lg border border-border px-3 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-40">
-              {scanning ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />}Scan history
+            <button type="button" onClick={() => void scan()} disabled={scanning} aria-busy={scanning || undefined} className={cn("inline-flex h-8 items-center gap-2 rounded-lg border border-border px-3 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-40", pendingClass(scanning))}>
+              <RefreshCw size={13} aria-hidden="true" />Scan history
             </button>
           </div>
           {scanNote && <p role="status" className="mb-3 text-caption text-muted-foreground">{scanNote}</p>}
@@ -467,8 +467,8 @@ function PriceSection({ report, summary, overrides, refreshing, onRefreshRates, 
         <span className="truncate text-caption tabular-nums text-muted-foreground">{formatCount(rows.length)} {rows.length === 1 ? "model" : "models"} in this window · snapshot {summary.pricing.snapshotDate}{summary.pricing.overrides > 0 ? ` · ${formatCount(summary.pricing.overrides)} overrides` : ""}</span>
         <ChevronDown size={14} className={cn("ml-auto shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} aria-hidden="true" />
       </button>
-      <button type="button" onClick={onRefreshRates} disabled={refreshing} aria-label="Refresh rates" aria-busy={refreshing} title={`Refresh rates from ${summary.pricing.source}`} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
-        <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
+      <button type="button" onClick={onRefreshRates} disabled={refreshing} aria-label="Refresh rates" aria-busy={refreshing} title={`Refresh rates from ${summary.pricing.source}`} className={cn("inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40", pendingClass(refreshing))}>
+        <RefreshCw size={13} aria-hidden="true" />
       </button>
     </div>
     {open && <div id="usage-model-prices" className="mt-3">

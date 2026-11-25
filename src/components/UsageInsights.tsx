@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { SkeletonCards } from "@/components/ui/skeleton";
-import { LoaderCircle, Sparkles } from "lucide-react";
+import { SkeletonCards, pendingClass } from "@/components/ui/skeleton";
+import { Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
 import { harnessLabel } from "../utils";
@@ -180,8 +180,8 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
   useEffect(() => { load(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const report = result?.report ?? null;
-  const analyseButton = <button type="button" onClick={() => load(true)} disabled={loading} className="inline-flex h-8 items-center gap-2 rounded-lg border border-border px-3 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-40">
-    {loading ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <Sparkles size={13} aria-hidden="true" />}{report ? "Analyse again" : "Analyse my usage"}
+  const analyseButton = <button type="button" onClick={() => load(true)} disabled={loading} aria-busy={loading || undefined} className={cn("inline-flex h-8 items-center gap-2 rounded-lg border border-border px-3 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-40", pendingClass(loading))}>
+    <Sparkles size={13} aria-hidden="true" />{report ? "Analyse again" : "Analyse my usage"}
   </button>;
 
   if (loading && !report) return <InsightsSkeleton step={step} />;

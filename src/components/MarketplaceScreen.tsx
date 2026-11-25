@@ -1,7 +1,7 @@
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
-import { SkeletonRows } from "@/components/ui/skeleton";
+import { Skeleton, SkeletonRegion, SkeletonRows, pendingClass } from "@/components/ui/skeleton";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Check, ChevronLeft, ChevronRight, ExternalLink, LoaderCircle, Package, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Unplug, X } from "lucide-react";
+import { AlertCircle, Check, ChevronLeft, ChevronRight, ExternalLink, Package, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Unplug, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import { applyAppAuthStates, authenticationLabel, categoryLabel, compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, isUnnamedService, MARKETPLACE_ALIASES, serviceCategory, servicePopularity, verifiedBrandLogoUrl, type MarketplaceService } from "../marketplace";
 import type { MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MarketplaceVariant } from "../types";
@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { SkillMarketplace } from "./SkillMarketplace";
 import { StoreApps } from "./StoreApps";
 import type { AppKey } from "../apps/registry";
+import { cn } from "@/lib/utils";
 
 type InstallTarget = MarketplaceProvider | "both";
 type CatalogScope = "public" | "personal";
@@ -94,7 +95,7 @@ function ServiceRow({ service, busyKey, onOpen, onInstall }: {
         </span>
       </button>
       {installable
-        ? <Button size="xs" variant="secondary" disabled={!!busyKey} onClick={onInstall}>{working ? <LoaderCircle className="animate-spin" size={12} /> : "Install"}</Button>
+        ? <Button size="xs" variant="secondary" loading={working} disabled={!!busyKey} onClick={onInstall}>Install</Button>
         : <ChevronRight size={15} className="shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden="true" />}
     </div>
   </article>;
@@ -134,7 +135,7 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
         </div>
         <div className="shrink-0 pt-2">
           {installable
-            ? <Button size="sm" disabled={!!busyKey} onClick={onInstall}>{working ? <LoaderCircle className="animate-spin" size={13} /> : <Package size={13} />} Install</Button>
+            ? <Button size="sm" loading={working} disabled={!!busyKey} onClick={onInstall}><Package size={13} /> Install</Button>
             : <span className="inline-flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-3 py-1.5 text-caption font-medium text-success"><Check size={12} aria-hidden="true" /> Installed</span>}
         </div>
       </header>
@@ -170,7 +171,7 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
                   <Status variant={variant} />
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5">
-                  {variant.installed && canToggle && <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, nextToggle)}>{variantWorking ? <LoaderCircle className="animate-spin" size={11} /> : actionLabel(nextToggle)}</Button>}
+                  {variant.installed && canToggle && <Button size="xs" variant="ghost" loading={variantWorking} disabled={!!busyKey} onClick={() => onAction(variant, nextToggle)}>{actionLabel(nextToggle)}</Button>}
                   {variant.installed && variant.supportedActions.includes("update") && <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, "update")}>Update</Button>}
                   {variant.installed && variant.supportedActions.includes("uninstall") && <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, "uninstall")}>Uninstall</Button>}
                   {variant.installed && canAuthenticate && <Button size="xs" variant="secondary" disabled={!!busyKey} onClick={() => onAction(variant, "authenticate")}><ShieldCheck size={11} /> {isCodexApp ? "Connect" : `Connect ${providerLabel(variant.provider)}`}</Button>}
@@ -189,7 +190,7 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
               return <button key={value} type="button" data-active={target === value} aria-pressed={target === value} disabled={disabled} onClick={() => onTarget(value)} className="u-segmented-item disabled:opacity-25">{value === "both" ? "Both" : providerLabel(value)}</button>;
             })}
           </div>
-          <Button size="sm" disabled={!!busyKey} onClick={onInstall}>{working ? <LoaderCircle className="animate-spin" size={12} /> : <Package size={12} />} Install for {target === "both" ? "both" : providerLabel(target)}</Button>
+          <Button size="sm" loading={working} disabled={!!busyKey} onClick={onInstall}><Package size={12} /> Install for {target === "both" ? "both" : providerLabel(target)}</Button>
         </div>
       </section>}
 
@@ -351,11 +352,11 @@ function PluginMarketplace() {
 
   return <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
-      <ScreenHeading title="Plugins" action={<button type="button" onClick={() => { void refresh(); void refreshAuth(); }} disabled={loading} aria-label="Refresh apps" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /></button>} />
+      <ScreenHeading title="Plugins" action={<button type="button" onClick={() => { void refresh(); void refreshAuth(); }} disabled={loading} aria-busy={loading || undefined} aria-label="Refresh apps" className={cn("inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40", pendingClass(loading))}><RefreshCw size={14} /></button>} />
       <div className="relative mt-4"><Search className="pointer-events-none absolute left-3.5 top-1/2 z-10 -translate-y-1/2 text-muted-foreground" size={14} /><Input value={query} onChange={event => setQuery(event.target.value)} aria-label="Search apps" placeholder="Search apps" className="h-8 rounded-lg pl-10 text-ui" /></div>
 
       {catalog?.providers.map(item => item.error && <div key={item.provider} className="mt-3 flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-caption text-warning"><AlertCircle className="mt-0.5 shrink-0" size={12} /><span className="min-w-0 break-words"><b>{providerLabel(item.provider)}:</b> {item.error}</span></div>)}
-      {resolvingNames && <p role="status" className="mt-3 flex items-center gap-2 text-caption text-muted-foreground"><LoaderCircle className="animate-spin" size={12} aria-hidden="true" />Resolving connector names…</p>}
+      {resolvingNames && <SkeletonRegion label="Resolving connector names" className="mt-3"><Skeleton className="h-2.5 w-40" /></SkeletonRegion>}
       {namesFailed && <p role="status" className="mt-3 flex flex-wrap items-center gap-2 text-caption text-warning"><AlertCircle size={12} aria-hidden="true" />Connector names could not be resolved.<button type="button" onClick={() => void refreshAuth()} className="font-medium text-foreground transition-colors hover:underline">Retry</button></p>}
       {loading && !catalog && <PluginListSkeleton />}
       {catalogFailed && !loading && !catalog && <p role="status" className="mt-5 flex items-center gap-2 text-meta text-warning"><AlertCircle size={12} aria-hidden="true" />Plugins could not be loaded. Use refresh to try again.</p>}

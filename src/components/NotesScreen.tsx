@@ -28,6 +28,7 @@ import { chatName } from "./sidebarChats";
 import { NotePageView } from "./notes/NotePageView";
 import { NoteListSkeleton, NotePageSkeleton, NoteTabsSkeleton, readListOpen, writeListOpen } from "./notes/NotesSkeleton";
 import type { StartChoice } from "./notes/NotePickers";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 export const JOB_POLL_MS = 1500;
 
@@ -531,7 +532,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
               <button type="button" onClick={() => retry(item.key, item.body)} className="rounded-md px-1.5 py-0.5 text-foreground transition-colors hover:bg-accent">Retry</button>
               <button type="button" onClick={() => setPending(current => current.filter(other => other.key !== item.key))} className="rounded-md px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Discard</button>
             </div>
-            : <p className="m-0 mt-0.5 text-meta text-faint">Saving…</p>}
+            : <SkeletonRegion label="Saving" className="mt-1.5"><Skeleton className="h-2.5 w-16" /></SkeletonRegion>}
         </li>)}
         {asTree ? <PageTree
           roots={visible.filter(note => !note.parentId || !visibleIds.has(note.parentId))}

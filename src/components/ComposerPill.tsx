@@ -8,6 +8,7 @@ import { chipDetail, chipSummary, type ReferenceChipModel } from "../referenceCh
 import { VoiceControls, VoiceStatus, voiceIsBusy } from "./VoiceControls";
 import type { VoiceView, VoiceState } from "@/voiceDictation";
 import type { VoiceRecoveryAction } from "@/protocol/generated/protocol";
+import { pendingClass } from "@/components/ui/skeleton";
 
 export type ComposerPillProps = {
   value: string;
@@ -405,8 +406,9 @@ export function ComposerPill({
                   onClick={onStop}
                   disabled={stopping}
                   title={!working && agentsWorking ? "Stop the agents this chat started" : undefined}
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border-card bg-card text-foreground transition-colors duration-150 active:scale-95 hover:bg-accent disabled:opacity-70"
-                  aria-label={stopping ? "Stopping…" : "Stop"}
+                  aria-busy={stopping || undefined}
+                  className={cn("inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border-card bg-card text-foreground transition-colors duration-150 active:scale-95 hover:bg-accent disabled:opacity-70", pendingClass(stopping))}
+                  aria-label={stopping ? "Stopping" : "Stop"}
                 >
                   <Square className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
                 </button>

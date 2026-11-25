@@ -13,6 +13,7 @@ import {
   turnNumbersAreAbsolute,
   type TranscriptFacet,
 } from "./transcriptFacets";
+import { pendingClass } from "@/components/ui/skeleton";
 // The live view merges delta frames for readability; this pane must not —
 // the raw stream is the product. Dedupe by id, order by sequence, keep all.
 function mergeRaw(current: AgentEvent[], incoming: AgentEvent[]): AgentEvent[] {
@@ -153,7 +154,7 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
       {view === "entries" && head && <span className="ml-auto truncate font-mono text-caption text-muted-foreground">
         head {head.activeEntryId ? shortId(head.activeEntryId) : "—"} · {leaves.length} {leaves.length === 1 ? "leaf" : "leaves"}
       </span>}
-      <button
+      <button aria-busy={(exportState.status === "running") || undefined}
         type="button"
         disabled={exportState.status === "running"}
         onClick={() => {
@@ -163,10 +164,10 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
             .catch(cause => setExportState({ status: "error", message: cause instanceof Error ? cause.message : String(cause) }));
         }}
         title="Write the whole durable record to a JSONL file"
-        className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+        className={cn("inline-flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50", pendingClass(exportState.status === "running"))}
       >
         <Download size={10} aria-hidden="true" />
-        {exportState.status === "running" ? "Exporting…" : "Export JSONL"}
+        Export JSONL
       </button>
     </div>
 
@@ -216,8 +217,9 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
             .then(page => setLoaded(current => mergeRaw(current, page)))
             .finally(() => setLoading(false));
         }}
-        className="block w-full border-b border-border px-2 py-1.5 text-left text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-      >{loading ? "Loading…" : "Load earlier events"}</button>}
+        aria-busy={loading || undefined}
+        className={cn("block w-full border-b border-border px-2 py-1.5 text-left text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50", pendingClass(loading))}
+      >Load earlier events</button>}
       {visible.length === 0 && !loading && <p className="px-2 py-4 text-muted-foreground">
         {stream.length === 0 ? "No events recorded for this session yet." : "Nothing matches the filter."}
       </p>}

@@ -8,6 +8,7 @@ import { Check } from "lucide-react";
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
 import { clsx } from "clsx";
+import { pendingClass } from "@/components/ui/skeleton";
 
 export function Popover({ open, onClose, label, align = "start", side = "bottom", width = "w-72", children }: {
   open: boolean;
@@ -89,11 +90,13 @@ export function Pill({ children, active = false, className, ...props }: React.Bu
 }
 
 /** The one filled action in a popover: ink on paper, paper on ink. */
-export function PrimaryButton({ children, className, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+export function PrimaryButton({ children, className, busy, disabled, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { busy?: boolean }) {
   return <button
     type="button"
     {...props}
-    className={clsx("inline-flex h-8 shrink-0 items-center rounded-full bg-primary px-3.5 text-ui font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40", className)}
+    disabled={disabled || busy}
+    aria-busy={busy || undefined}
+    className={clsx("inline-flex h-8 shrink-0 items-center rounded-full bg-primary px-3.5 text-ui font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40", pendingClass(busy), className)}
   >{children}</button>;
 }
 

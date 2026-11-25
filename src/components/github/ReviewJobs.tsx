@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CircleAlert, CircleCheck, LoaderCircle, RotateCcw, SquareArrowOutUpRight, X } from "lucide-react";
+import { CircleAlert, CircleCheck, RotateCcw, SquareArrowOutUpRight, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../../api";
 import { relativeTime } from "../workDashboard";
 import type { ReviewJob, ReviewJobStatus } from "../../protocol/generated/protocol";
 import { ReviewDraft } from "./ReviewDraft";
 import { harnessLabel, REVIEW_STATUS, SEVERITIES, SEVERITY_TEXT } from "./reviewLabels";
+import { SkeletonDot, pendingClass } from "@/components/ui/skeleton";
 
 // The PR's review jobs, newest first, kept current by `reviews/job_updated`:
 // a review started here, from another window, or while another chat was open
@@ -64,7 +65,7 @@ function JobRow({ job, now, onChanged }: { job: ReviewJob; now: number; onChange
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
   };
-  const Icon = status.tone === "running" ? LoaderCircle : status.tone === "failed" ? CircleAlert : status.tone === "done" ? CircleCheck : null;
+  const Icon = status.tone === "failed" ? CircleAlert : status.tone === "done" ? CircleCheck : null;
   return <div data-review-job={job.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2">
     <span className="flex items-center gap-1">
       {job.harnesses.map(harness => <span key={harness} className="rounded-sm border border-border bg-background px-1.5 py-px text-caption font-medium text-foreground">{harnessLabel(harness)}</span>)}
@@ -72,7 +73,7 @@ function JobRow({ job, now, onChanged }: { job: ReviewJob; now: number; onChange
     <span className={cn("flex items-center gap-1 text-meta",
       status.tone === "failed" && "text-destructive", status.tone === "done" && "text-success", status.tone === "waiting" && "font-medium text-foreground",
       (status.tone === "running" || status.tone === "quiet") && "text-muted-foreground")}>
-      {Icon && <Icon size={12} aria-hidden="true" className={cn(status.tone === "running" && "animate-spin motion-reduce:animate-none")} />}
+      {status.tone === "running" ? <SkeletonDot /> : Icon && <Icon size={12} aria-hidden="true" />}
       {/* Only the label is announced; the clock beside it changes every second. */}
       <span role="status">{status.label}</span>
       {time && <span className="font-mono tabular-nums text-caption text-muted-foreground">{time}</span>}
@@ -246,7 +247,7 @@ export function ReviewStatusLine({ reviews, onShow }: { reviews: PullRequestRevi
   }
   if (failed && !active.length) {
     lines.push({
-      key: failed.id, tone: "failed", text: `Review with ${who(failed)} ${failed.status === "interrupted" ? "was interrupted" : "failed"}${failed.error ? `: ${failed.error}` : ""}`, action: busy ? "Retrying…" : "Retry",
+      key: failed.id, tone: "failed", text: `Review with ${who(failed)} ${failed.status === "interrupted" ? "was interrupted" : "failed"}${failed.error ? `: ${failed.error}` : ""}`, action: "Retry",
       onAction: () => {
         setBusy(true);
         bridgeApi.retryReview(failed.id).then(result => update(result.job), () => onShow()).finally(() => setBusy(false));
@@ -256,11 +257,11 @@ export function ReviewStatusLine({ reviews, onShow }: { reviews: PullRequestRevi
   return <div data-review-status className="mt-2 grid gap-1" aria-live="polite">
     {lines.map(line => <div key={line.key} className={cn("flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-meta",
       line.tone === "failed" ? "border-destructive/25 bg-destructive/10 text-destructive" : line.tone === "waiting" ? "border-border bg-card text-foreground" : "border-border bg-muted/40 text-muted-foreground")}>
-      {line.tone === "running" ? <LoaderCircle size={12} aria-hidden="true" className="shrink-0 animate-spin motion-reduce:animate-none" />
+      {line.tone === "running" ? <SkeletonDot />
         : line.tone === "failed" ? <CircleAlert size={12} aria-hidden="true" className="shrink-0" /> : <CircleCheck size={12} aria-hidden="true" className="shrink-0 text-success" />}
       <span className="min-w-0 flex-1 truncate" title={line.text}>{line.text}</span>
       {line.time && <span className="shrink-0 font-mono text-caption tabular-nums">{line.time}</span>}
-      <button type="button" disabled={line.tone === "failed" && busy} onClick={line.onAction} className="shrink-0 rounded px-1.5 py-0.5 text-meta font-medium text-foreground hover:bg-accent disabled:opacity-50">{line.action}</button>
+      <button type="button" disabled={line.tone === "failed" && busy} aria-busy={(line.tone === "failed" && busy) || undefined} onClick={line.onAction} className={cn("shrink-0 rounded px-1.5 py-0.5 text-meta font-medium text-foreground hover:bg-accent disabled:opacity-50", pendingClass(line.tone === "failed" && busy))}>{line.action}</button>
     </div>)}
   </div>;
 }

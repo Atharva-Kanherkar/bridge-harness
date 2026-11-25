@@ -111,8 +111,9 @@ describe("MoveToBridge", () => {
     await act(async () => { button(container, "Import").click(); await flush(); });
 
     expect(start).toHaveBeenCalledWith("claude_code");
-    expect(section("claude_code").textContent).toContain("Finding your chats…");
-    expect(button(section("claude_code"), "Importing…").disabled).toBe(true);
+    expect(section("claude_code").textContent).toContain("Finding your chats");
+    expect(button(section("claude_code"), "Import").disabled).toBe(true);
+    expect(button(section("claude_code"), "Import").getAttribute("aria-busy")).toBe("true");
     expect(button(section("codex"), "Import").disabled).toBe(true);
     expect(section("codex").textContent).toContain("Waits for the import that is running.");
     expect(section("codex").querySelector("[aria-label='Import progress']")).toBeNull();
@@ -159,7 +160,7 @@ describe("MoveToBridge", () => {
     await act(async () => { button(section("opencode"), "Import").click(); await flush(); });
 
     expect(start).toHaveBeenCalledWith("opencode");
-    expect(button(section("opencode"), "Importing…").disabled).toBe(true);
+    expect(button(section("opencode"), "Import").getAttribute("aria-busy")).toBe("true");
     expect(button(section("claude_code"), "Import").disabled).toBe(true);
     expect(section("claude_code").textContent).toContain("Waits for the import that is running.");
     await send(job({ tool: "opencode", total: 30, processed: 10, imported: 10, updatedAt: "2026-11-19T10:00:05Z" }));
@@ -266,7 +267,7 @@ describe("MoveToBridge", () => {
     await render();
 
     expect(container.textContent).toContain("20 of 50");
-    expect(button(container, "Importing…").disabled).toBe(true);
+    expect(container.querySelector("button[aria-busy='true']")?.textContent).toBe("Import");
   });
 
   it("keeps the newest progress when an older status read arrives late", async () => {

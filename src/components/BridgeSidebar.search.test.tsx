@@ -130,7 +130,7 @@ describe("sidebar chat search", () => {
     await settle();
     press("Enter");
     expect(search).toHaveBeenLastCalledWith("stall", { deep: true });
-    expect(text()).toContain("Searching deeper…");
+    expect(container.querySelector('[role="status"][aria-label="Searching conversations"]')).not.toBeNull();
     await act(async () => {
       resolveDeep(indexResult("stall", {
         stage: "model",

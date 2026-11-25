@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLink, FolderGit2, LoaderCircle, Play, Plus, Settings2, Sparkles, Workflow as WorkflowIcon } from "lucide-react";
+import { ExternalLink, FolderGit2, Play, Plus, Settings2, Sparkles, Workflow as WorkflowIcon } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { ForkSessionResult, Project, Workflow, WorkflowDefinition, WorkflowDraft, WorkflowOptions, WorkflowRun, WorkflowSettingsSnapshot, WorkflowSummary, WorkflowTemplate } from "../protocol/generated/protocol";
 import { openExternalUrl } from "../externalLinks";
@@ -16,6 +16,7 @@ import { WorkflowTemplates } from "./workflows/WorkflowTemplates";
 import { CHIP, Dot, ErrorNote, StatusChip, errorText } from "./workflows/parts";
 import { WorkflowInbox } from "./workflows/WorkflowInbox";
 import { needsYouCount } from "./workflows/notify";
+import { SkeletonRows } from "@/components/ui/skeleton";
 
 type Tab = "workflows" | "templates" | "inbox" | "native";
 type Editing = { workflow: Workflow | null; initial?: WorkflowDefinition | null; notes?: string[] } | null;
@@ -272,7 +273,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
         <input aria-label="Describe a job" value={describe} onChange={event => setDescribe(event.target.value)} disabled={drafting}
           placeholder={'Describe a job: "every weekday at 9, summarise my Slack mentions and Linear issues"'}
           className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground"/>
-        <Button size="xs" type="submit" disabled={drafting || !describe.trim()}>{drafting ? <LoaderCircle className="animate-spin" size={12}/> : null}Draft it</Button>
+        <Button size="xs" type="submit" loading={drafting} disabled={!describe.trim()}>Draft it</Button>
       </form>
       <div className="u-segmented w-fit" role="tablist" aria-label="Workflows sections">
         <button type="button" role="tab" data-active={tab === "workflows"} aria-selected={tab === "workflows"} className="u-segmented-item" onClick={() => setTab("workflows")}>Workflows</button>
@@ -286,7 +287,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
         : tab === "templates" ? <WorkflowTemplates busy={busy} onTry={template => void tryTemplate(template)} onCustomize={customizeTemplate}/>
         : tab === "inbox" ? <WorkflowInbox runs={allRuns} names={new Map((rows ?? []).map(row => [row.id, row.name]))} onOpenRun={run => void act(() => openRunOf(run))} onChanged={() => void refreshList()}/>
         : rows === null
-        ? <div className="flex min-h-56 items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="animate-spin" size={15}/>Loading workflows…</div>
+        ? <SkeletonRows label="Loading workflows" rows={4} lead="icon" trailing className="mt-4" />
         : rows.length === 0
           ? <div className="mt-6 flex flex-col items-center rounded-2xl border border-dashed border-border px-6 py-12 text-center">
             <div className="flex h-11 w-11 items-center justify-center rounded-[14px] border border-border bg-accent text-muted-foreground"><WorkflowIcon size={18}/></div>

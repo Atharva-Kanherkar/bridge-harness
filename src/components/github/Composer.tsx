@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { LoaderCircle, Send } from "lucide-react";
+import { Send } from "lucide-react";
 import { modKey } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { Kbd } from "@/components/ui/kbd";
+import { pendingClass } from "@/components/ui/skeleton";
 
 /** A write that reports back: `undefined` when GitHub took it, otherwise the
  *  reason it did not, verbatim. */
@@ -101,10 +102,11 @@ export function Composer({ label, placeholder, submitLabel, onSubmit, onCancel, 
       <button
         type="button"
         disabled={!ready}
+        aria-busy={busy || undefined}
         onClick={() => void send()}
-        className="inline-flex min-h-7 items-center gap-1.5 rounded-md bg-primary px-2.5 py-1 text-meta font-medium text-primary-foreground shadow-xs transition-[background-color,transform,opacity] hover:bg-primary/90 active:scale-[0.97] disabled:opacity-40"
+        className={cn("inline-flex min-h-7 items-center gap-1.5 rounded-md bg-primary px-2.5 py-1 text-meta font-medium text-primary-foreground shadow-xs transition-[background-color,transform,opacity] hover:bg-primary/90 active:scale-[0.97] disabled:opacity-40", pendingClass(busy))}
       >
-        {busy ? <LoaderCircle size={11} className="animate-spin" aria-hidden="true" /> : <Send size={11} aria-hidden="true" />}
+        <Send size={11} aria-hidden="true" />
         {submitLabel}
       </button>
     </div>

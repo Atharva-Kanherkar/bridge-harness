@@ -1,8 +1,9 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import { AlertCircle, Check, Loader2, Play } from "lucide-react";
+import { AlertCircle, Check, Play } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { commandFromFence } from "../terminal/runCommand";
 import type { TerminalRunResult } from "../terminal/runQueue";
+import { pendingClass } from "@/components/ui/skeleton";
 
 // A shell block an agent wrote, run in the chat's own terminal with one
 // click. Only a host that owns a terminal provides the context: notes,
@@ -50,7 +51,7 @@ export function RunButton({ lang, body, closed }: { lang: string; body: string; 
   };
 
   const lines = command.split("\n").length;
-  const label = state.kind === "running" ? "Running…" : state.kind === "sent" ? `Sent to ${state.shell}` : state.kind === "failed" ? "Couldn't run" : "Run";
+  const label = state.kind === "running" ? "Run" : state.kind === "sent" ? `Sent to ${state.shell}` : state.kind === "failed" ? "Couldn't run" : "Run";
   const name = state.kind === "idle" ? "Run in terminal" : state.kind === "failed" ? `Couldn't run: ${state.message}` : label;
   const title = state.kind === "failed" ? state.message : state.kind === "idle" ? (lines > 1 ? `Run these ${lines} lines in the terminal` : "Run in the terminal") : label;
 
@@ -59,6 +60,7 @@ export function RunButton({ lang, body, closed }: { lang: string; body: string; 
       type="button"
       onClick={start}
       disabled={state.kind === "running"}
+      aria-busy={state.kind === "running" || undefined}
       aria-label={name}
       title={title}
       data-run-state={state.kind}
@@ -66,6 +68,7 @@ export function RunButton({ lang, body, closed }: { lang: string; body: string; 
         "group/run inline-flex min-h-7 items-center gap-1.5 rounded-[0.35rem] px-[0.45rem] py-[0.15rem] text-caption font-medium transition-colors",
         "hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-default disabled:hover:bg-transparent",
         state.kind === "failed" ? "text-destructive" : state.kind === "idle" ? "text-foreground" : "text-muted-foreground",
+        pendingClass(state.kind === "running"),
       )}
     >
       {state.kind === "idle" && (
@@ -73,7 +76,6 @@ export function RunButton({ lang, body, closed }: { lang: string; body: string; 
           <Play size={8} fill="currentColor" strokeWidth={0} className="translate-x-px" />
         </span>
       )}
-      {state.kind === "running" && <Loader2 size={12} aria-hidden="true" className="animate-spin" />}
       {state.kind === "sent" && <Check size={12} aria-hidden="true" />}
       {state.kind === "failed" && <AlertCircle size={12} aria-hidden="true" />}
       <span aria-live="polite">{label}</span>

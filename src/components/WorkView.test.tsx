@@ -71,7 +71,7 @@ it("refresh runs the connected-tools briefing when configured", () => {
   act(() => button("Refresh").click()); expect(run).toHaveBeenCalledOnce(); expect(read).not.toHaveBeenCalled();
 });
 it("disables refresh while a briefing is running", () => {
-  render({ board: board({ suggestions: { state: "running" } }) }); expect(button("Refreshing").disabled).toBe(true);
+  render({ board: board({ suggestions: { state: "running" } }) }); expect(button("Refresh").disabled).toBe(true); expect(button("Refresh").getAttribute("aria-busy")).toBe("true");
 });
 it("offers setup with no invented activity when unconfigured", () => {
   const setup = vi.fn(); const run = vi.fn(); const read = vi.fn();

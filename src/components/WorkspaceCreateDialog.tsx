@@ -2,6 +2,7 @@ import { FolderGit2 } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { CreateDialogShell } from "./CreateDialogShell";
+import { pendingClass } from "@/components/ui/skeleton";
 
 export type WorkspaceCreateDialogProps = {
   open: boolean;
@@ -83,13 +84,13 @@ export function WorkspaceCreateDialog({
         >
           Cancel
         </button>
-        <button
+        <button aria-busy={busy || undefined}
           type="button"
           disabled={!canSubmit}
           onClick={onSubmit}
-          className="min-h-8 rounded-lg bg-primary px-4 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-45"
+          className={cn("min-h-8 rounded-lg bg-primary px-4 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-45", pendingClass(busy))}
         >
-          {busy ? "Creating…" : "Create workspace"}
+          Create workspace
         </button>
       </div>
     </CreateDialogShell>

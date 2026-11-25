@@ -11,6 +11,7 @@ import { Check, FolderOpen, MousePointerClick, Terminal, Trash2 } from "lucide-r
 import { cn } from "@/lib/utils";
 import { diskBytes, displayPath, parseStoragePlan, type StoragePlanCommand, type StoragePlanItem } from "../diskSpace";
 import { StatusPill } from "./settings/kit";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 /** What the Storage page lends a plan card. */
 export interface StorageAgentHost {
@@ -44,7 +45,7 @@ export function StoragePlanCard({ body }: { body: string }) {
   const [working, setWorking] = useState(false);
 
   if (!plan) {
-    return <div className="my-3 rounded-xl border border-dashed border-border px-4 py-3 text-caption text-muted-foreground motion-safe:animate-pulse">Drafting a cleanup plan…</div>;
+    return <SkeletonRegion label="Drafting a cleanup plan" className="my-3"><Skeleton className="h-24 rounded-xl" /></SkeletonRegion>;
   }
   const trashed = host?.trashed ?? new Set<string>();
   const live = plan.items.filter(item => !trashed.has(item.path));

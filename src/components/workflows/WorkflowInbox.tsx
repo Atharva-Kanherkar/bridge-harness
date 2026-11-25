@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { RUN_STATUS_LABEL, relativeTime, runTone } from "./format";
 import { runSteps, toolLabel } from "./WorkflowRunView";
 import { Dot, ErrorNote, errorText } from "./parts";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 /** Results newest first; among runs of the same moment, unread first. */
 export function orderResults(runs: WorkflowRun[]): WorkflowRun[] {
@@ -41,7 +42,7 @@ function PendingCard({ run, workflowName, onAnswered }: { run: WorkflowRun; work
       <ShieldCheck size={15} className="mt-0.5 shrink-0 text-foreground"/>
       <div className="min-w-0 flex-1">
         <p className="text-ui font-semibold text-foreground">{workflowName} wants to change something</p>
-        <p className="mt-0.5 text-caption text-muted-foreground">{pending ? toolLabel(pending.identity) : "Loading the request…"}</p>
+        {pending ? <p className="mt-0.5 text-caption text-muted-foreground">{toolLabel(pending.identity)}</p> : <SkeletonRegion label="Loading the request" className="mt-1.5"><Skeleton className="h-2.5 w-40" /></SkeletonRegion>}
         {pending && run.sessionId && <div className="mt-3 flex flex-wrap gap-1.5">
           <Button size="xs" disabled={busy} onClick={() => void answer(() => bridgeApi.resolveApproval(run.sessionId!, pending.sequence, "accept"))}><Check size={10}/>Allow once</Button>
           <Button size="xs" variant="secondary" disabled={busy} onClick={() => void answer(() => bridgeApi.alwaysAllowWorkflowTool(run.workflowId, run.sessionId!, pending.sequence, pending.identity))}>Always allow for this workflow</Button>

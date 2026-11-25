@@ -5,7 +5,7 @@
 // Quota semantics (real zero, stale, unavailable) come from the backend; this
 // file draws them and never infers a value.
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { SkeletonRows } from "@/components/ui/skeleton";
+import { SkeletonRows, pendingClass } from "@/components/ui/skeleton";
 import { createPortal } from "react-dom";
 import { BarChart3, RefreshCw, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -188,8 +188,8 @@ function adapterState(adapter?: AdapterDescriptor): "not_installed" | "signed_ou
 function ProviderError({ message, refreshing, onRefresh }: { message: string; refreshing: boolean; onRefresh?: () => void }) {
   return <div className="mt-1 flex items-start gap-2">
     <p className="min-w-0 flex-1 text-caption leading-relaxed text-muted-foreground">{message}</p>
-    {onRefresh && <button type="button" onClick={onRefresh} disabled={refreshing} className="inline-flex min-h-6 shrink-0 items-center gap-1 rounded-md border border-border px-2 text-caption font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-40">
-      <RefreshCw size={11} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />{refreshing ? "Refreshing" : "Refresh"}
+    {onRefresh && <button aria-busy={refreshing || undefined} type="button" onClick={onRefresh} disabled={refreshing} className={cn("inline-flex min-h-6 shrink-0 items-center gap-1 rounded-md border border-border px-2 text-caption font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-40", pendingClass(refreshing))}>
+      <RefreshCw size={11} aria-hidden="true" />Refresh
     </button>}
   </div>;
 }
@@ -339,7 +339,7 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
           <span className="truncate text-caption tabular-nums text-muted-foreground">{worst == null ? "no live limits" : `${percentLabel(worst.used)} · ${worstName} ${worst.window.label}`}</span>
           <span className="ml-auto flex shrink-0 items-center gap-1">
             {onOpenUsage && <button type="button" onClick={() => { setOpen(false); onOpenUsage(); }} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><BarChart3 size={11} aria-hidden="true" />Open Usage</button>}
-            {onRefresh && <button type="button" onClick={onRefresh} disabled={refreshing} aria-label="Refresh usage" className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" /></button>}
+            {onRefresh && <button aria-busy={refreshing || undefined} type="button" onClick={onRefresh} disabled={refreshing} aria-label="Refresh usage" className={cn("grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40", pendingClass(refreshing))}><RefreshCw size={13} aria-hidden="true" /></button>}
             <button type="button" onClick={() => setOpen(false)} aria-label="Close usage" className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><X size={13} aria-hidden="true" /></button>
           </span>
         </div>

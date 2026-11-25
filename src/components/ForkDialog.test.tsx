@@ -70,6 +70,8 @@ describe("ForkDialog", () => {
 
   it("disables submit while busy", async () => {
     const { container } = await renderFork({ busy: true });
-    expect([...container.querySelectorAll("button")].find(button => button.textContent?.includes("Forking…"))?.disabled).toBe(true);
+    const submit = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Create fork"));
+    expect(submit?.disabled).toBe(true);
+    expect(submit?.getAttribute("aria-busy")).toBe("true");
   });
 });

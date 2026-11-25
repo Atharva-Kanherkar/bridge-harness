@@ -122,10 +122,10 @@ describe("ChatToolsControl", () => {
       expectedRevision: 3,
       selection: expect.objectContaining({ harness: "codex", serversOff: ["linear"], codexSkillsOff: [] }),
     });
-    // The switch shows the new state with a spinner until the host answers.
+    // The switch shows the new state, its row busy, until the host answers.
     expect(switchOf("github")!.getAttribute("aria-checked")).toBe("true");
     expect(switchOf("github")!.disabled).toBe(true);
-    expect(row("github")!.querySelector('[aria-label="Loading"]')).not.toBeNull();
+    expect(switchOf("github")!.getAttribute("aria-busy")).toBe("true");
 
     await act(async () => { save.resolve({ revision: 4, refusal: null }); await save.promise; });
     await settle();
@@ -308,7 +308,7 @@ describe("ChatToolsControl", () => {
     expect(read.mock.calls.slice(reads)).toEqual([]);
     expect(chip()!.getAttribute("aria-label")).toBe("Tools: all on");
     expect(switchOf("linear")!.disabled).toBe(true);
-    expect(row("linear")!.querySelector('[aria-label="Loading"]')).not.toBeNull();
+    expect(switchOf("linear")!.getAttribute("aria-busy")).toBe("true");
   });
 
   it("reads a chat again when its own save ends after a return to it", async () => {

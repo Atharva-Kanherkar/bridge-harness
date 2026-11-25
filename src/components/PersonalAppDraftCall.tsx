@@ -11,6 +11,7 @@ import { McpAppFrame, useNearViewport } from "../mcp-apps/McpAppFrame";
 import { useDarkTheme } from "./Markdown";
 import { VisualActionsContext } from "./VisualCall";
 import { Button } from "./ui/button";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 
 function DraftCard({ sessionId, draftId, contentHash, readOnly }: { sessionId: string; draftId: string; contentHash: string; readOnly: boolean }) {
@@ -46,7 +47,9 @@ function DraftCard({ sessionId, draftId, contentHash, readOnly }: { sessionId: s
     } catch (reason) { setError(String(reason)); }
     finally { setBusy(false); }
   };
-  if (!draft) return <div ref={ref} role="status" className="rounded-2xl border border-dashed border-border px-4 py-3 text-xs text-muted-foreground">{error || "Loading app preview…"}</div>;
+  if (!draft) return error
+    ? <div ref={ref} role="alert" className="rounded-2xl border border-dashed border-border px-4 py-3 text-xs text-muted-foreground">{error}</div>
+    : <div ref={ref}><SkeletonRegion label="Loading app preview"><Skeleton className="h-40 rounded-2xl" /></SkeletonRegion></div>;
   const callTool = async (tool: string, args: Record<string, unknown>): Promise<CallToolResult> => {
     if (readOnly) throw new Error("Live tools are unavailable in history");
     // A write is a dry-run stub that echoes the view's own arguments. A read
@@ -85,8 +88,8 @@ function DraftCard({ sessionId, draftId, contentHash, readOnly }: { sessionId: s
         <div className="flex gap-2"><Button size="xs" disabled={busy || readOnly} onClick={() => void lock(true)}>Allow access and lock</Button><Button size="xs" variant="ghost" disabled={busy} onClick={() => setWider(undefined)}>Cancel</Button></div>
       </div>}
       <div className="flex items-center gap-2">
-        <Button size="sm" disabled={readOnly || busy || draft.locked || Boolean(wider)} onClick={() => void lock(false)}>
-          {draft.locked ? <Check aria-hidden="true" /> : <LockKeyhole aria-hidden="true" />}{draft.locked ? "Version locked" : busy ? "Locking…" : "Lock version"}
+        <Button size="sm" loading={busy && !draft.locked} disabled={readOnly || busy || draft.locked || Boolean(wider)} onClick={() => void lock(false)}>
+          {draft.locked ? <Check aria-hidden="true" /> : <LockKeyhole aria-hidden="true" />}{draft.locked ? "Version locked" : "Lock version"}
         </Button>
         <Button size="sm" variant="ghost" disabled={readOnly || busy || !actions?.ask} onClick={() => actions?.ask?.(`Revise the personal app “${draft.name}” (app_id: ${draft.appId}), starting from the preview ${contentHash}. Keep its current server and tool access unless I ask to change them. `)}><Pencil aria-hidden="true" />Revise</Button>
       </div>
@@ -100,9 +103,9 @@ export function PersonalAppDraftCall({ item, sessionId, readOnly = false }: { it
   const reference = personalAppReference(item);
   if (!sessionId) return <p className="py-2 text-xs text-muted-foreground">Open the original chat to view this app.</p>;
   if (!reference) {
-    const waiting = opening ? "Opening an app…" : "Drafting an app…";
     const failed = opening ? "App not opened. The reason went back to the chat." : "App not drafted. The reason went back to the chat.";
-    return <div className="px-1.5 py-2 text-xs text-muted-foreground">{item.status === "inProgress" ? waiting : failed}</div>;
+    if (item.status === "inProgress") return <SkeletonRegion label={opening ? "Opening an app" : "Drafting an app"}><Skeleton className="h-40 rounded-2xl" /></SkeletonRegion>;
+    return <div className="px-1.5 py-2 text-xs text-muted-foreground">{failed}</div>;
   }
   if (reference.kind === "open") return <PersonalAppOpenCard key={`${sessionId}:${reference.openId}:${reference.contentHash}`} sessionId={sessionId} openId={reference.openId} contentHash={reference.contentHash} readOnly={readOnly} />;
   return <DraftCard key={`${sessionId}:${reference.draftId}:${reference.contentHash}`} sessionId={sessionId} draftId={reference.draftId} contentHash={reference.contentHash} readOnly={readOnly} />;

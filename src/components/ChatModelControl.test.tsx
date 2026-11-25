@@ -899,7 +899,8 @@ describe("ChatModelControl while the host resolves the model", () => {
     await act(async () => root.render(<ChatModelControl adapters={discovering} harness="opencode" model={null} loading onChange={vi.fn()} />));
     expect(trigger().textContent).not.toContain("Loading models");
     await act(async () => { vi.advanceTimersByTime(600); });
-    expect(trigger().textContent).toContain("Loading models…");
+    expect(trigger().title).toBe("Loading models");
+    expect(trigger().textContent).toBe("");
     expect(trigger().getAttribute("aria-busy")).toBe("true");
     expect(trigger().getAttribute("aria-label")).toBe("Chat model: loading");
   });
@@ -923,7 +924,7 @@ describe("ChatModelControl while the host resolves the model", () => {
     await act(async () => root.render(<ChatModelControl adapters={discovering} harness="opencode" model={null} loading onChange={vi.fn()} />));
     await act(async () => { vi.advanceTimersByTime(600); });
     await act(async () => trigger().click());
-    expect(panel().textContent).toContain("Loading models…");
+    expect(panel().querySelector('[role="status"][aria-label="Loading models"]')).not.toBeNull();
     expect(panel().querySelector('[role="option"]')).toBeNull();
     expect(panel().textContent).not.toContain("Default");
   });
