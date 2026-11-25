@@ -115,7 +115,7 @@ fn validate_shape(settings: &ChatDefaults) -> Result<(), BridgeError> {
     }
     Ok(())
 }
-fn validate_model(
+pub(crate) fn validate_model(
     choice: &ChatModelChoice,
     effort: Option<&str>,
     descriptors: &[AdapterDescriptor],

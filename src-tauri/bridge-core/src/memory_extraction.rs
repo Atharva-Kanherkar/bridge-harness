@@ -1569,7 +1569,7 @@ mod tests {
 
     /// The memory model as the live loop resolves it, with no standard choice.
     fn memory(db: &Connection) -> MemoryModelSettings {
-        crate::memory_model::resolve_with(db, || Err("no standard choice in tests".into())).unwrap()
+        crate::memory_model::resolve_with(db, |_| None, || Err("no standard choice in tests".into())).unwrap()
     }
 
     fn set_new_chat_model(db: &Connection, harness: &str, model: Option<&str>) {

@@ -54,6 +54,32 @@ Issue #1146, part of epic #1144. Locked before implementation.
   `setMemoryModel` once and the source label renders.
 - The `api.ts` mock serves both methods, so `bun run dev` shows the card.
 
+## Review amendments (PR #1166 review)
+
+- One validated write path: `memory/set_memory_model` and the `memory.model`
+  settings tool both pin through `api::set_memory_model`. It refuses a harness
+  that is unregistered, unavailable or turned off, and a model the harness
+  does not list as available and compatible, before anything is stored. A
+  refusal keeps the old pin. Test: `{claude, no-such-model}` over an Opus pin
+  is refused and Opus stays.
+- That write publishes one `MemoryChanged` after the store lock is released,
+  whichever surface called it. Test: the API setter publishes it.
+- Resolution skips any candidate (pin, new-chat default, standard) whose
+  harness is turned off in Settings or not available, with that reason, so a
+  runner never starts a disabled provider. Test: a disabled Claude default is
+  skipped with "turned off" and nothing resolves.
+- Saving the new-chat defaults or a harness config publishes `MemoryChanged`
+  too, because both can change what an unpinned memory model resolves to.
+  Test: saving chat defaults publishes it.
+- Memory dialog: the pickers show the stored pin on every read, including a
+  pin changed or cleared elsewhere. Only an incomplete local choice (a harness
+  with no model yet) is kept apart as a draft. Test: a remote change to Opus
+  and a remote clear both update the pickers.
+- Memory dialog: a read that started before a successful memory-model write
+  cannot overwrite that write's result. Test: a delayed initial read that
+  resolves after pinning Haiku leaves Haiku shown, and "Use my new-chat model"
+  then clears it.
+
 ## Verification
 
 - Focused: `cargo test -p bridge-core memory_`, `-p bridge-core settings_tools`,

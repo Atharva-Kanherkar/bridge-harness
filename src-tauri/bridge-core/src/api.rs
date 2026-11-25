@@ -2743,14 +2743,35 @@ pub fn get_memory_model(core: &Arc<BridgeCore>) -> Result<wire::MemoryModelSetti
 
 /// Both a harness and a model pin the memory model; neither clears the pin.
 /// The next extraction and consolidation run on the answer.
+///
+/// The one write path, for the Memory page, the daemon and the settings tool
+/// alike. A pin is checked against the registry the way a new-chat default is
+/// (registered, available, turned on, and a model it lists as available and
+/// compatible) before anything is stored, so a refusal keeps the old pin. Every
+/// open Memory screen hears about the change once the lock is released.
 pub fn set_memory_model(
     core: &Arc<BridgeCore>,
     harness: Option<&str>,
     model: Option<&str>,
 ) -> Result<wire::MemoryModelSettings, BridgeError> {
-    let db = lock_db(core);
-    crate::memory_model::set(&db, harness, model)?;
-    crate::memory_model::resolve(&db, &core.adapter_registry)
+    let settings = {
+        let db = lock_db(core);
+        let trimmed = |value: Option<&str>| value.map(str::trim).filter(|text| !text.is_empty()).map(str::to_owned);
+        if let (Some(harness), Some(model)) = (trimmed(harness), trimmed(model)) {
+            crate::chat_defaults::validate_model(
+                &wire::ChatModelChoice { harness, model: Some(model), account: None },
+                None,
+                &core.adapter_registry.descriptors(),
+                &db,
+            )?;
+        }
+        crate::memory_model::set(&db, harness, model)?;
+        crate::memory_model::resolve(&db, &core.adapter_registry)?
+    };
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: memory_ledger::account_memory_scope().to_string(),
+    });
+    Ok(settings)
 }
 
 fn consolidation_settings_wire(
@@ -6482,6 +6503,8 @@ pub fn save_harness_config(
     if accounts_may_change {
         core.events.publish(crate::events::CoreEvent::StateChanged);
     }
+    // Turning a harness on or off changes what an unpinned memory model is.
+    publish_memory_model_inputs_changed(core);
     Ok(next)
 }
 
@@ -6495,6 +6518,7 @@ pub fn reset_harness_config(
     if crate::provider_accounts::supports_accounts(id) {
         core.events.publish(crate::events::CoreEvent::StateChanged);
     }
+    publish_memory_model_inputs_changed(core);
     if id == "opencode" {
         let directory = opencode_directory(None)?;
         let _ = core
@@ -9254,7 +9278,16 @@ pub fn get_chat_defaults(core: &Arc<BridgeCore>, project_id: Option<&str>) -> Re
 pub fn save_chat_defaults(core: &Arc<BridgeCore>, params: &wire::SaveChatDefaultsParams) -> Result<wire::ChatDefaultsView, BridgeError> {
     let result = crate::chat_defaults::save(&core.db.lock().unwrap(), &core.adapter_registry.descriptors(), params)?;
     core.events.publish(CoreEvent::StateChanged);
+    publish_memory_model_inputs_changed(core);
     Ok(result)
+}
+
+/// The new-chat default and harness settings feed an unpinned memory model,
+/// so an open Memory screen re-reads what memory jobs now run on.
+fn publish_memory_model_inputs_changed(core: &Arc<BridgeCore>) {
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: memory_ledger::account_memory_scope().to_string(),
+    });
 }
 pub fn get_app_preferences(core: &Arc<BridgeCore>) -> Result<wire::AppPreferences, BridgeError> {
     crate::app_preferences::read(&core.db.lock().unwrap())

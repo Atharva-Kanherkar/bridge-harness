@@ -1136,7 +1136,7 @@ mod tests {
 
     /// The memory model as the live loop resolves it, with no standard choice.
     fn memory(db: &Connection) -> MemoryModelSettings {
-        crate::memory_model::resolve_with(db, || Err("no standard choice in tests".into())).unwrap()
+        crate::memory_model::resolve_with(db, |_| None, || Err("no standard choice in tests".into())).unwrap()
     }
 
     fn propose_mode(db: &Connection) {
@@ -2019,7 +2019,7 @@ mod tests {
         let due = start + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
         // No pin and no new-chat default: what a new chat would start on
         // answers, with no model id, so the harness runs its default.
-        let standard = crate::memory_model::resolve_with(&db, || Ok(("claude".into(), None))).unwrap();
+        let standard = crate::memory_model::resolve_with(&db, |_| None, || Ok(("claude".into(), None))).unwrap();
         let claimed = claim_due(&db, due, &standard).unwrap().expect("the resolver answered");
         assert_eq!((claimed.harness.as_str(), claimed.model.as_deref()), ("claude", None));
 

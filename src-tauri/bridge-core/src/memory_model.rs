@@ -4,10 +4,12 @@
 //!
 //! Resolution tries, in order, the user's pin, the application new-chat
 //! default, and what a new chat starts on when that default is unset. The
-//! first choice whose harness can hold briefing authority wins, because every
-//! memory turn is tool-free and only such an adapter can enforce that. Every
-//! choice passed over is reported with the adapter's own reason, so the Memory
-//! page can say why it is not running on what the user expected.
+//! first choice whose harness can hold briefing authority, is turned on in
+//! Settings and is available wins: every memory turn is tool-free and only such
+//! an adapter can enforce that, and the runners start the adapter directly, so
+//! a harness the user turned off must never be picked here. Every choice passed
+//! over is reported with its reason, so the Memory page can say why it is not
+//! running on what the user expected.
 //!
 //! The chat a job reads never decides what it runs on. That is what lets a
 //! Codex or OpenCode conversation feed memory at all.
@@ -76,10 +78,11 @@ pub fn pinned(db: &Connection) -> Result<Option<MemoryModelChoice>, BridgeError>
     })
 }
 
-/// Pins both a harness and a model, or clears the pin when given neither.
+/// Stores the pin: both a harness and a model, or neither to clear it.
 ///
-/// A harness that cannot run a tool-free turn is refused here, while the user
-/// is looking at the setting, rather than at every run.
+/// A harness that cannot run a tool-free turn is refused here. Whether the
+/// harness is on and the model exists depends on the adapter registry, which
+/// the public write path ([`crate::api::set_memory_model`]) checks first.
 pub fn set(db: &Connection, harness: Option<&str>, model: Option<&str>) -> Result<(), BridgeError> {
     let harness = harness.map(str::trim).filter(|value| !value.is_empty());
     let model = model.map(str::trim).filter(|value| !value.is_empty());
@@ -113,32 +116,54 @@ pub fn set(db: &Connection, harness: Option<&str>, model: Option<&str>) -> Resul
 /// The memory model, with the standard choice taken from the same code path a
 /// new chat uses when its default model is unset.
 pub fn resolve(db: &Connection, registry: &AdapterRegistry) -> Result<MemoryModelSettings, BridgeError> {
-    resolve_with(db, || {
-        crate::sessions::resolve_orchestrator_selection(db, registry)
-            .map(|selection| (selection.adapter_id, selection.model))
-            .map_err(|error| error.to_string())
-    })
+    resolve_with(
+        db,
+        |harness| unavailable(registry, harness),
+        || {
+            crate::sessions::resolve_orchestrator_selection(db, registry)
+                .map(|selection| (selection.adapter_id, selection.model))
+                .map_err(|error| error.to_string())
+        },
+    )
 }
 
-/// [`resolve`] with the standard choice supplied by the caller, which is only
-/// asked for when neither the pin nor the new-chat default can serve.
+/// Why the registry cannot start `harness` right now, if it cannot.
+pub(crate) fn unavailable(registry: &AdapterRegistry, harness: &str) -> Option<String> {
+    match registry.descriptor(harness) {
+        None => Some("it is not a registered harness".into()),
+        Some(descriptor) if !descriptor.available => Some(
+            descriptor
+                .unavailable_reason
+                .filter(|reason| !reason.trim().is_empty())
+                .unwrap_or_else(|| format!("{} is not available", descriptor.label)),
+        ),
+        Some(_) => None,
+    }
+}
+
+/// [`resolve`] with the registry's answers supplied by the caller:
+/// `unavailable` says why a harness cannot start, and `standard` is only asked
+/// for when neither the pin nor the new-chat default can serve.
 pub fn resolve_with(
     db: &Connection,
+    unavailable: impl Fn(&str) -> Option<String>,
     standard: impl FnOnce() -> Result<(String, Option<String>), String>,
 ) -> Result<MemoryModelSettings, BridgeError> {
     let pinned = pinned(db)?;
     let mut skipped = Vec::new();
     let mut consider = |harness: String, model: Option<String>, source: MemoryModelSource| {
         let model = model.map(|value| value.trim().to_owned()).filter(|value| !value.is_empty());
-        match crate::briefing_policy::adapter_may_brief(&harness) {
-            Ok(_) => Some(ResolvedMemoryModel { harness, model, source }),
-            Err(unsupported) => {
-                skipped.push(SkippedMemoryModel {
-                    harness,
-                    model,
-                    source,
-                    reason: unsupported.reason(),
-                });
+        let refusal = match crate::briefing_policy::adapter_may_brief(&harness) {
+            Err(unsupported) => Some(unsupported.reason()),
+            Ok(_) if !crate::agent_config::is_harness_enabled(db, &harness) => {
+                Some("it is turned off in Settings".to_owned())
+            }
+            Ok(_) => unavailable(&harness),
+        };
+        match refusal {
+            None => Some(ResolvedMemoryModel { harness, model, source }),
+            Some(reason) => {
+                skipped.push(SkippedMemoryModel { harness, model, source, reason });
                 None
             }
         }
@@ -206,7 +231,7 @@ mod tests {
         let (_dir, db) = db();
         set_new_chat_model(&db, "claude", Some("claude-opus-5-5"));
         set(&db, Some("claude"), Some("claude-haiku-5-5")).unwrap();
-        let settings = resolve_with(&db, || panic!("the standard choice is not needed")).unwrap();
+        let settings = resolve_with(&db, |_| None, || panic!("the standard choice is not needed")).unwrap();
         let resolved = settings.resolved.unwrap();
         assert_eq!(resolved.source, MemoryModelSource::User);
         assert_eq!(resolved.model.as_deref(), Some("claude-haiku-5-5"));
@@ -217,7 +242,7 @@ mod tests {
     fn no_pin_uses_the_new_chat_default_and_ignores_its_account() {
         let (_dir, db) = db();
         set_new_chat_model(&db, "claude", Some("claude-opus-5-5"));
-        let settings = resolve_with(&db, no_standard).unwrap();
+        let settings = resolve_with(&db, |_| None, no_standard).unwrap();
         assert!(settings.pinned.is_none());
         assert_eq!(
             settings.resolved,
@@ -233,7 +258,7 @@ mod tests {
     fn a_default_that_cannot_run_tool_free_is_skipped_for_the_standard_choice() {
         let (_dir, db) = db();
         set_new_chat_model(&db, "codex", Some("gpt-5.5"));
-        let settings = resolve_with(&db, || Ok(("claude".into(), Some("claude-sonnet-5-5".into())))).unwrap();
+        let settings = resolve_with(&db, |_| None, || Ok(("claude".into(), Some("claude-sonnet-5-5".into())))).unwrap();
         let resolved = settings.resolved.unwrap();
         assert_eq!(resolved.source, MemoryModelSource::Standard);
         assert_eq!(resolved.harness, "claude");
@@ -255,7 +280,7 @@ mod tests {
         )
         .unwrap();
         set_new_chat_model(&db, "codex", None);
-        let settings = resolve_with(&db, || Ok(("codex".into(), Some("gpt-5.5".into())))).unwrap();
+        let settings = resolve_with(&db, |_| None, || Ok(("codex".into(), Some("gpt-5.5".into())))).unwrap();
         assert!(settings.resolved.is_none());
         assert!(profile(&settings).is_none());
         let sources: Vec<_> = settings.skipped.iter().map(|skip| skip.source).collect();
@@ -264,6 +289,47 @@ mod tests {
             [MemoryModelSource::User, MemoryModelSource::ChatDefault, MemoryModelSource::Standard]
         );
         assert!(settings.skipped.iter().all(|skip| !skip.reason.is_empty()));
+    }
+
+    #[test]
+    fn a_harness_turned_off_in_settings_is_skipped_rather_than_started() {
+        let (_dir, db) = db();
+        set_new_chat_model(&db, "claude", Some("claude-opus-5-5"));
+        let mut claude = crate::agent_config::state(&db)
+            .unwrap()
+            .harnesses
+            .into_iter()
+            .find(|item| item.id == "claude")
+            .unwrap();
+        claude.enabled = false;
+        crate::agent_config::save_harness(&db, claude).unwrap();
+        assert!(!crate::agent_config::is_harness_enabled(&db, "claude"));
+        let settings = resolve_with(&db, |_| None, no_standard).unwrap();
+        assert!(settings.resolved.is_none(), "a runner must not start a disabled provider");
+        assert_eq!(settings.skipped.len(), 1);
+        assert_eq!(settings.skipped[0].source, MemoryModelSource::ChatDefault);
+        assert!(settings.skipped[0].reason.contains("turned off"), "{}", settings.skipped[0].reason);
+
+        // A pin on the disabled harness is skipped the same way.
+        set(&db, Some("claude"), Some("claude-haiku-5-5")).unwrap();
+        let settings = resolve_with(&db, |_| None, no_standard).unwrap();
+        assert!(settings.resolved.is_none());
+        assert_eq!(settings.skipped[0].source, MemoryModelSource::User);
+    }
+
+    #[test]
+    fn a_harness_the_registry_cannot_start_is_skipped_with_its_reason() {
+        let (_dir, db) = db();
+        set_new_chat_model(&db, "claude", Some("claude-opus-5-5"));
+        let settings = resolve_with(
+            &db,
+            |harness| (harness == "claude").then(|| "Claude Code is not signed in".to_owned()),
+            || Ok(("claude".into(), None)),
+        )
+        .unwrap();
+        assert!(settings.resolved.is_none());
+        assert_eq!(settings.skipped.len(), 2, "the default and the standard choice");
+        assert!(settings.skipped.iter().all(|skip| skip.reason == "Claude Code is not signed in"));
     }
 
     #[test]
