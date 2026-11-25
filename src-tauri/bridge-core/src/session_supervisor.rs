@@ -37,6 +37,10 @@ pub(crate) struct WorkerResultDelivery {
     pub child_session_id: String,
     pub result: WorkerResult,
     pub repository: Option<serde_json::Value>,
+    /// The attempt this result was reported against, even if the worker is
+    /// reused before the durable result is delivered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_attempt_id: Option<String>,
     /// Survives a daemon restart with the outbox row, so a pending delivery
     /// still names the artifact after a reload.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -285,14 +289,16 @@ impl SessionSupervisor {
     ) -> Result<Option<ReportedWorkerResult>, BridgeError> {
         result.validate().map_err(BridgeError::Invalid)?;
         let transaction = db.unchecked_transaction()?;
-        let runtime: Option<(String, String)> = transaction
+        let runtime: Option<(String, String, Option<String>)> = transaction
             .query_row(
-                "SELECT parent_session_id,result_status FROM worker_runtime WHERE session_id=?1",
+                "SELECT r.parent_session_id,r.result_status,i.verification_attempt_id
+                 FROM worker_runtime r LEFT JOIN worker_completion_inputs i ON i.child_session_id=r.session_id
+                 WHERE r.session_id=?1",
                 params![session_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
-        let Some((parent_session_id, result_status)) = runtime else {
+        let Some((parent_session_id, result_status, verification_attempt_id)) = runtime else {
             return Ok(None);
         };
         if result_status == "reported" {
@@ -355,6 +361,7 @@ impl SessionSupervisor {
                 child_session_id: session_id.to_owned(),
                 result: result.clone(),
                 repository: evidence.cloned(),
+                verification_attempt_id,
                 artifacts: artifacts.to_vec(),
             }).map_err(|error| BridgeError::Invalid(error.to_string()))?,
             idempotency_key: format!("worker-result:{}", report.evidence_id),

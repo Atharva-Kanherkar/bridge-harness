@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 96;
+const LATEST_SCHEMA_VERSION: i64 = 97;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -846,6 +846,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
                 add_column_if_missing(&transaction, "review_jobs", "pr_title", "TEXT")?;
                 add_column_if_missing(&transaction, "review_jobs", "pr_author", "TEXT")?;
             }
+            97 => add_column_if_missing(
+                &transaction, "worker_completion_inputs", "verification_attempt_id", "TEXT",
+            )?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"

@@ -626,18 +626,16 @@ pub fn integrate(plan: &AdoptionPlan) -> Result<AdoptionOutcome, BridgeError> {
     let mut divergence = Vec::new();
     // Does the checkout still hold exactly what was verified? The attempt stamped
     // this path's HEAD and dirty digest; anything else has been touched since.
-    if let Some((head, dirty)) = &plan.verified_stamp {
-        let current = store::repository_state_for_path(worker);
-        let current_head = current.get("head").and_then(serde_json::Value::as_str);
-        let current_dirty = current.get("dirtyHash").and_then(serde_json::Value::as_str);
-        if current_head != Some(head.as_str()) || current_dirty != Some(dirty.as_str()) {
-            divergence.push(format!(
-                "the worker checkout changed after verification (verified {head}/{dirty}, found {}/{})",
-                current_head.unwrap_or("unavailable"),
-                current_dirty.unwrap_or("unavailable")
-            ));
+    let verified_contents = plan.verified_stamp.as_ref().and_then(|(head, dirty)| {
+        match crate::completion::measure_repository(worker) {
+            Ok(current) if &current.stamp.head == head && &current.stamp.dirty_digest == dirty => {
+                return Some(current.checkout_digest);
+            }
+            Ok(_) => divergence.push("the worker checkout changed after verification".into()),
+            Err(error) => divergence.push(format!("the worker checkout could not be remeasured: {error}")),
         }
-    }
+        None
+    });
     // A three-way merge produces a tree that is neither the verified worker tree
     // nor the previously verified task tree.
     let fast_forward = git::integration_is_fast_forward(task, worker).unwrap_or(false);
@@ -658,6 +656,15 @@ pub fn integrate(plan: &AdoptionPlan) -> Result<AdoptionOutcome, BridgeError> {
         ),
     )?;
     let result = git::integrate_worker_changes(task, worker, plan.task_active)?;
+    // Git can leave verified bytes behind during capture (for example when a
+    // tracked path is marked assume-unchanged) or normalize them at checkout.
+    if let Some(contents) = verified_contents.filter(|_| fast_forward) {
+        match crate::completion::measure_repository(task) {
+            Ok(current) if current.checkout_digest == contents => {}
+            Ok(_) => divergence.push("the adopted checkout differs from the verified files".into()),
+            Err(error) => divergence.push(format!("the adopted checkout could not be measured: {error}")),
+        }
+    }
     let mut detail = match captured {
         Some(commit) => format!("{result:?} (captured uncommitted work as {commit})"),
         None => format!("{result:?}"),
@@ -1473,7 +1480,7 @@ mod tests {
     /// Record a live completion attempt bound to this worker at its current stamp,
     /// so adoption can tell whether the tree it merges is the verified one.
     fn verify_at_current_state(fixture: &Fixture, worker: &Path) -> String {
-        let state = store::repository_state_for_path(worker);
+        let stamp = crate::completion::repository_stamp(worker).unwrap();
         let attempt = uuid::Uuid::new_v4().to_string();
         fixture.db.execute("INSERT INTO completion_contracts(id,workspace_id,session_id,schema_version,acceptance_criteria,markdown_committed,status,created_at,updated_at) VALUES('c','w','parent',1,'[\"ok\"]',0,'active','now','now')", []).unwrap();
         fixture.db.execute("INSERT INTO eval_plans(id,contract_id,schema_version,risk,plan,created_at) VALUES('p','c',1,'low','{}','now')", []).unwrap();
@@ -1482,8 +1489,8 @@ mod tests {
              VALUES(?1,'p','parent',?2,?3,?4,'verified','child','now')",
             params![
                 attempt,
-                state["head"].as_str().unwrap(),
-                state["dirtyHash"].as_str().unwrap(),
+                stamp.head,
+                stamp.dirty_digest,
                 worker.to_string_lossy(),
             ],
         )
@@ -1509,8 +1516,6 @@ mod tests {
         let worker = isolated_worker(&fixture);
         std::fs::create_dir_all(worker.join("src")).unwrap();
         std::fs::write(worker.join("src/feature.txt"), "worker\n").unwrap();
-        git_cmd(&worker, &["add", "."]);
-        git_cmd(&worker, &["commit", "-q", "-m", "worker change"]);
         record_evidence(&fixture.db, "child", &recorded_evidence(&fixture, &worker)).unwrap();
         let attempt = verify_at_current_state(&fixture, &worker);
 
@@ -1531,24 +1536,44 @@ mod tests {
         std::fs::write(worker.join("src/feature.txt"), "verified\n").unwrap();
         git_cmd(&worker, &["add", "."]);
         git_cmd(&worker, &["commit", "-q", "-m", "worker change"]);
+        std::fs::write(worker.join("src/feature.txt"), "edit A\n").unwrap();
         record_evidence(&fixture.db, "child", &recorded_evidence(&fixture, &worker)).unwrap();
         let attempt = verify_at_current_state(&fixture, &worker);
-        // Something edits the checkout after the gate passed.
-        std::fs::write(
-            worker.join("src/feature.txt"),
-            "changed after verification\n",
-        )
-        .unwrap();
+        let status = git_cmd(&worker, &["status", "--porcelain"]);
+        std::fs::write(worker.join("src/feature.txt"), "edit B\n").unwrap();
+        assert_eq!(status, git_cmd(&worker, &["status", "--porcelain"]));
 
         adopt(&fixture.db, "child").unwrap();
 
         assert_eq!(attempt_status(&fixture, &attempt), "superseded");
+        assert_eq!(
+            std::fs::read_to_string(fixture.task.join("src/feature.txt")).unwrap(),
+            "edit B\n"
+        );
         let detail = binding(&fixture.db, "child")
             .unwrap()
             .unwrap()
             .detail
             .unwrap();
         assert!(detail.contains("changed after verification"), "{detail}");
+    }
+
+    #[test]
+    fn adoption_supersedes_proof_when_git_leaves_verified_bytes_behind() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        git_cmd(&worker, &["update-index", "--assume-unchanged", "base.txt"]);
+        std::fs::write(worker.join("base.txt"), "visible to verification\n").unwrap();
+        std::fs::create_dir_all(worker.join("src")).unwrap();
+        std::fs::write(worker.join("src/feature.txt"), "adopted\n").unwrap();
+        record_evidence(&fixture.db, "child", &recorded_evidence(&fixture, &worker)).unwrap();
+        let attempt = verify_at_current_state(&fixture, &worker);
+
+        adopt(&fixture.db, "child").unwrap();
+
+        assert!(fixture.task.join("src/feature.txt").exists());
+        assert_eq!(std::fs::read_to_string(fixture.task.join("base.txt")).unwrap(), "base\n");
+        assert_eq!(attempt_status(&fixture, &attempt), "superseded");
     }
 
     /// The task branch advanced, so integration is a three-way merge producing a

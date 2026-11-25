@@ -5752,15 +5752,12 @@ pub fn launch_worker_outcome(
         // else is refused as a delegation instead of surfacing later as a worker
         // launch failure after a reservation was already created.
         let available_capabilities = live_available_capabilities(&state);
-        let resolution = {
-            let db = state.db.lock().unwrap();
-            completion::ensure_verification_target(
-                &db,
-                parent_session_id,
-                directive,
-                &available_capabilities,
-            )
-        };
+        let resolution = completion::ensure_verification_target(
+            &state.db,
+            parent_session_id,
+            directive,
+            &available_capabilities,
+        );
         match resolution {
             Ok(completion::VerificationTargetResolution::Existing) => {}
             Ok(completion::VerificationTargetResolution::SelfRecorded) => {
@@ -5920,7 +5917,7 @@ pub fn launch_worker_outcome(
     let completion_input = serde_json::to_string(directive)
         .map_err(|error| BridgeError::Invalid(format!("Could not serialize worker completion input: {error}")))
         .and_then(|serialized| state.db.lock().unwrap().execute(
-            "INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES(?1,?2,?3) ON CONFLICT(child_session_id) DO UPDATE SET request=excluded.request,updated_at=excluded.updated_at",
+            "INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES(?1,?2,?3) ON CONFLICT(child_session_id) DO UPDATE SET request=excluded.request,updated_at=excluded.updated_at,verification_attempt_id=NULL",
             params![reservation.session_id, serialized, Utc::now().to_rfc3339()],
         ).map(|_| ()).map_err(BridgeError::from));
     if let Err(error) = completion_input {
@@ -5933,15 +5930,12 @@ pub fn launch_worker_outcome(
         return WorkerLaunchOutcome::Failed;
     }
     if directive.role == delegation::WorkerRole::Verification {
-        let verification_path =
-            completion::verification_target_path(&state.db.lock().unwrap(), parent_session_id);
+        let verification_path = completion::bind_verification_worker(
+            &state.db, parent_session_id, &reservation.session_id,
+        );
         match verification_path {
             Ok(Some(path)) => {
-                reservation.path = path.clone();
-                let _ = state.db.lock().unwrap().execute(
-                    "UPDATE worker_runtime SET worktree_path=?2,updated_at=?3 WHERE session_id=?1",
-                    params![reservation.session_id, path, Utc::now().to_rfc3339()],
-                );
+                reservation.path = path;
             }
             // Unroutable, not broken. This used to forward rusqlite's
             // `Query returned no rows`, which told the orchestrator neither what
@@ -5980,7 +5974,7 @@ pub fn launch_worker_outcome(
                     core,
                     &reservation,
                     parent_session_id,
-                    "database",
+                    "verification_target",
                     &reason,
                 );
                 return WorkerLaunchOutcome::Failed;
@@ -10778,7 +10772,7 @@ fn prepare_worker_result_delivery(
     delivery: session_supervisor::WorkerResultDelivery,
 ) -> Result<(), BridgeError> {
     let session_supervisor::WorkerResultDelivery {
-        report, child_session_id, result, repository: evidence_payload, artifacts,
+        report, child_session_id, result, repository: evidence_payload, verification_attempt_id, artifacts,
     } = delivery;
     let state = core.clone();
     {
@@ -10802,15 +10796,13 @@ fn prepare_worker_result_delivery(
     )
     .is_some_and(|turn_id| is_direct_agent_turn(&turn_id));
         let available_capabilities = live_available_capabilities(&state);
-        let completion_result = {
-            let db = state.db.lock().unwrap();
-            completion::create_from_worker_result(
-                &db,
-                &child_session_id,
-                &result,
-                &available_capabilities,
-            )
-        };
+        let completion_result = completion::create_from_worker_result(
+            &state.db,
+            &child_session_id,
+            &result,
+            verification_attempt_id.as_deref(),
+            &available_capabilities,
+        );
         let completion = match completion_result {
             Ok(summary) => summary,
             Err(error) => {
@@ -11587,23 +11579,19 @@ fn run_due_completion_checks(core: &Arc<BridgeCore>) {
         check_runner::pending_shell_checks(&db).unwrap_or_default()
     };
     for check in pending {
-        // Claim under the lock, then release it: the command itself must never
-        // run while the global SQLite lock is held.
-        let claimed = {
-            let db = state.db.lock().unwrap();
-            check_runner::claim(&db, &check).unwrap_or(false)
-        };
-        if !claimed {
+        let claimed = with_current_check_revision(core, &check, |db, _| {
+            check_runner::claim(db, &check)
+        });
+        if !matches!(claimed, Ok(Some(true))) {
             continue;
         }
-        // The command runs with no lock held: a `cargo test` can take minutes,
-        // and holding the global SQLite lock across it would freeze every other
-        // session. Only the verdict is written under the lock.
         let outcome = check_runner::run_claimed_check_offline(&check);
-        let ran = {
-            let db = state.db.lock().unwrap();
-            check_runner::record_outcome(&db, &check, &outcome)
-        };
+        let ran = with_current_check_revision(core, &check, |db, stamp| {
+            check_runner::record_outcome(db, &check, &outcome)?;
+            completion::finalize(db, &check.attempt_id, stamp)?;
+            completion::reconcile_parent_readiness(db, &check.session_id)?;
+            Ok(())
+        });
         if let Err(error) = ran {
             let db = state.db.lock().unwrap();
             let _ = store::event(
@@ -11615,29 +11603,38 @@ fn run_due_completion_checks(core: &Arc<BridgeCore>) {
             );
             continue;
         }
-        // Recompute the verdict now that this check is terminal, then release the
-        // parent if the gate is satisfied. The stamp is re-derived from the
-        // checkout, not read back out of the attempt row: passing the stored
-        // values would make `finalize`'s drift guard unfalsifiable, and a tree
-        // that changed under the checks must supersede the attempt.
-        let current = store::repository_state_for_path(Path::new(&check.repository_path));
-        let stamp = current
-            .get("head")
-            .and_then(serde_json::Value::as_str)
-            .zip(current.get("dirtyHash").and_then(serde_json::Value::as_str))
-            .map(|(head, dirty_digest)| completion::RepositoryStamp {
-                head: head.to_owned(),
-                dirty_digest: dirty_digest.to_owned(),
-            });
-        {
-            let db = state.db.lock().unwrap();
-            if let Some(stamp) = stamp {
-                let _ = completion::finalize(&db, &check.attempt_id, &stamp);
-            }
-            let _ = completion::reconcile_parent_readiness(&db, &check.session_id);
+        if matches!(ran, Ok(Some(()))) {
+            core.events.publish(CoreEvent::StateChanged);
         }
-        core.events.publish(CoreEvent::StateChanged);
     }
+}
+
+/// Measure outside the global lock, then compare and apply while the same
+/// attempt is pinned in SQLite. Both the claim and the result use this path.
+fn with_current_check_revision<T>(
+    core: &BridgeCore,
+    check: &check_runner::PendingCheck,
+    apply: impl FnOnce(&Connection, &completion::RepositoryStamp) -> Result<T, BridgeError>,
+) -> Result<Option<T>, BridgeError> {
+    let measured = completion::repository_stamp(Path::new(&check.repository_path));
+    let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let stamp = match measured {
+        Ok(stamp) => stamp,
+        Err(error) => {
+            let updated = check_runner::record_stamp_unavailable(&db, check, &error)?;
+            drop(db);
+            if updated {
+                core.events.publish(CoreEvent::StateChanged);
+            }
+            return Ok(None);
+        }
+    };
+    if !completion::confirm_attempt_stamp(&db, &check.attempt_id, &check.repository_path, &stamp)? {
+        drop(db);
+        core.events.publish(CoreEvent::StateChanged);
+        return Ok(None);
+    }
+    Ok(Some(apply(&db, &stamp)?))
 }
 
 pub fn start_learning_maintenance(core: Arc<BridgeCore>) {

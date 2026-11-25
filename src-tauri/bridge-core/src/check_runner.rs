@@ -451,10 +451,31 @@ pub fn pending_shell_checks(db: &Connection) -> Result<Vec<PendingCheck>, Bridge
 /// Returns false when another pass already claimed it.
 pub fn claim(db: &Connection, check: &PendingCheck) -> Result<bool, BridgeError> {
     let claimed = db.execute(
-        "UPDATE eval_check_runs SET status='running',started_at=?3 WHERE attempt_id=?1 AND check_id=?2 AND status='pending'",
+        "UPDATE eval_check_runs SET status='running',started_at=?3
+         WHERE attempt_id=?1 AND check_id=?2 AND status='pending'
+           AND EXISTS(SELECT 1 FROM eval_attempts WHERE id=?1 AND status IN ('verifying','changes_requested'))",
         params![check.attempt_id, check.check_id, Utc::now().to_rfc3339()],
     )?;
     Ok(claimed == 1)
+}
+
+pub(crate) fn record_stamp_unavailable(
+    db: &Connection,
+    check: &PendingCheck,
+    error: &BridgeError,
+) -> Result<bool, BridgeError> {
+    let detail = format!("Could not measure the verification checkout: {error}");
+    let updated = db.execute(
+        "UPDATE eval_check_runs SET detail=?3
+         WHERE attempt_id=?1 AND check_id=?2 AND status IN ('pending','running') AND detail IS NOT ?3
+           AND EXISTS(SELECT 1 FROM eval_attempts WHERE id=?1 AND status IN ('verifying','changes_requested'))",
+        params![check.attempt_id, check.check_id, detail],
+    )?;
+    if updated != 0 {
+        store::event(db, "completion", "completion.check_stamp_unavailable",
+            &check.session_id, &detail)?;
+    }
+    Ok(updated != 0)
 }
 
 /// Run a claimed check to a verdict **without touching the database**.
