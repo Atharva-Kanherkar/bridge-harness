@@ -64,9 +64,9 @@ The supplied conversation screenshot exposed a real gap in the earlier pass: sta
 | `AsideChat`, `WorkerDetail`, `WorkView`, `MissionControl` | Aside uses a focus-managed modal; worker feed/steering text and controls are readable; Work hierarchy and fact/task/error states are consistent; Mission Control uses container-based columns. Existing hidden routes are not newly enabled. |
 | `SessionRecallSearch`, `ShortcutsSheet`, `ModelSetupWizard`, `RouterSettingsDialog` | Legible search/shortcut rows; a compact first-run hierarchy with clear recommended and advanced paths; router settings use a bounded shared modal and readable grouped controls. |
 | `ui/button`, `input`, `textarea`, `label`, `badge`, `tabs`, `dialog`, `menu-panel`, `pane`, `scroll-area`, `input-group`, `alert`, `kbd`, `spinner` | Shared control sizes, typography, semantic tokens, focus/disabled/error states. Menus and dialogs use the existing glass primitives. Scroll content uses a Tailwind min-width utility; alert, input-group, keyboard hint, and spinner mechanics reviewed and retained. |
-| `BridgeMark`, `harnessMarks`, `connectorLogos` | Brand artwork retained; screen treatment is supplied by its surrounding controls. |
+| `harnessMarks`, `connectorLogos` | Brand artwork retained; screen treatment is supplied by its surrounding controls. |
 
-`WelcomeScreen.tsx` is an unused prototype with placeholder content; the shipped welcome view is owned by `App.tsx`. The prototype and development previews were not connected to navigation. `WorkspaceCreateDialog` is also currently unconnected; it was updated alongside the shared creation shell without enabling a second creation flow. Utility/data modules such as `workFacts`, `workTasks`, `workerStatus`, and editor buffer helpers retain their behavior and existing tests.
+The welcome view is owned by `App.tsx`; development previews are not connected to navigation. Utility/data modules such as `workFacts`, `workTasks`, `workerStatus`, and editor buffer helpers retain their behavior and existing tests.
 
 ## Visual walkthrough
 
