@@ -300,13 +300,14 @@ describe("GitHubPane", () => {
     expect(surfaceSnapshot("w")?.prs).toEqual([summary]);
   });
 
-  it("shows the connecting skeleton while the status resolves, not a lone spinner", async () => {
+  it("shows only placeholder rows while the status resolves: no spinner, no status copy", async () => {
     vi.spyOn(bridgeApi, "githubStatus").mockReturnValue(new Promise(() => undefined));
     await mount();
     const state = host!.querySelector('[role="status"][aria-label="Connecting to GitHub"]');
     expect(state).not.toBeNull();
-    expect(state!.textContent).toContain("Resolving the CLI and repository.");
-    // Structure, not a blank surface: placeholder rows ride beneath the notice.
+    // One loading state: the rows alone, never a spinner or copy stacked above.
+    expect(state!.textContent).not.toContain("Resolving the CLI");
+    expect(state!.querySelector(".animate-spin")).toBeNull();
     expect(state!.querySelectorAll("[data-skeleton-row]").length).toBeGreaterThan(0);
   });
 
