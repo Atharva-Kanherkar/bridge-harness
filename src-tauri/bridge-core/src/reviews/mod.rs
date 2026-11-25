@@ -8,6 +8,7 @@
 
 pub mod auto;
 pub mod contract;
+pub mod handoff;
 pub mod merge;
 pub mod overview;
 pub mod post;

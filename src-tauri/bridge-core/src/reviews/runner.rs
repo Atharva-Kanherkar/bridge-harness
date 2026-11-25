@@ -435,6 +435,7 @@ impl Driver {
                 return Err(StepError::Cancelled);
             }
             super::publish(&self.core, &job.id);
+            super::handoff::after(&self.core, &job.id, super::handoff::Moment::Drafted);
             // Only the claim that drafted the job reaches this, so a superseded
             // driver never removes a replacement's worktree. Posting reads the
             // stored findings, not the worktree.
@@ -704,6 +705,7 @@ impl Driver {
             return Err(StepError::Cancelled);
         }
         super::publish(&self.core, &job.id);
+        super::handoff::after(&self.core, &job.id, super::handoff::Moment::Posted);
         Ok(())
     }
 

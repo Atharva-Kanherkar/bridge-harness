@@ -1,5 +1,5 @@
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
-import { SkeletonRows, pendingClass } from "@/components/ui/skeleton";
+import { pendingClass, SkeletonRows } from "@/components/ui/skeleton";
 import { useEffect, useRef, useState } from "react";
 import { Check, Pencil, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -767,11 +767,12 @@ const EXCLUSION_LABEL: Record<string, string> = {
 
 /** The next page of a memory list, sized to what is left. */
 function ShowMore({ remaining, loading, disabled, onClick }: { remaining: number; loading: boolean; disabled: boolean; onClick: () => void }) {
+  // While the page loads the label stays and shimmers: one loading state.
   return <button
     type="button"
-    aria-busy={loading || undefined}
+    aria-busy={loading}
     className={cn("mt-2 h-8 w-full rounded-lg text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45", pendingClass(loading))}
-    disabled={disabled}
+    disabled={disabled || loading}
     onClick={onClick}
   >Show <span className="tabular-nums">{Math.min(MEMORY_PAGE_SIZE, Math.max(remaining, 1))}</span> more</button>;
 }

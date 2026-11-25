@@ -60,6 +60,32 @@
             "null"
           ]
         },
+        "handoffAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "handoffChat": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "handoffNote": {
+          "description": "Why the review was not sent, when handoff is on.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "handoffSessionId": {
+          "description": "The chat the review was sent to (see `ReviewJobSettings::handoff`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "harnesses": {
           "description": "The harness of each pass: the one that actually ran when a fallback replaced the one asked for, else the one asked for. Two entries mean a second opinion.",
           "items": {

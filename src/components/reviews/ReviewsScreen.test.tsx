@@ -50,14 +50,14 @@ function overview(over: Partial<ReviewOverview> = {}): ReviewOverview {
   };
 }
 
-async function mount(data: ReviewOverview | (() => ReviewOverview)) {
+async function mount(data: ReviewOverview | (() => ReviewOverview), props: { onOpenChat?: (sessionId: string) => void } = {}) {
   const read = vi.spyOn(bridgeApi, "reviewOverview").mockImplementation(async () => typeof data === "function" ? data() : data);
   const handlers: Array<(payload: { job: ReviewJob }) => void> = [];
   vi.spyOn(bridgeApi, "onReviewJobUpdated").mockImplementation(async handler => { handlers.push(handler); return () => {}; });
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => { root!.render(<ReviewsScreen />); await flush(); });
+  await act(async () => { root!.render(<ReviewsScreen {...props} />); await flush(); });
   return { read, emit: (next: ReviewJob) => act(() => { handlers.forEach(handler => handler({ job: next })); }) };
 }
 
@@ -188,5 +188,54 @@ describe("ReviewsScreen", () => {
     expect(host!.textContent).toContain("No reviewer has run in this period.");
     expect(host!.textContent).toContain("Start one from a pull request's Review button in the GitHub pane.");
     expect(tile("Median time").textContent).toContain("–");
+  });
+});
+
+describe("ReviewsScreen: activity, handoff and settings", () => {
+  const detailOf = (id: string) => async () => ({ job: overview().jobs.find(item => item.id === id)!, passes: [], findings: [] });
+
+  it("opens a running review on what it is doing, and a draft on what it found", async () => {
+    await mount(overview());
+    vi.spyOn(bridgeApi, "getReview").mockImplementation(async id => detailOf(id)());
+    vi.spyOn(bridgeApi, "reviewActivity").mockResolvedValue({ entries: [{ jobId: "run", passId: "p", seq: 1, kind: "tool", title: "Read", text: "src/login.rs", at: "2026-11-24T10:00:00.000Z" }] });
+    vi.spyOn(bridgeApi, "onReviewActivity").mockResolvedValue(() => {});
+    await act(async () => { host!.querySelector<HTMLButtonElement>('[data-open-job="run"]')!.click(); await flush(); });
+    const view = () => host!.querySelector<HTMLElement>('[role="radiogroup"][aria-label="Review view"] [aria-checked="true"]')!.textContent;
+    expect(view()).toBe("Activity");
+    expect(host!.querySelector('[data-review-activity="run"]')!.textContent).toContain("Readsrc/login.rs");
+    await act(async () => { host!.querySelector<HTMLElement>('[data-review-detail]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
+    await act(async () => { host!.querySelector<HTMLButtonElement>('[data-open-job="draft"]')!.click(); await flush(); });
+    expect(view()).toBe("Findings");
+  });
+
+  it("names the chat a review went to and opens it, or says why it did not go", async () => {
+    const onOpenChat = vi.fn();
+    const data = overview();
+    data.jobs = data.jobs.map(item => item.id === "done" ? { ...item, handoffSessionId: "chat-7", handoffChat: "Add the cache", handoffAt: "2026-11-24T10:05:00.000Z" }
+      : item.id === "draft" ? { ...item, handoffNote: "Not sent: no chat in this project works on the branch feat/x." } : item);
+    await mount(data, { onOpenChat });
+    vi.spyOn(bridgeApi, "getReview").mockImplementation(async id => ({ job: data.jobs.find(item => item.id === id)!, passes: [], findings: [] }));
+    await act(async () => { host!.querySelector<HTMLElement>('[data-job-row="done"]')!.click(); await flush(); });
+    const sent = host!.querySelector<HTMLElement>("[data-handoff]")!;
+    expect(sent.textContent).toContain("Sent to");
+    await act(async () => { [...sent.querySelectorAll("button")].find(button => button.textContent === "Add the cache")!.click(); await flush(); });
+    expect(onOpenChat).toHaveBeenCalledWith("chat-7");
+    expect(host!.querySelector("[data-review-detail]"), "opening the chat closes the review").toBeNull();
+    await act(async () => { host!.querySelector<HTMLElement>('[data-job-row="draft"]')!.click(); await flush(); });
+    expect(host!.querySelector("[data-handoff]")!.textContent).toBe("Not sent: no chat in this project works on the branch feat/x.");
+  });
+
+  it("holds each reviewer's model and effort in its Settings, saved from there", async () => {
+    await mount(overview());
+    vi.spyOn(bridgeApi, "health").mockResolvedValue({ adapters: [{ id: "claude", label: "Claude", available: true, models: [{ id: "claude-opus-5-5", label: "Opus 5.5" }] }] } as never);
+    vi.spyOn(bridgeApi, "reviewerSettings").mockResolvedValue({ settings: { harnesses: {}, systemPrompt: "" }, defaultSystemPrompt: "default" });
+    vi.spyOn(bridgeApi, "getReviewJobSettings").mockResolvedValue({});
+    const save = vi.spyOn(bridgeApi, "saveReviewerSettings").mockImplementation(async settings => ({ settings, defaultSystemPrompt: "default" }));
+    await act(async () => { radio("Reviews view", "Settings").click(); await flush(); });
+    expect(host!.querySelector('[data-tile="Reviews"]'), "the overview steps aside").toBeNull();
+    const model = host!.querySelector<HTMLSelectElement>('select[aria-label="Claude reviewer model"], [aria-label="Claude reviewer model"]');
+    expect(model, "Claude's model is set here").not.toBeNull();
+    expect(host!.textContent).toContain("Every review on that harness uses them");
+    expect(save).not.toHaveBeenCalled();
   });
 });

@@ -132,6 +132,11 @@ impl LiveSteps {
 }
 
 impl ReviewSteps for LiveSteps {
+    fn hand_off(&self, session_id: &str, text: &str) -> Result<(), String> {
+        let core = self.core().ok_or_else(|| "Bridge is shutting down".to_owned())?;
+        crate::live_turn::submit_input(&core, session_id.to_owned(), text.to_owned()).map(|_| ()).map_err(|error| error.to_string())
+    }
+
     fn prepare(&self, job: &JobRow, cancel: &CancelToken) -> Result<Prepared, StepError> {
         let core = self.core().ok_or_else(|| StepError::Fatal("Bridge is shutting down".into()))?;
         prepare(&core, &self.config, job, cancel)
@@ -303,6 +308,7 @@ pub fn prepare(
         &job.id,
         &detail.summary.title,
         detail.summary.author.as_ref().map(|author| author.login.as_str()),
+        Some(detail.summary.head_branch.as_str()).filter(|branch| !branch.is_empty()),
     )
     .map_err(fatal)?;
     let head_spec = format!("+refs/pull/{number}/head:{head_ref}");

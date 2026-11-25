@@ -537,6 +537,17 @@ describe("GitHubPane", () => {
     expect(host!.querySelector('section[aria-label="Reviews"]')!.textContent).toContain("Queued");
   });
 
+  it("shows the model and effort each harness reviews with, from the Reviews settings", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "getReviewJobSettings").mockResolvedValue({ secondOpinion: false });
+    vi.spyOn(bridgeApi, "reviewerSettings").mockResolvedValue({ settings: { harnesses: { claude: { model: "claude-opus-5-5", effort: "high" } }, systemPrompt: "" }, defaultSystemPrompt: "" });
+    await mount({ sessionId: "sess-1" });
+    await click(buttonByText("Safe GitHub surface"));
+    await click(buttonByText("Review"));
+    expect(host!.querySelector('[data-reviewer-model="claude"]')!.textContent).toBe("claude-opus-5-5 · high");
+    expect(host!.querySelector('[data-reviewer-model="codex"]')!.textContent).toBe("default model · default effort");
+  });
+
   it("marks a harness already reviewing the PR, so starting it twice is not silent", async () => {
     mockReads();
     vi.spyOn(bridgeApi, "getReviewJobSettings").mockResolvedValue({ secondOpinion: false });

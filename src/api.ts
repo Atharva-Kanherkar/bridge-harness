@@ -3,7 +3,7 @@ import { mockChatTools, mockSaveFirstToolChoice, mockUpdateChatTools } from "./c
 import type { GetChatToolsParams, GetChatToolsResult, UpdateChatToolsParams, UpdateChatToolsResult } from "./protocol/generated/protocol";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
 import type { AppPreferences, AppPreferenceValues } from "./protocol/generated/protocol";
-import type { ReviewFindingDecisionInput, ReviewFindingList, ReviewJob, ReviewJobDetail, ReviewJobList, ReviewJobResult, ReviewJobSettings, ReviewOverview, ReviewTrigger } from "./protocol/generated/protocol";
+import type { ReviewFindingDecisionInput, ReviewFindingList, ReviewJob, ReviewJobDetail, ReviewJobList, ReviewJobResult, ReviewJobSettings, ReviewOverview, ReviewTrigger, ReviewActivityEntry, ReviewActivityList } from "./protocol/generated/protocol";
 import type { LimitRecoverySettings, LimitRecoveryStatus } from "./protocol/generated/protocol";
 import type { AlwaysAllowToolResult, RunWorkflowResult, WorkflowDraftResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowEventSample, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary, WorkflowTemplate, WorkflowTemplateList, WorkflowTrigger, WorkflowTriggerPreview } from "./protocol/generated/protocol";
 import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, MarkAttentionUnreadResult, ReportPresenceResult, UnreadSummary } from "./protocol/generated/protocol";
@@ -151,7 +151,7 @@ export const emptyReviewOverview = (): ReviewOverview => ({
   findings: [],
   repositories: [],
 });
-let mockReviewJobSettings: ReviewJobSettings = { defaultHarnesses: [], fallbackHarnesses: [], maxConcurrentReviews: 2, postMode: "draft", maxReviewWorktrees: 8 };
+let mockReviewJobSettings: ReviewJobSettings = { defaultHarnesses: [], fallbackHarnesses: [], maxConcurrentReviews: 2, postMode: "draft", maxReviewWorktrees: 8, handoff: "off" };
 export type BackendMode = "tauri" | "web" | "mock";
 /** Which transport this window is on, for the few surfaces outside api.ts
  *  that behave differently per host (folder pickers, polls, the demo shell). */
@@ -2226,6 +2226,12 @@ export const bridgeApi = {
     hasBackend()
       ? call("reviews/review_overview", { days: days ?? null, repository: repository ?? null })
       : Promise.resolve(emptyReviewOverview()),
+  /** What a review's passes did: Bridge's request, the reviewer's messages,
+   *  each tool and command. The preview has no reviewer, so it has none. */
+  reviewActivity: (jobId: string): Promise<ReviewActivityList> =>
+    hasBackend() ? call("reviews/review_activity", { jobId }) : Promise.resolve({ entries: [] }),
+  onReviewActivity: (handler: (payload: { jobId: string; entry: ReviewActivityEntry }) => void): Promise<UnlistenFn> =>
+    hasBackend() ? subscribe<{ jobId: string; entry: ReviewActivityEntry }>("reviews/activity", handler) : Promise.resolve(() => {}),
   getReview: (jobId: string): Promise<ReviewJobDetail> =>
     hasBackend() ? call("reviews/get_review", { jobId }) : Promise.reject(new Error(`No review job ${jobId}`)),
   cancelReview: (jobId: string): Promise<ReviewJobResult> =>

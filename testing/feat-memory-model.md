@@ -19,7 +19,7 @@ Issue #1146, part of epic #1144. Locked before implementation.
   pin). One without the other is `Invalid`. A harness that cannot run tool-free
   is `Invalid` with the adapter's reason, and the stored pin is unchanged.
   Test all three.
-- Migration 97 creates `memory_model_settings` and seeds the pin from the
+- Migration 98 creates `memory_model_settings` and seeds the pin from the
   legacy extraction pin, else the legacy consolidation pin, else nothing.
   Clearing the pin later is not undone by the seed. Test both legacy sources
   and the clear.
@@ -41,7 +41,7 @@ Issue #1146, part of epic #1144. Locked before implementation.
   them. Test: updating consolidation to propose with no harness succeeds.
 - Wire: `memory/get_memory_model` returns `pinned`, `resolved` (harness, model,
   source) and `skipped`. `memory/set_memory_model` takes optional `harness` and
-  `model` and returns the same shape. Protocol 1.58, additive.
+  `model` and returns the same shape. Protocol 1.59, additive.
   Test: camelCase wire shapes and the version pairing.
 - Agents: `memory.model` in the settings tools reads the pin (null when unset)
   with the resolved choice as `effective`, and accepts `{harness, model}`, a

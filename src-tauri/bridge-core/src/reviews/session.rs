@@ -24,6 +24,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bridge_protocol::messages::ReviewActivityKind;
 use serde_json::Value;
 
 use super::contract::{self, RawReview, OUTPUT_CONTRACT};
@@ -68,6 +69,86 @@ pub struct SessionStart<'a> {
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
     pub instructions: &'a str,
+    /// Where the session reports what it does, as it does it. None records
+    /// nothing.
+    pub activity: Option<&'a dyn ActivitySink>,
+}
+
+/// What a reviewer session reports as it works: the dashboard's activity
+/// view. Recording must not fail the review, so it returns nothing.
+pub trait ActivitySink: Send + Sync {
+    fn record(&self, kind: ReviewActivityKind, title: Option<&str>, text: Option<&str>);
+}
+
+impl std::fmt::Debug for dyn ActivitySink + '_ {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ActivitySink")
+    }
+}
+
+/// Longest tool detail recorded, in characters.
+const TOOL_DETAIL_CHARS: usize = 300;
+
+/// Paths inside the checkout relative to it; any other long absolute path as
+/// its last two parts.
+fn display_paths(detail: &str, roots: &[String]) -> String {
+    let mut text = detail.to_owned();
+    for root in roots {
+        text = text.replace(root.as_str(), "");
+    }
+    text.split(' ')
+        .map(|word| {
+            let parts: Vec<&str> = word.split('/').filter(|part| !part.is_empty()).collect();
+            if word.starts_with('/') && parts.len() > 3 {
+                format!("…/{}", parts[parts.len() - 2..].join("/"))
+            } else {
+                word.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A tool's or command's short detail: the path, pattern, query or command
+/// it was given, when the event carries one.
+fn tool_detail(event: &NormalizedEvent) -> Option<String> {
+    const KEYS: [&str; 11] = ["file_path", "path", "pattern", "query", "command", "cmd", "url", "glob", "description", "code", "script"];
+    let from = |value: &Value| -> Option<String> {
+        let object = value.as_object()?;
+        let parts: Vec<String> = KEYS
+            .iter()
+            .filter_map(|key| object.get(*key))
+            .filter_map(|value| match value {
+                // Code reads best by its first line.
+                Value::String(text) => text.lines().map(str::trim).find(|line| !line.is_empty()).map(str::to_owned),
+                Value::Array(items) => {
+                    let joined = items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ");
+                    (!joined.is_empty()).then_some(joined)
+                }
+                _ => None,
+            })
+            .take(2)
+            .collect();
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    };
+    // Codex's tool calls carry `arguments`, an object or JSON text.
+    let arguments = event.data.get("arguments").and_then(|arguments| match arguments {
+        Value::String(text) => serde_json::from_str::<Value>(text).ok().and_then(|parsed| from(&parsed)).or_else(|| {
+            text.lines().map(str::trim).find(|line| !line.is_empty()).map(str::to_owned)
+        }),
+        other => from(other),
+    });
+    let detail = event
+        .data
+        .get("input")
+        .and_then(from)
+        .or(arguments)
+        .or_else(|| from(&event.data))
+        .or_else(|| event.text.clone().filter(|text| !text.trim().is_empty()))?;
+    Some(match detail.char_indices().nth(TOOL_DETAIL_CHARS) {
+        Some((index, _)) => format!("{}…", &detail[..index]),
+        None => detail,
+    })
 }
 
 /// What the next read from a session found.
@@ -281,24 +362,112 @@ fn request_id(event: &NormalizedEvent) -> Value {
 }
 
 /// Drive one turn to its end. Returns the final assistant message.
-fn turn(
-    session: &mut dyn Session,
-    text: &str,
-    usage: &mut Usage,
+/// What one turn reports to the activity sink, each thing once.
+struct TurnLog<'a> {
+    sink: Option<&'a dyn ActivitySink>,
+    /// Assistant messages already recorded, by item.
+    said: std::collections::HashSet<Option<String>>,
+    /// Tools already recorded, by item. Claude reports a tool first while it
+    /// is still writing the arguments, then again with them when it runs: the
+    /// second is the one worth showing.
+    shown: std::collections::HashSet<String>,
+    /// The checkout as the session may name it, longest first.
+    roots: Vec<String>,
+}
+
+impl<'a> TurnLog<'a> {
+    fn new(sink: Option<&'a dyn ActivitySink>, root: &Path) -> Self {
+        // macOS reaches `/var/…` through `/private/var/…`, and a harness may
+        // report either.
+        let mut roots = vec![format!("{}/", root.to_string_lossy().trim_end_matches('/'))];
+        if let Ok(canonical) = std::fs::canonicalize(root) {
+            roots.push(format!("{}/", canonical.to_string_lossy().trim_end_matches('/')));
+        }
+        if let Some(stripped) = roots[0].strip_prefix("/private") {
+            roots.push(stripped.to_owned());
+        } else if roots[0].starts_with("/var/") || roots[0].starts_with("/tmp/") {
+            roots.push(format!("/private{}", roots[0]));
+        }
+        // Longest first, so `/private/var/x/` goes before `/var/x/` matches inside it.
+        roots.sort_by_key(|root| std::cmp::Reverse(root.len()));
+        roots.dedup();
+        Self { sink, said: Default::default(), shown: Default::default(), roots }
+    }
+
+    fn record(&self, kind: ReviewActivityKind, title: Option<&str>, text: Option<&str>) {
+        if let Some(sink) = self.sink {
+            sink.record(kind, title, text);
+        }
+    }
+
+    /// A completed assistant message, once per item.
+    fn said(&mut self, item: &Option<String>, text: &str) {
+        if self.said.insert(item.clone()) && !text.trim().is_empty() {
+            self.record(ReviewActivityKind::Message, None, Some(text));
+        }
+    }
+
+    /// A tool or command, once it runs, with its detail.
+    fn tool(&mut self, event: &NormalizedEvent, name: Option<&str>) {
+        let preparing = event.data.get("phase").and_then(Value::as_str) == Some("preparing");
+        let first = match &event.item_id {
+            Some(id) => !preparing && self.shown.insert(id.clone()),
+            None => true,
+        };
+        if !first {
+            return;
+        }
+        let kind = if event.kind == "command.started" { ReviewActivityKind::Command } else { ReviewActivityKind::Tool };
+        let detail = tool_detail(event).map(|detail| display_paths(&detail, &self.roots));
+        let title = name.map(str::to_owned).unwrap_or_else(|| if kind == ReviewActivityKind::Command { "Command".into() } else { "Tool".into() });
+        // A command's name is its command line: no detail twice.
+        self.record(kind, Some(&title), detail.as_deref().filter(|detail| *detail != title));
+    }
+
+    /// Messages that never completed are what the reviewer said too.
+    fn flush(&mut self, parts: &[(Option<String>, String)]) {
+        for (id, part) in parts {
+            self.said(id, part);
+        }
+    }
+}
+
+/// Add a usage report to the session's totals.
+fn add_usage(usage: &mut Usage, event: &NormalizedEvent) {
+    let count = |key: &str| event.data.pointer(&format!("/usage/{key}")).and_then(Value::as_u64).unwrap_or(0);
+    usage.tokens_in += count("input_tokens");
+    usage.tokens_out += count("output_tokens");
+    let cost = event.data.get("totalCostUsd").or_else(|| event.data.get("cost")).and_then(Value::as_f64);
+    if let Some(cost) = cost.filter(|cost| cost.is_finite() && *cost > 0.0) {
+        usage.cost_microusd += (cost * 1_000_000.0).round() as u64;
+    }
+}
+
+/// How one turn is asked and bounded.
+struct TurnAsk<'a> {
+    root: &'a Path,
+    text: &'a str,
+    title: &'a str,
     deadline: Instant,
     limits: Limits,
-    cancel: &CancelToken,
-) -> Result<String, SessionError> {
-    session.send_turn(text).map_err(SessionError::Provider)?;
+    cancel: &'a CancelToken,
+    activity: Option<&'a dyn ActivitySink>,
+}
+
+/// Drive one turn to its end. Returns the final assistant message.
+fn turn(session: &mut dyn Session, ask: &TurnAsk<'_>, usage: &mut Usage) -> Result<String, SessionError> {
+    let mut log = TurnLog::new(ask.activity, ask.root);
+    log.record(ReviewActivityKind::Prompt, Some(ask.title), Some(ask.text));
+    session.send_turn(ask.text).map_err(SessionError::Provider)?;
     let mut parts: Vec<(Option<String>, String)> = Vec::new();
     let mut started = false;
     let mut result_text: Option<String> = None;
     loop {
-        if cancel.is_cancelled() {
+        if ask.cancel.is_cancelled() {
             return Err(SessionError::Cancelled);
         }
-        if Instant::now() >= deadline {
-            return Err(SessionError::Deadline(limits.max_wall));
+        if Instant::now() >= ask.deadline {
+            return Err(SessionError::Deadline(ask.limits.max_wall));
         }
         let events = match session.next(Duration::from_millis(200)) {
             Next::Idle => continue,
@@ -312,21 +481,19 @@ fn turn(
                 "message.delta" | "message.completed" if event.role.as_deref() == Some("assistant") => {
                     started = true;
                     let Some(text) = event.text else { continue };
+                    let completed = event.kind == "message.completed";
                     match parts.iter_mut().find(|(id, _)| *id == event.item_id) {
-                        Some((_, part)) if event.kind == "message.completed" => *part = text,
+                        Some((_, part)) if completed => *part = text,
                         Some((_, part)) => part.push_str(&text),
-                        None => parts.push((event.item_id, text)),
+                        None => parts.push((event.item_id.clone(), text)),
+                    }
+                    if completed {
+                        if let Some((_, part)) = parts.iter().find(|(id, _)| *id == event.item_id) {
+                            log.said(&event.item_id, part);
+                        }
                     }
                 }
-                "usage.updated" => {
-                    let count = |key: &str| event.data.pointer(&format!("/usage/{key}")).and_then(Value::as_u64).unwrap_or(0);
-                    usage.tokens_in += count("input_tokens");
-                    usage.tokens_out += count("output_tokens");
-                    let cost = event.data.get("totalCostUsd").or_else(|| event.data.get("cost")).and_then(Value::as_f64);
-                    if let Some(cost) = cost.filter(|cost| cost.is_finite() && *cost > 0.0) {
-                        usage.cost_microusd += (cost * 1_000_000.0).round() as u64;
-                    }
-                }
+                "usage.updated" => add_usage(usage, &event),
                 // A tool (Claude, OpenCode) or a command (Codex reads files
                 // through its sandboxed shell), counted once per invocation.
                 "tool.started" | "command.started" => {
@@ -335,24 +502,27 @@ fn turn(
                         Some(id) => usage.seen.insert(id.clone()),
                         None => true,
                     };
+                    let name = event.title.clone().or_else(|| event.data.get("command").and_then(Value::as_str).map(str::to_owned));
+                    log.tool(&event, name.as_deref());
                     if fresh {
                         usage.tool_calls += 1;
-                        let name = event.title.clone().or_else(|| event.data.get("command").and_then(Value::as_str).map(str::to_owned));
                         usage.tools.push(name.unwrap_or_else(|| event.kind.clone()));
-                        if usage.tool_calls > limits.max_tool_calls {
-                            return Err(SessionError::ToolLimit(limits.max_tool_calls));
+                        if usage.tool_calls > ask.limits.max_tool_calls {
+                            return Err(SessionError::ToolLimit(ask.limits.max_tool_calls));
                         }
                     }
                 }
                 // Nobody answers a hidden session: refuse at once, and count.
                 "permission.requested" | "approval.requested" => {
                     usage.denied_requests += 1;
+                    log.record(ReviewActivityKind::Denied, Some("Refused a permission request"), event.title.as_deref().or(event.text.as_deref()));
                     if let Err(error) = session.decline(request_id(&event)) {
                         eprintln!("[reviews] could not decline a permission request: {error}");
                     }
                 }
                 "question.requested" => {
                     usage.denied_requests += 1;
+                    log.record(ReviewActivityKind::Denied, Some("Refused a question"), event.text.as_deref().or(event.title.as_deref()));
                     let method = event.data.get("requestMethod").and_then(Value::as_str);
                     if let Err(error) = session.reject_question(request_id(&event), method) {
                         eprintln!("[reviews] could not reject a question: {error}");
@@ -369,12 +539,14 @@ fn turn(
                 "error" if event.status.as_deref() == Some("retrying") => {}
                 "error" => {
                     let detail = event.text.or(event.title).unwrap_or_else(|| "the provider reported an error".into());
+                    log.record(ReviewActivityKind::Error, None, Some(&detail));
                     return Err(SessionError::Provider(detail));
                 }
                 _ => {}
             }
         }
         if done {
+            log.flush(&parts);
             // The final message: the last thing the assistant said.
             let last = parts.into_iter().map(|(_, text)| text).filter(|text| !text.trim().is_empty()).last();
             return Ok(last.or(result_text).unwrap_or_default());
@@ -419,10 +591,20 @@ pub fn run_answered(
         Err(error) => return (Err(SessionError::Start(error)), usage),
     };
     let deadline = Instant::now() + limits.max_wall;
-    let result = turn(session.as_mut(), prompt, &mut usage, deadline, limits, cancel).and_then(|text| match contract::parse(&text) {
+    let result = turn(
+        session.as_mut(),
+        &TurnAsk { root: start.cwd, text: prompt, title: "Bridge asked for a review", deadline, limits, cancel, activity: start.activity },
+        &mut usage,
+    )
+    .and_then(|text| match contract::parse(&text) {
         Ok(review) => Ok((review, text)),
         Err(error) => {
-            let repaired = turn(session.as_mut(), &repair_prompt(&error), &mut usage, deadline, limits, cancel)?;
+            let repair = repair_prompt(&error);
+            let repaired = turn(
+                session.as_mut(),
+                &TurnAsk { root: start.cwd, text: &repair, title: "Bridge asked for the findings again", deadline, limits, cancel, activity: start.activity },
+                &mut usage,
+            )?;
             contract::parse(&repaired).map(|review| (review, repaired)).map_err(SessionError::Contract)
         }
     });
@@ -625,6 +807,29 @@ fn model_and_effort(core: &BridgeCore, harness: &str) -> (Option<String>, String
     (model, effort.to_owned())
 }
 
+/// Stores each thing a pass does and tells the dashboards.
+struct PassActivity<'a> {
+    core: &'a BridgeCore,
+    job_id: &'a str,
+    pass_id: &'a str,
+}
+
+impl ActivitySink for PassActivity<'_> {
+    fn record(&self, kind: ReviewActivityKind, title: Option<&str>, text: Option<&str>) {
+        let stored = {
+            let db = super::lock_db(self.core);
+            super::store::record_activity(&db, self.job_id, self.pass_id, kind, title, text, chrono::Utc::now())
+        };
+        match stored {
+            Ok(Some(entry)) => {
+                self.core.events.publish(crate::events::CoreEvent::ReviewActivity { job_id: self.job_id.to_owned(), entry });
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("[reviews] could not record activity for pass {}: {error}", self.pass_id),
+        }
+    }
+}
+
 /// One reviewer pass on the real harnesses.
 pub fn review_pass(core: &BridgeCore, request: PassRequest<'_>, cancel: &CancelToken) -> Result<PassOutcome, StepError> {
     let transport = RegistryTransport { registry: core.adapter_registry.clone() };
@@ -653,8 +858,12 @@ pub fn review_pass_with(
         (if custom.is_empty() { REVIEW_INSTRUCTIONS.to_owned() } else { custom }, crate::attribution_settings::hide_enabled(&db))
     };
     let (model, effort) = model_and_effort(core, request.harness);
+    if let Err(error) = super::store::set_pass_model(&super::lock_db(core), request.pass_id, model.as_deref(), Some(&effort)) {
+        eprintln!("[reviews] could not record pass {}'s model: {error}", request.pass_id);
+    }
     let instructions = instructions(&conventions_in(&placed), &user_instructions, hide);
-    let start = SessionStart { cwd: checkout, model: model.as_deref(), effort: Some(&effort), instructions: &instructions };
+    let sink = PassActivity { core, job_id: &request.job.id, pass_id: request.pass_id };
+    let start = SessionStart { cwd: checkout, model: model.as_deref(), effort: Some(&effort), instructions: &instructions, activity: Some(&sink) };
     let (result, usage) = run(transport, request.harness, &start, &prompt(&pr, &context_name), cancel, limits);
     // Spent either way: a failed or retried attempt cost what it cost.
     request.usage.add(usage.spent());
