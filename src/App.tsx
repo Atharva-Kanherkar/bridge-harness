@@ -3822,9 +3822,11 @@ function AppContent() {
     finally {setBusy(false);}
   };
   const effectiveSettings = session ? currentChatConfiguration?.settings : draftSettings.settings;
-  // The model picker repeats the access mode in its footer.
+  // The access mode lives in the model picker's footer. Only a chat drawn
+  // without the picker (a worker's) keeps it in the composer row.
   const accessModeControl = <AccessControl disabled={busy} policy={effectiveSettings ? {...(permissionPolicy ?? {workerPromptProposalRoles:[],updatedAt:""}),autoApproveProviderPermissions:effectiveSettings.access === "full"} : undefined} onChange={mode => void changeChatOptions(mode)} />;
-  const accessControl = <>{accessModeControl}
+  const composerHasModelPicker = !session || session.kind === "direct" || session.kind === "orchestrator";
+  const accessControl = <>{!composerHasModelPicker && accessModeControl}
     {session
       ? !session.parentSessionId && session.kind !== "worker" && <ChatToolsControl sessionId={session.id} harness={session.harness} account={session.account ?? null} />
       : draftSettings.settings && <ChatToolsControl
@@ -4363,7 +4365,7 @@ function AppContent() {
                     inputRef={composerRef}
                     header={<ChatWorkShelf sessionId={session.id} harness={session.harness} prs={chatPrs.prs} onOpen={showWorkInDock} onFix={draftPullRequestFix} />}
                     leading={contextRing}
-                    modelControl={session.kind === "direct" || session.kind === "orchestrator"
+                    modelControl={composerHasModelPicker
                       ? <ChatModelControl adapters={adapters} accounts={providerAccounts} account={session.account ?? null} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model, account) => void changeChatModel(harness, model, account)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} speed={session.speed ?? null} onSpeedChange={speed => void changeChatSpeed(speed)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} accessControl={accessModeControl} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-ui rounded-full">{harnessLabel(session.harness)}</span>}
                     accessControl={accessControl}

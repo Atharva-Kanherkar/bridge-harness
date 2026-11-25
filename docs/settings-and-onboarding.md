@@ -37,7 +37,6 @@ Any top-level chat can change some settings when you ask: "make the theme light"
 | --- | --- | --- |
 | `appearance.theme` | system, light, dark | every open window, at once |
 | `appearance.skin` | graphite, vibrancy, omarchy | every open window, at once |
-| `appearance.effortSelector` | slider, sentence, list | every open window, at once |
 | `transcript.showThinking` | true, false | every open window, at once |
 | `transcript.autoExpandEdits` | true, false | every open window, at once |
 | `newChat.model` | a harness and model, or default | new chats |

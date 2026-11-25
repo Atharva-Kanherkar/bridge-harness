@@ -1,5 +1,8 @@
 # feat/effort-selector-styles — Test Contract
 
+> Superseded by `feat-simple-effort-picker.md`: the three styles and their
+> Settings choice were replaced by one segmented control.
+
 The model picker's effort footer is a `flex-1` segmented row with fixed padding.
 It was sized for three to five short labels; Claude's ladder now ends at
 `xhigh`/`max` and Codex's at `ultra`, so six items squeeze inside the 340px
