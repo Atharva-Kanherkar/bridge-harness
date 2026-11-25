@@ -31,6 +31,13 @@ Issue #1145, part of epic #1144. Locked before implementation.
   clears afterwards and refusals are reported. Test it.
 - A `MemoryChanged` reload keeps as many records loaded as before, so a bulk
   action does not throw the user back to page 1.
+- A reload reads until it has passed the record that was last on screen, by
+  its `(updatedAt, id)` position, not just until it has the same count. New
+  proposals that arrive at the top must not push loaded ones onto an unloaded
+  page, so a ticked proposal is never dropped from the selection unless it is
+  no longer waiting for review. Test: load 100 proposals, tick the last one,
+  add 5 newer proposals, fire a change; the ticked one is still listed and
+  still counted in "N selected".
 - The mock backend in `api.ts` pages the same way, so `bun run dev` shows it.
 
 ## Verification
