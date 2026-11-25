@@ -56,9 +56,7 @@ export function ProjectsScreen({
       <div className={SCREEN_CONTENT}>
         <ScreenHeading title="Projects" action={
           <Button variant="default" size="sm" className="shrink-0"
-           
             onClick={onNewWorkspace}
-           
           >
             <Plus size={14} strokeWidth={1.9} aria-hidden="true" /> New project
           </Button>
@@ -89,7 +87,6 @@ export function ProjectsScreen({
 
                   <Tip label={workspace.path ?? undefined}><p
                     className="mt-3 truncate text-caption text-muted-foreground"
-                   
                   >
                     {workspace.path ? shortPath(workspace.path) : "No folder connected"}
                   </p></Tip>
@@ -140,18 +137,14 @@ export function ProjectsScreen({
                   </div>
                   <div className="mt-auto flex flex-wrap items-center gap-1.5 border-t border-border pt-3">
                     <Button variant="quiet" size="sm"
-                     
                       disabled={busy}
                       onClick={() => onNewWorkspaceSession(workspace.id)}
-                     
                     >
                       <Sparkles size={13} strokeWidth={1.75} aria-hidden="true" /> New agent
                     </Button>
                     {!workspace.path && (
                       <Button variant="quiet" size="sm"
-                       
                         onClick={() => onConnectFolder(workspace.id)}
-                       
                       >
                         <FolderOpen size={13} strokeWidth={1.75} aria-hidden="true" /> Connect folder
                       </Button>

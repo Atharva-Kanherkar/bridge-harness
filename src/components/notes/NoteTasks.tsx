@@ -44,11 +44,8 @@ export function NoteTasks({ tasks, drafts = [], adapters, workspaces, sessions, 
         const status = startingId === task.id ? "Starting…" : noteTaskStatus(task, session);
         return <li key={task.id} aria-label={title} className="group flex items-start gap-3 py-2.5">
           <Button variant="quiet" size="icon-3xs" className="mt-[3px] shrink-0" tooltip={done ? "Reopen" : "Mark done"}
-           
             aria-label={done ? `Reopen ${title}` : `Mark ${title} done`}
-           
             onClick={() => onSetState(task, done ? (lastChat ? "doing" : "open") : "done")}
-           
           >
             <StatusGlyph state={task.state} size={15} />
           </Button>

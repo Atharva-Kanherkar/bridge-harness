@@ -65,8 +65,6 @@ function RefusedRow({ detail }: { detail?: string }) {
   return (
     <div data-outgoing-state="refused" className="min-w-0 text-meta text-muted-foreground">
       <RowButton size="sm" tone="muted" className="w-auto"
-       
-       
         aria-expanded={detail ? open : undefined}
         disabled={!detail}
         onClick={() => setOpen(!open)}

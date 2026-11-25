@@ -321,7 +321,6 @@ function SubagentChip({ item }: { item: ConversationItem }) {
   if (!source || !label) return null;
   return <Tip label={source.title ? `Subagent: ${source.title}` : "Subagent work"}><span
     data-subagent={source.sessionId}
-   
     className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-1.5 py-px text-micro leading-4 text-muted-foreground"
   ><CornerDownRight size={10} aria-hidden="true" /><span className="sr-only">Subagent </span>{label}</span></Tip>;
 }
@@ -438,8 +437,6 @@ const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: C
               ><span className="min-w-0 truncate">{directory}</span></Button>
             : <Tip label={path}><span data-tool-path className="hidden min-w-0 flex-1 truncate text-muted-foreground sm:block">{directory}</span></Tip>)}
           <Button variant="quiet" size="sm" className="ml-auto shrink-0"
-           
-           
             disabled={!body}
             aria-label={open ? "Collapse tool output" : "Expand tool output"}
             onClick={() => body && setToggled(!open)}
@@ -1285,10 +1282,8 @@ function AskAsideChip({ onAsk }: { onAsk: (quoted: string) => void }) {
   // has raised the button itself; display:contents keeps it layout-invisible.
   return <span ref={rootRef} className="contents">
     {placement && <Button variant="quiet" size="xs" className="z-50"
-     
       data-ask-aside-chip
       aria-label="Ask aside about the selected text"
-     
       style={{ left: Math.max(8, Math.min(placement.left, (typeof window !== "undefined" ? window.innerWidth : 0) - 120)) , top: placement.top }}
       onMouseDown={event => event.preventDefault()}
       onClick={() => {
@@ -2480,7 +2475,6 @@ function DelegationFailureCard({ item }: { item: ConversationItem }) {
       <div className="relative">
         <code className={`${WELL} pr-20`}>{reason}</code>
         <Button
-         
           onClick={copy}
           aria-label={copied ? "Copied" : "Copy error"}
           variant="outline" size="2xs" className="absolute right-1.5 top-1.5"
@@ -2540,7 +2534,6 @@ function WorkerFailureRow({ title, summary, cause, failureClass, childSessionId,
     {summary && <p className="mt-1.5 whitespace-pre-wrap break-words">{summary}</p>}
     <div className="mt-2 flex flex-wrap items-center gap-2">
       {childSessionId && onRetryWorker && <Button
-       
         disabled={busy}
         onClick={() => { setBusy(true); setError(undefined); void onRetryWorker(childSessionId).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(false)); }}
         size="sm"

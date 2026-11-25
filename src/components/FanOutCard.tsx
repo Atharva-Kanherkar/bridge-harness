@@ -85,11 +85,8 @@ export function FanOutCard({ summary, rows, readOnly = false, onOpenAgents, onSt
         </span>)}</span>
       </span>
       {onStopWorkers && <Button variant="quiet" size="2xs" className="shrink-0" tooltip={summary.waiting.length === 1 ? "Stop this worker" : `Stop these ${summary.waiting.length} workers`}
-       
         disabled={stopping}
         onClick={stop}
-       
-       
       >{stopping ? "Stopping…" : "Stop"}</Button>}
     </div>}
     {error && <p role="alert" className="border-t border-border px-3.5 py-2 text-meta text-destructive">{error}</p>}

@@ -19,10 +19,8 @@ export function NewProjectDialog({ open, busy, canStartChat, onClose, onStartCha
         </DialogHeader>
         <DialogPanel className="grid gap-3">
           <Button variant="outline" size="xs"
-           
             disabled={busy || !canStartChat}
             onClick={onStartChat}
-           
           >
             <MessageSquareText size={18} strokeWidth={1.7} className="mb-2 text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden="true" />
             <span className="text-ui font-semibold text-foreground">Start a chat</span>
@@ -31,10 +29,8 @@ export function NewProjectDialog({ open, busy, canStartChat, onClose, onStartCha
             </span>
           </Button>
           <Button variant="outline" size="xs"
-           
             disabled={busy}
             onClick={onChooseFolder}
-           
           >
             <FolderOpen size={18} strokeWidth={1.7} className="mb-2 text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden="true" />
             <span className="text-ui font-semibold text-foreground">Choose a folder</span>

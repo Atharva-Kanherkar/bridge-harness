@@ -129,10 +129,8 @@ function DialogSurface({
             </div>
           </div>
           <Button variant="quiet" size="icon-xs" className="shrink-0"
-           
             onClick={onClose}
             disabled={closeDisabled}
-           
             aria-label={closeLabel}
           >
             <X className="h-4 w-4" strokeWidth={2} aria-hidden="true" />

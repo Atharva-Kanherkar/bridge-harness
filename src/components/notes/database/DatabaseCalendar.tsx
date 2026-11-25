@@ -115,7 +115,6 @@ export function DatabaseCalendar({ database, view, query, run, version, onCommit
   const shiftMonth = (by: number) => setMonth(new Date(Date.UTC(year, monthNumber - 1 + by, 1)).toISOString().slice(0, 7));
   const item = (row: DatabaseRow) => <RowButton size="bare" tone="default" shape="card"
     key={row.note.id}
-   
     draggable={writable}
     onDragStart={event => { event.dataTransfer?.setData("text/plain", row.note.id); setDragging(row); }}
     onDragEnd={() => setDragging(null)}

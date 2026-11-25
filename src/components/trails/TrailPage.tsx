@@ -44,11 +44,8 @@ function EventRow({ event, last, order, onOpen, onRemove }: { event: TrailEvent;
             <span data-remove-slot="" className="flex size-6 shrink-0 items-center justify-center opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
               {onRemove && (
                 <Button variant="quiet" size="icon-2xs" tooltip="Remove from trail"
-                 
                   onClick={onRemove}
                   aria-label={`Remove this ${memberNoun(event.member)} from the trail`}
-                 
-                 
                 >
                   <X className="size-3.5" aria-hidden="true" />
                 </Button>
@@ -187,7 +184,6 @@ export function TrailPage({ trail, summary: knownSummary, workspaceTitle, loadin
                 disabled={refreshing}
                 aria-busy={refreshing}
                 aria-label="Refresh from GitHub"
-               
               >
                 <RefreshCw aria-hidden="true" className={cn(refreshing && "animate-spin")} />
               </Button>

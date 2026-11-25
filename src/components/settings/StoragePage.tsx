@@ -196,17 +196,7 @@ function Size({ entry }: { entry: Pick<DiskEntry, "sizeBytes" | "measuring"> & {
 }
 
 const IconAction = ({ label, onClick, disabled, tone = "muted", children }: { label: string; onClick: () => void; disabled?: boolean; tone?: "muted" | "destructive"; children: ReactNode }) =>
-  tone === "destructive"
-    ? <Tip label={label}>
-      <Button variant="destructive-ghost" size="xs" className="shrink-0"
-       
-        aria-label={label}
-        disabled={disabled}
-        onClick={onClick}
-       
-      >{children}</Button>
-    </Tip>
-    : <Button variant="quiet" size="icon-xs" aria-label={label} tooltip={label} disabled={disabled} onClick={onClick}>{children}</Button>;
+  <Button variant={tone === "destructive" ? "destructive-quiet" : "quiet"} size="icon-xs" aria-label={label} tooltip={label} disabled={disabled} onClick={onClick}>{children}</Button>;
 
 /** How full the disk is, in one card: what macOS says is available, then a
  *  bar of what fills the rest. The home folder's biggest children each wear a

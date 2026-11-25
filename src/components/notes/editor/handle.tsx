@@ -104,15 +104,12 @@ export function BlockHandle({ editor, area }: { editor: Editor; area: RefObject<
     </Button>
     <div className="relative">
       <Button variant="quiet" size="icon-2xs" tooltip="Drag to move · click for options"
-       
         draggable
         aria-label="Drag to move, or click for options"
-       
         aria-expanded={menu}
         onDragStart={dragStart}
         onDragEnd={() => setHover(null)}
         onClick={() => { select(); setMenu(open => !open); }}
-       
       >
         <GripVertical size={15} aria-hidden="true" />
       </Button>

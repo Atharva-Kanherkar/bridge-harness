@@ -40,9 +40,7 @@ export function AppTitleBar({ title, navOpen, onOpenNav, leading, actions, flush
     >
       {leading && <div className="hidden shrink-0 items-center gap-0.5 sm:flex">{leading}</div>}
       <Button variant="quiet" size="icon-sm" className="shrink-0"
-       
         onClick={onOpenNav}
-       
         aria-label="Open navigation"
         aria-expanded={navOpen}
       >

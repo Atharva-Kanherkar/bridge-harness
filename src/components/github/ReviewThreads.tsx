@@ -100,11 +100,9 @@ function ThreadCard({ thread, index, number, repositoryUrl, headBranch, checkedO
   >
     <div className={cn("flex items-center gap-1.5 px-2 py-1.5", open && "border-b border-border/70")}>
       <Button variant="quiet" size="icon-2xs"
-       
         onClick={() => setOpen(value => !value)}
         aria-expanded={open}
         aria-label={open ? "Collapse conversation" : "Expand conversation"}
-       
       >
         <ChevronRight size={12} aria-hidden="true" className={cn("transition-transform duration-200", open && "rotate-90")} />
       </Button>
@@ -129,10 +127,8 @@ function ThreadCard({ thread, index, number, repositoryUrl, headBranch, checkedO
           ><Badge variant="success" size="sm"><Check size={10} aria-hidden="true" />Resolved</Badge></motion.span>}
         </AnimatePresence>
         {canToggle && <Button variant="outline" size="2xs"
-         
           disabled={busy}
           onClick={() => void toggle()}
-         
         >
           {busy ? <LoaderCircle size={11} className="animate-spin" aria-hidden="true" /> : resolved ? <RotateCcw size={11} aria-hidden="true" /> : <CircleCheck size={11} aria-hidden="true" />}
           {resolved ? "Unresolve" : "Resolve"}

@@ -53,7 +53,6 @@ export function AddToTrailDialog({ member, title: subjectTitle, workspaceId, tra
               {open.map(trail => (
                 <li key={trail.id}>
                   <RowButton size="bare" tone="default" shape="card"
-                   
                     disabled={busy}
                     onClick={() => void run(async () => { await bridgeApi.addTrailMember(trail.id, member); })}><span className="flex w-full items-center gap-3 px-3 py-2">
                     <span className="min-w-0 flex-1 truncate text-ui text-foreground">{trail.title}</span>

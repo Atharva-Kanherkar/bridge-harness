@@ -416,9 +416,7 @@ function Composer({ item, draft, busy, error, onDraft, onSend, onReact, onDismis
     {!!suggestions.length && <div className="flex flex-wrap gap-1.5">
       {suggestions.map(reply => <Button variant="chip" size="2xs"
         key={reply}
-       
         onClick={() => onDraft(reply)}
-       
       >
         {reply}
       </Button>)}

@@ -63,11 +63,8 @@ function DiffLine({ row, numbered, onQuoteHunk }: { row: DiffRow; numbered: bool
     <span className="min-w-0 flex-1 whitespace-pre-wrap break-words pl-2 pr-3">
       <span dangerouslySetInnerHTML={{ __html: row.html }} />
       {range && <Button variant="quiet" size="xs" className="ml-2" tooltip="Reference this hunk in the composer"
-       
         onClick={() => onQuoteHunk?.(range)}
         aria-label={`Reference lines ${range.start}-${range.end} in the composer`}
-       
-       
       >
         <Quote size={9} strokeWidth={1.8} aria-hidden="true" />
         quote
@@ -150,7 +147,6 @@ export function PatchView({ patch, path = "", className, foldAfterHunks, onQuote
       </div>
     </div>
     {hiddenHunks > 0 && <RowButton size="bare" tone="muted" shape="card"
-     
       onClick={() => setUnfoldedFor(patch)}><span className="flex w-full items-center gap-2 px-3 py-1 text-caption">
       <ChevronDown className="h-3 w-3 shrink-0" aria-hidden="true" />
       {hiddenHunks} more hunk{hiddenHunks === 1 ? "" : "s"} — expand

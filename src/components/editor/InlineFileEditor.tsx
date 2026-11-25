@@ -116,10 +116,8 @@ export function InlineFileEditor({ workspaceId, path, onDirtyChange, onSaved }: 
           <Button variant="link" size="inline" onClick={() => void save(true)}>Overwrite</Button>
         </>}
         {buffer.state !== "conflict" && <Button variant="link" size="inline"
-         
           onClick={() => void save()}
           disabled={buffer.state === "clean" || buffer.state === "saving"}
-         
         >Save {modKey("S")}</Button>}
       </span>
     </div>

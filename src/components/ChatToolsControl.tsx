@@ -387,7 +387,6 @@ function ToolRow({ item, pending, busy, onSwitch, onRemove }: {
   const on = pending?.on ?? item.state === "on";
   return <div data-tool-kind={item.kind} data-tool-item={item.id} className="flex items-center gap-1">
     <RowButton size="bare" tone="default" shape="card"
-     
       role="menuitemcheckbox"
       tabIndex={-1}
       aria-checked={on}

@@ -112,10 +112,8 @@ export function TrailStartDialog({ trail, harnesses, defaultHarness, initialText
               </div>
               <span className="flex-1" />
               <Button variant="default" size="icon-xs" type="submit"
-               
                 disabled={!canSend}
                 aria-label="Start chat"
-               
               >
                 <ArrowUp className="size-3.5" aria-hidden="true" />
               </Button>

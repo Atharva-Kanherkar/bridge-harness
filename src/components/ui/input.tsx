@@ -25,6 +25,9 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(function Inp
   ...props
 }, ref): React.ReactElement {
   const inputClassName = cn(
+    // The type size lives on the field too, so an unstyled input (one drawn
+    // inside a header or a composer) keeps the UI size instead of the body's.
+    unstyled && "text-ui",
     "h-8.5 w-full min-w-0 rounded-[inherit] px-[calc(--spacing(3)-1px)] leading-8.5 outline-none [transition:background-color_5000000s_ease-in-out_0s] placeholder:text-muted-foreground sm:h-7.5 sm:leading-7.5",
     size === "sm" &&
       "h-7.5 px-[calc(--spacing(2.5)-1px)] leading-7.5 sm:h-6.5 sm:leading-6.5",

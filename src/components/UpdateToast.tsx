@@ -37,10 +37,8 @@ export function UpdateToast({ update, onInstall, onDismiss }: {
     footer={<>
       {installError && <span className="mt-1 block text-meta text-destructive">{installError}</span>}
       {developmentBuild ? <span className="mt-2 block text-meta text-muted-foreground">Install updates from a packaged Bridge app.</span> : <Button variant="default" size="xs" className="mt-2"
-       
         disabled={installing}
         onClick={() => void install()}
-       
       >
         {installing && <LoaderCircle size={12} aria-hidden="true" className="animate-spin" />}
         {installing ? "Installing…" : installError ? "Retry" : "Install and restart"}

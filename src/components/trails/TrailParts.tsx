@@ -64,7 +64,6 @@ export function StateWord({ state, className }: { state: TrailState; className?:
 export function Chip({ children, tone = "plain", title, className }: { children: ReactNode; tone?: "plain" | "warning" | "danger" | "success"; title?: string; className?: string }) {
   return (
     <Tip label={title}><span
-     
       className={cn(
         "inline-flex h-6 max-w-full items-center gap-1.5 truncate rounded-md bg-muted px-2 text-caption font-medium",
         tone === "warning" ? "text-warning" : tone === "danger" ? "text-destructive" : tone === "success" ? "text-success" : "text-muted-foreground",
@@ -177,7 +176,6 @@ export function TrailScroll({ title, action, wide = false, resetKey, children }:
         >
           <div className={cn("mx-auto flex h-11 w-full items-center gap-3 px-5 sm:px-8", wide ? "max-w-page-wide" : "max-w-page")}>
             <Tip label="Back to top"><RowButton size="bare" tone="default" shape="card"
-             
               onClick={toTop}><span className="min-w-0 flex-1 truncate text-ui font-semibold tracking-tight">
               {title}
             </span></RowButton></Tip>

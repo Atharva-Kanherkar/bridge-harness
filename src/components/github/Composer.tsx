@@ -100,10 +100,8 @@ export function Composer({ label, placeholder, submitLabel, onSubmit, onCancel, 
       <span className="mr-auto flex items-center gap-1 text-caption text-muted-foreground">Markdown · <Kbd>{modKey("↵")}</Kbd></span>
       {(collapsed || onCancel) && <Button variant="quiet" size="xs" disabled={busy} onClick={dismiss}>Cancel</Button>}
       <Button variant="default" size="xs"
-       
         disabled={!ready}
         onClick={() => void send()}
-       
       >
         {busy ? <LoaderCircle size={11} className="animate-spin" aria-hidden="true" /> : <Send size={11} aria-hidden="true" />}
         {submitLabel}

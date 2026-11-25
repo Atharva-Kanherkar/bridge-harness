@@ -215,13 +215,11 @@ function FieldView({ field, position, values, other, disabled, shortcuts, onPick
             )}
           >
             <Button variant="text" size="icon-2xs"
-             
               role={field.multiple ? "checkbox" : "radio"}
               aria-checked={other.on}
               aria-label="Something else"
               disabled={disabled}
               onClick={() => { const on = !other.on; onOther({ on }); if (on) otherInput.current?.focus(); }}
-             
             ><Indicator multiple={field.multiple} selected={other.on} /></Button>
             <Input
               unstyled

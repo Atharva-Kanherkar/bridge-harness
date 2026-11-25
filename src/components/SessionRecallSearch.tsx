@@ -97,10 +97,8 @@ export function SessionRecallSearch({
             {status === "loading" && <LoaderCircle size={13} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />}
           </label>
           <Button variant="quiet" size="icon-sm" className="shrink-0"
-           
             onClick={onClose}
             aria-label="Close search"
-           
           >
             <X size={14} strokeWidth={1.8} aria-hidden="true" />
           </Button>
@@ -115,7 +113,6 @@ export function SessionRecallSearch({
             {hits.map(hit => (
               <li key={hit.entryId}>
                 <RowButton size="bare" tone="default" shape="card"
-                 
                   onClick={() => onJump(hit.entryId)}><span className="flex w-full flex-col gap-0.5 px-2 py-1.5">
                   <span className="font-mono text-caption text-muted-foreground">{hit.kind} · #{hit.sequence}</span>
                   <span className="line-clamp-2 text-ui text-foreground">{hit.snippet}</span>
@@ -126,7 +123,6 @@ export function SessionRecallSearch({
         )}
         {hasMore && (
           <Button variant="quiet" size="xs" className="self-start"
-           
             disabled={loadingMore}
             onClick={() => {
               const requested = generation.current;
@@ -149,7 +145,6 @@ export function SessionRecallSearch({
                 // would strand it.
                 .finally(() => setLoadingMore(false));
             }}
-           
           >{loadingMore ? "Loading…" : "Show more"}</Button>
         )}
       </div>

@@ -60,11 +60,9 @@ export function QuickPrompt({ emit = emitToShell }: { emit?: (event: string, pay
       <div className="flex items-center justify-between text-caption text-muted-foreground">
         <span>↵ send · ⇧↵ new line · {modKey("N")} in Bridge for more options</span>
         <Button variant="default" size="icon-xs"
-         
           aria-label="Send"
           disabled={!text.trim()}
           onClick={submit}
-         
         >
           <ArrowUp size={14} aria-hidden="true" />
         </Button>

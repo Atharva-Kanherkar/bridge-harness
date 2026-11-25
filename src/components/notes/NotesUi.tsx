@@ -63,7 +63,6 @@ export function Option({ selected, onSelect, leading, hint, children }: {
   children: ReactNode;
 }) {
   return <RowButton size="bare" tone="default" shape="card"
-   
     role="option"
     aria-selected={selected}
     onClick={onSelect}><span className="flex min-h-8 w-full items-center gap-2.5 px-2.5 text-ui">

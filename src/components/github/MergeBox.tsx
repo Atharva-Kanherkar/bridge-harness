@@ -339,23 +339,19 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
           <div className="flex flex-wrap items-center gap-1.5 px-3.5 py-3">
             <span className="inline-flex shrink-0 overflow-hidden rounded-lg bg-primary text-primary-foreground">
               <Button variant="default" size="xs"
-               
                 data-merge-button
                 onClick={() => dispatch({ type: "open", subject: defaultMergeSubject(summary, state.strategy) })}
                 disabled={busy || !config}
-               
               >
                 <GitMerge size={12} aria-hidden="true" />
                 {config ? MERGE_BUTTON_LABEL[state.strategy] : "Merge"}
               </Button>
               <Button variant="default" size="icon-xs"
-               
                 onClick={() => setMenuOpen(value => !value)}
                 disabled={busy || !config}
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
                 aria-label="Choose a merge strategy"
-               
               >
                 <ChevronDown size={12} aria-hidden="true" />
               </Button>

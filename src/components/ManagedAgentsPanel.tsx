@@ -425,9 +425,7 @@ function RemoveConfirmation({ agent, onCancel, onConfirm }: {
         </p>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="xs"
-           
             data-autofocus
-           
             onClick={onCancel}
           >
             Keep it

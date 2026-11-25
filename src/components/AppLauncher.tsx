@@ -382,13 +382,10 @@ function LauncherPanel({ onClose, apps, personal, badges, pins, chats, chatOpen,
         {/* Where the submenu came from, and the pointer's way back to it. The
             box keeps focus: ⌫ is the keyboard's way. */}
         {submenu && <Button variant="quiet" size="xs" className="-mx-1 shrink-0" tooltip="Back"
-         
           tabIndex={-1}
           aria-label={`Back from ${submenuLabel}`}
-         
           onMouseDown={event => event.preventDefault()}
           onClick={back}
-         
         >
           {submenuLabel}
           <ChevronRight size={15} strokeWidth={1.6} aria-hidden="true" />

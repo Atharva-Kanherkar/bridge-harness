@@ -51,7 +51,6 @@ function RunningRow({ row, now, active, onOpen, trail, onOpenTrail }: {
       )}
     >
       <RowButton size="bare" tone="default" shape="card"
-       
         onClick={onOpen}
         data-running-row={row.chat.id}
         data-active={active || undefined}><span className="flex h-11 min-w-0 flex-1 items-center gap-2 pl-2 font-sans">
@@ -106,11 +105,9 @@ export function SidebarRunning({ rows, activeSessionId, onOpenSession, onOpenMis
     <section aria-label="Active" data-sidebar-running data-collapsed={collapsed || undefined} className="mb-3 shrink-0">
       <div className="flex h-7 items-center gap-1 pr-1">
         <Tip label={collapsed ? "Show active chats" : "Hide active chats"}><RowButton size="bare" tone="default" shape="card"
-         
           onClick={toggle}
           aria-expanded={!collapsed}
           aria-controls={listId}
-         
           data-active-toggle><span className="flex h-7 min-w-0 flex-1 items-center gap-1.5 px-2">
           {/* A live dot, not a spinner: the group should read as calm presence. */}
           <span aria-hidden="true" className="relative grid size-3.25 shrink-0 place-items-center">

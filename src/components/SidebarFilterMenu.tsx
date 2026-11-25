@@ -96,7 +96,6 @@ export function SidebarFilterMenu({ view, agents, allowProjectGrouping, onChange
           <div key={row.panel}>
             {index > 0 && rows[index - 1].group !== row.group && <MenuSeparator />}
             <RowButton size="bare" tone="default" shape="card"
-             
               role="menuitem"
               onClick={() => setPanel(row.panel)}><span className="flex h-7 w-full items-center gap-2 px-2 text-ui">
               <span className="min-w-0 flex-1 truncate">{row.label}</span>
@@ -107,7 +106,6 @@ export function SidebarFilterMenu({ view, agents, allowProjectGrouping, onChange
         )) : (
           <>
             <RowButton size="bare" tone="muted" shape="card"
-             
               onClick={() => setPanel("root")}><span className="flex h-7 w-full items-center gap-1.5 px-1.5 text-caption font-medium">
               <ChevronLeft size={12} strokeWidth={1.7} aria-hidden="true" />
               {panels[panel].title}
@@ -118,7 +116,6 @@ export function SidebarFilterMenu({ view, agents, allowProjectGrouping, onChange
               return (
                 <RowButton size="bare" tone="default" shape="card"
                   key={option.id}
-                 
                   role="menuitemradio"
                   aria-checked={checked}
                   onClick={() => {

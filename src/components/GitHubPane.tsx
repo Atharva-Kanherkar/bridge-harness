@@ -925,10 +925,8 @@ function PatchView({ patch, fullDiffUrl, onComment }: { patch: string; fullDiffU
           <span aria-hidden="true" className="w-9 shrink-0 select-none pr-1.5 text-right tabular-nums text-muted-foreground/60">{line.oldLine ?? ""}</span>
           <span aria-hidden="true" className="w-9 shrink-0 select-none pr-2 text-right tabular-nums text-muted-foreground/60">{line.newLine ?? ""}</span>
           {anchor && <Tip label={`Comment on line ${anchor.line}`}><Button variant="default" size="icon-xs" className="absolute left-[4.1rem] top-0.5"
-           
             onClick={() => setComposing(index)}
             aria-label={`Comment on line ${anchor.line}`}
-           
           ><Plus size={11} strokeWidth={2.4} aria-hidden="true" /></Button></Tip>}
           <span className="pl-2 pr-3">{line.text || " "}</span>
         </div>

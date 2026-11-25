@@ -17,11 +17,9 @@ export function SidebarTrailButton({ trail, onOpenTrail }: { trail: TrailSummary
       side="right"
       align="start"
       trigger={<Button variant="quiet" size="icon-xs" className="hidden shrink-0"
-       
         onClick={event => { event.stopPropagation(); onOpenTrail(trail.id); }}
         aria-label={`Trail: ${trail.title}`}
         data-sidebar-trail={trail.id}
-       
       >
         <Route size={13} strokeWidth={1.7} aria-hidden="true" />
       </Button>}

@@ -66,10 +66,8 @@ export function ToastCard({
       {footer}
     </div>
     <Button variant="quiet" size="icon-xs" className="shrink-0"
-     
       onClick={() => onDismiss(toastKey)}
       aria-label="Dismiss notification"
-     
     >
       <X size={13} aria-hidden="true" />
     </Button>

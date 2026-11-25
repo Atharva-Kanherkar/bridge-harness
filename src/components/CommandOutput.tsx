@@ -67,8 +67,6 @@ export function CappedOutput({ text, className }: { text: string; className?: st
       <pre className={className}>{clipped ? text.slice(-OUTPUT_DISPLAY_CAP) : text}</pre>
       {clipped && (
         <Button variant="text" size="xs" className="-ms-1"
-         
-         
           onClick={() => setAll(true)}
         >
           Show earlier output

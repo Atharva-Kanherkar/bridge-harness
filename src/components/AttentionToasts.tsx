@@ -55,9 +55,7 @@ function AttentionCard({ toast, onOpen, onDismiss, onAction }: {
       <span className={cn("mt-0.5 block text-meta text-muted-foreground", toast.actionLabel ? "line-clamp-2" : "truncate")}>{toast.copy.detail}</span>
     </>}
     footer={toast.actionLabel && onAction && <Button variant="outline" size="xs" className="mt-2"
-     
       onClick={() => onAction(toast)}
-     
     >
       {toast.actionLabel}
     </Button>}

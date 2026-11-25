@@ -77,7 +77,6 @@ function TrailRow({ trail, workspaceTitle, order, onOpen }: { trail: TrailSummar
   return (
     <li className="trail-rise" style={riseDelay(order)}>
       <RowButton size="bare" tone="default" shape="card"
-       
         onClick={onOpen}><span className="flex w-full items-center gap-4 px-4 py-3">
         <span className="min-w-0 flex-1">
           <span className="block truncate text-ui font-medium text-foreground">{trail.title}</span>

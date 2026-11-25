@@ -82,12 +82,10 @@ export function PullsScreen({ workspaces, projects, onJumpToFile, onAddProject }
       </span>
       <Button variant="quiet" size="default" className="-ml-1 min-w-0"
         ref={menu.triggerRef}
-       
         onClick={menu.toggle}
         aria-haspopup="menu"
         aria-expanded={menu.open}
         aria-label={`Repository: ${current.label}`}
-       
       >
         <span className="min-w-0">
           <span className="block text-caption font-medium leading-none text-muted-foreground">Repository</span>

@@ -114,7 +114,6 @@ export function WorkShelf({ prs, tasks, notice, harness, onOpen, onFix }: {
   const fixable = lone && onFix && lone.state === "open" && chatPrStatus(lone).phase === "failing" ? lone : undefined;
   return <div data-work-shelf className="flex h-9 shrink-0 items-center gap-1 border-b border-border pr-1.5 text-meta text-muted-foreground">
     <RowButton size="bare" tone="default" shape="card"
-     
       data-work-shelf-open
       onClick={() => onOpen(lone?.number)}
       aria-label={shelfLabel(ordered, taskSummary(tasks))}><span className="group/shelf flex h-full min-w-0 flex-1 items-center gap-3 pl-3 pr-1">
@@ -126,10 +125,8 @@ export function WorkShelf({ prs, tasks, notice, harness, onOpen, onFix }: {
       <ChevronUp size={13} className="shrink-0 text-faint transition-transform group-hover/shelf:-translate-y-px" aria-hidden="true" />
     </span></RowButton>
     {fixable && <Button variant="outline" size="2xs" className="shrink-0"
-     
       data-work-shelf-fix
       onClick={() => onFix!(fixable)}
-     
     >
       Fix it
     </Button>}

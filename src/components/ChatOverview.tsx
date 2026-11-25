@@ -166,9 +166,7 @@ export function ChatOverviewView({ model, harness, onReview, onOpenCode, onOpenT
         {turns.map(turn => <TurnRow key={turn.key} turn={turn} harness={harness} onOpen={onOpenTurn} />)}
       </ul>
       {(hidden > 0 || allTurns) && model.turns.length > TURNS_SHOWN && <Button variant="quiet" size="xs" className="mt-0.5"
-       
         onClick={() => setAllTurns(value => !value)}
-       
       >{allTurns ? "Show fewer" : `Show ${hidden} more`}</Button>}
     </div>}
   </section>;

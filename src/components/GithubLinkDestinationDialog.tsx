@@ -40,18 +40,14 @@ export function GithubLinkDestinationDialog({
 
       <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-end">
         <Button variant="outline" size="default"
-         
           onClick={onOpenInBrowser}
-         
         >
           <ExternalLink size={13} aria-hidden="true" />
           Open in browser
         </Button>
         <Button variant="default" size="default"
-         
           autoFocus
           onClick={onOpenInline}
-         
         >
           <PanelRight size={13} aria-hidden="true" />
           Open in Bridge

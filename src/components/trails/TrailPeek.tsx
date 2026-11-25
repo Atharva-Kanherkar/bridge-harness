@@ -136,7 +136,6 @@ export function TrailPeekCard({ trail, detail, failed, onOpen }: {
 
       <div className="border-t border-border p-1.5">
         <RowButton size="bare" tone="default" shape="card"
-         
           onClick={onOpen}><span className="flex h-8 w-full items-center gap-2 px-2 text-ui">
           <span className="flex-1 font-medium">Open trail</span>
           <span className="text-caption tabular-nums text-faint">{summary.memberCount} {summary.memberCount === 1 ? "item" : "items"}</span>

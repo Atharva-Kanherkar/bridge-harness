@@ -320,10 +320,8 @@ function TitleCell({ title, onOpen }: { title: string; onOpen: () => void }) {
   return <span className="flex h-full min-w-0 items-center gap-1 pl-2 pr-1 text-ui">
     <span className={clsx("min-w-0 flex-1 truncate font-medium", title ? "text-foreground" : "text-faint")}>{title || "Untitled"}</span>
     <Button variant="outline" size="2xs" className="shrink-0"
-     
       aria-label={`Open ${title || "Untitled"}`}
       onClick={event => { event.stopPropagation(); onOpen(); }}
-     
     ><ArrowUpRight size={12} aria-hidden="true" />Open</Button>
   </span>;
 }

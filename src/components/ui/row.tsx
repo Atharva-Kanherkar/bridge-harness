@@ -28,7 +28,7 @@ export const rowVariants = cva(
       },
       tone: {
         default:
-          "text-foreground hover:bg-accent data-[active=true]:bg-accent aria-selected:bg-accent aria-pressed:bg-accent aria-expanded:bg-accent aria-[current=true]:bg-accent",
+          "text-foreground hover:bg-accent data-[active=true]:bg-accent aria-selected:bg-accent aria-pressed:bg-accent aria-[current=true]:bg-accent",
         muted:
           "text-muted-foreground hover:bg-accent hover:text-foreground data-[active=true]:bg-accent data-[active=true]:text-foreground aria-selected:bg-accent aria-selected:text-foreground aria-pressed:bg-accent aria-pressed:text-foreground aria-[current=true]:bg-accent aria-[current=true]:text-foreground",
         // Selection is drawn with the selection token rather than the hover fill.

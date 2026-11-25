@@ -88,7 +88,6 @@ function CandidateRow({ candidate, icon: Icon, busy, onPick }: { candidate: Trai
   return (
     <li>
       <RowButton size="bare" tone="default" shape="card"
-       
         disabled={busy || Boolean(elsewhere)}
         onClick={onPick}
         aria-label={elsewhere ? `${candidate.title}, on the trail “${elsewhere}”` : `Add ${candidate.title}`}><span className="group flex w-full items-center gap-3 px-3 py-2">

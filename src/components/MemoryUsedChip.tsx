@@ -20,10 +20,8 @@ export function MemoryUsedChip({
   return <div className="flex items-center gap-3 text-caption text-faint">
     <span aria-hidden="true" className="h-px flex-1 bg-border" />
     <Button variant="text" size="2xs"
-     
       aria-label={`Open Memory, ${count} ${count === 1 ? "memory" : "memories"} used in this session`}
       onClick={onOpenMemory}
-     
     >
       Recalled {count} {count === 1 ? "memory" : "memories"}
     </Button>

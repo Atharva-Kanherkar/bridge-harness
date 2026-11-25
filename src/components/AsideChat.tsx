@@ -314,20 +314,15 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
           </div>
           {headerActions}
           <Button variant="quiet" size="xs" className="shrink-0" tooltip="Continue this aside as a full chat"
-           
             onClick={onPromote}
-           
-           
             aria-label="Open as chat"
           >
             {!docked && "Open as chat"}
             <ArrowUpRight size={12} aria-hidden="true"/>
           </Button>
           {onClose && <Button variant="quiet" size="icon-xs" className="shrink-0"
-           
             onClick={onClose}
             aria-label="Close aside"
-           
           >
             <X size={14} aria-hidden="true"/>
           </Button>}
