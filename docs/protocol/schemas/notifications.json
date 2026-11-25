@@ -123,6 +123,10 @@
     },
     {
       "delivery": "transient",
+      "notification": "reviews/activity"
+    },
+    {
+      "delivery": "transient",
       "notification": "stream-lagged"
     }
   ]

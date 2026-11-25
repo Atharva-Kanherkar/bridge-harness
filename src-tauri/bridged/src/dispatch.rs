@@ -1451,6 +1451,10 @@ pub fn dispatch(
             let p: wire::ListReviewsParams = decode(method, params)?;
             reply(api::list_reviews(core, &p))
         }
+        MethodName::ReviewActivity => {
+            let p: wire::ReviewActivityParams = decode(method, params)?;
+            reply(api::review_activity(core, &p))
+        }
         MethodName::ReviewOverview => {
             let p: wire::ReviewOverviewParams = decode(method, params)?;
             reply(api::review_overview(core, &p))

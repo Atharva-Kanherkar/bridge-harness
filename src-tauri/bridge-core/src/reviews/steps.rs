@@ -279,6 +279,11 @@ pub trait ReviewSteps: Send + Sync {
     }
     /// Remove what no live job owns. Run at startup and periodically.
     fn reap(&self) {}
+    /// Give a chat a message as if its person wrote it: it starts a turn, or
+    /// queues behind the one running. See `reviews::handoff`.
+    fn hand_off(&self, _session_id: &str, _text: &str) -> Result<(), String> {
+        Err("This build cannot send reviews to a chat".into())
+    }
 }
 
 /// The steps a build without a reviewer pipeline runs: every job fails at

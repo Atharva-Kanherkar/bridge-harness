@@ -29,6 +29,32 @@
         }
       ]
     },
+    "ReviewHandoff": {
+      "description": "When a finished review goes to the chat that wrote the pull request.",
+      "oneOf": [
+        {
+          "description": "Never: the person reads reviews in the Reviews app or on GitHub.",
+          "enum": [
+            "off"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "As soon as a review drafts, before anyone has triaged it.",
+          "enum": [
+            "drafted"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "When a review posts: only what was posted, with the person's edits.",
+          "enum": [
+            "posted"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "ReviewJobSettings": {
       "description": "How review jobs run. One record for the account, separate from `ReviewerSettings` (the reviewer's model, effort and instructions) so that type keeps the shape older clients decode.\n\nOpen on purpose (no `deny_unknown_fields`): later minors add fields here, and an older client must still decode a newer response. Every field has a default, so a record stored before a field existed loads with it.",
       "properties": {
@@ -56,6 +82,15 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "handoff": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ReviewHandoff"
+            }
+          ],
+          "default": "off",
+          "description": "Send finished reviews to the chat that wrote the pull request, which then works on them. Off by default."
         },
         "incremental": {
           "default": false,

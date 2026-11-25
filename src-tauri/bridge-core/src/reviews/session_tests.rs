@@ -119,7 +119,7 @@ fn script(turns: Vec<Vec<Step>>) -> Arc<Script> {
 }
 
 fn start(cwd: &Path) -> SessionStart<'_> {
-    SessionStart { cwd, model: Some("m"), effort: Some("high"), instructions: "stable" }
+    SessionStart { cwd, model: Some("m"), effort: Some("high"), instructions: "stable", activity: None }
 }
 
 #[test]
@@ -418,7 +418,7 @@ fn live_review_on_a_fixture_pr() {
     }
     let transport = RegistryTransport { registry };
     let instructions = instructions(&conventions_in(&placed), REVIEW_INSTRUCTIONS, false);
-    let start = SessionStart { cwd: &repo, model: model.as_deref(), effort: Some("medium"), instructions: &instructions };
+    let start = SessionStart { cwd: &repo, model: model.as_deref(), effort: Some("medium"), instructions: &instructions, activity: None };
     let pr = read_json(&placed.join("pr.json")).unwrap();
     let started = Instant::now();
     let (result, usage) = run_answered(&transport, &harness, &start, &prompt(&pr, &context_name), &CancelToken::new(), Limits::default());
@@ -479,7 +479,7 @@ fn live_incremental_review_on_a_fixture_pr() {
     std::thread::sleep(Duration::from_secs(wait));
     let transport = RegistryTransport { registry };
     let instructions = instructions(&conventions_in(&placed), REVIEW_INSTRUCTIONS, false);
-    let start = SessionStart { cwd: repo, model: model.as_deref(), effort: Some("medium"), instructions: &instructions };
+    let start = SessionStart { cwd: repo, model: model.as_deref(), effort: Some("medium"), instructions: &instructions, activity: None };
     let pr = read_json(&placed.join("pr.json")).unwrap();
     let started = Instant::now();
     let (result, usage) = run_answered(&transport, &harness, &start, &prompt(&pr, &context_name), &CancelToken::new(), Limits::default());
@@ -899,7 +899,7 @@ fn live_second_opinion_on_a_fixture_pr() {
                     let registry = Arc::new(AdapterRegistry::built_in().unwrap());
                     std::thread::sleep(Duration::from_secs(wait));
                     let transport = RegistryTransport { registry };
-                    let start = SessionStart { cwd: repo, model: model.as_deref(), effort: Some("medium"), instructions };
+                    let start = SessionStart { cwd: repo, model: model.as_deref(), effort: Some("medium"), instructions, activity: None };
                     let begun = Instant::now();
                     let (result, usage) = run_answered(&transport, harness, &start, &prompt(pr, context_name), &CancelToken::new(), Limits::default());
                     (harness.clone(), model, result, usage, begun.elapsed())
@@ -1052,4 +1052,115 @@ fn a_merged_findings_other_title_is_a_repeat() {
     posted.also_known_as.clear();
     let unmerged = without_repeats(vec![draft("src/a.rs", "Reject indices equal to the slice length", "fp-moved", ReviewSeverity::Major)], &[posted]);
     assert_eq!(unmerged.len(), 1, "without the absorbed identity the wording comes back");
+}
+
+/// Keeps what a session recorded, for the activity tests.
+#[derive(Default)]
+struct Recorded(Mutex<Vec<(ReviewActivityKind, Option<String>, Option<String>)>>);
+
+impl ActivitySink for Recorded {
+    fn record(&self, kind: ReviewActivityKind, title: Option<&str>, text: Option<&str>) {
+        self.0.lock().unwrap().push((kind, title.map(str::to_owned), text.map(str::to_owned)));
+    }
+}
+
+#[test]
+fn activity_records_prompt_messages_tools_and_refusals() {
+    use ReviewActivityKind::{Command, Denied, Message, Prompt, Tool};
+    let read = NormalizedEvent { item_id: Some("t1".into()), data: json!({"input": {"file_path": "src/lib.rs"}}), ..tool("Read") };
+    let script = script(vec![
+        vec![
+            Step::Events(vec![event("turn.started"), read.clone(), read]),
+            Step::Events(vec![
+                NormalizedEvent { item_id: Some("c1".into()), title: Some("rg -n unwrap".into()), data: json!({"command": "rg -n unwrap"}), ..event("command.started") },
+                NormalizedEvent { title: Some("Run cargo test".into()), ..event("permission.requested") },
+                // An item that only ever streams: flushed when the turn ends.
+                NormalizedEvent { role: Some("assistant".into()), item_id: Some("m0".into()), text: Some("Looking at ".into()), ..event("message.delta") },
+                NormalizedEvent { role: Some("assistant".into()), item_id: Some("m0".into()), text: Some("the parser.".into()), ..event("message.delta") },
+                said("m1", "Not JSON yet."),
+                said("m1", "Not JSON yet."),
+            ]),
+            Step::Events(vec![event("turn.completed")]),
+        ],
+        vec![Step::Events(vec![event("turn.started"), said("m2", &answer(json!([]))), event("turn.completed")])],
+    ]);
+    let sink = Recorded::default();
+    let start = SessionStart { activity: Some(&sink), ..start(Path::new("/tmp")) };
+    let (result, _) = run(&ScriptedTransport(script), "claude", &start, "review it", &CancelToken::new(), Limits::default());
+    assert!(result.is_ok());
+    let recorded = sink.0.lock().unwrap().clone();
+    let kinds: Vec<ReviewActivityKind> = recorded.iter().map(|(kind, _, _)| *kind).collect();
+    assert_eq!(kinds, [Prompt, Tool, Command, Denied, Message, Message, Prompt, Message], "{recorded:#?}");
+    assert_eq!(recorded[0], (Prompt, Some("Bridge asked for a review".into()), Some("review it".into())));
+    assert_eq!(recorded[1], (Tool, Some("Read".into()), Some("src/lib.rs".into())), "one entry per invocation, with its path");
+    assert_eq!(recorded[2], (Command, Some("rg -n unwrap".into()), None), "the command line is the title, not repeated");
+    assert_eq!(recorded[3].1.as_deref(), Some("Refused a permission request"));
+    assert_eq!(recorded[3].2.as_deref(), Some("Run cargo test"));
+    assert_eq!(recorded[4].2.as_deref(), Some("Not JSON yet."), "a completed message once");
+    assert_eq!(recorded[5].2.as_deref(), Some("Looking at the parser."), "a message that only streamed, at turn end");
+    assert_eq!(recorded[6].1.as_deref(), Some("Bridge asked for the findings again"));
+    assert!(recorded[7].2.as_deref().unwrap().contains("```json"));
+}
+
+#[test]
+fn no_sink_records_nothing_and_changes_nothing() {
+    let script = script(vec![good_turn()]);
+    let (result, usage) = run(&ScriptedTransport(script), "claude", &start(Path::new("/tmp")), "review it", &CancelToken::new(), Limits::default());
+    assert!(result.is_ok());
+    assert_eq!(usage.tools, ["Read", "Grep"]);
+}
+
+#[test]
+fn a_provider_error_is_recorded() {
+    let script = script(vec![vec![Step::Events(vec![event("turn.started"), NormalizedEvent { text: Some("Overloaded".into()), ..event("error") }])]]);
+    let sink = Recorded::default();
+    let start = SessionStart { activity: Some(&sink), ..start(Path::new("/tmp")) };
+    let (result, _) = run(&ScriptedTransport(script), "claude", &start, "review it", &CancelToken::new(), Limits::default());
+    assert!(result.is_err());
+    assert_eq!(sink.0.lock().unwrap().last().unwrap(), &(ReviewActivityKind::Error, None, Some("Overloaded".into())));
+}
+
+#[test]
+fn a_claude_tool_is_shown_once_it_runs_with_its_input_relative_to_the_checkout() {
+    let preparing = NormalizedEvent { item_id: Some("t1".into()), data: json!({"phase": "preparing"}), ..tool("Read") };
+    let running = NormalizedEvent { item_id: Some("t1".into()), data: json!({"phase": "running", "input": {"file_path": "/tmp/checkout/src/cache.rs"}}), ..tool("Read") };
+    let script = script(vec![vec![
+        Step::Events(vec![event("turn.started"), preparing, running]),
+        Step::Events(vec![said("m1", &answer(json!([]))), event("turn.completed")]),
+    ]]);
+    let sink = Recorded::default();
+    let start = SessionStart { activity: Some(&sink), ..start(Path::new("/tmp/checkout")) };
+    let (result, usage) = run(&ScriptedTransport(script), "claude", &start, "go", &CancelToken::new(), Limits::default());
+    assert!(result.is_ok());
+    assert_eq!(usage.tool_calls, 1, "one invocation");
+    let tools: Vec<_> = sink.0.lock().unwrap().iter().filter(|(kind, _, _)| *kind == ReviewActivityKind::Tool).cloned().collect();
+    assert_eq!(tools, [(ReviewActivityKind::Tool, Some("Read".into()), Some("src/cache.rs".into()))]);
+}
+
+#[test]
+fn tool_paths_are_shown_short() {
+    let roots = vec!["/private/var/folders/x/checkout/".to_owned(), "/var/folders/x/checkout/".to_owned()];
+    assert_eq!(display_paths("/private/var/folders/x/checkout/src/a.rs", &roots), "src/a.rs", "the /private form");
+    assert_eq!(display_paths("/var/folders/x/checkout/src/a.rs", &roots), "src/a.rs");
+    assert_eq!(display_paths("/var/folders/x/T/sandbox/output/conventions/CLAUDE.md", &roots), "…/conventions/CLAUDE.md");
+    assert_eq!(display_paths("unwrap · src/lib.rs", &roots), "unwrap · src/lib.rs", "patterns and relative paths are kept");
+}
+
+#[test]
+fn a_codex_tool_shows_its_arguments() {
+    let call = |id: &str, arguments: Value| NormalizedEvent { item_id: Some(id.into()), data: json!({"tool": "js", "arguments": arguments}), ..tool("js") };
+    let script = script(vec![vec![
+        Step::Events(vec![
+            event("turn.started"),
+            call("c1", json!("{\"code\": \"\\nawait tools.exec_command({cmd: 'rg -n page_cursor'})\"}")),
+            call("c2", json!({"cmd": "sed -n 1,80p src/memory.rs"})),
+        ]),
+        Step::Events(vec![said("m1", &answer(json!([]))), event("turn.completed")]),
+    ]]);
+    let sink = Recorded::default();
+    let start = SessionStart { activity: Some(&sink), ..start(Path::new("/tmp/checkout")) };
+    let (result, _) = run(&ScriptedTransport(script), "codex", &start, "go", &CancelToken::new(), Limits::default());
+    assert!(result.is_ok());
+    let details: Vec<Option<String>> = sink.0.lock().unwrap().iter().filter(|(kind, _, _)| *kind == ReviewActivityKind::Tool).map(|(_, _, text)| text.clone()).collect();
+    assert_eq!(details, [Some("await tools.exec_command({cmd: 'rg -n page_cursor'})".into()), Some("sed -n 1,80p src/memory.rs".into())]);
 }

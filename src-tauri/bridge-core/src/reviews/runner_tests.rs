@@ -171,6 +171,11 @@ impl ReviewSteps for Script {
     fn reap(&self) {
         self.call("reap".into());
     }
+
+    fn hand_off(&self, session_id: &str, text: &str) -> Result<(), String> {
+        self.call(format!("hand_off:{session_id}:{}", text.lines().next().unwrap_or_default()));
+        Ok(())
+    }
 }
 
 fn fast() -> RunnerConfig {
@@ -1053,4 +1058,40 @@ fn a_second_pass_and_a_queued_job_never_exceed_the_limit() {
     assert_eq!(job(&core, &pair).status, Status::Drafted);
     assert_eq!(job(&core, &single).status, Status::Drafted);
     assert_eq!(runner.active(), 0);
+}
+
+#[test]
+fn a_drafted_job_hands_off_to_the_branch_chat_when_asked() {
+    let (_scratch, core, script) = fixture();
+    settings(&core, |settings| settings.handoff = wire::ReviewHandoff::Drafted);
+    core.db.lock().unwrap().execute("INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('chat','w1','claude','The chat','ready')", []).unwrap();
+    let id = queue(&core, 1, &["claude"]);
+    core.db.lock().unwrap().execute("UPDATE review_jobs SET pr_branch='main', pr_title='Add it' WHERE id=?1", params![id]).unwrap();
+    drain(&Runner::with(core.clone(), fast(), Arc::new(Utc::now)));
+    assert_eq!(job(&core, &id).status, Status::Drafted);
+    // The handoff runs on its own thread.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while script.calls("hand_off:").is_empty() {
+        assert!(Instant::now() < deadline, "the drafted review never went to the chat");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(script.calls("hand_off:"), ["hand_off:chat:Bridge reviewed pull request #1 (Add it) with Claude. 1 finding came back. Nobody has triaged them yet, so judge each one."]);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while job(&core, &id).handoff_chat.is_none() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(job(&core, &id).handoff_chat.as_deref(), Some("The chat"));
+}
+
+#[test]
+fn handoff_off_sends_nothing_from_the_runner() {
+    let (_scratch, core, script) = fixture();
+    core.db.lock().unwrap().execute("INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('chat','w1','claude','The chat','ready')", []).unwrap();
+    let id = queue(&core, 1, &["claude"]);
+    core.db.lock().unwrap().execute("UPDATE review_jobs SET pr_branch='main' WHERE id=?1", params![id]).unwrap();
+    drain(&Runner::with(core.clone(), fast(), Arc::new(Utc::now)));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(script.calls("hand_off:").is_empty());
+    assert!(job(&core, &id).handoff_note.is_none());
 }

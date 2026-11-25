@@ -43,3 +43,11 @@ it("saves a valid number on change, and never sends one the host would refuse", 
   expect(save).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ stallTimeoutSeconds: 900 }));
   expect(host.textContent).toContain("Saved");
 });
+
+it("no longer holds the reviewer settings: they live in the Reviews app", async () => {
+  const reviewer = vi.spyOn(bridgeApi, "reviewerSettings");
+  await act(async () => { root.render(<WorkersPage adapters={[]} />); });
+  expect(host.querySelector("[data-reviewer-settings]")).toBeNull();
+  expect(host.textContent).not.toContain("Reviewer instructions");
+  expect(reviewer).not.toHaveBeenCalled();
+});

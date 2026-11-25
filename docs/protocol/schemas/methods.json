@@ -2550,6 +2550,13 @@
       "resultSchema": "review-overview.json"
     },
     {
+      "command": "review_activity",
+      "domain": "reviews",
+      "method": "reviews/review_activity",
+      "paramsSchema": "review-activity-params.json",
+      "resultSchema": "review-activity-list.json"
+    },
+    {
       "command": "get_review",
       "domain": "reviews",
       "method": "reviews/get_review",
@@ -2601,7 +2608,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 57
+    "minor": 58
   },
   "reserved": {
     "cancel": "$/cancel",
