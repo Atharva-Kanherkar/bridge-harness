@@ -13,12 +13,12 @@
 // Shared controls use the same Lucide symbols as the rest of Bridge.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Select as SelectPrimitive } from "@base-ui/react/select";
 import { ChevronDown as CaretDown, ChevronRight as CaretRight, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { RowButton } from "@/components/ui/row";
+import { Select as SelectRoot, SelectGroup, SelectGroupLabel, SelectItem, SelectPopup, SelectTrigger } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch as SwitchControl } from "@/components/ui/switch";
 import { SETTINGS_COLUMN } from "./layout";
@@ -276,13 +276,9 @@ export type SelectOption = {
   group?: string;
 };
 
-const CONTROL = "h-7 rounded-lg border border-border-card bg-popover px-2.5 text-xs text-foreground outline-none transition-colors disabled:opacity-45";
-
 /**
- * A select that renders no native select element.
- *
- * Base UI supplies typeahead, arrow keys, focus management, and a portal that
- * keeps the model catalog clear of scrolling group cards.
+ * A select that renders no native select element: the shared Select primitive
+ * with the kit's width and option shape (lead, description, groups).
  */
 export function Select({ value, options, onChange, disabled, label, placeholder = "Choose", width = "w-56" }: {
   value: string;
@@ -293,69 +289,39 @@ export function Select({ value, options, onChange, disabled, label, placeholder 
   placeholder?: string;
   width?: string;
 }) {
-  const [open, setOpen] = useState(false);
   const selected = options.find(option => option.value === value);
-  return <SelectPrimitive.Root
-    value={value}
-    onValueChange={next => { if (next !== null) onChange(next); }}
-    open={open}
-    onOpenChange={setOpen}
-    disabled={disabled || options.length === 0}
-    items={options}
-  >
-    <SelectPrimitive.Trigger
-      aria-label={label}
-      className={cn(CONTROL, width, "flex max-w-full shrink-0 items-center gap-1.5 hover:bg-accent")}
+  const groups = [...new Set(options.map(option => option.group))];
+  const item = (option: SelectOption) => <SelectItem key={option.value} value={option.value} label={option.label} disabled={option.disabled}>
+    <span className="flex min-w-0 items-center gap-2">
+      {option.lead}
+      <span className="min-w-0 flex-1">
+        <span className="block">{option.label}</span>
+        {option.description && <span className="mt-0.5 block text-caption text-muted-foreground">{option.description}</span>}
+      </span>
+    </span>
+  </SelectItem>;
+  // The width sits on a wrapper: the trigger owns its own box.
+  return <span className={cn(width, "inline-flex max-w-full shrink-0")}>
+    <SelectRoot
+      value={value}
+      onValueChange={next => { if (next !== null) onChange(next); }}
+      disabled={disabled || options.length === 0}
+      items={options}
     >
-      {selected?.lead}
-      <span className="min-w-0 flex-1 truncate text-left">{selected?.label ?? (value || placeholder)}</span>
-      <CaretDown size={12} strokeWidth={1.7} aria-hidden="true" className={cn("shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
-    </SelectPrimitive.Trigger>
-    {/* Escape the cards' overflow clipping and flip above the trigger when
-        there is not enough room below it. */}
-    <SelectPrimitive.Portal>
-      <SelectPrimitive.Positioner
-        align="end"
-        sideOffset={4}
-        collisionPadding={8}
-        alignItemWithTrigger={false}
-        positionMethod="fixed"
-        className="z-50 data-closed:hidden"
-      >
-        <SelectPrimitive.Popup
-          aria-label={label}
-          className="u-glass-popover max-h-[min(18rem,var(--available-height))] min-w-(--anchor-width) max-w-(--available-width) overflow-y-auto rounded-lg border border-border bg-popover p-1 outline-none"
-        >
-          {options.map((option, index) => <SelectItemWithGroup key={option.value} option={option} first={index === 0 || options[index - 1].group !== option.group}><SelectPrimitive.Item
-            key={option.value}
-            value={option.value}
-            label={option.label}
-            disabled={option.disabled}
-            className={cn(
-              "flex w-full cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs outline-none transition-colors data-disabled:opacity-40 data-highlighted:bg-accent",
-              option.value === value ? "bg-accent text-foreground" : "text-foreground hover:bg-accent",
-            )}
-          >
-            {option.lead}
-            <span className="min-w-0 flex-1">
-              <SelectPrimitive.ItemText render={<span />}>{option.label}</SelectPrimitive.ItemText>
-              {option.description && <span className="mt-0.5 block text-caption text-muted-foreground">{option.description}</span>}
-            </span>
-            {option.value === value && <Check size={12} strokeWidth={1.7} aria-hidden="true" className="shrink-0" />}
-          </SelectPrimitive.Item></SelectItemWithGroup>)}
-        </SelectPrimitive.Popup>
-      </SelectPrimitive.Positioner>
-    </SelectPrimitive.Portal>
-  </SelectPrimitive.Root>;
-}
-
-/** A group label above the first option of each group. */
-function SelectItemWithGroup({ option, first, children }: { option: SelectOption; first: boolean; children: ReactNode }) {
-  if (!option.group || !first) return <>{children}</>;
-  return <>
-    <div role="presentation" className="px-2 pb-1 pt-2 text-caption font-medium text-muted-foreground first:pt-1">{option.group}</div>
-    {children}
-  </>;
+      <SelectTrigger size="sm" aria-label={label}>
+        {selected?.lead}
+        <span className="min-w-0 flex-1 truncate">{selected?.label ?? (value || placeholder)}</span>
+      </SelectTrigger>
+      {/* Portalled, so the cards' overflow clipping cannot cut it off. */}
+      <SelectPopup aria-label={label} align="end" alignItemWithTrigger={false}>
+        {groups.length === 1 && groups[0] === undefined
+          ? options.map(item)
+          : groups.map(group => group === undefined
+            ? options.filter(option => option.group === undefined).map(item)
+            : <SelectGroup key={group}><SelectGroupLabel>{group}</SelectGroupLabel>{options.filter(option => option.group === group).map(item)}</SelectGroup>)}
+      </SelectPopup>
+    </SelectRoot>
+  </span>;
 }
 
 /** A single-line text field. Same box as the select, without the chevron. */
