@@ -33,7 +33,7 @@ export const rowVariants = cva(
           "text-muted-foreground hover:bg-accent hover:text-foreground data-[active=true]:bg-accent data-[active=true]:text-foreground aria-selected:bg-accent aria-selected:text-foreground aria-pressed:bg-accent aria-pressed:text-foreground aria-[current=true]:bg-accent aria-[current=true]:text-foreground",
         // Selection is drawn with the selection token rather than the hover fill.
         selection:
-          "text-foreground hover:bg-accent data-[active=true]:bg-selection data-[active=true]:text-selection-foreground aria-selected:bg-selection aria-selected:text-selection-foreground",
+          "text-foreground hover:bg-accent data-[active=true]:bg-selection data-[active=true]:text-selection-foreground data-[active=true]:hover:bg-selection aria-selected:bg-selection aria-selected:text-selection-foreground aria-selected:hover:bg-selection",
         // A vertical tab list: the selected tab is raised like a segmented item.
         tab: "text-foreground hover:bg-accent aria-selected:bg-card aria-selected:shadow-control aria-selected:hover:bg-card",
         // A raised card that fills on hover.

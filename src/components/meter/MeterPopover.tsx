@@ -51,7 +51,7 @@ export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose, 
       </span>
     </div>
     <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-2">
-      {registry == null && live.length === 0 && <SkeletonRows label="Loading meter" rows={2} framed={false} rowClassName="px-0 py-3" />}
+      {registry == null && live.length === 0 && <SkeletonRows label="Loading meter" rows={2} framed={false} density="flush" />}
       <MeterReadings usage={usage} nowMs={nowMs} />
       {awaiting.map(entry => <section key={entry.id} aria-label={`${entry.label} usage`} className="flex items-center gap-2 border-b border-border py-3 last:border-0">
         <HarnessMark harness={entry.id} size={12} />

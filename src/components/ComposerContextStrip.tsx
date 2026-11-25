@@ -129,7 +129,7 @@ export function ComposerContextStrip({
             onNewChat={locked && onNewChat ? () => { branchMenu.close(); onNewChat(); } : undefined}
           />
         </> : <>
-          {branchBusy && <SkeletonRows label="Loading branches" rows={3} meta={false} framed={false} className="divide-y-0" rowClassName="min-h-8 px-3 py-1.5" />}
+          {branchBusy && <SkeletonRows label="Loading branches" rows={3} meta={false} framed={false} density="menu" />}
           {!branchBusy && branchError && <p role="status" aria-live="polite" className="px-3 py-2 text-meta text-destructive">{branchError}</p>}
           {!branchBusy && !branchError && branches.map(branch => (
             <MenuItem

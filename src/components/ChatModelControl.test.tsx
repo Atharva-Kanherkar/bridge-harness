@@ -148,7 +148,7 @@ describe("ChatModelControl", () => {
     await act(async () => root.render(
       <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact maxWidthClassName="max-w-[190px]" onChange={vi.fn()} />,
     ));
-    expect(trigger().className).toContain("max-w-[190px]");
+    expect(trigger().parentElement!.className).toContain("max-w-[190px]");
     const label = trigger().querySelector("span")!;
     expect(label.className).toContain("overflow-hidden");
     expect(label.className).toContain("text-ellipsis");
@@ -158,7 +158,7 @@ describe("ChatModelControl", () => {
     await act(async () => root.render(
       <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact maxWidthClassName="max-w-[190px]" onChange={vi.fn()} />,
     ));
-    expect(trigger().title).toBe("Codex · GPT Balanced");
+    expect(trigger().dataset.tip).toBe("Codex · GPT Balanced");
   });
 
   it("strips the trailing (Unlimited) suffix from the displayed label", async () => {
@@ -178,7 +178,7 @@ describe("ChatModelControl", () => {
     ));
     expect(trigger().textContent).toContain("Cursor · default");
     expect(trigger().textContent).not.toContain("[");
-    expect(trigger().title).toBe("Cursor · default");
+    expect(trigger().dataset.tip).toBe("Cursor · default");
     expect(trigger().getAttribute("aria-label")).toBe("Chat model: Cursor default");
   });
 
@@ -231,7 +231,7 @@ describe("ChatModelControl", () => {
     await act(async () => root.render(
       <ChatModelControl adapters={stuttering} harness="opencode" model="oc-go-mimo" compact onChange={vi.fn()} />,
     ));
-    expect(trigger().title).toBe("OpenCode Go · MiMo V2.5");
+    expect(trigger().dataset.tip).toBe("OpenCode Go · MiMo V2.5");
     expect(trigger().title).not.toContain("OpenCode · OpenCode");
   });
 
@@ -239,7 +239,7 @@ describe("ChatModelControl", () => {
     await act(async () => root.render(
       <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact onChange={vi.fn()} />,
     ));
-    expect(trigger().title).toBe("Codex · GPT Balanced");
+    expect(trigger().dataset.tip).toBe("Codex · GPT Balanced");
   });
 
   it("opens the picker and calls onChange when a model is chosen", async () => {

@@ -51,7 +51,7 @@ export const buttonVariants = cva(
           "border-transparent text-foreground hover:bg-accent data-pressed:bg-accent *:data-[slot=button-loading-indicator]:text-foreground",
         // Toolbar and row actions: recedes until hovered.
         quiet:
-          "border-transparent text-muted-foreground hover:bg-accent hover:text-foreground data-pressed:bg-accent data-pressed:text-foreground aria-pressed:bg-accent aria-pressed:text-foreground aria-expanded:bg-accent aria-expanded:text-foreground *:data-[slot=button-loading-indicator]:text-foreground",
+          "border-transparent text-muted-foreground hover:bg-accent hover:text-foreground data-pressed:bg-accent data-pressed:text-foreground aria-pressed:bg-accent aria-pressed:text-foreground aria-expanded:bg-accent aria-expanded:text-foreground aria-[current=true]:bg-accent aria-[current=true]:text-foreground *:data-[slot=button-loading-indicator]:text-foreground",
         // A filter pill: outlined at rest, filled while pressed. Pair with size="2xs" and aria-pressed.
         chip: "rounded-full border-border text-muted-foreground before:rounded-full hover:bg-accent hover:text-foreground aria-pressed:border-foreground/25 aria-pressed:bg-accent aria-pressed:text-foreground",
         // Words that act: no fill at rest or on hover. Pair with size="inline" inside a sentence.
@@ -86,7 +86,13 @@ export interface ButtonProps extends useRender.ComponentProps<"button"> {
 
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   function Button(
-    {
+    allProps,
+    forwardedRef,
+  ): React.ReactElement {
+    // A button that can carry a hint keeps the tooltip wrapper even while the
+    // hint is empty, so toggling it never remounts the button (and drops focus).
+    const hintable = "tooltip" in allProps;
+    const {
       className,
       variant,
       size,
@@ -98,9 +104,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       tooltipSide,
       disabled: disabledProp,
       ...props
-    },
-    forwardedRef,
-  ): React.ReactElement {
+    } = allProps;
     const isDisabled: boolean = Boolean(loading || disabledProp);
     const typeValue: React.ButtonHTMLAttributes<HTMLButtonElement>["type"] =
       render ? undefined : "button";
@@ -136,7 +140,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       ref: forwardedRef,
       render,
     });
-    if (!tooltip || !element) return element as React.ReactElement;
+    if (!hintable || !element) return element as React.ReactElement;
     return <Tip label={tooltip} side={tooltipSide}>{element}</Tip>;
   },
 );

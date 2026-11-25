@@ -66,8 +66,8 @@ export function TooltipPopup({
 
 /**
  * The everyday tooltip: wrap one element, name the hint. Replaces the native
- * `title` attribute everywhere. An empty label renders the child untouched,
- * so a conditional hint needs no branch at the call site.
+ * `title` attribute everywhere. An empty label shows nothing, so a
+ * conditional hint needs no branch at the call site.
  *
  * The child must take a ref and spread props (any intrinsic element, or a
  * primitive from this folder). A tooltip is a hint, not a name: an icon-only
@@ -88,22 +88,23 @@ export function Tip({
   align?: TooltipPrimitive.Positioner.Props["align"];
   children: React.ReactElement;
 }): React.ReactElement {
-  if (label === undefined || label === null || label === false || label === "")
-    return children;
+  // An empty hint disables the tooltip rather than unwrapping the child, so a
+  // hint that comes and goes never remounts what it wraps.
+  const empty = label === undefined || label === null || label === false || label === "";
   return (
-    <Tooltip>
+    <Tooltip disabled={empty}>
       <TooltipTrigger
-        data-tip={typeof label === "string" ? label : undefined}
+        data-tip={typeof label === "string" && label ? label : undefined}
         render={children}
       />
-      <TooltipPopup align={align} side={side}>
+      {!empty && <TooltipPopup align={align} side={side}>
         <span className="flex items-center gap-2">
           <span className="min-w-0 whitespace-pre-line">{label}</span>
           {shortcut && (
             <span className="shrink-0 text-muted-foreground">{shortcut}</span>
           )}
         </span>
-      </TooltipPopup>
+      </TooltipPopup>}
     </Tooltip>
   );
 }

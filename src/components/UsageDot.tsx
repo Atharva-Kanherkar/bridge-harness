@@ -345,7 +345,7 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-1">
           {error && <p role="alert" className="my-2 rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-caption leading-relaxed text-destructive">{error}</p>}
-          {overviews == null && !error && <SkeletonRows label="Loading usage" rows={2} framed={false} rowClassName="px-0 py-3" />}
+          {overviews == null && !error && <SkeletonRows label="Loading usage" rows={2} framed={false} density="flush" />}
           {snapshots.map(snapshot => <ProviderSection key={snapshotKey(snapshot)} snapshot={snapshot} adapter={adapterFor(snapshot.provider)} nowSeconds={now} refreshing={refreshing} onSignIn={onSignIn} onRefresh={onRefresh} />)}
           {overviews != null && snapshots.length === 0 && <p className="py-5 text-center text-caption text-muted-foreground">No providers report usage yet.</p>}
         </div>

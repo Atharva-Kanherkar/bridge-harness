@@ -1,7 +1,7 @@
 "use client";
 
 import { Input as InputPrimitive } from "@base-ui/react/input";
-import type * as React from "react";
+import * as React from "react";
 import { cn } from "@/lib/utils";
 
 export type InputProps = Omit<
@@ -15,7 +15,7 @@ export type InputProps = Omit<
   mono?: boolean;
 };
 
-export function Input({
+export const Input = React.forwardRef<HTMLInputElement, InputProps>(function Input({
   className,
   size = "default",
   unstyled = false,
@@ -23,7 +23,7 @@ export function Input({
   mono = false,
   style,
   ...props
-}: InputProps): React.ReactElement {
+}, ref): React.ReactElement {
   const inputClassName = cn(
     "h-8.5 w-full min-w-0 rounded-[inherit] px-[calc(--spacing(3)-1px)] leading-8.5 outline-none [transition:background-color_5000000s_ease-in-out_0s] placeholder:text-muted-foreground sm:h-7.5 sm:leading-7.5",
     size === "sm" &&
@@ -50,6 +50,7 @@ export function Input({
     >
       {nativeInput ? (
         <input
+          ref={ref}
           className={inputClassName}
           data-slot="input"
           size={typeof size === "number" ? size : undefined}
@@ -58,6 +59,7 @@ export function Input({
         />
       ) : (
         <InputPrimitive
+          ref={ref}
           className={inputClassName}
           data-slot="input"
           size={typeof size === "number" ? size : undefined}
@@ -67,6 +69,6 @@ export function Input({
       )}
     </span>
   );
-}
+});
 
 export { InputPrimitive };

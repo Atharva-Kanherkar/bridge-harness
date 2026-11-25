@@ -1,7 +1,7 @@
 "use client";
 
 import { cva, type VariantProps } from "class-variance-authority";
-import type * as React from "react";
+import * as React from "react";
 import { cn } from "@/lib/utils";
 import { Input, type InputProps } from "@/components/ui/input";
 import { Textarea, type TextareaProps } from "@/components/ui/textarea";
@@ -90,16 +90,14 @@ export function InputGroupText({
   );
 }
 
-export function InputGroupInput({
-  className,
-  ...props
-}: InputProps): React.ReactElement {
-  return <Input className={className} unstyled {...props} />;
-}
+export const InputGroupInput = React.forwardRef<HTMLInputElement, InputProps>(
+  function InputGroupInput({ className, ...props }, ref): React.ReactElement {
+    return <Input ref={ref} className={className} unstyled {...props} />;
+  },
+);
 
-export function InputGroupTextarea({
-  className,
-  ...props
-}: TextareaProps): React.ReactElement {
-  return <Textarea className={className} unstyled {...props} />;
-}
+export const InputGroupTextarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
+  function InputGroupTextarea({ className, ...props }, ref): React.ReactElement {
+    return <Textarea ref={ref} className={className} unstyled {...props} />;
+  },
+);

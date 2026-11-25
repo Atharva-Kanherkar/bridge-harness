@@ -298,7 +298,7 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
         role={notice.tone === "saved" ? "status" : "alert"}
         className={cn("mx-1 mb-1 px-1 text-caption leading-4", notice.tone === "error" ? "text-destructive" : notice.tone === "refusal" ? "text-warning" : "text-muted-foreground")}
       >{notice.text}</p>}
-      {loading && <SkeletonRows label="Loading tools" rows={4} meta={false} trailing framed={false} rowClassName="min-h-8 px-2 py-1.5" />}
+      {loading && <SkeletonRows label="Loading tools" rows={4} meta={false} trailing framed={false} density="menu" />}
       {!data && loadError && <div className="px-2 py-1.5">
         <p role="alert" className="text-caption leading-4 text-destructive">{loadError}</p>
         <Button variant="ghost" size="xs" role="menuitem" tabIndex={-1} onClick={() => void load()} className="-ml-2 mt-1">

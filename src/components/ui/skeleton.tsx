@@ -68,7 +68,18 @@ export function SkeletonText({ lines = 3, className, index = 0 }: { lines?: numb
  * Placeholder list rows. Framed, it matches a `SettingsGroup` card; unframed,
  * it drops into a popover, a pane, or an existing `SettingsGroup`.
  */
-export function SkeletonRows({ label, rows = 4, lead, meta = true, trailing = false, framed = true, className, rowClassName }: {
+const ROW_DENSITY = {
+  /** A list or settings row. */
+  default: "min-h-11 gap-3 px-3.5 py-2.5",
+  /** A menu or picker option. Rows sit flush, without dividers. */
+  menu: "min-h-8 gap-3 px-2 py-1.5",
+  /** Rows aligned to the container's own padding. */
+  flush: "gap-3 px-0 py-3",
+  /** A roomy card row. */
+  card: "gap-3 p-4",
+} as const;
+
+export function SkeletonRows({ label, rows = 4, lead, meta = true, trailing = false, framed = true, density = "default", className }: {
   /** Names the wait. Omit it only inside a `SkeletonRegion` that already does. */
   label?: string;
   rows?: number;
@@ -79,11 +90,11 @@ export function SkeletonRows({ label, rows = 4, lead, meta = true, trailing = fa
   /** A control-sized block at the end of the row. */
   trailing?: boolean;
   framed?: boolean;
+  density?: keyof typeof ROW_DENSITY;
   className?: string;
-  rowClassName?: string;
 }): React.ReactElement {
-  const frame = cn("divide-y divide-border", framed && "overflow-hidden rounded-xl border border-border-card bg-card", className);
-  const items = Array.from({ length: rows }, (_, row) => <div key={row} data-skeleton-row="" className={cn("flex min-h-11 items-center gap-3 px-3.5 py-2.5", rowClassName)}>
+  const frame = cn(density !== "menu" && "divide-y divide-border", framed && "overflow-hidden rounded-xl border border-border-card bg-card", className);
+  const items = Array.from({ length: rows }, (_, row) => <div key={row} data-skeleton-row="" className={cn("flex items-center", ROW_DENSITY[density])}>
     {lead && <Skeleton index={row} className={cn("shrink-0", LEAD[lead])} />}
     <span className="flex min-w-0 flex-1 flex-col gap-2">
       <Skeleton index={row} className={TITLE_WIDTHS[row % TITLE_WIDTHS.length]} />
