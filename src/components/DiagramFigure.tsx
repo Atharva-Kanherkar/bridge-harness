@@ -262,6 +262,7 @@ export function DiagramFigure({ spec }: { spec: DiagramSpec }) {
     // Sized to its own content via width/height attributes, not CSS —
     // max-width only ever shrinks a diagram wider than its column back
     // down to fit, it never stretches a small one to fill it.
+    // oxlint-disable-next-line shadcn/no-arbitrary-values -- a diagram sits in prose of any size, so its spacing is in em
     <figure className="my-[0.9em] flex flex-col items-start gap-[0.6em] [&_svg]:h-auto [&_svg]:max-w-full">
       <svg
         viewBox={layout.viewBox}
@@ -336,6 +337,7 @@ export function DiagramFigure({ spec }: { spec: DiagramSpec }) {
           })}
         </g>
       </svg>
+      {/* oxlint-disable-next-line shadcn/no-arbitrary-values -- the caption scales with the prose around the diagram */}
       <figcaption className="text-[0.82em] leading-relaxed text-muted-foreground">{spec.caption}</figcaption>
     </figure>
   );

@@ -403,7 +403,7 @@ function RemoveConfirmation({ agent, onCancel, onConfirm }: {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-[8vh] sm:pt-[10vh]"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-viewport sm:pt-viewport-lg"
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}

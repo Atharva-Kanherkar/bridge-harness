@@ -26,7 +26,7 @@ const KIND_GAP = 34;
 function Leader({ x, from, to, side }: { x: number; from: number; to: number; side: "left" | "right" }) {
   if (Math.abs(from - to) < 3) return null;
   const reach = side === "left" ? -7 : 7;
-  return <path d={`M${x},${from} L${x + reach},${to}`} className="fill-none stroke-muted-foreground/40" strokeWidth={1} />;
+  return <path d={`M${x},${from} L${x + reach},${to}`} fill="none" className="stroke-muted-foreground/40" strokeWidth={1} />;
 }
 
 export function UsageFlow({ report, window, metric }: UsageLayoutProps) {

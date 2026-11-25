@@ -10,6 +10,7 @@ import { PaneState } from "./ui/pane";
 import { Textarea } from "./ui/textarea";
 import { cn } from "../lib/utils";
 import { formatShortcut, modKey } from "../lib/platform";
+import { Input } from "@/components/ui/input";
 
 export type SimpleBrowserProps = {
   sessionId?: string;
@@ -246,7 +247,7 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
       <Button variant="quiet" size="icon-xs" aria-label="Back" tooltip="Back" disabled={!canBack} onClick={() => act("back")}><ArrowLeft /></Button>
       <Button variant="quiet" size="icon-xs" aria-label="Forward" tooltip="Forward" disabled={!canForward} onClick={() => act("forward")}><ArrowRight /></Button>
       <Button variant="quiet" size="icon-xs" aria-label={live?.loading ? "Stop loading" : "Reload"} tooltip={live?.loading ? "Stop loading" : "Reload"} disabled={!active.url} onClick={() => act(live?.loading ? "stop" : "reload")}>{live?.loading ? <Square size={11} className="size-3" /> : <RotateCw />}</Button>
-      <input ref={address} value={draft} onChange={event => setDraft(event.target.value)} aria-label="Address" placeholder="Search or enter address" spellCheck={false} autoComplete="off" className="h-8 min-w-0 flex-1 rounded-full border border-input bg-muted/40 px-3.5 text-xs outline-none transition-colors placeholder:text-muted-foreground/70 focus-visible:border-ring focus-visible:bg-background" />
+      <Input size="sm" ref={address} className="min-w-0 flex-1" value={draft} onChange={event => setDraft(event.target.value)} aria-label="Address" placeholder="Search or enter address" spellCheck={false} autoComplete="off"/>
       <Button variant="quiet" size="icon-xs" aria-label="Select page element" aria-pressed={inspecting} disabled={!active.url || !!pageError} tooltip="Select an element to edit" onClick={() => inspecting ? cancelSelection() : act("inspect")}><MousePointer2 /></Button>
       <Button variant="quiet" size="icon-xs" aria-label="Open in system browser" tooltip="Open in system browser" disabled={!active.url} onClick={() => void run(() => openExternalUrl(live?.url || active.url))}><ExternalLink /></Button>
     </form>

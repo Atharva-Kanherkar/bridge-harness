@@ -74,7 +74,7 @@ export function ProviderSignInDialog({ provider, label, onRetry, onAuthChanged, 
                 ? <CircleHelp size={18} className="text-muted-foreground" aria-hidden="true" />
                 : <HarnessMark harness={provider} size={18} />}
         </span>
-        <DialogTitle className="mt-2 text-lg">
+        <DialogTitle className="mt-2">
           {phase === "signed-in" ? `Signed in to ${label}` : phase === "failed" ? "Sign-in didn't finish" : phase === "unconfirmed" ? "Couldn't confirm sign-in" : `Sign in to ${label}`}
         </DialogTitle>
         <DialogDescription>

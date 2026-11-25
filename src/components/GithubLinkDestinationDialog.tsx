@@ -29,7 +29,8 @@ export function GithubLinkDestinationDialog({
   onCancel,
 }: GithubLinkDestinationDialogProps) {
   return <Dialog open onOpenChange={next => { if (!next) onCancel(); }}>
-    <DialogPopup showCloseButton={false} aria-label="Open GitHub link" className="max-w-md p-5">
+    <DialogPopup showCloseButton={false} aria-label="Open GitHub link" className="max-w-md">
+      <div className="p-5">
       <p className="text-xs text-muted-foreground">Open this in</p>
       <p className="mt-1 text-message font-medium leading-snug text-foreground">{subject}</p>
       <p className="mt-0.5 font-mono text-caption text-muted-foreground">{repository}</p>
@@ -52,6 +53,7 @@ export function GithubLinkDestinationDialog({
           <PanelRight size={13} aria-hidden="true" />
           Open in Bridge
         </Button>
+      </div>
       </div>
     </DialogPopup>
   </Dialog>;

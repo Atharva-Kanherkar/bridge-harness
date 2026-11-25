@@ -83,7 +83,7 @@ function DialogSurface({
     <motion.div
       ref={surfaceRef}
       className={cn(
-        "fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-[8vh] sm:pt-[12vh]",
+        "fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-viewport sm:pt-viewport-lg",
         !isPresent && "pointer-events-none",
       )}
       onClick={dismissOnScrim ? event => { if (!closeDisabled && event.target === event.currentTarget) onClose(); } : undefined}

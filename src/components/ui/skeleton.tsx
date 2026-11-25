@@ -39,8 +39,16 @@ const LEAD = {
 } as const;
 
 /** One placeholder shape. Decorative: the region around it carries the label. */
-export function Skeleton({ className, index }: { className?: string; index?: number }): React.ReactElement {
-  return <span aria-hidden="true" className={cn("skeleton-shimmer block h-3 rounded", skeletonDelay(index), className)} />;
+export function Skeleton({ className, index, width }: {
+  className?: string;
+  index?: number;
+  /** A ragged width that varies with `index`: a title's, or a meta line's (which is also shorter). */
+  width?: "title" | "meta";
+}): React.ReactElement {
+  const ragged = width === "title" ? TITLE_WIDTHS[(index ?? 0) % TITLE_WIDTHS.length]
+    : width === "meta" ? cn("h-2.5", META_WIDTHS[(index ?? 0) % META_WIDTHS.length])
+    : undefined;
+  return <span aria-hidden="true" className={cn("skeleton-shimmer block h-3 rounded", skeletonDelay(index), ragged, className)} />;
 }
 
 /** The status region every skeleton sits in: named for assistive tech, busy, and faded in after a beat. */

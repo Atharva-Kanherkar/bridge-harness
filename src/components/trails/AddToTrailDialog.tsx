@@ -6,6 +6,7 @@ import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { StageBar } from "./TrailParts";
 import { RowButton } from "@/components/ui/row";
+import { Input } from "@/components/ui/input";
 
 /** Put a chat or a note on an open trail, or start a new trail from it. */
 export function AddToTrailDialog({ member, title: subjectTitle, workspaceId, trails, onDone, onClose }: {
@@ -65,12 +66,12 @@ export function AddToTrailDialog({ member, title: subjectTitle, workspaceId, tra
           <form onSubmit={create} className="flex flex-col gap-2 rounded-xl bg-card p-3" aria-label={`New trail from this ${noun}`}>
             <span className="text-caption font-medium text-faint">New trail from this {noun}</span>
             <div className="flex gap-2">
-              <input
+              <Input
+                className="min-w-0 flex-1"
                 value={title}
                 maxLength={120}
                 onChange={event => setTitle(event.target.value)}
                 aria-label="Trail title"
-                className="h-8 min-w-0 flex-1 rounded-lg border border-input bg-background px-3 text-ui text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
               />
               <Button type="submit" size="sm" disabled={busy || !title.trim()}><Plus aria-hidden="true" />Create</Button>
             </div>

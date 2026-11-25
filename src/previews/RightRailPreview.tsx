@@ -563,28 +563,28 @@ function ComposerCanvas({
             className="min-h-12 w-full resize-none bg-transparent text-message leading-relaxed text-foreground outline-none placeholder:text-muted-foreground/70"
           />
           <div className="flex items-center gap-1.5">
-            <button type="button" aria-label="Add context" className="inline-flex size-7 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-accent hover:text-foreground">
+            <Button variant="outline" size="icon-xs" shape="round" aria-label="Add context">
               <Plus size={14} strokeWidth={1.7} aria-hidden="true" />
-            </button>
+            </Button>
             <span className="inline-flex h-7 items-center rounded-full px-2.5 text-meta text-muted-foreground">High</span>
-            <button type="button" aria-label="Voice input" className="ml-auto inline-flex size-8 items-center justify-center rounded-full bg-foreground text-background">
+            <Button size="icon-sm" shape="round" aria-label="Voice input" className="ml-auto">
               <Mic size={14} strokeWidth={1.8} aria-hidden="true" />
-            </button>
+            </Button>
           </div>
         </form>
 
         {hero && (
           <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-            <button type="button" className="inline-flex h-8 items-center rounded-full border border-border bg-card px-3 text-meta text-foreground hover:bg-accent">
+            <Button variant="outline" size="sm" shape="round">
               Plan new idea
-            </button>
-            <button type="button" className="inline-flex h-8 items-center rounded-full border border-border bg-card px-3 text-meta text-foreground hover:bg-accent">
+            </Button>
+            <Button variant="outline" size="sm" shape="round">
               Multitask
-            </button>
-            <button type="button" onClick={onCloudShortcut} className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border bg-card px-3 text-meta text-foreground hover:bg-accent">
+            </Button>
+            <Button variant="outline" size="sm" shape="round" onClick={onCloudShortcut}>
               <Cloud size={13} aria-hidden="true" />
               Run in Cloud
-            </button>
+            </Button>
           </div>
         )}
       </div>

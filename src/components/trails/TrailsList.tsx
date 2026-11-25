@@ -7,8 +7,9 @@ import { Button } from "@/components/ui/button";
 import { ScreenHeading } from "@/components/ui/screen";
 import { StageBar, StateWord, TrailScroll, riseDelay } from "./TrailParts";
 import { TrailListSkeleton } from "./TrailSkeletons";
-import { clsx as cn } from "clsx";
 import { RowButton } from "@/components/ui/row";
+import { Input } from "@/components/ui/input";
+import { SelectField } from "@/components/ui/select";
 
 export type TrailWorkspace = { id: string; title: string };
 
@@ -45,7 +46,8 @@ function NewTrailForm({ workspaces, defaultWorkspaceId, onCreate, onCancel }: {
   return (
     <form onSubmit={submit} className="mb-5 rounded-xl bg-card p-4" aria-label="New trail">
       <div className="flex flex-wrap items-center gap-2">
-        <input
+        <Input
+          className="min-w-0 flex-1"
           autoFocus
           value={title}
           onChange={event => setTitle(event.target.value)}
@@ -53,17 +55,14 @@ function NewTrailForm({ workspaces, defaultWorkspaceId, onCreate, onCancel }: {
           maxLength={120}
           placeholder="What is this piece of work?"
           aria-label="Trail title"
-          className="h-8 min-w-0 flex-1 rounded-lg border border-input bg-background px-3 text-ui text-foreground outline-none placeholder:text-faint focus-visible:ring-2 focus-visible:ring-ring"
         />
-        <select
+        <SelectField
+          label="Project"
           value={workspaceId}
-          onChange={event => setWorkspaceId(event.target.value)}
-          aria-label="Project"
-          className="h-8 max-w-48 rounded-lg border border-input bg-background px-2 text-ui text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <option value="">No project</option>
-          {workspaces.map(workspace => <option key={workspace.id} value={workspace.id}>{workspace.title}</option>)}
-        </select>
+          onChange={setWorkspaceId}
+          options={[{ value: "", label: "No project" }, ...workspaces.map(workspace => ({ value: workspace.id, label: workspace.title }))]}
+          className="max-w-48"
+        />
         <Button type="submit" size="sm" disabled={!title.trim() || busy}>Create</Button>
         <Button type="button" size="sm" variant="ghost" onClick={onCancel}>Cancel</Button>
       </div>
@@ -154,10 +153,10 @@ export function TrailsList({ trails, loading, error, workspaces, defaultWorkspac
           </section>
         ))}
         {trails && (
-          <div className="mt-6 px-4">
-            <button type="button" onClick={onToggleArchived} className={cn("text-caption hover:text-foreground", showArchived ? "text-foreground" : "text-muted-foreground")} aria-pressed={showArchived}>
+          <div className="mt-6 px-4 text-caption">
+            <Button variant="text" size="inline" onClick={onToggleArchived} aria-pressed={showArchived}>
               {showArchived ? "Hide archived" : "Show archived"}
-            </button>
+            </Button>
             {showArchived && (
               <ul className="mt-2">
                 {archived.length === 0 && <li className="px-4 py-2 text-caption text-faint">No archived trails.</li>}

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { ArrowUp, Check, Route } from "lucide-react";
+import { ArrowUp, Route } from "lucide-react";
 import type { PreviewTrailBriefResult, TrailSummary } from "@/protocol/generated/protocol";
 import { bridgeApi } from "@/api";
 import { briefTotal, chosenInOrder, defaultBriefSelection, formatTokens } from "@/trails";
@@ -8,6 +8,9 @@ import { HarnessMark } from "@/components/harnessMarks";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { clsx as cn } from "clsx";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { SegmentedRadio } from "@/components/ui/segmented";
+import { Checkbox } from "@/components/ui/checkbox";
 
 export type TrailHarnessOption = { id: string; label: string };
 
@@ -81,8 +84,10 @@ export function TrailStartDialog({ trail, harnesses, defaultHarness, initialText
             <Route className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
             <h2 className="truncate text-ui font-medium text-foreground">New chat on “{trail.title}”</h2>
           </div>
-          <div className="rounded-xl bg-card p-3">
-            <textarea
+          <div className="rounded-xl bg-card p-3 text-message">
+            <Textarea
+              unstyled
+              size="bare"
               autoFocus
               value={text}
               onChange={event => setText(event.target.value)}
@@ -90,26 +95,15 @@ export function TrailStartDialog({ trail, harnesses, defaultHarness, initialText
               rows={3}
               placeholder="What should this chat do next?"
               aria-label="First message"
-              className="w-full resize-none bg-transparent text-message text-foreground outline-none placeholder:text-faint"
+              className="w-full"
             />
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              <div role="radiogroup" aria-label="Agent" className="flex flex-wrap gap-1">
-                {harnesses.map(option => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={harness === option.id}
-                    onClick={() => setHarness(option.id)}
-                    className={cn(
-                      "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-caption font-medium transition-colors",
-                      harness === option.id ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60",
-                    )}
-                  >
-                    <HarnessMark harness={option.id} size={12} />{option.label}
-                  </button>
-                ))}
-              </div>
+              <SegmentedRadio
+                label="Agent"
+                value={harness}
+                options={harnesses.map(option => ({ value: option.id, label: <><HarnessMark harness={option.id} size={12} />{option.label}</> }))}
+                onChange={setHarness}
+              />
               <span className="flex-1" />
               <Button variant="default" size="icon-xs" type="submit"
                 disabled={!canSend}
@@ -140,10 +134,7 @@ export function TrailStartDialog({ trail, harnesses, defaultHarness, initialText
                   return (
                     <li key={item.id}>
                       <label className="flex cursor-default items-center gap-2.5 py-1.5">
-                        <input type="checkbox" checked={on} onChange={() => toggle(item.id)} className="peer sr-only" aria-label={item.label} />
-                        <span aria-hidden="true" className={cn("flex size-4 shrink-0 items-center justify-center rounded peer-focus-visible:ring-2 peer-focus-visible:ring-ring", on ? "bg-primary text-primary-foreground" : "bg-muted")}>
-                          {on && <Check className="size-3" />}
-                        </span>
+                        <Checkbox checked={on} onCheckedChange={() => toggle(item.id)} aria-label={item.label} />
                         <span className={cn("min-w-0 flex-1 truncate text-ui", on ? "text-foreground" : "text-muted-foreground")}>{item.label}</span>
                         <span className="shrink-0 font-mono text-caption text-faint">{formatTokens(item.tokens)}</span>
                       </label>

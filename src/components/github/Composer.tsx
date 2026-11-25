@@ -5,6 +5,7 @@ import { modKey } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { Kbd } from "@/components/ui/kbd";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 
 /** A write that reports back: `undefined` when GitHub took it, otherwise the
  *  reason it did not, verbatim. */
@@ -61,20 +62,23 @@ export function Composer({ label, placeholder, submitLabel, onSubmit, onCancel, 
     onCancel?.();
   };
 
-  if (!open) return <button
-    type="button"
+  if (!open) return <Button
+    variant="outline"
+    size="sm"
     disabled={disabled}
     onClick={() => setOpen(true)}
-    className={cn("flex h-8 w-full items-center rounded-md border border-border bg-background/60 px-2.5 text-left text-meta text-muted-foreground transition-colors hover:border-foreground/25 hover:bg-background disabled:opacity-50", className)}
-  >{placeholder}</button>;
+    className={cn("w-full justify-start", className)}
+  ><span className="truncate font-normal text-muted-foreground">{placeholder}</span></Button>;
 
   return <motion.div
     initial={reduced || !collapsed ? false : { opacity: 0, y: -4 }}
     animate={{ opacity: 1, y: 0 }}
     transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-    className={cn("rounded-lg border border-border bg-card p-2 transition-[border-color,box-shadow] focus-within:border-foreground/30 focus-within:shadow-xs", className)}
+    className={cn("rounded-lg border border-border bg-card p-2 text-meta leading-relaxed transition-[border-color,box-shadow] focus-within:border-foreground/30 focus-within:shadow-xs", className)}
   >
-    <textarea
+    <Textarea
+      unstyled
+      size="bare"
       ref={field}
       value={body}
       disabled={busy}
@@ -85,7 +89,7 @@ export function Composer({ label, placeholder, submitLabel, onSubmit, onCancel, 
       }}
       aria-label={label}
       placeholder={placeholder}
-      className="min-h-16 w-full resize-y bg-transparent text-meta leading-relaxed text-foreground outline-none placeholder:text-muted-foreground disabled:opacity-60"
+      className="block min-h-16 w-full"
     />
     <AnimatePresence initial={false}>
       {error !== undefined && <motion.p

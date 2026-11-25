@@ -30,7 +30,7 @@ export function ImportTransfer({ tool, done = false }: { tool: string; done?: bo
         ? <HarnessMark harness={source.harness} size={26} />
         : <span className="text-title font-semibold text-muted-foreground" data-tool-initial={tool}>{source.label.slice(0, 1)}</span>}
     </Tile>
-    <div className="import-transfer-lane relative h-16 min-w-0 flex-1" aria-hidden="true">
+    <div data-import-lane="" className="relative h-16 min-w-0 flex-1" aria-hidden="true">
       <svg className="absolute inset-0 h-full w-full overflow-visible" viewBox="0 0 100 64" preserveAspectRatio="none">
         <path className="import-transfer-path" d="M 2 46 Q 50 2 98 46" fill="none" vectorEffect="non-scaling-stroke" />
       </svg>

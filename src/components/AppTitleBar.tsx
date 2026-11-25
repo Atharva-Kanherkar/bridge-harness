@@ -34,7 +34,7 @@ export function AppTitleBar({ title, navOpen, onOpenNav, leading, actions, flush
       data-tauri-drag-region="deep"
       className={cn(
         "flex h-11 shrink-0 items-center gap-2",
-        flush ? "bg-background pr-3" : "u-vibrancy-sidebar border-b border-border bg-sidebar pr-[var(--window-control-inset)]",
+        flush ? "bg-background pr-3" : "u-vibrancy-sidebar border-b border-border bg-sidebar pr-window-control",
         !flush || sidebarHidden ? "u-traffic-inset pl-24" : "pl-5",
       )}
     >

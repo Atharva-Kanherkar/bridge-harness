@@ -4157,6 +4157,7 @@ function AppContent() {
               )}
               {/* A mask, not a painted fade: the canvas can be translucent, and
                   no opaque color matches it. */}
+              {/* oxlint-disable-next-line shadcn/no-arbitrary-values -- the fade is the last 2rem at any height, which no percentage token expresses */}
               <div className="flex-1 min-h-0 relative mask-b-from-[calc(100%-2rem)]">
                 <AgentConversation
                   session={session}
@@ -4850,7 +4851,7 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
   const failure = composerError ?? harnessShortcutFailure;
   const modeToggle = !!workspace && !agent;
   return <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-8 sm:px-10 animate-page-enter">
-    <div className="mx-auto my-auto w-full max-w-3xl pb-[10vh] pt-8">
+    <div className="mx-auto my-auto w-full max-w-3xl pb-viewport-lg pt-8">
     {!adapters.some(adapter => adapter.available && adapter.id !== "bridge") && <div className="mb-10 rounded-xl border border-border bg-card p-4">
       <h2 className="text-sm font-medium">Connect your first agent</h2>
       <p className="mt-1 mb-3 text-ui text-muted-foreground">Install an agent and sign in here. Bridge handles the setup commands.</p>

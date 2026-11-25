@@ -302,7 +302,7 @@ describe("TrailStartDialog", () => {
     await settle();
     const total = () => document.querySelector("[data-testid=brief-total]")?.textContent;
     expect(total()).toBe("6.1k of 14k tokens");
-    const chat = document.querySelector<HTMLInputElement>("input[aria-label='Chat “Implement the archive row action” (Codex)']")!;
+    const chat = document.querySelector<HTMLElement>("[role=checkbox][aria-label='Chat “Implement the archive row action” (Codex)']")!;
     act(() => chat.click());
     expect(total()).toBe("3.1k of 14k tokens");
     const area = document.querySelector<HTMLTextAreaElement>("textarea")!;

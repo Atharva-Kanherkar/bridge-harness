@@ -46,7 +46,8 @@
           {
             "allow": ["layout"],
             "contracts": [
-              { "pattern": "^Skeleton$", "allow": ["layout", "shape"] }
+              { "pattern": "^Skeleton$", "allow": ["layout", "shape"] },
+              { "pattern": "^SkeletonRegion$", "allow": ["layout", "spacing"] }
             ]
           }
         ],

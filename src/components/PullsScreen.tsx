@@ -80,7 +80,7 @@ export function PullsScreen({ workspaces, projects, onJumpToFile, onAddProject }
       <span className="grid size-8 shrink-0 place-items-center rounded-lg border border-border bg-card text-foreground shadow-xs">
         <FolderGit2 size={15} strokeWidth={1.7} aria-hidden="true" />
       </span>
-      <Button variant="quiet" size="default" className="-ml-1 min-w-0"
+      <Button variant="quiet" size="lg" className="-ml-1 min-w-0"
         ref={menu.triggerRef}
         onClick={menu.toggle}
         aria-haspopup="menu"

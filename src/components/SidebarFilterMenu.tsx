@@ -12,6 +12,7 @@ import {
   type ChatView,
 } from "./sidebarChats";
 import { RowButton } from "@/components/ui/row";
+import { Button } from "@/components/ui/button";
 
 type Panel = "root" | "status" | "agent" | "groupBy" | "sortBy";
 
@@ -75,21 +76,19 @@ export function SidebarFilterMenu({ view, agents, allowProjectGrouping, onChange
 
   return (
     <>
-      <button
+      <Button
         ref={menu.triggerRef}
-        type="button"
+        variant="quiet"
+        size="icon-xs"
         onClick={menu.toggle}
         aria-expanded={menu.open}
         aria-haspopup="menu"
         aria-label="Filter and group chats"
-        title="Filter and group chats"
-        className={cn(
-          "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
-          menu.open || narrowing ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-        )}
+        tooltip="Filter and group chats"
+        data-pressed={narrowing ? "" : undefined}
       >
         <SlidersHorizontal size={13} strokeWidth={1.7} aria-hidden="true" />
-      </button>
+      </Button>
 
       <MenuPanel controller={menu} label="Chat list options">
         {panel === "root" ? rows.map((row, index) => (

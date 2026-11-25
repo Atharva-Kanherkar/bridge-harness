@@ -59,6 +59,7 @@ export function UsageLoadingState() {
 /** `~` after a cost whose window holds unpriced records: the figure is a floor, not a total. */
 export function EstimateMark({ report, large }: { report: UsageReport; large?: boolean }) {
   if (report.costSource !== "unpriced") return null;
+  // oxlint-disable-next-line shadcn/no-arbitrary-values -- the mark is a superscript sized to whichever hero figure it follows
   return <Tip label="Partly unpriced: some records have no known rate"><span className={cn("font-normal text-muted-foreground", large && "ml-1 align-top text-[0.42em] tracking-normal")}>~</span></Tip>;
 }
 

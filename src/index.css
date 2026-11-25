@@ -21,6 +21,17 @@
        tight (-0.025em) sits between them. */
     --tracking-snug: -0.01em;
     --tracking-display: -0.035em;
+    /* Room for the macOS window controls, and the top gap of a sheet that
+       hangs from the viewport (pt-viewport, sm:pt-viewport-lg). */
+    --spacing-window-control: var(--window-control-inset);
+    --spacing-viewport: 8vh;
+    --spacing-viewport-lg: 12vh;
+    /* The Cursor mark's facet shades, which flip with the theme. */
+    --color-cursor-facet-darkest: var(--cursor-facet-darkest);
+    --color-cursor-facet-mid: var(--cursor-facet-mid);
+    --color-cursor-facet-light: var(--cursor-facet-light);
+    --color-cursor-facet-lighter: var(--cursor-facet-lighter);
+    --color-cursor-facet-lightest: var(--cursor-facet-lightest);
     /* Reveal motion for charts and meters: marks grow from their baseline once. */
     --animate-meter-fill: meter-fill 600ms ease-out both;
     --animate-chart-rise: chart-rise 600ms ease-out both;
