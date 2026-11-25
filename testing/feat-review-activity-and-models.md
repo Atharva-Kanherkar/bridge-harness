@@ -20,8 +20,8 @@ Branch `feat/review-activity-and-models`, issue #1159. Locked before implementat
    kept entry says the log was cut), text cut to 4,000 characters. Rows go with their pass.
 3. **Publishing.** Each recorded entry is stored and published as `reviews/activity`
    `{jobId, entry}` (transient). `reviews/review_activity {jobId}` returns every entry of the
-   job's passes, pass by pass in slot and attempt order, each in seq order. Protocol 1.57; a
-   1.56 client still pairs.
+   job's passes, pass by pass in slot and attempt order, each in seq order. Protocol 1.58 (1.57 went to memory paging); a
+   1.57 client still pairs.
 4. **Dashboard detail.** An Activity view: one thread per pass, headed by its harness and
    status. Bridge's prompt is a collapsed bubble, assistant messages render as Markdown, tools
    and commands are compact rows, refusals and errors are marked. While the job runs, new

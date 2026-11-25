@@ -306,6 +306,7 @@ typed_methods![
     (SupersedeMemoryRecord, SupersedeMemoryRecordParams, MemoryRecord),
     (ApproveMemoryRecord, ApproveMemoryRecordParams, MemoryRecord),
     (RejectMemoryRecord, RejectMemoryRecordParams, MemoryRecord),
+    (ReviewMemoryRecords, ReviewMemoryRecordsParams, ReviewMemoryRecordsResult),
     (GetExtractionSettings, _, MemoryExtractionSettings),
     (UpdateExtractionSettings, UpdateExtractionSettingsParams, MemoryExtractionSettings),
     (GetMemoryInjection, _, MemoryInjectionSettings),

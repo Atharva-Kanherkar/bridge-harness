@@ -174,6 +174,7 @@ methods![
     (SupersedeMemoryRecord, "memory", "supersede_memory_record"),
     (ApproveMemoryRecord, "memory", "approve_memory_record"),
     (RejectMemoryRecord, "memory", "reject_memory_record"),
+    (ReviewMemoryRecords, "memory", "review_memory_records"),
     (GetExtractionSettings, "memory", "get_extraction_settings"),
     (UpdateExtractionSettings, "memory", "update_extraction_settings"),
     (GetMemoryInjection, "memory", "get_memory_injection"),

@@ -28,6 +28,14 @@ pub struct ListMemoryRecordsParams {
     /// `active` (default) or `proposed`. Nothing else lists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// The `nextCursor` of the previous page. Absent reads the first page. A
+    /// cursor that does not parse, or belongs to another status, is refused
+    /// rather than read as the first page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// Records per page, 1 to [`MAX_MEMORY_LIST_LIMIT`]. Absent is the maximum.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -92,6 +100,12 @@ pub struct ListMemoryRecordsAsOfParams {
 pub struct ListMemoryRecordsResult {
     pub scope_key: String,
     pub records: Vec<MemoryRecord>,
+    /// Every record of the listed status in the scope, not just this page.
+    #[serde(default)]
+    pub total: i64,
+    /// Pass back as `cursor` for the next page. Absent on the last page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// Edit is supersession: a new record replaces the old, which stays history.
@@ -115,6 +129,39 @@ pub struct ApproveMemoryRecordParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RejectMemoryRecordParams {
     pub record_id: String,
+}
+
+/// The most record ids one review batch may name, approvals and rejections
+/// together.
+pub const MAX_MEMORY_REVIEW_BATCH: usize = 200;
+
+/// Approve and reject many proposals in one transaction. An id may appear in
+/// one list only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReviewMemoryRecordsParams {
+    pub scope_key: String,
+    #[serde(default)]
+    pub approve: Vec<String>,
+    #[serde(default)]
+    pub reject: Vec<String>,
+}
+
+/// A record the batch left alone, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryReviewRefusal {
+    pub id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewMemoryRecordsResult {
+    pub scope_key: String,
+    pub approved: Vec<String>,
+    pub rejected: Vec<String>,
+    pub refused: Vec<MemoryReviewRefusal>,
 }
 
 /// Extraction has three account-local modes. `propose` is the safe default and
@@ -406,6 +453,40 @@ pub struct ProviderMemoryCommand {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn list_pages_and_review_batches_have_camel_case_wire_shapes() {
+        let params: ListMemoryRecordsParams = serde_json::from_value(json!({
+            "scopeKey": "account:local",
+            "status": "proposed",
+            "cursor": "abc",
+            "limit": 25
+        }))
+        .unwrap();
+        assert_eq!(params.cursor.as_deref(), Some("abc"));
+        assert_eq!(params.limit, Some(25));
+        let result = ListMemoryRecordsResult {
+            scope_key: "account:local".into(),
+            records: Vec::new(),
+            total: 138,
+            next_cursor: Some("next".into()),
+        };
+        let wire = serde_json::to_value(&result).unwrap();
+        assert_eq!(wire["total"], json!(138));
+        assert_eq!(wire["nextCursor"], json!("next"));
+        let last = ListMemoryRecordsResult { next_cursor: None, ..result };
+        assert!(serde_json::to_value(&last).unwrap().get("nextCursor").is_none());
+
+        let review: ReviewMemoryRecordsParams =
+            serde_json::from_value(json!({ "scopeKey": "account:local", "approve": ["a"] })).unwrap();
+        assert_eq!(review.approve, vec!["a".to_string()]);
+        assert!(review.reject.is_empty(), "an omitted list is empty");
+        assert!(serde_json::from_value::<ReviewMemoryRecordsParams>(json!({
+            "scopeKey": "account:local",
+            "approveAll": true
+        }))
+        .is_err());
+    }
 
     #[test]
     fn save_and_list_refuse_unknown_fields_and_null_scope() {
