@@ -2026,7 +2026,8 @@ export const bridgeApi = {
   getChatDefaults: async (projectId?: string | null): Promise<ChatDefaultsView> => hasBackend() ? call("config/get_chat_defaults", { projectId: projectId ?? null }) : Promise.resolve(mockDefaultsView(mockState, projectId)),
   saveChatDefaults: async (params: SaveChatDefaultsParams): Promise<ChatDefaultsView> => {
     if (hasBackend()) return call("config/save_chat_defaults", params);
-    const result = mockSaveDefaults(mockState,params); emitState(); return result;
+    // Like the host: an unpinned memory model follows the new-chat model.
+    const result = mockSaveDefaults(mockState,params); emitState(); emitMemoryChanged("account:local"); return result;
   },
   resolveChatSettings: async (params: ResolveChatSettingsParams): Promise<ResolvedChatSettings> => hasBackend() ? call("sessions/resolve_chat_settings", params) : Promise.resolve(mockResolveSettings(mockState,mockHealth.adapters,mockConfigState.agents,params)),
   createConfiguredChat: async (params: CreateConfiguredChatParams): Promise<ConfiguredChatResult> => {
@@ -3827,6 +3828,7 @@ export const bridgeApi = {
     if (Boolean(harness) !== Boolean(model)) throw new Error("Pin both a harness and a model, or neither to use your new-chat model.");
     if (harness && harness !== "claude") throw new Error(`${harness} cannot run memory jobs, which must be tool-free.`);
     mockMemoryModelPin = harness && model ? { harness, model } : undefined;
+    emitMemoryChanged("account:local");
     return mockMemoryModel();
   },
   getMemoryInjection: async (): Promise<MemoryInjectionSettings> => {

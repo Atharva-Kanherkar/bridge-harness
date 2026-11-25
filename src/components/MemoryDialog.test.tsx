@@ -605,6 +605,73 @@ describe("MemoryDialog review queue", () => {
     expect(sourceLine()).toBe("Using Claude Opus, your new-chat model.");
   });
 
+  const pickerValue = (label: string) => container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!.value;
+
+  it("the pickers follow a pin changed or cleared elsewhere", async () => {
+    memoryModel = { pinned: { harness: "claude", model: "haiku" }, resolved: { harness: "claude", model: "haiku", source: "user" }, skipped: [] };
+    mount({ adapters: memoryAdapters });
+    await flush();
+    click(tab("Review"));
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["claude", "haiku"]);
+
+    // Changed through the settings tool in another chat.
+    memoryModel = { pinned: { harness: "claude", model: "opus" }, resolved: { harness: "claude", model: "opus", source: "user" }, skipped: [] };
+    await act(async () => { memoryHandler?.({ scopeKey: "account:local" }); });
+    await flush();
+    expect(sourceLine()).toBe("Using Claude Opus, your pick.");
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["claude", "opus"]);
+
+    // Cleared elsewhere: back to the new-chat model.
+    memoryModel = { resolved: { harness: "claude", model: "opus", source: "chat_default" }, skipped: [] };
+    await act(async () => { memoryHandler?.({ scopeKey: "account:local" }); });
+    await flush();
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["", ""]);
+  });
+
+  it("a harness picked without a model stays a local draft until a model is chosen", async () => {
+    memoryModel = { pinned: { harness: "claude", model: "haiku" }, resolved: { harness: "claude", model: "haiku", source: "user" }, skipped: [] };
+    mount({ adapters: memoryAdapters });
+    await flush();
+    click(tab("Review"));
+    pick("Memory harness", "codex");
+    await flush();
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["codex", ""]);
+    await act(async () => { memoryHandler?.({ scopeKey: "account:local" }); });
+    await flush();
+    expect(pickerValue("Memory harness"), "an unrelated reload keeps the draft").toBe("codex");
+    expect(sourceLine(), "the stored pin is still what runs").toBe("Using Claude Haiku, your pick.");
+    expect(bridgeApi.setMemoryModel).not.toHaveBeenCalled();
+  });
+
+  it("a read that started before a memory-model write cannot undo it", async () => {
+    let release: () => void = () => {};
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const list = vi.mocked(bridgeApi.listMemoryRecords).getMockImplementation()!;
+    let first = true;
+    vi.mocked(bridgeApi.listMemoryRecords).mockImplementation(async (...args) => {
+      if (first) { first = false; await held; }
+      return list(...args);
+    });
+    mount({ adapters: memoryAdapters });
+    await flush();
+    click(tab("Review"));
+    pick("Memory harness", "claude");
+    pick("Memory model", "haiku");
+    await flush();
+    expect(sourceLine()).toBe("Using Claude Haiku, your pick.");
+
+    // The first read captured the unpinned model before the write.
+    await act(async () => { release(); });
+    await flush();
+    expect(sourceLine()).toBe("Using Claude Haiku, your pick.");
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["claude", "haiku"]);
+
+    pick("Memory harness", "");
+    await flush();
+    expect(bridgeApi.setMemoryModel).toHaveBeenLastCalledWith();
+    expect(memoryModel.pinned, "the clear reached the store").toBeUndefined();
+  });
+
   it("the last run's observed spend is on screen", async () => {
     extractionSettings = {
       scopeKey: "account:local",

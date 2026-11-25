@@ -138,13 +138,17 @@ export function MemoryDialog({
   // Edit is supersession: the row's body moves here, and saving writes a
   // superseding record — never save-then-forget, never an in-place update.
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [profileHarness, setProfileHarness] = useState("");
-  const [profileModel, setProfileModel] = useState("");
+  // A harness picked with no model yet. The pickers otherwise always show the
+  // stored pin, so a pin changed or cleared elsewhere shows up on the next read.
+  const [modelDraft, setModelDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // Which read is the newest. The initial load and every memory-changed hint
   // read, so a slow earlier call must not land over a fresher one. Same shape
   // as RouterSettingsDialog's learningReadGeneration.
   const readGeneration = useRef(0);
+  // Bumped by every memory-model write that succeeds. A read that began before
+  // one must not put back the model that write replaced.
+  const modelRevision = useRef(0);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   // How many records each list shows, and the last one on screen, read by the
   // change-driven reload.
@@ -215,8 +219,8 @@ export function MemoryDialog({
     setBody("");
     setKind("preference");
     setEditingId(null);
-    setProfileHarness("");
-    setProfileModel("");
+    setModelDraft(null);
+    setMemoryModel(undefined);
   }, [open]);
 
   useEffect(() => {
@@ -229,6 +233,7 @@ export function MemoryDialog({
     let off: (() => void) | undefined;
     const load = () => {
       const generation = ++readGeneration.current;
+      const revision = modelRevision.current;
       Promise.all([
         readMemoryPages("active", loadedCount.current.active, lastLoaded.current.active),
         readMemoryPages("proposed", loadedCount.current.proposed, lastLoaded.current.proposed),
@@ -251,9 +256,7 @@ export function MemoryDialog({
         setInjection(injectionSettings.enabled);
         setStats(recallStats);
         setLog(activity);
-        setMemoryModel(model);
-        setProfileHarness(current => current || model.pinned?.harness || "");
-        setProfileModel(current => current || model.pinned?.model || "");
+        if (revision === modelRevision.current) setMemoryModel(model);
       }).catch(error => {
         // The generation gate covers the failure path too: a slow read that
         // errors after a newer one rendered must not toast over it.
@@ -341,34 +344,38 @@ export function MemoryDialog({
   const setMode = (mode: string) => act(async () => {
     setSettings(await bridgeApi.updateExtractionSettings(mode));
   });
-  // A pin names both halves, so picking a harness only saves once a model is
-  // chosen; "Use my new-chat model" clears the pin at once.
+  /** Store a pin, or clear it with neither half, and show the stored answer. */
+  const saveMemoryModel = (harness?: string, model?: string) => act(async () => {
+    try {
+      const next = harness && model ? await bridgeApi.setMemoryModel(harness, model) : await bridgeApi.setMemoryModel();
+      modelRevision.current += 1;
+      setMemoryModel(next);
+    } finally {
+      // Saved or refused, the pickers go back to what is stored.
+      setModelDraft(null);
+    }
+  });
+  // A pin names both halves, so picking a harness only drafts it until a model
+  // is chosen; "Use my new-chat model" clears the pin at once.
   const pickMemoryHarness = (harness: string) => {
-    setProfileHarness(harness);
-    setProfileModel("");
-    if (!harness && memoryModel?.pinned) {
-      void act(async () => setMemoryModel(await bridgeApi.setMemoryModel()));
+    if (harness) {
+      setModelDraft(harness);
+    } else if (memoryModel?.pinned) {
+      void saveMemoryModel();
+    } else {
+      setModelDraft(null);
     }
   };
   const pickMemoryModel = (model: string) => {
-    setProfileModel(model);
-    if (!profileHarness || !model) return;
-    void act(async () => {
-      try {
-        setMemoryModel(await bridgeApi.setMemoryModel(profileHarness, model));
-      } catch (error) {
-        // A refused pin changed nothing; show what is still in force.
-        setProfileHarness(memoryModel?.pinned?.harness ?? "");
-        setProfileModel(memoryModel?.pinned?.model ?? "");
-        throw error;
-      }
-    });
+    if (pickedHarness && model) void saveMemoryModel(pickedHarness, model);
   };
 
   const fieldClass = "rounded-lg border border-border-card bg-card text-foreground outline-none transition-colors placeholder:text-faint focus:border-ring/60 disabled:opacity-45";
   const quietSelect = "h-7 min-w-0 rounded-lg border border-transparent bg-transparent px-1.5 text-caption text-muted-foreground outline-none transition-colors hover:text-foreground focus:border-border-card disabled:opacity-45";
   const iconButton = "grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45";
-  const models = adapters.find(adapter => adapter.id === profileHarness)?.models ?? [];
+  const pickedHarness = modelDraft ?? memoryModel?.pinned?.harness ?? "";
+  const pickedModel = modelDraft === null ? memoryModel?.pinned?.model ?? "" : "";
+  const models = adapters.find(adapter => adapter.id === pickedHarness)?.models ?? [];
   const composing = editingId !== null || body.length > 0;
   const memoryCount = activeList?.total ?? 0;
   const allShownSelected = (proposed?.length ?? 0) > 0 && (proposed ?? []).every(record => selected.has(record.id));
@@ -575,11 +582,11 @@ export function MemoryDialog({
                 <span className="block text-ui text-foreground">Memory model</span>
                 <span className="mt-0.5 block text-caption leading-relaxed text-muted-foreground">Runs extraction after chats, nightly cleanup and automatic approval.</span>
               </span>
-              <select className={`${fieldClass} h-7 w-44 px-2 text-caption`} value={profileHarness} disabled={busy} onChange={event => pickMemoryHarness(event.target.value)} aria-label="Memory harness">
+              <select className={`${fieldClass} h-7 w-44 px-2 text-caption`} value={pickedHarness} disabled={busy} onChange={event => pickMemoryHarness(event.target.value)} aria-label="Memory harness">
                 <option value="">Use my new-chat model</option>
                 {adapters.map(adapter => <option key={adapter.id} value={adapter.id}>{adapter.label}</option>)}
               </select>
-              <select className={`${fieldClass} h-7 w-44 px-2 text-caption`} value={profileModel} disabled={busy || !profileHarness} onChange={event => pickMemoryModel(event.target.value)} aria-label="Memory model">
+              <select className={`${fieldClass} h-7 w-44 px-2 text-caption`} value={pickedModel} disabled={busy || !pickedHarness} onChange={event => pickMemoryModel(event.target.value)} aria-label="Memory model">
                 <option value="">Model…</option>
                 {models.map(model => <option key={model.id} value={model.id}>{model.label ?? model.id}</option>)}
               </select>
