@@ -140,6 +140,12 @@ function pullRequestStateIcon(pr: { isDraft: boolean; state: string }) {
   return pr.isDraft ? GitPullRequestDraft : pr.state === "merged" ? GitMerge : GitPullRequest;
 }
 
+function PullRequestStateGlyph({ pr, size, className }: { pr: { isDraft: boolean; state: string }; size: number; className?: string }) {
+  if (pr.isDraft) return <GitPullRequestDraft size={size} strokeWidth={1.8} aria-hidden="true" className={className} />;
+  if (pr.state === "merged") return <GitMerge size={size} strokeWidth={1.8} aria-hidden="true" className={className} />;
+  return <GitPullRequest size={size} strokeWidth={1.8} aria-hidden="true" className={className} />;
+}
+
 const SECTION_LABEL = "text-caption font-medium text-muted-foreground";
 
 /** A section heading with an optional count, the one heading shape the pane
@@ -828,7 +834,6 @@ function PullRequestRow({ pr, index, wide, active, onOpen }: { pr: PullRequestLi
   const rollup = ROLLUP[rollupState(pr)];
   const RollupIcon = rollup.icon;
   const review = REVIEW[pr.reviewDecision];
-  const StateIcon = pullRequestStateIcon(pr);
   const stateTone = pr.isDraft || pr.state === "merged" ? "text-muted-foreground" : "text-foreground";
   const actions = <span className="u-glass-soft absolute bottom-2.5 right-1.5 flex items-center rounded-md opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
     <CopyButton value={pr.url} label={`Copy the link to #${pr.number}`} />
@@ -840,7 +845,7 @@ function PullRequestRow({ pr, index, wide, active, onOpen }: { pr: PullRequestLi
   if (wide) return <div className={rowClass} style={delay}>
     <RowButton size="bare" tone="plain" shape="flush" onClick={onOpen}><span className={cn("grid w-full items-center gap-4 px-4 py-3.5", PR_GRID)}>
       <span className="flex min-w-0 items-start gap-3">
-        <StateIcon size={16} strokeWidth={1.8} aria-hidden="true" className={cn("mt-0.5 shrink-0", stateTone)} />
+        <PullRequestStateGlyph pr={pr} size={16} className={cn("mt-0.5 shrink-0", stateTone)} />
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span className="min-w-0 text-ui font-medium leading-5 text-foreground group-hover:underline group-hover:decoration-border group-hover:underline-offset-4">{pr.title}</span>
@@ -865,7 +870,7 @@ function PullRequestRow({ pr, index, wide, active, onOpen }: { pr: PullRequestLi
 
   return <div className={cn(rowClass, "flex items-start")} style={delay}>
     <RowButton size="bare" tone="plain" shape="flush" onClick={onOpen} className="flex-1"><span className="flex min-w-0 flex-1 items-start gap-2.5 px-3 py-3">
-      <StateIcon size={15} strokeWidth={1.8} aria-hidden="true" className={cn("mt-0.5 shrink-0", stateTone)} />
+      <PullRequestStateGlyph pr={pr} size={15} className={cn("mt-0.5 shrink-0", stateTone)} />
       <span className="min-w-0 flex-1">
         <span className="flex flex-wrap items-start gap-x-1.5 gap-y-1">
           <span className="min-w-0 flex-1 text-ui font-medium leading-5 text-foreground">{pr.title}</span>

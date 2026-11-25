@@ -408,8 +408,11 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
   }), [stored.order, stored.expandedId, sessionMap, dismissedSessionIds, pinnedSessionIds, visible, incoming, isActive]);
   const orderKey = order.join("\u0000");
   const expandedId = stored.expandedId && order.includes(stored.expandedId) ? stored.expandedId : null;
+  const pinnedKey = pinnedSessionIds.join("\u0000");
+  const dismissedKey = dismissedSessionIds.join("\u0000");
+  // Keyed by content, not identity: the arrays are rebuilt every render.
   const layout: MissionLayout = useMemo(() => ({ version: 2, order, pinnedSessionIds, dismissedSessionIds, expandedId, stageLimit: stored.stageLimit }),
-    [orderKey, pinnedSessionIds.join("\u0000"), dismissedSessionIds.join("\u0000"), expandedId, stored.stageLimit]); // eslint-disable-line react-hooks/exhaustive-deps
+    [orderKey, pinnedKey, dismissedKey, expandedId, stored.stageLimit]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { setStored(prev => sameLayout(prev, layout) ? prev : layout); writeLayout(layout); }, [layout]);
 
   const statuses = useMemo(() => new Map(order.flatMap(id => { const session = sessionMap.get(id); return session ? [[id, tileStatus(session, runtimes.get(id))] as const] : []; })), [order, sessionMap, runtimes]);

@@ -40,7 +40,10 @@ export function editorCodec(editor: Editor): BlockCodec {
         lengths.push(lead + token.raw.length);
         lead = 0;
       }
-      if (lead) lengths.length ? (lengths[lengths.length - 1] += lead) : lengths.push(lead);
+      if (lead) {
+        if (lengths.length) lengths[lengths.length - 1] += lead;
+        else lengths.push(lead);
+      }
       if (lengths.reduce((sum, length) => sum + length, 0) !== text.length) return null;
       const blocks: string[] = [];
       let from = 0;

@@ -75,7 +75,7 @@ describe("authenticated browser bridge artifacts", () => {
     const invoke = (message: unknown) => new Promise<{ ok: boolean; result?: Record<string, unknown>; error?: string }>(resolve => listeners[0](message, null, value => resolve(value as { ok: boolean; result?: Record<string, unknown>; error?: string })));
     const snapshot = await invoke({ type: "bridge-page-action", action: { kind: "snapshot", delta: false } });
     const generation = snapshot.result?.pageGeneration;
-    const elementId = (snapshot.result?.elements as Array<{ id: string }>)[0].id;
+    const elementId = (snapshot.result!.elements as Array<{ id: string }>)[0].id;
     dom.window.document.querySelector("button")?.setAttribute("aria-label", "Changed");
     await new Promise(resolve => dom.window.setTimeout(resolve, 0));
     const delayed = await invoke({ type: "bridge-page-action", action: { kind: "click", elementId }, expectedPageGeneration: generation });

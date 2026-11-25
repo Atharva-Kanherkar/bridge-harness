@@ -400,7 +400,7 @@ describe("the dock in the session view", () => {
   // Contract: testing/feat-dock-changes.md §5.
   it("quotes a file and a hunk from the diff into the composer", async () => {
     await mountApp();
-    await // policy.rs is one of demo-2's own changes in the browser mock.
+    // policy.rs is one of demo-2's own changes in the browser mock.
     await openWorkspaceSession("1 file");
     await key({ ...chord, code: "Digit1", key: "1" });
     await settle(3);
@@ -419,7 +419,7 @@ describe("the dock in the session view", () => {
 
   it("opens a file from the diff in the Code pane", async () => {
     await mountApp();
-    await // policy.rs is one of demo-2's own changes in the browser mock.
+    // policy.rs is one of demo-2's own changes in the browser mock.
     await openWorkspaceSession("1 file");
     await key({ ...chord, code: "Digit1", key: "1" });
     await settle(3);
@@ -864,6 +864,7 @@ describe("the dock in the session view", () => {
 
   it("carries the model picker only in the composer, not the toolbar", async () => {
     await mountApp();
+    // policy.rs is one of demo-2's own changes in the browser mock.
     await openWorkspaceSession("1 file");
     // The toolbar no longer duplicates the composer's model control; the sole
     // picker lives below and opens upward, into the view.

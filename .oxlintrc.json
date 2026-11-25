@@ -25,7 +25,8 @@
       { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_", "caughtErrorsIgnorePattern": "^_" }
     ],
     "eslint/no-control-regex": "off",
-    "react/react-in-jsx-scope": "off"
+    "react/react-in-jsx-scope": "off",
+    "unicorn/no-useless-spread": "off"
   },
   "overrides": [
     {

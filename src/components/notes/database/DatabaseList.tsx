@@ -72,7 +72,7 @@ function Line({ row, columns, host, onOpen }: { row: DatabaseRow; columns: Colum
       <span className={clsx("min-w-0 max-w-[60%] shrink-0 truncate text-ui font-medium", row.note.title ? "text-foreground" : "text-faint")}>{row.note.title || "Untitled"}</span>
       {/* Right-aligned, and clipped at the right edge when there are more than fit. */}
       <span className="ml-auto flex min-w-0 shrink items-center gap-1.5 overflow-hidden">
-        {chips.map(([column, text]) => <Tip label={`${column.name}: ${text}`}><span key={column.id} className="max-w-48 shrink-0 truncate rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">{column.type === "checkbox" ? column.name : text}</span></Tip>)}
+        {chips.map(([column, text]) => <Tip key={column.id} label={`${column.name}: ${text}`}><span className="max-w-48 shrink-0 truncate rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">{column.type === "checkbox" ? column.name : text}</span></Tip>)}
       </span>
     </span></RowButton>
   </div>;

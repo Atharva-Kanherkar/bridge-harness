@@ -169,7 +169,7 @@ export const NoteImage = Image.extend({
 function PageLinkView({ node, selected }: ReactNodeViewProps) {
   const pages = useContext(EditorPagesContext);
   const id = String(node.attrs.id ?? "");
-  const title = pages.title(id) ?? String(node.attrs.title ?? "") ?? "Untitled";
+  const title = pages.title(id) ?? (String(node.attrs.title ?? "") || "Untitled");
   return <NodeViewWrapper data-drag-handle="" className="my-0.5">
     <RowButton
       size="sm"
