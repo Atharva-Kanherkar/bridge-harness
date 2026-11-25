@@ -3,6 +3,22 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "properties": {
+    "cursor": {
+      "description": "The `nextCursor` of the previous page. Absent reads the first page. A cursor that does not parse, or belongs to another status, is refused rather than read as the first page.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "limit": {
+      "description": "Records per page, 1 to [`MAX_MEMORY_LIST_LIMIT`]. Absent is the maximum.",
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "scopeKey": {
       "type": "string"
     },

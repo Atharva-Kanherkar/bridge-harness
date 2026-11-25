@@ -659,3 +659,169 @@ describe("memory hardening", () => {
     expect(container.textContent).toContain("expire");
   });
 });
+
+// testing/feat-memory-paging.md: lists page, badges show the true total, and
+// proposals are decided in bulk with one call.
+describe("MemoryDialog paging and bulk review", () => {
+  // Each proposal is a minute older than the one before, so core's order
+  // (newest change first) is index order.
+  const minutesAgo = (minutes: number) => new Date(Date.UTC(2026, 10, 20) - minutes * 60_000).toISOString();
+  const proposal = (index: number, updatedAt = minutesAgo(index)): MemoryRecord => ({
+    ...record(`q-${String(index).padStart(3, "0")}`, `Proposal number ${index}`, "fact"),
+    status: "proposed",
+    provenance: "model_proposal",
+    updatedAt,
+  });
+  const pageCursorsOf: string[] = [];
+  const pagedList = () => vi.spyOn(bridgeApi, "listMemoryRecords").mockImplementation(async (scopeKey, status, page = {}) => {
+    if (page.cursor) pageCursorsOf.push(page.cursor);
+    // Core's order: newest change first, ties by id, both descending.
+    const matching = store
+      .filter(item => item.status === (status ?? "active"))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id));
+    const start = page.cursor ? Number(page.cursor) : 0;
+    const end = start + 50;
+    return {
+      scopeKey,
+      records: matching.slice(start, end),
+      total: matching.length,
+      ...(end < matching.length ? { nextCursor: String(end) } : {}),
+    };
+  });
+  const cards = () => container.querySelectorAll('input[aria-label^="Select proposal"]');
+  const toggle = (element: Element) => {
+    act(() => { (element as HTMLInputElement).click(); });
+  };
+
+  beforeEach(() => {
+    pageCursorsOf.length = 0;
+    store = store.filter(item => item.status === "active");
+    pagedList();
+    vi.spyOn(bridgeApi, "reviewMemoryRecords").mockImplementation(async (approve, reject) => {
+      for (const id of approve) store.find(item => item.id === id)!.status = "active";
+      for (const id of reject) store.find(item => item.id === id)!.status = "rejected";
+      memoryHandler?.({ scopeKey: "account:local" });
+      return { scopeKey: "account:local", approved: approve, rejected: reject, refused: [] };
+    });
+  });
+
+  it("badges the true queue size and pages proposals with Show more", async () => {
+    store.push(...Array.from({ length: 138 }, (_, index) => proposal(index)));
+    mount();
+    await flush();
+    expect(tab("Review").textContent).toContain("138");
+    click(tab("Review"));
+    expect(cards()).toHaveLength(50);
+    expect(container.textContent).toContain("50 of 138");
+    click(buttonByText("Show 50 more"));
+    await flush();
+    expect(cards()).toHaveLength(100);
+    click(buttonByText("Show 38 more"));
+    await flush();
+    expect(cards()).toHaveLength(138);
+    expect(buttonByText("more")).toBeUndefined();
+    expect(new Set([...cards()].map(input => input.getAttribute("aria-label"))).size).toBe(138);
+  });
+
+  it("approves the selected proposals in one call and clears the selection", async () => {
+    store.push(proposal(1), proposal(2), proposal(3));
+    mount();
+    await flush();
+    click(tab("Review"));
+    toggle(cards()[0]);
+    toggle(cards()[2]);
+    expect(container.textContent).toContain("2 selected");
+    click(buttonByText("Approve selected"));
+    await flush();
+    expect(bridgeApi.reviewMemoryRecords).toHaveBeenCalledTimes(1);
+    expect(bridgeApi.reviewMemoryRecords).toHaveBeenCalledWith(["q-001", "q-003"], []);
+    expect(bridgeApi.approveMemoryRecord).not.toHaveBeenCalled();
+    expect(cards()).toHaveLength(1);
+    expect(container.textContent).not.toContain("selected");
+  });
+
+  it("selects every shown proposal, not the unloaded ones, and rejects them together", async () => {
+    store.push(...Array.from({ length: 60 }, (_, index) => proposal(index)));
+    mount();
+    await flush();
+    click(tab("Review"));
+    toggle(document.querySelector('input[aria-label="Select all shown proposals"]')!);
+    expect(container.textContent).toContain("50 selected");
+    click(buttonByText("Reject selected"));
+    await flush();
+    const [approve, reject] = vi.mocked(bridgeApi.reviewMemoryRecords).mock.calls[0];
+    expect(approve).toEqual([]);
+    expect(reject).toHaveLength(50);
+    expect(tab("Review").textContent).toContain("10");
+  });
+
+  it("reports proposals the batch refused", async () => {
+    store.push(proposal(1), proposal(2));
+    vi.mocked(bridgeApi.reviewMemoryRecords).mockResolvedValueOnce({
+      scopeKey: "account:local",
+      approved: ["q-001"],
+      rejected: [],
+      refused: [{ id: "q-002", reason: "This record is already rejected, not waiting for review." }],
+    });
+    const onError = vi.fn();
+    mount({ onError });
+    await flush();
+    click(tab("Review"));
+    toggle(document.querySelector('input[aria-label="Select all shown proposals"]')!);
+    click(buttonByText("Approve selected"));
+    await flush();
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining("1 of 2 could not be approved"));
+  });
+
+  it("keeps the pages it showed when memory changes", async () => {
+    store.push(...Array.from({ length: 120 }, (_, index) => proposal(index)));
+    mount();
+    await flush();
+    click(tab("Review"));
+    click(buttonByText("Show 50 more"));
+    await flush();
+    expect(cards()).toHaveLength(100);
+    act(() => memoryHandler?.({ scopeKey: "account:local" }));
+    await flush();
+    expect(cards()).toHaveLength(100);
+  });
+
+  it("keeps a ticked proposal through a reload when newer proposals arrive", async () => {
+    store.push(...Array.from({ length: 100 }, (_, index) => proposal(index)));
+    mount();
+    await flush();
+    click(tab("Review"));
+    click(buttonByText("Show 50 more"));
+    await flush();
+    expect(cards()).toHaveLength(100);
+    const last = cards()[99];
+    const ticked = last.getAttribute("aria-label");
+    toggle(last);
+    expect(container.textContent).toContain("1 selected");
+    // An extraction run lands five newer proposals, which sort to the top.
+    store.push(...Array.from({ length: 5 }, (_, index) => proposal(500 + index, minutesAgo(-1 - index))));
+    act(() => memoryHandler?.({ scopeKey: "account:local" }));
+    await flush();
+    await flush();
+    const labels = [...cards()].map(input => input.getAttribute("aria-label"));
+    expect(labels).toContain(ticked);
+    expect(cards()).toHaveLength(105);
+    expect(container.textContent).toContain("1 selected");
+    const kept = [...cards()].find(input => input.getAttribute("aria-label") === ticked) as HTMLInputElement;
+    expect(kept.checked).toBe(true);
+  });
+
+  it("reads the rest of the memories before a search, so nothing unloaded is missed", async () => {
+    store = Array.from({ length: 70 }, (_, index) => ({ ...record(`a-${index}`, `Ordinary memory ${index}`), updatedAt: minutesAgo(index) }));
+    store.push({ ...record("a-late", "Deploys from a laptop only"), updatedAt: minutesAgo(500) });
+    mount();
+    await flush();
+    expect(container.textContent).not.toContain("Deploys from a laptop only");
+    expect(buttonByText("Show 21 more")).toBeDefined();
+    setSearch("laptop");
+    await flush();
+    await flush();
+    expect(pageCursorsOf).toContain("50");
+    expect(container.textContent).toContain("Deploys from a laptop only");
+  });
+});

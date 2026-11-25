@@ -97,6 +97,13 @@
     }
   },
   "properties": {
+    "nextCursor": {
+      "description": "Pass back as `cursor` for the next page. Absent on the last page.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "records": {
       "items": {
         "$ref": "#/definitions/MemoryRecord"
@@ -105,6 +112,12 @@
     },
     "scopeKey": {
       "type": "string"
+    },
+    "total": {
+      "default": 0,
+      "description": "Every record of the listed status in the scope, not just this page.",
+      "format": "int64",
+      "type": "integer"
     }
   },
   "required": [

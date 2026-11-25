@@ -21,7 +21,7 @@ import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
 import { activeWebDaemon } from "./webDaemon";
 import { asWireKind, readWireKind } from "./transcript/wire";
-import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryConsolidationSettings, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, Workspace, WorkspaceSessionKind } from "./types";
+import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, ReviewMemoryRecordsResult, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryConsolidationSettings, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, Workspace, WorkspaceSessionKind } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { EarlyCompactionSettings } from "./types";
 import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath, BrowserCloneStatus } from "./types";
@@ -777,6 +777,19 @@ const demoEntries: SessionEntry[] = [
 // Seed memory for the mock host: a spread the Memory surface can actually
 // render — pinned + accepted + proposed records, a supersession lineage, a
 // conflict group, and a tombstone. `bun run dev` and component tests read this.
+/** Core's page size for memory lists (`MAX_MEMORY_LIST_LIMIT`). */
+export const MEMORY_PAGE_SIZE = 50;
+/** Where a memory list page starts, from the previous page's `nextCursor`. */
+export interface MemoryPageRequest { cursor?: string; limit?: number }
+
+const MOCK_QUEUE_BODIES = [
+  "Does ML research as an independent researcher, so compute cost matters.",
+  "Asks for a review only once something works end to end.",
+  "Prefers small PRs that each land green on CI.",
+  "Keeps the main checkout on main and works in worktrees.",
+  "Wants screenshots in every UI pull request.",
+];
+const MEMORY_KIND_ORDER = ["preference", "fact", "decision", "constraint"];
 function memRecord(
   id: string,
   body: string,
@@ -803,6 +816,16 @@ const mockMemoryRecords: MemoryRecord[] = [
   memRecord("mem_p2b5", "Prefers vitest -t filters over whole-file runs while triaging.", "preference", "proposed", "model_proposal", { confidenceBps: 6200, rationale: "run 8813" }),
   memRecord("mem_p3c7", "Check the upstream tracker before deep-diving a security-hunt candidate.", "constraint", "proposed", "agent_proposal", { rationale: "The person said to keep this for every future hunt." }),
   memRecord("mem_d1c9", "Sprint-scoped: land the onboarding picker before Friday.", "constraint", "deleted", "model_proposal", { confidenceBps: 3000, createdAt: "2026-08-05T09:00:00Z", validTo: "2026-08-18T09:00:00Z" }),
+  // A long review queue, so mock mode shows the paged Review tab the way a
+  // real account with months of extraction does.
+  ...Array.from({ length: 135 }, (_, index) => memRecord(
+    `mem_q${String(index).padStart(3, "0")}`,
+    MOCK_QUEUE_BODIES[index % MOCK_QUEUE_BODIES.length],
+    MEMORY_KIND_ORDER[index % MEMORY_KIND_ORDER.length],
+    "proposed",
+    "model_proposal",
+    { confidenceBps: 6000 + (index % 7) * 500, rationale: `run ${7000 + index}`, createdAt: new Date(Date.UTC(2026, 7, 23, 12) - index * 3_600_000).toISOString() },
+  )),
 ];
 
 // Deterministic packet-injection audit over the recall-eligible ids — the mock
@@ -3654,19 +3677,59 @@ export const bridgeApi = {
     emitMemoryChanged(record.scopeKey);
     return structuredClone(record);
   },
-  listMemoryRecords: async (scopeKey: string, status?: string): Promise<ListMemoryRecordsResult> => {
-    if (hasBackend()) return call("memory/list_memory_records", { scopeKey, ...(status ? { status } : {}) });
+  listMemoryRecords: async (scopeKey: string, status?: string, page: MemoryPageRequest = {}): Promise<ListMemoryRecordsResult> => {
+    if (hasBackend()) return call("memory/list_memory_records", {
+      scopeKey,
+      ...(status ? { status } : {}),
+      ...(page.cursor ? { cursor: page.cursor } : {}),
+      ...(page.limit ? { limit: page.limit } : {}),
+    });
     const trimmed = scopeKey.trim();
     if (!trimmed) throw new Error("Memory scope is required; it cannot be empty or NULL");
     const wanted = status ?? "active";
     if (wanted !== "active" && wanted !== "proposed") throw new Error(`Memory list can show active or proposed records, not '${wanted}'.`);
+    const limit = page.limit ?? MEMORY_PAGE_SIZE;
+    if (limit < 1 || limit > MEMORY_PAGE_SIZE) throw new Error(`A memory page holds 1 to ${MEMORY_PAGE_SIZE} records.`);
+    // Core's order and keyset: newest change first, ties by id, and a cursor
+    // that names where the last page ended.
+    const matching = mockMemoryRecords
+      .filter(record => record.scopeKey === trimmed && record.status === wanted)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id));
+    let start = 0;
+    if (page.cursor) {
+      let after: { status: string; updatedAt: string; id: string };
+      try { after = JSON.parse(atob(page.cursor)); } catch { throw new Error("That memory page cursor is not valid. Reload the list from its first page."); }
+      if (after.status !== wanted) throw new Error(`That memory page cursor lists ${after.status} records, not ${wanted} ones.`);
+      start = matching.findIndex(record => record.updatedAt < after.updatedAt || (record.updatedAt === after.updatedAt && record.id < after.id));
+      if (start < 0) start = matching.length;
+    }
+    const records = matching.slice(start, start + limit);
+    const last = records[records.length - 1];
+    const more = start + limit < matching.length;
     return {
       scopeKey: trimmed,
-      records: mockMemoryRecords
-        .filter(record => record.scopeKey === trimmed && record.status === wanted)
-        .slice(0, 50)
-        .map(record => structuredClone(record)),
+      records: records.map(record => structuredClone(record)),
+      total: matching.length,
+      ...(more && last ? { nextCursor: btoa(JSON.stringify({ status: wanted, updatedAt: last.updatedAt, id: last.id })) } : {}),
     };
+  },
+  reviewMemoryRecords: async (approve: string[], reject: string[], scopeKey = "account:local"): Promise<ReviewMemoryRecordsResult> => {
+    if (hasBackend()) return call("memory/review_memory_records", { scopeKey, approve, reject });
+    if (approve.length + reject.length > 200) throw new Error("One review can decide at most 200 memory records.");
+    const both = approve.find(id => reject.includes(id));
+    if (both) throw new Error(`Memory record '${both}' cannot be approved and rejected in one review.`);
+    const result: ReviewMemoryRecordsResult = { scopeKey, approved: [], rejected: [], refused: [] };
+    const now = new Date().toISOString();
+    for (const [id, approving] of [...approve.map(id => [id, true] as const), ...reject.map(id => [id, false] as const)]) {
+      const record = mockMemoryRecords.find(item => item.id === id);
+      if (!record) { result.refused.push({ id, reason: "This memory record does not exist." }); continue; }
+      if (record.status !== "proposed") { result.refused.push({ id, reason: `This record is already ${record.status}, not waiting for review.` }); continue; }
+      record.status = approving ? "active" : "rejected";
+      record.updatedAt = now;
+      if (approving) result.approved.push(id); else result.rejected.push(id);
+    }
+    if (result.approved.length || result.rejected.length) emitMemoryChanged(scopeKey);
+    return result;
   },
   supersedeMemoryRecord: async (recordId: string, body: string, kind?: string | null): Promise<MemoryRecord> => {
     if (hasBackend()) return call("memory/supersede_memory_record", { recordId, body, ...(kind ? { kind } : {}) });
