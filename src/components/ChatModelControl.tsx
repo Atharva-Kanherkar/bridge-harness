@@ -5,12 +5,9 @@ import type { AdapterDescriptor, Harness, ModelOption } from "../types";
 import { harnessLabel } from "../utils";
 import { accountLabel, normalizeAccount, type AccountChoice } from "../providerAccounts";
 import { HarnessMark } from "./harnessMarks";
-import { useEffortSelectorStyle } from "../theme";
 import { isModelFavorite, useModelFavorites, type ModelFavorite } from "../modelFavorites";
 import { effortIndex, effortLevelsFrom, effortMeaning } from "./effort/effortLevels";
-import { EffortSlider } from "./effort/EffortSlider";
-import { EffortSentence } from "./effort/EffortSentence";
-import { EffortList } from "./effort/EffortList";
+import { EffortControl } from "./effort/EffortControl";
 import { SpeedControl } from "./effort/SpeedControl";
 import { cn } from "@/lib/utils";
 
@@ -63,9 +60,8 @@ export type ChatModelControlProps = {
    *  top row of a container that clips its overflow) must pass `"down"`, or
    *  the panel lands above the viewport and never becomes visible. */
   placement?: "up" | "down";
-  /** Active reasoning effort for the session. Highlighted in the popover's
-   *  footer segmented control — the 2a home for effort, moved off the composer's
-   *  old standalone pill. */
+  /** Active reasoning effort for the session, checked in the picker's
+   *  Thinking row. */
   effort?: string | null;
   /** Restricts the offered levels, e.g. to what a specialist worker can carry. */
   allowedEfforts?: readonly string[];
@@ -297,10 +293,6 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   // all; one that wires either shows the current level, editable or not.
   const effortSurface = effort != null || !!onEffortChange;
   const showEffort = effortLevels.length > 0 && effortSurface;
-  // The user's chosen form for the control (Settings › Appearance), drawn in
-  // the Thinking column. Any surface that does effort has that column, so a
-  // model can be picked and its effort set without the popover closing.
-  const effortStyle = useEffortSelectorStyle();
   const [favorites, toggleFavorite] = useModelFavorites();
   // While the host switches to the picked model the ladder is the new model's;
   // the session's level carries over only if that ladder has it, which is the
@@ -319,7 +311,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   // one open. Only a disable from elsewhere makes the control inert.
   const switchInFlight = !!disabled && inFlight;
   const effortDisabled = !!disabled && !inFlight;
-  const effortProps = { levels: effortLevels, value: effortValue, onChange: onEffortChange ? changeEffort : undefined, disabled: effortDisabled, harness: activeHarness, modelLabel };
+  const effortProps = { levels: effortLevels, value: effortValue, onChange: onEffortChange ? changeEffort : undefined, disabled: effortDisabled };
   // Faster service tiers the selected model lists. Only a surface that can
   // change the speed shows them; a model without any shows nothing.
   const speedTiers = onSpeedChange ? currentModel?.speedTiers ?? [] : [];
@@ -545,20 +537,12 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
     }
     if (zone === "thinking" && event.key === "Enter") {
       // "Use": the level is already applied as it moves; Enter keeps it and
-      // closes. A list row that was only focused is chosen first.
+      // closes. A segment that was only focused is chosen first.
       event.preventDefault();
       const level = target.getAttribute("role") === "radio" && target.getAttribute("aria-checked") !== "true" ? target.dataset.effort : undefined;
       if (level && !effortDisabled) changeEffort(level);
       closePicker();
-      return;
     }
-    // Digit shortcuts for the list style live on the popover, not the list:
-    // after a model pick focus sits on that row in the other column, and the
-    // key has to work from wherever focus is, except while typing a search.
-    if (effortStyle !== "list" || !showEffort || effortDisabled || !onEffortChange || !/^[1-9]$/.test(event.key)) return;
-    if (target instanceof HTMLInputElement) return;
-    const level = effortLevels[Number(event.key) - 1];
-    if (level) { event.preventDefault(); changeEffort(level.value); }
   };
 
   // Picking restarts the provider session; said once, as a caption under the
@@ -695,22 +679,19 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
           </div>
           {!effortSurface && <div className="order-4">{switchNote}</div>}
         </div>
-        {/* Thinking: one full-width row under the list, in the user's chosen
-            style, so a model can be picked and its effort set in one open. */}
+        {/* Thinking: a label, what the level means, and one segmented row
+            under the list, so a model and its effort are set in one open. */}
         {effortSurface && <div data-picker-zone="thinking" className="order-4 flex shrink-0 flex-col border-t border-border">
-          <div className="flex h-10 shrink-0 items-center gap-3 px-3.5 text-meta text-muted-foreground">
-            <span className="shrink-0 text-ui font-medium text-foreground">Thinking effort</span>
-            {/* What the level means; the control alone only says where it sits. */}
-            {!showAwaiting && showEffort && effortStyle !== "list" && <span className="ml-auto min-w-0 truncate">{effortIndex(effortLevels, effortValue) >= 0 ? effortMeaning(effortValue!) : "The provider's own default."}</span>}
-            {!showAwaiting && showEffort && effortStyle === "list" && <span className="ml-auto shrink-0 text-faint">1–{Math.min(9, effortLevels.length)} jumps to a level</span>}
+          <div className="flex flex-col gap-1.5 px-3 pb-1 pt-2.5">
+            <div className="flex items-baseline gap-3 px-0.5">
+              <span className="shrink-0 text-ui font-medium text-foreground">Thinking</span>
+              {/* What the level means; the row alone only says which it is. */}
+              {!showAwaiting && showEffort && <span className="ml-auto min-w-0 truncate text-caption text-muted-foreground">{effortIndex(effortLevels, effortValue) >= 0 ? effortMeaning(effortValue!) : "The provider's own default."}</span>}
+            </div>
+            {showAwaiting ? null : showEffort
+              ? <div data-testid="effort-control"><EffortControl {...effortProps} /></div>
+              : <p className="px-0.5 text-meta leading-5 text-muted-foreground">No thinking control for this model.</p>}
           </div>
-          {showAwaiting ? null : showEffort
-            ? effortStyle === "list"
-              ? <div data-testid="effort-control" className="max-h-36 overflow-y-auto px-2 pb-1"><EffortList {...effortProps} /></div>
-              : <div data-testid="effort-control" className="h-[72px] shrink-0 px-3.5 pb-2 pt-1 [contain:layout]">
-                  {effortStyle === "sentence" ? <EffortSentence {...effortProps} /> : <EffortSlider {...effortProps} />}
-                </div>
-            : <p className="px-3.5 pb-1 text-meta leading-5 text-muted-foreground">No thinking control for this model.</p>}
           {switchNote}
         </div>}
         {/* Footer: speed where the model has a faster tier, and the access

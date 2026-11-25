@@ -318,7 +318,7 @@ describe("ChatModelControl", () => {
     await act(async () => trigger().click());
     const control = panel().querySelector('[data-testid="effort-control"]');
     expect(control).not.toBeNull();
-    const active = control!.querySelectorAll('[aria-pressed="true"]');
+    const active = control!.querySelectorAll('[aria-checked="true"]');
     // Exactly one segment reads as the active effort, and it is the one passed in.
     expect(active).toHaveLength(1);
     expect(active[0].textContent).toBe("High");
@@ -447,9 +447,8 @@ describe("cleanModelLabel", () => {
 
 });
 
-// The user's chosen thinking-control style (Settings › Appearance) is read from
-// storage; each style renders the same levels in a different form.
-describe("ChatModelControl effort styles", () => {
+// The Thinking row: one segment per level, a click or an arrow key picks one.
+describe("ChatModelControl effort control", () => {
   const codexAdapters: AdapterDescriptor[] = [
     {
       id: "codex", label: "Codex", available: true, authState: "signed_in", version: "test", capabilities: ["messages", "reasoning"], unavailableReason: null,
@@ -459,8 +458,11 @@ describe("ChatModelControl effort styles", () => {
   ];
   const control = () => panel().querySelector<HTMLElement>('[data-testid="effort-control"]')!;
   const key = (target: Element, key: string) => target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+  /** The level the row shows as current, or null for the provider default. */
+  const checked = () => control().querySelector('[role="radio"][aria-checked="true"]')?.getAttribute("data-effort") ?? null;
+  const segment = (level: string) => control().querySelector<HTMLButtonElement>(`[role="radio"][data-effort="${level}"]`)!;
 
-  // jsdom here has an opaque origin and no storage; the style is read from
+  // jsdom here has an opaque origin and no storage; favorites are read from
   // localStorage during render, so give it a minimal stub.
   const store = new Map<string, string>();
   let original: PropertyDescriptor | undefined;
@@ -482,39 +484,56 @@ describe("ChatModelControl effort styles", () => {
     else Reflect.deleteProperty(globalThis, "localStorage");
   });
 
-  describe("slider (default)", () => {
-    it("announces the current level on the thumb and steps with the keyboard", async () => {
+  describe("segments", () => {
+    it("picks a level in one click, checks it at once, and steps with the keyboard", async () => {
       const onEffortChange = vi.fn();
       await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} effort="high" onEffortChange={onEffortChange} />));
       await act(async () => trigger().click());
-      const thumb = control().querySelector('[role="slider"]')!;
-      expect(thumb.getAttribute("aria-valuetext")).toBe("High");
-      expect(thumb.getAttribute("aria-valuenow")).toBe("2");
-      await act(async () => { key(thumb, "ArrowRight"); });
-      expect(onEffortChange).toHaveBeenLastCalledWith("xhigh");
-      await act(async () => { key(thumb, "Home"); });
-      expect(onEffortChange).toHaveBeenLastCalledWith("low");
-      await act(async () => { key(thumb, "End"); });
+      expect(control().querySelector('[role="radiogroup"]')!.getAttribute("aria-label")).toBe("Reasoning effort");
+      expect(checked()).toBe("high");
+      // The current level is the group's one tab stop.
+      expect([...control().querySelectorAll<HTMLButtonElement>('[role="radio"]')].filter(radio => radio.tabIndex === 0).map(radio => radio.dataset.effort)).toEqual(["high"]);
+      await act(async () => segment("max").click());
       expect(onEffortChange).toHaveBeenLastCalledWith("max");
+      expect(checked()).toBe("max");
+      await act(async () => { key(segment("max"), "ArrowLeft"); });
+      expect(onEffortChange).toHaveBeenLastCalledWith("xhigh");
+      await act(async () => { key(segment("xhigh"), "Home"); });
+      expect(onEffortChange).toHaveBeenLastCalledWith("low");
+      await act(async () => { key(segment("low"), "End"); });
+      expect(onEffortChange).toHaveBeenLastCalledWith("max");
+      // Clicking the level already set sends nothing.
+      onEffortChange.mockClear();
+      await act(async () => segment("max").click());
+      expect(onEffortChange).not.toHaveBeenCalled();
     });
 
-    it("draws Codex's six levels into the same fixed footer box as Claude's five", async () => {
+    it("captions the row with what the current level means", async () => {
+      await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} effort="xhigh" onEffortChange={vi.fn()} />));
+      await act(async () => trigger().click());
+      const thinking = panel().querySelector('[data-picker-zone="thinking"]')!;
+      expect(thinking.textContent).toContain("Thinking");
+      expect(thinking.textContent).toContain("Long reasoning chains.");
+      expect(segment("max").title).toBe("Longest Claude allows.");
+    });
+
+    it("fits Codex's six levels in one row", async () => {
       await act(async () => root.render(<ChatModelControl adapters={codexAdapters} harness="codex" model="gpt-luna" onChange={vi.fn()} effort="ultra" onEffortChange={vi.fn()} />));
       await act(async () => trigger().click());
-      expect(control().querySelectorAll("[data-effort]")).toHaveLength(6);
-      expect(control().className).toContain("h-[72px]");
-      expect(control().textContent).toContain("Ultra");
+      expect([...control().querySelectorAll('[role="radio"]')].map(radio => radio.textContent)).toEqual(["Low", "Med", "High", "XHigh", "Max", "Ultra"]);
+      expect(checked()).toBe("ultra");
+      expect(control().querySelectorAll('[role="radiogroup"]')).toHaveLength(1);
     });
 
-    it("says Default, with nothing lit, while the session has no effort yet", async () => {
+    it("checks nothing while the session has no effort yet, and says it is the provider's default", async () => {
       const onEffortChange = vi.fn();
       await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} effort={null} onEffortChange={onEffortChange} />));
       await act(async () => trigger().click());
-      const thumb = control().querySelector('[role="slider"]')!;
-      expect(thumb.getAttribute("aria-valuetext")).toBe("Default");
-      expect(control().querySelectorAll('[aria-pressed="true"]')).toHaveLength(0);
-      // From Default the first step lands on the first level, not the second.
-      await act(async () => { key(thumb, "ArrowRight"); });
+      expect(checked()).toBeNull();
+      expect(panel().textContent).toContain("The provider's own default.");
+      // The first segment is the tab stop; the first arrow lands on it.
+      expect(segment("low").tabIndex).toBe(0);
+      await act(async () => { key(segment("low"), "ArrowRight"); });
       expect(onEffortChange).toHaveBeenLastCalledWith("low");
     });
 
@@ -532,7 +551,7 @@ describe("ChatModelControl effort styles", () => {
       expect(opus.getAttribute("aria-selected")).toBe("true");
       expect([...control().querySelectorAll("[data-effort]")].map(el => el.getAttribute("data-effort"))).toEqual(["low", "medium", "high", "xhigh", "max"]);
       // high is on Opus's ladder too, so the session's level carries over.
-      expect(control().querySelector('[role="slider"]')!.getAttribute("aria-valuetext")).toBe("High");
+      expect(checked()).toBe("high");
     });
 
     it("queues a level chosen while the host is still switching and sends it once the switch settles", async () => {
@@ -546,12 +565,11 @@ describe("ChatModelControl effort styles", () => {
       // control stays live regardless…
       await act(async () => root.render(<ChatModelControl {...props} disabled />));
       expect(panel()).not.toBeNull();
-      const thumb = control().querySelector('[role="slider"]')!;
-      expect(thumb.getAttribute("aria-disabled")).toBeNull();
+      expect(segment("max").disabled).toBe(false);
       // …a level picked now is shown at once but not sent yet…
-      await act(async () => { key(thumb, "End"); });
+      await act(async () => segment("max").click());
       expect(onEffortChange).not.toHaveBeenCalled();
-      expect(control().querySelector('[role="slider"]')!.getAttribute("aria-valuetext")).toBe("Max");
+      expect(checked()).toBe("max");
       // …and goes out exactly once when the switch settles.
       await act(async () => root.render(<ChatModelControl {...props} model="opus" />));
       expect(onEffortChange).toHaveBeenCalledTimes(1);
@@ -567,7 +585,7 @@ describe("ChatModelControl effort styles", () => {
       const opus = [...panel().querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes("Opus"))!;
       await act(async () => opus.click());
       await act(async () => root.render(<ChatModelControl {...props} disabled />));
-      await act(async () => { key(control().querySelector('[role="slider"]')!, "End"); });
+      await act(async () => segment("max").click());
       // "I'm done": dismiss while the provider is still restarting.
       await act(async () => container.querySelector<HTMLElement>(".fixed.inset-0")!.click());
       expect(panel()).toBeNull();
@@ -582,25 +600,24 @@ describe("ChatModelControl effort styles", () => {
       const props = { adapters: effortAwareAdapters, harness: "claude" as const, model: "opus", onChange: vi.fn(), effort: "high", onEffortChange };
       await act(async () => root.render(<ChatModelControl {...props} />));
       await act(async () => trigger().click());
-      await act(async () => { key(control().querySelector('[role="slider"]')!, "End"); });
+      await act(async () => segment("max").click());
       expect(onEffortChange).toHaveBeenCalledWith("max");
       // The host goes busy for the effort round-trip; the prop is still stale.
       await act(async () => root.render(<ChatModelControl {...props} disabled />));
-      const thumb = control().querySelector('[role="slider"]')!;
-      expect(thumb.getAttribute("aria-valuetext")).toBe("Max");
-      expect(thumb.getAttribute("aria-disabled")).toBeNull();
+      expect(checked()).toBe("max");
+      expect(segment("max").disabled).toBe(false);
       await act(async () => root.render(<ChatModelControl {...props} effort="max" />));
-      expect(control().querySelector('[role="slider"]')!.getAttribute("aria-valuetext")).toBe("Max");
+      expect(checked()).toBe("max");
     });
 
     it("reverts to the host's level when it settles without adopting the sent one", async () => {
       const props = { adapters: effortAwareAdapters, harness: "claude" as const, model: "opus", onChange: vi.fn(), effort: "high", onEffortChange: vi.fn() };
       await act(async () => root.render(<ChatModelControl {...props} />));
       await act(async () => trigger().click());
-      await act(async () => { key(control().querySelector('[role="slider"]')!, "End"); });
+      await act(async () => segment("max").click());
       await act(async () => root.render(<ChatModelControl {...props} disabled />));
       await act(async () => root.render(<ChatModelControl {...props} />));
-      expect(control().querySelector('[role="slider"]')!.getAttribute("aria-valuetext")).toBe("High");
+      expect(checked()).toBe("high");
     });
 
     it("drops the queue and the highlight when the switch fails", async () => {
@@ -611,14 +628,14 @@ describe("ChatModelControl effort styles", () => {
       const opus = [...panel().querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes("Opus"))!;
       await act(async () => opus.click());
       await act(async () => root.render(<ChatModelControl {...props} disabled />));
-      await act(async () => { key(control().querySelector('[role="slider"]')!, "End"); });
+      await act(async () => segment("max").click());
       // The host settles still on Sonnet: the switch did not happen.
       await act(async () => root.render(<ChatModelControl {...props} />));
       expect(onEffortChange).not.toHaveBeenCalled();
       const sonnet = [...panel().querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes("Sonnet"))!;
       expect(sonnet.getAttribute("aria-selected")).toBe("true");
       expect([...control().querySelectorAll("[data-effort]")].map(el => el.getAttribute("data-effort"))).toEqual(["low", "high", "xhigh"]);
-      expect(control().querySelector('[role="slider"]')!.getAttribute("aria-valuetext")).toBe("High");
+      expect(checked()).toBe("high");
     });
 
     it("ignores a second pick while its own switch is in flight", async () => {
@@ -654,9 +671,8 @@ describe("ChatModelControl effort styles", () => {
       expect(onChange).toHaveBeenCalledTimes(1);
       expect(panel().querySelector('[role="listbox"]')!.getAttribute("aria-busy")).toBe("true");
       // …and the effort control is still live, queueing for the settle.
-      const thumb = control().querySelector('[role="slider"]')!;
-      expect(thumb.getAttribute("aria-disabled")).toBeNull();
-      await act(async () => { key(thumb, "End"); });
+      expect(segment("max").disabled).toBe(false);
+      await act(async () => segment("max").click());
       expect(onEffortChange).not.toHaveBeenCalled();
       await act(async () => root.render(<ChatModelControl {...props} model="opus" />));
       expect(onEffortChange).toHaveBeenCalledTimes(1);
@@ -701,47 +717,8 @@ describe("ChatModelControl effort styles", () => {
     it("stays inert without a setter but still shows the level", async () => {
       await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} effort="max" />));
       await act(async () => trigger().click());
-      expect(control().querySelector('[role="slider"]')!.getAttribute("aria-valuetext")).toBe("Max");
+      expect(checked()).toBe("max");
       expect([...control().querySelectorAll("button")].every(button => button.disabled)).toBe(true);
-    });
-  });
-
-  describe("sentence", () => {
-    beforeEach(() => localStorage.setItem("bridge.effortSelector", "sentence"));
-
-    it("captions the rail with a sentence naming the model and the level", async () => {
-      const onEffortChange = vi.fn();
-      await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort="high" onEffortChange={onEffortChange} />));
-      await act(async () => trigger().click());
-      expect(control().querySelector("p")!.textContent).toContain("Claude Sonnet thinks");
-      expect(control().querySelector('[data-testid="effort-word"]')!.textContent).toBe("properly");
-      // The same rail as the slider drives it.
-      const thumb = control().querySelector('[role="slider"]')!;
-      expect(thumb.getAttribute("aria-valuetext")).toBe("High");
-      await act(async () => { key(thumb, "ArrowRight"); });
-      expect(onEffortChange).toHaveBeenLastCalledWith("xhigh");
-      // The chosen level shows at once (the word is mid-scramble for a beat,
-      // so read the rail), and the next step is relative to it.
-      expect(control().querySelector('[role="slider"]')!.getAttribute("aria-valuetext")).toBe("XHigh");
-      await act(async () => { key(thumb, "ArrowLeft"); });
-      expect(onEffortChange).toHaveBeenLastCalledWith("high");
-    });
-
-    it("reads 'normally' while unset and steps onto the first level", async () => {
-      const onEffortChange = vi.fn();
-      await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort={null} onEffortChange={onEffortChange} />));
-      await act(async () => trigger().click());
-      expect(control().querySelector('[data-testid="effort-word"]')!.textContent).toBe("normally");
-      await act(async () => { key(control().querySelector('[role="slider"]')!, "ArrowRight"); });
-      expect(onEffortChange).toHaveBeenLastCalledWith("low");
-    });
-
-    it("draws six Codex levels into the same footer box", async () => {
-      await act(async () => root.render(<ChatModelControl adapters={codexAdapters} harness="codex" model="gpt-luna" onChange={vi.fn()} effort="ultra" onEffortChange={vi.fn()} />));
-      await act(async () => trigger().click());
-      expect(control().querySelectorAll("[data-effort]")).toHaveLength(6);
-      expect(control().className).toContain("h-[72px]");
-      expect(control().querySelector('[data-testid="effort-word"]')!.textContent).toBe("relentlessly");
     });
   });
 
@@ -790,10 +767,8 @@ describe("ChatModelControl effort styles", () => {
     });
   });
 
-  describe("list", () => {
-    beforeEach(() => localStorage.setItem("bridge.effortSelector", "list"));
-
-    it("renders effort as radios in a second pane and keeps the popover open across a model switch", async () => {
+  describe("across a model switch", () => {
+    it("keeps the popover open across a model switch, with the level row live", async () => {
       const onChange = vi.fn();
       const onEffortChange = vi.fn();
       await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={onChange} effort="high" onEffortChange={onEffortChange} />));
@@ -804,8 +779,6 @@ describe("ChatModelControl effort styles", () => {
       expect(control().querySelector('[role="radio"][aria-checked="true"]')!.getAttribute("data-effort")).toBe("high");
       await act(async () => (radios[4] as HTMLButtonElement).click());
       expect(onEffortChange).toHaveBeenLastCalledWith("max");
-      await act(async () => { key(control().querySelector('[role="radiogroup"]')!, "1"); });
-      expect(onEffortChange).toHaveBeenLastCalledWith("low");
 
       const sonnet = [...panel().querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes("Sonnet"))!;
       await act(async () => sonnet.click());
@@ -831,22 +804,6 @@ describe("ChatModelControl effort styles", () => {
       expect(panel()).toBeNull();
     });
 
-    it("takes digit shortcuts from wherever focus is, except the search box", async () => {
-      const onEffortChange = vi.fn();
-      await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} effort="high" onEffortChange={onEffortChange} />));
-      await act(async () => trigger().click());
-      // Focus rests on the model row just clicked, in the other pane.
-      const opus = [...panel().querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes("Opus"))!;
-      await act(async () => { opus.focus(); key(opus, "3"); });
-      expect(onEffortChange).toHaveBeenLastCalledWith("high");
-      await act(async () => { key(opus, "5"); });
-      expect(onEffortChange).toHaveBeenLastCalledWith("max");
-      // Typing a digit into the search box is a search, not a shortcut.
-      onEffortChange.mockClear();
-      await act(async () => { key(panel().querySelector("input")!, "2"); });
-      expect(onEffortChange).not.toHaveBeenCalled();
-    });
-
     it("keeps the pane, and its width, for a model with no effort knob", async () => {
       await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="haiku" onChange={vi.fn()} effort="high" onEffortChange={vi.fn()} />));
       await act(async () => trigger().click());
@@ -859,7 +816,7 @@ describe("ChatModelControl effort styles", () => {
       await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} />));
       await act(async () => trigger().click());
       expect(panel().className).toContain("w-[380px]");
-      expect(panel().textContent).not.toContain("Thinking effort");
+      expect(panel().querySelector('[data-picker-zone="thinking"]')).toBeNull();
     });
   });
 
@@ -905,18 +862,16 @@ describe("ChatModelControl effort styles", () => {
       expect([...panel().querySelectorAll('[data-testid="effort-control"] [data-effort]')].map(node => node.getAttribute("data-effort"))).toEqual(["low", "high", "xhigh"]);
     });
 
-    describe("list", () => {
-      beforeEach(() => localStorage.setItem("bridge.effortSelector", "list"));
-
+    describe("Thinking row", () => {
       it("names the missing control instead of leaving the effort pane blank", async () => {
         await act(async () => root.render(<ChatModelControl adapters={codexThinking} harness="codex" model="gpt-spark" onChange={vi.fn()} effort="high" onEffortChange={vi.fn()} />));
         await act(async () => trigger().click());
         expect(panel().querySelector('[data-testid="effort-control"]')).toBeNull();
         expect(panel().textContent).toContain("No thinking control for this model.");
-        expect(panel().textContent).toContain("Thinking effort");
+        expect(panel().querySelector('[data-picker-zone="thinking"]')!.textContent).toContain("Thinking");
       });
 
-      it("changes effort from the list for GPT Sol", async () => {
+      it("changes effort from the row for GPT Sol", async () => {
         const onEffortChange = vi.fn();
         await act(async () => root.render(<ChatModelControl adapters={codexThinking} harness="codex" model="gpt-5.6-sol" onChange={vi.fn()} effort="medium" onEffortChange={onEffortChange} />));
         await act(async () => trigger().click());

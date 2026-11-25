@@ -1,5 +1,4 @@
-//! The app preferences record: theme, skin, effort picker style and transcript
-//! display. The app draws these itself, but the core keeps the record of them
+//! The app preferences record: theme, skin and transcript display. The app draws these itself, but the core keeps the record of them
 //! so a chat (through `settings_change`), a second window or the web client can
 //! change them. Each window caches the values in localStorage only to paint its
 //! first frame, and follows `config/app_preferences_changed` after that.
@@ -30,7 +29,7 @@ pub fn save(db: &Connection, values: &AppPreferenceValues) -> Result<(AppPrefere
     macro_rules! merge {
         ($($field:ident),*) => { $(if values.$field.is_some() { next.$field = values.$field; })* };
     }
-    merge!(theme, skin, effort_selector, show_thinking, auto_expand_edits, allow_opencode_app_courier);
+    merge!(theme, skin, show_thinking, auto_expand_edits, allow_opencode_app_courier);
     if next == current.values {
         return Ok((current, false));
     }

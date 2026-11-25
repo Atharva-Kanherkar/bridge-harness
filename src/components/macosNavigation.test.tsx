@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AppearancePage } from "./settings/AppearancePage";
-import { EffortList } from "./effort/EffortList";
+import { EffortControl } from "./effort/EffortControl";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -39,12 +39,16 @@ it("moves and selects appearance radios with arrow, Home, and End keys", () => {
 
 it("navigates reasoning radios and keeps disabled choices inert", () => {
   const onChange = vi.fn();
-  const props = { levels: [{ value: "low", label: "Low" }, { value: "high", label: "High" }], value: "low", onChange, harness: "codex", modelLabel: "Test model" };
-  act(() => root.render(<EffortList {...props} />));
+  const props = { levels: [{ value: "low", label: "Low" }, { value: "medium", label: "Med" }, { value: "high", label: "High" }], value: "low", onChange };
+  act(() => root.render(<EffortControl {...props} />));
   const radios = [...host.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
-  radios[0].focus(); key(radios[0], "ArrowUp");
-  expect(onChange).toHaveBeenLastCalledWith("high"); expect(document.activeElement).toBe(radios[1]);
-  key(radios[1], "Home"); expect(onChange).toHaveBeenLastCalledWith("low");
-  act(() => root.render(<EffortList {...props} disabled />)); onChange.mockClear();
+  // Arrows wrap, and focus follows the pick.
+  radios[0].focus(); key(radios[0], "ArrowLeft");
+  expect(onChange).toHaveBeenLastCalledWith("high"); expect(document.activeElement).toBe(radios[2]);
+  act(() => root.render(<EffortControl {...props} value="high" />));
+  key(radios[2], "ArrowRight"); expect(onChange).toHaveBeenLastCalledWith("low");
+  key(radios[2], "Home"); expect(onChange).toHaveBeenLastCalledWith("low");
+  key(radios[2], "ArrowLeft"); expect(onChange).toHaveBeenLastCalledWith("medium");
+  act(() => root.render(<EffortControl {...props} disabled />)); onChange.mockClear();
   key(radios[0], "End"); expect(onChange).not.toHaveBeenCalled();
 });
