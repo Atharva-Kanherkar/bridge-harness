@@ -2,8 +2,8 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FileLinkContext, Markdown, MentionText, mermaidClamp, renderMathToHtml, RichFence, richFenceKind, splitBlocks, type FileLinks } from "./Markdown";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { FileLinkContext, loadMath, Markdown, MentionText, mermaidClamp, renderMathToHtml, RichFence, richFenceKind, splitBlocks, type FileLinks } from "./Markdown";
 import * as highlight from "./highlight";
 import { withNotesContext } from "../notesBrief";
 
@@ -265,6 +265,20 @@ describe("GFM table rendering", () => {
   it("renders ~~text~~ as <del> strikethrough inline", () => {
     const html = renderToStaticMarkup(<Markdown text="this is ~~wrong~~ but this is right" />);
     expect(html).toMatch(/<del>.*wrong.*<\/del>/);
+  });
+});
+
+// Math renders through KaTeX loaded on first use; synchronous renders below
+// need it loaded up front.
+beforeAll(() => loadMath());
+
+describe("math loading", () => {
+  it("keeps KaTeX out of the module graph until math is shown", async () => {
+    vi.resetModules();
+    const fresh = await import("./Markdown");
+    expect(fresh.renderMathToHtml("x^2", false), "nothing renders before the renderer loads").toBeNull();
+    await fresh.loadMath();
+    expect(fresh.renderMathToHtml("x^2", false)).toContain("katex");
   });
 });
 
