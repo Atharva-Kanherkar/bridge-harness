@@ -17,7 +17,7 @@ import type { ImportContinuation, ImportJob, ResolveReferenceResult, WorkflowDra
 import { workflowNotification } from "./components/workflows/notify";
 import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, Check, CircleDot, Clock3, Code2, History, FileCode2, FileDiff, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, Check, CircleDot, Clock3, Code2, History, FileCode2, FileDiff, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, SquarePen, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
 import { continuationNotice, importedChatBadge, importSourceLabel } from "./importSources";
 import { abandonFlight, beginNewChat, beginSend, bindNewChat, markFlight, markSubmitted } from "./sendLatency";
@@ -187,8 +187,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { TRANSIENT_ALERT_TTL_MS, TransientAlert } from "./components/TransientAlert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
-import { Kbd } from "@/components/ui/kbd";
+import { RowButton } from "@/components/ui/row";
+import { Tip } from "@/components/ui/tooltip";
 import { createBridgeQueryClient } from "./queryClient";
 import { useUiStore } from "./uiStore";
 import { useBridgeServerState } from "./serverState";
@@ -245,11 +245,6 @@ function orderSessionTree(sessions: Session[]): Session[] {
   visit(undefined);
   for (const s of sessions) if (!out.includes(s)) out.push(s);
   return out;
-}
-
-function StatusDot({ status }: { status: SessionStatus }) {
-  const color = status === "working" ? "bg-success" : status === "waiting" ? "bg-warning" : status === "ready" ? "bg-info" : status === "failed" ? "bg-destructive" : "bg-ring";
-  return <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${color}`} />;
 }
 
 // A new chat remains an unstarted draft. Only explicit overrides live here;
@@ -2528,14 +2523,14 @@ function AppContent() {
         docked
         tag="storage"
         placeholder="Ask about your storage…"
-        headerActions={<button
-          type="button"
+        headerActions={<Button
+          variant="quiet"
+          size="icon-xs"
           onClick={() => setStorageChatId(null)}
           disabled={storageWorking}
-          title="New chat"
+          tooltip="New chat"
           aria-label="New storage chat"
-          className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30"
-        ><SquarePen size={14} aria-hidden="true" /></button>}
+        ><SquarePen size={14} aria-hidden="true" /></Button>}
         session={storageSession}
         adapters={adapters}
         accounts={providerAccounts}
@@ -4062,25 +4057,25 @@ function AppContent() {
             setRecallOpen(open => !open);
           }}
           recallOpen={recallOpen}
-          actions={hasRepo && workspace && review ? <button
-            type="button"
+          actions={hasRepo && workspace && review ? <Button
+            variant="outline"
+            size="xs"
             onClick={() => dispatchDock({ type: "open-pane", pane: "changes" })}
             aria-label={review.scope === "chat"
               ? `Review this chat's changes in ${review.files} ${review.files === 1 ? "file" : "files"}`
               : `Review uncommitted changes in ${review.files} ${review.files === 1 ? "file" : "files"}`}
             // Say which number this is where the number is: the chat's own
             // turns, or (when the chat cannot be measured yet) the folder.
-            title={review.scope === "chat"
+            tooltip={review.scope === "chat"
               ? "Files this chat's turns changed. The Changes pane also shows everything uncommitted in the folder."
               : `Uncommitted in ${workspace.branch ? `${workspace.branch}` : "this folder"} vs HEAD: every change in the folder, not only this chat's`}
             aria-pressed={dock.open && dock.pane === "changes"}
-            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-2 text-meta text-foreground shadow-xs transition-colors hover:bg-accent"
           >
             <FileDiff size={13} aria-hidden="true" />
             <span className="hidden md:inline">Review</span>
             <span>{review.files} {review.files === 1 ? "file" : "files"}</span>
             <span className="hidden gap-1.5 pl-1 font-mono text-caption tabular-nums xl:inline-flex"><span className="text-success">+{review.additions}</span><span className="text-destructive">−{review.deletions}</span></span>
-          </button> : undefined}
+          </Button> : undefined}
           onEnd={sessionConnected ? () => void endChat() : undefined}
           busy={busy}
         />
@@ -4261,7 +4256,7 @@ function AppContent() {
                 {session.kind === "harness_subagent" ? <div className="mx-auto flex max-w-conversation items-center gap-3 px-4 py-3 text-meta text-muted-foreground sm:px-6">
                   <span className="flex-1">Started by {harnessLabel(session.harness)} in its parent chat. Runs with that chat’s permissions. Not a Bridge worker.</span>
                   {/* A child waiting on an approval has no turn of its own to interrupt. */}
-                  {(turnActive || session.status === "waiting") && <button type="button" onClick={() => void stopWorker(session.id).catch(value => setError(errorMessage(value)))} className="shrink-0 rounded-md border border-border px-3 py-1.5 hover:bg-accent">Stop subagent</button>}
+                  {(turnActive || session.status === "waiting") && <Button variant="outline" size="xs" onClick={() => void stopWorker(session.id).catch(value => setError(errorMessage(value)))}>Stop subagent</Button>}
                 </div> : isWorkerView ? <div className="mx-auto max-w-conversation px-4 sm:px-6">
                   <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-meta text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator. Steer it here to amend that objective.</span></div>
                   <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2" trailing={contextRing}/>
@@ -4276,13 +4271,13 @@ function AppContent() {
                         const agent = candidate.agent;
                         const model = agent.model ?? (agent.harness === "bridge" ? "automatic model" : "default model");
                         const access = agent.role === "implementation" ? "isolated write" : "read only";
-                        return <button id={`agent-shortcut-option-${index}`} role="option" aria-selected={index === agentShortcutIndex} key={agent.id ?? `${agent.name}:${agent.role}`} type="button" data-agent-shortcut-index={index} onMouseEnter={() => setAgentShortcutIndex(index)} onMouseDown={e => { e.preventDefault(); applyAgentShortcut(candidate); }} className={`min-h-12 w-full flex items-start gap-3 px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${index === agentShortcutIndex ? "bg-accent" : "hover:bg-accent"}`}>
+                        return <RowButton id={`agent-shortcut-option-${index}`} role="option" aria-selected={index === agentShortcutIndex} key={agent.id ?? `${agent.name}:${agent.role}`} size="lg" shape="flush" data-agent-shortcut-index={index} onMouseEnter={() => setAgentShortcutIndex(index)} onMouseDown={e => { e.preventDefault(); applyAgentShortcut(candidate); }} className="items-start">
                           <Bot size={13} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden="true" />
                           <span className="min-w-0 flex-1">
                             <span className="flex items-baseline gap-2"><b className="font-mono text-meta font-medium text-foreground">#{candidate.token}</b><span className="truncate text-caption text-muted-foreground">{agent.name}</span></span>
                             <small className="mt-0.5 block truncate text-micro leading-4 text-muted-foreground">{agent.role} · {agent.harness} / {model} · {access} · {agent.effort} effort</small>
                           </span>
-                        </button>;
+                        </RowButton>;
                       })}
                     </div>
                   </div>}
@@ -4293,11 +4288,11 @@ function AppContent() {
                       <span className="normal-case tracking-normal text-muted-foreground/50">{slashMatches.length}</span>
                     </div>
                     <div ref={slashListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onWheel={e => e.stopPropagation()}>
-                      {slashMatches.map((command, index) => <button id={`slash-option-${index}`} role="option" aria-selected={index === slashIndex} key={`${command.harness}:${command.kind}:${command.name}`} type="button" data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); void applySlash(command); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-accent" : "hover:bg-accent"}`}>
+                      {slashMatches.map((command, index) => <RowButton id={`slash-option-${index}`} role="option" aria-selected={index === slashIndex} key={`${command.harness}:${command.kind}:${command.name}`} size="lg" shape="flush" data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); void applySlash(command); }}>
                         <span className="font-mono text-meta text-foreground whitespace-nowrap">/{command.name}</span>
                         <span className="flex-1 min-w-0 text-caption text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis">{command.description}</span>
-                        <span title={command.harness === "bridge" ? "Runs locally in Bridge" : "Provider-owned command"} className="shrink-0 text-micro text-muted-foreground border border-border rounded-sm px-1 py-px font-medium">{slashOwnershipBadge(command.harness)}</span>
-                      </button>)}
+                        <Tip label={command.harness === "bridge" ? "Runs locally in Bridge" : "Provider-owned command"}><span className="shrink-0 text-micro text-muted-foreground border border-border rounded-sm px-1 py-px font-medium">{slashOwnershipBadge(command.harness)}</span></Tip>
+                      </RowButton>)}
                     </div>
                   </div>}
                   {harnessShortcutOpen && <div className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
@@ -4306,10 +4301,10 @@ function AppContent() {
                       <span className="normal-case tracking-normal text-muted-foreground/50">{harnessShortcutMatches.length}</span>
                     </div>
                     <div ref={harnessShortcutListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onWheel={e => e.stopPropagation()}>
-                      {harnessShortcutMatches.map((adapter, index) => <button key={adapter.id} type="button" data-harness-shortcut-index={index} onMouseEnter={() => setHarnessShortcutIndex(index)} onMouseDown={e => { e.preventDefault(); applyHarnessShortcut(adapter); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${index === harnessShortcutIndex ? "bg-accent" : "hover:bg-accent"}`}>
+                      {harnessShortcutMatches.map((adapter, index) => <RowButton key={adapter.id} size="lg" shape="flush" active={index === harnessShortcutIndex} data-harness-shortcut-index={index} onMouseEnter={() => setHarnessShortcutIndex(index)} onMouseDown={e => { e.preventDefault(); applyHarnessShortcut(adapter); }}>
                         <span className="font-mono text-meta text-foreground whitespace-nowrap">${adapter.id}</span>
                         <span className="flex-1 min-w-0 text-caption text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis">Starts a new {adapter.label} chat with what follows</span>
-                      </button>)}
+                      </RowButton>)}
                     </div>
                   </div>}
                   <ComposerPill
@@ -4861,7 +4856,7 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
       <p className="mt-1 mb-3 text-ui text-muted-foreground">Install an agent and sign in here. Bridge handles the setup commands.</p>
       <ManagedAgentsPanel adapters={adapters} onChanged={onHealthChange} />
     </div>}
-    <h1 className="mb-7 text-balance text-center font-display text-[26px] font-medium leading-tight tracking-[-0.025em] text-foreground sm:text-[30px]">
+    <h1 className="mb-7 text-balance text-center font-display text-2xl font-medium leading-tight tracking-tight text-foreground sm:text-3xl">
       {heroLines.length
         ? <StreamingGreeting key={heroProject} lines={heroLines} projectClassName="font-semibold" />
         : greeting.headline}
@@ -4951,23 +4946,22 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
     </div>
     {modeToggle && <span id={sessionModeHintId} className="sr-only">{sessionModeDescription(sessionKind)}</span>}
     {workspaces.length === 0 ? <div className="mt-6 flex justify-center">
-      <button type="button" onClick={onNewWorkspace} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />Add project</button>
+      <Button variant="outline" size="sm" onClick={onNewWorkspace}><Plus size={13} aria-hidden="true" />Add project</Button>
     </div> : <section aria-label="Choose a project" className="mt-10">
       <div className="mb-1 flex items-center justify-between pl-2.5">
         <h2 className="text-caption font-medium text-faint">Projects</h2>
-        <button type="button" onClick={onNewWorkspace} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={12} aria-hidden="true" />Add project</button>
+        <Button variant="quiet" size="xs" onClick={onNewWorkspace}><Plus size={12} aria-hidden="true" />Add project</Button>
       </div>
       <ul className="flex flex-col">{workspaces.slice(0, 4).map(item => {
         const selected = workspace?.id === item.id;
-        return <li key={item.id}><button type="button" disabled={busy} onClick={() => onSelectWorkspace(item.id)} aria-pressed={selected} className={cn("flex h-9 w-full min-w-0 items-center gap-2.5 rounded-lg px-2.5 text-left transition-colors hover:bg-accent disabled:opacity-50", selected && "bg-accent/60")}>
+        return <li key={item.id}><RowButton size="lg" shape="card" disabled={busy} onClick={() => onSelectWorkspace(item.id)} aria-pressed={selected}>
           <FolderGit2 size={14} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
           <span className="min-w-0 shrink truncate text-ui text-foreground">{item.title}</span>
           {item.branch && <span className="min-w-0 flex-1 truncate text-caption text-faint">{item.branch}</span>}
           {selected && <Check size={14} className="ml-auto shrink-0 text-muted-foreground" aria-hidden="true" />}
-        </button></li>;
+        </RowButton></li>;
       })}</ul>
     </section>}
     </div>
   </div>;
 }
-function CommandPalette({ workspaces, onChoose }: { workspaces: Workspace[]; onChoose: (id:string)=>void }) { return <><InputGroup className="border-b border-border rounded-none border-x-0 border-t-0 shadow-none"><InputGroupInput autoFocus placeholder="Search workspaces and actions…" /><InputGroupAddon><Search size={17} aria-hidden="true" /></InputGroupAddon></InputGroup><div className="p-[9px]"><label className="block p-[5px_9px_7px] text-muted-foreground/65 text-micro font-semibold">WORKSPACES</label>{workspaces.map(w => <Button type="button" key={w.id} variant="ghost" className="w-full h-[44px] rounded-md justify-start px-2.5" onClick={() => onChoose(w.id)}><StatusDot status={w.status}/><span className="flex flex-col gap-[3px] flex-1 text-left"><b className="text-meta font-medium">{w.title}</b><small className="text-micro text-muted-foreground">{w.city} · {w.branch}</small></span><Kbd className="font-mono text-muted-foreground/65 border border-border rounded px-1 py-[1px] text-micro">↵</Kbd></Button>)}</div><div className="h-[32px] border-t border-border flex items-center gap-[14px] px-[13px] text-muted-foreground/65 text-micro"><span>↑↓ navigate</span><span>esc close</span></div></>; }

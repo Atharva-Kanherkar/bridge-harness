@@ -17,6 +17,9 @@ import { Select as SelectPrimitive } from "@base-ui/react/select";
 import { ChevronDown as CaretDown, ChevronRight as CaretRight, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { RowButton } from "@/components/ui/row";
+import { Textarea } from "@/components/ui/textarea";
 import { Switch as SwitchControl } from "@/components/ui/switch";
 import { SETTINGS_COLUMN } from "./layout";
 
@@ -45,7 +48,7 @@ export function SettingsPage({ title, description, breadcrumb, action, children 
       {breadcrumb.map((crumb, index) => <span key={`${crumb.label}-${index}`} className="flex items-center gap-1.5">
         {index > 0 && <span aria-hidden="true" className="text-muted-foreground">/</span>}
         {crumb.onClick
-          ? <button type="button" onClick={crumb.onClick} className="rounded text-muted-foreground transition-colors hover:text-foreground">{crumb.label}</button>
+          ? <Button variant="text" size="inline" onClick={crumb.onClick}>{crumb.label}</Button>
           : <span className="text-foreground">{crumb.label}</span>}
       </span>)}
     </nav>}
@@ -157,15 +160,20 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
   // A row that only opens a page is the button, so the hit target matches what
   // the chevron promises.
   if (onOpen && !control) {
-    return <button
-      type="button"
+    return <RowButton
+      size="bare"
+      shape="flush"
       data-settings-row={anchor}
       disabled={disabled}
       aria-label={openLabel}
       aria-expanded={expanded}
       onClick={onOpen}
-      className={cn("flex min-h-11 w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-accent disabled:opacity-45", ROW_HIGHLIGHT, className)}
-    >{lead && <RowLead>{lead}</RowLead>}{text}{trailing}</button>;
+      className={className}
+    >
+      <span className="flex min-h-11 w-full min-w-0 items-center gap-3 px-3.5 py-2.5 transition-colors duration-300 in-data-search-highlight:bg-accent">
+        {lead && <RowLead>{lead}</RowLead>}{text}{trailing}
+      </span>
+    </RowButton>;
   }
 
   // A row that both opens a page and carries an action (Install next to a
@@ -174,12 +182,13 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
   // name each, and the whole row is still the target for "open this".
   if (onOpen) {
     return <div data-settings-row={anchor} className={cn("relative flex min-h-11 flex-wrap items-center gap-3 px-3.5 py-2.5", ROW_HIGHLIGHT, className)}>
-      <button
-        type="button"
+      <RowButton
+        size="bare"
+        shape="flush"
         disabled={disabled}
         aria-label={openLabel ?? (typeof label === "string" ? label : "Open")}
         onClick={onOpen}
-        className="absolute inset-0 z-0 transition-colors hover:bg-accent disabled:opacity-45"
+        className="absolute inset-0 z-0"
       />
       {lead && <span className="pointer-events-none relative z-10"><RowLead>{lead}</RowLead></span>}
       <span className="pointer-events-none relative z-10 flex min-w-0 flex-1">{text}</span>
@@ -361,7 +370,9 @@ export function Field({ value, onChange, disabled, label, placeholder, type = "t
   mono?: boolean;
   onKeyDown?: (event: React.KeyboardEvent<HTMLInputElement>) => void;
 }) {
-  return <input
+  // The width and the mono face sit on a wrapper: the field owns its own box and type.
+  return <span className={cn(width, "inline-flex max-w-full shrink-0", mono && "font-mono")}><Input
+    size="sm"
     type={type}
     value={value}
     disabled={disabled}
@@ -371,8 +382,7 @@ export function Field({ value, onChange, disabled, label, placeholder, type = "t
     spellCheck={false}
     onKeyDown={onKeyDown}
     onChange={event => onChange(event.target.value)}
-    className={cn(CONTROL, width, "max-w-full shrink-0 placeholder:text-muted-foreground focus:border-foreground/25", mono && "font-mono text-caption")}
-  />;
+  /></span>;
 }
 
 /**
@@ -403,7 +413,8 @@ export function NumberField({ value, min, max, onChange, disabled, label, width 
     const parsed = parse(raw);
     if (parsed !== null && parsed !== value) onChange(parsed);
   };
-  return <input
+  return <span className={cn(width, "inline-flex max-w-full shrink-0 tabular-nums")}><Input
+    size="sm"
     type="number"
     inputMode="numeric"
     aria-label={label}
@@ -420,8 +431,7 @@ export function NumberField({ value, min, max, onChange, disabled, label, width 
       timer.current = window.setTimeout(() => commit(raw), 400);
     }}
     onBlur={event => commit(event.target.value)}
-    className={cn(CONTROL, width, "max-w-full shrink-0 tabular-nums focus:border-foreground/25 aria-invalid:border-destructive")}
-  />;
+  /></span>;
 }
 
 /** A multi-line editor for a system prompt. Dirties the page; never saves. */
@@ -433,7 +443,7 @@ export function TextArea({ value, onChange, disabled, label, placeholder, rows =
   placeholder?: string;
   rows?: number;
 }) {
-  return <textarea
+  return <div className="flex font-mono"><Textarea
     value={value}
     rows={rows}
     disabled={disabled}
@@ -441,8 +451,9 @@ export function TextArea({ value, onChange, disabled, label, placeholder, rows =
     placeholder={placeholder}
     spellCheck={false}
     onChange={event => onChange(event.target.value)}
-    className="w-full resize-y rounded-lg border border-border-card bg-popover px-2.5 py-2 font-mono text-caption leading-relaxed text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-foreground/25 disabled:opacity-45"
-  />;
+    // The primitive sizes to its content, which ignores `rows`; keep the asked height as a floor.
+    style={{ minHeight: `calc(${rows}lh + 0.625rem)` }}
+  /></div>;
 }
 
 /* ── buttons ──────────────────────────────────────────────────────────────── */

@@ -21,7 +21,11 @@ import type { DiskDeleteResult, DiskEntry, DiskListing, DiskOverview, DiskSugges
 import { cleanupTotal, diskBytes, displayPath, storageSnapshot, withSnapshot, type StoragePlanItem } from "../../diskSpace";
 import { StorageAgentContext, type StorageAgentHost } from "../StoragePlanCard";
 import { Button } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogTitle } from "../ui/dialog";
+import { RowButton } from "../ui/row";
+import { SegmentedGroup, SegmentedItem } from "../ui/segmented";
+import { Tip } from "../ui/tooltip";
 import { GhostButton, PrimaryButton, SETTINGS_COLUMN_WIDE, StatusPill, TextButton } from "./kit";
 import type { StorageCopilotHost } from "./StorageCopilot";
 import { WorktreeStorage } from "./WorktreeStorage";
@@ -119,6 +123,7 @@ function RailDivider({ width, railId, gridRef, railRef, onResize }: {
     aria-valuemin={RAIL_MIN}
     aria-valuemax={RAIL_MAX}
     tabIndex={0}
+    // oxlint-disable-next-line bridge/no-native-title-tooltip -- a resize handle: a Tip would open under the pointer and follow the drag
     title="Drag to resize · double-click to reset"
     onPointerDown={start}
     onKeyDown={keys}
@@ -165,7 +170,7 @@ function message(error: unknown): string {
 /** Descriptions mark commands with backticks; show them as code. */
 function Prose({ text }: { text: string }) {
   return <>{text.split("`").map((part, index) => index % 2 === 1
-    ? <code key={index} className="rounded bg-muted px-1 font-mono text-[0.92em] text-foreground">{part}</code>
+    ? <code key={index} className="rounded bg-muted px-1 font-mono text-micro text-foreground">{part}</code>
     : part)}</>;
 }
 
@@ -185,20 +190,23 @@ function Size({ entry }: { entry: Pick<DiskEntry, "sizeBytes" | "measuring"> & {
       ? <span role="status" aria-label="Measuring" className={PLACEHOLDER} />
       : <span className="text-muted-foreground">—</span>;
   }
-  return <span title={entry.partial ? "Some items inside could not be read, so this is a lower bound." : undefined}>
-    {entry.partial ? "≥ " : ""}{diskBytes(entry.sizeBytes)}
-  </span>;
+  return <Tip label={entry.partial ? "Some items inside could not be read, so this is a lower bound." : undefined}>
+    <span>{entry.partial ? "≥ " : ""}{diskBytes(entry.sizeBytes)}</span>
+  </Tip>;
 }
 
 const IconAction = ({ label, onClick, disabled, tone = "muted", children }: { label: string; onClick: () => void; disabled?: boolean; tone?: "muted" | "destructive"; children: ReactNode }) =>
-  <button
-    type="button"
-    aria-label={label}
-    title={label}
-    disabled={disabled}
-    onClick={onClick}
-    className={cn("grid size-7 shrink-0 place-items-center rounded-md outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-30", tone === "destructive" ? "text-muted-foreground hover:bg-destructive/10 hover:text-destructive" : "text-muted-foreground hover:bg-accent hover:text-foreground")}
-  >{children}</button>;
+  tone === "destructive"
+    ? <Tip label={label}>
+      <button
+        type="button"
+        aria-label={label}
+        disabled={disabled}
+        onClick={onClick}
+        className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-30"
+      >{children}</button>
+    </Tip>
+    : <Button variant="quiet" size="icon-xs" aria-label={label} tooltip={label} disabled={disabled} onClick={onClick}>{children}</Button>;
 
 /** How full the disk is, in one card: what macOS says is available, then a
  *  bar of what fills the rest. The home folder's biggest children each wear a
@@ -239,11 +247,11 @@ function DiskSummary({ overview, home, onOpen, onEmptyTrash, busy }: {
     </div>
     <ul className="mt-3 grid grid-cols-1 gap-x-4 gap-y-0.5 @md/storage:grid-cols-2 @3xl/storage:grid-cols-3">
       {top.map((entry, index) => <li key={entry.path}>
-        <button type="button" onClick={() => onOpen(entry.path)} className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-2 rounded-md px-1.5 py-1 text-left text-caption outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
+        <RowButton size="sm" onClick={() => onOpen(entry.path)} className="-mx-1.5 w-[calc(100%+0.75rem)]">
           <span className={cn("size-2.5 shrink-0 rounded-sm", SERIES[index])} />
           <span className="min-w-0 flex-1 truncate text-foreground">{entry.name}</span>
           <span className="shrink-0 tabular-nums text-muted-foreground">{diskBytes(entry.sizeBytes)}</span>
-        </button>
+        </RowButton>
       </li>)}
       {Array.from({ length: pending }, (_, index) => <li key={`pending-${index}`} aria-hidden="true" className="flex items-center gap-2 py-1 text-caption">
         <span className="size-2.5 shrink-0 rounded-sm bg-foreground/10" />
@@ -285,13 +293,15 @@ function Suggestions({ overview, onOpen, onDelete, onAsk, busy }: {
     <div className={cn(TILE, "overflow-hidden")}>
       <ul className="divide-y divide-border/60">
         {shown.map(item => <li key={item.id} className="flex items-center gap-3 py-2.5 pl-4 pr-2.5">
-          <button type="button" onClick={() => onOpen(item.path)} className="min-w-0 flex-1 rounded text-left outline-none focus-visible:ring-2 focus-visible:ring-ring">
-            <span className="flex items-baseline gap-2">
-              <span className="truncate text-ui font-medium text-foreground">{item.label}</span>
-              <span className={cn("shrink-0 text-caption", item.safety === "safe" ? "text-success" : "text-muted-foreground")}>{item.safety === "safe" ? "Rebuilds itself" : "Review first"}</span>
+          <RowButton size="bare" tone="plain" onClick={() => onOpen(item.path)} className="w-auto flex-1">
+            <span className="min-w-0 flex-1">
+              <span className="flex items-baseline gap-2">
+                <span className="truncate text-ui font-medium text-foreground">{item.label}</span>
+                <span className={cn("shrink-0 text-caption", item.safety === "safe" ? "text-success" : "text-muted-foreground")}>{item.safety === "safe" ? "Rebuilds itself" : "Review first"}</span>
+              </span>
+              <Tip label={item.description.replaceAll("`", "")}><span className="mt-0.5 block truncate text-caption text-muted-foreground"><Prose text={item.description} /></span></Tip>
             </span>
-            <span className="mt-0.5 block truncate text-caption text-muted-foreground" title={item.description.replaceAll("`", "")}><Prose text={item.description} /></span>
-          </button>
+          </RowButton>
           <span className="w-[4.5rem] shrink-0 text-right text-ui font-medium tabular-nums text-foreground"><Size entry={item} /></span>
           <span className="flex shrink-0 items-center">
             {onAsk && <IconAction label={`Ask about ${item.label}`} onClick={() => onAsk(item)}><MessageCircle size={14} aria-hidden="true" /></IconAction>}
@@ -301,10 +311,12 @@ function Suggestions({ overview, onOpen, onDelete, onAsk, busy }: {
           </span>
         </li>)}
       </ul>
-      {rows.length > SUGGESTIONS_SHOWN && <button type="button" onClick={() => setAll(value => !value)} className="flex w-full items-center justify-center gap-1 border-t border-border/60 py-2 text-caption text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent">
-        {all ? "Show fewer" : `Show all ${rows.length}`}
-        <ChevronDown size={13} aria-hidden="true" className={cn("transition-transform", all && "rotate-180")} />
-      </button>}
+      {rows.length > SUGGESTIONS_SHOWN && <div className="border-t border-border/60">
+        <RowButton size="sm" tone="muted" shape="flush" onClick={() => setAll(value => !value)} className="justify-center">
+          {all ? "Show fewer" : `Show all ${rows.length}`}
+          <ChevronDown size={13} aria-hidden="true" className={cn("transition-transform", all && "rotate-180")} />
+        </RowButton>
+      </div>}
     </div>
   </section>;
 }
@@ -319,7 +331,7 @@ function Breadcrumb({ path, home, onOpen }: { path: string; home: string | undef
       {index > 0 && <ChevronRight size={12} aria-hidden="true" className="text-muted-foreground/60" />}
       {index === crumbs.length - 1
         ? <span className="font-medium text-foreground">{crumb.label}</span>
-        : <button type="button" onClick={() => onOpen(crumb.path)} className="rounded text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">{crumb.label}</button>}
+        : <Button variant="text" size="inline" onClick={() => onOpen(crumb.path)}>{crumb.label}</Button>}
     </span>)}
   </nav>;
 }
@@ -351,15 +363,13 @@ function Explorer({ listing, overview, root, selected, busy, sectionRef, onRoot,
       title="Everything on this Mac"
       detail={listing ? diskBytes(listing.sizeBytes) : undefined}
       action={<>
-        <span role="group" aria-label="Start from" className="flex rounded-lg bg-muted p-0.5 text-caption">
-          {ROOTS.map(item => <button
+        <SegmentedGroup label="Start from">
+          {ROOTS.map(item => <SegmentedItem
             key={item.label}
-            type="button"
-            aria-pressed={(root ?? null) === item.path}
+            active={(root ?? null) === item.path}
             onClick={() => onRoot(item.path)}
-            className={cn("rounded-md px-2.5 py-1 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring", (root ?? null) === item.path ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}
-          >{item.label}</button>)}
-        </span>
+          >{item.label}</SegmentedItem>)}
+        </SegmentedGroup>
         <IconAction label="Measure this folder again" onClick={onRefresh} disabled={busy}><RefreshCw size={13} aria-hidden="true" /></IconAction>
       </>}
     />
@@ -373,24 +383,22 @@ function Explorer({ listing, overview, root, selected, busy, sectionRef, onRoot,
           const folder = entry.kind === "directory" || entry.kind === "package";
           const checked = selected.has(entry.path);
           return <li key={entry.path} className={cn("group py-2", EXPLORER_ROW, checked && "bg-accent/60")}>
-            <button
-              type="button"
-              role="checkbox"
-              aria-label={`Select ${entry.name}`}
-              aria-checked={checked}
-              disabled={Boolean(entry.protectedReason)}
-              title={entry.protectedReason ?? undefined}
-              onClick={() => onToggle(entry)}
-              className={cn("grid size-4 shrink-0 place-items-center rounded-sm outline-none ring-1 ring-inset transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30", checked ? "bg-foreground ring-foreground" : "ring-border hover:ring-muted-foreground")}
-            >
-              {checked && <Check size={11} strokeWidth={3} aria-hidden="true" className="text-background" />}
-            </button>
+            <Tip label={entry.protectedReason ?? undefined}>
+              <Checkbox
+                nativeButton
+                render={<button type="button" />}
+                aria-label={`Select ${entry.name}`}
+                checked={checked}
+                disabled={Boolean(entry.protectedReason)}
+                onCheckedChange={() => onToggle(entry)}
+              />
+            </Tip>
             <div className="min-w-0">
-              <span className="flex min-w-0 items-center gap-1.5">
+              <span className="flex min-w-0 items-center gap-1.5 text-ui">
                 {folder ? <Folder size={13} aria-hidden="true" className="shrink-0 text-muted-foreground" /> : <File size={13} aria-hidden="true" className="shrink-0 text-muted-foreground" />}
                 {folder
-                  ? <button type="button" onClick={() => onOpen(entry.path)} className="min-w-0 truncate rounded text-left text-ui text-foreground outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring">{entry.name}</button>
-                  : <span className="min-w-0 truncate text-ui text-foreground">{entry.name}</span>}
+                  ? <Button variant="link" size="inline" onClick={() => onOpen(entry.path)} className="min-w-0 shrink justify-start"><span className="truncate">{entry.name}</span></Button>
+                  : <span className="min-w-0 truncate text-foreground">{entry.name}</span>}
               </span>
               <span className="mt-1 block h-1 rounded-full bg-muted">
                 <span className="block h-full rounded-full bg-foreground/30" style={{ width: `${((entry.sizeBytes ?? 0) / largest) * 100}%` }} />
@@ -402,7 +410,7 @@ function Explorer({ listing, overview, root, selected, busy, sectionRef, onRoot,
             <span className="text-right text-ui tabular-nums text-foreground"><Size entry={entry} /></span>
             <span className="flex justify-end">
               {entry.protectedReason
-                ? <span className="flex items-center gap-1 text-caption text-muted-foreground" title={entry.protectedReason}><Lock size={12} aria-hidden="true" /><span className="sr-only">Protected</span></span>
+                ? <Tip label={entry.protectedReason}><span className="flex items-center gap-1 text-caption text-muted-foreground"><Lock size={12} aria-hidden="true" /><span className="sr-only">Protected</span></span></Tip>
                 : <span className="flex opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
                   {onAsk && <IconAction label={`Ask about ${entry.name}`} onClick={() => onAsk(entry)}><MessageCircle size={14} aria-hidden="true" /></IconAction>}
                   <IconAction label={`Move ${entry.name} to the Trash`} tone="destructive" disabled={busy} onClick={() => onDelete(entry)}><Trash2 size={14} aria-hidden="true" /></IconAction>
@@ -463,7 +471,7 @@ function ConfirmDialog({ confirming, busy, home, onCancel, onPermanent, onRemove
     <DialogContent aria-label="Confirm deletion" className="max-w-md" showCloseButton={false}>
       <DialogHeader>
         <span className={cn("grid size-9 place-items-center rounded-xl", emptying || permanent ? "bg-destructive/10 text-destructive" : "bg-muted text-foreground")}><Trash2 size={16} aria-hidden="true" /></span>
-        <DialogTitle className="mt-1 text-lg leading-snug">{title}</DialogTitle>
+        <DialogTitle className="mt-1">{title}</DialogTitle>
         <DialogDescription>{description}</DialogDescription>
       </DialogHeader>
       {entries.length > 0 && <DialogPanel scrollFade={false}>
@@ -492,7 +500,7 @@ function ConfirmDialog({ confirming, busy, home, onCancel, onPermanent, onRemove
               <Button variant="destructive" disabled={busy} onClick={() => onRemove(entries, true)}>{busy && spinner}{busy ? "Deleting…" : "Delete permanently"}</Button>
             </>
             : <>
-              <Button variant="ghost" className="mr-auto text-destructive hover:text-destructive" disabled={busy} onClick={() => onPermanent(true)}>Delete permanently…</Button>
+              <Button variant="destructive-ghost" className="mr-auto" disabled={busy} onClick={() => onPermanent(true)}>Delete permanently…</Button>
               <Button variant="ghost" disabled={busy} onClick={onCancel}>Cancel</Button>
               <Button disabled={busy} onClick={() => onRemove(entries, false)}>{busy && spinner}{busy ? "Moving…" : "Move to Trash"}</Button>
             </>}

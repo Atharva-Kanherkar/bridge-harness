@@ -18,6 +18,8 @@ import { HarnessMark } from "../harnessMarks";
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
 import { clsx } from "clsx";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
 import { PassPicker, PopoverAction, StartPicker, type StartChoice } from "./NotePickers";
 import { NoteHistoryDialog } from "./NoteHistoryDialog";
 import { NoteTasks } from "./NoteTasks";
@@ -192,11 +194,11 @@ export function NotePageView(props: NotePageViewProps) {
   return <div className="flex min-h-full flex-col">
     <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-1 bg-background px-3">
       <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-0.5 text-ui">
-        {onToggleList && !listOpen && <button type="button" aria-label="Show the notes list" title={`Show the notes list (${chordLabel("toggle-notes-list")})`} onClick={onToggleList} className="mr-1 hidden size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:grid"><PanelLeft size={15} aria-hidden="true" /></button>}
-        <button type="button" onClick={onBack} className="shrink-0 rounded-md px-1.5 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Notes</button>
+        {onToggleList && !listOpen && <Button variant="quiet" size="icon-xs" aria-label="Show the notes list" tooltip={`Show the notes list (${chordLabel("toggle-notes-list")})`} onClick={onToggleList} className="mr-1 hidden md:inline-flex"><PanelLeft size={15} aria-hidden="true" /></Button>}
+        <Button variant="text" size="inline" onClick={onBack} className="mx-1.5">Notes</Button>
         {ancestors.map(ancestor => <Fragment key={ancestor.id}>
           <ChevronRight size={13} className="shrink-0 text-faint" aria-hidden="true" />
-          <button type="button" onClick={() => onOpenPage(ancestor.id)} className="min-w-0 max-w-48 truncate rounded-md px-1.5 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">{noteDisplayTitle(ancestor)}</button>
+          <Button variant="text" size="inline" onClick={() => onOpenPage(ancestor.id)} className="mx-1.5 min-w-0 max-w-48 shrink"><span className="truncate">{noteDisplayTitle(ancestor)}</span></Button>
         </Fragment>)}
         <ChevronRight size={13} className="shrink-0 text-faint" aria-hidden="true" />
         <span aria-current="page" className="min-w-0 truncate px-1.5 text-foreground">{noteDisplayTitle({ title: note.title, preview: draft.text || note.preview })}</span>
@@ -277,7 +279,7 @@ export function NotePageView(props: NotePageViewProps) {
       {notice && <p role="status" className="m-0 mt-3 text-ui text-muted-foreground">{notice}</p>}
 
       {/* A database's words are its description: one line until there are some. */}
-      {page.database && !describing && !draft.text.trim() && view === "words" && <button type="button" onClick={() => setDescribing(true)} className="-ml-1.5 mt-4 inline-flex h-8 items-center rounded-md px-1.5 text-ui text-faint transition-colors hover:bg-accent hover:text-foreground">Add a description</button>}
+      {page.database && !describing && !draft.text.trim() && view === "words" && <Button variant="quiet" size="sm" onClick={() => setDescribing(true)} className="-ml-2.5 mt-4">Add a description</Button>}
       {/* Hidden rather than unmounted, so the editor keeps its place and undo. */}
       <div hidden={view !== "words" || (!!page.database && !describing && !draft.text.trim())} className="mt-6">
         {draft.changedUnderneath && <p role="status" className="m-0 mb-4 rounded-lg bg-muted px-3 py-2 text-ui text-foreground">This page changed while you were typing. Your typing is kept and merges when it saves.</p>}
@@ -310,10 +312,12 @@ export function NotePageView(props: NotePageViewProps) {
         </div>
         <ul className="m-0 list-none divide-y divide-border p-0">
           {childPages.map(child => <li key={child.id}>
-            <button type="button" onClick={() => onOpenPage(child.id)} className="flex w-full items-baseline gap-3 py-2.5 text-left">
-              <span className="min-w-0 flex-1 truncate text-body text-foreground hover:underline hover:decoration-border hover:underline-offset-4">{noteDisplayTitle(child)}</span>
-              <span className="shrink-0 text-meta text-faint">{relativeTime(child.updatedAt)}</span>
-            </button>
+            <RowButton size="bare" tone="plain" shape="flush" onClick={() => onOpenPage(child.id)}>
+              <span className="flex min-w-0 flex-1 items-baseline gap-3 py-2.5">
+                <span className="min-w-0 flex-1 truncate text-body text-foreground hover:underline hover:decoration-border hover:underline-offset-4">{noteDisplayTitle(child)}</span>
+                <span className="shrink-0 text-meta text-faint">{relativeTime(child.updatedAt)}</span>
+              </span>
+            </RowButton>
           </li>)}
         </ul>
       </section>}
@@ -340,20 +344,18 @@ export function NotePageView(props: NotePageViewProps) {
         </div>
         <ul className="m-0 list-none divide-y divide-border p-0">
           {page.backlinks.map((backlink, index) => <li key={`${backlink.pageId}-${index}`}>
-            <button
-              type="button"
-              onClick={() => onOpenPage(backlink.pageId)}
-              className="flex w-full items-baseline gap-3 py-2.5 text-left transition-colors"
-            >
-              <span className="min-w-0 flex-1">
-                <span className="flex items-baseline gap-2">
-                  <span className="min-w-0 truncate text-body text-foreground">{backlink.title || "Untitled"}</span>
-                  <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">{capital(backlink.kind)}</span>
+            <RowButton size="bare" tone="plain" shape="flush" onClick={() => onOpenPage(backlink.pageId)}>
+              <span className="flex min-w-0 flex-1 items-baseline gap-3 py-2.5">
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-baseline gap-2">
+                    <span className="min-w-0 truncate text-body text-foreground">{backlink.title || "Untitled"}</span>
+                    <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">{capital(backlink.kind)}</span>
+                  </span>
+                  <blockquote className="m-0 mt-0.5 truncate text-meta text-muted-foreground before:content-['“'] after:content-['”']">{quoteText(backlink.excerpt)}</blockquote>
                 </span>
-                <blockquote className="m-0 mt-0.5 truncate text-meta text-muted-foreground before:content-['“'] after:content-['”']">{quoteText(backlink.excerpt)}</blockquote>
+                <span className="shrink-0 text-meta text-faint">{relativeTime(backlink.updatedAt)}</span>
               </span>
-              <span className="shrink-0 text-meta text-faint">{relativeTime(backlink.updatedAt)}</span>
-            </button>
+            </RowButton>
           </li>)}
         </ul>
       </section>}
@@ -367,6 +369,7 @@ function TitleField({ note, onCommit, onEnter }: { note: Note; onCommit: (title:
   const box = useRef<HTMLTextAreaElement>(null);
   useEffect(() => { if (!editing) setTitle(note.title ?? ""); }, [note.title, editing]);
   useAutoGrow(box, title);
+  // oxlint-disable-next-line bridge/no-raw-controls -- the page title is a heading typed in place; Textarea's field padding and minimum height would break its line
   return <textarea
     ref={box}
     aria-label="Title"
@@ -377,7 +380,7 @@ function TitleField({ note, onCommit, onEnter }: { note: Note; onCommit: (title:
     onChange={event => setTitle(event.target.value.replace(/\n/g, " "))}
     onBlur={() => { setEditing(false); if (title.trim() !== (note.title ?? "")) onCommit(title); }}
     onKeyDown={event => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.blur(); onEnter(); } }}
-    className="block w-full resize-none overflow-hidden bg-transparent text-[2.25rem] font-bold leading-[1.2] tracking-[-0.025em] text-foreground outline-none placeholder:text-foreground/25"
+    className="block w-full resize-none overflow-hidden bg-transparent text-4xl font-bold leading-tight tracking-tight text-foreground outline-none placeholder:text-foreground/25"
   />;
 }
 
@@ -416,7 +419,7 @@ function Author({ note, chatTitle, onOpenChat }: { note: Note; chatTitle: (id: s
       <span className="sr-only">Written by </span>{harnessLabel(harness)}{" "}
       <span className="text-faint">in</span>{" "}
       {title
-        ? <button type="button" onClick={() => onOpenChat(sessionId)} className="min-w-0 truncate underline decoration-border underline-offset-4 transition-colors hover:decoration-foreground">{title}</button>
+        ? <Button variant="link" size="inline" onClick={() => onOpenChat(sessionId)} className="min-w-0 shrink"><span className="truncate">{title}</span></Button>
         : <span className="text-muted-foreground">a chat</span>}
     </span>
   </Property>;
@@ -437,9 +440,9 @@ function MoreMenu({ note, taskCount, moveTargets, onPromote, onMove, onHistory, 
   const [moving, setMoving] = useState(false);
   const close = () => { setOpen(false); setConfirming(false); setMoving(false); };
   return <div className="relative">
-    <button type="button" aria-label="More" aria-expanded={open} onClick={() => open ? close() : setOpen(true)} className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+    <Button variant="quiet" size="icon-sm" aria-label="More" aria-expanded={open} onClick={() => open ? close() : setOpen(true)}>
       <MoreHorizontal size={16} aria-hidden="true" />
-    </button>
+    </Button>
     <Popover open={open} onClose={close} label="Page actions" align="end" width="w-64">
       {confirming
         ? <div role="alertdialog" aria-label="Delete note" className="p-1.5">
@@ -447,7 +450,7 @@ function MoreMenu({ note, taskCount, moveTargets, onPromote, onMove, onHistory, 
           <p className="m-0 mt-1 text-meta text-muted-foreground">Its Markdown file moves to the notes trash folder.</p>
           <div className="mt-3 flex justify-end gap-1">
             <Pill onClick={() => setConfirming(false)}>Cancel</Pill>
-            <button type="button" onClick={() => { close(); onDelete(); }} className="inline-flex h-8 items-center rounded-full bg-destructive px-3.5 text-ui font-medium text-destructive-foreground hover:opacity-90">Delete</button>
+            <Button variant="destructive" size="sm" onClick={() => { close(); onDelete(); }}>Delete</Button>
           </div>
         </div>
         : moving
@@ -492,13 +495,13 @@ function StructuredPanel({ view, busy, streaming, onSplit }: { view: StructuredV
       <span className="size-1.5 shrink-0 rounded-full bg-warning" aria-hidden="true" />
       Your words changed since this was built. Re-structure to refresh it.
     </p>}
-    <h2 className="m-0 text-[1.375rem] font-semibold leading-snug tracking-[-0.015em] text-foreground">{view.title}</h2>
+    <h2 className="m-0 text-xl font-semibold leading-snug tracking-tight text-foreground">{view.title}</h2>
     <p className="m-0 mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-meta text-muted-foreground">
       <span className="text-foreground">{capital(view.kind)}</span>
       {view.tags.map(tag => <span key={tag}>#{tag}</span>)}
       {view.harness && <span className="text-faint">· {view.model ?? view.harness}</span>}
     </p>
-    {view.summary && <p className="m-0 mt-4 text-message leading-[1.7] text-foreground">{view.summary}</p>}
+    {view.summary && <p className="m-0 mt-4 text-message text-foreground">{view.summary}</p>}
     {view.items.length > 0 && <ol className="m-0 mt-6 list-none divide-y divide-border border-t border-border p-0">
       {view.items.map((item, index) => <li key={`${index}-${item.excerpt}`} className="group flex items-start gap-3 py-3">
         <span className="w-14 shrink-0 pt-0.5 text-meta text-muted-foreground">{capital(item.kind)}</span>
@@ -506,7 +509,7 @@ function StructuredPanel({ view, busy, streaming, onSplit }: { view: StructuredV
           <p className="m-0 text-body font-medium leading-6 text-foreground">{item.title}</p>
           <blockquote className="m-0 mt-0.5 whitespace-pre-wrap text-ui leading-relaxed text-muted-foreground before:content-['“'] after:content-['”']">{quoteText(item.excerpt)}</blockquote>
         </div>
-        <button type="button" aria-label={`Split "${item.title}" into a note`} onClick={() => onSplit(index)} className="shrink-0 rounded-full px-2.5 py-1 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Split into note</button>
+        <Button variant="quiet" size="xs" aria-label={`Split "${item.title}" into a note`} onClick={() => onSplit(index)}>Split into note</Button>
       </li>)}
     </ol>}
   </section>;
@@ -518,12 +521,12 @@ function StreamingPanel({ view }: { view: StreamingStructure }) {
   const writing = !view.items.length;
   return <section aria-label="Structured view" aria-busy="true" className="mt-6">
     <p role="status" className="m-0 mb-4 inline-flex items-center gap-2 text-meta text-muted-foreground"><span aria-hidden="true" className="size-1.5 animate-pulse rounded-full bg-foreground" />Structuring…</p>
-    {view.title && <h2 className="m-0 text-[1.375rem] font-semibold leading-snug tracking-[-0.015em] text-foreground">{view.title}{!view.summary && caret}</h2>}
+    {view.title && <h2 className="m-0 text-xl font-semibold leading-snug tracking-tight text-foreground">{view.title}{!view.summary && caret}</h2>}
     {(view.kind || view.tags.length > 0) && <p className="m-0 mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-meta text-muted-foreground">
       {view.kind && <span className="text-foreground">{capital(view.kind)}</span>}
       {view.tags.map(tag => <span key={tag}>#{tag}</span>)}
     </p>}
-    {view.summary && <p className="m-0 mt-4 text-message leading-[1.7] text-foreground">{view.summary}{writing && caret}</p>}
+    {view.summary && <p className="m-0 mt-4 text-message text-foreground">{view.summary}{writing && caret}</p>}
     {view.items.length > 0 && <ol className="m-0 mt-6 list-none divide-y divide-border border-t border-border p-0">
       {view.items.map((item, index) => <li key={index} className="flex items-start gap-3 py-3">
         <span className="w-14 shrink-0 pt-0.5 text-meta text-muted-foreground">{capital(item.kind)}</span>

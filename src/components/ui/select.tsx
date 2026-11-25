@@ -182,6 +182,7 @@ export function SelectItem({
         className,
       )}
       data-slot="select-item"
+      data-value={typeof props.value === "string" ? props.value : undefined}
       {...props}
     >
       <SelectPrimitive.ItemIndicator className="col-start-1">

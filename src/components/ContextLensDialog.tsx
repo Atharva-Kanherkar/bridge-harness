@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogPanel, DialogTitle } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
+import { Tip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { ContextBridgeContribution, ContextReadingState, ContextWindow, ContextWindowReading, EarlierContextWindow } from "../protocol/generated/protocol";
 import { contextPressure } from "../usage";
@@ -86,23 +87,23 @@ export function CompositionBar({ reading, tall = false }: { reading: ContextWind
       aria-label={`${reading.percent}% of the window is occupied`}
       className={cn("relative flex gap-px overflow-hidden rounded-full bg-muted ring-1 ring-inset ring-border", tall ? "h-3" : "h-2")}
     >
-      {composition.used.map((segment, index) => <span
-        key={segment.name}
-        className={cn("h-full origin-left motion-safe:animate-[meter-fill_600ms_ease-out_both]", segmentFill(index))}
-        style={{ width: width(segment.tokens), animationDelay: `${index * 40}ms` }}
-        title={`${segment.name} · ${compactTokens(segment.tokens)}`}
-      />)}
-      {composition.unattributed > 0 && <span
-        className={cn("h-full", composition.used.length === 0 ? segmentFill(0) : "ctx-hatch-neutral")}
-        style={{ width: width(composition.unattributed) }}
-        title={`Not attributed · ${compactTokens(composition.unattributed)}`}
-      />}
+      {composition.used.map((segment, index) => <Tip key={segment.name} label={`${segment.name} · ${compactTokens(segment.tokens)}`}>
+        <span
+          className={cn("h-full origin-left motion-safe:animate-[meter-fill_600ms_ease-out_both]", segmentFill(index))}
+          style={{ width: width(segment.tokens), animationDelay: `${index * 40}ms` }}
+        />
+      </Tip>)}
+      {composition.unattributed > 0 && <Tip label={`Not attributed · ${compactTokens(composition.unattributed)}`}>
+        <span
+          className={cn("h-full", composition.used.length === 0 ? segmentFill(0) : "ctx-hatch-neutral")}
+          style={{ width: width(composition.unattributed) }}
+        />
+      </Tip>}
     </div>
     {compactsAt != null && <span
       aria-hidden="true"
       className={cn("pointer-events-none absolute bottom-0 w-px bg-foreground", tall ? "h-5" : "h-2")}
       style={{ left: width(compactsAt) }}
-      title={`Auto-compacts at ${compactTokens(compactsAt)}`}
     />}
   </div>;
 }
@@ -281,7 +282,7 @@ function WindowDetail({ window, bridge, earlier, onCompact }: { window: ContextW
           {identity}
           <Badge variant="outline" className="border-dashed px-1.5 font-normal text-muted-foreground">Unavailable</Badge>
         </div>
-        <p className="mt-4 font-display text-[22px] font-semibold leading-none tracking-tight text-foreground">No reading yet</p>
+        <p className="mt-4 font-display text-xl font-semibold leading-none tracking-tight text-foreground">No reading yet</p>
         <p className="mt-2 text-meta leading-relaxed text-muted-foreground">{window.unavailableReason}</p>
       </div>
       {onCompact && <CompactAction window={window} owner={null} urgent={false} onCompact={onCompact} />}
@@ -309,7 +310,7 @@ function WindowDetail({ window, bridge, earlier, onCompact }: { window: ContextW
           </div>
         </div>
         <div className="mt-4 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-          <span className="font-display text-[40px] font-semibold leading-none tracking-tight tabular-nums text-foreground">{reading.percent}%</span>
+          <span className="font-display text-4xl font-semibold leading-none tracking-tight tabular-nums text-foreground">{reading.percent}%</span>
           <span className="text-ui text-muted-foreground"><span className="font-mono tabular-nums text-foreground">{compactTokens(reading.usedTokens)}</span> of {compactTokens(reading.windowTokens)} tokens</span>
           <span className="ml-auto font-mono text-caption tabular-nums text-muted-foreground">{compactTokens(composition.free)} free</span>
         </div>
@@ -372,12 +373,14 @@ export function ContextLensDialog({ open, sessionId, focusSessionId, refreshKey,
   return <Dialog open={open} onOpenChange={next => { if (!next) onClose(); }}>
     {/* One window fits a column; several earn the room for a rail beside it. */}
     <DialogContent aria-label="Context lens" className={cn("max-w-2xl", several && "lg:max-w-4xl")}>
-      <DialogHeader className="gap-1 pe-12">
-        <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-          <DialogTitle className="font-display text-base font-medium text-foreground">Context lens</DialogTitle>
-          {result && <span className="text-meta tabular-nums text-muted-foreground">{live} live · {windows.length} window{windows.length === 1 ? "" : "s"}</span>}
+      <DialogHeader className="me-6">
+        <div className="flex flex-col gap-1">
+          <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+            <DialogTitle className="text-base font-medium">Context lens</DialogTitle>
+            {result && <span className="text-meta tabular-nums text-muted-foreground">{live} live · {windows.length} window{windows.length === 1 ? "" : "s"}</span>}
+          </div>
+          <DialogDescription className="text-meta leading-5">How full each window in this chat is, read from its own harness.</DialogDescription>
         </div>
-        <DialogDescription className="text-meta leading-5">How full each window in this chat is, read from its own harness.</DialogDescription>
       </DialogHeader>
       <DialogPanel className="@container/lens">
         {!result
@@ -386,10 +389,12 @@ export function ContextLensDialog({ open, sessionId, focusSessionId, refreshKey,
               <p className="text-ui font-medium text-foreground">Context is unavailable</p>
               <p className="mt-1 text-meta text-muted-foreground">This Bridge daemon does not report context windows yet. Restart Bridge after updating.</p>
             </div>
-            : <SkeletonRegion label="Reading context windows" className="flex flex-col gap-4">
-              <Skeleton className="h-44 rounded-2xl" />
-              <Skeleton index={1} className="h-3 w-full rounded-full" />
-              <SkeletonText index={2} lines={4} />
+            : <SkeletonRegion label="Reading context windows">
+              <div className="flex flex-col gap-4">
+                <Skeleton className="h-44 rounded-2xl" />
+                <Skeleton index={1} className="h-3 w-full rounded-full" />
+                <SkeletonText index={2} lines={4} />
+              </div>
             </SkeletonRegion>)
           : <div className="flex flex-col gap-4 @3xl/lens:flex-row @3xl/lens:items-start @3xl/lens:gap-5">
             {/* A wrapping grid when the lens is narrow, a rail when it is wide.

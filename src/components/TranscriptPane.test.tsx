@@ -278,7 +278,7 @@ describe("TranscriptPane observability", () => {
       event(4, 4, "turn.started"),
       event(5, 5, "assistant.message", { text: "two" }),
     ]);
-    const turns = [...container.querySelectorAll('span[title^="Turn "]')].map(span => span.textContent);
+    const turns = [...container.querySelectorAll("button[aria-expanded]")].map(row => row.querySelectorAll("span")[1].textContent);
     expect(turns).toEqual(["t0", "t1", "t1", "t2", "t2"]);
   });
 

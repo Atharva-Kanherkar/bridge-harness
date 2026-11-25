@@ -133,7 +133,7 @@ it("renders no archive action when the host cannot archive", () => {
 it("places the row's actions trigger before the harness mark", () => {
   mount({ onArchiveChat: noop });
   const trigger = menuTrigger();
-  const mark = trigger?.parentElement?.querySelector("[data-harness]");
+  const mark = trigger?.closest('[class*="group/row"]')?.querySelector("[data-harness]");
   expect(trigger).toBeTruthy();
   expect(mark).toBeTruthy();
   expect(trigger!.compareDocumentPosition(mark!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);

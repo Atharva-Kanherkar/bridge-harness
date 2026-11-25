@@ -1,5 +1,7 @@
 import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
 import { Check, Copy, KeyRound, Maximize2, Minimize2 } from "lucide-react";
 import katex from "katex";
 import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from "./highlight";
@@ -176,13 +178,13 @@ function InlineCode({ text }: { text: string }) {
   const links = useContext(FileLinkContext);
   const ref = parseFileRef(text, links);
   if (!ref) return <code>{text}</code>;
-  return <button
-    type="button"
+  return <Button
+    variant="ghost"
+    size="inline"
     onClick={() => links!.open(ref.path, ref.line)}
     aria-label={`Open ${ref.path} in the Code pane`}
-    title={`Open ${ref.path} in the Code pane`}
-    className="rounded transition-colors hover:bg-accent"
-  ><code>{text}</code></button>;
+    tooltip={`Open ${ref.path} in the Code pane`}
+  ><code className="whitespace-normal">{text}</code></Button>;
 }
 
 const MENTION = /(@[\w~@./-]+)/g;
@@ -223,12 +225,11 @@ function TextRun({ text }: { text: string }) {
  *  Bridge. A saved key shows its name, a pasted one just "API key". */
 function KeyChip({ reference }: { reference: string }) {
   const name = reference.startsWith("sec_") ? "API key" : reference;
-  return <span
+  return <Tip label={`Bridge kept this key out of the chat. The agent sees only [secret:${reference}] and can use it on the sites allowed in Settings, Permissions, API keys.`}><span
     role="img"
     aria-label={`${name}, kept by Bridge`}
-    title={`Bridge kept this key out of the chat. The agent sees only [secret:${reference}] and can use it on the sites allowed in Settings, Permissions, API keys.`}
     className="mx-0.5 inline-flex items-baseline gap-1 rounded-md border border-border bg-foreground/[0.04] px-1.5 font-mono text-caption text-muted-foreground"
-  ><KeyRound size={10} aria-hidden="true" className="self-center" />{name}</span>;
+  ><KeyRound size={10} aria-hidden="true" className="self-center" />{name}</span></Tip>;
 }
 
 function MentionRun({ text }: { text: string }) {
@@ -238,14 +239,12 @@ function MentionRun({ text }: { text: string }) {
   return <>{parts.map((part, index) => {
     if (part.startsWith("@") && links.has(part.slice(1))) {
       const path = part.slice(1);
-      return <button
-        key={index}
+      return <Tip key={index} label={`Open ${path} in the Code pane`}><button
         type="button"
         onClick={() => links.open(path)}
         aria-label={`Open ${path} in the Code pane`}
-        title={`Open ${path} in the Code pane`}
-        className="rounded text-[var(--color-ring)] underline decoration-dotted underline-offset-2 transition-colors hover:bg-accent"
-      >{part}</button>;
+        className="rounded text-ring underline decoration-dotted underline-offset-2 transition-colors hover:bg-accent"
+      >{part}</button></Tip>;
     }
     return <span key={index}>{part}</span>;
   })}</>;
@@ -317,12 +316,12 @@ export function CopyButton({ text, className }: { text: string; className: strin
 function MathBlock({ tex }: { tex: string }) {
   const html = useMemo(() => renderMathToHtml(tex, true), [tex]);
   if (html == null) {
-    return <pre className="my-[0.6em] overflow-x-auto rounded-[0.7rem] border border-destructive/30 bg-destructive/10 px-[0.85em] py-[0.6em] text-destructive"><code>{tex}</code></pre>;
+    return <pre className="my-[0.6em] overflow-x-auto rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive"><code>{tex}</code></pre>;
   }
   return (
     <div className="rich-block my-[0.9em]">
       <CopyButton text={tex} className="rich-block-copy" />
-      <div className="overflow-x-auto py-[0.2em] text-foreground" dangerouslySetInnerHTML={{ __html: html }} />
+      <div className="overflow-x-auto py-0.5 text-foreground" dangerouslySetInnerHTML={{ __html: html }} />
     </div>
   );
 }
@@ -495,7 +494,7 @@ function MermaidBlock({ code }: { code: string }) {
     </div>;
   }
   if (rendered?.code !== code || rendered.dark !== dark) {
-    return <div className="my-[0.9em] rounded-[0.9rem] border border-dashed border-border p-[0.9em_1em] text-xs text-muted-foreground">Rendering diagram…</div>;
+    return <div className="my-[0.9em] rounded-2xl border border-dashed border-border px-3 py-2.5 text-xs text-muted-foreground">Rendering diagram…</div>;
   }
   const viewBoxWidth = Number(/viewBox="0 0 ([\d.]+) /.exec(rendered.svg)?.[1]);
   const { width: clampedWidth, clamped } = mermaidClamp(containerWidth, viewBoxWidth);
@@ -554,9 +553,9 @@ function HtmlBlock({ html }: { html: string }) {
       <DialogPopup showCloseButton={false} aria-label="HTML preview" className="h-[84dvh] max-w-[calc(100vw-4rem)] overflow-hidden">
         <div className="code-block-header">
           <span className="code-block-lang">html</span>
-          <button type="button" className="code-block-copy" onClick={() => setFullscreen(false)} aria-label="Exit fullscreen" title="Exit fullscreen (Esc)">
+          <Tip label="Exit fullscreen (Esc)"><button type="button" className="code-block-copy" onClick={() => setFullscreen(false)} aria-label="Exit fullscreen">
             <Minimize2 size={12} aria-hidden="true" />Close
-          </button>
+          </button></Tip>
         </div>
         {frame}
       </DialogPopup>
@@ -567,10 +566,10 @@ function HtmlBlock({ html }: { html: string }) {
     <div className="html-block my-[0.9em]">
       <div className="code-block-header">
         <span className="code-block-lang">html</span>
-        <button type="button" className="code-block-copy" onClick={() => setFullscreen(true)} aria-label="Fullscreen" title="Fullscreen">
+        <Tip label="Fullscreen"><button type="button" className="code-block-copy" onClick={() => setFullscreen(true)} aria-label="Fullscreen">
           <Maximize2 size={12} aria-hidden="true" />
           Expand
-        </button>
+        </button></Tip>
       </div>
       {frame}
     </div>

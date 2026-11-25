@@ -71,7 +71,8 @@ export function TooltipPopup({
  *
  * The child must take a ref and spread props (any intrinsic element, or a
  * primitive from this folder). A tooltip is a hint, not a name: an icon-only
- * control still needs its own `aria-label`.
+ * control still needs its own `aria-label`. A string label is mirrored to
+ * `data-tip` on the child so tests can find a hint without hovering.
  */
 export function Tip({
   label,
@@ -91,7 +92,10 @@ export function Tip({
     return children;
   return (
     <Tooltip>
-      <TooltipTrigger render={children} />
+      <TooltipTrigger
+        data-tip={typeof label === "string" ? label : undefined}
+        render={children}
+      />
       <TooltipPopup align={align} side={side}>
         <span className="flex items-center gap-2">
           <span className="min-w-0 whitespace-pre-line">{label}</span>

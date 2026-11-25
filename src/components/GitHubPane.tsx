@@ -43,8 +43,13 @@ import { errorMessage } from "../errors";
 import { rememberSurface, surfaceSnapshot } from "../githubSurfaceCache";
 import { cn } from "@/lib/utils";
 import { ActionSheet, ActionSheetHost } from "./github/ActionSheet";
-import { MergeBox, initialMergeState, mergeReducer, type MergeState, type OverflowItem } from "./github/MergeBox";
+import { MergeBox, initialMergeState, mergeReducer, type OverflowItem } from "./github/MergeBox";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { RowButton } from "@/components/ui/row";
+import { Segmented } from "@/components/ui/segmented";
+import { Tip } from "@/components/ui/tooltip";
 import { Skeleton, SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
 import { Avatar, AvatarScope, Monogram } from "./github/Avatar";
 import { Composer } from "./github/Composer";
@@ -81,7 +86,6 @@ import type {
   GithubRepository,
   GithubRepositoryResult,
   GithubStatusResult,
-  MergeStrategy,
   ReviewDecision,
   ReviewJob,
 } from "../protocol/generated/protocol";
@@ -148,10 +152,8 @@ function SectionLabel({ children, count, className }: { children: React.ReactNod
 
 /** A branch name as a quiet mono chip. */
 function BranchChip({ name, className }: { name: string; className?: string }) {
-  return <span title={name} className={cn("inline-block max-w-full truncate rounded-sm bg-muted px-1.5 py-px font-mono text-caption text-foreground/80", className)}>{name}</span>;
+  return <Tip label={name}><span className={cn("inline-block max-w-full truncate rounded-sm bg-muted px-1.5 py-px font-mono text-caption text-foreground/80", className)}>{name}</span></Tip>;
 }
-
-const STRATEGY_LABEL: Record<MergeStrategy, string> = { merge: "Merge commit", squash: "Squash and merge", rebase: "Rebase and merge" };
 
 /** A check's glyph and tone. Nothing rotates: `live` breathes on the app's
  * shared cadence instead, so twenty queued checks read as one calm state
@@ -170,9 +172,10 @@ function checkTone(conclusion: string | null | undefined, status: string) {
  * this surface — a PR URL, a branch name, a commit SHA — is something a reader
  * wants in a terminal or a message a second later, and the pane used to offer
  * no way to get it out. */
-function CopyButton({ value, label, className, children }: {
+function CopyButton({ value, label, variant = "quiet", className, children }: {
   value: string;
   label: string;
+  variant?: "quiet" | "outline";
   className?: string;
   children?: React.ReactNode;
 }) {
@@ -189,21 +192,19 @@ function CopyButton({ value, label, className, children }: {
     if (write) void write.then(done).catch(() => undefined);
     else done();
   };
-  return <button
-    type="button"
+  return <Button
+    variant={variant}
+    size={children ? "xs" : "icon-xs"}
     onClick={copy}
     aria-label={copied ? `${label} copied` : label}
-    title={copied ? "Copied" : label}
-    className={cn(
-      "inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-      className,
-    )}
+    tooltip={copied ? "Copied" : label}
+    className={className}
   >
     {copied
       ? <Check size={13} strokeWidth={1.7} className="text-success" aria-hidden="true" />
       : <Copy size={13} strokeWidth={1.7} aria-hidden="true" />}
     {children}
-  </button>;
+  </Button>;
 }
 
 const HEADER_ICON =
@@ -228,32 +229,31 @@ function ShowInChat({ sessionId, url, number }: { sessionId: string; url: string
   };
   const Icon = state === "done" ? MessageSquareDot : MessageSquarePlus;
   const label = state === "done" ? `#${number} is shown in this chat` : state === "error" ? `Could not show #${number} in this chat: ${message}` : `Show #${number} as a live card in this chat`;
-  return <button
-    type="button"
+  return <Button
+    variant="quiet"
+    size="icon-xs"
     onClick={() => void pin()}
     disabled={state === "busy" || state === "done"}
     aria-label={label}
-    title={label}
-    className={cn("inline-grid size-7 place-items-center rounded-md transition-colors hover:bg-accent disabled:cursor-default", state === "done" ? "text-success" : state === "error" ? "text-destructive" : "text-muted-foreground hover:text-foreground")}
+    tooltip={label}
   >
-    <Icon size={13} aria-hidden="true" className={cn(state === "busy" && "github-check-live")} />
-  </button>;
+    <Icon size={13} aria-hidden="true" className={cn(state === "busy" && "github-check-live", state === "done" && "text-success", state === "error" && "text-destructive")} />
+  </Button>;
 }
 
 function OpenOnGithub({ url, what, className }: { url: string; what: string; className?: string }) {
-  return <a
-    href={url}
-    target="_blank"
-    rel="noreferrer"
-    // Leaving is the whole point of this affordance, so the link router never
-    // claims it. A check's log URL in particular is often shaped
-    // `/pull/<n>/checks`, which the pane would otherwise swallow into a checks
-    // list holding no logs.
-    data-system-browser
+  // Leaving is the whole point of this affordance, so the link router never
+  // claims it. A check's log URL in particular is often shaped
+  // `/pull/<n>/checks`, which the pane would otherwise swallow into a checks
+  // list holding no logs.
+  return <Button
+    render={<a href={url} target="_blank" rel="noreferrer" data-system-browser />}
+    variant="quiet"
+    size="icon-xs"
     aria-label={`Open ${what} on GitHub`}
-    title="Open on GitHub"
-    className={cn(HEADER_ICON, className)}
-  ><SquareArrowOutUpRight size={13} strokeWidth={1.7} aria-hidden="true" /></a>;
+    tooltip="Open on GitHub"
+    className={className}
+  ><SquareArrowOutUpRight size={13} strokeWidth={1.7} aria-hidden="true" /></Button>;
 }
 
 /** Centered empty/availability state — the pane never renders blank. */
@@ -269,14 +269,14 @@ function PaneNotice({ icon: Icon, title, children }: { icon: typeof GitPullReque
  * a raw ISO string (or "unknown") is noise, not information. */
 function CommentTime({ iso }: { iso: string }) {
   if (Number.isNaN(Date.parse(iso))) return null;
-  return <time dateTime={iso} title={new Date(iso).toLocaleString()} className="text-caption text-muted-foreground">{relativeTime(iso, new Date())}</time>;
+  return <Tip label={new Date(iso).toLocaleString()}><time dateTime={iso} className="text-caption text-muted-foreground">{relativeTime(iso, new Date())}</time></Tip>;
 }
 
 /** Placeholder rows shaped like the shared list. One quiet loading state:
  *  the rows are the signal, with no spinner or status copy stacked on top. */
 function ListSkeleton({ label }: { label: string }) {
-  return <SkeletonRegion label={label} className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
-    <SkeletonRows rows={6} lead="dot" />
+  return <SkeletonRegion label={label} className="min-h-0 flex-1 overflow-y-auto">
+    <div className="px-3 py-3 sm:px-4"><SkeletonRows rows={6} lead="dot" /></div>
   </SkeletonRegion>;
 }
 
@@ -289,7 +289,7 @@ function DetailSkeleton({ label }: { label: string }) {
       <Skeleton index={1} className="h-4 w-4/5" />
       <Skeleton index={2} className="w-2/5" />
     </div>
-    <SkeletonText index={3} className="px-4 py-4" />
+    <div className="px-4 py-4"><SkeletonText index={3} /></div>
   </SkeletonRegion>;
 }
 
@@ -319,13 +319,12 @@ export function RollupMeter({ checks, className }: { checks: PullRequestListItem
  * should not sprout six saturated pills the moment a PR is triaged. */
 function LabelBadge({ label }: { label: GithubLabel }) {
   const color = /^[\da-f]{3,8}$/i.test(label.color) ? `#${label.color}` : undefined;
-  return <span
-    title={label.description || label.name}
+  return <Tip label={label.description || label.name}><span
     className="inline-flex max-w-[12rem] items-center gap-1.5 rounded-full border border-border bg-card px-2 py-0.5 text-caption text-muted-foreground"
   >
     <span className="size-2 shrink-0 rounded-full bg-muted-foreground" style={color ? { backgroundColor: color } : undefined} aria-hidden="true" />
     <span className="min-w-0 truncate">{label.name}</span>
-  </span>;
+  </span></Tip>;
 }
 
 function LabelControls({ available, current, disabled, onChange }: {
@@ -338,11 +337,11 @@ function LabelControls({ available, current, disabled, onChange }: {
   return <div className="animate-page-mount mt-2 grid max-h-56 gap-1 overflow-y-auto rounded-lg border border-border bg-card p-1.5" aria-label="Repository labels">
     {available.length ? available.map(label => {
       const active = selected.has(label.name);
-      return <button key={label.name} type="button" disabled={disabled} onClick={() => onChange(label.name, active ? "remove" : "add")} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-50">
+      return <RowButton key={label.name} size="sm" disabled={disabled} onClick={() => onChange(label.name, active ? "remove" : "add")}>
         <Tag size={11} className={active ? "text-primary" : "text-muted-foreground"} aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate">{label.name}</span>
         <span className="text-caption text-muted-foreground">{active ? "Remove" : "Add"}</span>
-      </button>;
+      </RowButton>;
     }) : <p className="px-2 py-1 text-caption text-muted-foreground">No repository labels.</p>}
   </div>;
 }
@@ -350,19 +349,21 @@ function LabelControls({ available, current, disabled, onChange }: {
 /** The list search field. One control for both lists; the placeholder says
  * which one it is filtering. */
 function ListSearch({ value, onChange, placeholder }: { value: string; onChange: (next: string) => void; placeholder: string }) {
-  return <label className="u-glass-soft flex min-w-0 flex-1 items-center gap-1.5 rounded-md border border-border px-2 py-1">
+  return <label className="u-glass-soft flex min-w-0 flex-1 items-center rounded-md border border-border pl-2 pr-0.5 text-meta text-foreground">
     <Search size={11.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-    <input
+    <Input
       type="search"
+      unstyled
+      size="sm"
       value={value}
       onChange={event => onChange(event.target.value)}
       placeholder={placeholder}
       aria-label={placeholder}
-      className="min-w-0 flex-1 bg-transparent text-meta text-foreground outline-none placeholder:text-muted-foreground [&::-webkit-search-cancel-button]:hidden"
+      className="min-w-0 flex-1"
     />
-    {value && <button type="button" onClick={() => onChange("")} aria-label="Clear the filter" className="grid size-4 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground">
-      <X size={10} aria-hidden="true" />
-    </button>}
+    {value && <Button variant="text" size="icon-2xs" onClick={() => onChange("")} aria-label="Clear the filter">
+      <X className="size-2.5" aria-hidden="true" />
+    </Button>}
   </label>;
 }
 
@@ -630,7 +631,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       {signingIn
         ? <div className="text-left"><ProviderLoginPane provider="github" label="GitHub" onClose={() => { setSigningIn(false); void loadSurface(true); }} /></div>
         : <span className="mt-3 block">
-          <button type="button" onClick={() => setSigningIn(true)} className="min-h-8 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90">Sign in to GitHub</button>
+          <Button size="sm" onClick={() => setSigningIn(true)}>Sign in to GitHub</Button>
         </span>}
     </PaneNotice>;
   } else if (!status.repository) {
@@ -639,7 +640,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
     body = <PaneNotice icon={FolderGit2} title="No GitHub repository connected">
       This folder has no GitHub remote, so there are no pull requests or issues to show. Connect it to a repository and this pane fills in.
       <span className="mt-3 block">
-        <button type="button" onClick={() => setConnectOpen(true)} className="min-h-8 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90">Connect a repository</button>
+        <Button size="sm" onClick={() => setConnectOpen(true)}>Connect a repository</Button>
       </span>
     </PaneNotice>;
   } else if (surfaceTab === "pulls" && selected !== undefined) {
@@ -667,7 +668,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   } else if (surfaceTab === "pulls" && prs?.length === 0) {
     body = <PaneNotice icon={GitPullRequest} title="No open pull requests">{repoLabel ? `${repoLabel} has nothing waiting on you.` : "This repository has nothing waiting on you."}</PaneNotice>;
   } else if (surfaceTab === "pulls" && visiblePrs?.length === 0) {
-    body = <PaneNotice icon={Search} title="Nothing matches this filter">{prs?.length} open pull request{prs?.length === 1 ? "" : "s"} — none of them match. <button type="button" onClick={() => { setQuery(""); setFacet("all"); }} className="text-foreground underline decoration-dotted underline-offset-2">Clear the filter</button>.</PaneNotice>;
+    body = <PaneNotice icon={Search} title="Nothing matches this filter">{prs?.length} open pull request{prs?.length === 1 ? "" : "s"} — none of them match. <Button variant="link" size="inline" onClick={() => { setQuery(""); setFacet("all"); }}>Clear the filter</Button>.</PaneNotice>;
   } else if (surfaceTab === "pulls" && visiblePrs) {
     body = pullList;
   } else if (surfaceTab === "issues" && selectedIssue !== undefined) {
@@ -714,9 +715,10 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   ] as const;
   const pickSurface = (id: SurfaceTab) => { setPushDirection("back"); setSurfaceTab(id); setSelected(undefined); setSelectedIssue(undefined); setQuery(""); };
   const refresh = () => { void loadSurface(true); if (selected !== undefined) void openDetail(selected, true); if (selectedIssue !== undefined) void openIssue(selectedIssue, true); };
-  const refreshButton = <button type="button" onClick={refresh} aria-label="Refresh GitHub" title="Refresh" className={HEADER_ICON}>
+  const refreshButton = <Button variant="quiet" size="icon-xs" onClick={refresh} aria-label="Refresh GitHub" tooltip="Refresh">
     <RefreshCw size={13} strokeWidth={1.7} className={cn(refreshing && "animate-spin")} aria-hidden="true" />
-  </button>;
+  </Button>;
+  const facetOptions = PULL_REQUEST_FACETS.map(choice => ({ value: choice.id, label: choice.label }));
 
   return <GithubMediaScope.Provider value={mediaScope}><section data-gh-pane-root="" className="relative flex h-full w-full flex-col" aria-label="GitHub repository">
     {page ? <header className="flex shrink-0 flex-col border-b border-border bg-background px-5">
@@ -742,7 +744,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
           </button>)}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-0.5 self-center">
-          {repoLabel && <CopyButton value={repoLabel} label={`Copy ${repoLabel}`} className="h-7 px-2">
+          {repoLabel && <CopyButton value={repoLabel} label={`Copy ${repoLabel}`}>
             <span className="whitespace-nowrap font-mono text-caption">{repoLabel}</span>
           </CopyButton>}
           {repositoryUrl && <OpenOnGithub url={repositoryUrl} what={repoLabel ?? "the repository"} />}
@@ -751,16 +753,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       </div>
       {showsFilters && <div className="flex items-center gap-2 py-2.5">
         <ListSearch value={query} onChange={setQuery} placeholder={surfaceTab === "pulls" ? "Filter pull requests" : "Filter issues"} />
-        {surfaceTab === "pulls" && <div className="u-segmented flex shrink-0 p-0.5" role="group" aria-label="Pull request filters">
-          {PULL_REQUEST_FACETS.map(choice => <button
-            key={choice.id}
-            type="button"
-            aria-pressed={facet === choice.id}
-            data-active={facet === choice.id}
-            onClick={() => setFacet(choice.id)}
-            className="u-segmented-item rounded-md px-2.5 py-1 text-meta text-muted-foreground"
-          >{choice.label}</button>)}
-        </div>}
+        {surfaceTab === "pulls" && <Segmented label="Pull request filters" value={facet} options={facetOptions} onChange={setFacet} />}
       </div>}
     </header> : <header className="flex shrink-0 flex-col gap-1.5 border-b border-border bg-background p-1.5">
       <div className="flex h-8 items-center gap-1.5">
@@ -768,37 +761,26 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
           <span className="inline-flex size-7 shrink-0 items-center justify-center text-muted-foreground">
             <FolderGit2 size={13} strokeWidth={1.7} aria-hidden="true" />
           </span>
-          {repoLabel && <CopyButton value={repoLabel} label={`Copy ${repoLabel}`} className="h-7 min-w-0 shrink px-1.5">
+          {repoLabel && <CopyButton value={repoLabel} label={`Copy ${repoLabel}`} className="min-w-0 shrink">
             <span className="min-w-0 truncate font-mono text-caption">{repoLabel}</span>
           </CopyButton>}
         </div>
         <div className="u-segmented flex shrink-0 items-center p-0.5" role="toolbar" aria-label="GitHub repository actions">
-          {surfaces.map(([id, label, Icon]) => <button
-            key={id}
+          {surfaces.map(([id, label, Icon]) => <Tip key={id} label={label}><button
             type="button"
             aria-label={label}
             aria-pressed={surfaceTab === id}
             data-active={surfaceTab === id}
-            title={label}
             onClick={() => pickSurface(id)}
             className={cn("u-segmented-item", HEADER_ICON)}
-          ><Icon size={13} strokeWidth={1.7} aria-hidden="true" /></button>)}
+          ><Icon size={13} strokeWidth={1.7} aria-hidden="true" /></button></Tip>)}
           {repositoryUrl && <OpenOnGithub url={repositoryUrl} what={repoLabel ?? "the repository"} />}
           {refreshButton}
         </div>
       </div>
       {showsFilters && <div className="flex items-center gap-1.5 pb-0.5">
         <ListSearch value={query} onChange={setQuery} placeholder={surfaceTab === "pulls" ? "Filter pull requests" : "Filter issues"} />
-        {surfaceTab === "pulls" && <div className="u-segmented flex shrink-0 p-0.5" role="group" aria-label="Pull request filters">
-          {PULL_REQUEST_FACETS.map(choice => <button
-            key={choice.id}
-            type="button"
-            aria-pressed={facet === choice.id}
-            data-active={facet === choice.id}
-            onClick={() => setFacet(choice.id)}
-            className="u-segmented-item rounded-md px-2 py-1 text-caption text-muted-foreground"
-          >{choice.label}</button>)}
-        </div>}
+        {surfaceTab === "pulls" && <Segmented label="Pull request filters" value={facet} options={facetOptions} onChange={setFacet} />}
       </div>}
     </header>}
     {connectOpen && <ConnectRepositoryDialog
@@ -836,14 +818,14 @@ function ChecksCell({ pr }: { pr: PullRequestListItem }) {
   if (!pr.checks.total) return <span className="text-caption text-muted-foreground">No checks</span>;
   const rollup = ROLLUP[rollupState(pr)];
   const RollupIcon = rollup.icon;
-  return <span className="flex min-w-0 flex-col gap-1.5" title={`${rollup.label} — ${pr.checks.passed}/${pr.checks.total} checks passed`}>
+  return <Tip label={`${rollup.label} — ${pr.checks.passed}/${pr.checks.total} checks passed`}><span className="flex min-w-0 flex-col gap-1.5">
     <span className={cn("inline-flex items-center gap-1.5 text-caption tabular-nums", rollup.className)}>
       <RollupIcon size={13} aria-hidden="true" className={cn(rollup.live && "github-check-live")} />
       <span className="font-medium"><RollLabel value={rollup.label} /></span>
       <span className="font-mono text-caption text-muted-foreground">{pr.checks.passed}/{pr.checks.total}</span>
     </span>
     <RollupMeter checks={pr.checks} className="w-full max-w-28" />
-  </span>;
+  </span></Tip>;
 }
 
 function PullRequestRow({ pr, index, wide, active, onOpen }: { pr: PullRequestListItem; index: number; wide: boolean; active: boolean; onOpen: () => void }) {
@@ -860,7 +842,7 @@ function PullRequestRow({ pr, index, wide, active, onOpen }: { pr: PullRequestLi
   const delay = { "--github-row-delay": `${Math.min(index, 12) * 28}ms` } as React.CSSProperties;
 
   if (wide) return <div className={rowClass} style={delay}>
-    <button type="button" onClick={onOpen} className={cn("grid w-full items-center gap-4 px-4 py-3.5 text-left", PR_GRID)}>
+    <RowButton size="bare" tone="plain" shape="flush" onClick={onOpen}><span className={cn("grid w-full items-center gap-4 px-4 py-3.5", PR_GRID)}>
       <span className="flex min-w-0 items-start gap-3">
         <StateIcon size={16} strokeWidth={1.8} aria-hidden="true" className={cn("mt-0.5 shrink-0", stateTone)} />
         <span className="min-w-0 flex-1">
@@ -881,12 +863,12 @@ function PullRequestRow({ pr, index, wide, active, onOpen }: { pr: PullRequestLi
         <Monogram login={pr.author?.login} />
         <span className="truncate">{pr.author?.login ?? "ghost"}</span>
       </span>
-    </button>
+    </span></RowButton>
     {actions}
   </div>;
 
   return <div className={cn(rowClass, "flex items-start")} style={delay}>
-    <button type="button" onClick={onOpen} className="flex min-w-0 flex-1 items-start gap-2.5 px-3 py-3 text-left">
+    <RowButton size="bare" tone="plain" shape="flush" onClick={onOpen} className="flex-1"><span className="flex min-w-0 flex-1 items-start gap-2.5 px-3 py-3">
       <StateIcon size={15} strokeWidth={1.8} aria-hidden="true" className={cn("mt-0.5 shrink-0", stateTone)} />
       <span className="min-w-0 flex-1">
         <span className="flex flex-wrap items-start gap-x-1.5 gap-y-1">
@@ -894,10 +876,10 @@ function PullRequestRow({ pr, index, wide, active, onOpen }: { pr: PullRequestLi
           {pr.mergeability === "conflicting" && <Badge variant="warning" size="sm">Conflicts</Badge>}
           {pr.isDraft && <Badge variant="outline" size="sm">Draft</Badge>}
           {review && <Badge variant={review.variant} size="sm">{review.label}</Badge>}
-          {pr.checks.total > 0 && <span className={cn("inline-flex shrink-0 items-center gap-1 font-mono text-caption tabular-nums", rollup.className)} title={`${rollup.label} — ${pr.checks.passed}/${pr.checks.total} checks passed`}>
+          {pr.checks.total > 0 && <Tip label={`${rollup.label} — ${pr.checks.passed}/${pr.checks.total} checks passed`}><span className={cn("inline-flex shrink-0 items-center gap-1 font-mono text-caption tabular-nums", rollup.className)}>
             <RollupIcon size={12} aria-hidden="true" className={cn(rollup.live && "github-check-live")} />
             {pr.checks.passed}/{pr.checks.total}
-          </span>}
+          </span></Tip>}
         </span>
         <span className="mt-1 flex items-center gap-1.5 pr-14 text-caption text-muted-foreground">
           <span className="shrink-0 tabular-nums">#{pr.number}</span>
@@ -908,7 +890,7 @@ function PullRequestRow({ pr, index, wide, active, onOpen }: { pr: PullRequestLi
         </span>
         {pr.checks.total > 0 && <RollupMeter checks={pr.checks} className="mt-2 w-full max-w-40" />}
       </span>
-    </button>
+    </span></RowButton>
     {/* Absolute, so the affordances cost the title no width until a pointer
         (or the keyboard) is actually on the row. */}
     {actions}
@@ -942,13 +924,12 @@ function PatchView({ patch, fullDiffUrl, onComment }: { patch: string; fullDiffU
         <div className={cn("group/line relative flex w-max min-w-full whitespace-pre", PATCH_ROW[line.kind])}>
           <span aria-hidden="true" className="w-9 shrink-0 select-none pr-1.5 text-right tabular-nums text-muted-foreground/60">{line.oldLine ?? ""}</span>
           <span aria-hidden="true" className="w-9 shrink-0 select-none pr-2 text-right tabular-nums text-muted-foreground/60">{line.newLine ?? ""}</span>
-          {anchor && <button
+          {anchor && <Tip label={`Comment on line ${anchor.line}`}><button
             type="button"
             onClick={() => setComposing(index)}
             aria-label={`Comment on line ${anchor.line}`}
-            title={`Comment on line ${anchor.line}`}
             className="absolute left-[4.1rem] top-0.5 grid size-4 -translate-x-1/2 scale-75 place-items-center rounded-sm bg-primary text-primary-foreground opacity-0 shadow-xs transition-[opacity,transform] duration-150 hover:scale-110 focus-visible:scale-100 focus-visible:opacity-100 group-hover/line:scale-100 group-hover/line:opacity-100"
-          ><Plus size={11} strokeWidth={2.4} aria-hidden="true" /></button>}
+          ><Plus size={11} strokeWidth={2.4} aria-hidden="true" /></button></Tip>}
           <span className="pl-2 pr-3">{line.text || " "}</span>
         </div>
         {anchor && onComment && composing === index && <div className="sticky left-0 w-full max-w-full border-y border-border bg-card/80 p-2 font-sans">
@@ -979,13 +960,13 @@ function FileChange({ file, defaultOpen, fullDiffUrl, onComment }: {
   const [open, setOpen] = useState(defaultOpen);
   return <article className="overflow-hidden rounded-lg border border-border bg-card">
     <div className={cn("flex items-center transition-colors hover:bg-accent/40", open && "border-b border-border")}>
-      <button type="button" onClick={() => setOpen(value => !value)} aria-expanded={open} className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left">
+      <RowButton size="lg" tone="plain" shape="flush" onClick={() => setOpen(value => !value)} aria-expanded={open} className="flex-1">
         <ChevronRight size={11} aria-hidden="true" className={cn("shrink-0 text-muted-foreground transition-transform duration-200", open && "rotate-90")} />
         <span className="min-w-0 flex-1 truncate font-mono text-caption text-foreground">{file.path}</span>
         <Badge variant="outline" size="sm">{file.status}</Badge>
         <span className="font-mono text-caption text-success">+{file.additions}</span>
         <span className="font-mono text-caption text-destructive">−{file.deletions}</span>
-      </button>
+      </RowButton>
       <CopyButton value={file.path} label={`Copy the path ${file.path}`} className="mr-1.5" />
     </div>
     {open && (file.patch ? <PatchView patch={file.patch} fullDiffUrl={fullDiffUrl} onComment={onComment} /> : <p className="px-3 py-4 text-center text-meta text-muted-foreground">Binary file or patch unavailable from GitHub.</p>)}
@@ -1106,14 +1087,14 @@ function IssueList({ issues, wide, active, onOpen }: { issues: GithubIssuesResul
         className={cn("github-row-enter group relative flex items-start transition-colors hover:bg-accent/50", active === issue.number && "bg-accent/60")}
         style={{ "--github-row-delay": `${Math.min(index, 12) * 28}ms` } as React.CSSProperties}
       >
-        <button type="button" onClick={() => onOpen(issue.number)} className={cn("flex min-w-0 flex-1 items-start text-left", wide ? "gap-3 px-4 py-3.5" : "gap-2.5 px-3 py-3")}>
+        <RowButton size="bare" tone="plain" shape="flush" onClick={() => onOpen(issue.number)} className="flex-1"><span className={cn("flex min-w-0 flex-1 items-start", wide ? "gap-3 px-4 py-3.5" : "gap-2.5 px-3 py-3")}>
           <CircleDot size={wide ? 16 : 14} strokeWidth={1.8} className={cn("mt-0.5 shrink-0", issue.state === "open" ? "text-foreground" : "text-muted-foreground")} aria-hidden="true" />
           <span className="min-w-0 flex-1">
             <span className={cn("block pr-14 font-medium leading-5 text-foreground", wide ? "text-ui" : "text-ui")}>{issue.title}</span>
             <span className="mt-1 flex items-center gap-1.5 text-caption text-muted-foreground"><span className="font-mono tabular-nums">#{issue.number}</span><span aria-hidden="true">·</span>{wide && <Monogram login={issue.author?.login} className="size-4 text-micro" />}<span>{issue.author?.login ?? "ghost"}</span>{!Number.isNaN(Date.parse(issue.updatedAt)) && <><span aria-hidden="true">·</span><span>updated {relativeTime(issue.updatedAt, new Date())}</span></>}</span>
             {!!issue.labels.length && <span className="mt-2 flex flex-wrap gap-1">{issue.labels.map(label => <LabelBadge key={label.name} label={label} />)}</span>}
           </span>
-        </button>
+        </span></RowButton>
         <span className="u-glass-soft absolute right-1.5 top-2.5 flex items-center rounded-md opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
           <CopyButton value={issue.url} label={`Copy the link to #${issue.number}`} />
           <OpenOnGithub url={issue.url} what={`#${issue.number}`} />
@@ -1141,8 +1122,8 @@ function RepositoryOverview({ overview }: { overview: GithubRepositoryResult }) 
         <Badge variant="outline" size="sm">{overview.visibility.toLowerCase()}</Badge>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-1">
-        <CopyButton value={overview.url} label="Copy the repository link" className="border border-border bg-card px-2">Copy link</CopyButton>
-        <CopyButton value={`git clone ${overview.url}.git`} label="Copy the clone command" className="border border-border bg-card px-2">Copy clone command</CopyButton>
+        <CopyButton value={overview.url} label="Copy the repository link" variant="outline">Copy link</CopyButton>
+        <CopyButton value={`git clone ${overview.url}.git`} label="Copy the clone command" variant="outline">Copy clone command</CopyButton>
         <OpenOnGithub url={overview.url} what={overview.nameWithOwner} />
       </div>
       <div className="mt-5 grid grid-cols-2 gap-2 @2xl:grid-cols-4">{facts.map(([label, value, Icon]) => <div key={label} className="rounded-lg bg-muted/50 px-3 py-3"><p className="flex items-center gap-1.5 text-caption text-muted-foreground"><Icon size={11} aria-hidden="true" />{label}</p><p className="mt-1.5 truncate text-message font-semibold tabular-nums text-foreground">{value}</p></div>)}</div>
@@ -1181,13 +1162,6 @@ const REVIEW_HARNESSES: ReadonlyArray<{ id: string; label: string }> = [
   { id: "opencode", label: "OpenCode" },
 ];
 const BUGBOT = { id: "bugbot", label: "Cursor Bugbot", note: "reviews on GitHub" };
-
-const ACTION_BUTTON = "inline-flex min-h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-meta font-medium text-foreground shadow-xs transition-colors hover:bg-accent active:scale-[0.98] disabled:opacity-50";
-/** The one action a PR is for. Ink on paper, like every other primary button
- *  in the app, rather than a green that reads as a status. */
-const PRIMARY_ACTION = "inline-flex min-h-7 items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-meta font-medium text-primary-foreground shadow-xs transition-colors hover:bg-primary/90 active:scale-[0.98] disabled:opacity-50";
-/** Ending something is available but never loud until a pointer is on it. */
-const QUIET_ACTION = "ml-auto inline-flex min-h-7 items-center gap-1.5 rounded-md px-2.5 py-1 text-meta font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive active:scale-[0.98] disabled:opacity-50";
 
 const PILL_BASE = "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-caption font-medium capitalize shadow-xs";
 const PILL_MERGED = "border-merged/45 bg-merged/15 text-merged";
@@ -1273,8 +1247,8 @@ function RollLabel({ value }: { value: string }) {
   if (!roll) return <span>{value}</span>;
   return <span className="relative inline-block h-[15px] overflow-hidden align-baseline" role="status" aria-label={roll.to}>
     <span aria-hidden="true" className="github-roll-up absolute inset-x-0 top-0 block">
-      <span className="block h-[15px] leading-[15px]">{roll.from}</span>
-      <span className="block h-[15px] leading-[15px]">{roll.to}</span>
+      <span className="block h-[15px] leading-3.75">{roll.from}</span>
+      <span className="block h-[15px] leading-3.75">{roll.to}</span>
     </span>
   </span>;
 }
@@ -1563,9 +1537,9 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   };
 
   const header = <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5">
-    <button type="button" onClick={onBack} className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 py-1 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+    <Button variant="quiet" size="xs" onClick={onBack}>
       <ArrowLeft size={12.5} aria-hidden="true" /> All pull requests
-    </button>
+    </Button>
   </div>;
 
   if (error && !detail) return <div className="flex min-h-0 flex-1 flex-col">{header}<PaneNotice icon={CircleX} title={`Pull request #${number} did not load`}>{error}</PaneNotice></div>;
@@ -1650,7 +1624,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
             <OpenOnGithub url={summary.url} what={`#${summary.number}`} />
           </span>
         </div>
-        <h2 className="mt-2.5 font-display text-[19px] font-semibold leading-snug tracking-[-0.015em] text-foreground">{summary.title}</h2>
+        <h2 className="mt-2.5 font-display text-heading font-semibold leading-snug text-foreground">{summary.title}</h2>
         <p className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-meta text-muted-foreground">
           <b className="font-medium text-foreground">{summary.author?.login ?? "ghost"}</b>
           {mergedNow
@@ -1669,9 +1643,9 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
         </div>}
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           {pullRequest.labels.map(label => <LabelBadge key={label.name} label={label} />)}
-          <button type="button" onClick={() => setLabelsOpen(value => !value)} className="inline-flex min-h-7 items-center gap-1 rounded-md px-2 py-1 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+          <Button variant="quiet" size="xs" onClick={() => setLabelsOpen(value => !value)}>
             <Tag size={10.5} aria-hidden="true" /> Manage labels
-          </button>
+          </Button>
         </div>
         {labelsOpen && <LabelControls
           available={availableLabels}
@@ -1734,39 +1708,39 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
             {REVIEW_HARNESSES.map(choice => {
               const checked = picked.includes(choice.id);
               return secondOpinion
-                ? <button key={choice.id} type="button" role="checkbox" aria-checked={checked} disabled={reviewBusy || (!checked && picked.length >= 2)} onClick={() => setPicked(current => checked ? current.filter(id => id !== choice.id) : [...current, choice.id])} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
+                ? <RowButton key={choice.id} role="checkbox" aria-checked={checked} disabled={reviewBusy || (!checked && picked.length >= 2)} onClick={() => setPicked(current => checked ? current.filter(id => id !== choice.id) : [...current, choice.id])}>
                     <span aria-hidden="true" className={cn("grid size-3 place-items-center rounded-sm border border-border", checked && "border-primary bg-primary text-primary-foreground")}>{checked && <Check size={9} />}</span>
                     <span className="min-w-0 flex-1 truncate">{choice.label}</span>
-                  </button>
+                  </RowButton>
                 : (() => {
                     const inUse = activeJobFor(reviews.jobs, [choice.id]);
-                    return <button key={choice.id} type="button" disabled={reviewBusy || !!inUse} onClick={() => void startReview([choice.id])} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
+                    return <RowButton key={choice.id} disabled={reviewBusy || !!inUse} onClick={() => void startReview([choice.id])}>
                       {inUse && inUse.status !== "drafted"
                         ? <LoaderCircle size={11} className="animate-spin text-muted-foreground motion-reduce:animate-none" aria-hidden="true" />
                         : <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />}
                       <span className="min-w-0 flex-1 truncate">{choice.label}</span>
                       {inUse && <span className="shrink-0 text-micro text-muted-foreground">{inUse.status === "drafted" ? "Draft waiting" : "Reviewing"}</span>}
-                    </button>;
+                    </RowButton>;
                   })();
             })}
             {secondOpinion && (() => {
               const inUse = picked.length > 0 ? activeJobFor(reviews.jobs, picked) : undefined;
               const names = picked.map(id => REVIEW_HARNESSES.find(choice => choice.id === id)?.label ?? id).join(" and ");
-              return <button type="button" disabled={reviewBusy || picked.length === 0 || !!inUse} onClick={() => void startReview(picked)} className={cn(PRIMARY_ACTION, "mx-1 my-0.5 justify-center")}>
+              return <Button size="xs" disabled={reviewBusy || picked.length === 0 || !!inUse} onClick={() => void startReview(picked)} className="mx-1 my-0.5">
                 {reviewBusy ? "Starting review…" : picked.length === 0 ? "Pick a harness" : inUse ? (inUse.status === "drafted" ? `A draft from ${names} is waiting` : `${names} already reviewing`) : `Review with ${names}`}
-              </button>;
+              </Button>;
             })()}
-            <button type="button" disabled={reviewBusy} onClick={() => void startReview([BUGBOT.id])} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-meta text-foreground transition-colors hover:bg-accent disabled:opacity-50">
+            <RowButton disabled={reviewBusy} onClick={() => void startReview([BUGBOT.id])}>
               <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />
               <span className="min-w-0 flex-1 truncate">{BUGBOT.label}</span>
               <span className="shrink-0 text-micro text-muted-foreground">{BUGBOT.note}</span>
-            </button>
+            </RowButton>
           </div>}
           {summary.state === "open" && reviewNotice && <p role="status" className={cn("animate-page-mount mt-2 rounded-md border px-2.5 py-1.5 text-meta", reviewNotice.tone === "success" ? "border-success/25 bg-success/10 text-success" : reviewNotice.tone === "info" ? "border-border bg-muted/40 text-foreground" : "border-destructive/25 bg-destructive/10 text-destructive")}>{reviewNotice.text}</p>}
           <ReviewStatusLine reviews={reviews} onShow={() => { selectTab("conversation"); setRevealReviews(value => value + 1); }} />
         </>}
         {summary.state === "closed" && <div className="mt-3 flex flex-wrap items-center gap-1.5">
-          <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({
+          <Button variant="outline" size="xs" disabled={busy} onClick={() => setPending({
             title: `Reopen #${number}`,
             consequence: "The pull request is open again for review and comments.",
             command: `gh pr reopen ${number} -R ${repoLabel}`,
@@ -1775,7 +1749,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
             requiresBody: false,
             confirmLabel: "Reopen",
             build: () => ({ kind: "setState", target: "pullRequest", number, operation: "reopen" }),
-          })}><RotateCcw size={11.5} aria-hidden="true" /> Reopen</button>
+          })}><RotateCcw size={11.5} aria-hidden="true" /> Reopen</Button>
         </div>}
       </div>
 
@@ -1784,7 +1758,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
       {checkout && <p className="border-b border-border bg-success/10 px-4 py-2 text-meta text-success">
         {checkout.reused ? "Reusing the task worktree already on " : "Checked out into a task worktree on "}
         <span className="font-mono">{checkout.branch}</span>
-        <span className="block truncate font-mono text-caption text-success/80" title={checkout.path}>{checkout.path}</span>
+        <Tip label={checkout.path}><span className="block truncate font-mono text-caption text-success/80">{checkout.path}</span></Tip>
       </p>}
 
       <DetailTabs id={detailId} tabs={tabs} active={tab} onSelect={selectTab} label="Pull request detail" />
@@ -1911,7 +1885,7 @@ function IssueDetail({ workspaceId, repository, repositoryUrl, number, detail, e
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string>();
   const repoLabel = repository ? `${repository.owner}/${repository.name}` : "this repository";
-  const header = <div className="flex shrink-0 items-center border-b border-border px-2 py-1.5"><button type="button" onClick={onBack} className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 py-1 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><ArrowLeft size={12.5} aria-hidden="true" /> All issues</button></div>;
+  const header = <div className="flex shrink-0 items-center border-b border-border px-2 py-1.5"><Button variant="quiet" size="xs" onClick={onBack}><ArrowLeft size={12.5} aria-hidden="true" /> All issues</Button></div>;
 
   const submit = async (action: GithubAction) => {
     setBusy(true); setActionError(undefined);
@@ -1941,9 +1915,9 @@ function IssueDetail({ workspaceId, repository, repositoryUrl, number, detail, e
             <OpenOnGithub url={issue.summary.url} what={`#${issue.summary.number}`} />
           </span>
         </div>
-        <h2 className="mt-2.5 font-display text-[19px] font-semibold leading-snug tracking-[-0.015em] text-foreground">{issue.summary.title}</h2>
+        <h2 className="mt-2.5 font-display text-heading font-semibold leading-snug text-foreground">{issue.summary.title}</h2>
         <p className="mt-1.5 flex items-center gap-1.5 text-caption text-muted-foreground"><Monogram login={issue.summary.author?.login} className="size-4 text-micro" />Opened by {issue.summary.author?.login ?? "ghost"}</p>
-        <div className="mt-2 flex flex-wrap items-center gap-1.5">{issue.summary.labels.map(label => <LabelBadge key={label.name} label={label} />)}<button type="button" onClick={() => setLabelsOpen(value => !value)} className="inline-flex min-h-7 items-center gap-1 rounded-md px-2 py-1 text-caption text-muted-foreground hover:bg-accent hover:text-foreground"><Tag size={10.5} aria-hidden="true" /> Manage labels</button></div>
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">{issue.summary.labels.map(label => <LabelBadge key={label.name} label={label} />)}<Button variant="quiet" size="xs" onClick={() => setLabelsOpen(value => !value)}><Tag size={10.5} aria-hidden="true" /> Manage labels</Button></div>
         {labelsOpen && <LabelControls available={availableLabels} current={issue.summary.labels} disabled={busy} onChange={(label, operation) => setPending({
           title: `${operation === "add" ? "Add" : "Remove"} label “${label}”`,
           consequence: `The issue is edited on ${repoLabel}.`,
@@ -1955,7 +1929,7 @@ function IssueDetail({ workspaceId, repository, repositoryUrl, number, detail, e
           build: () => ({ kind: "label", target: "issue", number, label, operation }),
         })} />}
         <div className="mt-3 flex flex-wrap items-center gap-1.5">
-          <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({
+          <Button variant="outline" size="xs" disabled={busy} onClick={() => setPending({
             title: open ? `Close #${number}` : `Reopen #${number}`,
             consequence: open
               ? "Comments stay, and you can reopen it from this pane."
@@ -1969,7 +1943,7 @@ function IssueDetail({ workspaceId, repository, repositoryUrl, number, detail, e
             build: () => ({ kind: "setState", target: "issue", number, operation: open ? "close" : "reopen" }),
           })}>
             {open ? <><Ban size={11.5} aria-hidden="true" /> Close</> : <><RotateCcw size={11.5} aria-hidden="true" /> Reopen</>}
-          </button>
+          </Button>
         </div>
       </div>
       {actionError && <p role="alert" className="border-b border-border bg-destructive/10 px-4 py-2 text-meta text-destructive">{actionError}</p>}
@@ -2077,35 +2051,38 @@ function ConnectRepositoryDialog({ workspaceId, onCancel, onConnected }: {
   }
 
   return <Dialog open onOpenChange={next => { if (!next && !busy) onCancel(); }}>
-    <DialogPopup showCloseButton={false} aria-label="Connect a repository" className="max-w-md p-5">
+    <DialogPopup showCloseButton={false} aria-label="Connect a repository" className="max-w-md">
+      <div className="p-5">
       <h2 className="font-display text-body font-semibold text-foreground">Connect a repository</h2>
       <p className="mt-1 text-meta leading-relaxed text-muted-foreground">Search your GitHub repositories, or paste a repository URL. Bridge points this folder&apos;s <code className="font-mono text-foreground/90">origin</code> at it.</p>
-      <input
+      <Input
         autoFocus
+        size="lg"
         value={query}
         onChange={event => { setQuery(event.target.value); setError(undefined); }}
         onKeyDown={event => { if (event.key === "Enter" && pastedUrl && !busy) { event.preventDefault(); void connect(pastedUrl); } }}
         disabled={busy}
         aria-label="Repository search or URL"
         placeholder="owner/name, or https://github.com/owner/name"
-        className="mt-4 h-9 w-full rounded-lg border border-input bg-card px-3 text-ui text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring disabled:opacity-50"
+        className="mt-4"
       />
       {!pastedUrl && candidates !== undefined && <ul className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-border" aria-label="Matching repositories">
         {candidates.length === 0
           ? <li className="px-3 py-2.5 text-meta text-muted-foreground">{searching ? "Searching…" : "No repository matches that. Paste its URL instead."}</li>
           : candidates.map(candidate => <li key={candidate.nameWithOwner}>
-            <button type="button" disabled={busy} onClick={() => void connect(candidate.url)} className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent disabled:opacity-50">
+            <RowButton size="lg" shape="flush" disabled={busy} onClick={() => void connect(candidate.url)}>
               <FolderGit2 size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
               <span className="min-w-0 flex-1 truncate font-mono text-meta text-foreground">{candidate.nameWithOwner}</span>
-              {candidate.isPrivate && <Badge variant="outline" className="shrink-0 text-micro">Private</Badge>}
-            </button>
+              {candidate.isPrivate && <Badge variant="outline" size="sm">Private</Badge>}
+            </RowButton>
           </li>)}
       </ul>}
       {searchError && !pastedUrl && <p role="alert" className="mt-2 text-meta text-destructive">Search failed: {searchError} You can still paste the repository URL.</p>}
       {error && <p role="alert" className="mt-3 text-meta text-destructive">{error}</p>}
       <div className="mt-4 flex justify-end gap-2">
-        <button type="button" onClick={onCancel} disabled={busy} className="min-h-8 rounded-lg px-3 text-ui font-medium hover:bg-accent disabled:opacity-50">Cancel</button>
-        <button type="button" onClick={() => pastedUrl && void connect(pastedUrl)} disabled={busy || !pastedUrl} className="min-h-8 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">Connect</button>
+        <Button variant="ghost" size="sm" onClick={onCancel} disabled={busy}>Cancel</Button>
+        <Button size="sm" onClick={() => pastedUrl && void connect(pastedUrl)} disabled={busy || !pastedUrl}>Connect</Button>
+      </div>
       </div>
     </DialogPopup>
   </Dialog>;

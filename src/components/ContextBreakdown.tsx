@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { ArrowUpRight, ChevronRight, ExternalLink, Layers, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
 import type { ContextBreakdownResult, ContextBreakdownState as WireSourceState } from "../protocol/generated/protocol";
 import {
   breakdownMath,
@@ -60,12 +62,12 @@ export function ContextBreakdownPanel({ state, sessionId, onClose, onOpenPromptS
       <span className="ml-auto truncate font-mono text-caption text-muted-foreground">
         {state.reconciledAt ? `reconciled ${new Date(state.reconciledAt).toLocaleTimeString()}` : "reconciling…"}
       </span>
-      <button type="button" onClick={onClose} className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Back to usage health"><X size={13} aria-hidden="true" /></button>
+      <Button variant="quiet" size="icon-xs" onClick={onClose} aria-label="Back to usage health"><X aria-hidden="true" /></Button>
     </div>
 
     {!result ? <EmptyCard unavailable={state.unavailable} /> : <>
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 px-0.5">
-        <span className="min-w-0 truncate font-mono text-caption text-muted-foreground" title={sessionId ?? undefined}>{result.sessionId}</span>
+        <Tip label={sessionId ?? undefined}><span className="min-w-0 truncate font-mono text-caption text-muted-foreground">{result.sessionId}</span></Tip>
         {result.conversation.model && <span className="truncate font-mono text-caption text-muted-foreground">{result.conversation.model}</span>}
         {result.conversation.effort && <span className="shrink-0 rounded-full border border-border px-1.5 py-0.5 text-caption font-semibold text-muted-foreground">{result.conversation.effort}</span>}
         {result.totals.unavailableSources > 0 && <span className="ml-auto shrink-0 text-caption text-muted-foreground">{result.totals.unavailableSources} unavailable sources</span>}
@@ -84,7 +86,7 @@ export function ContextBreakdownPanel({ state, sessionId, onClose, onOpenPromptS
 }
 
 function EmptyCard({ unavailable }: { unavailable: boolean }) {
-  return <p className={cn("border border-dashed border-border px-3 py-6 text-center text-caption leading-relaxed text-muted-foreground", "rounded-[calc(var(--radius-2xl)-0.625rem)]")}>
+  return <p className={cn("border border-dashed border-border px-3 py-6 text-center text-caption leading-relaxed text-muted-foreground", "rounded-sm")}>
     {unavailable
       ? "No breakdown is available for this session right now. Polling stopped after repeated misses."
       : "No breakdown recorded yet — reconciling with the focused session…"}
@@ -100,7 +102,7 @@ function PressureCard({ result }: { result: ContextBreakdownResult }) {
     aria-label="Context pressure"
     className={cn(
       "border p-3 transition-colors duration-300",
-      "rounded-[calc(var(--radius-2xl)-0.625rem)]",
+      "rounded-sm",
       pressure.level === "critical" && "border-destructive/45 bg-destructive/10",
       pressure.level === "high" && "border-warning/40 bg-warning/10",
       pressure.level === "elevated" && "border-warning/30 bg-warning/[0.06]",
@@ -125,18 +127,19 @@ function CompositionBar({ result }: { result: ContextBreakdownResult }) {
   let rampIndex = -1;
   const delta = result.compactionDelta;
   return <div className="px-0.5">
-    <div className="relative flex h-3.5 overflow-hidden rounded-full border border-border bg-muted" role="img" aria-label={`Context window composition: ${formatTokens(math.knownTokens)} of ${formatTokens(math.windowTokens)} tokens attributed`} title={`${formatCompactTokens(math.occupiedTokens)} of ${formatCompactTokens(math.windowTokens)} tok occupied`}>
+    <div className="relative overflow-hidden rounded-full">
+    <Tip label={`${formatCompactTokens(math.occupiedTokens)} of ${formatCompactTokens(math.windowTokens)} tok occupied`}><div className="flex h-3.5 overflow-hidden rounded-full border border-border bg-muted" role="img" aria-label={`Context window composition: ${formatTokens(math.knownTokens)} of ${formatTokens(math.windowTokens)} tokens attributed`}>
       {ranked.map(({ segment }) => {
         if (segment.state === "unavailable" || segment.tokens == null) return null;
         rampIndex += 1;
         return <span key={`${segment.origin}:${segment.segmentClass}`} className={cn("h-full", rampClass(rampIndex))} style={{ width: width(segment.tokens) }} />;
       })}
       {math.unattributedTokens > 0 && <span className="ctx-hatch h-full" style={{ width: width(math.unattributedTokens) }} />}
-      {delta && <span
-        className="absolute inset-y-[-3px] w-[2px] rounded-sm bg-ring"
+    </div></Tip>
+      {delta && <Tip label={`Last checkpoint · ${formatTokens(delta.tokensBefore)} tok before`}><span
+        className="absolute inset-y-px w-[2px] rounded-sm bg-ring"
         style={{ left: `${Math.min(100, (delta.tokensBefore / math.windowTokens) * 100)}%` }}
-        title={`Last checkpoint · ${formatTokens(delta.tokensBefore)} tok before`}
-      />}
+      /></Tip>}
     </div>
     <div className="mt-1 flex items-center justify-between font-mono text-caption tabular-nums text-muted-foreground">
       <span>{formatTokens(math.knownTokens)} tok attributed</span>
@@ -169,18 +172,19 @@ function SegmentRows({
       if (sized) rampIndex += 1;
       const isOpen = expanded.has(id);
       const expandable = (segment.names?.length ?? 0) > 0 || meta.editable;
-      return <div key={id} className={cn("overflow-hidden border border-border bg-card transition-colors hover:border-foreground/20", "rounded-[calc(var(--radius-2xl)-0.625rem)]", unavailable && "border-dashed bg-transparent")}>
+      return <div key={id} className={cn("overflow-hidden border border-border bg-card transition-colors hover:border-foreground/20", "rounded-sm", unavailable && "border-dashed bg-transparent")}>
         <div className="flex min-w-0 flex-wrap items-center gap-2 px-2.5 py-2">
           {expandable
-            ? <button type="button" onClick={() => onToggle(id)} aria-expanded={isOpen} aria-label={`${isOpen ? "Collapse" : "Expand"} ${meta.label}`} className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><ChevronRight size={10} className={cn("transition-transform duration-150", isOpen && "rotate-90")} aria-hidden="true" /></button>
+            ? <Button variant="quiet" size="icon-xs" onClick={() => onToggle(id)} aria-expanded={isOpen} aria-label={`${isOpen ? "Collapse" : "Expand"} ${meta.label}`}><ChevronRight className={cn("size-2.5 transition-transform duration-150", isOpen && "rotate-90")} aria-hidden="true" /></Button>
             : <span className="w-[10px] shrink-0" aria-hidden="true" />}
           <span className={cn("size-2 shrink-0 rounded-sm", sized ? rampClass(rampIndex) : "ctx-hatch")} />
           <span className="min-w-0 truncate text-caption font-medium">{meta.label}</span>
-          {meta.editable && onOpenPromptStudio && <button
-            type="button"
+          {meta.editable && onOpenPromptStudio && <Button
+            variant="quiet"
+            size="xs"
             onClick={() => onOpenPromptStudio(segment.segmentClass)}
-            className="ml-auto inline-flex shrink-0 items-center gap-1 min-h-7 rounded-md px-2 text-caption font-medium text-ring transition-colors hover:bg-accent"
-          >Edit in Prompt Studio<ExternalLink size={9} aria-hidden="true" /></button>}
+            className="ml-auto"
+          >Edit in Prompt Studio<ExternalLink className="size-2.5" aria-hidden="true" /></Button>}
           <span className={cn("whitespace-nowrap font-mono text-caption tabular-nums", meta.editable && onOpenPromptStudio ? "" : "ml-auto", sized ? "text-foreground" : "text-muted-foreground")}>
             {sized ? formatTokens(segment.tokens!) : "—"}
           </span>
@@ -189,13 +193,13 @@ function SegmentRows({
           </span>
           <SourceStateBadge state={segment.state} />
         </div>
-        {unavailable && segment.reason && <p className="px-2.5 pb-2 pl-[26px] text-caption leading-relaxed text-muted-foreground">{segment.reason}</p>}
-        {isOpen && segment.names && segment.names.length > 0 && <ul className="grid gap-1 px-2.5 pb-2 pl-[26px]">
+        {unavailable && segment.reason && <p className="px-2.5 pb-2 pl-6.5 text-caption leading-relaxed text-muted-foreground">{segment.reason}</p>}
+        {isOpen && segment.names && segment.names.length > 0 && <ul className="grid gap-1 px-2.5 pb-2 pl-6.5">
           {segment.names.map(name => (
-            <li key={name} className="truncate rounded-md px-1.5 py-1 text-caption text-muted-foreground hover:bg-accent" title={name}>{name}</li>
+            <Tip key={name} label={name}><li className="truncate rounded-md px-1.5 py-1 text-caption text-muted-foreground hover:bg-accent">{name}</li></Tip>
           ))}
         </ul>}
-        {isOpen && meta.editable && segment.names?.length === 0 && <p className="px-2.5 pb-2 pl-[26px] text-caption leading-relaxed text-muted-foreground">Compiled sections live in Prompt Studio; per-section sizes are not reported separately.</p>}
+        {isOpen && meta.editable && segment.names?.length === 0 && <p className="px-2.5 pb-2 pl-6.5 text-caption leading-relaxed text-muted-foreground">Compiled sections live in Prompt Studio; per-section sizes are not reported separately.</p>}
       </div>;
     })}
   </div>;
@@ -204,7 +208,7 @@ function SegmentRows({
 function DeltaStrip({ result }: { result: ContextBreakdownResult }) {
   const summary = deltaSummary(result);
   if (!summary) return null;
-  return <div className="flex items-center gap-2 rounded-[calc(var(--radius-2xl)-0.625rem)] border border-dashed border-border px-2.5 py-2 text-caption text-muted-foreground">
+  return <div className="flex items-center gap-2 rounded-sm border border-dashed border-border px-2.5 py-2 text-caption text-muted-foreground">
     <ArrowUpRight size={12} className="shrink-0 text-warning" aria-hidden="true" />
     <span>Since last checkpoint: <b className="font-semibold text-foreground">{summary.text}</b></span>
     {summary.detail && <span className="min-w-0 truncate text-muted-foreground">({summary.detail})</span>}

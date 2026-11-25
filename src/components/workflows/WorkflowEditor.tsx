@@ -3,14 +3,55 @@ import { LoaderCircle, RefreshCw, ShieldCheck } from "lucide-react";
 import { bridgeApi } from "../../api";
 import type { Project, Workflow, WorkflowDefinition, WorkflowEventKind, WorkflowEventSample, WorkflowGrant, WorkflowOptions, WorkflowTrigger, WorkflowTriggerPreview } from "../../protocol/generated/protocol";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Select, SelectGroup, SelectGroupLabel, SelectItem, SelectPopup, SelectTrigger } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { Tip } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import { ErrorNote } from "./parts";
 import { EVENT_APPS, EVENT_OPTIONS, eventFilters, localTimezone, presetCron, presetFor, presetForCron, WEEKDAY_OPTIONS, type SchedulePreset } from "./format";
 
 const FIELD = "block text-caption font-medium text-muted-foreground";
-const SELECT = "mt-1 h-8 w-full rounded-lg border border-input bg-background dark:bg-input/32 px-2 text-ui text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
+
+type ChoiceOption = { value: string; label: string; group?: string; disabled?: boolean };
+
+/** One choice from a list. Options that name a group are listed under it. */
+function Choice({ label, value, options, onChange, size, className }: {
+  /** Names the control for assistive tech. */
+  label: string;
+  value: string;
+  options: ChoiceOption[];
+  onChange: (next: string) => void;
+  size?: "sm" | "default";
+  className?: string;
+}) {
+  const selected = options.find(option => option.value === value);
+  const groups = [...new Set(options.map(option => option.group))];
+  const item = (option: ChoiceOption) => <SelectItem key={option.value} value={option.value} disabled={option.disabled}>{option.label}</SelectItem>;
+  return <Select value={value} onValueChange={next => { if (next !== null) onChange(next); }}>
+    <SelectTrigger size={size} aria-label={label} className={className}>
+      <span className="min-w-0 flex-1 truncate">{selected?.label ?? value}</span>
+    </SelectTrigger>
+    <SelectPopup alignItemWithTrigger={false}>
+      {groups.map(group => group === undefined
+        ? options.filter(option => option.group === undefined).map(item)
+        : <SelectGroup key={group}><SelectGroupLabel>{group}</SelectGroupLabel>{options.filter(option => option.group === group).map(item)}</SelectGroup>)}
+    </SelectPopup>
+  </Select>;
+}
+
+const SCHEDULE_OPTIONS: ChoiceOption[] = [
+  { value: "manual", label: "Only when I press Run now" },
+  { value: "event", label: "When something happens" },
+  { value: "daily", label: "Every day" },
+  { value: "weekdays", label: "Weekdays" },
+  { value: "weekly", label: "Once a week" },
+  { value: "hourly", label: "Every hour" },
+  { value: "custom", label: "Custom (cron)" },
+];
+const EVENT_CHOICES: ChoiceOption[] = EVENT_APPS.flatMap(app => EVENT_OPTIONS.filter(option => option.app === app).map(option => ({ value: option.value, label: option.label, group: app })));
 
 export type EditorSubmit = { definition: WorkflowDefinition; approve: boolean; dryRun: boolean; event?: WorkflowEventSample | null };
 
@@ -187,38 +228,25 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
         <DialogTitle>{workflow ? "Edit workflow" : initial ? "Drafted workflow" : "New workflow"}</DialogTitle>
         <DialogDescription>Check what it may use before you approve it. A change that lets it touch more asks for approval again.</DialogDescription>
       </DialogHeader>
-      <DialogPanel className="min-w-0 space-y-3">
+      <DialogPanel className="min-w-0"><div className="space-y-3">
         {notes.length > 0 && <ul aria-label="Draft notes" className="space-y-1 rounded-xl border border-border bg-muted px-3 py-2 text-caption text-muted-foreground">{notes.map(note => <li key={note}>{note}</li>)}</ul>}
         <label className={FIELD}>Name<Input aria-label="Workflow name" className="mt-1" value={definition.name} onChange={event => update({ name: event.target.value })}/></label>
 
         <div className="grid gap-3 sm:grid-cols-2">
           <label className={FIELD}>Project
-            <select aria-label="Workflow project" className={SELECT} value={definition.projectId ?? ""} onChange={event => {
-              const projectId = event.target.value || null;
+            <Choice label="Workflow project" className="mt-1" value={definition.projectId ?? ""} options={[{ value: "", label: "No project (runs in a private folder)" }, ...projects.map(project => ({ value: project.id, label: project.name }))]} onChange={next => {
+              const projectId = next || null;
               update({ projectId, files: projectId ? definition.files : "none" });
-            }}>
-              <option value="">No project (runs in a private folder)</option>
-              {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
-            </select>
+            }}/>
           </label>
           <label className={FIELD}>When
-            <select aria-label="Workflow schedule" className={SELECT} value={preset} onChange={event => setPreset(event.target.value as SchedulePreset)}>
-              <option value="manual">Only when I press Run now</option>
-              <option value="event">When something happens</option>
-              <option value="daily">Every day</option>
-              <option value="weekdays">Weekdays</option>
-              <option value="weekly">Once a week</option>
-              <option value="hourly">Every hour</option>
-              <option value="custom">Custom (cron)</option>
-            </select>
+            <Choice label="Workflow schedule" className="mt-1" value={preset} options={SCHEDULE_OPTIONS} onChange={next => setPreset(next as SchedulePreset)}/>
           </label>
         </div>
         {preset === "event" && <div className="space-y-3 rounded-xl border border-border px-3 py-2.5">
           <div className="grid gap-3 sm:grid-cols-2">
             <label className={FIELD}>When
-              <select aria-label="Event" className={SELECT} value={eventKind} onChange={event => setEventKind(event.target.value as WorkflowEventKind)}>
-                {EVENT_APPS.map(app => <optgroup key={app} label={app}>{EVENT_OPTIONS.filter(option => option.app === app).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</optgroup>)}
-              </select>
+              <Choice label="Event" className="mt-1" value={eventKind} options={EVENT_CHOICES} onChange={next => setEventKind(next as WorkflowEventKind)}/>
             </label>
             {filters.repo && <label className={FIELD}>{filters.repo.label}{filters.repo.required ? "" : " (optional)"}<Input aria-label="Repository" className="mt-1 font-mono" placeholder={filters.repo.placeholder} value={repo} onChange={event => setRepo(event.target.value)}/></label>}
             {filters.channel && <label className={FIELD}>{filters.channel.label}{filters.channel.required ? "" : " (optional)"}<Input aria-label="Channel filter" className="mt-1" placeholder={filters.channel.placeholder} value={channel} onChange={event => setChannel(event.target.value)}/></label>}
@@ -228,8 +256,8 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
             <label className="flex items-center gap-1.5"><input type="radio" name="event-mode" aria-label="Run for each event" checked={!collect} onChange={() => setCollect(false)} className="accent-foreground"/>Run for each event</label>
             <label className="flex items-center gap-1.5"><input type="radio" name="event-mode" aria-label="Collect them and run at a set time" checked={collect} onChange={() => setCollect(true)} className="accent-foreground"/>Collect them and run</label>
             {collect && <>
-              <select aria-label="Collect on" className="h-7 rounded-md border border-input bg-background px-1.5 text-caption text-foreground dark:bg-input/32" value={batchPreset} onChange={event => setBatchPreset(event.target.value as BatchPreset)}>{BATCH_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
-              {batchPreset === "weekly" && <select aria-label="Collect weekday" className="h-7 rounded-md border border-input bg-background px-1.5 text-caption text-foreground dark:bg-input/32" value={weekday} onChange={event => setWeekday(Number(event.target.value))}>{WEEKDAY_OPTIONS.map(day => <option key={day.value} value={day.value}>on {day.label}</option>)}</select>}
+              <Choice label="Collect on" size="sm" className="w-auto" value={batchPreset} options={BATCH_OPTIONS} onChange={next => setBatchPreset(next as BatchPreset)}/>
+              {batchPreset === "weekly" && <Choice label="Collect weekday" size="sm" className="w-auto" value={String(weekday)} options={WEEKDAY_OPTIONS.map(day => ({ value: String(day.value), label: `on ${day.label}` }))} onChange={next => setWeekday(Number(next))}/>}
               {batchPreset === "custom"
                 ? <Input aria-label="Collect cron" className="h-7 w-40 font-mono" placeholder="minute hour day month weekday" value={custom} onChange={event => setCustom(event.target.value)}/>
                 : <><span>{batchPreset === "hourly" ? "at minute" : "at"}</span>
@@ -247,9 +275,9 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
         </div>}
         {preset !== "manual" && (preset !== "event" || collect) && <div className="grid gap-3 sm:grid-cols-3">
           {preset === "event" ? null : preset === "custom"
-            ? <label className={`${FIELD} sm:col-span-2`}>Cron (minute hour day month weekday)<Input aria-label="Cron expression" className="mt-1 font-mono" value={custom} onChange={event => setCustom(event.target.value)}/></label>
+            ? <label className={cn(FIELD, "sm:col-span-2")}>Cron (minute hour day month weekday)<Input aria-label="Cron expression" className="mt-1 font-mono" value={custom} onChange={event => setCustom(event.target.value)}/></label>
             : <>
-              {preset === "weekly" && <label className={FIELD}>Day<select aria-label="Weekday" className={SELECT} value={weekday} onChange={event => setWeekday(Number(event.target.value))}>{WEEKDAY_OPTIONS.map(day => <option key={day.value} value={day.value}>{day.label}</option>)}</select></label>}
+              {preset === "weekly" && <label className={FIELD}>Day<Choice label="Weekday" className="mt-1" value={String(weekday)} options={WEEKDAY_OPTIONS.map(day => ({ value: String(day.value), label: day.label }))} onChange={next => setWeekday(Number(next))}/></label>}
               <label className={FIELD}>{preset === "hourly" ? "Minute past the hour" : "Time"}<Input aria-label="Schedule time" type="time" className="mt-1" value={time} onChange={event => setTime(event.target.value)}/></label>
             </>}
           <label className={FIELD}>Timezone<Input aria-label="Timezone" className="mt-1" value={timezone} onChange={event => setTimezone(event.target.value)}/></label>
@@ -260,17 +288,17 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
             {(options?.harnesses ?? []).map(candidate => {
               const reason = harnessRefusal(options, candidate.id, composed);
               const selected = candidate.id === step.harness;
-              return <label key={candidate.id} title={reason ?? undefined} className={`flex min-w-0 items-center gap-2 px-2.5 py-1.5 text-ui ${selected ? "bg-accent text-foreground" : reason ? "text-muted-foreground opacity-70" : "text-foreground"}`}>
+              return <Tip key={candidate.id} label={reason}><label className={cn("flex min-w-0 items-center gap-2 px-2.5 py-1.5 text-ui", selected ? "bg-accent text-foreground" : reason ? "text-muted-foreground opacity-70" : "text-foreground")}>
                 <input type="radio" name="workflow-harness" aria-label={candidate.label} disabled={!!reason || !candidate.available} checked={selected} onChange={() => updateStep({ harness: candidate.id, model: candidate.defaultModel ?? candidate.models[0]?.id ?? "" })} className="accent-foreground"/>
                 <span className="shrink-0">{candidate.label}</span>
                 <span className="ml-auto min-w-0 line-clamp-2 text-right text-caption text-muted-foreground">{reason ?? (candidate.available ? "" : "not installed")}</span>
-              </label>;
+              </label></Tip>;
             })}
           </div>
         </div>
         <label className={FIELD}>Model
           {harness && harness.models.length > 0
-            ? <select aria-label="Workflow model" className={SELECT} value={step.model} onChange={event => updateStep({ model: event.target.value })}>{!harness.models.some(model => model.id === step.model) && <option value={step.model} disabled>{step.model || "Choose a model"}</option>}{harness.models.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}</select>
+            ? <Choice label="Workflow model" className="mt-1" value={step.model} options={[...(harness.models.some(model => model.id === step.model) ? [] : [{ value: step.model, label: step.model || "Choose a model", disabled: true }]), ...harness.models.map(model => ({ value: model.id, label: model.label }))]} onChange={model => updateStep({ model })}/>
             : <Input aria-label="Workflow model" className="mt-1" value={step.model} onChange={event => updateStep({ model: event.target.value })}/>}
         </label>
 
@@ -278,12 +306,12 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
         <label className={FIELD}>What a finished run looks like<Input aria-label="Expected result" className="mt-1" value={definition.expectedResult ?? ""} onChange={event => update({ expectedResult: event.target.value })}/></label>
 
         {definition.projectId && <label className="flex items-center gap-2 text-caption text-muted-foreground">
-          <input type="checkbox" aria-label="Work in a worktree" checked={definition.files === "worktree"} onChange={event => update({ files: event.target.checked ? "worktree" : "none", grants: event.target.checked ? [] : grants })} className="size-3.5 accent-foreground"/>
+          <Checkbox aria-label="Work in a worktree" checked={definition.files === "worktree"} onCheckedChange={checked => update({ files: checked ? "worktree" : "none", grants: checked ? [] : grants })}/>
           Work in its own copy of the project (a worktree). Connectors are off for worktree jobs for now.
         </label>}
 
         {definition.files === "none" && <div className={FIELD}><span className="flex items-center justify-between">Can use
-          {onRefreshConnectors && <button type="button" onClick={onRefreshConnectors} disabled={refreshing} className="inline-flex items-center gap-1 font-normal text-muted-foreground hover:text-foreground disabled:opacity-60"><RefreshCw size={11} className={refreshing ? "animate-spin" : ""}/>Refresh</button>}</span>
+          {onRefreshConnectors && <Button variant="text" size="inline" onClick={onRefreshConnectors} disabled={refreshing}><RefreshCw size={11} className={refreshing ? "animate-spin" : ""}/>Refresh</Button>}</span>
           <div className="mt-1 divide-y divide-border rounded-lg border border-border">
             {options?.connectorsError
               ? <p className="px-2.5 py-2 text-caption text-muted-foreground">Bridge could not list Claude's connectors just now ({options.connectorsError}). Use Refresh to ask again.</p>
@@ -292,16 +320,15 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
               const grant = grantFor(server.id);
               return <div key={server.id} className="flex min-w-0 flex-wrap items-center gap-3 px-2.5 py-1.5 text-meta text-foreground">
                 <span className="min-w-0 flex-1 break-all font-mono">{server.id}{server.connected === false && <span className="ml-2 font-sans text-caption text-muted-foreground">needs sign-in in Claude</span>}</span>
-                <label className="flex items-center gap-1.5 text-muted-foreground"><input type="checkbox" aria-label={`Read ${server.id}`} checked={grant?.read ?? false} onChange={event => {
-                  const read = event.target.checked;
+                <label className="flex items-center gap-1.5 text-muted-foreground"><Checkbox aria-label={`Read ${server.id}`} checked={grant?.read ?? false} onCheckedChange={read => {
                   const write = grant?.write ?? "never";
                   setGrant(server.id, read || write === "ask" ? { server: server.id, read, write } : null);
-                }} className="size-3.5 accent-foreground"/>read</label>
-                <label className="flex items-center gap-1.5 text-muted-foreground"><input type="checkbox" aria-label={`Write ${server.id}`} checked={grant?.write === "ask"} onChange={event => {
-                  const write = event.target.checked ? "ask" : "never";
+                }}/>read</label>
+                <label className="flex items-center gap-1.5 text-muted-foreground"><Checkbox aria-label={`Write ${server.id}`} checked={grant?.write === "ask"} onCheckedChange={checked => {
+                  const write = checked ? "ask" : "never";
                   const read = grant?.read ?? false;
                   setGrant(server.id, read || write === "ask" ? { server: server.id, read, write } : null);
-                }} className="size-3.5 accent-foreground"/>write, asking every time</label>
+                }}/>write, asking every time</label>
               </div>;
             })}
           </div>
@@ -310,7 +337,7 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
         <div className="grid gap-3 sm:grid-cols-3">
           <label className={FIELD}>Time limit (minutes)<Input aria-label="Time limit" type="number" min={1} max={60} className="mt-1" value={Math.round(definition.budget.maxWallSeconds / 60)} onChange={event => update({ budget: { ...definition.budget, maxWallSeconds: Math.max(1, Number(event.target.value) || 1) * 60 } })}/></label>
           <label className={FIELD}>Tool calls<Input aria-label="Tool call limit" type="number" min={1} max={256} className="mt-1" value={definition.budget.maxToolCalls} onChange={event => update({ budget: { ...definition.budget, maxToolCalls: Number(event.target.value) || 1 } })}/></label>
-          <label className="flex items-end gap-2 pb-1.5 text-caption text-muted-foreground"><input type="checkbox" aria-label="Notify on success" checked={definition.notify?.onSuccess ?? false} onChange={event => update({ notify: { onSuccess: event.target.checked } })} className="size-3.5 accent-foreground"/>Notify me on success too</label>
+          <label className="flex items-end gap-2 pb-1.5 text-caption text-muted-foreground"><Checkbox aria-label="Notify on success" checked={definition.notify?.onSuccess ?? false} onCheckedChange={onSuccess => update({ notify: { onSuccess } })}/>Notify me on success too</label>
         </div>
         {refusal && <p className="text-caption text-muted-foreground">This agent cannot run this workflow: {refusal}.</p>}
         {!options && <p className="inline-flex items-center gap-1.5 text-caption text-muted-foreground"><LoaderCircle className="animate-spin" size={11}/>Loading agents and connectors…</p>}
@@ -318,7 +345,7 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
         {missingChannel && <p className="text-caption text-muted-foreground">Choose the Notion database to watch, by name or link.</p>}
         {options && !step.model.trim() && <p className="text-caption text-muted-foreground">Choose a model.</p>}
         <ErrorNote message={error}/>
-      </DialogPanel>
+      </div></DialogPanel>
       <DialogFooter>
         <Button variant="ghost" disabled={busy} onClick={onCancel}>Cancel</Button>
         <Button variant="secondary" disabled={busy || !ready || previewPending} title={tryOn ? `On: ${tryOn.title}` : undefined} onClick={() => onSubmit({ definition: composed, approve: false, dryRun: true, event: tryOn })}>{tryOn ? "Dry run on the latest event" : "Dry run first"}</Button>

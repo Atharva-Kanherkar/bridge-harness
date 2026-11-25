@@ -720,7 +720,7 @@ describe("storage agent blocks", () => {
     expect(html).toContain('aria-label="API key, kept by Bridge"');
     expect(html).toContain('aria-label="OPENAI_API_KEY, kept by Bridge"');
     expect(html).toContain(" please");
-    expect(html.replace(/title="[^"]*"/g, "")).not.toContain("[secret:");
+    expect(html.replace(/data-tip="[^"]*"/g, "")).not.toContain("[secret:");
   });
 
   it("leaves bracketed text that is not a placeholder alone", () => {

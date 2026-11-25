@@ -1,7 +1,10 @@
 // How images, child pages, embedded databases and wiki links draw inside the editor.
 
 import { createContext, useContext, useEffect, useRef, useState, type FocusEvent, type ReactNode } from "react";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
+import { Tip } from "@/components/ui/tooltip";
 import Image from "@tiptap/extension-image";
 import CodeBlock from "@tiptap/extension-code-block";
 import { NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer, type ReactNodeViewProps } from "@tiptap/react";
@@ -120,6 +123,7 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
           ? <img
             src={url}
             alt={caption}
+            // oxlint-disable-next-line bridge/no-native-title-tooltip -- the image's Markdown title, kept on the element as content
             title={resizable ? undefined : title}
             draggable={false}
             // The width is the one computed thing a utility cannot say.
@@ -128,7 +132,9 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
           />
           : <SkeletonRegion label="Loading image"><Skeleton className="h-40 rounded-lg" /></SkeletonRegion>}
       {url && !failed && resizable && <>
+        {/* oxlint-disable-next-line bridge/no-raw-controls -- a resize handle, dragged rather than pressed */}
         <button type="button" contentEditable={false} aria-label="Resize from the left edge" onPointerDown={beginDrag("left")} className={clsx(handle, "left-0 -translate-x-1/2")} />
+        {/* oxlint-disable-next-line bridge/no-raw-controls -- a resize handle, dragged rather than pressed */}
         <button type="button" contentEditable={false} aria-label="Resize from the right edge" onPointerDown={beginDrag("right")} className={clsx(handle, "right-0 translate-x-1/2")} />
       </>}
     </span>
@@ -165,15 +171,17 @@ function PageLinkView({ node, selected }: ReactNodeViewProps) {
   const id = String(node.attrs.id ?? "");
   const title = pages.title(id) ?? String(node.attrs.title ?? "") ?? "Untitled";
   return <NodeViewWrapper data-drag-handle="" className="my-0.5">
-    <button
-      type="button"
+    <RowButton
+      size="sm"
+      tone="selection"
+      active={selected}
       contentEditable={false}
       onClick={() => pages.open(id)}
-      className={clsx("-mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-2 rounded-md px-1.5 py-1 text-left text-message text-foreground transition-colors hover:bg-accent", selected && "bg-selection")}
+      className="-mx-1.5 w-[calc(100%+0.75rem)]"
     >
       <FileText size={16} strokeWidth={1.75} aria-hidden="true" className="shrink-0 text-muted-foreground" />
-      <span className="min-w-0 truncate underline decoration-border underline-offset-4">{title || "Untitled"}</span>
-    </button>
+      <span className="min-w-0 truncate text-message underline decoration-border underline-offset-4">{title || "Untitled"}</span>
+    </RowButton>
   </NodeViewWrapper>;
 }
 
@@ -190,9 +198,9 @@ function DatabaseEmbedView({ node, selected }: ReactNodeViewProps) {
     <div contentEditable={false} className="mb-1.5 flex items-center gap-2">
       <Table2 size={15} strokeWidth={1.75} aria-hidden="true" className="shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1 truncate text-message font-semibold text-foreground">{title || "Untitled database"}</span>
-      <button type="button" onClick={() => pages.open(id)} className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
-        <ArrowUpRight size={13} aria-hidden="true" />Open as page
-      </button>
+      <Button variant="quiet" size="xs" className="shrink-0" onClick={() => pages.open(id)}>
+        <ArrowUpRight aria-hidden="true" />Open as page
+      </Button>
     </div>
     <div contentEditable={false} data-database-frame="" className="max-h-[480px]">
       {pages.renderDatabase?.(id, view) ?? <p className="m-0 rounded-lg bg-muted px-3 py-4 text-ui text-muted-foreground">{title || "Untitled database"}</p>}
@@ -215,17 +223,16 @@ function WikiLinkView({ node }: ReactNodeViewProps) {
   const target = String(node.attrs.target ?? "").trim();
   const alias = node.attrs.alias == null ? null : String(node.attrs.alias).trim() || null;
   return <NodeViewWrapper as="span" className="inline">
-    <button
+    <Tip label={`Open the page ${target}`}><button
       type="button"
       contentEditable={false}
-      title={`Open the page ${target}`}
       aria-label={`Open the page ${target}`}
       onClick={() => { if (target) pages.openByTitle?.(target); }}
       className="inline-flex cursor-pointer items-baseline gap-1 rounded text-foreground align-baseline underline decoration-border underline-offset-4 transition-colors hover:decoration-foreground"
     >
       <FileText size={13} strokeWidth={1.75} aria-hidden="true" className="relative top-[1px] shrink-0 text-muted-foreground" />
       <span className="min-w-0 truncate">{alias ?? target}</span>
-    </button>
+    </button></Tip>
   </NodeViewWrapper>;
 }
 
@@ -246,16 +253,15 @@ function CalloutView({ node, updateAttributes }: ReactNodeViewProps) {
   const look = CALLOUT_LOOK[kind];
   const next = CALLOUT_KINDS[(CALLOUT_KINDS.indexOf(kind) + 1) % CALLOUT_KINDS.length];
   return <NodeViewWrapper as="aside" data-callout="" data-kind={kind} className={clsx("my-2 flex gap-2.5 rounded-lg px-3 py-2.5", look.tone)}>
-    <button
+    <Tip label={`${look.label} · click to change`}><button
       type="button"
       contentEditable={false}
       aria-label={`${look.label} callout. Change to ${CALLOUT_LOOK[next].label}`}
-      title={`${look.label} · click to change`}
       onClick={() => updateAttributes({ kind: next })}
       className={clsx("mt-[0.3rem] grid size-5 shrink-0 place-items-center rounded transition-colors hover:bg-accent", kind === "WARNING" ? "text-warning" : kind === "CAUTION" ? "text-destructive" : "text-muted-foreground")}
     >
       <look.icon size={15} strokeWidth={1.9} aria-hidden="true" />
-    </button>
+    </button></Tip>
     <NodeViewContent className="note-callout-body min-w-0 flex-1" />
   </NodeViewWrapper>;
 }

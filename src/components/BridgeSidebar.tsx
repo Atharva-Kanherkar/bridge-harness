@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Archive, AtSign, Blocks, Bot, Check, CheckCheck, ChevronRight, CircleDot, Clock, Copy, Folder, FolderPlus, GitFork, Home, MoreHorizontal, PinOff, Plus, Search, Settings2, SquarePen, Workflow as WorkflowIcon, type LucideIcon } from "lucide-react";
+import { Archive, AtSign, Blocks, Bot, Check, CheckCheck, ChevronRight, CircleDot, Copy, Folder, FolderPlus, GitFork, Home, MoreHorizontal, PinOff, Plus, Search, Settings2, SquarePen, Workflow as WorkflowIcon, type LucideIcon } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import type { AppKey, BadgeText, LaunchEntry } from "../apps/registry";
 import { HarnessMark } from "./harnessMarks";
@@ -18,8 +18,12 @@ import { MOTION_DURATION, useMotionTransition } from "../motion";
 import { harnessLabel } from "../utils";
 import { NOTIFY_LEVELS, useDelegationNotify } from "../delegationNotify";
 import { EARLY_COMPACTION_CHAT_NOTE, useEarlyCompaction } from "../earlyCompaction";
-import { mentionToken, toPublicAlias } from "../referenceChip";
-import { MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
+import { toPublicAlias } from "../referenceChip";
+import { MenuItem, MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
+import { Tip } from "@/components/ui/tooltip";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { SidebarFilterMenu } from "./SidebarFilterMenu";
 import { ChatSearchResults } from "./ChatSearchResults";
 import { CHAT_SEARCH_MIN_CHARS, enterAction, useChatSearch } from "../chatSearch";
@@ -157,8 +161,9 @@ function ChatRow({
       "group/row relative flex items-center rounded-md transition-colors",
       active ? "bg-selection text-selection-foreground" : "hover:bg-accent",
     )}>
-    <button
-      type="button"
+    <RowButton
+      size="bare"
+      tone="plain"
       draggable
       onDragStart={event => {
         event.dataTransfer.setData(SIDEBAR_CHAT_DRAG, chat.id);
@@ -171,25 +176,22 @@ function ChatRow({
       title={detail}
       aria-description="Drag into Mission Control to keep this chat in the grid"
       aria-current={active ? "page" : undefined}
-      className={cn(
-        "flex h-11 min-w-0 flex-1 items-center gap-2 rounded-md text-left font-sans transition-colors active:scale-[0.99]",
-        indented ? "pl-7" : "pl-2",
-      )}
+      className="h-11 flex-1"
     >
-      <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
+      <span className={cn("flex min-w-0 flex-1 flex-col justify-center gap-0.5", indented ? "pl-7" : "pl-2")}>
         {unread && <span className="sr-only">Unread: </span>}
         <span className="flex min-w-0 items-center gap-1.5">
           {unread && <span className="size-1.5 shrink-0 rounded-full bg-foreground" aria-hidden="true" />}
           <FittedTitle
             title={name}
             ladder={chat.title ? chat.titleLadder : undefined}
-            className={cn("min-w-0 flex-1 truncate text-ui leading-4 tracking-[-0.008em] text-foreground", (active || unread) && "font-medium")}
+            className={cn("min-w-0 flex-1 truncate text-ui leading-4 text-foreground", (active || unread) && "font-medium")}
           />
         </span>
         {/* The fork origin is extra context, not a replacement for the status
             line: a fork still has to show whether it is working and when it
             last moved, like any other chat. */}
-        <span className="flex min-w-0 items-center gap-1.5 truncate text-caption leading-3.5 tracking-[-0.004em] text-muted-foreground">
+        <span className="flex min-w-0 items-center gap-1.5 truncate text-caption leading-3.5 text-muted-foreground">
           {status && <><span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status.dot)} aria-hidden="true" /><span>{status.label}</span></>}
           {/* The PR comes before the time: on a narrow rail the time is what
               truncates, never the word saying whether the PR landed. The
@@ -216,7 +218,7 @@ function ChatRow({
           </>}
         </span>
       </span>
-    </button>
+    </RowButton>
     {/* Revealed on hover or keyboard focus: one three-dot menu holding every
         row action, so the row itself stays a single click target. The copy
         action puts the public `brio_…` alias on the clipboard — the token the
@@ -258,40 +260,36 @@ function SubagentList({ chatName: parentName, rows, open, indented, activeSessio
   const count = `${rows.length} subagent${rows.length === 1 ? "" : "s"}`;
   return (
     <div className="flex flex-col gap-0.5" data-subagents-of={parentName}>
-      <button
-        type="button"
+      <RowButton
+        size="sm"
+        tone="muted"
         onClick={onToggle}
         aria-expanded={open}
         aria-label={`${open ? "Hide" : "Show"} ${count} of ${parentName}`}
-        className={cn(
-          "flex h-6 w-full items-center gap-1 rounded-md pr-2 text-left text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-          indented ? "pl-9" : "pl-4",
-        )}
       >
-        <ChevronRight size={11} strokeWidth={1.7} className={cn("shrink-0 transition-transform", open && "rotate-90")} aria-hidden="true" />
-        <span className="truncate">{count}</span>
-      </button>
+        <span className={cn("flex min-w-0 items-center gap-1", indented ? "pl-7.5" : "pl-2.5")}>
+          <ChevronRight size={11} strokeWidth={1.7} className={cn("shrink-0 transition-transform", open && "rotate-90")} aria-hidden="true" />
+          <span className="truncate">{count}</span>
+        </span>
+      </RowButton>
       {open && rows.map(({ chat, depth }) => {
         const active = chat.id === activeSessionId;
         const time = chatListTime(chatTimestamp(chat), now);
         return (
-          <button
-            key={chat.id}
-            type="button"
-            onClick={() => onOpenSession(chat.id)}
-            aria-current={active ? "page" : undefined}
-            title={`${chatName(chat)} — subagent of ${parentName}`}
-            data-subagent-row={chat.id}
-            style={{ paddingLeft: `${(indented ? 2.25 : 1) + depth * 0.75}rem` }}
-            className={cn(
-              "flex h-8 w-full min-w-0 items-center gap-1.5 rounded-md pr-2 text-left text-meta transition-colors",
-              active ? "bg-selection text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-            )}
-          >
-            <Bot size={12} strokeWidth={1.6} className="shrink-0" aria-hidden="true" />
-            <span className={cn("min-w-0 flex-1 truncate", active && "font-medium")}>{chatName(chat)}</span>
-            {time && <span className="shrink-0 tabular-nums text-caption text-faint">{time}</span>}
-          </button>
+          <Tip key={chat.id} label={`${chatName(chat)} — subagent of ${parentName}`}>
+            <RowButton
+              tone="selection"
+              active={active}
+              onClick={() => onOpenSession(chat.id)}
+              aria-current={active ? "page" : undefined}
+              data-subagent-row={chat.id}
+              style={{ paddingLeft: `${(indented ? 2.25 : 1) + depth * 0.75}rem` }}
+            >
+              <Bot size={12} strokeWidth={1.6} className={cn("shrink-0", !active && "text-muted-foreground")} aria-hidden="true" />
+              <span className={cn("min-w-0 flex-1 truncate text-meta", active ? "font-medium" : "text-muted-foreground")}>{chatName(chat)}</span>
+              {time && <span className="shrink-0 tabular-nums text-caption text-faint">{time}</span>}
+            </RowButton>
+          </Tip>
         );
       })}
     </div>
@@ -332,63 +330,50 @@ function ChatRowMenu({
   const run = (action: () => void) => () => { action(); menu.close(); };
   return (
     <>
-      <button
-        ref={menu.triggerRef}
-        type="button"
-        onClick={event => { event.stopPropagation(); menu.toggle(); }}
-        title={`Chat actions for ${name}`}
-        aria-label={`Chat actions for ${name}`}
-        aria-haspopup="menu"
-        aria-expanded={menu.open}
+      <span
         className={cn(
-          "mr-1 grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100",
+          "mr-1 flex shrink-0 transition-opacity has-focus-visible:opacity-100 group-hover/row:opacity-100",
           menu.open ? "opacity-100" : "opacity-0",
         )}
       >
-        <MoreHorizontal size={13} strokeWidth={1.7} aria-hidden="true" />
-      </button>
+        <Button
+          ref={menu.triggerRef}
+          variant="quiet"
+          size="icon-xs"
+          onClick={event => { event.stopPropagation(); menu.toggle(); }}
+          tooltip={`Chat actions for ${name}`}
+          aria-label={`Chat actions for ${name}`}
+          aria-haspopup="menu"
+          aria-expanded={menu.open}
+        >
+          <MoreHorizontal strokeWidth={1.7} aria-hidden="true" />
+        </Button>
+      </span>
       <MenuPanel controller={menu} label={`Chat actions for ${name}`}>
         {onMarkRead && (
-          <button type="button" role="menuitem" className={item} onClick={run(onMarkRead)}>
-            <CheckCheck size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate">Mark as read</span>
-          </button>
+          <MenuItem label="Mark as read" onClick={run(onMarkRead)} leading={<CheckCheck size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />} />
         )}
         {onMarkUnread && (
-          <button type="button" role="menuitem" className={item} onClick={run(onMarkUnread)}>
-            <CircleDot size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate">Mark as unread</span>
-          </button>
+          <MenuItem label="Mark as unread" onClick={run(onMarkUnread)} leading={<CircleDot size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />} />
         )}
         {(onMarkRead || onMarkUnread) && <MenuSeparator />}
-        <button type="button" role="menuitem" className={item} onClick={run(() => { void navigator.clipboard?.writeText(alias); })}>
-          <Copy size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-          <span className="min-w-0 flex-1 truncate">Copy chat ID</span>
-          <span className="shrink-0 font-mono text-caption text-muted-foreground">{alias}</span>
-        </button>
+        <MenuItem
+          label="Copy chat ID"
+          onClick={run(() => { void navigator.clipboard?.writeText(alias); })}
+          leading={<Copy size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
+          trailing={<span className="shrink-0 font-mono text-caption text-muted-foreground">{alias}</span>}
+        />
         {onMention && (
-          <button type="button" role="menuitem" className={item} onClick={run(onMention)}>
-            <AtSign size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate">Mention in current chat</span>
-          </button>
+          <MenuItem label="Mention in current chat" onClick={run(onMention)} leading={<AtSign size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />} />
         )}
         {onFork && (
-          <button type="button" role="menuitem" className={item} onClick={run(onFork)}>
-            <GitFork size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate">Fork chat…</span>
-          </button>
+          <MenuItem label="Fork chat…" onClick={run(onFork)} leading={<GitFork size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />} />
         )}
         {onSaveAsWorkflow && (
-          <button type="button" role="menuitem" className={item} onClick={run(onSaveAsWorkflow)}>
-            <WorkflowIcon size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate">Save as workflow…</span>
-          </button>
+          <MenuItem label="Save as workflow…" onClick={run(onSaveAsWorkflow)} leading={<WorkflowIcon size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />} />
         )}
         {onJumpToParent && forkLabel && (
-          <button type="button" role="menuitem" className={item} onClick={run(onJumpToParent)}>
-            <GitFork size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate">Open parent: {forkLabel}</span>
-          </button>
+          <MenuItem label={`Open parent: ${forkLabel}`} onClick={run(onJumpToParent)} leading={<GitFork size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />} />
         )}
         <ChatEarlyCompaction chatId={chat.id} />
         {chat.kind !== "worker" && <ChatNoticeLevel chatId={chat.id} item={item} />}
@@ -417,12 +402,11 @@ function ChatEarlyCompaction({ chatId }: { chatId: string }) {
   return (
     <>
       <MenuSeparator />
-      <button
-        type="button"
+      <RowButton
         role="menuitemcheckbox"
         aria-checked={on}
         disabled={busy}
-        className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-ui transition-colors hover:bg-accent"
+        className="items-start"
         onClick={() => set(view.sessionOptedOut ? null : false)}
       >
         <Check size={12} strokeWidth={1.7} className={cn("mt-1 shrink-0", on ? "text-foreground" : "opacity-0")} aria-hidden="true" />
@@ -430,7 +414,7 @@ function ChatEarlyCompaction({ chatId }: { chatId: string }) {
           <span className="block truncate">Compact early</span>
           <span className="block text-caption leading-snug text-muted-foreground">{EARLY_COMPACTION_CHAT_NOTE}</span>
         </span>
-      </button>
+      </RowButton>
       {error && <p role="alert" className="pb-1 pl-7 pr-2 text-caption leading-snug text-destructive">{error}</p>}
     </>
   );
@@ -471,7 +455,7 @@ function SectionLabel({ children, action }: { children: React.ReactNode; action?
   return (
     <div className="flex h-7 items-center gap-1.5 px-2">
       <Folder size={13} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-      <span className="text-meta font-medium tracking-[-0.004em] text-muted-foreground">{children}</span>
+      <span className="text-meta font-medium text-muted-foreground">{children}</span>
       {action && <span className="ml-auto flex items-center gap-0.5">{action}</span>}
     </div>
   );
@@ -497,16 +481,17 @@ function GroupLabel({
   return (
     <div
       className={cn(
-        "group flex h-7 w-full items-center gap-2 rounded-md pl-2 pr-1 text-left text-ui tracking-[-0.008em] text-foreground/90 transition-colors",
+        "group flex h-7 w-full items-center gap-2 rounded-md pl-2 pr-1 text-left text-ui text-foreground/90 transition-colors",
         active ? "bg-accent font-medium text-foreground" : "hover:bg-accent/70 hover:text-foreground",
       )}
     >
-      <button
-        type="button"
+      <Tip label={folded ? `Show ${label}` : `Hide ${label}`}>
+      <RowButton
+        size="bare"
+        tone="plain"
         onClick={onToggle}
         aria-expanded={!folded}
-        title={folded ? `Show ${label}` : `Hide ${label}`}
-        className="flex h-full min-w-0 flex-1 items-center gap-2 text-left"
+        className="h-full flex-1"
       >
         <ChevronRight
           size={11}
@@ -516,7 +501,8 @@ function GroupLabel({
         />
         {Icon && <Icon size={13} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
         <span className="min-w-0 truncate text-meta text-muted-foreground">{label}</span>
-      </button>
+      </RowButton>
+      </Tip>
       <span className="ml-auto shrink-0 text-caption tabular-nums text-muted-foreground/60">{count}</span>
       {action}
     </div>
@@ -525,15 +511,9 @@ function GroupLabel({
 
 function RailIconButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={label}
-      aria-label={label}
-      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-    >
+    <Button variant="quiet" size="icon-xs" onClick={onClick} tooltip={label} aria-label={label}>
       {children}
-    </button>
+    </Button>
   );
 }
 
@@ -563,24 +543,21 @@ function ActionRow({
   unpinnable?: boolean;
 }) {
   return (
-    <button
-      type="button"
+    <Tip label={label} shortcut={chord ? chordLabel(chord) : undefined}>
+    <RowButton
+      tone="selection"
+      shape="card"
+      active={active}
       onClick={onClick}
       disabled={disabled}
-      title={chord ? `${label}  ${chordLabel(chord)}` : label}
       aria-label={badge ? `${label}, ${badge.label}` : label}
       aria-current={active ? "page" : undefined}
-      className={cn(
-        "flex h-8 w-full items-center gap-2.5 rounded-lg px-2 text-ui tracking-[-0.008em] transition-colors",
-        active ? "bg-selection font-medium text-selection-foreground" : "text-foreground/85 hover:bg-accent hover:text-foreground",
-        disabled && "cursor-default opacity-50 hover:bg-transparent hover:text-foreground/85",
-        unpinnable && !active && "group-hover/pin:bg-accent group-hover/pin:text-foreground",
-      )}
     >
       <Icon size={15} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-      {label}
+      <span className={cn(active && "font-medium")}>{label}</span>
       {badge && <span aria-hidden="true" className={cn("ml-auto rounded-full bg-foreground/10 px-1.5 text-caption tabular-nums text-muted-foreground", unpinnable && "group-hover/pin:opacity-0")}>{badge.count}</span>}
-    </button>
+    </RowButton>
+    </Tip>
   );
 }
 
@@ -938,13 +915,13 @@ export function BridgeSidebar({
         aria-hidden={hidden || undefined}
         className={cn(
           "z-40 flex shrink-0 flex-col font-sans antialiased",
-          "fixed inset-y-0 left-0 w-[min(84vw,20rem)] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+          "fixed inset-y-0 left-0 w-[min(84vw,20rem)] transition-transform duration-300 ease-out-bridge",
           mobileOpen ? "visible translate-x-0" : "invisible -translate-x-full",
           "sm:visible sm:relative sm:z-20 sm:w-(--sidebar-w) sm:translate-x-0",
           "u-vibrancy-sidebar bg-sidebar",
           // Hidden means hidden: no rail, no icons, not even the seam.
           hidden ? "overflow-hidden" : "border-r border-sidebar-border",
-          animateWidth ? "sm:transition-[width] sm:duration-300 sm:ease-[cubic-bezier(0.22,1,0.36,1)]" : "sm:transition-none",
+          animateWidth ? "sm:transition-[width] sm:duration-300 sm:ease-out-bridge" : "sm:transition-none",
         )}
         style={{
           "--sidebar-w": `${collapsed ? 0 : width}px`,
@@ -984,9 +961,11 @@ export function BridgeSidebar({
           }}
         >
           {searchOpen && (
-            <div className="relative h-8 min-w-0 flex-1">
-              <Search size={14} strokeWidth={1.6} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-              <input
+            <InputGroup className="flex-1">
+              <InputGroupAddon>
+                <Search strokeWidth={1.6} aria-hidden="true" />
+              </InputGroupAddon>
+              <InputGroupInput
                 type="text"
                 value={query}
                 autoFocus
@@ -1000,34 +979,26 @@ export function BridgeSidebar({
                 }}
                 placeholder="Search chats and what was said…"
                 aria-label="Filter chats and projects"
-                className="h-8 w-full rounded-md border border-ring/50 bg-background pl-8 pr-2.5 text-ui text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-ring"
               />
-            </div>
+            </InputGroup>
           )}
-          <button
-            type="button"
-            onClick={() => { closeSearch(); onOpenNewChat(); }}
-            disabled={newChatBusy}
-            aria-label="New Chat"
-            title={`New Chat  ${chordLabel("new-chat")}`}
-            className={cn(
-              "inline-flex h-8 items-center gap-2 rounded-md border border-border-card bg-card text-foreground shadow-control text-ui font-medium transition-colors enabled:hover:bg-accent disabled:cursor-default disabled:opacity-50",
-              searchOpen ? "w-8 shrink-0 justify-center" : "min-w-0 flex-1 px-2.5 text-left",
-            )}
-          >
-            <SquarePen size={15} strokeWidth={1.6} className="shrink-0" aria-hidden="true" />
-            {!searchOpen && <><span className="min-w-0 flex-1 truncate">New Chat</span><span aria-hidden="true" className="text-caption font-normal text-muted-foreground">{chordLabel("new-chat")}</span></>}
-          </button>
-          {!searchOpen && (
-            <button
-              type="button"
-              onClick={openSearch}
-              aria-label="Search"
-              title="Search"
-              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
+          <Tip label="New Chat" shortcut={chordLabel("new-chat")}>
+            <Button
+              variant="outline"
+              size={searchOpen ? "icon-sm" : "sm"}
+              onClick={() => { closeSearch(); onOpenNewChat(); }}
+              disabled={newChatBusy}
+              aria-label="New Chat"
+              className={cn(searchOpen ? "size-8 sm:size-8" : "min-w-0 flex-1 justify-start")}
             >
-              <Search size={15} strokeWidth={1.6} aria-hidden="true" />
-            </button>
+              <SquarePen strokeWidth={1.6} aria-hidden="true" />
+              {!searchOpen && <><span className="min-w-0 flex-1 truncate text-left">New Chat</span><span aria-hidden="true" className="text-caption font-normal text-muted-foreground">{chordLabel("new-chat")}</span></>}
+            </Button>
+          </Tip>
+          {!searchOpen && (
+            <Button variant="outline" size="icon-sm" onClick={openSearch} aria-label="Search" tooltip="Search" className="size-8 sm:size-8">
+              <Search strokeWidth={1.6} aria-hidden="true" />
+            </Button>
           )}
         </div>
 
@@ -1044,17 +1015,19 @@ export function BridgeSidebar({
             // Unpin sits beside the row, never inside it: a <button> inside a
             // <button> is invalid HTML. It shows on hover and keyboard focus.
             return (
-              <div key={app.key} className="group/pin relative">
+              <div key={app.key} className="group/pin relative rounded-lg transition-colors hover:bg-accent">
                 {row}
-                <button
-                  type="button"
-                  onClick={() => onUnpinApp(app.key)}
-                  title={`Unpin ${app.name}`}
-                  aria-label={`Unpin ${app.name}`}
-                  className="absolute right-1 top-1 grid size-6 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 group-hover/pin:opacity-100"
-                >
-                  <PinOff size={12} strokeWidth={1.7} aria-hidden="true" />
-                </button>
+                <span className="absolute right-1 top-1 flex opacity-0 transition-opacity has-focus-visible:opacity-100 group-hover/pin:opacity-100">
+                  <Button
+                    variant="quiet"
+                    size="icon-2xs"
+                    onClick={() => onUnpinApp(app.key)}
+                    tooltip={`Unpin ${app.name}`}
+                    aria-label={`Unpin ${app.name}`}
+                  >
+                    <PinOff strokeWidth={1.7} aria-hidden="true" />
+                  </Button>
+                </span>
               </div>
             );
           })}
@@ -1118,15 +1091,15 @@ export function BridgeSidebar({
                     folded={folded}
                     active={group.chats.some(chat => chat.id === activeSessionId)}
                     action={isProjectGroup && onNewChatInProject && (
-                      <button
-                        type="button"
+                      <Button
+                        variant="quiet"
+                        size="icon-xs"
                         onClick={() => onNewChatInProject(group.key)}
-                        title={`New chat in ${group.label}`}
+                        tooltip={`New chat in ${group.label}`}
                         aria-label={`New chat in ${group.label}`}
-                        className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                       >
-                        <Plus size={12} strokeWidth={1.7} aria-hidden="true" />
-                      </button>
+                        <Plus strokeWidth={1.7} aria-hidden="true" />
+                      </Button>
                     )}
                     icon={projectIcon}
                     onToggle={() => toggleFold(group.key)}
@@ -1175,17 +1148,11 @@ export function BridgeSidebar({
                 );
               })}
                 {overCap && !folded && (
-                  <button
-                    type="button"
-                    aria-expanded={!capped}
-                    onClick={() => toggleShownInFull(group.key)}
-                    className={cn(
-                      "flex h-6 w-full items-center rounded-md text-left text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-                      group.label ? "pl-7" : "px-2",
-                    )}
-                  >
-                    {capped ? `Show ${group.chats.length - GROUP_ROW_CAP} more` : "Show less"}
-                  </button>
+                  <RowButton size="sm" tone="muted" aria-expanded={!capped} onClick={() => toggleShownInFull(group.key)}>
+                    <span className={group.label ? "pl-5.5" : "pl-0.5"}>
+                      {capped ? `Show ${group.chats.length - GROUP_ROW_CAP} more` : "Show less"}
+                    </span>
+                  </RowButton>
                 )}
               </div>
             );
@@ -1200,7 +1167,10 @@ export function BridgeSidebar({
         {/* A rail pinned to the bottom: the account's settings entry and the
             usage dot. */}
         <div className="mt-1 flex shrink-0 items-center gap-0.5 border-t border-sidebar-border pt-1.5">
-          <button type="button" onClick={onOpenSettings} aria-label={`Open settings for ${accountName}`} aria-current={settingsActive ? "page" : undefined} title={`Open settings for ${accountName}`} className={cn("flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-meta transition-colors", settingsActive ? "bg-selection text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")}><Settings2 size={16} strokeWidth={1.6} aria-hidden="true" /><span className="truncate">Settings</span></button>
+          <RowButton tone="selection" shape="card" active={settingsActive} onClick={onOpenSettings} aria-label={`Open settings for ${accountName}`} aria-current={settingsActive ? "page" : undefined} title={`Open settings for ${accountName}`} className="flex-1">
+            <Settings2 size={16} strokeWidth={1.6} className={cn(!settingsActive && "text-muted-foreground")} aria-hidden="true" />
+            <span className={cn("truncate text-meta", !settingsActive && "text-muted-foreground")}>Settings</span>
+          </RowButton>
           {/* The usage dot: a quick look at account quota, with the Usage app
               for the full screen. */}
           {railTrailing}

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, LoaderCircle, Pencil, Send, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { bridgeApi } from "../../api";
 import type { ReviewFinding, ReviewFindingDecisionInput, ReviewJob, ReviewPass, ReviewSeverity } from "../../protocol/generated/protocol";
 import { GithubMarkdown } from "./GithubMarkdown";
@@ -93,7 +95,8 @@ function FindingItem({ finding, harnesses, repositoryUrl, draft, busy, onDraft, 
     </div>
     {editing
       ? <div className="mt-2 grid gap-1.5">
-          <textarea
+          <Textarea
+            size="sm"
             aria-label={`Edit finding: ${finding.title}`}
             autoFocus
             value={text}
@@ -103,18 +106,17 @@ function FindingItem({ finding, harnesses, repositoryUrl, draft, busy, onDraft, 
               if (event.key === "Escape") { event.preventDefault(); onCancelEdit(); }
               if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && text.trim()) { event.preventDefault(); onDecide("edited", text); }
             }}
-            className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-meta text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
           <div className="flex justify-end gap-1.5">
-            <button type="button" onClick={onCancelEdit} className="rounded-md px-2 py-0.5 text-meta text-muted-foreground hover:bg-accent">Cancel</button>
-            <button type="button" disabled={busy || !text.trim()} onClick={() => onDecide("edited", text)} className="rounded-md bg-primary px-2 py-0.5 text-meta font-medium text-primary-foreground disabled:opacity-50">Save edit</button>
+            <Button variant="quiet" size="2xs" onClick={onCancelEdit}>Cancel</Button>
+            <Button size="2xs" disabled={busy || !text.trim()} onClick={() => onDecide("edited", text)}>Save edit</Button>
           </div>
         </div>
       : <div className="mt-1.5 text-meta text-foreground/90"><GithubMarkdown text={savedBody(finding)} repositoryUrl={repositoryUrl} /></div>}
     {!editing && <div className="mt-1.5 flex gap-1">
-      <button type="button" disabled={busy} aria-pressed={finding.decision === "kept"} onClick={() => onDecide("kept")} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-meta text-foreground hover:bg-accent disabled:opacity-50"><Check size={11} aria-hidden="true" /> Keep</button>
-      <button type="button" disabled={busy} aria-pressed={dropped} onClick={() => onDecide("dropped")} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-meta text-foreground hover:bg-accent disabled:opacity-50"><X size={11} aria-hidden="true" /> Drop</button>
-      <button type="button" disabled={busy} onClick={onEdit} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-meta text-foreground hover:bg-accent disabled:opacity-50"><Pencil size={11} aria-hidden="true" /> Edit</button>
+      <Button variant="ghost" size="2xs" disabled={busy} aria-pressed={finding.decision === "kept"} onClick={() => onDecide("kept")}><Check className="size-3" aria-hidden="true" /> Keep</Button>
+      <Button variant="ghost" size="2xs" disabled={busy} aria-pressed={dropped} onClick={() => onDecide("dropped")}><X className="size-3" aria-hidden="true" /> Drop</Button>
+      <Button variant="ghost" size="2xs" disabled={busy} onClick={onEdit}><Pencil className="size-3" aria-hidden="true" /> Edit</Button>
     </div>}
   </li>;
 }
@@ -193,8 +195,8 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
   const label = posting ? "Posting…" : findings.length === 0 ? "Post summary" : count === 0 ? "Post" : `Post ${count} ${count === 1 ? "finding" : "findings"}`;
   return <div data-review-draft={job.id} className="border-t border-border/70 bg-muted/20 px-3 py-2.5">
     {findings.length > 0 && <div className="mb-2 flex flex-wrap items-center gap-1.5">
-      <button type="button" disabled={busy} onClick={() => void decide(settled.map(finding => ({ findingId: finding.id, decision: "kept" })))} className="rounded-md border border-border bg-card px-2 py-0.5 text-meta text-foreground hover:bg-accent disabled:opacity-50">Keep all</button>
-      <button type="button" disabled={busy} onClick={() => void decide(settled.map(finding => ({ findingId: finding.id, decision: "dropped" })))} className="rounded-md border border-border bg-card px-2 py-0.5 text-meta text-foreground hover:bg-accent disabled:opacity-50">Drop all</button>
+      <Button variant="outline" size="2xs" disabled={busy} onClick={() => void decide(settled.map(finding => ({ findingId: finding.id, decision: "kept" })))}>Keep all</Button>
+      <Button variant="outline" size="2xs" disabled={busy} onClick={() => void decide(settled.map(finding => ({ findingId: finding.id, decision: "dropped" })))}>Drop all</Button>
       <span className="ml-auto text-caption text-muted-foreground"><kbd>K</kbd> keep · <kbd>D</kbd> drop · <kbd>E</kbd> edit · arrows move</span>
     </div>}
     {findings.length === 0 && <p className="mb-2 text-meta text-muted-foreground">The reviewer found nothing to flag. Posting leaves its summary as a comment review.</p>}
@@ -221,9 +223,9 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
     <div className="flex items-center justify-end gap-2">
       {reason && <span className="text-caption text-muted-foreground">{reason}</span>}
       {!reason && undecided > 0 && <span className="text-caption text-muted-foreground">{count} kept, {undecided} not decided</span>}
-      <button type="button" disabled={busy || blocked} aria-busy={posting} onClick={() => void post()} className="inline-flex min-h-7 items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-meta font-medium text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50">
-        {posting ? <LoaderCircle size={11} aria-hidden="true" className="animate-spin motion-reduce:animate-none" /> : <Send size={11} aria-hidden="true" />} {label}
-      </button>
+      <Button size="xs" disabled={busy || blocked} aria-busy={posting} onClick={() => void post()}>
+        {posting ? <LoaderCircle aria-hidden="true" className="size-3 animate-spin motion-reduce:animate-none" /> : <Send className="size-3" aria-hidden="true" />} {label}
+      </Button>
     </div>
   </div>;
 }

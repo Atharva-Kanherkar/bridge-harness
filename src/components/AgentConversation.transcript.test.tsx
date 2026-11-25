@@ -385,7 +385,7 @@ describe("inline diffs", () => {
     openActivity();
     expect(host.textContent).toContain("+24");
     expect(host.textContent).toContain("−3");
-    expect(host.querySelector('[title="src-tauri/src/lib.rs"]')?.textContent).toBe("src-tauri/src");
+    expect(host.querySelector('[data-tip="src-tauri/src/lib.rs"]')?.textContent).toBe("src-tauri/src");
   });
 
   it("still opens a group whose edit carries no diff only on request", () => {

@@ -169,7 +169,7 @@ describe("AgentConversation", () => {
 
   it("leaves the tool path inert without an opener", async () => {
     const { container, unmount } = await mountConversation({});
-    expect(container.querySelector('[title="src/App.tsx"]')?.textContent).toBe("src");
+    expect(container.querySelector('[data-tip="src/App.tsx"]')?.textContent).toBe("src");
     expect(container.querySelector('button[aria-label="Open src/App.tsx in the Code pane"]')).toBeNull();
     await unmount();
   });

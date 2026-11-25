@@ -164,9 +164,10 @@ describe("GitHubPane", () => {
     ]);
     expect([...toolbar.children].every(node => node.className.includes("size-7"))).toBe(true);
     const copy = host!.querySelector('button[aria-label="Copy bridge/harness"]')!;
-    expect(copy.className).toMatch(/\bmin-w-0\b/);
-    expect(copy.className).toMatch(/\bshrink\b/);
-    expect(copy.className).not.toMatch(/\bshrink-0\b/);
+    const copyClasses = copy.className.split(/\s+/);
+    expect(copyClasses).toContain("min-w-0");
+    expect(copyClasses).toContain("shrink");
+    expect(copyClasses).not.toContain("shrink-0");
     expect(host!.querySelector("header")!.className).toContain("p-1.5");
     expect(host!.querySelector("header")!.className).not.toContain("u-glass");
   });
