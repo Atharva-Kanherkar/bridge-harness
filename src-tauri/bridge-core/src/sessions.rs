@@ -2076,14 +2076,13 @@ pub(crate) fn resolve_reference_records(
     Ok(ResolveReferenceResult::Unknown { authorized: false })
 }
 
-/// The durable half of a session fork, in one transaction. Returns the new
-/// session's id. The parent session is never written: its rows, entries, and
-/// head are only read. Entry ids are a global primary key, so the fork mints
-/// fresh ids for every copied row and remaps the parent-entry chain and the
-/// session head to the copies; payloads, kinds, sequences, and timestamps are
-/// copied verbatim, and `provider_event_id` is cleared because the fork owns
-/// no provider-adjacent events yet. A `fork.created` event names the parent
-/// and fork point; a `session.forked` event on the parent names the fork.
+/// Copy a session branch in one transaction and return the new session id.
+/// Read the parent rows, entries and head. Make a new id for each copy.
+/// Remap the parent chain and the head to the copies. Keep payloads, kinds
+/// and timestamps. Number the copies from 1 in branch order.
+/// Clear `provider_event_id` because the fork has no provider events yet.
+/// A `fork.created` event names the parent and fork point.
+/// A `session.forked` event on the parent names the fork.
 pub(crate) fn fork_session_records(
     db: &Connection,
     session_id: &str,
@@ -2212,11 +2211,10 @@ pub(crate) fn fork_session_records(
     let mut fork_point_copy: Option<String> = None;
     let mut checkpoint_copy: Option<String> = None;
     for (index, entry) in prefix.iter().enumerate() {
-        // Entry ids are a global primary key across all sessions, so the fork
-        // mints fresh ids and remaps the parent chain and the head pointers to
-        // the copies. Payloads, kinds, sequences, and timestamps are copied
-        // verbatim; `provider_event_id` is cleared because the fork owns no
-        // provider-adjacent events yet.
+        // Entry ids are unique across sessions. Make a new id for each copy
+        // and remap the parent chain and the head to the copies.
+        // Keep the payload, kind and timestamp. Number the copies from 1 in
+        // branch order. Clear `provider_event_id` for each copy.
         let entry_copy_id = Uuid::new_v4().to_string();
         // Imported history is stored for display only (`visible`), so it
         // never enters a model's context. The chat that continues it is a

@@ -951,4 +951,48 @@ mod tests {
         assert_eq!(entry.payload["approvalType"], "delegation_path_scope");
         assert_eq!(entry.payload["requestedOwnedPaths"], json!(["src/**"]));
     }
+
+    /// A Bridge worker sits at depth 1, and the generic chat start no longer
+    /// resets it to 0. The live coordinator, under a saved workspace policy
+    /// with raised limits, rejects its read-only research request at the depth
+    /// gate. The same request from the top-level parent spawns a worker.
+    #[test]
+    fn a_depth_one_session_cannot_delegate_reading() {
+        let workspace = tempfile::tempdir().unwrap();
+        let db = database(workspace.path());
+        let mut settings = crate::worker_settings::load(&db, "w").unwrap();
+        settings.max_concurrent_workers = 16;
+        settings.max_workers_per_turn = 16;
+        crate::worker_settings::save(&db, "w", &settings).unwrap();
+        db.execute_batch(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,parent_session_id,depth) VALUES('worker','w','claude','Research','working','reported','standard','parent',1);
+             INSERT INTO session_heads(session_id,restoration_mode,updated_at) VALUES('worker','fresh','now');
+             INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,updated_at) VALUES('worker','parent','working','research','key','pending','now');",
+        )
+        .unwrap();
+        let reading = DelegationRequest {
+            role: WorkerRole::Research,
+            objective: "Read the session store and list the callers of open".into(),
+            acceptance_criteria: vec!["Name each caller with its file".into()],
+            owned_paths: Vec::new(),
+            write_mode: WriteMode::ReadOnly,
+            verification: Vec::new(),
+            output_contract: OutputContract::ResearchResult,
+            harness: Some("claude".into()),
+            ..request(&[])
+        };
+
+        let route = PolicyCoordinator::decide_worker_route(&db, "worker", "turn-1", &reading, true).unwrap();
+        assert_eq!(route.parent_depth, 1);
+        assert!(matches!(route.outcome.decision, policy::RouteDecision::Reject), "{:?}", route.outcome.decision);
+        assert_eq!(route.outcome.reason, policy::RouteReason::DepthLimit);
+        assert_eq!(route.pending_approval_id, None);
+        let branch = SessionForest::new(&db).active_branch("worker").unwrap();
+        let recorded = branch.last().unwrap();
+        assert_eq!(recorded.kind, "delegation.rejected");
+        assert_eq!(recorded.payload["reason"], json!("depth_limit"));
+
+        let route = PolicyCoordinator::decide_worker_route(&db, "parent", "turn-2", &reading, true).unwrap();
+        assert!(matches!(route.outcome.decision, policy::RouteDecision::SpawnWorker(_)), "{:?}", route.outcome.decision);
+    }
 }

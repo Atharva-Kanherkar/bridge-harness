@@ -1224,6 +1224,26 @@ mod account_launch_tests {
     }
 }
 
+/// The newest session of the workspace and harness that start_session may
+/// launch again. A session with a parent or a worker runtime never qualifies:
+/// this launcher would drop the authority of a worker and clear its depth.
+/// An aside with a pending native fork does not qualify either: a resume would
+/// write to the conversation of its source.
+fn reusable_workspace_session(db: &Connection, workspace_id: &str, harness: &str) -> Option<(String, Option<String>)> {
+    db.query_row(
+        "SELECT id,provider_session_id FROM sessions
+         WHERE workspace_id=?1 AND harness=?2 AND sessions.kind IN ('direct','orchestrator')
+           AND parent_session_id IS NULL
+           AND NOT EXISTS(SELECT 1 FROM worker_runtime w WHERE w.session_id=sessions.id)
+           AND NOT EXISTS(SELECT 1 FROM session_heads h WHERE h.session_id=sessions.id AND h.restoration_mode='native_fork')
+           AND status IN ('idle','stopped','failed','ready','working','waiting')
+         ORDER BY rowid DESC LIMIT 1",
+        params![workspace_id, harness],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .ok()
+}
+
 pub fn start_session(
     core: &Arc<BridgeCore>,
     workspace_id: String,
@@ -1285,11 +1305,7 @@ pub fn start_session(
         params![workspace_id],
         |r| r.get::<_, Option<String>>(0),
     )?;
-    let existing: Option<(String, Option<String>)> = db.query_row(
-        "SELECT id,provider_session_id FROM sessions WHERE workspace_id=?1 AND harness=?2 AND status IN ('idle','stopped','failed','ready','working','waiting') ORDER BY rowid DESC LIMIT 1",
-        params![workspace_id, adapter_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    ).ok();
+    let existing = reusable_workspace_session(&db, &workspace_id, adapter_id);
     let session_id = existing
         .as_ref()
         .map(|(id, _)| id.clone())
@@ -1323,7 +1339,10 @@ pub fn start_session(
     };
     let dispatch_id = launch_plan.adapter_id.as_str();
     let root_write_mode = crate::chat_defaults::root_write_mode(&state.db.lock().unwrap(), &session_id)?;
-    let interactive = crate::chat_defaults::is_top_level_chat(&state.db.lock().unwrap(), &session_id)?;
+    // A new session has no row yet. The insert below writes it with no parent
+    // and no worker runtime, so it is a top-level chat.
+    // For an existing row, read its current state again for the launch settings.
+    let interactive = existing.is_none() || crate::chat_defaults::is_top_level_chat(&state.db.lock().unwrap(), &session_id)?;
     let path = path.filter(|value| !value.is_empty()).unwrap_or_else(|| {
         state
             .chat_scratch_dir(&session_id)
@@ -1788,6 +1807,9 @@ impl LaunchTiming {
     }
 }
 
+/// The refusal of a generic chat launcher for a Bridge worker.
+const WORKER_START_REFUSAL: &str = "This is a worker; it resumes through its orchestrator, not from here.";
+
 /// The caller owns the session lifecycle across a cancellation and continuation.
 fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<(), BridgeError> {
     let state = core;
@@ -1821,6 +1843,13 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<(), 
             "Imported history cannot resume a foreign provider session. Start a fresh Bridge conversation explicitly instead."
                 .into(),
         ));
+    }
+    // A Bridge worker starts only through its orchestrator, inside its pool
+    // reservation and with its sandbox and write scope. This launcher would
+    // drop all three and set its depth to 0. The check comes before the
+    // workspace lock, a process stop or a row update.
+    if !crate::chat_defaults::is_top_level_chat(&state.db.lock().unwrap(), &session_id)? {
+        return Err(BridgeError::Invalid(WORKER_START_REFUSAL.into()));
     }
     // An empty stored id is not a thread to resume; treating it as Some would
     // send `""` to registry.resume under the native plan.
@@ -1894,6 +1923,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<(), 
     } else {
         crate::chat_defaults::root_write_mode(&state.db.lock().unwrap(), &session_id)?
     };
+    // Read the current row again for the launch settings after the workspace lock.
     let interactive = !is_workflow && crate::chat_defaults::is_top_level_chat(&state.db.lock().unwrap(), &session_id)?;
     let scoped_settings = crate::chat_defaults::validate_launch(&state.db.lock().unwrap(), &state.adapter_registry, &session_id, adapter_id, model.as_deref(), effort.as_deref())?;
     let tier = if is_orchestrator {
@@ -13697,9 +13727,7 @@ pub fn deliver_queued_now(core: &Arc<BridgeCore>, session_id: &str) -> Result<Qu
         |row| row.get(0),
     )?;
     if worker {
-        return Err(BridgeError::Invalid(
-            "This is a worker; it resumes through its orchestrator, not from here.".into(),
-        ));
+        return Err(BridgeError::Invalid(WORKER_START_REFUSAL.into()));
     }
     let queued = session_input::next_queued(&core.db.lock().unwrap(), session_id)?.is_some();
     if !queued {
