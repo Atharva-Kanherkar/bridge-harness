@@ -125,13 +125,13 @@ describe("ComposerPill", () => {
 
     const submit = container.querySelector<HTMLButtonElement>('button[aria-label="Queue"]')!;
     expect(submit.disabled).toBe(false);
-    expect(submit.title).toBe("Held until the current step finishes");
+    expect(submit.dataset.tip).toBe("Held until the current step finishes");
     expect(container.querySelector('button[aria-label="Steer"]')).toBeNull();
   });
 
   it("explains unsupported steering in the Queue tooltip", () => {
     render({ value: "next", working: true, activeAction: "queue", activeActionNote: "This provider cannot steer a live turn.", onStop: () => {} });
-    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Queue"]')!.title).toBe("This provider cannot steer a live turn.");
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Queue"]')!.dataset.tip).toBe("This provider cannot steer a live turn.");
   });
 
   it("submits on Enter during an active turn", () => {

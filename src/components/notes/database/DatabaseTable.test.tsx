@@ -266,7 +266,7 @@ describe("DatabaseTable", () => {
     // The date editor's own toggles.
     click(cell(0, 1));
     press("Enter");
-    click([...document.querySelectorAll("label")].find(label => label.textContent === "End date")!.querySelector("input")!);
+    click([...document.querySelectorAll("label")].find(label => label.textContent === "End date")!.querySelector<HTMLElement>('[data-slot="checkbox"]')!);
     expect(document.querySelector("[role=dialog][aria-label='Due editor']")).not.toBeNull();
     expect(input("Due end")).not.toBeNull();
     act(() => { input("Due start").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });

@@ -11,6 +11,10 @@ import { ArrowUpRight, Check, Plus } from "lucide-react";
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
 import { clsx } from "clsx";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { RowButton } from "@/components/ui/row";
 import { openExternalUrl } from "../../../externalLinks";
 import type { NoteOption, NoteOptionInput, NoteProperty, Workspace } from "../../../types";
 import { MenuLabel, Option, OptionList } from "../NotesUi";
@@ -75,8 +79,7 @@ export function PropertyCell({ column, value, host, mode = "panel", editing: con
     return <InlineInput type={type} name={column.name} initial={seed ?? (type === "number" ? (typeof value === "number" ? String(value) : "") : typeof value === "string" ? value : "")} mode={mode} onCommit={(next, reason) => commit(next, reason)} onCancel={cancel} />;
   }
 
-  const panelButton = (children: ReactNode) => <button
-    type="button"
+  const panelButton = (children: ReactNode) => <RowButton
     aria-label={column.name}
     aria-haspopup={type === "checkbox" ? undefined : "dialog"}
     aria-expanded={type === "checkbox" ? undefined : editing}
@@ -84,8 +87,9 @@ export function PropertyCell({ column, value, host, mode = "panel", editing: con
     disabled={READ_ONLY.has(type)}
     onClick={() => type === "checkbox" ? onCommit(!(value === true)) : setEditing(!editing)}
     onKeyDown={event => { if (type === "checkbox" && event.key === " ") { event.preventDefault(); onCommit(!(value === true)); } }}
-    className={clsx("-ml-1.5 flex min-h-8 w-full min-w-0 items-center rounded-md px-1.5 text-left text-ui transition-colors enabled:hover:bg-accent", editing && "bg-accent", text || type === "checkbox" ? "text-foreground" : "text-faint")}
-  >{children}</button>;
+    active={editing}
+    className="-ml-1.5"
+  ><span className={clsx("flex min-w-0 flex-1 items-center", text || type === "checkbox" ? "text-foreground" : "text-faint")}>{children}</span></RowButton>;
 
   const openable = type === "url" && typeof value === "string" && OPENABLE.test(value.trim());
   return <div ref={anchor} className={clsx("relative min-w-0", mode === "cell" ? "h-full" : "flex items-center gap-1")}>
@@ -140,14 +144,14 @@ function Display({ column, value, text, host, mode }: { column: PropertyCellProp
 
 /** Opens a cell's link the way Bridge opens any outside link. */
 function OpenLink({ url }: { url: string }) {
-  return <button
-    type="button"
+  return <Button
+    variant="quiet"
+    size="icon-2xs"
     aria-label={`Open link ${url}`}
-    title="Open link"
+    tooltip="Open link"
     onClick={event => { event.stopPropagation(); void openExternalUrl(url.trim()); }}
     onMouseDown={event => event.stopPropagation()}
-    className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-  ><ArrowUpRight size={13} aria-hidden="true" /></button>;
+  ><ArrowUpRight aria-hidden="true" /></Button>;
 }
 
 function Chip({ option, status }: { option: NoteOption; status: boolean }) {
@@ -183,6 +187,7 @@ function InlineInput({ type, name, initial, mode, onCommit, onCancel }: { type: 
     done.current = true;
     onCommit(parsed(), reason);
   };
+  // oxlint-disable-next-line bridge/no-raw-controls -- the in-place cell editor fills its grid cell; a boxed field would shift the row
   return <input
     ref={input}
     aria-label={name}
@@ -210,8 +215,10 @@ function InlineInput({ type, name, initial, mode, onCommit, onCancel }: { type: 
 function SearchBox({ label, value, onChange, onEnter, onCancel }: { label: string; value: string; onChange: (value: string) => void; onEnter: () => void; onCancel: () => void }) {
   const box = useRef<HTMLInputElement>(null);
   useEffect(() => { box.current?.focus(); }, []);
-  return <input
+  return <Input
     ref={box}
+    size="sm"
+    className="mb-1"
     aria-label={label}
     value={value}
     placeholder="Search or create…"
@@ -221,7 +228,6 @@ function SearchBox({ label, value, onChange, onEnter, onCancel }: { label: strin
       if (event.key === "Enter") { event.preventDefault(); onEnter(); }
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onCancel(); }
     }}
-    className="mb-1 h-8 w-full rounded-lg bg-muted px-2.5 text-ui text-foreground outline-none placeholder:text-faint focus-visible:ring-2 focus-visible:ring-ring"
   />;
 }
 
@@ -263,10 +269,10 @@ function OptionPicker({ property, value, seed, host, onPick, onCancel }: { prope
           return inGroup.length ? <div key={group} role="group" aria-label={label}><MenuLabel>{label}</MenuLabel>{inGroup.map(row)}</div> : null;
         })
         : matches.map(row)}
-      {query.trim() && !exact && <button type="button" onClick={() => void create()} disabled={creating} className="flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-ui text-foreground transition-colors hover:bg-accent disabled:opacity-60">
+      {query.trim() && !exact && <RowButton shape="card" onClick={() => void create()} disabled={creating}>
         <Plus size={14} aria-hidden="true" className="shrink-0 text-muted-foreground" />
         <span className="min-w-0 truncate">Create <span className="font-medium">{query.trim()}</span></span>
-      </button>}
+      </RowButton>}
       {!matches.length && !query.trim() && <p className="m-0 px-2.5 py-2 text-meta text-muted-foreground">No options yet. Type one to create it.</p>}
     </OptionList>
   </div>;
@@ -315,16 +321,15 @@ function DateEditor({ name, value, onCommit, onCancel }: { name: string; value: 
     if (event.key === "Enter") { event.preventDefault(); save(); }
     if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onCancel(); }
   };
-  const field = "h-8 w-full rounded-lg bg-muted px-2.5 text-ui text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
   return <div className="flex flex-col gap-1.5 p-1" onKeyDown={keys}>
-    <input aria-label={`${name} start`} type={withTime ? "datetime-local" : "date"} value={start} onChange={event => setStart(event.target.value)} autoFocus className={field} />
-    {hasEnd && <input aria-label={`${name} end`} type={withTime ? "datetime-local" : "date"} value={end} onChange={event => setEnd(event.target.value)} className={field} />}
+    <Input size="sm" aria-label={`${name} start`} type={withTime ? "datetime-local" : "date"} value={start} onChange={event => setStart(event.target.value)} autoFocus />
+    {hasEnd && <Input size="sm" aria-label={`${name} end`} type={withTime ? "datetime-local" : "date"} value={end} onChange={event => setEnd(event.target.value)} />}
     {backwards && <p role="alert" className="m-0 px-1 text-meta text-destructive">The end is before the start.</p>}
-    <label className="flex items-center gap-2 px-1 text-meta text-foreground"><input type="checkbox" checked={hasEnd} onChange={() => setHasEnd(current => !current)} className="accent-foreground" />End date</label>
-    <label className="flex items-center gap-2 px-1 text-meta text-foreground"><input type="checkbox" checked={withTime} onChange={toggleTime} className="accent-foreground" />Include time</label>
+    <label className="flex items-center gap-2 px-1 text-meta text-foreground"><Checkbox checked={hasEnd} onCheckedChange={() => setHasEnd(current => !current)} />End date</label>
+    <label className="flex items-center gap-2 px-1 text-meta text-foreground"><Checkbox checked={withTime} onCheckedChange={toggleTime} />Include time</label>
     <div className="mt-1 flex justify-between gap-1">
-      <button type="button" onClick={() => onCommit(null)} className="inline-flex h-8 items-center rounded-full px-3 text-ui text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Clear</button>
-      <button type="button" onClick={save} disabled={!ready} className="inline-flex h-8 items-center rounded-full bg-primary px-3.5 text-ui font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40">Done</button>
+      <Button variant="quiet" size="sm" onClick={() => onCommit(null)}>Clear</Button>
+      <Button size="sm" onClick={save} disabled={!ready}>Done</Button>
     </div>
   </div>;
 }
@@ -367,6 +372,6 @@ function ChatLinks({ value, host }: { value: unknown; host: CellHost }) {
   const ids = Array.isArray(value) ? value.map(String) : [];
   if (!ids.length) return <p className="m-0 px-2.5 py-2 text-meta text-muted-foreground">No linked chats.</p>;
   return <div className="flex flex-col">
-    {ids.map(id => <button key={id} type="button" onClick={() => host.onOpenChat?.(id)} className="flex min-h-8 w-full items-center rounded-lg px-2.5 text-left text-ui text-foreground underline decoration-border underline-offset-4 transition-colors hover:bg-accent">{host.chatTitle?.(id) ?? "A chat"}</button>)}
+    {ids.map(id => <RowButton key={id} shape="card" onClick={() => host.onOpenChat?.(id)}><span className="truncate underline decoration-border underline-offset-4">{host.chatTitle?.(id) ?? "A chat"}</span></RowButton>)}
   </div>;
 }

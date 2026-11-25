@@ -14,6 +14,7 @@ export const buttonVariants = cva(
     defaultVariants: {
       size: "default",
       variant: "default",
+      shape: "default",
     },
     variants: {
       size: {
@@ -61,6 +62,11 @@ export const buttonVariants = cva(
         secondary:
           "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/90 data-pressed:bg-secondary/90 *:data-[slot=button-loading-indicator]:text-secondary-foreground [:active,[data-pressed]]:bg-secondary/80",
       },
+      // Round: the composer's send and stop, and pills that sit on media.
+      shape: {
+        default: "",
+        round: "rounded-full before:rounded-full",
+      },
     },
   },
 );
@@ -68,6 +74,7 @@ export const buttonVariants = cva(
 export interface ButtonProps extends useRender.ComponentProps<"button"> {
   variant?: VariantProps<typeof buttonVariants>["variant"];
   size?: VariantProps<typeof buttonVariants>["size"];
+  shape?: VariantProps<typeof buttonVariants>["shape"];
   loading?: boolean;
   /**
    * Hover and focus hint, shown in the app's Tooltip. A string also names an
@@ -83,6 +90,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       className,
       variant,
       size,
+      shape,
       render,
       children,
       loading = false,
@@ -109,7 +117,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
           )}
         </>
       ),
-      className: cn(buttonVariants({ className, size, variant })),
+      className: cn(buttonVariants({ className, shape, size, variant })),
       "aria-disabled": loading || undefined,
       // An icon-only button has no text to be named by, so the hint names it.
       "aria-label":
