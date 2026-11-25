@@ -52,25 +52,41 @@ button, field, row or tooltip looks like.
 
 | You need | Use |
 |---|---|
-| An action beside other content | `Button` (`variant`: `default` `outline` `secondary` `ghost` `quiet` `text` `link` `destructive` `destructive-outline` `destructive-ghost`; `size`: `2xs` `xs` `sm` `default` `lg` `xl`, `icon-2xs` … `icon-xl`, `inline`) |
+| An action beside other content | `Button` (`variant`: `default` `outline` `secondary` `ghost` `quiet` `text` `link` `chip` `destructive` `destructive-outline` `destructive-ghost` `destructive-quiet`; `size`: `2xs` `xs` `sm` `default` `lg` `xl`, `icon-3xs` … `icon-xl`, `inline`; `shape="round"` for the composer's send and stop) |
+| A filter pill that toggles | `Button variant="chip" size="2xs" aria-pressed={on}` |
+| A row's delete or remove | `Button variant="destructive-quiet" size="icon-xs"`: muted until hovered |
+| A link styled as a button | `Button render={<a href=… />}` |
+| The small text action on a rendered block (Copy, Expand, Zoom) | `BlockAction` (`floating` pins it to the block's corner) |
 | An icon-only action | `Button size="icon-xs" variant="quiet" tooltip="Close tab"` |
 | A link-like action inside a sentence | `Button variant="text" size="inline"` |
-| A line that is clicked as a whole (list item, tree node, menu-like choice) | `RowButton` (`size`: `sm` `default` `lg` `bare`; `tone`: `default` `muted` `selection` `plain`; `shape`: `rounded` `card` `flush`; `active`) |
-| Two to four visible choices | `Segmented`, or `SegmentedGroup` + `SegmentedItem` |
+| A line that is clicked as a whole (list item, tree node, menu-like choice) | `RowButton` (`size`: `sm` `default` `lg` `card` `bare`; `tone`: `default` `muted` `selection` `nav` `tab` `choice` `surface` `plain`; `shape`: `rounded` `card` `panel` `flush`; `active`). With `size="bare"`, put the row's own layout and padding on a child element |
+| Navigation (settings rail, a page list) | `RowButton tone="nav" active={current}` |
+| A selectable option card | `RowButton tone="choice" role="radio" aria-checked={chosen}` |
+| Two to four visible choices | `Segmented`, or `SegmentedGroup` + `SegmentedItem`; `tabs`/`tab` for a section switcher |
+| One choice from a short list with descriptions | `RadioGroup` + `Radio` |
 | A hint on hover or focus | `Tip`, or `tooltip=` on `Button` |
-| A text field | `Input` (`size="sm"` for dense rows), `Textarea`, `InputGroup` for a field with an adornment |
+| A text field | `Input` (`size="sm"` for dense rows, `mono` for paths and ids, `unstyled` inside a header or composer), `Textarea`, `InputGroup` for a field with an adornment |
 | On or off | `Switch` |
-| A choice from a list | `Select` |
+| On or off, with a label | `Checkbox` |
+| A choice from a list | `SelectField` (value, options, onChange); compose `Select` parts only when an option needs more than a label |
 | A menu | `MenuPanel`, `MenuItem` |
 | A floating panel | `Popover` |
 | A dialog | `Dialog` and its parts |
-| A status label | `Badge` |
+| A status label | `Badge` (`muted` for secondary facts, `dashed` for estimates) |
 | A notice | `Alert` |
 | A framed block | `Card` |
 | A key hint | `Kbd` |
-| Empty, loading or failed pane | `PaneState`, `Empty`, `Skeleton*` |
+| Empty, loading or failed pane | `PaneState`, `Empty`, `Skeleton*` (`SkeletonRows density`: `default` `menu` `flush` `card`) |
 | A page heading | `ScreenHeading`, `SCREEN_CONTENT` |
 | A settings page | `src/components/settings/kit.tsx`, which composes the primitives above |
+
+## Tokens worth knowing
+
+Letter spacing: `tracking-snug` for UI text, `tracking-tight`, `tracking-display` for large figures. Motion: `animate-meter-fill`, `animate-chart-rise`, `animate-insight-rise`, `animate-thinking-pulse`. Shadows: `shadow-control`, `shadow-float`. All live in `src/index.css`.
+
+## Testing hints and selects
+
+`Tip` mirrors a string label to `data-tip` on its child, so a test finds a hint with `[data-tip="…"]` instead of `title`. `SelectItem` mirrors its value to `data-value`; drive a select from jsdom with `chooseOption`, `openSelect` and `selectValue` from `src/testing/select.ts`.
 
 ## When nothing fits
 

@@ -158,7 +158,7 @@ describe("AgentConversation", () => {
     const chips = [...container.querySelectorAll<HTMLElement>("[data-subagent]")];
     expect(chips.map(chip => chip.dataset.subagent)).toEqual(["ses_child"]);
     expect(chips[0].textContent).toContain("general");
-    expect(chips[0].title).toBe("Subagent: Look up the facts");
+    expect(chips[0].dataset.tip).toBe("Subagent: Look up the facts");
     const rows = [...container.querySelectorAll<HTMLElement>("[data-tool-row]")];
     expect(rows).toHaveLength(2);
     expect(rows[0].querySelector("[data-subagent]")).toBeNull();

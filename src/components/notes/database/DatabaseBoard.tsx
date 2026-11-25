@@ -208,9 +208,9 @@ function Card({ row, columns, host, movable, targets, onOpen, onDragStart, onDra
       <span className={clsx("block truncate text-ui font-medium", row.note.title ? "text-foreground" : "text-faint")}>{row.note.title || "Untitled"}</span>
       {lines.map(([column, text]) => <span key={column.id} className="mt-0.5 block truncate text-caption text-muted-foreground">{column.type === "checkbox" ? column.name : text}</span>)}
     </span></RowButton>
-    {movable && targets.length > 0 && <Button variant="quiet" size="icon-2xs" className="absolute right-1 top-1" aria-label={`Move ${row.note.title || "Untitled"} to…`} aria-expanded={menu} onClick={() => setMenu(current => !current)}>
+    {movable && targets.length > 0 && <span className="absolute right-1 top-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100"><Button variant="quiet" size="icon-2xs" aria-label={`Move ${row.note.title || "Untitled"} to…`} aria-expanded={menu} onClick={() => setMenu(current => !current)}>
       <ArrowRightLeft size={12} aria-hidden="true" />
-    </Button>}
+    </Button></span>}
     {menu && <Floating anchor={anchor} label="Move to" onClose={() => setMenu(false)} width="w-56">
       <div role="menu" aria-label="Move to">
         {targets.map(target => <RowButton size="bare" tone="default" shape="card" key={target.key || "none"} role="menuitem" onClick={() => { setMenu(false); onMove(target.key); }}><span className="flex min-h-8 w-full items-center px-2.5 text-ui">{target.label}</span></RowButton>)}
