@@ -6,6 +6,7 @@ import {
   GhostButton, PrimaryButton, SettingsGroup, SettingsRow, StatusPill, Switch, TextButton,
 } from "./settings/kit";
 import { cn } from "@/lib/utils";
+import { Input } from "@/components/ui/input";
 
 // The two groups only OpenCode's harness detail page shows: which providers it
 // has credentials for, and which of their models Bridge is allowed to offer.
@@ -113,7 +114,8 @@ export function OpenCodeHarnessSettings({
           : provider.authMethods.some(method => method.kind === "api")
             ? <>
                 <label className="sr-only" htmlFor={`opencode-key-${provider.id}`}>{provider.name} API key</label>
-                <input
+                <Input
+                  size="sm"
                   id={`opencode-key-${provider.id}`}
                   type="password"
                   autoComplete="off"
@@ -121,7 +123,7 @@ export function OpenCodeHarnessSettings({
                   placeholder={`${provider.name} API key`}
                   value={providerKeys[provider.id] ?? ""}
                   onChange={event => setProviderKeys(current => ({ ...current, [provider.id]: event.target.value }))}
-                  className="h-7 w-44 shrink-0 rounded-lg border border-border-card bg-popover px-2.5 text-xs text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-foreground/25"
+                  className="w-44 shrink-0"
                 />
                 <PrimaryButton
                   disabled={disabled || workingProvider === provider.id || !(providerKeys[provider.id]?.trim())}

@@ -65,7 +65,7 @@ it("lists cleanup suggestions largest first with whether they rebuild themselves
 
 it("drills into a folder and protects the standard ones", async () => {
   await render();
-  expect((row("Documents")?.querySelector("[role=checkbox]") as HTMLButtonElement | null)?.disabled).toBe(true);
+  expect(row("Documents")?.querySelector("[role=checkbox]")?.getAttribute("aria-disabled")).toBe("true");
   expect(row("Documents")?.textContent).toContain("Protected");
   await act(async () => { button("Downloads")!.click(); });
   await act(async () => { await Promise.resolve(); });

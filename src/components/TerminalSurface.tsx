@@ -5,6 +5,7 @@ import { terminalSearchDecorations } from "../terminal/theme";
 import { acquireTerminalEngine, releaseTerminalEngine, type TerminalEngine, type TerminalViewState } from "../terminal/engine";
 import type { TerminalRecord } from "../terminal/types";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 /** One terminal on screen. The xterm, its checkpoint replay, and its input
  *  live in a `TerminalEngine`; this view gives it a host, a size, and the
@@ -59,9 +60,9 @@ export function TerminalSurface({ record, focused, onRecord, onSearchHandled = (
     if (previous) engineRef.current?.search.findPrevious(query, options); else engineRef.current?.search.findNext(query, options);
   }
   return <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-code">
-    {searchOpen && <div className="flex shrink-0 items-center gap-1 border-b border-border bg-background px-2 py-1">
+    {searchOpen && <div className="flex shrink-0 items-center gap-1 border-b border-border bg-background px-2 py-1 text-xs">
       <Search size={12} aria-hidden="true" />
-      <input autoFocus aria-label="Search terminal scrollback" className="min-w-0 flex-1 bg-transparent px-1 py-1 text-xs outline-none" value={query} onChange={event => { setQuery(event.target.value); engineRef.current?.search.findNext(event.target.value, { incremental: true, decorations: terminalSearchDecorations() }); }} onKeyDown={event => { if (event.key === "Enter") find(event.shiftKey); if (event.key === "Escape") setSearchOpen(false); event.stopPropagation(); }} />
+      <Input unstyled size="bare" autoFocus aria-label="Search terminal scrollback" className="m-1 min-w-0 flex-1" value={query} onChange={event => { setQuery(event.target.value); engineRef.current?.search.findNext(event.target.value, { incremental: true, decorations: terminalSearchDecorations() }); }} onKeyDown={event => { if (event.key === "Enter") find(event.shiftKey); if (event.key === "Escape") setSearchOpen(false); event.stopPropagation(); }} />
       <span className="text-micro text-muted-foreground">{query && matches}</span>
       <Button variant="quiet" size="icon-xs" aria-label="Previous match" onClick={() => find(true)}><ChevronUp size={13} /></Button>
       <Button variant="quiet" size="icon-xs" aria-label="Next match" onClick={() => find()}><ChevronDown size={13} /></Button>

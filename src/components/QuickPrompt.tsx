@@ -8,6 +8,7 @@ import { ArrowUp } from "lucide-react";
 import { BridgeGlyph } from "./BridgeGlyph";
 import { modKey } from "@/lib/platform";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 
 export const QUICK_HIDE_EVENT = "bridge-quick-hide";
 export const QUICK_SUBMIT_EVENT = "bridge-quick-submit";
@@ -44,8 +45,10 @@ export function QuickPrompt({ emit = emitToShell }: { emit?: (event: string, pay
       <span>New chat in your last project</span>
       <span className="ml-auto">Esc to hide</span>
     </div>
-    <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-border-card bg-card p-3 focus-within:border-ring">
-      <textarea
+    <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-border-card bg-card p-3 text-message focus-within:border-ring">
+      <Textarea
+        unstyled
+        size="bare"
         ref={input}
         aria-label="Ask Bridge"
         value={text}
@@ -55,7 +58,7 @@ export function QuickPrompt({ emit = emitToShell }: { emit?: (event: string, pay
           else if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); }
         }}
         placeholder="Ask Bridge…"
-        className="min-h-0 flex-1 resize-none bg-transparent text-message text-foreground outline-none placeholder:text-muted-foreground"
+        className="flex min-h-0 flex-1"
       />
       <div className="flex items-center justify-between text-caption text-muted-foreground">
         <span>↵ send · ⇧↵ new line · {modKey("N")} in Bridge for more options</span>

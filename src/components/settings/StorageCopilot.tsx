@@ -9,6 +9,7 @@ import { ArrowUp, Boxes, ChevronRight, Container, FolderSearch, HardDrive, ListC
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
+import { Textarea } from "@/components/ui/textarea";
 
 export interface StorageQuickAsk { label: string; prompt: string; icon: typeof Sparkles; series: string }
 
@@ -118,15 +119,15 @@ function StorageCopilotIntro({ selectedCount, starting, recent, onOpenRecent, on
         </ul>
       </>}
     </div>
-    <form onSubmit={event => { event.preventDefault(); submit(question); }} className="m-3 mt-0 flex shrink-0 items-end gap-2 rounded-xl border border-border bg-background p-1.5 transition-shadow focus-within:border-ring/60 focus-within:ring-3 focus-within:ring-ring/20">
-      <textarea
+    <form onSubmit={event => { event.preventDefault(); submit(question); }} className="m-3 mt-0 flex shrink-0 items-end gap-2 rounded-xl border border-border bg-background p-1.5 text-ui transition-shadow focus-within:border-ring/60 focus-within:ring-3 focus-within:ring-ring/20">
+      <Textarea unstyled size="bare"
         aria-label="Ask about your storage"
         value={question}
         rows={2}
         placeholder={starting ? "Starting…" : "Ask about your storage…"}
         onChange={event => setQuestion(event.target.value)}
         onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(question); } }}
-        className="min-w-0 flex-1 resize-none bg-transparent px-1.5 py-1 text-ui text-foreground outline-none placeholder:text-muted-foreground"
+        className="mx-1.5 my-1 min-w-0 flex-1"
       />
       <Button variant="default" size="icon-xs" className="shrink-0" type="submit" aria-label={starting ? "Starting" : "Ask"} disabled={!question.trim() || starting}>
         <ArrowUp size={14} aria-hidden="true" />

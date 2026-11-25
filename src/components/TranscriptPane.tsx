@@ -176,22 +176,18 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
     </div>
 
     {view === "stream" && <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-2 py-1.5">
-      {TRANSCRIPT_FACETS.map(option => <button
+      {TRANSCRIPT_FACETS.map(option => <Button
         key={option}
-        type="button"
+        variant="chip"
+        size="2xs"
         aria-pressed={facet === option}
         onClick={() => setFacet(option)}
-        className={cn(
-          "inline-flex min-h-6 items-center gap-1 rounded-full border px-2 font-mono text-caption transition-colors",
-          facet === option ? "border-foreground/30 bg-accent text-foreground" : "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
-          // The one place this pane is not achromatic: a failure that reads
-          // like every other chip is a failure nobody clicks.
-          option === "problems" && counts.problems > 0 && "border-destructive/40 text-destructive",
-        )}
       >
-        {FACET_LABELS[option]}
-        <span className="tabular-nums opacity-70">{counts[option]}</span>
-      </button>)}
+        {/* The one place this pane is not achromatic: a failure that reads
+            like every other chip is a failure nobody clicks. */}
+        <span className={option === "problems" && counts.problems > 0 ? "font-mono text-destructive" : "font-mono"}>{FACET_LABELS[option]}</span>
+        <span className="font-mono tabular-nums opacity-70">{counts[option]}</span>
+      </Button>)}
     </div>}
 
     {exportState.status === "done" && <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-code px-2 py-1.5 font-mono text-caption">
@@ -229,12 +225,13 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
         {stream.length === 0 ? "No events recorded for this session yet." : "Nothing matches the filter."}
       </p>}
       {visible.map(row => <div key={row.event.id} className="border-b border-border/50">
-        <button
-          type="button"
+        <RowButton
+          size="bare"
+          shape="flush"
           onClick={() => setSelectedId(current => current === row.event.id ? undefined : row.event.id)}
           aria-expanded={selectedId === row.event.id}
-          className={cn("flex w-full items-baseline gap-2 px-2 text-left transition-colors hover:bg-accent", selectedId === row.event.id && "bg-code")}
-        >
+          active={selectedId === row.event.id}
+        ><span className="flex w-full min-w-0 items-baseline gap-2 px-2 text-caption">
           <span className="w-7 shrink-0 tabular-nums text-muted-foreground">{row.event.sequence}</span>
           <Tip label={absoluteTurns
             ? `Turn ${row.turnIndex}`
@@ -244,7 +241,7 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
           {row.problem && <AlertTriangle size={10} className="shrink-0 text-destructive" aria-label={row.problem} />}
           <span className="min-w-0 flex-1 truncate text-muted-foreground">{row.detail}</span>
           <span className="shrink-0 tabular-nums text-muted-foreground">{eventTime(row.event.createdAt)}</span>
-        </button>
+        </span></RowButton>
         {selected?.event.id === row.event.id && <div className="border-t border-border bg-code px-2 py-1.5">
           <div className="flex items-center gap-2">
             <span className="text-caption text-muted-foreground font-medium">Raw event</span>

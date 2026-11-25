@@ -7,6 +7,8 @@
 
 import { LoaderCircle, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { RowButton } from "@/components/ui/row";
+import { Tip } from "@/components/ui/tooltip";
 import type { ChatSearchHit, SearchChatsResult } from "../protocol/generated/protocol";
 import { HarnessMark } from "./harnessMarks";
 import { chatListTime } from "./sidebarChats";
@@ -62,16 +64,13 @@ export function ChatSearchResults({
           const active = hit.sessionId === activeSessionId;
           return (
             <li key={hit.sessionId}>
-              <button
-                type="button"
+              <Tip label={hit.title} side="right"><RowButton
+                size="bare"
+                tone="selection"
                 onClick={() => onOpen(hit.sessionId)}
-                title={hit.title}
                 aria-current={active ? "page" : undefined}
-                className={cn(
-                  "flex w-full min-w-0 flex-col gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors active:scale-[0.99]",
-                  active ? "bg-selection text-selection-foreground" : "hover:bg-accent",
-                )}
-              >
+                active={active}
+              ><span className="flex w-full min-w-0 flex-col gap-0.5 px-2 py-1.5">
                 <span className="flex min-w-0 items-center gap-1.5">
                   <HarnessMark harness={hit.harness} size={12} className="shrink-0 text-muted-foreground" />
                   <span className="min-w-0 flex-1 truncate text-ui leading-4 tracking-snug text-foreground">{hit.title}</span>
@@ -82,7 +81,7 @@ export function ChatSearchResults({
                   <span className="truncate">{hit.why}</span>
                   {(hit.archived || hit.ended) && <span className="shrink-0">· {hit.archived ? "archived" : "ended"}</span>}
                 </span>
-              </button>
+              </span></RowButton></Tip>
             </li>
           );
         })}

@@ -1,8 +1,8 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { AlertCircle, Check, Loader2, Play } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { commandFromFence } from "../terminal/runCommand";
 import type { TerminalRunResult } from "../terminal/runQueue";
+import { Button } from "@/components/ui/button";
 
 // A shell block an agent wrote, run in the chat's own terminal with one
 // click. Only a host that owns a terminal provides the context: notes,
@@ -55,18 +55,15 @@ export function RunButton({ lang, body, closed }: { lang: string; body: string; 
   const title = state.kind === "failed" ? state.message : state.kind === "idle" ? (lines > 1 ? `Run these ${lines} lines in the terminal` : "Run in the terminal") : label;
 
   return (
-    <button
-      type="button"
+    <Button
+      variant={state.kind === "failed" ? "destructive-ghost" : "ghost"}
+      size="xs"
       onClick={start}
       disabled={state.kind === "running"}
       aria-label={name}
-      title={title}
+      tooltip={title}
       data-run-state={state.kind}
-      className={cn(
-        "group/run inline-flex min-h-7 items-center gap-1.5 rounded-md px-[0.45rem] py-[0.15rem] text-caption font-medium transition-colors",
-        "hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-default disabled:hover:bg-transparent",
-        state.kind === "failed" ? "text-destructive" : state.kind === "idle" ? "text-foreground" : "text-muted-foreground",
-      )}
+      className="group/run"
     >
       {state.kind === "idle" && (
         <span aria-hidden="true" className="grid size-4 place-items-center rounded-full bg-foreground text-background transition-transform group-hover/run:scale-110 group-active/run:scale-95">
@@ -76,7 +73,7 @@ export function RunButton({ lang, body, closed }: { lang: string; body: string; 
       {state.kind === "running" && <Loader2 size={12} aria-hidden="true" className="animate-spin" />}
       {state.kind === "sent" && <Check size={12} aria-hidden="true" />}
       {state.kind === "failed" && <AlertCircle size={12} aria-hidden="true" />}
-      <span aria-live="polite">{label}</span>
-    </button>
+      <span aria-live="polite" className={state.kind === "running" || state.kind === "sent" ? "text-muted-foreground" : undefined}>{label}</span>
+    </Button>
   );
 }

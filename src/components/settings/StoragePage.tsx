@@ -375,8 +375,6 @@ function Explorer({ listing, overview, root, selected, busy, sectionRef, onRoot,
           return <li key={entry.path} className={cn("group py-2", EXPLORER_ROW, checked && "bg-accent/60")}>
             <Tip label={entry.protectedReason ?? undefined}>
               <Checkbox
-                nativeButton
-                render={<button type="button" />}
                 aria-label={`Select ${entry.name}`}
                 checked={checked}
                 disabled={Boolean(entry.protectedReason)}

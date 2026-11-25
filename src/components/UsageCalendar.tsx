@@ -7,6 +7,7 @@ import { bucketKeys, calendarAxis, calendarWeeks, harnessesByMetric, harnessValu
 import { EstimateMark, formatMetric, HarnessName, HeroCaption, LAYOUT_CARD, type UsageLayoutProps } from "./UsageLayoutParts";
 import { Tip } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
+import { DataCell } from "@/components/ui/data-cell";
 
 // Layout E: time is the navigation. The calendar is the hero; clicking a day
 // selects it, and shift-click or a drag extends the range. Everything under
@@ -74,12 +75,11 @@ export function UsageCalendar({ summary, periods, window, metric }: UsageLayoutP
     const monthLabel = !hourly && (index === 0 || dayOfMonth === 1) ? formatDayShort(day).split(" ")[0] : null;
     const parts = harnesses.map(entry => ({ harness: entry.harness, value: metric === "cost" ? period.costByHarness[entry.harness] ?? 0 : period.tokensByHarness[entry.harness] ?? 0 })).filter(part => part.value > 0);
     const selected = inRange(index);
-    return <button
-      key={day}
-      type="button"
+    return <Tip key={day} label={`${hourly ? label(index) : formatDayShort(day)} · ${format(value)}`}><DataCell
+      size={compact ? "compact" : "default"}
+      filled={value > 0}
       aria-pressed={selected}
       aria-label={`${hourly ? label(index) : formatDayShort(day)}: ${format(value)}`}
-      title={`${hourly ? label(index) : formatDayShort(day)} · ${format(value)}`}
       onPointerDown={event => { if (!event.shiftKey) drag.current = { anchor: index, moved: false }; }}
       onPointerEnter={() => {
         const current = drag.current;
@@ -92,23 +92,17 @@ export function UsageCalendar({ summary, periods, window, metric }: UsageLayoutP
         drag.current = null;
         select(index, event.shiftKey);
       }}
-      className={cn(
-        "group relative flex select-none flex-col overflow-hidden rounded-lg text-left outline-none transition-[background-color,box-shadow] focus-visible:ring-2 focus-visible:ring-ring",
-        compact ? "h-9 px-1.5 pt-1" : "h-[4.75rem] px-2.5 pb-2 pt-2",
-        value > 0 ? "bg-muted/50 hover:bg-muted/80" : "bg-muted/20 hover:bg-muted/40",
-        selected && "shadow-[inset_0_0_0_1.5px_var(--color-ring)]",
-      )}
     >
       {fill > 0 && <span className="absolute inset-x-0 bottom-0 flex motion-safe:animate-chart-rise origin-bottom" style={{ height: `${fill * 100}%` }} aria-hidden="true">
         {parts.map(part => <span key={part.harness} className="flex flex-col" style={{ flexGrow: part.value }}>
-          <span className={cn("h-[2px] shrink-0", harnessChartDot(part.harness))} />
+          <span className={cn("h-0.5 shrink-0", harnessChartDot(part.harness))} />
           <span className={cn("flex-1 opacity-20 transition-opacity group-hover:opacity-25", harnessChartDot(part.harness))} />
         </span>)}
       </span>}
       <span className={cn("relative leading-none tabular-nums", compact ? "text-micro" : "text-caption", value > 0 ? "text-muted-foreground" : "text-muted-foreground/50")}>{monthLabel && <span className="mr-1 font-medium text-foreground">{monthLabel}</span>}{hourly ? formatHourShort(day, window.timeZone) : dayOfMonth}</span>
       {!hourly && axis[index] === window.untilDay && <span className={cn("absolute size-1.5 rounded-full bg-foreground", compact ? "right-1.5 top-1.5" : "right-2.5 top-2.5")} aria-hidden="true" />}
       {!compact && value > 0 && <span className="relative mt-auto text-body font-medium tracking-tight tabular-nums text-foreground">{format(value)}</span>}
-    </button>;
+    </DataCell></Tip>;
   };
 
   return <div className="space-y-4">

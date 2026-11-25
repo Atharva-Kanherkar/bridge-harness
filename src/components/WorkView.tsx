@@ -6,6 +6,7 @@ import { hasOpenableEvidence, sourceLabel, type TaskAction } from "./workTasks";
 import { recentIntegrationActivity } from "./workActivity";
 import { logoForSourceKind } from "./connectorLogos";
 import { lastRunLine, toolsReadLine } from "./workDashboard";
+import { Button } from "@/components/ui/button";
 
 export type WorkActionOutcome = { ok: true } | { ok: false; reason: string };
 
@@ -36,7 +37,6 @@ export function WorkView({ board, error, refreshError, onRefresh, now, onOpenEvi
   const configured = board !== undefined && board.suggestions.state !== "not_configured";
   const running = board?.suggestions.state === "running";
   const refresh = configured && onRunBriefing ? onRunBriefing : onRefresh;
-  const buttonClass = "inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md border border-border px-3 text-xs text-foreground transition-colors hover:bg-accent disabled:opacity-50";
 
   return (
     <section aria-label="Work" className="mx-auto flex min-h-0 w-full max-w-page flex-1 flex-col overflow-y-auto">
@@ -47,10 +47,10 @@ export function WorkView({ board, error, refreshError, onRefresh, now, onOpenEvi
             {board ? "Activity from your connected integrations." : error ? "Activity could not be loaded." : "Loading your activity…"}
           </p>
         </div>
-        <button type="button" disabled={running} onClick={refresh} className={`${buttonClass} ml-auto`}>
+        <Button variant="outline" size="sm" disabled={running} onClick={refresh} className="ml-auto">
           <RefreshCw size={13} aria-hidden="true" />
           {running ? "Refreshing…" : "Refresh"}
-        </button>
+        </Button>
       </header>
 
       <div className="flex flex-col gap-3 px-5 pb-6 sm:px-8">
@@ -58,7 +58,7 @@ export function WorkView({ board, error, refreshError, onRefresh, now, onOpenEvi
           <div className="u-glass-soft rounded-xl border border-border p-4">
             <h3 className="text-sm font-medium">Connect your work</h3>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Choose a briefing model and your connected tools in Settings → Work to see recent Slack, GitHub, and other integration activity.</p>
-            {onOpenSettings && <button type="button" onClick={onOpenSettings} className={`${buttonClass} mt-3`}>Set up integrations</button>}
+            {onOpenSettings && <Button variant="outline" size="sm" onClick={onOpenSettings} className="mt-3">Set up integrations</Button>}
           </div>
         )}
 
@@ -78,7 +78,7 @@ export function WorkView({ board, error, refreshError, onRefresh, now, onOpenEvi
           <div role="alert" className="rounded-xl border border-border p-5">
             <h3 className="text-sm font-medium">Activity could not be loaded</h3>
             <p className="mt-1 text-xs text-muted-foreground">{error}</p>
-            <button type="button" onClick={onRefresh} className={`${buttonClass} mt-3`}>Try again</button>
+            <Button variant="outline" size="sm" onClick={onRefresh} className="mt-3">Try again</Button>
           </div>
         ) : !board ? (
           <SkeletonRows label="Loading activity" rows={3} lead="dot" />
@@ -104,9 +104,9 @@ export function WorkView({ board, error, refreshError, onRefresh, now, onOpenEvi
                     <h3 className="mt-1 text-sm font-medium [overflow-wrap:anywhere]">{item.title}</h3>
                     <p className="mt-1 text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{item.why}</p>
                     {onOpenEvidence && hasOpenableEvidence(item) && item.evidenceTarget?.kind === "externalLink" && (
-                      <button type="button" onClick={() => onOpenEvidence(item)} className={`${buttonClass} mt-3`}>
+                      <Button variant="outline" size="sm" onClick={() => onOpenEvidence(item)} className="mt-3">
                         <ExternalLink size={12} aria-hidden="true" />Open in {item.evidenceTarget.host}
-                      </button>
+                      </Button>
                     )}
                   </div>
                 </li>

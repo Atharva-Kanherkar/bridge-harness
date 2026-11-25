@@ -45,7 +45,7 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(fun
               "field-sizing-content w-full rounded-[inherit] outline-none placeholder:text-muted-foreground",
               size !== "bare" &&
                 "min-h-17.5 px-[calc(--spacing(3)-1px)] py-[calc(--spacing(1.5)-1px)] max-sm:min-h-20.5",
-              size === "bare" && "resize-none bg-transparent",
+              size === "bare" && "h-full resize-none bg-transparent",
               size === "sm" &&
                 "min-h-16.5 px-[calc(--spacing(2.5)-1px)] py-[calc(--spacing(1)-1px)] max-sm:min-h-19.5",
               size === "lg" &&

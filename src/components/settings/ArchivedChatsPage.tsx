@@ -99,7 +99,7 @@ export function ArchivedChatsPage() {
       <SettingsGroup label={viewing?.title} note="Read-only transcript. Reasoning, tools and interactions use the same conversation view; historical actions are disabled.">
         <div className="relative h-[60dvh] min-h-64">
           {loading && events.length === 0
-            ? <SkeletonRegion label="Loading conversation" className="flex flex-col gap-5 p-4"><Skeleton className="ml-auto h-10 w-2/5 rounded-2xl" /><SkeletonText index={1} /><SkeletonText index={2} lines={2} /></SkeletonRegion>
+            ? <SkeletonRegion label="Loading conversation"><div className="flex flex-col gap-5 p-4"><Skeleton className="ml-auto h-10 w-2/5 rounded-2xl" /><SkeletonText index={1} /><SkeletonText index={2} lines={2} /></div></SkeletonRegion>
             : <AgentConversation key={viewing?.id} readOnly events={events} onResolve={() => undefined} />}
         </div>
       </SettingsGroup>

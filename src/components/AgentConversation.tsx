@@ -402,14 +402,16 @@ const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: C
             body && "hover:bg-accent/50",
           )}
         >
-          <button
-            type="button"
-            className={cn("flex min-h-8 min-w-0 items-center gap-2 rounded-md text-left disabled:cursor-default", suffix && "flex-1")}
-            disabled={!body}
+          {/* A row with nothing to unfold stays a button, out of the tab
+              order, rather than a faded disabled one. */}
+          <Tip label={suffix ? `${label}\n${suffix}` : label}><RowButton
+            size="bare"
+            tone="plain"
+            className={suffix ? "min-h-8 flex-1" : "min-h-8 w-auto"}
+            tabIndex={body ? undefined : -1}
             aria-expanded={body ? open : undefined}
-            title={suffix ? `${label}\n${suffix}` : label}
             onClick={() => body && setToggled(!open)}
-          >
+          ><span className="flex min-w-0 flex-1 items-center gap-2 text-meta">
             {check ? <>
               {/* A check reads like a Verifying row: state, the command as typed,
                   what kind of check it is, and what the output said. */}
@@ -425,7 +427,7 @@ const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: C
               {suffix && <span data-tool-command className="hidden min-w-0 flex-1 truncate font-mono text-caption text-faint sm:block">{suffix}</span>}
             </>}
             <SubagentChip item={item}/>
-          </button>
+          </span></RowButton></Tip>
           {/* flex-1 from a zero basis, so the path gives up room before the label does. */}
           {path && (fileRef
             ? <Button
