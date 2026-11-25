@@ -11775,8 +11775,27 @@ pub fn start_worktree_maintenance(core: Arc<BridgeCore>) {
     });
 }
 
+/// Drop telemetry spans past [`store::TELEMETRY_RETENTION`]. One batch per
+/// lock, so the frame handler (which only ever `try_lock`s this database and
+/// skips telemetry when busy) is never held off for long.
+fn prune_telemetry_pass(core: &BridgeCore) {
+    const BATCH: usize = 5_000;
+    let cutoff = (Utc::now() - store::TELEMETRY_RETENTION).to_rfc3339();
+    loop {
+        let deleted = {
+            let Ok(telemetry) = core.telemetry_db.lock() else { return };
+            store::prune_telemetry(&telemetry, &cutoff, BATCH).unwrap_or(0)
+        };
+        if deleted < BATCH {
+            return;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
 pub fn start_history_snapshot_maintenance(core: Arc<BridgeCore>) {
     thread::spawn(move || loop {
+        prune_telemetry_pass(&core);
         // Every pass, the boot one included, is gated on the newest snapshot's
         // age, so a development restart loop does not export once per restart
         // and a large database is not copied every tick.

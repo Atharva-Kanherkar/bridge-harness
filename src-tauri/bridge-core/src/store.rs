@@ -201,9 +201,10 @@ pub fn append_telemetry_batch(
     }
     let transaction = db.unchecked_transaction()?;
     for span in spans {
-        transaction.execute(
+        transaction.prepare_cached(
             "INSERT OR IGNORE INTO telemetry_spans(span_id,trace_id,name,attributes,started_at,ended_at)
              VALUES(?1,?2,?3,?4,?5,?6)",
+        )?.execute(
             params![
                 span.span_id,
                 span.trace_id,
@@ -216,6 +217,37 @@ pub fn append_telemetry_batch(
     }
     transaction.commit()?;
     Ok(spans.len())
+}
+
+/// How long telemetry spans are kept. Nothing in Bridge reads them back, and
+/// one is written per persisted frame, so without a horizon the file only
+/// grows (1.9 GB after four months on one install).
+pub const TELEMETRY_RETENTION: chrono::Duration = chrono::Duration::days(14);
+
+/// Delete up to `batch` of the oldest spans that started before `cutoff`.
+///
+/// Spans are appended in time order, so the oldest rowids are the oldest
+/// spans: this reads at most `batch` rows from the front and deletes the run
+/// that is old enough, never scanning the rest of the table. A span written
+/// out of order stays until the run in front of it has aged out.
+pub fn prune_telemetry(db: &Connection, cutoff: &str, batch: usize) -> Result<usize, BridgeError> {
+    let last_expired = {
+        let mut statement =
+            db.prepare_cached("SELECT rowid,started_at FROM telemetry_spans ORDER BY rowid LIMIT ?1")?;
+        let mut rows = statement.query(params![batch as i64])?;
+        let mut last = None;
+        while let Some(row) = rows.next()? {
+            if row.get_ref(1)?.as_str().map_err(rusqlite::Error::from)? >= cutoff {
+                break;
+            }
+            last = Some(row.get::<_, i64>(0)?);
+        }
+        last
+    };
+    match last_expired {
+        Some(rowid) => Ok(db.execute("DELETE FROM telemetry_spans WHERE rowid<=?1", params![rowid])?),
+        None => Ok(0),
+    }
 }
 
 pub fn export_history_snapshot(
@@ -4907,6 +4939,40 @@ mod tests {
             plan.iter().any(|step| step.contains("idx_sessions_checkpointing")),
             "the 1 s maintenance query must not scan the sessions table: {plan:?}"
         );
+    }
+
+    #[test]
+    fn telemetry_retention_deletes_only_expired_spans_from_the_front() {
+        let dir = tempfile::tempdir().unwrap();
+        let telemetry = open_telemetry(&dir.path().join("telemetry.db")).unwrap();
+        let span = |id: &str, at: &str| TelemetrySpan {
+            span_id: id.into(),
+            trace_id: "trace".into(),
+            name: "frame".into(),
+            attributes: "{}".into(),
+            started_at: at.into(),
+            ended_at: at.into(),
+        };
+        let spans: Vec<_> = (0..5)
+            .map(|index| span(&format!("old-{index}"), &format!("2026-01-0{}T00:00:00+00:00", index + 1)))
+            .chain([span("new", "2026-11-01T00:00:00+00:00")])
+            .collect();
+        append_telemetry_batch(&telemetry, &spans).unwrap();
+        let remaining = |db: &Connection| -> Vec<String> {
+            db.prepare("SELECT span_id FROM telemetry_spans ORDER BY rowid")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let cutoff = "2026-06-01T00:00:00+00:00";
+
+        assert_eq!(prune_telemetry(&telemetry, cutoff, 2).unwrap(), 2, "one batch at a time");
+        assert_eq!(remaining(&telemetry), ["old-2", "old-3", "old-4", "new"]);
+        assert_eq!(prune_telemetry(&telemetry, cutoff, 10).unwrap(), 3, "stops at the first span still kept");
+        assert_eq!(remaining(&telemetry), ["new"]);
+        assert_eq!(prune_telemetry(&telemetry, cutoff, 10).unwrap(), 0);
     }
 
     #[test]
