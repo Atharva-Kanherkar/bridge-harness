@@ -64,9 +64,10 @@ fn field<'a>(text: &'a str, key: &str) -> Option<&'a str> {
 }
 fn raw_number(text: &str, key: &str) -> Option<f64> {
     let raw = field(text, key)?;
-    let matched = Regex::new(r"^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?:[,}\s]|$)")
-        .ok()?
-        .find(raw)?;
+    static NUMBER: std::sync::LazyLock<Option<Regex>> = std::sync::LazyLock::new(|| {
+        Regex::new(r"^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?:[,}\s]|$)").ok()
+    });
+    let matched = NUMBER.as_ref()?.find(raw)?;
     raw[matched.start()..matched.end()]
         .trim_end_matches([',', '}'])
         .trim()
@@ -127,9 +128,11 @@ fn object<'a>(text: &'a str, key: &str) -> Option<&'a str> {
 fn explicit_null(text: &str) -> bool {
     let text = text.trim().trim_end_matches(';').trim();
     text == "null"
-        || Regex::new(r"^\$R\[\d+\]\s*=\s*null$")
-            .unwrap()
-            .is_match(text)
+        || {
+            static NULL_REF: std::sync::LazyLock<Option<Regex>> =
+                std::sync::LazyLock::new(|| Regex::new(r"^\$R\[\d+\]\s*=\s*null$").ok());
+            NULL_REF.as_ref().is_some_and(|pattern| pattern.is_match(text))
+        }
 }
 fn parse_subscription(text: &str, now: i64) -> Result<Option<AccountUsage>, String> {
     if explicit_null(text) {
