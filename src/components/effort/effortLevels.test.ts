@@ -1,16 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { carryEffort, effortIndex, effortLabel, effortLevelsFrom, effortMeaning, effortWord, supportedEffortLevelsOf } from "./effortLevels";
+import { carryEffort, effortIndex, effortLabel, effortLevelsFrom, effortMeaning, supportedEffortLevelsOf } from "./effortLevels";
 
 describe("effort vocabulary", () => {
   it("names the known ladder", () => {
     expect(["low", "medium", "high", "xhigh", "max", "ultra"].map(effortLabel)).toEqual(["Low", "Med", "High", "XHigh", "Max", "Ultra"]);
-    expect(["low", "xhigh", "ultra"].map(effortWord)).toEqual(["lightly", "deeply", "relentlessly"]);
     expect(effortMeaning("max")).toContain("Claude");
   });
 
   it("never hides a wire value it has not seen", () => {
     expect(effortLabel("turbo")).toBe("Turbo");
-    expect(effortWord("turbo")).toBe("turbo");
     expect(effortMeaning("turbo")).toBe("");
   });
 

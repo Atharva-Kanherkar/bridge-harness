@@ -297,6 +297,14 @@ pub fn prepare(
     let remote = remote_for(&workspace, &job.repo_owner, &job.repo_name);
     let number = job.number;
     let detail = core.github_surface.pr_detail_in(&workspace, &repository, number).map_err(surface_error)?;
+    // For the Reviews dashboard: which PR this was, by name.
+    store::set_pr_meta(
+        &super::lock_db(core),
+        &job.id,
+        &detail.summary.title,
+        detail.summary.author.as_ref().map(|author| author.login.as_str()),
+    )
+    .map_err(fatal)?;
     let head_spec = format!("+refs/pull/{number}/head:{head_ref}");
     let base_spec = format!("+refs/heads/{}:{base_ref}", detail.base_branch);
     let head = git::fetch_ref(&workspace, &remote, &format!("refs/pull/{number}/head"), &head_ref)
@@ -577,6 +585,9 @@ pub fn prior_findings_json(prior: &[(store::PriorFinding, Relation)], threads: &
                 "title": finding.title,
                 "body": finding.body,
                 "fingerprint": finding.fingerprint,
+                // What a second opinion merged into it: other wordings of the
+                // same finding, settled along with it.
+                "alsoKnownAs": finding.also_known_as,
                 "decision": finding.decision.as_str(),
                 "posted": finding.posted,
                 "fixedInSha": finding.fixed_in_sha,

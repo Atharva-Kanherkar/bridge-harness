@@ -36,7 +36,6 @@ export const SETTINGS_ROWS: RegistryRow[] = [
   { page: "general", id: "zoom", label: "Window zoom", description: "Scale the whole window" },
   { page: "general", id: "show-thinking", label: "Show thinking", description: "Draw or hide the model's reasoning text in the transcript" },
   { page: "general", id: "edit-activity", label: "Open edit activity automatically", description: "Open short Activity sections with file diffs in the transcript" },
-  { page: "general", id: "thinking-control", label: "Thinking control", description: "Slider, Sentence, or List effort picker" },
   { page: "general", id: "mission-control", label: "Show worker chats in Mission Control", description: "Also show chats for background tasks" },
 
   { page: "notifications", id: "notices", label: "Notices", description: "Toast, banner and sound for needs you, a waiting result, failed and completed turns" },

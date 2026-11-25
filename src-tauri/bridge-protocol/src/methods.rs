@@ -459,6 +459,7 @@ methods![
     // reviews: pull-request reviews as stored background jobs Bridge runs
     (StartReview, "reviews", "start_review"),
     (ListReviews, "reviews", "list_reviews"),
+    (ReviewOverview, "reviews", "review_overview"),
     (GetReview, "reviews", "get_review"),
     (CancelReview, "reviews", "cancel_review"),
     (RetryReview, "reviews", "retry_review"),

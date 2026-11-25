@@ -1451,6 +1451,10 @@ pub fn dispatch(
             let p: wire::ListReviewsParams = decode(method, params)?;
             reply(api::list_reviews(core, &p))
         }
+        MethodName::ReviewOverview => {
+            let p: wire::ReviewOverviewParams = decode(method, params)?;
+            reply(api::review_overview(core, &p))
+        }
         MethodName::GetReview => {
             let p: wire::GetReviewParams = decode(method, params)?;
             reply(api::get_review(core, &p))
@@ -1778,7 +1782,7 @@ mod tests {
         let core = core(fixture.path());
         let mut events = core.events.subscribe();
         let listed = dispatch(&core, MethodName::ListApps, None).unwrap();
-        assert_eq!(listed["apps"].as_array().unwrap().len(), 12);
+        assert_eq!(listed["apps"].as_array().unwrap().len(), 13);
         assert_eq!(listed["apps"][0]["manifest"]["id"], "notes");
         assert_eq!(listed["apps"][0]["pinned"], Value::Null);
         assert!(dispatch(&core, MethodName::ListApps, Some(json!({}))).is_err(), "list_apps takes no parameters");

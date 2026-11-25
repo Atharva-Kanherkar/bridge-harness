@@ -31,6 +31,12 @@ struct Script {
     panic_on_prepare: AtomicBool,
     /// The review checkout budget is full.
     full: AtomicBool,
+    /// Prepare waits while this is set.
+    prepare_gate_closed: AtomicBool,
+    /// `has_capacity` records a call, then waits (up to half a second) for
+    /// two reviews to start: a window for a second pass to reserve a slot
+    /// between the tick's check and its claim.
+    slow_capacity: AtomicBool,
     /// Review bodies on the simulated pull request.
     github: Mutex<Vec<String>>,
     calls: Mutex<Vec<String>>,
@@ -81,6 +87,9 @@ fn outcome() -> PassOutcome {
 impl ReviewSteps for Script {
     fn prepare(&self, job: &JobRow, _cancel: &CancelToken) -> Result<Prepared, StepError> {
         self.call(format!("prepare:{}", job.id));
+        while self.prepare_gate_closed.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         if self.panic_on_prepare.load(Ordering::SeqCst) {
             panic!("worktree exploded");
         }
@@ -149,6 +158,13 @@ impl ReviewSteps for Script {
     }
 
     fn has_capacity(&self) -> bool {
+        if self.slow_capacity.load(Ordering::SeqCst) {
+            self.call("capacity".into());
+            let deadline = Instant::now() + Duration::from_millis(500);
+            while self.calls("review:").len() < 2 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
         !self.full.load(Ordering::SeqCst)
     }
 
@@ -288,6 +304,8 @@ fn cancel_during_reviewing_stops_the_step_and_cleans_up_within_five_seconds() {
     let runner = Runner::with(core.clone(), fast(), Arc::new(Utc::now));
     let handles = runner.tick().unwrap();
     wait_for(&core, &id, Status::Reviewing);
+    // Cancel once the step is running, not between `reviewing` and its start.
+    wait_for_reviews(&script, 1);
     let started = Instant::now();
     let cancelled = crate::reviews::cancel(&core, &id).unwrap();
     assert_eq!(cancelled.status, Status::Cancelled);
@@ -798,4 +816,241 @@ fn recovery_reaps_review_worktrees() {
     let (_scratch, core, script) = fixture();
     Runner::with(core.clone(), fast(), Arc::new(Utc::now)).recover().unwrap();
     assert_eq!(script.calls("reap"), ["reap"]);
+}
+
+fn second_opinion_on(core: &Arc<BridgeCore>) {
+    settings(core, |settings| settings.second_opinion = true);
+}
+
+/// Wait until `count` reviews have started.
+fn wait_for_reviews(script: &Script, count: usize) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while script.calls("review:").len() < count {
+        assert!(Instant::now() < deadline, "only {:?} started", script.calls("review:"));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn codex_outcome() -> PassOutcome {
+    let mut outcome = outcome();
+    outcome.summary = "One real problem.".into();
+    let mut extra = outcome.findings[0].clone();
+    extra.path = "src/other.rs".into();
+    extra.title = "Missing test".into();
+    extra.fingerprint = "fp-2".into();
+    extra.severity = ReviewSeverity::Nit;
+    outcome.findings.push(extra);
+    outcome
+}
+
+#[test]
+fn two_passes_run_at_once_when_a_slot_is_free() {
+    let (_scratch, core, script) = fixture();
+    second_opinion_on(&core);
+    script.close_gate();
+    let id = queue(&core, 1, &["claude", "codex"]);
+    let runner = Runner::with(core.clone(), fast(), Arc::new(Utc::now));
+    let handles = runner.tick().unwrap();
+    wait_for_reviews(&script, 2);
+    assert_eq!(runner.active(), 2, "the second pass holds the second slot");
+    script.open_gate();
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    assert_eq!(job(&core, &id).status, Status::Drafted);
+    assert_eq!(runner.active(), 0, "both slots are given back");
+}
+
+#[test]
+fn two_passes_run_in_turn_with_one_slot() {
+    let (_scratch, core, script) = fixture();
+    second_opinion_on(&core);
+    settings(&core, |settings| settings.max_concurrent_reviews = 1);
+    script.close_gate();
+    let id = queue(&core, 1, &["claude", "codex"]);
+    let runner = Runner::with(core.clone(), fast(), Arc::new(Utc::now));
+    let handles = runner.tick().unwrap();
+    wait_for_reviews(&script, 1);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(script.calls("review:"), [format!("review:{id}:claude")], "the second pass waits for the first");
+    script.open_gate();
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    assert_eq!(script.calls("review:"), [format!("review:{id}:claude"), format!("review:{id}:codex")]);
+    assert_eq!(job(&core, &id).status, Status::Drafted);
+}
+
+#[test]
+fn the_second_pass_holds_a_runner_slot() {
+    let (_scratch, core, script) = fixture();
+    second_opinion_on(&core);
+    script.close_gate();
+    let pair = queue(&core, 1, &["claude", "codex"]);
+    let runner = Runner::with(core.clone(), fast(), Arc::new(Utc::now));
+    let first = runner.tick().unwrap();
+    wait_for_reviews(&script, 2);
+    let single = queue(&core, 2, &["claude"]);
+    assert!(runner.tick().unwrap().is_empty(), "both slots are busy with one job's two passes");
+    assert_eq!(job(&core, &single).status, Status::Queued);
+    script.open_gate();
+    for handle in first {
+        handle.join().unwrap();
+    }
+    drain(&runner);
+    assert_eq!(job(&core, &pair).status, Status::Drafted);
+    assert_eq!(job(&core, &single).status, Status::Drafted);
+}
+
+#[test]
+fn prepare_runs_once_and_cleanup_after_both_passes() {
+    let (_scratch, core, script) = fixture();
+    second_opinion_on(&core);
+    script.close_gate();
+    let id = queue(&core, 1, &["claude", "codex"]);
+    let runner = Runner::with(core.clone(), fast(), Arc::new(Utc::now));
+    let handles = runner.tick().unwrap();
+    wait_for_reviews(&script, 2);
+    assert_eq!(script.calls("prepare:").len(), 1, "one checkout for both reviewers");
+    assert!(script.calls("cleanup:").is_empty(), "nothing is removed while a pass still reads the checkout");
+    script.open_gate();
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    assert_eq!(script.calls("prepare:").len(), 1);
+    assert_eq!(script.calls(&format!("cleanup:{id}")).len(), 1, "cleanup once, after both passes");
+    let calls = script.calls.lock().unwrap().clone();
+    let cleanup = calls.iter().position(|call| call.starts_with("cleanup:")).unwrap();
+    assert!(calls.iter().rposition(|call| call.starts_with("review:")).unwrap() < cleanup);
+}
+
+#[test]
+fn one_failed_reviewer_still_drafts_and_says_so() {
+    let (_scratch, core, script) = fixture();
+    second_opinion_on(&core);
+    script.plan_review("codex", vec![Err(StepError::Harness("Codex is signed out".into()))]);
+    let id = queue(&core, 1, &["claude", "codex"]);
+    drain(&Runner::with(core.clone(), fast(), Arc::new(Utc::now)));
+    let detail = crate::reviews::get(&core, &id).unwrap();
+    assert_eq!(detail.job.status, Status::Drafted);
+    assert_eq!(detail.findings.len(), 1);
+    assert_eq!(detail.findings[0].agreed_by, 1);
+    let stored = job(&core, &id);
+    let named = stored.named_summary.unwrap();
+    assert!(
+        named.starts_with("Codex could not finish its review (Codex is signed out). This draft has Claude's findings only."),
+        "{named}"
+    );
+    assert!(named.ends_with("Looks mostly fine."), "{named}");
+    let anonymous = stored.summary.unwrap();
+    assert_eq!(
+        anonymous,
+        "One reviewer could not finish its review, so this draft has the other reviewer's findings only.\n\nLooks mostly fine.",
+        "the summary posted under hidden attribution names neither reviewer nor the reason"
+    );
+}
+
+#[test]
+fn a_fallback_never_takes_the_other_slots_harness() {
+    let (_scratch, core, script) = fixture();
+    second_opinion_on(&core);
+    settings(&core, |settings| settings.fallback_harnesses = vec!["codex".into(), "opencode".into()]);
+    script.plan_review("claude", vec![Err(StepError::Harness("usage limit".into()))]);
+    let id = queue(&core, 1, &["claude", "codex"]);
+    drain(&Runner::with(core.clone(), fast(), Arc::new(Utc::now)));
+    let detail = crate::reviews::get(&core, &id).unwrap();
+    assert_eq!(detail.job.status, Status::Drafted);
+    let mut done: Vec<&str> =
+        detail.passes.iter().filter(|pass| pass.status == ReviewPassStatus::Done).map(|pass| pass.harness.as_str()).collect();
+    done.sort_unstable();
+    assert_eq!(done, ["codex", "opencode"], "claude's slot fell back past codex, which the other slot runs");
+    assert_eq!(script.calls(&format!("review:{id}:codex")).len(), 1);
+}
+
+#[test]
+fn agreed_findings_merge_and_rank_first() {
+    let (_scratch, core, script) = fixture();
+    second_opinion_on(&core);
+    script.plan_review("codex", vec![Ok(codex_outcome())]);
+    let id = queue(&core, 1, &["claude", "codex"]);
+    drain(&Runner::with(core.clone(), fast(), Arc::new(Utc::now)));
+    let detail = crate::reviews::get(&core, &id).unwrap();
+    assert_eq!(detail.job.status, Status::Drafted);
+    assert_eq!(detail.findings.len(), 2, "the finding both flagged is one finding");
+    let top = &detail.findings[0];
+    assert_eq!((top.title.as_str(), top.agreed_by, top.pass_ids.len()), ("Unchecked unwrap", 2, 2));
+    assert_eq!(detail.findings[1].agreed_by, 1);
+    assert_eq!(detail.job.finding_counts.total, 2);
+    let stored = job(&core, &id);
+    assert_eq!(stored.summary.as_deref(), Some("**Reviewer 1:** Looks mostly fine.\n\n**Reviewer 2:** One real problem."));
+    assert_eq!(stored.named_summary.as_deref(), Some("**Claude:** Looks mostly fine.\n\n**Codex:** One real problem."));
+}
+
+#[test]
+fn a_lost_claim_merges_nothing() {
+    let (_scratch, core, script) = fixture();
+    second_opinion_on(&core);
+    script.close_gate();
+    // The harnesses finish their turns after Bridge stopped listening.
+    script.stubborn.store(true, Ordering::SeqCst);
+    let id = queue(&core, 1, &["claude", "codex"]);
+    let runner = Runner::with(core.clone(), fast(), Arc::new(Utc::now));
+    let handles = runner.tick().unwrap();
+    wait_for_reviews(&script, 2);
+    crate::reviews::cancel(&core, &id).unwrap();
+    script.open_gate();
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    let detail = crate::reviews::get(&core, &id).unwrap();
+    assert_eq!(detail.job.status, Status::Cancelled);
+    assert!(detail.findings.is_empty(), "neither late pass stored or merged anything: {:?}", detail.findings);
+    assert_eq!(runner.active(), 0);
+}
+
+#[test]
+fn a_second_pass_and_a_queued_job_never_exceed_the_limit() {
+    let (_scratch, core, script) = fixture();
+    second_opinion_on(&core);
+    script.close_gate();
+    script.prepare_gate_closed.store(true, Ordering::SeqCst);
+    let pair = queue(&core, 1, &["claude", "codex"]);
+    let runner = Arc::new(Runner::with(core.clone(), fast(), Arc::new(Utc::now)));
+    let mut handles = runner.tick().unwrap();
+    assert_eq!(handles.len(), 1);
+    let single = queue(&core, 2, &["claude"]);
+
+    // The next tick stops inside its capacity check; meanwhile the pair's
+    // driver leaves prepare and asks for a second slot.
+    script.slow_capacity.store(true, Ordering::SeqCst);
+    let ticking = {
+        let runner = runner.clone();
+        std::thread::spawn(move || runner.tick().unwrap())
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while script.calls("capacity").is_empty() {
+        assert!(Instant::now() < deadline, "the tick never reached its capacity check");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    script.prepare_gate_closed.store(false, Ordering::SeqCst);
+    let mut most = 0;
+    let watch_until = Instant::now() + Duration::from_millis(800);
+    while Instant::now() < watch_until {
+        most = most.max(runner.active());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    handles.extend(ticking.join().unwrap());
+    most = most.max(runner.active());
+    assert!(most <= 2, "maxConcurrentReviews is 2, yet {most} slots were in use");
+    assert!(script.calls("review:").len() <= 2, "at most two reviews in flight: {:?}", script.calls("review:"));
+
+    script.slow_capacity.store(false, Ordering::SeqCst);
+    script.open_gate();
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    drain(&runner);
+    assert_eq!(job(&core, &pair).status, Status::Drafted);
+    assert_eq!(job(&core, &single).status, Status::Drafted);
+    assert_eq!(runner.active(), 0);
 }

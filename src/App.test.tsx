@@ -252,7 +252,8 @@ describe("the dock in the session view", () => {
     expect(welcomeCalls.length).toBeGreaterThan(0);
     // Once the workspace resolves, the hero is fed the owning project ("Bridge").
     expect(welcomeCalls.at(-1)?.[0]).toBe("Bridge");
-    expect(container.querySelector("h1")?.textContent).toBe("What should we build in Bridge?");
+    // The hero streams its lines in; the accessible copy is the whole first line.
+    expect(container.querySelector("h1 .sr-only")?.textContent).toBe("What should we build in Bridge?");
     // And it is never fed the workspace's own title, on any render.
     expect(welcomeCalls.some(args => args[0] === "Build session supervisor")).toBe(false);
   });

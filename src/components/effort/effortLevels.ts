@@ -1,13 +1,12 @@
 // Vocabulary for the thinking-effort control, keyed by the wire effort value.
-// Every style draws the same levels — only how it says them differs. A wire
-// value Bridge has not seen falls back to itself so a new provider level is
-// never hidden, only unstyled.
+// A wire value Bridge has not seen falls back to itself so a new provider
+// level is never hidden, only unstyled.
 
 import type { AdapterDescriptor } from "../../types";
 
 export type EffortLevel = { value: string; label: string };
 
-/** Compact glyphs for the footer's single label. */
+/** Short names, one per segment. */
 const LABELS: Record<string, string> = {
   low: "Low",
   medium: "Med",
@@ -18,18 +17,7 @@ const LABELS: Record<string, string> = {
   ultracode: "Ultracode",
 };
 
-/** The adverb the sentence style scrubs through. */
-const WORDS: Record<string, string> = {
-  low: "lightly",
-  medium: "briefly",
-  high: "properly",
-  xhigh: "deeply",
-  max: "exhaustively",
-  ultra: "relentlessly",
-  ultracode: "with workflows",
-};
-
-/** One line of meaning per level for the list style. */
+/** One line of meaning per level, shown beside the control. */
 const MEANINGS: Record<string, string> = {
   low: "Fastest. Minimal reasoning.",
   medium: "Balanced default.",
@@ -42,10 +30,6 @@ const MEANINGS: Record<string, string> = {
 
 export function effortLabel(value: string): string {
   return LABELS[value] ?? value.charAt(0).toUpperCase() + value.slice(1);
-}
-
-export function effortWord(value: string): string {
-  return WORDS[value] ?? value;
 }
 
 export function effortMeaning(value: string): string {
@@ -62,16 +46,12 @@ export function effortIndex(levels: EffortLevel[], value: string | null | undefi
   return levels.findIndex(level => level.value === value);
 }
 
-/** Props every style renders from. The footer decides the form, not the data. */
 export type EffortControlProps = {
   levels: EffortLevel[];
   value: string | null | undefined;
   /** Absent means read-only: the control shows the value and stays inert. */
   onChange?: (value: string) => void;
   disabled?: boolean;
-  harness: string;
-  /** The resolved model's display label, for styles that name it. */
-  modelLabel: string;
 };
 
 /** The ladder a catalog reports for a model; `null` means the adapter's default model. */

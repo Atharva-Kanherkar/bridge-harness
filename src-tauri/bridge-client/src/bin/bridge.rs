@@ -7,6 +7,8 @@
 //!                                                        call one protocol method
 //! bridge learning run --database <bridge.db> --trigger <...>
 //! bridge meter --json                                    print the menu-bar meter registry
+//! bridge tokens [--database <path> | --data-dir <dir>]   print the token report
+//!           [--cohort <orchestrator|direct> | --session <id>] [--since YYYY-MM-DD] [--top <n>] [--json]
 //! ```
 //!
 //! `meter` is the `codexbar serve` equivalent for scripts: the static provider
@@ -20,8 +22,10 @@
 //! `--timeout` budget covers the whole command, setup calls included.
 
 use bridge_client::{ClientError, DaemonClient, Endpoint, SessionEventStream};
+use bridge_core::token_report::{self, Cohort, NaiveDate, ReportOptions};
 use bridge_protocol::MethodName;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -41,6 +45,7 @@ fn main() -> ExitCode {
         Some("status") => status(&args[1..]),
         Some("sessions") => sessions(&args[1..]),
         Some("approval") => approval(&args[1..]),
+        Some("tokens") => tokens(&args[1..]),
         _ => {
             eprintln!(
                 "usage:\n  bridge exec --json [--data-dir <dir>] [--timeout <secs>] \
@@ -50,7 +55,8 @@ fn main() -> ExitCode {
                  bridge meter --json\n  \
                  bridge status --json [--watch] [--data-dir <dir>]\n  \
                  bridge sessions --json [--data-dir <dir>]\n  \
-                 bridge approval <allow-once|allow-session|decline> <sessionId> <eventId> [--data-dir <dir>]"
+                 bridge approval <allow-once|allow-session|decline> <sessionId> <eventId> [--data-dir <dir>]\n  \
+                 {TOKENS_USAGE}"
             );
             ExitCode::from(2)
         }
@@ -756,9 +762,327 @@ fn learning_run(args: &[String]) -> ExitCode {
     }
 }
 
+// --- tokens -------------------------------------------------------------------
+//
+// An offline report of the main-window tokens of each chat. It opens the
+// database read-only and never attaches to a daemon.
+
+const TOKENS_USAGE: &str = "bridge tokens [--database <path> | --data-dir <dir>] \
+    [--cohort <orchestrator|direct> | --session <id>] [--since YYYY-MM-DD] [--top <n>] [--json]\n\
+    Use --database <path> to report on a backup copy.\n\
+    Each flag may appear once. With --session, Bridge infers the cohort and skips recency filtering.";
+
+#[derive(Debug, PartialEq)]
+struct TokensFlags {
+    database: PathBuf,
+    uses_default_database: bool,
+    options: ReportOptions,
+    json: bool,
+}
+
+/// The value after `flag`, or a usage error.
+fn flag_value<'a>(iter: &mut std::slice::Iter<'a, String>, flag: &str) -> Result<&'a str, String> {
+    iter.next()
+        .map(String::as_str)
+        .filter(|value| !value.is_empty() && !value.starts_with("--"))
+        .ok_or_else(|| format!("{flag} needs a value"))
+}
+
+/// Parses the flags of `bridge tokens`. Each error is a usage error.
+fn parse_tokens_flags(args: &[String], today: NaiveDate) -> Result<TokensFlags, String> {
+    let mut database: Option<PathBuf> = None;
+    let mut options = ReportOptions {
+        cohort: Cohort::Orchestrator,
+        since: token_report::default_since(today),
+        top: 10,
+        session: None,
+    };
+    let mut json = false;
+    let mut seen = HashSet::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let flag = arg.as_str();
+        if !seen.insert(flag) {
+            return Err(format!("pass {flag} once"));
+        }
+        match flag {
+            "--json" => json = true,
+            "--database" | "--data-dir" => {
+                let value = PathBuf::from(flag_value(&mut iter, flag)?);
+                if database.is_some() {
+                    return Err("pass one database flag: --database or --data-dir".into());
+                }
+                database = Some(if flag == "--data-dir" { value.join("bridge.db") } else { value });
+            }
+            "--cohort" => {
+                let value = flag_value(&mut iter, flag)?;
+                options.cohort = Cohort::parse(value)
+                    .ok_or_else(|| format!("unknown cohort {value}: use orchestrator or direct"))?;
+            }
+            "--since" => {
+                options.since = token_report::parse_since(flag_value(&mut iter, flag)?).map_err(|error| error.to_string())?;
+            }
+            "--top" => {
+                let value = flag_value(&mut iter, flag)?;
+                options.top = value
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|top| *top > 0)
+                    .ok_or_else(|| format!("--top needs a whole number above 0, not {value}"))?;
+            }
+            "--session" => options.session = Some(flag_value(&mut iter, flag)?.to_owned()),
+            other => return Err(format!("unknown argument {other}")),
+        }
+    }
+    if options.session.is_some() && seen.contains("--cohort") {
+        return Err("--cohort and --session conflict".into());
+    }
+    let uses_default_database = database.is_none();
+    let database = match database {
+        Some(database) => database,
+        None => default_data_dir()
+            .map(|dir| dir.join("bridge.db"))
+            .ok_or("pass --database or --data-dir, or set BRIDGE_DATA_DIR")?,
+    };
+    Ok(TokensFlags {
+        database,
+        uses_default_database,
+        options,
+        json,
+    })
+}
+
+/// The output of `bridge tokens`, or an exit code and a message for stderr.
+fn run_tokens(args: &[String]) -> Result<String, (u8, String)> {
+    let flags = parse_tokens_flags(args, token_report::utc_today())
+        .map_err(|error| (2, format!("bridge tokens: {error}\nusage:\n  {TOKENS_USAGE}")))?;
+    if flags.uses_default_database {
+        eprintln!(
+            "bridge tokens: using the default database at {}. Use --database <path> to report on a backup copy. A report on a live database can delay WAL checkpoints.",
+            flags.database.display(),
+        );
+    }
+    let failed = |error: bridge_core::BridgeError| (1, format!("bridge tokens: {error}"));
+    let db = token_report::open_read_only(&flags.database).map_err(failed)?;
+    let report = token_report::report(&db, &flags.options).map_err(failed)?;
+    if flags.json {
+        token_report::render_json(&report).map(|json| json + "\n").map_err(failed)
+    } else {
+        Ok(token_report::render_markdown(&report))
+    }
+}
+
+fn tokens(args: &[String]) -> ExitCode {
+    match run_tokens(args) {
+        Ok(output) => {
+            print!("{output}");
+            ExitCode::SUCCESS
+        }
+        Err((code, message)) => {
+            eprintln!("{message}");
+            ExitCode::from(code)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn strings(list: &[&str]) -> Vec<String> {
+        list.iter().map(|value| value.to_string()).collect()
+    }
+
+    fn parse_test_flags(list: &[&str]) -> Result<TokensFlags, String> {
+        let today = NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
+        parse_tokens_flags(&strings(list), today)
+    }
+
+    /// A migrated store with one recent orchestrator chat and one worker.
+    fn seeded_database() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let db = bridge_core::store::open(&path).unwrap();
+        db.execute_batch(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/tokens','2026-06-01T00:00:00Z');
+             INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at)
+                 VALUES('w','p','Kyoto','Task','main',NULL,'idle','2026-06-01T00:00:00Z');
+             INSERT INTO sessions(id,workspace_id,harness,label,status,kind,depth)
+                 VALUES('chat-a','w','claude','Secret label','idle','orchestrator',0);
+             INSERT INTO sessions(id,workspace_id,harness,label,status,kind,parent_session_id,depth)
+                 VALUES('worker-1','w','codex','Worker','idle','orchestrator','chat-a',1);
+             INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,updated_at)
+                 VALUES('worker-1','chat-a','idle','research','key','2026-06-10T12:00:00Z');
+             INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,provider_event_id,token_estimate,created_at)
+                 VALUES('e1','chat-a',NULL,1,'user.message','{\"text\":\"Secret text\"}',NULL,12,'2026-06-10T12:00:00Z'),
+                       ('e2','chat-a','e1',2,'tool.completed','{\"itemId\":\"t1\",\"data\":{\"name\":\"Read\"}}',NULL,30,'2026-06-10T12:00:01Z'),
+                       ('e3','worker-1',NULL,1,'user.message','{\"text\":\"Worker text\"}',NULL,99,'2026-06-10T12:00:00Z');",
+        )
+        .unwrap();
+        let path = path.to_string_lossy().into_owned();
+        (dir, path)
+    }
+
+    #[test]
+    fn tokens_flags_have_defaults() {
+        let flags = parse_test_flags(&[]).unwrap();
+        assert_eq!(flags.database, default_data_dir().unwrap().join("bridge.db"));
+        assert_eq!(flags.options.cohort, Cohort::Orchestrator);
+        assert_eq!(flags.options.since, NaiveDate::from_ymd_opt(2026, 1, 1).unwrap());
+        assert_eq!(flags.options.top, 10);
+        assert_eq!(flags.options.session, None);
+        assert!(!flags.json);
+    }
+
+    #[test]
+    fn tokens_flags_accept_cohort_options() {
+        let flags = parse_test_flags(&[
+            "--data-dir",
+            "data",
+            "--cohort",
+            "direct",
+            "--since",
+            "2026-05-01",
+            "--top",
+            "3",
+            "--json",
+        ])
+        .unwrap();
+        let options = ReportOptions {
+            cohort: Cohort::Direct,
+            since: token_report::parse_since("2026-05-01").unwrap(),
+            top: 3,
+            session: None,
+        };
+        assert_eq!(flags.database, Path::new("data").join("bridge.db"));
+        assert_eq!(flags.options, options);
+        assert!(flags.json);
+    }
+
+    #[test]
+    fn tokens_flags_accept_session_options() {
+        let flags = parse_test_flags(&["--database", "copy.db", "--session", "s1"]).unwrap();
+        assert_eq!(flags.database, PathBuf::from("copy.db"));
+        assert_eq!(flags.options.cohort, Cohort::Orchestrator);
+        assert_eq!(flags.options.session.as_deref(), Some("s1"));
+    }
+
+    #[test]
+    fn tokens_rejects_an_unknown_cohort() {
+        let error = parse_test_flags(&["--cohort", "worker"]).unwrap_err();
+        assert!(error.contains("worker"), "{error}");
+        let (code, message) = run_tokens(&strings(&["--cohort", "worker"])).unwrap_err();
+        assert_eq!(code, 2);
+        assert!(message.contains(TOKENS_USAGE), "{message}");
+        // An unknown flag and a top of 0 are usage errors too.
+        for args in [&["--cohort"][..], &["--verbose"], &["extra"], &["--top", "0"], &["--top", "many"], &["--session", "--bogus"], &["--database", "--json"]] {
+            let (code, message) = run_tokens(&strings(args)).unwrap_err();
+            assert_eq!(code, 2, "{args:?}");
+            assert!(message.contains(TOKENS_USAGE), "{message}");
+        }
+        for flag in ["--database", "--data-dir", "--session", "--cohort", "--since", "--top"] {
+            let (code, message) = run_tokens(&strings(&[flag, ""])).unwrap_err();
+            assert_eq!(code, 2, "{flag}");
+            assert!(message.contains(TOKENS_USAGE), "{message}");
+            assert!(message.contains(&format!("{flag} needs a value")), "{message}");
+        }
+    }
+
+    #[test]
+    fn tokens_rejects_a_bad_since_date() {
+        for date in ["2026-02-30", "2026/05/01", "2026-5-1", "yesterday"] {
+            let error = parse_test_flags(&["--since", date]).unwrap_err();
+            assert!(error.contains(date), "{error}");
+            let (code, message) = run_tokens(&strings(&["--since", date])).unwrap_err();
+            assert_eq!(code, 2, "{date}");
+            assert!(message.contains(TOKENS_USAGE), "{message}");
+        }
+    }
+
+    #[test]
+    fn tokens_rejects_two_database_flags() {
+        for args in [
+            &["--database", "a.db", "--data-dir", "data"],
+            &["--data-dir", "data", "--database", "a.db"],
+        ] {
+            let error = parse_test_flags(args).unwrap_err();
+            assert!(error.contains("one database flag"), "{error}");
+            let (code, message) = run_tokens(&strings(args)).unwrap_err();
+            assert_eq!(code, 2, "{args:?}");
+            assert!(message.contains(TOKENS_USAGE), "{message}");
+        }
+    }
+
+    #[test]
+    fn tokens_rejects_repeated_flags() {
+        let mut missed = Vec::new();
+        for args in [
+            &["--database", "a.db", "--database", "b.db"][..],
+            &["--data-dir", "a", "--data-dir", "b"],
+            &["--cohort", "orchestrator", "--cohort", "direct"],
+            &["--since", "2026-01-01", "--since", "2026-01-02"],
+            &["--top", "1", "--top", "2"],
+            &["--session", "s1", "--session", "s2"],
+            &["--json", "--json"],
+        ] {
+            let result = run_tokens(&strings(args));
+            if !matches!(&result, Err((2, message)) if message.contains(TOKENS_USAGE)) {
+                missed.push((args[0], result));
+            }
+        }
+        assert!(missed.is_empty(), "{missed:?}");
+    }
+
+    #[test]
+    fn tokens_rejects_cohort_with_session() {
+        for args in [
+            &["--cohort", "orchestrator", "--session", "s1"],
+            &["--session", "s1", "--cohort", "orchestrator"],
+        ] {
+            let (code, message) = run_tokens(&strings(args)).unwrap_err();
+            assert_eq!(code, 2, "{args:?}");
+            assert!(message.contains(TOKENS_USAGE), "{message}");
+        }
+    }
+
+    #[test]
+    fn tokens_prints_markdown_for_a_seeded_database() {
+        let (dir, path) = seeded_database();
+        let output = run_tokens(&strings(&["--database", &path, "--since", "2026-01-01"])).unwrap();
+        assert!(output.starts_with("Token report: schema "), "{output}");
+        assert!(output.contains("cohort orchestrator, since 2026-01-01, eligible 1, shown 1"), "{output}");
+        assert!(output.contains("\n| 1 | chat-a | claude | 42 | 30 |"), "{output}");
+        assert!(!output.contains("worker-1"), "{output}");
+        assert!(!output.contains("Secret"), "{output}");
+        // A report error exits 1 with the error text.
+        let absent = dir.path().join("absent.db").to_string_lossy().into_owned();
+        let (code, message) = run_tokens(&strings(&["--database", &absent])).unwrap_err();
+        assert_eq!(code, 1);
+        assert!(message.contains("read-only"), "{message}");
+        let (code, message) = run_tokens(&strings(&["--database", &path, "--session", "worker-1"])).unwrap_err();
+        assert_eq!(code, 1);
+        assert!(message.contains("worker-1"), "{message}");
+    }
+
+    #[test]
+    fn tokens_prints_json_for_a_seeded_database() {
+        let (_dir, path) = seeded_database();
+        let output = run_tokens(&strings(&["--database", &path, "--since", "2026-01-01", "--top", "5", "--json"])).unwrap();
+        let report: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(report["cohort"], "orchestrator");
+        assert_eq!(report["since"], "2026-01-01");
+        assert_eq!(report["eligible"], 1);
+        let sessions = report["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0]["sessionId"], "chat-a");
+        assert_eq!(sessions[0]["total"], 42);
+        assert_eq!(sessions[0]["classes"]["read"], 30);
+        assert_eq!(sessions[0]["classes"]["conversation"], 12);
+        assert!(!output.contains("Secret"), "{output}");
+        let direct = run_tokens(&strings(&["--database", &path, "--since", "2026-01-01", "--cohort", "direct", "--json"])).unwrap();
+        let direct: Value = serde_json::from_str(&direct).unwrap();
+        assert_eq!(direct["sessions"], json!([]));
+    }
 
     #[test]
     fn the_fleet_summary_counts_live_working_and_waiting_sessions() {

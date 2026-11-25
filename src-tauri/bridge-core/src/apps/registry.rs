@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_db_lists_twelve_apps_on_and_unpinned() {
+    fn fresh_db_lists_thirteen_apps_on_and_unpinned() {
         let db = database();
         assert_eq!(state(&db), (Vec::new(), BTreeSet::new()));
         for app in super::super::builtins() {

@@ -716,6 +716,9 @@ pub struct Prior {
     pub fixed_in_sha: Option<String>,
     #[serde(default)]
     pub thread: Option<PriorThread>,
+    /// Other findings a second opinion merged into this one.
+    #[serde(default)]
+    pub also_known_as: Vec<super::store::FindingIdentity>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
@@ -762,9 +765,14 @@ pub fn without_repeats(findings: Vec<DraftFinding>, prior: &[Prior]) -> Vec<Draf
         .filter(|finding| {
             let title = contract::normalized(&finding.title);
             !prior.iter().any(|earlier| {
+                // Its own wording, or any a second opinion merged into it.
+                let identities = std::iter::once((earlier.title.as_str(), earlier.fingerprint.as_str()))
+                    .chain(earlier.also_known_as.iter().map(|other| (other.title.as_str(), other.fingerprint.as_str())));
                 earlier.settled()
-                    && (earlier.fingerprint == finding.fingerprint
-                        || (earlier.path == finding.path && contract::normalized(&earlier.title) == title))
+                    && identities.into_iter().any(|(earlier_title, fingerprint)| {
+                        fingerprint == finding.fingerprint
+                            || (earlier.path == finding.path && contract::normalized(earlier_title) == title)
+                    })
                     && contract::severity_rank(finding.severity) >= contract::severity_rank(earlier.severity)
             })
         })

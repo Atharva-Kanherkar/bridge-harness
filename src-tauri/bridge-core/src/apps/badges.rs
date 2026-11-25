@@ -217,7 +217,7 @@ mod tests {
         let db = database();
         let notes = NoteSnapshot::default();
         let summaries = summaries(&db, &notes, None).unwrap();
-        assert_eq!(summaries.len(), 12);
+        assert_eq!(summaries.len(), 13);
         assert_eq!(badge_of(&summaries, "memory"), Some(0), "a zero count is still a badge");
         assert_eq!(badge_of(&summaries, "notes"), None, "notes has no badge source");
         registry::set_enabled(&db, "memory", false, "t").unwrap();

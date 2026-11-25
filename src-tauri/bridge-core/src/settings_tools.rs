@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use bridge_protocol::messages::{
-    ActiveTurnInput, AppPreferenceValues, ChatDefaults, ChatEffortChoice, ChatModelChoice, EffortSelectorStyle,
+    ActiveTurnInput, AppPreferenceValues, ChatDefaults, ChatEffortChoice, ChatModelChoice,
     ResolveChatSettingsParams, SaveChatDefaultsParams, ThemePreference, ThemeSkin,
 };
 use serde_json::{json, Value};
@@ -58,7 +58,6 @@ fn catalog() -> Vec<Setting> {
     vec![
         Setting { key: "appearance.theme", kind: Kind::Choice(&["system", "light", "dark"]), default: json!("system"), description: "Light or dark mode. system follows macOS appearance.", applies: NOW },
         Setting { key: "appearance.skin", kind: Kind::Choice(&["graphite", "vibrancy", "omarchy"]), default: json!("graphite"), description: "The character of the window chrome: graphite is opaque, vibrancy lets the desktop wallpaper tint the sidebar, omarchy follows the Omarchy theme on Linux.", applies: NOW },
-        Setting { key: "appearance.effortSelector", kind: Kind::Choice(&["slider", "sentence", "list"]), default: json!("slider"), description: "How the model picker draws the thinking-effort control.", applies: NOW },
         Setting { key: "transcript.showThinking", kind: Kind::Switch, default: json!(true), description: "Show the agent's thinking blocks in chats.", applies: NOW },
         Setting { key: "transcript.autoExpandEdits", kind: Kind::Switch, default: json!(false), description: "Open file-edit activity in chats expanded instead of collapsed.", applies: NOW },
         Setting { key: "newChat.model", kind: Kind::Model, default: Value::Null, description: "The harness and model a new chat starts on, as {harness, model}, a bare model id, or null for Bridge's standard choice. Call settings_read with this key to list the models you can choose.", applies: NEW_CHATS },
@@ -89,7 +88,6 @@ fn stored(key: &str, app: &AppPreferenceValues, chat: &ChatDefaults) -> Value {
     match key {
         "appearance.theme" => enum_text(&app.theme),
         "appearance.skin" => enum_text(&app.skin),
-        "appearance.effortSelector" => enum_text(&app.effort_selector),
         "transcript.showThinking" => json!(app.show_thinking),
         "transcript.autoExpandEdits" => json!(app.auto_expand_edits),
         "newChat.model" => chat.model.as_ref().map_or(Value::Null, |model| json!({"harness": model.harness, "model": model.model})),
@@ -234,7 +232,6 @@ fn change_app(core: &Arc<BridgeCore>, setting: &Setting, value: &Value) -> Resul
     match setting.key {
         "appearance.theme" => values.theme = Some(choice::<ThemePreference>(setting.key, allowed, value)?),
         "appearance.skin" => values.skin = Some(choice::<ThemeSkin>(setting.key, allowed, value)?),
-        "appearance.effortSelector" => values.effort_selector = Some(choice::<EffortSelectorStyle>(setting.key, allowed, value)?),
         "transcript.showThinking" => values.show_thinking = Some(switch(setting.key, value)?),
         "transcript.autoExpandEdits" => values.auto_expand_edits = Some(switch(setting.key, value)?),
         other => return Err(bad(format!("{other} is not an app preference"))),

@@ -1408,6 +1408,10 @@ pub fn list_reviews(core: &Arc<BridgeCore>, params: &wire::ListReviewsParams) ->
     crate::reviews::list(core, params)
 }
 
+pub fn review_overview(core: &Arc<BridgeCore>, params: &wire::ReviewOverviewParams) -> Result<wire::ReviewOverview, BridgeError> {
+    crate::reviews::overview::overview(core, params)
+}
+
 pub fn get_review(core: &Arc<BridgeCore>, params: &wire::GetReviewParams) -> Result<wire::ReviewJobDetail, BridgeError> {
     crate::reviews::get(core, &params.job_id)
 }

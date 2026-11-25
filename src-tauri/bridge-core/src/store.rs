@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 94;
+const LATEST_SCHEMA_VERSION: i64 = 96;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -836,6 +836,16 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // App trigger reads: what each Gmail, Linear or Notion read found,
             // and when it last ran. See `workflow_ingress`.
             94 => crate::workflow_ingress::install_store(&transaction)?,
+            // A second opinion: the passes a merged review finding came from,
+            // the identities of the findings merged into it, and the job's
+            // summary with reviewer names for when attribution is shown.
+            95 => migration_95_second_opinion(&transaction)?,
+            // The PR's title and author on a review job, for the Reviews
+            // dashboard. Filled when the job prepares.
+            96 => {
+                add_column_if_missing(&transaction, "review_jobs", "pr_title", "TEXT")?;
+                add_column_if_missing(&transaction, "review_jobs", "pr_author", "TEXT")?;
+            }
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -849,6 +859,13 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
         transaction.commit()?;
     }
     Ok(migration_backup)
+}
+
+fn migration_95_second_opinion(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(transaction, "review_findings", "pass_ids", "TEXT")?;
+    add_column_if_missing(transaction, "review_findings", "merged_identities", "TEXT")?;
+    add_column_if_missing(transaction, "review_jobs", "named_summary", "TEXT")?;
+    Ok(())
 }
 
 fn migration_47_model_profile_selection_mode(
@@ -1724,7 +1741,7 @@ fn migration_22_session_backend_binding(transaction: &Transaction<'_>) -> Result
     Ok(())
 }
 
-fn supported_schema_version(connection: &Connection) -> Result<i64, BridgeError> {
+pub(crate) fn supported_schema_version(connection: &Connection) -> Result<i64, BridgeError> {
     let current = current_schema_version(connection)?;
     if current > LATEST_SCHEMA_VERSION {
         return Err(BridgeError::Invalid(format!(

@@ -292,6 +292,15 @@ fn context_files_describe_the_pr() {
     assert_eq!(context, fixture.layout().attempt_dir(&job).join("context"), "each attempt has its own context");
     let pr = read_json(&context.join("pr.json"));
     assert_pr_json(&pr, &fixture);
+    let stored = store::require_job(&fixture.core.db.lock().unwrap(), &job.id).unwrap();
+    assert_eq!(
+        (stored.pr_title.as_deref(), stored.pr_author.as_deref()),
+        (Some("Changes requested"), Some("review-author")),
+        "the dashboard names the PR"
+    );
+    let wire = store::to_wire(&fixture.core.db.lock().unwrap(), &stored).unwrap();
+    let json = serde_json::to_value(&wire).unwrap();
+    assert_eq!((json["prTitle"].as_str(), json["repoName"].as_str()), (Some("Changes requested"), Some("project")));
     assert_files_json(&read_json(&context.join("files.json")));
     let patch = std::fs::read_to_string(context.join("diff.patch")).unwrap();
     assert!(patch.contains("+three") && patch.contains("+only in the PR"));
@@ -422,6 +431,17 @@ fn push_on_top(fixture: &Fixture, file: &str, text: &str) -> String {
 fn a_re_review_gets_the_new_commits_and_what_earlier_reviews_said() {
     let fixture = fixture();
     posted_review(&fixture, &fixture.head);
+    // A second opinion merged another wording into the kept finding.
+    fixture
+        .core
+        .db
+        .lock()
+        .unwrap()
+        .execute(
+            r#"UPDATE review_findings SET merged_identities='[{"title":"Other wording","fingerprint":"fp-other"}]' WHERE title='Kept one'"#,
+            [],
+        )
+        .unwrap();
     let head = push_on_top(&fixture, "a.txt", "one\ntwo\nthree\nfour, added later\n");
     let job = claimed_re_review(&fixture, &head, &fixture.head);
     let prepared = prepare_job(&fixture, &job).unwrap();
@@ -445,6 +465,8 @@ fn a_re_review_gets_the_new_commits_and_what_earlier_reviews_said() {
     assert_eq!((kept["decision"].as_str(), kept["posted"].as_bool()), (Some("kept"), Some(true)));
     assert_eq!(kept["reviewedHead"], fixture.head.as_str());
     assert_eq!(kept["relation"], "earlier");
+    assert_eq!(kept["alsoKnownAs"], serde_json::json!([{"title": "Other wording", "fingerprint": "fp-other"}]), "merged wordings reach the reviewer");
+    assert!(prior.as_array().unwrap().iter().filter(|item| item["title"] != "Kept one").all(|item| item["alsoKnownAs"] == serde_json::json!([])));
     let earlier_ids: std::collections::HashSet<String> =
         prior.as_array().unwrap().iter().map(|item| item["id"].as_str().unwrap().to_owned()).collect();
     assert_eq!(prepared.fixable, earlier_ids, "an ancestor's findings may be marked fixed");

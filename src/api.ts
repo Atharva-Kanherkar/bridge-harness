@@ -3,7 +3,7 @@ import { mockChatTools, mockSaveFirstToolChoice, mockUpdateChatTools } from "./c
 import type { GetChatToolsParams, GetChatToolsResult, UpdateChatToolsParams, UpdateChatToolsResult } from "./protocol/generated/protocol";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
 import type { AppPreferences, AppPreferenceValues } from "./protocol/generated/protocol";
-import type { ReviewFindingDecisionInput, ReviewFindingList, ReviewJob, ReviewJobDetail, ReviewJobList, ReviewJobResult, ReviewJobSettings, ReviewTrigger } from "./protocol/generated/protocol";
+import type { ReviewFindingDecisionInput, ReviewFindingList, ReviewJob, ReviewJobDetail, ReviewJobList, ReviewJobResult, ReviewJobSettings, ReviewOverview, ReviewTrigger } from "./protocol/generated/protocol";
 import type { LimitRecoverySettings, LimitRecoveryStatus } from "./protocol/generated/protocol";
 import type { AlwaysAllowToolResult, RunWorkflowResult, WorkflowDraftResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowEventSample, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary, WorkflowTemplate, WorkflowTemplateList, WorkflowTrigger, WorkflowTriggerPreview } from "./protocol/generated/protocol";
 import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, MarkAttentionUnreadResult, ReportPresenceResult, UnreadSummary } from "./protocol/generated/protocol";
@@ -140,6 +140,17 @@ const webDaemon = () => (isTauri() ? null : activeWebDaemon());
 const hasBackend = () => isTauri() || webDaemon() !== null;
 const REVIEWS_NEED_DESKTOP = "Reviewing pull requests requires the Bridge desktop app.";
 // Browser preview's review job settings: the host's defaults, kept in memory.
+export const emptyReviewOverview = (): ReviewOverview => ({
+  jobs: [],
+  stats: {
+    reviews: 0, running: 0, waiting: 0, posted: 0, failed: 0, cancelled: 0,
+    findings: { total: 0, critical: 0, major: 0, minor: 0, nit: 0 },
+    kept: 0, edited: 0, dropped: 0, pending: 0, fixedLater: 0, agreed: 0, spendMicrousd: 0, tokensIn: 0, tokensOut: 0,
+  },
+  harnesses: [],
+  findings: [],
+  repositories: [],
+});
 let mockReviewJobSettings: ReviewJobSettings = { defaultHarnesses: [], fallbackHarnesses: [], maxConcurrentReviews: 2, postMode: "draft", maxReviewWorktrees: 8 };
 export type BackendMode = "tauri" | "web" | "mock";
 /** Which transport this window is on, for the few surfaces outside api.ts
@@ -2192,6 +2203,13 @@ export const bridgeApi = {
       : Promise.reject(new Error(REVIEWS_NEED_DESKTOP)),
   listReviews: (workspaceId: string, number?: number): Promise<ReviewJobList> =>
     hasBackend() ? call("reviews/list_reviews", { workspaceId, number: number ?? null }) : Promise.resolve({ jobs: [] }),
+  /** The Reviews dashboard: every review of the last `days` (all time when
+   *  absent), of one repository (`owner/name`) when given. The preview has no
+   *  reviews, so it answers with an empty overview. */
+  reviewOverview: (days?: number, repository?: string): Promise<ReviewOverview> =>
+    hasBackend()
+      ? call("reviews/review_overview", { days: days ?? null, repository: repository ?? null })
+      : Promise.resolve(emptyReviewOverview()),
   getReview: (jobId: string): Promise<ReviewJobDetail> =>
     hasBackend() ? call("reviews/get_review", { jobId }) : Promise.reject(new Error(`No review job ${jobId}`)),
   cancelReview: (jobId: string): Promise<ReviewJobResult> =>
