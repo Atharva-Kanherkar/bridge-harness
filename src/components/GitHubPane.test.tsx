@@ -1045,11 +1045,11 @@ describe("GitHubPane", () => {
     ]));
     await mount();
     await click(buttonByText("Safe GitHub surface"));
-    const radio = (name: string) => [...host!.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(button => button.textContent?.startsWith(name))!;
+    const radio = (name: string) => [...host!.querySelectorAll<HTMLButtonElement>('[aria-label="Filter conversations"] button')].find(button => button.textContent?.startsWith(name))!;
     expect(radio("Open").textContent).toContain("1");
     await click(radio("Resolved"));
     expect(host!.querySelector('[data-thread="done-one"]')).not.toBeNull();
-    expect(radio("Resolved").getAttribute("aria-checked")).toBe("true");
+    expect(radio("Resolved").getAttribute("aria-pressed")).toBe("true");
     await click(radio("Open"));
     expect(host!.querySelector('[data-thread="open-one"]')).not.toBeNull();
   });

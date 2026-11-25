@@ -22,6 +22,8 @@ import { ConnectorApprovalSheet } from "./ConnectorApprovalSheet";
 import { Markdown } from "./Markdown";
 import { outgoingCallState, outgoingDraftId, outgoingRefusal } from "../transcript/outgoing";
 import { Tip } from "@/components/ui/tooltip";
+import { Textarea } from "@/components/ui/textarea";
+import { RowButton } from "@/components/ui/row";
 
 function DestinationIcon({ destination }: { destination: OutgoingDestination }) {
   const Icon = destination.kind === "slackDm" ? AtSign
@@ -62,9 +64,9 @@ function RefusedRow({ detail }: { detail?: string }) {
   const [open, setOpen] = useState(false);
   return (
     <div data-outgoing-state="refused" className="min-w-0 text-meta text-muted-foreground">
-      <button
-        type="button"
-        className="flex min-h-7 items-center gap-2 rounded-md px-1.5 text-left transition-colors hover:bg-accent/50 disabled:cursor-default"
+      <RowButton size="sm" tone="muted" className="w-auto"
+       
+       
         aria-expanded={detail ? open : undefined}
         disabled={!detail}
         onClick={() => setOpen(!open)}
@@ -72,7 +74,7 @@ function RefusedRow({ detail }: { detail?: string }) {
         <MessageSquareText size={13} aria-hidden="true" />
         <span>Message not drafted: the reason went back to the agent</span>
         {detail && <ChevronRight size={12} className={cn("transition-transform", open && "rotate-90")} aria-hidden="true" />}
-      </button>
+      </RowButton>
       {open && detail && <pre className="ml-6 mt-1 max-h-60 overflow-auto whitespace-pre-wrap rounded-lg bg-code p-3 font-mono text-caption leading-relaxed">{detail}</pre>}
     </div>
   );
@@ -133,14 +135,14 @@ function Attachment({ draftId, index, attachment, readOnly, canRemove, busy, onR
           {failed ? "Missing: " : ""}{attachment.name}
         </span></Tip>
         {!readOnly && <>
-          <button type="button" aria-label={copied ? "Image copied" : `Copy image ${attachment.name}`} disabled={!src || busy} onClick={() => void copy()}
-            className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
+          <Button variant="quiet" size="icon-2xs" aria-label={copied ? "Image copied" : `Copy image ${attachment.name}`} disabled={!src || busy} onClick={() => void copy()}
+           >
             {copied ? <Check size={12} aria-hidden="true" /> : <ClipboardCopy size={12} aria-hidden="true" />}
-          </button>
-          {canRemove && <button type="button" aria-label={`Remove image ${attachment.name}`} disabled={busy} onClick={onRemove}
-            className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
+          </Button>
+          {canRemove && <Button variant="quiet" size="icon-2xs" aria-label={`Remove image ${attachment.name}`} disabled={busy} onClick={onRemove}
+           >
             <X size={12} aria-hidden="true" />
-          </button>}
+          </Button>}
         </>}
       </div>
     </li>
@@ -226,7 +228,7 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
     <section
       data-outgoing-state={draft.state}
       aria-label={`Drafted message for ${draft.label}`}
-      className="relative overflow-hidden rounded-2xl border border-border-card bg-card shadow-[0_1px_2px_rgb(0_0_0/0.04),0_12px_32px_-16px_rgb(0_0_0/0.18)]"
+      className="relative overflow-hidden rounded-2xl border border-border-card bg-card shadow-float"
     >
       <div hidden={!!currentApproval && !readOnly} className="px-4 pb-3.5 pt-3.5 sm:px-5">
         <p className="flex flex-wrap items-center gap-1.5 text-caption font-medium text-muted-foreground">
@@ -245,9 +247,9 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
         </div>
 
         {editing ? (
-          <textarea
+          <Textarea
             aria-label="Message text"
-            className="mt-3 block min-h-32 w-full resize-y rounded-xl border border-input bg-background px-3 py-2.5 text-ui leading-relaxed text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="mt-3"
             value={text}
             onChange={event => setText(event.target.value)}
             disabled={busy}
@@ -318,7 +320,7 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
                   <Wand2 aria-hidden="true" />Fix
                 </Button>
               )}
-              <Button size="sm" variant="ghost" className="ml-auto text-muted-foreground" onClick={() => void run(async () => (await bridgeApi.discardOutgoing(draft.id)).item)} disabled={busy}>
+              <Button size="sm" variant="quiet" className="ml-auto" onClick={() => void run(async () => (await bridgeApi.discardOutgoing(draft.id)).item)} disabled={busy}>
                 <Trash2 aria-hidden="true" />Discard
               </Button>
             </>}
