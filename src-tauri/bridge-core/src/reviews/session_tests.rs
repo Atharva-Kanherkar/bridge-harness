@@ -1145,3 +1145,22 @@ fn tool_paths_are_shown_short() {
     assert_eq!(display_paths("/var/folders/x/T/sandbox/output/conventions/CLAUDE.md", &roots), "…/conventions/CLAUDE.md");
     assert_eq!(display_paths("unwrap · src/lib.rs", &roots), "unwrap · src/lib.rs", "patterns and relative paths are kept");
 }
+
+#[test]
+fn a_codex_tool_shows_its_arguments() {
+    let call = |id: &str, arguments: Value| NormalizedEvent { item_id: Some(id.into()), data: json!({"tool": "js", "arguments": arguments}), ..tool("js") };
+    let script = script(vec![vec![
+        Step::Events(vec![
+            event("turn.started"),
+            call("c1", json!("{\"code\": \"\\nawait tools.exec_command({cmd: 'rg -n page_cursor'})\"}")),
+            call("c2", json!({"cmd": "sed -n 1,80p src/memory.rs"})),
+        ]),
+        Step::Events(vec![said("m1", &answer(json!([]))), event("turn.completed")]),
+    ]]);
+    let sink = Recorded::default();
+    let start = SessionStart { activity: Some(&sink), ..start(Path::new("/tmp/checkout")) };
+    let (result, _) = run(&ScriptedTransport(script), "codex", &start, "go", &CancelToken::new(), Limits::default());
+    assert!(result.is_ok());
+    let details: Vec<Option<String>> = sink.0.lock().unwrap().iter().filter(|(kind, _, _)| *kind == ReviewActivityKind::Tool).map(|(_, _, text)| text.clone()).collect();
+    assert_eq!(details, [Some("await tools.exec_command({cmd: 'rg -n page_cursor'})".into()), Some("sed -n 1,80p src/memory.rs".into())]);
+}

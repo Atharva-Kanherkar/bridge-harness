@@ -112,29 +112,37 @@ fn display_paths(detail: &str, roots: &[String]) -> String {
 /// A tool's or command's short detail: the path, pattern, query or command
 /// it was given, when the event carries one.
 fn tool_detail(event: &NormalizedEvent) -> Option<String> {
-    const KEYS: [&str; 8] = ["file_path", "path", "pattern", "query", "command", "url", "glob", "description"];
+    const KEYS: [&str; 11] = ["file_path", "path", "pattern", "query", "command", "cmd", "url", "glob", "description", "code", "script"];
     let from = |value: &Value| -> Option<String> {
         let object = value.as_object()?;
         let parts: Vec<String> = KEYS
             .iter()
             .filter_map(|key| object.get(*key))
             .filter_map(|value| match value {
-                Value::String(text) => Some(text.clone()),
+                // Code reads best by its first line.
+                Value::String(text) => text.lines().map(str::trim).find(|line| !line.is_empty()).map(str::to_owned),
                 Value::Array(items) => {
                     let joined = items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ");
                     (!joined.is_empty()).then_some(joined)
                 }
                 _ => None,
             })
-            .filter(|text| !text.trim().is_empty())
             .take(2)
             .collect();
         (!parts.is_empty()).then(|| parts.join(" · "))
     };
+    // Codex's tool calls carry `arguments`, an object or JSON text.
+    let arguments = event.data.get("arguments").and_then(|arguments| match arguments {
+        Value::String(text) => serde_json::from_str::<Value>(text).ok().and_then(|parsed| from(&parsed)).or_else(|| {
+            text.lines().map(str::trim).find(|line| !line.is_empty()).map(str::to_owned)
+        }),
+        other => from(other),
+    });
     let detail = event
         .data
         .get("input")
         .and_then(from)
+        .or(arguments)
         .or_else(|| from(&event.data))
         .or_else(|| event.text.clone().filter(|text| !text.trim().is_empty()))?;
     Some(match detail.char_indices().nth(TOOL_DETAIL_CHARS) {
