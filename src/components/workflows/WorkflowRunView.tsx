@@ -185,7 +185,7 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
     cost ? `≈ ${cost}` : null, run.quotaUnknown ? "quota unknown" : null].filter(Boolean).join(" · ");
 
   return <div>
-    <button type="button" onClick={onBack} className="mb-3 inline-flex items-center gap-1 text-caption text-muted-foreground hover:text-foreground"><ArrowLeft size={12}/>{workflow.definition.name}</button>
+    <Button variant="text" size="xs" className="mb-3" onClick={onBack}><ArrowLeft size={12}/>{workflow.definition.name}</Button>
     <ScreenHeading title={`Run · ${new Date(when).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`}
       description={<span className="inline-flex flex-wrap items-center gap-2"><StatusChip label={RUN_STATUS_LABEL[run.status]} tone={runTone(run.status)}/><span>{meta}</span></span>}
       action={<>
@@ -194,7 +194,7 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
       </>}/>
     {run.event && <Card className="mb-3"><p className="text-caption font-medium text-muted-foreground">{eventCount > 1 ? `Started by ${eventCount} events, first:` : "Started by"}</p>
       <p className="mt-0.5 text-ui text-foreground">{run.event.url
-        ? <button type="button" className="inline-flex items-center gap-1 text-left hover:underline" onClick={() => void openExternalUrl(run.event!.url!)}>{run.event.title}<ExternalLink size={11}/></button>
+        ? <Button variant="link" size="inline" onClick={() => void openExternalUrl(run.event!.url!)}>{run.event.title}<ExternalLink size={11}/></Button>
         : run.event.title}</p></Card>}
     {run.status === "queued" && !run.sessionId && <Card className="mb-3"><p className="text-ui text-foreground">{queuedLine(queuePosition)}</p><p className="mt-0.5 text-caption text-muted-foreground">At most a few workflows run at once, so your plan is not spent in one burst. Change it in Workflow settings.</p></Card>}
     {run.summary && <Card className="mb-3"><p className="text-ui leading-relaxed text-foreground">{run.summary}</p>{run.failureCode && <p className="mt-1 font-mono text-caption text-muted-foreground">{run.failureCode}</p>}

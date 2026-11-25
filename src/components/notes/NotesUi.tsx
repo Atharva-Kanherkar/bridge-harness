@@ -8,6 +8,7 @@ import { Check } from "lucide-react";
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
 import { clsx } from "clsx";
+import { RowButton } from "@/components/ui/row";
 
 export function Popover({ open, onClose, label, align = "start", side = "bottom", width = "w-72", children }: {
   open: boolean;
@@ -61,18 +62,16 @@ export function Option({ selected, onSelect, leading, hint, children }: {
   hint?: string;
   children: ReactNode;
 }) {
-  return <button
-    type="button"
+  return <RowButton size="bare" tone="default" shape="card"
+   
     role="option"
     aria-selected={selected}
-    onClick={onSelect}
-    className="flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-ui text-foreground outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
-  >
+    onClick={onSelect}><span className="flex min-h-8 w-full items-center gap-2.5 px-2.5 text-ui">
     {leading && <span className="grid w-4 shrink-0 place-items-center">{leading}</span>}
     <span data-option-label className="min-w-0 flex-1 truncate">{children}</span>
     {hint && <span className="shrink-0 text-caption text-muted-foreground">{hint}</span>}
     <Check size={14} strokeWidth={2} aria-hidden="true" className={clsx("shrink-0", selected ? "text-foreground" : "invisible")} />
-  </button>;
+  </span></RowButton>;
 }
 
 /** A quiet text action. `active` keeps it lit while its popover is open. */

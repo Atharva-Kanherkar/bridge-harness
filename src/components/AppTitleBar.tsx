@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { PanelLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 
 // The window keeps no native titlebar (overlay style, hidden title), so this
 // strip is the app's own: it carries the canvas chrome and drags the window
@@ -38,15 +39,15 @@ export function AppTitleBar({ title, navOpen, onOpenNav, leading, actions, flush
       )}
     >
       {leading && <div className="hidden shrink-0 items-center gap-0.5 sm:flex">{leading}</div>}
-      <button
-        type="button"
+      <Button variant="quiet" size="icon-sm" className="shrink-0"
+       
         onClick={onOpenNav}
-        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground sm:hidden"
+       
         aria-label="Open navigation"
         aria-expanded={navOpen}
       >
         <PanelLeft size={16} strokeWidth={1.7} aria-hidden="true" />
-      </button>
+      </Button>
       <p className="m-0 min-w-0 flex-1 truncate">
         <span className="text-ui font-semibold text-foreground">{title}</span>
       </p>

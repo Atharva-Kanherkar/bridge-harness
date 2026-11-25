@@ -5,6 +5,7 @@ import type { UsageProvider } from "../usage";
 import { Skeleton } from "./ui/skeleton";
 import { SignInProgress, type SignInStage } from "./SignInProgress";
 import { plainProviderLoginOutput, providerLoginCode, providerLoginTerminalId, providerLoginUrl } from "../providerLoginPresentation";
+import { Button } from "@/components/ui/button";
 
 // `bare` drops the card and header for hosts that supply their own (the
 // sign-in dialog). `onExited` lets that host judge the result instead of
@@ -119,11 +120,11 @@ export function ProviderLoginPane({ provider, label, account, onClose, onExited,
       aria-label={`Reply to the ${label} sign-in prompt`}
       className="min-w-0 flex-1 rounded-md border border-border bg-card px-2 py-1 font-mono text-caption text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
     />
-    <button type="button" onClick={send} className="rounded-md border border-border px-2 py-1 text-caption font-medium text-foreground transition-colors hover:bg-accent">Send</button>
+    <Button variant="outline" size="xs" onClick={send}>Send</Button>
   </div>;
   const optionKeys = provider === "opencode" && <div className="mt-2 flex flex-wrap gap-2">{([
     ["Previous option", "\u001b[A"], ["Next option", "\u001b[B"], ["Choose option", "\r"],
-  ] as const).map(([name, key]) => <button key={name} type="button" onClick={() => void writeReply(key)} className="min-h-8 rounded-md border border-border px-2 text-xs text-foreground">{name}</button>)}</div>;
+  ] as const).map(([name, key]) => <Button variant="outline" size="sm" key={name} onClick={() => void writeReply(key)}>{name}</Button>)}</div>;
   const outputPane = <pre ref={outputRef} aria-live="polite" aria-label={`${label} sign-in output`} className="max-h-36 overflow-y-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 font-mono text-caption leading-relaxed text-foreground">{cleanOutput || "Starting secure sign-in…"}</pre>;
   if (bare) return <div className="grid gap-4" aria-label={`${label} sign-in`}>
     {error ? <div role="alert" className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-meta text-destructive">{error}</div> : <div className="grid gap-3 rounded-xl border border-border-card bg-background/50 p-4">
@@ -159,7 +160,7 @@ export function ProviderLoginPane({ provider, label, account, onClose, onExited,
         <h3 className="text-ui font-medium text-foreground">Connect {label}</h3>
         <p className="mt-0.5 text-caption text-muted-foreground">{label} handles authentication; Bridge does not store your credentials.</p>
       </div>
-      <button type="button" onClick={cancel} className="min-h-7 rounded-lg px-2.5 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Cancel</button>
+      <Button variant="quiet" size="xs" onClick={cancel}>Cancel</Button>
     </header>
     <div className="grid gap-3 px-4 py-4">
       {error ? <div role="alert" className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-meta text-destructive">{error}</div> : <div className="grid gap-3">

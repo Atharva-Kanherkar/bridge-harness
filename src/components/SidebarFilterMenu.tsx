@@ -11,6 +11,7 @@ import {
   type ChatStatusFilter,
   type ChatView,
 } from "./sidebarChats";
+import { RowButton } from "@/components/ui/row";
 
 type Panel = "root" | "status" | "agent" | "groupBy" | "sortBy";
 
@@ -94,45 +95,39 @@ export function SidebarFilterMenu({ view, agents, allowProjectGrouping, onChange
         {panel === "root" ? rows.map((row, index) => (
           <div key={row.panel}>
             {index > 0 && rows[index - 1].group !== row.group && <MenuSeparator />}
-            <button
-              type="button"
+            <RowButton size="bare" tone="default" shape="card"
+             
               role="menuitem"
-              onClick={() => setPanel(row.panel)}
-              className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-ui transition-colors hover:bg-accent"
-            >
+              onClick={() => setPanel(row.panel)}><span className="flex h-7 w-full items-center gap-2 px-2 text-ui">
               <span className="min-w-0 flex-1 truncate">{row.label}</span>
               <span className="shrink-0 truncate text-caption text-muted-foreground">{row.value}</span>
               <ChevronRight size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-            </button>
+            </span></RowButton>
           </div>
         )) : (
           <>
-            <button
-              type="button"
-              onClick={() => setPanel("root")}
-              className="flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
+            <RowButton size="bare" tone="muted" shape="card"
+             
+              onClick={() => setPanel("root")}><span className="flex h-7 w-full items-center gap-1.5 px-1.5 text-caption font-medium">
               <ChevronLeft size={12} strokeWidth={1.7} aria-hidden="true" />
               {panels[panel].title}
-            </button>
+            </span></RowButton>
             <MenuSeparator />
             {panels[panel].options.map(option => {
               const checked = option.id === panels[panel].current;
               return (
-                <button
+                <RowButton size="bare" tone="default" shape="card"
                   key={option.id}
-                  type="button"
+                 
                   role="menuitemradio"
                   aria-checked={checked}
                   onClick={() => {
                     onChange(panels[panel].apply(option.id));
                     setPanel("root");
-                  }}
-                  className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-ui transition-colors hover:bg-accent"
-                >
+                  }}><span className="flex h-7 w-full items-center gap-2 px-2 text-ui">
                   <Check size={12} strokeWidth={2.2} aria-hidden="true" className={cn("shrink-0", checked ? "opacity-100" : "opacity-0")} />
                   <span className="min-w-0 flex-1 truncate">{option.label}</span>
-                </button>
+                </span></RowButton>
               );
             })}
           </>

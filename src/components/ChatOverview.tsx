@@ -10,6 +10,7 @@ import type { AgentEvent, BaseBranchDivergence, CompletionSummary, Session, Sess
 import { HarnessMark } from "./harnessMarks";
 import { Kbd } from "./ui/kbd";
 import { Tip } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
 
 // The head of the dock's Work pane: where this chat runs, which branch, what
 // it has not committed, how its last checks went, and what each turn did. It
@@ -164,11 +165,11 @@ export function ChatOverviewView({ model, harness, onReview, onOpenCode, onOpenT
       <ul aria-label="Turn history" className="grid grid-cols-1 gap-px">
         {turns.map(turn => <TurnRow key={turn.key} turn={turn} harness={harness} onOpen={onOpenTurn} />)}
       </ul>
-      {(hidden > 0 || allTurns) && model.turns.length > TURNS_SHOWN && <button
-        type="button"
+      {(hidden > 0 || allTurns) && model.turns.length > TURNS_SHOWN && <Button variant="quiet" size="xs" className="mt-0.5"
+       
         onClick={() => setAllTurns(value => !value)}
-        className="mt-0.5 h-7 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >{allTurns ? "Show fewer" : `Show ${hidden} more`}</button>}
+       
+      >{allTurns ? "Show fewer" : `Show ${hidden} more`}</Button>}
     </div>}
   </section>;
 }

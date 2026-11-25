@@ -1,5 +1,6 @@
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { ExternalLink, PanelRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 // Where a GitHub link should open. Bridge can render a pull request, an issue
 // or the repository beside the conversation, and the browser can render all of
@@ -38,23 +39,23 @@ export function GithubLinkDestinationDialog({
       <p className="mt-3 break-all font-mono text-caption leading-relaxed text-muted-foreground">{url}</p>
 
       <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-end">
-        <button
-          type="button"
+        <Button variant="outline" size="default"
+         
           onClick={onOpenInBrowser}
-          className="inline-flex min-h-9 items-center justify-center gap-2 rounded-lg border border-border px-3 text-ui font-medium text-foreground transition-colors hover:bg-accent"
+         
         >
           <ExternalLink size={13} aria-hidden="true" />
           Open in browser
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button variant="default" size="default"
+         
           autoFocus
           onClick={onOpenInline}
-          className="inline-flex min-h-9 items-center justify-center gap-2 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+         
         >
           <PanelRight size={13} aria-hidden="true" />
           Open in Bridge
-        </button>
+        </Button>
       </div>
     </DialogPopup>
   </Dialog>;

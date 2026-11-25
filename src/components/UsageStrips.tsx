@@ -5,6 +5,7 @@ import { harnessChartDot, harnessChartText } from "./harnessMarks";
 import { chartY, formatPercent, formatPeriodLabel, formatTokens, formatUsd, type ChartGeometry } from "../usageReport";
 import { axisFraction, harnessesByMetric, harnessValue, modelValue, periodHarnessValue, periodValue, straightPaths } from "../usageGeometry";
 import { AxisLabels, EstimateMark, formatMetric, HarnessName, HeroCaption, LAYOUT_CARD, periodNoun, useScrub, type UsageLayoutProps } from "./UsageLayoutParts";
+import { Button } from "@/components/ui/button";
 
 // Layout B: small multiples. One strip per harness on one shared clock, so
 // no series is ever drawn over another. A single rule scrubs every strip at
@@ -77,7 +78,7 @@ export function UsageStrips({ report, window, metric }: UsageLayoutProps) {
       <div className="mb-2 flex items-center gap-3">
         <h2 className="text-ui font-medium text-foreground">{title}</h2>
         <div role="radiogroup" aria-label="Strip scale" className="u-segmented ml-auto">
-          {(["shared", "own"] as const).map(option => <button key={option} type="button" role="radio" aria-checked={scale === option} data-active={scale === option} className="u-segmented-item" onClick={() => setScale(option)}>{option === "shared" ? "Shared scale" : "Own scale"}</button>)}
+          {(["shared", "own"] as const).map(option => <Button variant="quiet" size="xs" key={option} role="radio" aria-checked={scale === option} data-active={scale === option} onClick={() => setScale(option)}>{option === "shared" ? "Shared scale" : "Own scale"}</Button>)}
         </div>
       </div>
       {count === 0 || harnesses.length === 0 ? <p className="py-10 text-center text-caption text-muted-foreground">No activity in this window.</p> : <div

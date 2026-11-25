@@ -7,6 +7,7 @@ import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { HarnessMark } from "@/components/harnessMarks";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { clsx as cn } from "clsx";
+import { Button } from "@/components/ui/button";
 
 export type TrailHarnessOption = { id: string; label: string };
 
@@ -110,14 +111,14 @@ export function TrailStartDialog({ trail, harnesses, defaultHarness, initialText
                 ))}
               </div>
               <span className="flex-1" />
-              <button
-                type="submit"
+              <Button variant="default" size="icon-xs" type="submit"
+               
                 disabled={!canSend}
                 aria-label="Start chat"
-                className="flex size-7 items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-40"
+               
               >
                 <ArrowUp className="size-3.5" aria-hidden="true" />
-              </button>
+              </Button>
             </div>
           </div>
 

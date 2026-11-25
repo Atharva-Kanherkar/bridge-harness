@@ -15,6 +15,8 @@ import type { ViewBodyProps } from "./viewBody";
 import { addDays, placedDay } from "./DatabaseCalendar";
 import { composeFilter, readAll } from "./viewBody";
 import { filterColumns, type Condition, type FieldColumn } from "./viewModel";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
 
 export const GROUP_LIMIT = 50;
 const MOVABLE = new Set(["select", "status", "multiSelect", "checkbox", "kind", "state", "project"]);
@@ -174,8 +176,8 @@ export function DatabaseBoard({ database, view, query, groups, run, host, onComm
           />
         </li>)}
       </ol>
-      {column.count > column.cards.length && <button type="button" disabled={loading.has(column.key)} onClick={() => void loadMore(column, column.cards.length)} className="mt-1 h-7 rounded-md text-meta text-muted-foreground transition-colors enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-50">Load more ({column.count - column.cards.length})</button>}
-      {movable && <button type="button" aria-label={`New in ${column.label}`} onClick={() => void onNewRow({ column: grouping, value: movedValue(grouping, undefined, "", column.key) })} className="mt-1 inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />New</button>}
+      {column.count > column.cards.length && <Button variant="quiet" size="xs" className="mt-1" disabled={loading.has(column.key)} onClick={() => void loadMore(column, column.cards.length)}>Load more ({column.count - column.cards.length})</Button>}
+      {movable && <Button variant="quiet" size="xs" className="mt-1" aria-label={`New in ${column.label}`} onClick={() => void onNewRow({ column: grouping, value: movedValue(grouping, undefined, "", column.key) })}><Plus size={13} aria-hidden="true" />New</Button>}
     </section>)}
   </div>;
 }
@@ -202,16 +204,16 @@ function Card({ row, columns, host, movable, targets, onOpen, onDragStart, onDra
     onDragEnd={onDragEnd}
     className="group relative rounded-lg bg-background p-2 shadow-sm ring-1 ring-border"
   >
-    <button type="button" onClick={onOpen} className="block w-full min-w-0 text-left">
+    <RowButton size="bare" tone="default" shape="card" onClick={onOpen}><span className="block w-full min-w-0">
       <span className={clsx("block truncate text-ui font-medium", row.note.title ? "text-foreground" : "text-faint")}>{row.note.title || "Untitled"}</span>
       {lines.map(([column, text]) => <span key={column.id} className="mt-0.5 block truncate text-caption text-muted-foreground">{column.type === "checkbox" ? column.name : text}</span>)}
-    </button>
-    {movable && targets.length > 0 && <button type="button" aria-label={`Move ${row.note.title || "Untitled"} to…`} aria-expanded={menu} onClick={() => setMenu(current => !current)} className="absolute right-1 top-1 grid size-6 place-items-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100">
+    </span></RowButton>
+    {movable && targets.length > 0 && <Button variant="quiet" size="icon-2xs" className="absolute right-1 top-1" aria-label={`Move ${row.note.title || "Untitled"} to…`} aria-expanded={menu} onClick={() => setMenu(current => !current)}>
       <ArrowRightLeft size={12} aria-hidden="true" />
-    </button>}
+    </Button>}
     {menu && <Floating anchor={anchor} label="Move to" onClose={() => setMenu(false)} width="w-56">
       <div role="menu" aria-label="Move to">
-        {targets.map(target => <button key={target.key || "none"} type="button" role="menuitem" onClick={() => { setMenu(false); onMove(target.key); }} className="flex min-h-8 w-full items-center rounded-lg px-2.5 text-left text-ui text-foreground transition-colors hover:bg-accent">{target.label}</button>)}
+        {targets.map(target => <RowButton size="bare" tone="default" shape="card" key={target.key || "none"} role="menuitem" onClick={() => { setMenu(false); onMove(target.key); }}><span className="flex min-h-8 w-full items-center px-2.5 text-ui">{target.label}</span></RowButton>)}
       </div>
     </Floating>}
   </div>;

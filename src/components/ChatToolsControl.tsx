@@ -13,6 +13,7 @@ import { formatTokens } from "../contextBreakdown";
 import { errorMessage } from "../errors";
 import { normalizeAccount } from "../providerAccounts";
 import type { ChatToolItem, ChatTools, ChatToolSelection, ChatToolsDraft } from "../types";
+import { RowButton } from "@/components/ui/row";
 
 /**
  * The connectors and skills a chat starts with, beside the access control.
@@ -385,15 +386,13 @@ function ToolRow({ item, pending, busy, onSwitch, onRemove }: {
   }
   const on = pending?.on ?? item.state === "on";
   return <div data-tool-kind={item.kind} data-tool-item={item.id} className="flex items-center gap-1">
-    <button
-      type="button"
+    <RowButton size="bare" tone="default" shape="card"
+     
       role="menuitemcheckbox"
       tabIndex={-1}
       aria-checked={on}
       disabled={busy}
-      onClick={() => onSwitch(!on)}
-      className="flex min-h-7 min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-default disabled:hover:bg-transparent"
-    >
+      onClick={() => onSwitch(!on)}><span className="flex min-h-7 min-w-0 flex-1 items-center gap-2 px-2 py-1">
       <span className="min-w-0 flex-1">
         <span className={cn("block truncate text-ui", on ? "text-foreground" : "text-muted-foreground")}>{item.label}</span>
         {meta}
@@ -402,7 +401,7 @@ function ToolRow({ item, pending, busy, onSwitch, onRemove }: {
       <span aria-hidden="true" className={cn("relative h-[18px] w-8 shrink-0 rounded-full transition-colors", on ? "bg-foreground" : "bg-foreground/15", busy && "opacity-60")}>
         <span className={cn("absolute top-[2px] size-[14px] rounded-full bg-background transition-[left] duration-150", on ? "left-4" : "left-[2px]")} />
       </span>
-    </button>
+    </span></RowButton>
     {remove}
   </div>;
 }

@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, Quote } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { COLORIZE_DEBOUNCE_MS, colorizePatch, highlightPatch, type DiffRow, type DiffRowKind } from "./highlight";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
 
 /** A hunk's span in the new file, read from its own @@ header. */
 export type HunkRange = { start: number; end: number };
@@ -60,16 +62,16 @@ function DiffLine({ row, numbered, onQuoteHunk }: { row: DiffRow; numbered: bool
     </span>
     <span className="min-w-0 flex-1 whitespace-pre-wrap break-words pl-2 pr-3">
       <span dangerouslySetInnerHTML={{ __html: row.html }} />
-      {range && <button
-        type="button"
+      {range && <Button variant="quiet" size="xs" className="ml-2" tooltip="Reference this hunk in the composer"
+       
         onClick={() => onQuoteHunk?.(range)}
         aria-label={`Reference lines ${range.start}-${range.end} in the composer`}
-        title="Reference this hunk in the composer"
-        className="ml-2 inline-flex h-4 items-center gap-1 rounded px-1 align-middle text-caption text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/hunk:opacity-100"
+       
+       
       >
         <Quote size={9} strokeWidth={1.8} aria-hidden="true" />
         quote
-      </button>}
+      </Button>}
     </span>
   </div>;
 }
@@ -147,13 +149,11 @@ export function PatchView({ patch, path = "", className, foldAfterHunks, onQuote
         {shown.map((row, index) => <DiffLine key={index} row={row} numbered={numbered} onQuoteHunk={onQuoteHunk} />)}
       </div>
     </div>
-    {hiddenHunks > 0 && <button
-      type="button"
-      onClick={() => setUnfoldedFor(patch)}
-      className="flex w-full items-center gap-2 bg-card px-3 py-1 text-left text-caption text-muted-foreground transition-colors hover:text-muted-foreground"
-    >
+    {hiddenHunks > 0 && <RowButton size="bare" tone="muted" shape="card"
+     
+      onClick={() => setUnfoldedFor(patch)}><span className="flex w-full items-center gap-2 px-3 py-1 text-caption">
       <ChevronDown className="h-3 w-3 shrink-0" aria-hidden="true" />
       {hiddenHunks} more hunk{hiddenHunks === 1 ? "" : "s"} — expand
-    </button>}
+    </span></RowButton>}
   </div>;
 }

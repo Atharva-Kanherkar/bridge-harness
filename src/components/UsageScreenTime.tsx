@@ -9,6 +9,7 @@ import {
 } from "../screenTime";
 import { LAYOUT_CARD, UsageLoadingState, useScrub } from "./UsageLayoutParts";
 import { Switch } from "./settings/kit";
+import { Button } from "@/components/ui/button";
 
 // The Time tab: Screen Time for Bridge. Your time is minutes the window was
 // focused and in use; agent time is minutes your chats spent working, added
@@ -196,7 +197,7 @@ export function UsageScreenTime({ onError, refreshKey = 0 }: { onError: (message
   return <div className="space-y-5">
     <div className="flex flex-wrap items-center gap-3">
       <div role="radiogroup" aria-label="Range" className="u-segmented">
-        {([7, 30] as const).map(option => <button key={option} type="button" role="radio" aria-checked={range === option} data-active={range === option} className="u-segmented-item" onClick={() => setRange(option)}>{RANGE_LABELS[option]}</button>)}
+        {([7, 30] as const).map(option => <Button variant="quiet" size="xs" key={option} role="radio" aria-checked={range === option} data-active={range === option} onClick={() => setRange(option)}>{RANGE_LABELS[option]}</Button>)}
       </div>
       {result && !stale && <span className="text-caption tabular-nums text-muted-foreground">{formatDayShort(result.sinceDay)} to {formatDayShort(result.untilDay)}</span>}
       <label className="ml-auto inline-flex items-center gap-2 text-caption text-muted-foreground">

@@ -10,6 +10,7 @@ import type { UsageProvider, UsageSnapshot } from "../../usage";
 import type { MeterRegistry } from "../../types";
 import { HarnessMark } from "../harnessMarks";
 import { MeterReadings, providerSnapshots, useMeterClock } from "./MeterReadings";
+import { Button } from "@/components/ui/button";
 
 export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose, onOpenBridge }: {
   usage: Partial<Record<UsageProvider, UsageSnapshot>>;
@@ -41,13 +42,13 @@ export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose, 
           terse because the header has to survive a 360pt panel. */}
       <span className="truncate text-caption tabular-nums text-muted-foreground">{worst == null ? "no limits" : `${Math.round(worst)}% worst`}</span>
       <span className="ml-auto flex shrink-0 items-center gap-1">
-        {onOpenBridge && <button type="button" onClick={onOpenBridge} className="rounded-md px-2 py-1 text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Open Bridge</button>}
-        <button type="button" onClick={onRefresh} disabled={refreshing} aria-label="Refresh meter" className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
+        {onOpenBridge && <Button variant="quiet" size="xs" onClick={onOpenBridge}>Open Bridge</Button>}
+        <Button variant="quiet" size="icon-xs" onClick={onRefresh} disabled={refreshing} aria-label="Refresh meter">
           <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
-        </button>
-        <button type="button" onClick={onClose} aria-label="Close meter" className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+        </Button>
+        <Button variant="quiet" size="icon-xs" onClick={onClose} aria-label="Close meter">
           <X size={13} aria-hidden="true" />
-        </button>
+        </Button>
       </span>
     </div>
     <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-2">

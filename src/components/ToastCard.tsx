@@ -1,6 +1,8 @@
 import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
 
 // The one card every toast draws: glass, an icon, a body that opens what it is
 // about, an optional action area, and the X. It also owns the timer, so every
@@ -59,18 +61,18 @@ export function ToastCard({
     {icon}
     <div className="min-w-0 flex-1">
       {onOpen
-        ? <button type="button" onClick={onOpen} className="block w-full text-left" aria-label={openLabel}>{body}</button>
+        ? <RowButton size="bare" tone="default" shape="card" onClick={onOpen} aria-label={openLabel}><span className="block w-full">{body}</span></RowButton>
         : body}
       {footer}
     </div>
-    <button
-      type="button"
+    <Button variant="quiet" size="icon-xs" className="shrink-0"
+     
       onClick={() => onDismiss(toastKey)}
       aria-label="Dismiss notification"
-      className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+     
     >
       <X size={13} aria-hidden="true" />
-    </button>
+    </Button>
   </div>;
 }
 

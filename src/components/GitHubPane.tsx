@@ -924,12 +924,12 @@ function PatchView({ patch, fullDiffUrl, onComment }: { patch: string; fullDiffU
         <div className={cn("group/line relative flex w-max min-w-full whitespace-pre", PATCH_ROW[line.kind])}>
           <span aria-hidden="true" className="w-9 shrink-0 select-none pr-1.5 text-right tabular-nums text-muted-foreground/60">{line.oldLine ?? ""}</span>
           <span aria-hidden="true" className="w-9 shrink-0 select-none pr-2 text-right tabular-nums text-muted-foreground/60">{line.newLine ?? ""}</span>
-          {anchor && <Tip label={`Comment on line ${anchor.line}`}><button
-            type="button"
+          {anchor && <Tip label={`Comment on line ${anchor.line}`}><Button variant="default" size="icon-xs" className="absolute left-[4.1rem] top-0.5"
+           
             onClick={() => setComposing(index)}
             aria-label={`Comment on line ${anchor.line}`}
-            className="absolute left-[4.1rem] top-0.5 grid size-4 -translate-x-1/2 scale-75 place-items-center rounded-sm bg-primary text-primary-foreground opacity-0 shadow-xs transition-[opacity,transform] duration-150 hover:scale-110 focus-visible:scale-100 focus-visible:opacity-100 group-hover/line:scale-100 group-hover/line:opacity-100"
-          ><Plus size={11} strokeWidth={2.4} aria-hidden="true" /></button></Tip>}
+           
+          ><Plus size={11} strokeWidth={2.4} aria-hidden="true" /></Button></Tip>}
           <span className="pl-2 pr-3">{line.text || " "}</span>
         </div>
         {anchor && onComment && composing === index && <div className="sticky left-0 w-full max-w-full border-y border-border bg-card/80 p-2 font-sans">

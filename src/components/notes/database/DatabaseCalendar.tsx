@@ -13,6 +13,8 @@ import type { DatabaseRow } from "../../../types";
 import type { ViewBodyProps } from "./viewBody";
 import { readWith } from "./viewBody";
 import { filterColumns } from "./viewModel";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
 
 const DAY_MS = 86_400_000;
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -111,23 +113,21 @@ export function DatabaseCalendar({ database, view, query, run, version, onCommit
   };
   const [year, monthNumber] = month.split("-").map(Number);
   const shiftMonth = (by: number) => setMonth(new Date(Date.UTC(year, monthNumber - 1 + by, 1)).toISOString().slice(0, 7));
-  const item = (row: DatabaseRow) => <button
+  const item = (row: DatabaseRow) => <RowButton size="bare" tone="default" shape="card"
     key={row.note.id}
-    type="button"
+   
     draggable={writable}
     onDragStart={event => { event.dataTransfer?.setData("text/plain", row.note.id); setDragging(row); }}
     onDragEnd={() => setDragging(null)}
-    onClick={() => onOpenRow(row.note.id)}
-    className="block w-full truncate rounded px-1 py-0.5 text-left text-caption text-foreground ring-1 ring-border transition-colors hover:bg-accent"
-  >{row.note.title || "Untitled"}</button>;
+    onClick={() => onOpenRow(row.note.id)}><span className="block w-full truncate px-1 py-0.5 text-caption">{row.note.title || "Untitled"}</span></RowButton>;
 
   return <div aria-label="Calendar" className="flex gap-3">
     <div className="min-w-0 flex-1">
       <div className="mb-2 flex items-center gap-1">
         <h3 className="m-0 mr-auto text-body font-semibold text-foreground">{MONTHS[monthNumber - 1]} {year}</h3>
-        <button type="button" aria-label="Previous month" onClick={() => shiftMonth(-1)} className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><ChevronLeft size={14} aria-hidden="true" /></button>
-        <button type="button" onClick={() => setMonth(today.slice(0, 7))} className="h-7 rounded-md px-2 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Today</button>
-        <button type="button" aria-label="Next month" onClick={() => shiftMonth(1)} className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><ChevronRight size={14} aria-hidden="true" /></button>
+        <Button variant="quiet" size="icon-xs" aria-label="Previous month" onClick={() => shiftMonth(-1)}><ChevronLeft size={14} aria-hidden="true" /></Button>
+        <Button variant="quiet" size="xs" onClick={() => setMonth(today.slice(0, 7))}>Today</Button>
+        <Button variant="quiet" size="icon-xs" aria-label="Next month" onClick={() => shiftMonth(1)}><ChevronRight size={14} aria-hidden="true" /></Button>
       </div>
       <div role="grid" aria-label={`${MONTHS[monthNumber - 1]} ${year}`} className="grid grid-cols-7 overflow-hidden rounded-lg ring-1 ring-border">
         {WEEKDAYS.map(name => <div key={name} role="columnheader" className="border-b border-border px-1.5 py-1 text-caption text-muted-foreground">{name}</div>)}

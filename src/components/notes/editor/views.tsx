@@ -223,16 +223,16 @@ function WikiLinkView({ node }: ReactNodeViewProps) {
   const target = String(node.attrs.target ?? "").trim();
   const alias = node.attrs.alias == null ? null : String(node.attrs.alias).trim() || null;
   return <NodeViewWrapper as="span" className="inline">
-    <Tip label={`Open the page ${target}`}><button
-      type="button"
+    <Tip label={`Open the page ${target}`}><Button variant="link" size="inline"
+     
       contentEditable={false}
       aria-label={`Open the page ${target}`}
       onClick={() => { if (target) pages.openByTitle?.(target); }}
-      className="inline-flex cursor-pointer items-baseline gap-1 rounded text-foreground align-baseline underline decoration-border underline-offset-4 transition-colors hover:decoration-foreground"
+     
     >
       <FileText size={13} strokeWidth={1.75} aria-hidden="true" className="relative top-[1px] shrink-0 text-muted-foreground" />
       <span className="min-w-0 truncate">{alias ?? target}</span>
-    </button></Tip>
+    </Button></Tip>
   </NodeViewWrapper>;
 }
 

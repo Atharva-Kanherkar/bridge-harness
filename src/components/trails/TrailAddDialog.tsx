@@ -8,6 +8,7 @@ import { HarnessMark } from "@/components/harnessMarks";
 import { SkeletonText } from "@/components/ui/skeleton";
 import { whenLabel } from "@/trails";
 import { clsx as cn } from "clsx";
+import { RowButton } from "@/components/ui/row";
 
 const KINDS: { kind: TrailMemberKind; label: string; plural: string; icon: ComponentType<{ className?: string }> }[] = [
   { kind: "note", label: "Note", plural: "notes", icon: FileText },
@@ -86,13 +87,11 @@ function CandidateRow({ candidate, icon: Icon, busy, onPick }: { candidate: Trai
   const elsewhere = candidate.onTrailTitle ?? (candidate.onTrailId ? "another trail" : undefined);
   return (
     <li>
-      <button
-        type="button"
+      <RowButton size="bare" tone="default" shape="card"
+       
         disabled={busy || Boolean(elsewhere)}
         onClick={onPick}
-        aria-label={elsewhere ? `${candidate.title}, on the trail “${elsewhere}”` : `Add ${candidate.title}`}
-        className="group flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left enabled:hover:bg-card focus-visible:bg-card focus-visible:outline-none disabled:cursor-default"
-      >
+        aria-label={elsewhere ? `${candidate.title}, on the trail “${elsewhere}”` : `Add ${candidate.title}`}><span className="group flex w-full items-center gap-3 px-3 py-2">
         <span className="flex size-5 shrink-0 items-center justify-center">
           {candidate.harness ? <HarnessMark harness={candidate.harness} size={13} /> : <Icon className="size-3.5 text-muted-foreground" />}
         </span>
@@ -103,7 +102,7 @@ function CandidateRow({ candidate, icon: Icon, busy, onPick }: { candidate: Trai
           </span>
         </span>
         {!elsewhere && <Plus className="size-3.5 shrink-0 text-faint opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" aria-hidden="true" />}
-      </button>
+      </span></RowButton>
     </li>
   );
 }

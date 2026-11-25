@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import katex from "katex";
+import { Button } from "@/components/ui/button";
 
 export interface MathEdit {
   kind: "inline" | "block";
@@ -57,8 +58,8 @@ export function MathPopover({ edit, onSave, onRemove, onClose }: { edit: MathEdi
       </div>
       <div className="mt-2 flex items-center gap-1">
         <span className="flex-1 text-caption text-faint">Enter to keep · Shift+Enter for a new line</span>
-        {edit.existing && <button type="button" onClick={onRemove} className="h-7 rounded-full px-2.5 text-meta text-muted-foreground hover:bg-accent hover:text-foreground">Remove</button>}
-        <button type="submit" className="h-7 rounded-full bg-primary px-3 text-meta font-medium text-primary-foreground hover:opacity-90">Done</button>
+        {edit.existing && <Button variant="quiet" size="xs" onClick={onRemove}>Remove</Button>}
+        <Button variant="default" size="xs" type="submit">Done</Button>
       </div>
     </form>
   </>, document.body);

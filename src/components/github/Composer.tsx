@@ -4,6 +4,7 @@ import { LoaderCircle, Send } from "lucide-react";
 import { modKey } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { Kbd } from "@/components/ui/kbd";
+import { Button } from "@/components/ui/button";
 
 /** A write that reports back: `undefined` when GitHub took it, otherwise the
  *  reason it did not, verbatim. */
@@ -97,16 +98,16 @@ export function Composer({ label, placeholder, submitLabel, onSubmit, onCancel, 
     </AnimatePresence>
     <div className="mt-1 flex items-center justify-end gap-1.5">
       <span className="mr-auto flex items-center gap-1 text-caption text-muted-foreground">Markdown · <Kbd>{modKey("↵")}</Kbd></span>
-      {(collapsed || onCancel) && <button type="button" disabled={busy} onClick={dismiss} className="inline-flex min-h-7 items-center rounded-md px-2 py-1 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50">Cancel</button>}
-      <button
-        type="button"
+      {(collapsed || onCancel) && <Button variant="quiet" size="xs" disabled={busy} onClick={dismiss}>Cancel</Button>}
+      <Button variant="default" size="xs"
+       
         disabled={!ready}
         onClick={() => void send()}
-        className="inline-flex min-h-7 items-center gap-1.5 rounded-md bg-primary px-2.5 py-1 text-meta font-medium text-primary-foreground shadow-xs transition-[background-color,transform,opacity] hover:bg-primary/90 active:scale-[0.97] disabled:opacity-40"
+       
       >
         {busy ? <LoaderCircle size={11} className="animate-spin" aria-hidden="true" /> : <Send size={11} aria-hidden="true" />}
         {submitLabel}
-      </button>
+      </Button>
     </div>
   </motion.div>;
 }

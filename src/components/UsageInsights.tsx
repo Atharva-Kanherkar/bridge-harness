@@ -7,6 +7,7 @@ import { harnessLabel } from "../utils";
 import type { UsageInsightsReport, UsageInsightsResult, UsageInsightTone } from "../types";
 import { HarnessMark, harnessChartDot } from "./harnessMarks";
 import { formatCount, formatTokens, formatUsd } from "../usageReport";
+import { Button } from "@/components/ui/button";
 
 // The Insights tab: one harness turn over Bridge's own records, rendered as
 // charts whose numbers Bridge computed and prose the model wrote. The two are
@@ -180,9 +181,9 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
   useEffect(() => { load(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const report = result?.report ?? null;
-  const analyseButton = <button type="button" onClick={() => load(true)} disabled={loading} className="inline-flex h-8 items-center gap-2 rounded-lg border border-border px-3 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-40">
+  const analyseButton = <Button variant="outline" size="sm" onClick={() => load(true)} disabled={loading}>
     {loading ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <Sparkles size={13} aria-hidden="true" />}{report ? "Analyse again" : "Analyse my usage"}
-  </button>;
+  </Button>;
 
   if (loading && !report) return <InsightsSkeleton step={step} />;
 

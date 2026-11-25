@@ -338,27 +338,27 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
           {/* Wraps in a narrow dock rather than pushing the pane sideways. */}
           <div className="flex flex-wrap items-center gap-1.5 px-3.5 py-3">
             <span className="inline-flex shrink-0 overflow-hidden rounded-lg bg-primary text-primary-foreground">
-              <button
-                type="button"
+              <Button variant="default" size="xs"
+               
                 data-merge-button
                 onClick={() => dispatch({ type: "open", subject: defaultMergeSubject(summary, state.strategy) })}
                 disabled={busy || !config}
-                className="inline-flex h-[30px] items-center gap-1.5 px-3 text-meta font-medium transition-colors hover:bg-primary-foreground/10 disabled:opacity-50"
+               
               >
                 <GitMerge size={12} aria-hidden="true" />
                 {config ? MERGE_BUTTON_LABEL[state.strategy] : "Merge"}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button variant="default" size="icon-xs"
+               
                 onClick={() => setMenuOpen(value => !value)}
                 disabled={busy || !config}
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
                 aria-label="Choose a merge strategy"
-                className="inline-flex h-[30px] items-center border-l border-primary-foreground/25 px-2 transition-colors hover:bg-primary-foreground/10 disabled:opacity-50"
+               
               >
                 <ChevronDown size={12} aria-hidden="true" />
-              </button>
+              </Button>
             </span>
             {/* Approve, Review and More wrap as one group: never one alone. */}
             <span className="ml-auto flex shrink-0 items-center gap-1.5">

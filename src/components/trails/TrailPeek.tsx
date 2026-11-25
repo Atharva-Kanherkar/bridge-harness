@@ -8,6 +8,7 @@ import { HarnessMark } from "@/components/harnessMarks";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 import { KIND_ICON, StageBar, StateWord, TONE_INK } from "./TrailParts";
 import { clsx as cn } from "clsx";
+import { RowButton } from "@/components/ui/row";
 
 // A trail at a glance, from wherever a chat names its trail: the sidebar row's
 // trail button and the chat header's trail chip. It opens on hover or focus
@@ -134,15 +135,13 @@ export function TrailPeekCard({ trail, detail, failed, onOpen }: {
       )}
 
       <div className="border-t border-border p-1.5">
-        <button
-          type="button"
-          onClick={onOpen}
-          className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-ui text-foreground transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
-        >
+        <RowButton size="bare" tone="default" shape="card"
+         
+          onClick={onOpen}><span className="flex h-8 w-full items-center gap-2 px-2 text-ui">
           <span className="flex-1 font-medium">Open trail</span>
           <span className="text-caption tabular-nums text-faint">{summary.memberCount} {summary.memberCount === 1 ? "item" : "items"}</span>
           <ArrowRight className="size-3.5 text-muted-foreground" aria-hidden="true" />
-        </button>
+        </span></RowButton>
       </div>
     </div>
   );

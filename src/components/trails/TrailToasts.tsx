@@ -1,6 +1,7 @@
 import { Route } from "lucide-react";
 import type { TrailMemberAdded } from "@/trails";
 import { ToastCard, ToastOverflow, TOASTS_SHOWN } from "../ToastCard";
+import { Button } from "@/components/ui/button";
 
 // "Added to a trail": one card per automatic addition the core announced.
 // Undo takes the record off the trail, which the core remembers, so the
@@ -36,8 +37,8 @@ export function TrailToasts({ toasts, onOpen, onUndo, onDismiss }: {
         <span className="mt-0.5 block text-meta leading-relaxed text-muted-foreground">{toast.added.label} is now on “{toast.added.trailTitle}”.</span>
       </>}
       footer={<div className="mt-2 flex gap-3 text-meta font-medium">
-        <button type="button" onClick={() => onOpen(toast)} className="text-foreground hover:underline">Open trail</button>
-        <button type="button" onClick={() => onUndo(toast)} className="text-muted-foreground hover:text-foreground">Undo</button>
+        <Button variant="link" size="inline" onClick={() => onOpen(toast)}>Open trail</Button>
+        <Button variant="text" size="xs" onClick={() => onUndo(toast)}>Undo</Button>
       </div>}
     />)}
     <ToastOverflow count={toasts.length - shown.length} />

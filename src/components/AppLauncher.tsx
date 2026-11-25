@@ -18,6 +18,7 @@ import { CHAT_SEARCH_MIN_CHARS } from "../chatSearch";
 import { DOCK_PANES, dockPaneChord, type DockPaneId } from "../dockLayout";
 import { chordLabel, shortcutFor, type CommandId } from "../keymap";
 import { formatShortcut } from "../lib/platform";
+import { Button } from "@/components/ui/button";
 
 export type LauncherChat = { id: string; title: string; detail?: string };
 export type LauncherDockPane = { id: DockPaneId; label: string; icon: LucideIcon };
@@ -380,18 +381,18 @@ function LauncherPanel({ onClose, apps, personal, badges, pins, chats, chatOpen,
         <Search size={17} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
         {/* Where the submenu came from, and the pointer's way back to it. The
             box keeps focus: ⌫ is the keyboard's way. */}
-        {submenu && <button
-          type="button"
+        {submenu && <Button variant="quiet" size="xs" className="-mx-1 shrink-0" tooltip="Back"
+         
           tabIndex={-1}
           aria-label={`Back from ${submenuLabel}`}
-          title="Back"
+         
           onMouseDown={event => event.preventDefault()}
           onClick={back}
-          className="-mx-1 flex h-7 shrink-0 items-center gap-1 rounded-md px-1 text-message text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+         
         >
           {submenuLabel}
           <ChevronRight size={15} strokeWidth={1.6} aria-hidden="true" />
-        </button>}
+        </Button>}
         <input
           ref={inputRef}
           value={query}

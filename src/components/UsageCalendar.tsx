@@ -6,6 +6,7 @@ import { formatDayShort, formatHourShort, formatPercent, formatPeriodLabel, form
 import { bucketKeys, calendarAxis, calendarWeeks, harnessesByMetric, harnessValue, modelValue, orderedRange, periodValue, scopeReport } from "../usageGeometry";
 import { EstimateMark, formatMetric, HarnessName, HeroCaption, LAYOUT_CARD, type UsageLayoutProps } from "./UsageLayoutParts";
 import { Tip } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
 
 // Layout E: time is the navigation. The calendar is the hero; clicking a day
 // selects it, and shift-click or a drag extends the range. Everything under
@@ -139,7 +140,7 @@ export function UsageCalendar({ summary, periods, window, metric }: UsageLayoutP
         <div className="flex items-center gap-2.5">
           <span className={cn("rounded-full border px-2 py-0.5 text-caption", range ? "border-ring/40 text-ring" : "border-border text-muted-foreground")}>{range ? "Selected" : "Whole window"}</span>
           <span className="text-caption tabular-nums text-muted-foreground">{range ? `${label(range[0])}${range[1] !== range[0] ? ` – ${label(range[1])}` : ""}` : `${label(whole[0])} – ${label(whole[1])}`} · {scoped.periods.length} {hourly ? (scoped.periods.length === 1 ? "hour" : "hours") : scoped.periods.length === 1 ? "day" : "days"}</span>
-          {range && <button type="button" onClick={() => setSelection(null)} className="ml-auto rounded-md px-2 py-0.5 text-caption text-muted-foreground hover:bg-accent hover:text-foreground">Clear</button>}
+          {range && <Button variant="quiet" size="2xs" className="ml-auto" onClick={() => setSelection(null)}>Clear</Button>}
         </div>
         <div className="mt-4 text-4xl font-light leading-none tracking-display tabular-nums text-foreground">{format(scopedTotal)}{metric === "cost" && <EstimateMark report={scoped.report} large />}</div>
         <p className="mt-2 text-ui text-muted-foreground">{metric === "cost"

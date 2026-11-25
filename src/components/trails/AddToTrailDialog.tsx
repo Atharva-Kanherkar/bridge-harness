@@ -5,6 +5,7 @@ import { bridgeApi } from "@/api";
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { StageBar } from "./TrailParts";
+import { RowButton } from "@/components/ui/row";
 
 /** Put a chat or a note on an open trail, or start a new trail from it. */
 export function AddToTrailDialog({ member, title: subjectTitle, workspaceId, trails, onDone, onClose }: {
@@ -51,15 +52,13 @@ export function AddToTrailDialog({ member, title: subjectTitle, workspaceId, tra
             <ul className="max-h-64 overflow-y-auto" aria-label="Open trails">
               {open.map(trail => (
                 <li key={trail.id}>
-                  <button
-                    type="button"
+                  <RowButton size="bare" tone="default" shape="card"
+                   
                     disabled={busy}
-                    onClick={() => void run(async () => { await bridgeApi.addTrailMember(trail.id, member); })}
-                    className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-card focus-visible:bg-card focus-visible:outline-none"
-                  >
+                    onClick={() => void run(async () => { await bridgeApi.addTrailMember(trail.id, member); })}><span className="flex w-full items-center gap-3 px-3 py-2">
                     <span className="min-w-0 flex-1 truncate text-ui text-foreground">{trail.title}</span>
                     <StageBar stage={trail.stage} state={trail.state} />
-                  </button>
+                  </span></RowButton>
                 </li>
               ))}
             </ul>

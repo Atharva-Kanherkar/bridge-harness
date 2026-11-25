@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { LoaderCircle, Search, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { SearchSessionEntriesResult, SessionRecallHit } from "../types";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
 
 export type SessionRecallSearchProps = {
   sessionId: string;
@@ -94,14 +96,14 @@ export function SessionRecallSearch({
             />
             {status === "loading" && <LoaderCircle size={13} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />}
           </label>
-          <button
-            type="button"
+          <Button variant="quiet" size="icon-sm" className="shrink-0"
+           
             onClick={onClose}
             aria-label="Close search"
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+           
           >
             <X size={14} strokeWidth={1.8} aria-hidden="true" />
-          </button>
+          </Button>
         </div>
         <p className="text-caption text-muted-foreground">This search stays in this chat. It does not look at other sessions or account memory.</p>
         {status === "error" && error && <p className="text-meta text-destructive">{error}</p>}
@@ -112,21 +114,19 @@ export function SessionRecallSearch({
           <ul className="max-h-48 overflow-y-auto">
             {hits.map(hit => (
               <li key={hit.entryId}>
-                <button
-                  type="button"
-                  onClick={() => onJump(hit.entryId)}
-                  className="flex w-full flex-col gap-0.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-accent"
-                >
+                <RowButton size="bare" tone="default" shape="card"
+                 
+                  onClick={() => onJump(hit.entryId)}><span className="flex w-full flex-col gap-0.5 px-2 py-1.5">
                   <span className="font-mono text-caption text-muted-foreground">{hit.kind} · #{hit.sequence}</span>
                   <span className="line-clamp-2 text-ui text-foreground">{hit.snippet}</span>
-                </button>
+                </span></RowButton>
               </li>
             ))}
           </ul>
         )}
         {hasMore && (
-          <button
-            type="button"
+          <Button variant="quiet" size="xs" className="self-start"
+           
             disabled={loadingMore}
             onClick={() => {
               const requested = generation.current;
@@ -149,8 +149,8 @@ export function SessionRecallSearch({
                 // would strand it.
                 .finally(() => setLoadingMore(false));
             }}
-            className="self-start rounded-md px-2 py-1 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-          >{loadingMore ? "Loading…" : "Show more"}</button>
+           
+          >{loadingMore ? "Loading…" : "Show more"}</Button>
         )}
       </div>
     </div>

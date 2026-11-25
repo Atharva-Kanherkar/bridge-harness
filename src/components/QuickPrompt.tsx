@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowUp } from "lucide-react";
 import { BridgeGlyph } from "./BridgeGlyph";
 import { modKey } from "@/lib/platform";
+import { Button } from "@/components/ui/button";
 
 export const QUICK_HIDE_EVENT = "bridge-quick-hide";
 export const QUICK_SUBMIT_EVENT = "bridge-quick-submit";
@@ -58,15 +59,15 @@ export function QuickPrompt({ emit = emitToShell }: { emit?: (event: string, pay
       />
       <div className="flex items-center justify-between text-caption text-muted-foreground">
         <span>↵ send · ⇧↵ new line · {modKey("N")} in Bridge for more options</span>
-        <button
-          type="button"
+        <Button variant="default" size="icon-xs"
+         
           aria-label="Send"
           disabled={!text.trim()}
           onClick={submit}
-          className="grid size-7 place-items-center rounded-full bg-primary text-primary-foreground disabled:opacity-40"
+         
         >
           <ArrowUp size={14} aria-hidden="true" />
-        </button>
+        </Button>
       </div>
     </div>
   </div>;

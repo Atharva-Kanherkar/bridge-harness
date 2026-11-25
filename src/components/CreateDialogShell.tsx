@@ -4,6 +4,7 @@ import { AnimatePresence, motion, usePresence } from "framer-motion";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
+import { Button } from "@/components/ui/button";
 
 /**
  * The chrome the two create dialogs share: scrim, floating panel, and a header
@@ -127,15 +128,15 @@ function DialogSurface({
               </p>
             </div>
           </div>
-          <button
-            type="button"
+          <Button variant="quiet" size="icon-xs" className="shrink-0"
+           
             onClick={onClose}
             disabled={closeDisabled}
-            className="shrink-0 rounded-xl p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+           
             aria-label={closeLabel}
           >
             <X className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
-          </button>
+          </Button>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-5">{children}</div>

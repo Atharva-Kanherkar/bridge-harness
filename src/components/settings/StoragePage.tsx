@@ -198,13 +198,13 @@ function Size({ entry }: { entry: Pick<DiskEntry, "sizeBytes" | "measuring"> & {
 const IconAction = ({ label, onClick, disabled, tone = "muted", children }: { label: string; onClick: () => void; disabled?: boolean; tone?: "muted" | "destructive"; children: ReactNode }) =>
   tone === "destructive"
     ? <Tip label={label}>
-      <button
-        type="button"
+      <Button variant="destructive-ghost" size="xs" className="shrink-0"
+       
         aria-label={label}
         disabled={disabled}
         onClick={onClick}
-        className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-30"
-      >{children}</button>
+       
+      >{children}</Button>
     </Tip>
     : <Button variant="quiet" size="icon-xs" aria-label={label} tooltip={label} disabled={disabled} onClick={onClick}>{children}</Button>;
 

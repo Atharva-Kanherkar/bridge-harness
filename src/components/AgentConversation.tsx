@@ -437,9 +437,9 @@ const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: C
                 className="hidden min-h-8 min-w-0 flex-1 justify-start sm:flex"
               ><span className="min-w-0 truncate">{directory}</span></Button>
             : <Tip label={path}><span data-tool-path className="hidden min-w-0 flex-1 truncate text-muted-foreground sm:block">{directory}</span></Tip>)}
-          <button
-            type="button"
-            className="ml-auto flex min-h-8 shrink-0 items-center gap-2 rounded-md text-caption tabular-nums disabled:cursor-default"
+          <Button variant="quiet" size="sm" className="ml-auto shrink-0"
+           
+           
             disabled={!body}
             aria-label={open ? "Collapse tool output" : "Expand tool output"}
             onClick={() => body && setToggled(!open)}
@@ -453,7 +453,7 @@ const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: C
                 on every settled row was noise the eye had to skip. */}
             {!check && (live || failed) && <StatusGlyph live={live} failed={failed} succeeded={false}/>}
             {body && <ChevronRight size={12} className={cn("text-muted-foreground transition-transform", open && "rotate-90")} aria-hidden="true"/>}
-          </button>
+          </Button>
         </div>
         <Disclosure open={open} className="my-1 ml-6 rounded-lg border border-border/60">
           {body === "patch" && <PatchView patch={call.patch ?? ""} path={call.path ?? ""} className="max-h-[360px]" foldAfterHunks={1}/>}
@@ -1284,11 +1284,11 @@ function AskAsideChip({ onAsk }: { onAsk: (quoted: string) => void }) {
   // scroll container it belongs to (`parentElement`) even before any selection
   // has raised the button itself; display:contents keeps it layout-invisible.
   return <span ref={rootRef} className="contents">
-    {placement && <button
-      type="button"
+    {placement && <Button variant="quiet" size="xs" className="z-50"
+     
       data-ask-aside-chip
       aria-label="Ask aside about the selected text"
-      className="u-glass-popover fixed z-50 inline-flex -translate-y-full items-center gap-1.5 rounded-full px-2.5 py-1.5 text-caption text-foreground shadow-sm transition-colors hover:bg-accent"
+     
       style={{ left: Math.max(8, Math.min(placement.left, (typeof window !== "undefined" ? window.innerWidth : 0) - 120)) , top: placement.top }}
       onMouseDown={event => event.preventDefault()}
       onClick={() => {
@@ -1299,7 +1299,7 @@ function AskAsideChip({ onAsk }: { onAsk: (quoted: string) => void }) {
     >
       <MessageSquarePlus size={12} aria-hidden="true"/>
       Ask aside
-    </button>}
+    </Button>}
   </span>;
 }
 
@@ -1373,11 +1373,11 @@ function VerificationCard({ summary, onWaive }: { summary: CompletionSummary; on
         {summary.checks.map(check => <div key={check.checkId} className="flex items-start gap-2 text-xs text-muted-foreground">{statusIcon(check.status)}<div className="min-w-0 flex-1"><div className="flex flex-wrap gap-x-2"><span className="text-foreground">{check.command || check.checkId}</span><span>{humanizeCheckKind(check.kind)}</span>{check.verifierFamily && <span>· {check.verifierFamily}</span>}</div>{check.detail && <p className="mt-0.5 truncate font-mono text-caption">{check.detail}</p>}</div><span className="shrink-0 text-caption">{humanizeCheckStatus(check.status)}</span></div>)}
         {summary.waiverReason && <p className="mt-2 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-warning">Waiver: {summary.waiverReason}</p>}
         {onWaive && unresolved.length > 0 && !["verified", "waived", "superseded"].includes(summary.verdict) && <div className="pt-2">
-          {!waiverOpen ? <button type="button" onClick={() => setWaiverOpen(true)} className="min-h-8 rounded-lg border border-input px-2.5 py-1.5 text-ui font-medium text-warning transition-colors hover:bg-accent">Waive unresolved checks</button> : <form onSubmit={event => { event.preventDefault(); const reason = waiverReason.trim(); if (!reason) { setWaiverError("Explain why these checks can be waived."); return; } setWaiving(true); setWaiverError(undefined); void onWaive(summary.attemptId, unresolved.map(check => check.checkId), reason).then(() => { setWaiverOpen(false); setWaiverReason(""); }).catch(error => setWaiverError(error instanceof Error ? error.message : String(error))).finally(() => setWaiving(false)); }} className="space-y-2 rounded-lg border border-border bg-background p-2.5">
+          {!waiverOpen ? <Button variant="outline" size="sm" onClick={() => setWaiverOpen(true)}>Waive unresolved checks</Button> : <form onSubmit={event => { event.preventDefault(); const reason = waiverReason.trim(); if (!reason) { setWaiverError("Explain why these checks can be waived."); return; } setWaiving(true); setWaiverError(undefined); void onWaive(summary.attemptId, unresolved.map(check => check.checkId), reason).then(() => { setWaiverOpen(false); setWaiverReason(""); }).catch(error => setWaiverError(error instanceof Error ? error.message : String(error))).finally(() => setWaiving(false)); }} className="space-y-2 rounded-lg border border-border bg-background p-2.5">
             <p className="text-xs text-warning">This records human-approved risk for: {unresolved.map(check => check.command || check.checkId).join(", ")}. It remains distinct from Verified.</p>
             <Textarea autoFocus size="sm" value={waiverReason} onChange={event => setWaiverReason(event.target.value)} rows={2} placeholder="Reason for waiver" aria-label="Waiver reason"/>
             {waiverError && <p role="alert" className="text-xs text-destructive">{waiverError}</p>}
-            <div className="flex flex-wrap gap-2"><button type="submit" disabled={waiving} className="min-h-8 rounded-lg bg-warning px-2.5 py-1.5 text-ui font-semibold text-warning-foreground disabled:opacity-50">{waiving ? "Recording…" : `Waive ${unresolved.length} check${unresolved.length === 1 ? "" : "s"}`}</button><Button variant="outline" size="sm" disabled={waiving} onClick={() => { setWaiverOpen(false); setWaiverError(undefined); }}>Cancel</Button></div>
+            <div className="flex flex-wrap gap-2"><Button variant="quiet" size="sm" type="submit" disabled={waiving}>{waiving ? "Recording…" : `Waive ${unresolved.length} check${unresolved.length === 1 ? "" : "s"}`}</Button><Button variant="outline" size="sm" disabled={waiving} onClick={() => { setWaiverOpen(false); setWaiverError(undefined); }}>Cancel</Button></div>
           </form>}
         </div>}
       </div>

@@ -1,4 +1,5 @@
 import type { MemoryPacketAudit } from "../types";
+import { Button } from "@/components/ui/button";
 
 /**
  * "Recalled N memories" at the head of the transcript — audit-backed, never
@@ -18,14 +19,14 @@ export function MemoryUsedChip({
   const count = audit.selected.length;
   return <div className="flex items-center gap-3 text-caption text-faint">
     <span aria-hidden="true" className="h-px flex-1 bg-border" />
-    <button
-      type="button"
+    <Button variant="text" size="2xs"
+     
       aria-label={`Open Memory, ${count} ${count === 1 ? "memory" : "memories"} used in this session`}
       onClick={onOpenMemory}
-      className="rounded-md px-1.5 py-0.5 transition-colors hover:text-foreground"
+     
     >
       Recalled {count} {count === 1 ? "memory" : "memories"}
-    </button>
+    </Button>
     <span aria-hidden="true" className="h-px flex-1 bg-border" />
   </div>;
 }

@@ -7,6 +7,7 @@ import type { ReviewJob, ReviewJobStatus } from "../../protocol/generated/protoc
 import { ReviewDraft } from "./ReviewDraft";
 import { harnessLabel, REVIEW_STATUS, SEVERITIES, SEVERITY_TEXT } from "./reviewLabels";
 import { Tip } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
 
 // The PR's review jobs, newest first, kept current by `reviews/job_updated`:
 // a review started here, from another window, or while another chat was open
@@ -87,12 +88,12 @@ function JobRow({ job, now, onChanged }: { job: ReviewJob; now: number; onChange
       {job.status === "posted" && job.postedReviewUrl && <a href={job.postedReviewUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-meta text-foreground hover:bg-accent">
         View on GitHub <SquareArrowOutUpRight size={11} aria-hidden="true" />
       </a>}
-      {RETRYABLE.has(job.status) && <button type="button" disabled={busy} onClick={() => void act(() => bridgeApi.retryReview(job.id))} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-meta text-foreground hover:bg-accent disabled:opacity-50">
+      {RETRYABLE.has(job.status) && <Button variant="quiet" size="2xs" disabled={busy} onClick={() => void act(() => bridgeApi.retryReview(job.id))}>
         <RotateCcw size={11} aria-hidden="true" /> Retry
-      </button>}
-      {!TERMINAL.has(job.status) && job.status !== "posting" && <button type="button" disabled={busy} onClick={() => void act(() => bridgeApi.cancelReview(job.id))} aria-label={job.status === "drafted" ? "Discard this draft" : "Cancel this review"} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-meta text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50">
+      </Button>}
+      {!TERMINAL.has(job.status) && job.status !== "posting" && <Button variant="quiet" size="2xs" disabled={busy} onClick={() => void act(() => bridgeApi.cancelReview(job.id))} aria-label={job.status === "drafted" ? "Discard this draft" : "Cancel this review"}>
         <X size={11} aria-hidden="true" /> {job.status === "drafted" ? "Discard" : "Cancel"}
-      </button>}
+      </Button>}
     </span>
     {(error || job.error) && <p role="alert" className="basis-full text-caption text-destructive">{error ?? job.error}</p>}
   </div>;
@@ -210,9 +211,9 @@ export function ReviewJobsView({ reviews, repositoryUrl, reveal, sectionRef }: {
         {job.status === "drafted" && <ReviewDraft job={job} repositoryUrl={repositoryUrl} onPosting={update} />}
       </div>)}
     </div>
-    {hidden > 0 && <button type="button" onClick={() => setShowAll(true)} className="mt-1.5 rounded-md px-2 py-0.5 text-meta text-muted-foreground hover:bg-accent hover:text-foreground">
+    {hidden > 0 && <Button variant="quiet" size="2xs" className="mt-1.5" onClick={() => setShowAll(true)}>
       Show {hidden} more
-    </button>}
+    </Button>}
   </section>;
 }
 
@@ -261,7 +262,7 @@ export function ReviewStatusLine({ reviews, onShow }: { reviews: PullRequestRevi
         : line.tone === "failed" ? <CircleAlert size={12} aria-hidden="true" className="shrink-0" /> : <CircleCheck size={12} aria-hidden="true" className="shrink-0 text-success" />}
       <Tip label={line.text}><span className="min-w-0 flex-1 truncate">{line.text}</span></Tip>
       {line.time && <span className="shrink-0 font-mono text-caption tabular-nums">{line.time}</span>}
-      <button type="button" disabled={line.tone === "failed" && busy} onClick={line.onAction} className="shrink-0 rounded px-1.5 py-0.5 text-meta font-medium text-foreground hover:bg-accent disabled:opacity-50">{line.action}</button>
+      <Button variant="quiet" size="2xs" className="shrink-0" disabled={line.tone === "failed" && busy} onClick={line.onAction}>{line.action}</Button>
     </div>)}
   </div>;
 }

@@ -14,6 +14,7 @@ import {
   GhostButton, SettingsGroup, SettingsRow, StatusPill, TextButton, type PillTone,
 } from "./settings/kit";
 import { Tip } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
 
 /**
  * Install and remove the built-in agent runtimes.
@@ -423,14 +424,14 @@ function RemoveConfirmation({ agent, onCancel, onConfirm }: {
           installed yourself are left untouched. You can reinstall at any time.
         </p>
         <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
+          <Button variant="outline" size="xs"
+           
             data-autofocus
-            className="inline-flex h-7 items-center rounded-lg border border-border-card bg-popover px-2.5 text-xs text-foreground transition-colors hover:bg-accent"
+           
             onClick={onCancel}
           >
             Keep it
-          </button>
+          </Button>
           <TextButton tone="destructive" onClick={onConfirm}>Remove</TextButton>
         </div>
       </div>

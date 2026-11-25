@@ -14,6 +14,7 @@ import {
   type FanOutSummary,
 } from "./workerFanOut";
 import { Tip } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
 
 // One card per delegation: who the orchestrator handed work to, how each of
 // them is doing, and how long it has taken. The worker rows themselves are the
@@ -83,13 +84,13 @@ export function FanOutCard({ summary, rows, readOnly = false, onOpenAgents, onSt
           <span className="text-foreground">{worker.name}</span>
         </span>)}</span>
       </span>
-      {onStopWorkers && <button
-        type="button"
+      {onStopWorkers && <Button variant="quiet" size="2xs" className="shrink-0" tooltip={summary.waiting.length === 1 ? "Stop this worker" : `Stop these ${summary.waiting.length} workers`}
+       
         disabled={stopping}
         onClick={stop}
-        title={summary.waiting.length === 1 ? "Stop this worker" : `Stop these ${summary.waiting.length} workers`}
-        className="shrink-0 rounded-md px-1.5 py-0.5 font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50"
-      >{stopping ? "Stopping…" : "Stop"}</button>}
+       
+       
+      >{stopping ? "Stopping…" : "Stop"}</Button>}
     </div>}
     {error && <p role="alert" className="border-t border-border px-3.5 py-2 text-meta text-destructive">{error}</p>}
   </div>;

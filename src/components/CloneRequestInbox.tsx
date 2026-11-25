@@ -15,7 +15,7 @@ const lifetimeLabel = (minutes: number) => minutes < 60 ? `${minutes} min` : min
 export function SignInToggle({ value, onChange, disabled }: { value: CloneSignInPath; onChange: (next: CloneSignInPath) => void; disabled?: boolean }) {
   return <div className="u-segmented w-fit" role="radiogroup" aria-label="Sign-in">
     {([["import", "Signed in as you"], ["sign_in_inside", "Blank"]] as const).map(([path, label]) =>
-      <button key={path} type="button" role="radio" aria-checked={value === path} data-active={value === path} disabled={disabled} onClick={() => onChange(path)} className="u-segmented-item">{label}</button>)}
+      <Button variant="quiet" size="xs" key={path} role="radio" aria-checked={value === path} data-active={value === path} disabled={disabled} onClick={() => onChange(path)}>{label}</Button>)}
   </div>;
 }
 

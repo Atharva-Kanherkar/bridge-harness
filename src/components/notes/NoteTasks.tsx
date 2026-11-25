@@ -9,6 +9,7 @@ import type { AdapterDescriptor, Note, Session, Workspace } from "../../types";
 import { HarnessMark } from "../harnessMarks";
 import { PopoverAction, StartPicker, type StartChoice } from "./NotePickers";
 import { StatusGlyph } from "./NotesUi";
+import { Button } from "@/components/ui/button";
 
 export function NoteTasks({ tasks, drafts = [], adapters, workspaces, sessions, defaultHarness, pageWorkspaceId, startingId, onStart, onOpenChat, onSetState, onOpen }: {
   tasks: Note[];
@@ -42,24 +43,24 @@ export function NoteTasks({ tasks, drafts = [], adapters, workspaces, sessions, 
         const { id: lastChat, session } = latestTaskChat(task, chats);
         const status = startingId === task.id ? "Starting…" : noteTaskStatus(task, session);
         return <li key={task.id} aria-label={title} className="group flex items-start gap-3 py-2.5">
-          <button
-            type="button"
+          <Button variant="quiet" size="icon-3xs" className="mt-[3px] shrink-0" tooltip={done ? "Reopen" : "Mark done"}
+           
             aria-label={done ? `Reopen ${title}` : `Mark ${title} done`}
-            title={done ? "Reopen" : "Mark done"}
+           
             onClick={() => onSetState(task, done ? (lastChat ? "doing" : "open") : "done")}
-            className="mt-[3px] grid size-5 shrink-0 place-items-center rounded-full transition-transform hover:scale-110"
+           
           >
             <StatusGlyph state={task.state} size={15} />
-          </button>
+          </Button>
           <div className="min-w-0 flex-1">
             <button type="button" onClick={() => onOpen(task)} className={`block max-w-full truncate text-left text-body leading-6 hover:underline hover:decoration-border hover:underline-offset-4 ${done ? "text-muted-foreground line-through" : "text-foreground"}`}>{title}</button>
             <p role="status" className={`m-0 mb-0.5 text-meta ${!done && session?.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{status}</p>
             {task.sourceExcerpt && <blockquote className="m-0 line-clamp-2 text-meta leading-snug text-muted-foreground before:content-['“'] after:content-['”']">{quoteText(task.sourceExcerpt)}</blockquote>}
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
-            {lastChat && <button type="button" onClick={() => onOpenChat(lastChat)} className="inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-meta text-foreground transition-colors hover:bg-accent">
+            {lastChat && <Button variant="quiet" size="xs" onClick={() => onOpenChat(lastChat)}>
               {session && <HarnessMark harness={session.harness} size={12} />}Open chat
-            </button>}
+            </Button>}
             {!lastChat && !done && task.state !== "archived" && <PopoverAction label="Start" triggerLabel={`Start ${title}`} panelLabel="Start a chat" align="end" busy={startingId === task.id} busyLabel="Starting…">
               {close => <StartPicker
                 adapters={adapters}

@@ -4,6 +4,7 @@ import type { UsageOverviewSnapshot, UsageResetCredit } from "../protocol/genera
 import { bridgeApi } from "../api";
 import { errorMessage } from "../errors";
 import { harnessLabel } from "../utils";
+import { Button } from "@/components/ui/button";
 
 function dateLabel(seconds: number): string {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(seconds * 1000));
@@ -77,7 +78,7 @@ export function UsageResetRow({ snapshot, onUpdated, compact = false }: { snapsh
   return <div className={compact ? "mt-2 border-t border-border pt-2 text-caption" : "u-glass-soft rounded-xl p-3 text-caption"}>
     <div className="flex items-center justify-between gap-3">
       <span className="text-foreground">{compact ? summary : `${harnessLabel(snapshot.provider)} · ${summary}`}</span>
-      <button type="button" onClick={() => setConfirming(true)} disabled={disabled} title={disabledReason ?? undefined} className="shrink-0 rounded-md border border-border px-2.5 py-1 font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-40">Use reset</button>
+      <Button variant="outline" size="xs" className="shrink-0" tooltip={disabledReason ?? undefined} onClick={() => setConfirming(true)} disabled={disabled}>Use reset</Button>
     </div>
     {disabledReason && <p className="mt-1 text-muted-foreground">{disabledReason}</p>}
     {result && <p role="status" className="mt-1 text-muted-foreground">{result}</p>}
@@ -86,8 +87,8 @@ export function UsageResetRow({ snapshot, onUpdated, compact = false }: { snapsh
         <h2 className="font-display text-base font-semibold text-foreground">Use {harnessLabel(snapshot.provider)} reset?</h2>
         {confirmation(snapshot, credit).map(line => <p key={line} className="mt-2 text-ui leading-relaxed text-muted-foreground">{line}</p>)}
         <div className="mt-5 flex justify-end gap-2">
-          <button type="button" onClick={() => setConfirming(false)} className="rounded-lg border border-border px-3 py-1.5 text-ui text-foreground hover:bg-accent">Cancel</button>
-          <button type="button" onClick={() => void redeem()} className="rounded-lg bg-primary px-3 py-1.5 text-ui font-medium text-primary-foreground hover:bg-primary/90">Use reset</button>
+          <Button variant="outline" size="xs" onClick={() => setConfirming(false)}>Cancel</Button>
+          <Button variant="default" size="xs" onClick={() => void redeem()}>Use reset</Button>
         </div>
       </div>
     </div>, document.body)}

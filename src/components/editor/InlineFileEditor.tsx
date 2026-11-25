@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { CodeEditor } from "./CodeEditor";
 import { isDirty, isReadOnly, loadBuffer, saveBuffer, settleSave, stateAfterEdit, statusLabel, type FileBuffer } from "./fileBuffer";
 import { modKey } from "@/lib/platform";
+import { Button } from "@/components/ui/button";
 
 /**
  * One file from the Changes tab, opened for editing in place.
@@ -111,15 +112,15 @@ export function InlineFileEditor({ workspaceId, path, onDirtyChange, onSaved }: 
       )}>{statusLabel(buffer)}</span>
       <span className="ml-auto flex items-center gap-2">
         {buffer.state === "conflict" && <>
-          <button type="button" onClick={() => void reload()} className="min-h-7 rounded-md px-2 underline decoration-dotted underline-offset-2 hover:text-foreground">Reload</button>
-          <button type="button" onClick={() => void save(true)} className="min-h-7 rounded-md px-2 underline decoration-dotted underline-offset-2 hover:text-foreground">Overwrite</button>
+          <Button variant="link" size="inline" onClick={() => void reload()}>Reload</Button>
+          <Button variant="link" size="inline" onClick={() => void save(true)}>Overwrite</Button>
         </>}
-        {buffer.state !== "conflict" && <button
-          type="button"
+        {buffer.state !== "conflict" && <Button variant="link" size="inline"
+         
           onClick={() => void save()}
           disabled={buffer.state === "clean" || buffer.state === "saving"}
-          className="min-h-7 rounded-md px-2 underline decoration-dotted underline-offset-2 hover:text-foreground disabled:no-underline disabled:opacity-45"
-        >Save {modKey("S")}</button>}
+         
+        >Save {modKey("S")}</Button>}
       </span>
     </div>
   </div>;

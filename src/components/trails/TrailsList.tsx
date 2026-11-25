@@ -8,6 +8,7 @@ import { ScreenHeading } from "@/components/ui/screen";
 import { StageBar, StateWord, TrailScroll, riseDelay } from "./TrailParts";
 import { TrailListSkeleton } from "./TrailSkeletons";
 import { clsx as cn } from "clsx";
+import { RowButton } from "@/components/ui/row";
 
 export type TrailWorkspace = { id: string; title: string };
 
@@ -75,11 +76,9 @@ function TrailRow({ trail, workspaceTitle, order, onOpen }: { trail: TrailSummar
   const last = trail.needsYouReason ?? (trail.lastEvent ? `${trail.lastEvent.title} · ${relative(trail.lastEvent.at)}` : "Nothing on it yet");
   return (
     <li className="trail-rise" style={riseDelay(order)}>
-      <button
-        type="button"
-        onClick={onOpen}
-        className="flex w-full items-center gap-4 rounded-xl px-4 py-3 text-left transition-colors hover:bg-card focus-visible:bg-card focus-visible:outline-none"
-      >
+      <RowButton size="bare" tone="default" shape="card"
+       
+        onClick={onOpen}><span className="flex w-full items-center gap-4 px-4 py-3">
         <span className="min-w-0 flex-1">
           <span className="block truncate text-ui font-medium text-foreground">{trail.title}</span>
           <span className="mt-0.5 block truncate text-caption text-muted-foreground">
@@ -94,7 +93,7 @@ function TrailRow({ trail, workspaceTitle, order, onOpen }: { trail: TrailSummar
           <span className="text-caption text-faint">{stageLabel(trail.stage)}</span>
         </span>
         <StateWord state={trail.state} className="w-24 text-right" />
-      </button>
+      </span></RowButton>
     </li>
   );
 }

@@ -1,5 +1,6 @@
 import { FolderOpen, MessageSquareText } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogPanel, DialogTitle } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 
 export function NewProjectDialog({ open, busy, canStartChat, onClose, onStartChat, onChooseFolder }: {
   open: boolean;
@@ -17,28 +18,28 @@ export function NewProjectDialog({ open, busy, canStartChat, onClose, onStartCha
           <DialogDescription>Start with a conversation, or connect a folder from this Mac.</DialogDescription>
         </DialogHeader>
         <DialogPanel className="grid gap-3">
-          <button
-            type="button"
+          <Button variant="outline" size="xs"
+           
             disabled={busy || !canStartChat}
             onClick={onStartChat}
-            className="u-glass-soft group flex min-h-20 flex-col items-start rounded-xl border border-border p-4 text-left outline-none transition-colors hover:border-ring/50 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-45"
+           
           >
             <MessageSquareText size={18} strokeWidth={1.7} className="mb-2 text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden="true" />
             <span className="text-ui font-semibold text-foreground">Start a chat</span>
             <span className="mt-1 text-ui leading-relaxed text-muted-foreground">
               {canStartChat ? "Begin without choosing a repository yet." : "Install or sign in to a model adapter first."}
             </span>
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button variant="outline" size="xs"
+           
             disabled={busy}
             onClick={onChooseFolder}
-            className="u-glass-soft group flex min-h-20 flex-col items-start rounded-xl border border-border p-4 text-left outline-none transition-colors hover:border-ring/50 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-45"
+           
           >
             <FolderOpen size={18} strokeWidth={1.7} className="mb-2 text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden="true" />
             <span className="text-ui font-semibold text-foreground">Choose a folder</span>
             <span className="mt-1 text-ui leading-relaxed text-muted-foreground">Open the standard folder picker and connect an existing project.</span>
-          </button>
+          </Button>
         </DialogPanel>
       </DialogContent>
     </Dialog>

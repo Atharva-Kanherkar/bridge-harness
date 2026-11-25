@@ -24,6 +24,7 @@ import { type ComposerAttachment, imageFilesFromClipboard, prepareImage } from "
 import { cn } from "@/lib/utils";
 import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session, SlashCommand } from "../types";
 import type { ChatSessionSettings, InteractionResolutionResult, QuestionAction, SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
+import { Button } from "@/components/ui/button";
 
 // An aside: a standalone chat the user delegated to another agent from inside
 // a conversation, shown as a panel floating over that conversation instead of
@@ -312,24 +313,24 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
             </div>
           </div>
           {headerActions}
-          <button
-            type="button"
+          <Button variant="quiet" size="xs" className="shrink-0" tooltip="Continue this aside as a full chat"
+           
             onClick={onPromote}
-            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            title="Continue this aside as a full chat"
+           
+           
             aria-label="Open as chat"
           >
             {!docked && "Open as chat"}
             <ArrowUpRight size={12} aria-hidden="true"/>
-          </button>
-          {onClose && <button
-            type="button"
+          </Button>
+          {onClose && <Button variant="quiet" size="icon-xs" className="shrink-0"
+           
             onClick={onClose}
             aria-label="Close aside"
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+           
           >
             <X size={14} aria-hidden="true"/>
-          </button>}
+          </Button>}
         </header>
 
         <div className="relative min-h-0 flex-1">

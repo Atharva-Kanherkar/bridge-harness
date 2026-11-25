@@ -4,6 +4,7 @@ import type { Session, SessionStatus, Workspace } from "../types";
 import { cn } from "@/lib/utils";
 import { chatName, chatTimestamp } from "./sidebarChats";
 import { Tip } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
 
 // Projects are their own entity, not a second kind of row in the chat rail. This
 // screen is where a repo's identity lives: where it is on disk, what branch it is
@@ -54,13 +55,13 @@ export function ProjectsScreen({
     <div className="@container/projects h-full overflow-y-auto">
       <div className={SCREEN_CONTENT}>
         <ScreenHeading title="Projects" action={
-          <button
-            type="button"
+          <Button variant="default" size="sm" className="shrink-0"
+           
             onClick={onNewWorkspace}
-            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-opacity hover:opacity-90 active:scale-[0.98]"
+           
           >
             <Plus size={14} strokeWidth={1.9} aria-hidden="true" /> New project
-          </button>
+          </Button>
         } />
 
         {!workspaces.length ? (
@@ -138,22 +139,22 @@ export function ProjectsScreen({
                     )}
                   </div>
                   <div className="mt-auto flex flex-wrap items-center gap-1.5 border-t border-border pt-3">
-                    <button
-                      type="button"
+                    <Button variant="quiet" size="sm"
+                     
                       disabled={busy}
                       onClick={() => onNewWorkspaceSession(workspace.id)}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-secondary px-2.5 text-meta font-medium text-secondary-foreground transition-colors hover:bg-accent disabled:opacity-40"
+                     
                     >
                       <Sparkles size={13} strokeWidth={1.75} aria-hidden="true" /> New agent
-                    </button>
+                    </Button>
                     {!workspace.path && (
-                      <button
-                        type="button"
+                      <Button variant="quiet" size="sm"
+                       
                         onClick={() => onConnectFolder(workspace.id)}
-                        className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-meta font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                       
                       >
                         <FolderOpen size={13} strokeWidth={1.75} aria-hidden="true" /> Connect folder
-                      </button>
+                      </Button>
                     )}
                   </div>
                 </section>
