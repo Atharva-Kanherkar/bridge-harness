@@ -250,7 +250,7 @@ describe("DatabaseTable", () => {
     expect(props.actions.show).toHaveBeenCalledWith(expect.objectContaining({ id: "p-note" }));
     click(document.querySelector("button[aria-label='Add a property']")!);
     type(input("New property name"), "Due");
-    click([...document.querySelectorAll("[role=radio]")].find(radio => radio.textContent === "Date")!);
+    click([...document.querySelectorAll('[aria-label="New property type"] button')].find(radio => radio.textContent === "Date")!);
     click(menuItem("Add"));
     expect(props.actions.addProperty).toHaveBeenCalledWith("Due", "date");
   });

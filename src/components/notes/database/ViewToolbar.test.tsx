@@ -6,6 +6,7 @@ import type { NoteDatabase, NoteDatabaseView, Workspace } from "../../../types";
 import { FilterBuilder } from "./FilterBuilder";
 import { useViewOverride, type ViewOverride, type ViewQuery } from "./useViewOverride";
 import { ViewToolbar } from "./ViewToolbar";
+import { chooseOption, openSelect, selectValue } from "@/testing/select";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -29,11 +30,9 @@ const DATABASE: NoteDatabase = { id: "db", scope: "children", views: [], propert
 ] };
 const VIEW: NoteDatabaseView = { id: "v", name: "Table", type: "table", order: 0, filter: { and: [{ property: "p-rating", op: "gte", value: 3 }] }, sorts: [{ property: "title", direction: "asc" }], properties: [{ id: "p-note", visible: false }] };
 
-const select = (label: string) => document.querySelector(`select[aria-label="${label}"]`) as HTMLSelectElement;
+const select = (label: string) => document.querySelector<HTMLElement>(`[role="combobox"][aria-label="${label}"]`)!;
 const input = (label: string) => document.querySelector(`input[aria-label="${label}"]`) as HTMLInputElement;
-function choose(element: HTMLSelectElement, value: string) {
-  act(() => { element.value = value; element.dispatchEvent(new Event("change", { bubbles: true })); });
-}
+const choose = (element: HTMLElement, value: string) => chooseOption(element, value);
 function type(element: HTMLInputElement, text: string) {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
   act(() => { setter.call(element, text); element.dispatchEvent(new Event("input", { bubbles: true })); });
@@ -106,26 +105,26 @@ describe("FilterBuilder", () => {
     return onChange;
   }
 
-  it("builds each op's JSON from the rows", () => {
+  it("builds each op's JSON from the rows", async () => {
     const onChange = mount();
     click(button("Add a filter"));
     expect(onChange).toHaveBeenLastCalledWith({ and: [{ property: "p-rating", op: "eq", value: 0 }] });
-    choose(select("Filter 1 op"), "gte");
+    await choose(select("Filter 1 op"), "gte");
     type(input("Filter 1 value"), "4");
     expect(onChange).toHaveBeenLastCalledWith({ and: [{ property: "p-rating", op: "gte", value: 4 }] });
-    choose(select("Filter 1 property"), "p-status");
-    choose(select("Filter 1 op"), "isAnyOf");
-    click([...document.querySelectorAll("label")].find(label => label.textContent === "Read")!.querySelector("input")!);
+    await choose(select("Filter 1 property"), "p-status");
+    await choose(select("Filter 1 op"), "isAnyOf");
+    click([...document.querySelectorAll('[aria-label="Filter 1 value"] button')].find(chip => chip.textContent === "Read")!);
     // "is To read" became "is any of [To read]"; Read joins it.
     expect(onChange).toHaveBeenLastCalledWith({ and: [{ property: "p-status", op: "isAnyOf", value: ["o-todo", "o-done"] }] });
-    choose(select("Filter 1 op"), "inGroup");
-    choose(select("Filter 1 value"), "done");
+    await choose(select("Filter 1 op"), "inGroup");
+    await choose(select("Filter 1 value"), "done");
     expect(onChange).toHaveBeenLastCalledWith({ and: [{ property: "p-status", op: "inGroup", value: "done" }] });
-    choose(select("Filter 1 property"), "p-due");
-    choose(select("Filter 1 op"), "within");
-    choose(select("Filter 1 value"), "thisMonth");
+    await choose(select("Filter 1 property"), "p-due");
+    await choose(select("Filter 1 op"), "within");
+    await choose(select("Filter 1 value"), "thisMonth");
     expect(onChange).toHaveBeenLastCalledWith({ and: [{ property: "p-due", op: "within", value: "thisMonth" }] });
-    choose(select("Filter 1 op"), "isEmpty");
+    await choose(select("Filter 1 op"), "isEmpty");
     expect(input("Filter 1 value")).toBeNull();
     expect(onChange).toHaveBeenLastCalledWith({ and: [{ property: "p-due", op: "isEmpty" }] });
     click(button("Remove filter 1"));
@@ -139,33 +138,33 @@ describe("FilterBuilder", () => {
     expect(onChange).toHaveBeenLastCalledWith({ and: [{ property: "p-note", op: "contains", value: "x" }, { or: [{ property: "p-rating", op: "eq", value: 0 }, { property: "p-rating", op: "eq", value: 0 }] }] });
     // Groups nest one deep: inside a group there is no "Add a filter group".
     expect([...document.querySelectorAll("li li button")].some(candidate => candidate.textContent === "Add a filter group")).toBe(false);
-    click([...document.querySelectorAll("[role=radiogroup][aria-label=Match] [role=radio]")].find(radio => radio.textContent === "Any")!);
-    click([...document.querySelectorAll("[role=radiogroup][aria-label='Match in this group'] [role=radio]")].find(radio => radio.textContent === "All")!);
+    click([...document.querySelectorAll("[role=group][aria-label=Match] button")].find(radio => radio.textContent === "Any")!);
+    click([...document.querySelectorAll("[role=group][aria-label='Match in this group'] button")].find(radio => radio.textContent === "All")!);
     expect(onChange).toHaveBeenLastCalledWith({ or: [{ property: "p-note", op: "contains", value: "x" }, { and: [{ property: "p-rating", op: "eq", value: 0 }, { property: "p-rating", op: "eq", value: 0 }] }] });
   });
 
-  it("shows the number each row applies when rows change under it", () => {
+  it("shows the number each row applies when rows change under it", async () => {
     const database: NoteDatabase = { ...DATABASE, properties: [...DATABASE.properties, { id: "p-pages", name: "Pages", type: "number", order: 4 }] };
     const onChange = vi.fn();
     act(() => root.render(<FilterBuilder database={database} value={{ and: [{ property: "p-rating", op: "gte", value: 5 }, { property: "p-rating", op: "lte", value: 10 }] }} onChange={onChange} />));
     click(button("Remove filter 1"));
     expect(onChange).toHaveBeenLastCalledWith({ and: [{ property: "p-rating", op: "lte", value: 10 }] });
     expect(input("Filter 1 value").value).toBe("10");
-    choose(select("Filter 1 property"), "p-pages");
+    await choose(select("Filter 1 property"), "p-pages");
     expect(onChange).toHaveBeenLastCalledWith({ and: [{ property: "p-pages", op: "eq", value: 0 }] });
     expect(input("Filter 1 value").value).toBe("0");
   });
 
-  it("starts a Project filter on a real project, and shows Choose… for none", () => {
+  it("starts a Project filter on a real project, and shows Choose… for none", async () => {
     const onChange = vi.fn();
     const workspaces = [{ id: "w1", title: "Only project" }] as unknown as Workspace[];
     act(() => root.render(<FilterBuilder database={DATABASE} value={null} onChange={onChange} workspaces={workspaces} />));
     click(button("Add a filter"));
-    choose(select("Filter 1 property"), "project");
+    await choose(select("Filter 1 property"), "project");
     expect(onChange).toHaveBeenLastCalledWith({ and: [{ property: "project", op: "is", value: "w1" }] });
     act(() => root.render(<FilterBuilder key="none" database={DATABASE} value={{ and: [{ property: "project", op: "is", value: "" }] }} onChange={onChange} workspaces={workspaces} />));
-    expect(select("Filter 1 value").value).toBe("");
-    expect(select("Filter 1 value").selectedOptions[0].textContent).toBe("Choose…");
+    expect(selectValue(select("Filter 1 value"))).toBe("");
+    expect(select("Filter 1 value").textContent).toBe("Choose…");
   });
 
   it("keeps unfinished text with its own row when a row above goes", () => {
@@ -176,7 +175,7 @@ describe("FilterBuilder", () => {
     expect(onChange).toHaveBeenLastCalledWith(null);
     expect(input("Filter 1 value").value).toBe("4x");
     expect(input("Filter 1 value").getAttribute("aria-invalid")).toBe("true");
-    expect(select("Filter 1 op").value).toBe("lte");
+    expect(selectValue(select("Filter 1 op"))).toBe("lte");
   });
 
   it("leaves an unfinished number out", () => {
@@ -210,32 +209,33 @@ describe("ViewToolbar", () => {
     for (let index = 0; index < 6; index += 1) if (button("Add a sort")) click(button("Add a sort"));
     expect(document.querySelectorAll("[aria-label=Sorts] li")).toHaveLength(5);
     expect(button("Add a sort")).toBeUndefined();
-    expect(select("Sort 2 property").value).toBe("p-rating");
+    expect(selectValue(select("Sort 2 property"))).toBe("p-rating");
     click(button("Move sort 2 up"));
-    expect(select("Sort 1 property").value).toBe("p-rating");
-    expect(select("Sort 2 property").value).toBe("title");
+    expect(selectValue(select("Sort 1 property"))).toBe("p-rating");
+    expect(selectValue(select("Sort 2 property"))).toBe("title");
     expect(button("Save for everyone")).toBeDefined();
   });
 
-  it("saves for everyone and resets", () => {
+  it("saves for everyone and resets", async () => {
     const onSave = vi.fn();
     act(() => root.render(<Mounted view={VIEW} onSave={onSave} />));
     click(button("Group"));
-    choose(select("Group by"), "p-status");
+    await choose(select("Group by"), "p-status");
     click(button("Reset"));
     expect(button("Save for everyone")).toBeUndefined();
     // The panel stays open through a reset; open it only if it closed.
     if (!select("Group by")) click(button("Group"));
-    choose(select("Group by"), "p-due");
-    expect(select("Date bucket").value).toBe("month");
+    await choose(select("Group by"), "p-due");
+    expect(selectValue(select("Date bucket"))).toBe("month");
     click(button("Save for everyone"));
     expect(onSave).toHaveBeenCalledWith({ filter: { and: [{ property: "p-rating", op: "gte", value: 3 }] }, sorts: [{ property: "title", direction: "asc" }], groupBy: { property: "p-due", dateBucket: "month" } });
   });
 
-  it("board has no None grouping and calendar no group", () => {
+  it("board has no None grouping and calendar no group", async () => {
     act(() => root.render(<Mounted view={{ ...VIEW, type: "board", groupBy: { property: "p-status" } }} onSave={vi.fn()} />));
     click(button("Group, 1"));
-    expect([...select("Group by").options].map(option => option.textContent)).not.toContain("None");
+    const options = await openSelect(select("Group by"));
+    expect([...options!.querySelectorAll('[role="option"]')].map(option => option.textContent)).not.toContain("None");
     act(() => root.render(<Mounted key="cal" view={{ ...VIEW, type: "calendar" }} onSave={vi.fn()} />));
     expect(button("Group")).toBeUndefined();
   });

@@ -7,6 +7,7 @@ import { mockCreateDatabase, mockCreatePage, mockDeleteNote, mockListNotes, mock
 import type { AdapterDescriptor, Session, Workspace } from "../types";
 import type { Editor } from "@tiptap/core";
 import { NotesScreen, type NotesScreenProps } from "./NotesScreen";
+import { chooseOption } from "@/testing/select";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -1180,7 +1181,7 @@ describe("tabs as saved views", () => {
     await click(menuItem("Edit view"));
     await click(button("Filter, 2"));
     await click(floating("Add a filter"));
-    const choose = async (label: string, value: string) => { const node = document.querySelector(`select[aria-label="${label}"]`) as HTMLSelectElement; await act(async () => { node.value = value; node.dispatchEvent(new Event("change", { bubbles: true })); }); await settle(); };
+    const choose = async (label: string, value: string) => { await chooseOption(document.querySelector<HTMLElement>(`[role="combobox"][aria-label="${label}"]`)!, value); await settle(); };
     await choose("Filter 3 property", "state");
     await choose("Filter 3 value", "doing");
     expect(rowTitles()).toHaveLength(1);

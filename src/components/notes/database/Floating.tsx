@@ -7,6 +7,9 @@ import { createPortal } from "react-dom";
 // text-caption sizes, and drops them beside a text color.
 import { clsx } from "clsx";
 
+const NESTED_LAYER = '[data-slot="select-positioner"],[data-slot="popover-positioner"],[data-slot="menu-positioner"]';
+const OPEN_NESTED_LAYER = '[data-slot="select-popup"][data-open],[data-slot="popover-popup"][data-open],[data-slot="menu-popup"][data-open]';
+
 /** A panel that floats over the page at its anchor, so a cell in a scrolling
  *  table is never clipped. Closes on a click outside or Escape. */
 export function Floating({ anchor, label, onClose, width = "w-72", children }: { anchor: React.RefObject<HTMLElement>; label: string; onClose: () => void; width?: string; children: ReactNode }) {
@@ -19,11 +22,18 @@ export function Floating({ anchor, label, onClose, width = "w-72", children }: {
     setPlace({ left: Math.max(8, Math.min(rect.left, window.innerWidth - 296)), ...(below ? { top: rect.bottom + 4 } : { bottom: window.innerHeight - rect.top + 4 }) });
   }, [anchor]);
   useEffect(() => {
+    // A select or menu opened from inside the panel renders its popup in the
+    // body: a press there, or the Escape that closes it, belongs to that popup.
+    const nested = (target: EventTarget | null) => target instanceof Element && !!target.closest(NESTED_LAYER);
     const outside = (event: MouseEvent) => {
       const target = event.target as Node;
+      if (nested(event.target)) return;
       if (!panel.current?.contains(target) && !anchor.current?.contains(target)) onClose();
     };
-    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || document.querySelector(OPEN_NESTED_LAYER)) return;
+      event.stopPropagation(); onClose();
+    };
     document.addEventListener("mousedown", outside);
     document.addEventListener("keydown", escape, true);
     return () => { document.removeEventListener("mousedown", outside); document.removeEventListener("keydown", escape, true); };
