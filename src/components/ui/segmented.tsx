@@ -44,13 +44,16 @@ export function SegmentedGroup({
   label,
   className,
   children,
+  tabs = false,
   ...props
 }: Omit<React.ComponentProps<"div">, "role"> & {
   label: string;
+  /** Section switcher: a tablist whose items are tabs. */
+  tabs?: boolean;
 }): React.ReactElement {
   return (
     <div
-      role="group"
+      role={tabs ? "tablist" : "group"}
       aria-label={label}
       className={cn("u-segmented flex shrink-0", className)}
       data-slot="segmented"
@@ -63,17 +66,22 @@ export function SegmentedGroup({
 
 export function SegmentedItem({
   active,
+  tab = false,
   className,
   ...props
 }: Omit<React.ComponentProps<"button">, "type"> & {
   active: boolean;
+  /** Inside a `tabs` group: a tab, selected rather than pressed. */
+  tab?: boolean;
 }): React.ReactElement {
   return (
     <button
       type="button"
       className={cn("u-segmented-item disabled:opacity-45", className)}
       data-active={active}
-      aria-pressed={active}
+      role={tab ? "tab" : undefined}
+      aria-selected={tab ? active : undefined}
+      aria-pressed={tab ? undefined : active}
       data-slot="segmented-item"
       {...props}
     />
