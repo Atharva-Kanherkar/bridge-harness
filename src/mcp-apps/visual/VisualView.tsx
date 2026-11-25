@@ -69,7 +69,7 @@ export function VisualView({ spec, actions = {}, showTitle = true, fullscreen = 
       <div className="px-5 pt-4 pb-4">
         {showTitle && (
           <header className="mb-4">
-            <h2 className="text-message font-semibold tracking-[-0.01em]">{spec.title}</h2>
+            <h2 className="text-message font-semibold tracking-snug">{spec.title}</h2>
             {spec.subtitle && <p className="mt-0.5 text-meta text-muted-foreground">{spec.subtitle}</p>}
           </header>
         )}

@@ -41,7 +41,7 @@ function Metric({ content }: { content: Item }) {
         return (
           <div key={at} className="min-w-0">
             <div className="text-caption font-medium text-muted-foreground">{text(item.label)}</div>
-            <div className="mt-1.5 flex items-baseline text-[32px] font-light leading-none tracking-[-0.03em] text-foreground tabular-nums">
+            <div className="mt-1.5 flex items-baseline text-3xl font-light leading-none tracking-display text-foreground tabular-nums">
               {text(item.value)}
               {item.estimate === true && <Estimate />}
             </div>

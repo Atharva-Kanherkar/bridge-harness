@@ -73,7 +73,7 @@ function NotesCopilotIntro({ asks, hasPage, starting, onAsk }: { asks: NotesQuic
   };
   return <aside aria-label="Notes chat" className="flex min-h-0 flex-1 flex-col">
     <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-6">
-      <p className="m-0 text-[1.125rem] font-semibold tracking-[-0.01em] text-foreground">{hasPage ? "Ask about this page" : "Ask about your notes"}</p>
+      <p className="m-0 text-lg font-semibold tracking-snug text-foreground">{hasPage ? "Ask about this page" : "Ask about your notes"}</p>
       <p className="m-0 mt-1.5 text-ui leading-relaxed text-muted-foreground">
         {hasPage ? "It reads the page you have open." : "Open a page and it reads that page too."} It can search your notes, write research up as a page, and add to a page when you ask. Every change it makes is labeled with this chat.
       </p>

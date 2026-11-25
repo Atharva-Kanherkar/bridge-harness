@@ -83,17 +83,17 @@ export function UsageHeatmap({ periods, resolution, timeZone, metric, className 
 
   return <figure className={cn("min-w-0", className)}>
     <div className="flex items-start gap-2 overflow-x-auto">
-      {!hourly && <div className="mt-[1.1rem] grid shrink-0 gap-[2px] text-micro leading-none text-muted-foreground" style={{ gridTemplateRows: `repeat(7, 0.75rem)` }} aria-hidden="true">
+      {!hourly && <div className="mt-[1.1rem] grid shrink-0 gap-0.5 text-micro leading-none text-muted-foreground" style={{ gridTemplateRows: `repeat(7, 0.75rem)` }} aria-hidden="true">
         {WEEKDAYS.map((label, index) => <span key={label} className="flex items-center">{index % 2 === 0 ? label : ""}</span>)}
       </div>}
       <div className="w-fit">
-        <div className="mb-1 grid gap-[2px] text-micro leading-none text-muted-foreground" style={{ gridTemplateColumns: `repeat(${columns}, 0.75rem)`, height: "0.75rem" }} aria-hidden="true">
+        <div className="mb-1 grid gap-0.5 text-micro leading-none text-muted-foreground" style={{ gridTemplateColumns: `repeat(${columns}, 0.75rem)`, height: "0.75rem" }} aria-hidden="true">
           {Array.from({ length: columns }, (_, column) => <span key={column} className="whitespace-nowrap">{hourly ? (column % 6 === 0 ? formatPeriodLabel(cells[column].period, resolution, timeZone).replace(/\s?[AP]M$/, match => match.trim().toLowerCase()) : "") : monthStarts.get(column) ?? ""}</span>)}
         </div>
         <div
           role="grid"
           aria-label={`${hourly ? "Hourly" : "Daily"} ${metric === "cost" ? "cost" : "processed tokens"} calendar`}
-          className="relative grid gap-[2px]"
+          className="relative grid gap-0.5"
           style={{ gridTemplateColumns: `repeat(${columns}, 0.75rem)`, gridTemplateRows: `repeat(${rows}, 0.75rem)` }}
           onMouseLeave={() => setHover(null)}
         >

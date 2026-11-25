@@ -376,7 +376,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
                 {slashMatches.map((command, index) => <button id={`aside-slash-option-${index}`} key={`${command.harness}:${command.kind}:${command.name}`} type="button" role="option" aria-selected={index === slashIndex} data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); applySlash(command); }} className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-accent" : "hover:bg-accent"}`}>
                   <span className="whitespace-nowrap font-mono text-meta text-foreground">/{command.name}</span>
                   <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-caption text-muted-foreground">{command.description}</span>
-                  <span className="shrink-0 rounded border border-border px-1 py-[1px] text-caption text-muted-foreground font-medium">{slashOwnershipBadge(command.harness)}</span>
+                  <span className="shrink-0 rounded border border-border px-1 py-px text-caption text-muted-foreground font-medium">{slashOwnershipBadge(command.harness)}</span>
                 </button>)}
               </div>
             </div>}

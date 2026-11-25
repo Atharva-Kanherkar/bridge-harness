@@ -50,7 +50,7 @@ function HarnessBars({ report }: { report: UsageInsightsReport }) {
           <span className="shrink-0 tabular-nums text-muted-foreground">{formatTokens(entry.processedTokens)}</span>
         </div>
         <div className="h-3 w-full overflow-hidden rounded-sm bg-muted/60">
-          <div className={cn("h-full origin-left rounded-r-[4px] motion-safe:animate-meter-fill", harnessChartDot(entry.harness))} style={{ width: `${Math.max(width, entry.processedTokens > 0 ? 1.5 : 0)}%` }} />
+          <div className={cn("h-full origin-left rounded-r-sm motion-safe:animate-meter-fill", harnessChartDot(entry.harness))} style={{ width: `${Math.max(width, entry.processedTokens > 0 ? 1.5 : 0)}%` }} />
         </div>
         {hover === entry.harness && <div role="tooltip" className="u-glass-popover absolute right-0 top-full z-10 mt-1 rounded-lg px-2.5 py-1.5 text-caption leading-4 tabular-nums">
           <div className="text-foreground">{formatUsd(entry.costMicrousd)} at API rates</div>
@@ -69,9 +69,9 @@ function HourColumns({ report }: { report: UsageInsightsReport }) {
   const peakHour = report.hours.reduce((best, entry) => (entry.prompts > best.prompts ? entry : best), report.hours[0] ?? { hour: 0, prompts: 0 });
   const total = report.hours.reduce((sum, entry) => sum + entry.prompts, 0);
   return <figure aria-label="Prompts by hour of day">
-    <div className="relative flex h-28 items-end gap-[2px]" onMouseLeave={() => setHover(null)}>
+    <div className="relative flex h-28 items-end gap-0.5" onMouseLeave={() => setHover(null)}>
       {report.hours.map((entry, index) => <div key={entry.hour} className="group relative flex h-full flex-1 items-end" onMouseEnter={() => setHover(entry.hour)}>
-        <div className={cn("w-full origin-bottom rounded-t-[3px] motion-safe:animate-chart-rise", entry.hour === peakHour.hour && entry.prompts > 0 ? "bg-foreground" : "bg-foreground/35 group-hover:bg-foreground/60")} style={{ height: `${Math.max((entry.prompts / peak) * 100, entry.prompts > 0 ? 3 : 1)}%`, animationDelay: `${index * 15}ms` }} />
+        <div className={cn("w-full origin-bottom rounded-t-sm motion-safe:animate-chart-rise", entry.hour === peakHour.hour && entry.prompts > 0 ? "bg-foreground" : "bg-foreground/35 group-hover:bg-foreground/60")} style={{ height: `${Math.max((entry.prompts / peak) * 100, entry.prompts > 0 ? 3 : 1)}%`, animationDelay: `${index * 15}ms` }} />
         {hover === entry.hour && <div role="tooltip" className={cn("u-glass-popover pointer-events-none absolute bottom-full z-10 mb-1 whitespace-nowrap rounded-lg px-2 py-1 text-caption tabular-nums", index > 15 ? "right-0" : "left-0")}>
           <span className="text-foreground">{formatCount(entry.prompts)} prompts</span> <span className="text-muted-foreground">at {String(entry.hour).padStart(2, "0")}:00</span>
         </div>}
@@ -131,7 +131,7 @@ export function Themes({ report }: { report: Pick<UsageInsightsReport, "themes">
   const shades = ["bg-foreground", "bg-foreground/75", "bg-foreground/55", "bg-foreground/40", "bg-foreground/28", "bg-foreground/18"];
   if (themes.length === 0) return <p className="text-caption text-muted-foreground">No themes were found in the sampled prompts.</p>;
   return <div>
-    <div className="flex h-3 w-full gap-[2px] overflow-hidden rounded-sm" aria-hidden="true">
+    <div className="flex h-3 w-full gap-0.5 overflow-hidden rounded-sm" aria-hidden="true">
       {themes.map((theme, index) => <div key={theme.label} className={cn("h-full origin-left motion-safe:animate-meter-fill", shades[Math.min(index, shades.length - 1)])} style={{ width: `${Math.max(theme.share * 100, 1)}%`, animationDelay: `${index * 60}ms` }} />)}
     </div>
     <ul className="mt-3 space-y-2" aria-label="Prompt themes">

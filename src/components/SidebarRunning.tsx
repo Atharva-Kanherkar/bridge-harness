@@ -58,8 +58,8 @@ function RunningRow({ row, now, active, onOpen, trail, onOpenTrail }: {
         <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
           {/* The hover names the chat in full on the name itself: the row's own
               title stays with the chat's row in its project folder. */}
-          <span title={`${row.chat.titleLadder?.at(-1) ?? name} · ${harnessLabel(row.chat.harness)}`} className={clsx("min-w-0 truncate text-ui leading-4 tracking-[-0.008em] text-foreground", active && "font-medium")}>{name}</span>
-          <span className="flex min-w-0 items-center gap-1.5 text-caption leading-3.5 tracking-[-0.004em] text-muted-foreground">
+          <span title={`${row.chat.titleLadder?.at(-1) ?? name} · ${harnessLabel(row.chat.harness)}`} className={clsx("min-w-0 truncate text-ui leading-4 tracking-snug text-foreground", active && "font-medium")}>{name}</span>
+          <span className="flex min-w-0 items-center gap-1.5 text-caption leading-3.5 tracking-snug text-muted-foreground">
             <span data-active-dot aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-info motion-safe:animate-pulse" />
             <span data-running-elapsed className="shrink-0 tabular-nums text-info">{formatElapsed(now - row.since)}</span>
             <span aria-hidden="true">·</span>
@@ -119,7 +119,7 @@ export function SidebarRunning({ rows, activeSessionId, onOpenSession, onOpenMis
             <span className="absolute size-1.5 rounded-full bg-info/40 motion-safe:animate-ping" />
             <span className="relative size-1.5 rounded-full bg-info" />
           </span>
-          <span className="text-meta font-medium tracking-[-0.004em] text-muted-foreground">Active</span>
+          <span className="text-meta font-medium tracking-snug text-muted-foreground">Active</span>
           <span data-active-count className="text-caption tabular-nums text-muted-foreground/60">{rows.length}</span>
           <ChevronRight size={12} strokeWidth={1.7} aria-hidden="true" className={clsx("ml-auto shrink-0 text-muted-foreground/70 transition-transform", !collapsed && "rotate-90")} />
         </button>

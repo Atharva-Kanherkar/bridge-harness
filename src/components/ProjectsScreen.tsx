@@ -82,7 +82,7 @@ export function ProjectsScreen({
                 <section key={workspace.id} className="flex min-w-0 flex-col rounded-xl border border-border bg-card p-4">
                   <div className="flex min-w-0 items-center gap-2">
                     <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-accent text-muted-foreground"><FolderGit2 size={19} strokeWidth={1.6} aria-hidden="true" /></span>
-                    <h2 title={workspace.title} className="m-0 min-w-0 flex-1 truncate text-message font-semibold tracking-[-0.01em] text-foreground">{workspace.title}</h2>
+                    <h2 title={workspace.title} className="m-0 min-w-0 flex-1 truncate text-message font-semibold tracking-snug text-foreground">{workspace.title}</h2>
                   </div>
 
                   <p

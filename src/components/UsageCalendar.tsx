@@ -100,7 +100,7 @@ export function UsageCalendar({ summary, periods, window, metric }: UsageLayoutP
       {fill > 0 && <span className="absolute inset-x-0 bottom-0 flex motion-safe:animate-chart-rise origin-bottom" style={{ height: `${fill * 100}%` }} aria-hidden="true">
         {parts.map(part => <span key={part.harness} className="flex flex-col" style={{ flexGrow: part.value }}>
           <span className={cn("h-[2px] shrink-0", harnessChartDot(part.harness))} />
-          <span className={cn("flex-1 opacity-[0.18] transition-opacity group-hover:opacity-25", harnessChartDot(part.harness))} />
+          <span className={cn("flex-1 opacity-20 transition-opacity group-hover:opacity-25", harnessChartDot(part.harness))} />
         </span>)}
       </span>}
       <span className={cn("relative leading-none tabular-nums", compact ? "text-micro" : "text-caption", value > 0 ? "text-muted-foreground" : "text-muted-foreground/50")}>{monthLabel && <span className="mr-1 font-medium text-foreground">{monthLabel}</span>}{hourly ? formatHourShort(day, window.timeZone) : dayOfMonth}</span>
@@ -140,14 +140,14 @@ export function UsageCalendar({ summary, periods, window, metric }: UsageLayoutP
           <span className="text-caption tabular-nums text-muted-foreground">{range ? `${label(range[0])}${range[1] !== range[0] ? ` – ${label(range[1])}` : ""}` : `${label(whole[0])} – ${label(whole[1])}`} · {scoped.periods.length} {hourly ? (scoped.periods.length === 1 ? "hour" : "hours") : scoped.periods.length === 1 ? "day" : "days"}</span>
           {range && <button type="button" onClick={() => setSelection(null)} className="ml-auto rounded-md px-2 py-0.5 text-caption text-muted-foreground hover:bg-accent hover:text-foreground">Clear</button>}
         </div>
-        <div className="mt-4 text-[2.5rem] font-light leading-none tracking-[-0.04em] tabular-nums text-foreground">{format(scopedTotal)}{metric === "cost" && <EstimateMark report={scoped.report} large />}</div>
+        <div className="mt-4 text-4xl font-light leading-none tracking-display tabular-nums text-foreground">{format(scopedTotal)}{metric === "cost" && <EstimateMark report={scoped.report} large />}</div>
         <p className="mt-2 text-ui text-muted-foreground">{metric === "cost"
           ? <>at API rates · <span className="font-medium tabular-nums text-foreground">{formatTokens(scoped.report.totals.processedTokens)}</span> tokens</>
           : <>tokens · <span className="font-medium tabular-nums text-foreground">{formatUsd(scoped.report.totals.costMicrousd)}</span><EstimateMark report={scoped.report} /> at API rates</>}
           {range && windowTotal > 0 && <> · {formatPercent(scopedTotal / windowTotal, 0)} of the window</>}</p>
         <HeroCaption report={scoped.report} metric={metric} className="mt-0.5" />
         {scopedTotal > 0 && <>
-          <div className="mt-5 flex h-2 gap-[3px]" aria-hidden="true">
+          <div className="mt-5 flex h-2 gap-0.75" aria-hidden="true">
             {scopedHarnesses.filter(entry => harnessValue(entry, metric) > 0).map(entry => <span key={entry.harness} className={cn("rounded-sm", harnessChartDot(entry.harness))} style={{ flexGrow: harnessValue(entry, metric) }} />)}
           </div>
           <ul className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1.5 text-caption text-muted-foreground" aria-label="By harness">

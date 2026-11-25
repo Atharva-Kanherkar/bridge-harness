@@ -214,7 +214,7 @@ export function UsageScreenTime({ onError, refreshKey = 0 }: { onError: (message
     {!result || !summary ? loading ? <UsageLoadingState /> : null : <div aria-busy={loading} className={cn("space-y-5 transition-opacity", stale && "opacity-50")}>
       <section aria-label="Summary" className="flex flex-wrap items-end justify-between gap-6">
         <div>
-          <div data-testid="screen-time-today" className="text-[2.75rem] font-light leading-none tracking-[-0.04em] tabular-nums text-foreground">{formatDuration(summary.today.humanSeconds)}</div>
+          <div data-testid="screen-time-today" className="text-5xl font-light leading-none tracking-display tabular-nums text-foreground">{formatDuration(summary.today.humanSeconds)}</div>
           <p className="mt-2.5 text-body text-muted-foreground">in Bridge today · agents worked <span className="font-medium tabular-nums text-foreground">{formatDuration(summary.today.agentSeconds)}</span></p>
         </div>
         <dl className="flex flex-wrap divide-x divide-border">
@@ -225,7 +225,7 @@ export function UsageScreenTime({ onError, refreshKey = 0 }: { onError: (message
             { label: "Agent time", value: formatDuration(summary.agentSeconds), detail: summary.leverage !== null ? `${formatLeverage(summary.leverage)} yours` : RANGE_TOTALS[shownRange].toLowerCase() },
           ].map(tile => <div key={tile.label} className="px-5 first:pl-0 last:pr-0">
             <dt className="text-caption text-muted-foreground">{tile.label}</dt>
-            <dd className="mt-1 text-[17px] tracking-tight tabular-nums text-foreground">{tile.value}</dd>
+            <dd className="mt-1 text-lg tracking-tight tabular-nums text-foreground">{tile.value}</dd>
             <dd className="text-caption tabular-nums text-muted-foreground">{tile.detail}</dd>
           </div>)}
         </dl>

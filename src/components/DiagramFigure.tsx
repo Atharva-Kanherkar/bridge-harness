@@ -336,7 +336,7 @@ export function DiagramFigure({ spec }: { spec: DiagramSpec }) {
           })}
         </g>
       </svg>
-      <figcaption className="text-[0.82em] leading-[1.55] text-muted-foreground">{spec.caption}</figcaption>
+      <figcaption className="text-[0.82em] leading-relaxed text-muted-foreground">{spec.caption}</figcaption>
     </figure>
   );
 }

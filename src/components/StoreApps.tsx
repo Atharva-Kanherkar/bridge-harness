@@ -88,7 +88,7 @@ export function StoreApps({ onOpenApp }: { onOpenApp?: (key: AppKey) => void }) 
           return (
             <li key={row.id} data-app={row.id} data-enabled={enabled ? "true" : "false"} className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3.5">
               <div className="flex items-start gap-3">
-                <span className={cn("flex size-10 shrink-0 items-center justify-center rounded-[11px] border border-border-card bg-background shadow-control", !enabled && "opacity-50")}><Icon size={18} strokeWidth={1.5} aria-hidden="true" /></span>
+                <span className={cn("flex size-10 shrink-0 items-center justify-center rounded-xl border border-border-card bg-background shadow-control", !enabled && "opacity-50")}><Icon size={18} strokeWidth={1.5} aria-hidden="true" /></span>
                 <div className="min-w-0 flex-1">
                   <h3 className="flex items-center gap-1.5 text-ui font-medium text-foreground">
                     {row.name}
@@ -164,7 +164,7 @@ function MyApps({ apps, onOpenApp, onStatus }: { apps: readonly PersonalAppEntry
           const pinned = entry.pinned !== null && entry.pinned !== undefined;
           return <li key={app.id} data-personal-app={app.id} data-enabled={enabled ? "true" : "false"} className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3.5">
             <div className="flex items-start gap-3">
-              <span className={cn("flex size-10 shrink-0 items-center justify-center rounded-[11px] border border-border-card bg-background shadow-control", !enabled && "opacity-50")}><AppWindow size={18} strokeWidth={1.5} aria-hidden="true" /></span>
+              <span className={cn("flex size-10 shrink-0 items-center justify-center rounded-xl border border-border-card bg-background shadow-control", !enabled && "opacity-50")}><AppWindow size={18} strokeWidth={1.5} aria-hidden="true" /></span>
               <div className="min-w-0 flex-1">
                 <h3 className="flex items-center gap-1.5 text-ui font-medium text-foreground">
                   {app.name}

@@ -77,7 +77,7 @@ export function OpenCodeHarnessSettings({
     });
   };
 
-  return <div className="space-y-[26px]" data-testid="opencode-provider-settings">
+  return <div className="space-y-6.5" data-testid="opencode-provider-settings">
     <SettingsGroup
       label="Providers"
       note={catalog ? `OpenCode ${catalog.version}` : undefined}

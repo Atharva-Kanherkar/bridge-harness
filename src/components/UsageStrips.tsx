@@ -54,7 +54,7 @@ export function UsageStrips({ report, window, metric }: UsageLayoutProps) {
   return <div className="space-y-5">
     <section aria-label="Summary" className="flex flex-wrap items-end justify-between gap-6">
       <div>
-        <div className="text-[2.75rem] font-light leading-none tracking-[-0.04em] tabular-nums text-foreground">{format(metric === "cost" ? report.totals.costMicrousd : report.totals.processedTokens)}{metric === "cost" && <EstimateMark report={report} large />}</div>
+        <div className="text-5xl font-light leading-none tracking-display tabular-nums text-foreground">{format(metric === "cost" ? report.totals.costMicrousd : report.totals.processedTokens)}{metric === "cost" && <EstimateMark report={report} large />}</div>
         <p className="mt-2.5 text-body text-muted-foreground">{metric === "cost"
           ? <>at API rates · <span className="font-medium tabular-nums text-foreground">{formatTokens(report.totals.processedTokens)}</span> tokens processed</>
           : <>tokens processed · <span className="font-medium tabular-nums text-foreground">{formatUsd(report.totals.costMicrousd)}</span><EstimateMark report={report} /> at API rates</>}</p>
@@ -68,7 +68,7 @@ export function UsageStrips({ report, window, metric }: UsageLayoutProps) {
           ["Cache saved", formatUsd(report.totals.cacheSavingsMicrousd)],
         ].map(([label, value]) => <div key={label} className="px-5 first:pl-0 last:pr-0">
           <dt className="text-caption text-muted-foreground">{label}</dt>
-          <dd className="mt-1 text-[17px] tracking-tight tabular-nums text-foreground">{value}</dd>
+          <dd className="mt-1 text-lg tracking-tight tabular-nums text-foreground">{value}</dd>
         </div>)}
       </dl>
     </section>

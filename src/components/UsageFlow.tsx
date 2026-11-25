@@ -60,9 +60,9 @@ export function UsageFlow({ report, window, metric }: UsageLayoutProps) {
 
   return <div className="space-y-6">
     <section aria-label="Summary">
-      {empty ? <h2 className="text-[2rem] font-normal leading-tight tracking-[-0.03em] text-foreground">No activity in this window.</h2> : metric === "tokens"
-        ? <h2 className="max-w-3xl text-[2rem] font-normal leading-tight tracking-[-0.03em] text-foreground">{formatPercent(cacheShare, 0)} of what you processed was a cache read. <span className="text-muted-foreground">Here is where the other {formatTokens(processed - report.totals.cacheReadTokens)} went.</span></h2>
-        : <h2 className="max-w-3xl text-[2rem] font-normal leading-tight tracking-[-0.03em] text-foreground">{harnessLabel(lead!.harness)} carried {formatPercent(leadShare, 0)} of the cost. <span className="text-muted-foreground">Here is how it splits by model.</span></h2>}
+      {empty ? <h2 className="text-3xl font-normal leading-tight tracking-display text-foreground">No activity in this window.</h2> : metric === "tokens"
+        ? <h2 className="max-w-3xl text-3xl font-normal leading-tight tracking-display text-foreground">{formatPercent(cacheShare, 0)} of what you processed was a cache read. <span className="text-muted-foreground">Here is where the other {formatTokens(processed - report.totals.cacheReadTokens)} went.</span></h2>
+        : <h2 className="max-w-3xl text-3xl font-normal leading-tight tracking-display text-foreground">{harnessLabel(lead!.harness)} carried {formatPercent(leadShare, 0)} of the cost. <span className="text-muted-foreground">Here is how it splits by model.</span></h2>}
       <p className="mt-3 text-body text-muted-foreground">
         <span className="font-medium tabular-nums text-foreground">{formatTokens(processed)}</span> tokens · <span className="font-medium tabular-nums text-foreground">{formatUsd(report.totals.costMicrousd)}</span><EstimateMark report={report} /> at API rates · cache reuse saved <span className="font-medium tabular-nums text-foreground">{formatUsd(report.totals.cacheSavingsMicrousd)}</span>
       </p>

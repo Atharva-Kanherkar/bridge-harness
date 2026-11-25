@@ -141,7 +141,7 @@ export function PatchView({ patch, path = "", className, foldAfterHunks, onQuote
   const shown = fold === null ? rows : hunks.slice(0, fold).flat();
   const hiddenHunks = fold === null ? 0 : hunks.length - fold;
   if (!rows.length) return null;
-  return <div className={cn("stx flex flex-col overflow-hidden bg-card font-mono text-meta leading-[1.6]", className)}>
+  return <div className={cn("stx flex flex-col overflow-hidden bg-card font-mono text-meta leading-relaxed", className)}>
     <div className="min-h-0 flex-1 overflow-auto p-1">
       <div className="min-w-0 overflow-hidden rounded-sm border border-border bg-card">
         {shown.map((row, index) => <DiffLine key={index} row={row} numbered={numbered} onQuoteHunk={onQuoteHunk} />)}

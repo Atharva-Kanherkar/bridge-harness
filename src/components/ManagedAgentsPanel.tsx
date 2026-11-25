@@ -348,7 +348,7 @@ export function ManagedAgentsPanel({ initialAgents, adapters, onOpen, onChanged 
   onChanged?: () => void;
 }) {
   const state = useManagedAgents(initialAgents, onChanged);
-  return <div className="space-y-[26px]">
+  return <div className="space-y-6.5">
     <ManagedAgentRows state={state} adapters={adapters} onOpen={onOpen} onAuthenticationChanged={onChanged} />
     {state.confirmation}
   </div>;
