@@ -7,7 +7,9 @@ import { applyAppAuthStates, authenticationLabel, categoryLabel, compatibilityLa
 import type { MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MarketplaceVariant } from "../types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { RowButton } from "@/components/ui/row";
+import { Segmented, SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
 import { SkillMarketplace } from "./SkillMarketplace";
 import { StoreApps } from "./StoreApps";
 import type { AppKey } from "../apps/registry";
@@ -83,16 +85,18 @@ function ServiceRow({ service, busyKey, onOpen, onInstall }: {
   const working = busyKey === `${service.id}:install`;
   return <article className="group transition-colors hover:bg-accent">
     <div className="flex min-h-18 items-center gap-3.5 px-4 py-3.5">
-      <button type="button" className="flex min-w-0 flex-1 items-center gap-3.5 rounded-xl text-left" onClick={onOpen}>
+      <RowButton size="bare" tone="plain" shape="card" className="flex-1" onClick={onOpen}>
+        <span className="flex min-w-0 flex-1 items-center gap-3.5">
         <ServiceIcon service={service} />
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2">
-            <span className="truncate text-ui font-semibold tracking-[-0.008em] text-foreground">{service.name}</span>
+            <span className="truncate text-ui font-semibold text-foreground">{service.name}</span>
             {service.variants.every(variant => variant.installed) && <Check size={12} className="shrink-0 text-success" aria-label="Installed" />}
           </span>
-          <span className="mt-1 line-clamp-2 block text-ui leading-[1.5] text-muted-foreground">{service.description || "Provider plugin for Bridge agents"}</span>
+          <span className="mt-1 line-clamp-2 block text-ui leading-normal text-muted-foreground">{service.description || "Provider plugin for Bridge agents"}</span>
         </span>
-      </button>
+        </span>
+      </RowButton>
       {installable
         ? <Button size="xs" variant="secondary" disabled={!!busyKey} onClick={onInstall}>{working ? <LoaderCircle className="animate-spin" size={12} /> : "Install"}</Button>
         : <ChevronRight size={15} className="shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden="true" />}
@@ -122,9 +126,9 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
 
   return <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
-      <button type="button" onClick={onBack} className="inline-flex items-center gap-0.5 min-h-8 rounded-lg py-1 pl-1 pr-3 text-meta font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+      <Button variant="quiet" size="sm" onClick={onBack} className="-ms-1">
         <ChevronLeft size={14} aria-hidden="true" /> Plugins
-      </button>
+      </Button>
 
       <header className="mt-4 flex flex-wrap items-center gap-4">
         <ServiceIcon service={service} size="lg" />
@@ -147,7 +151,7 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
 
       <section className="mt-5">
         <h2 className="text-meta font-medium text-muted-foreground">About</h2>
-        <p className="mt-3 text-ui leading-[1.7] text-foreground">{service.description || "Provider plugin for Bridge agents"}</p>
+        <p className="mt-3 text-ui leading-relaxed text-foreground">{service.description || "Provider plugin for Bridge agents"}</p>
         {capabilities.length > 0 && <div className="mt-4 flex flex-wrap gap-1.5">
           {capabilities.map(capability => <span key={capability} className="rounded-full border border-border bg-muted px-2.5 py-1 text-caption text-muted-foreground">{capability}</span>)}
         </div>}
@@ -183,12 +187,12 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
 
       {installable && <section className="mt-6">
         <div className="u-surface flex flex-wrap items-center justify-between gap-3 rounded-2xl p-4">
-          <div className="u-segmented">
+          <SegmentedGroup label="Install for">
             {(["codex", "claude", "both"] as InstallTarget[]).map(value => {
               const disabled = (value === "codex" && !hasCodex) || (value === "claude" && !hasClaude) || (value === "both" && (!hasCodex || !hasClaude));
-              return <button key={value} type="button" data-active={target === value} aria-pressed={target === value} disabled={disabled} onClick={() => onTarget(value)} className="u-segmented-item disabled:opacity-25">{value === "both" ? "Both" : providerLabel(value)}</button>;
+              return <SegmentedItem key={value} active={target === value} disabled={disabled} onClick={() => onTarget(value)}>{value === "both" ? "Both" : providerLabel(value)}</SegmentedItem>;
             })}
-          </div>
+          </SegmentedGroup>
           <Button size="sm" disabled={!!busyKey} onClick={onInstall}>{working ? <LoaderCircle className="animate-spin" size={12} /> : <Package size={12} />} Install for {target === "both" ? "both" : providerLabel(target)}</Button>
         </div>
       </section>}
@@ -205,7 +209,7 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
 
 function PluginListSkeleton() {
   return <div data-testid="plugin-catalog-skeleton" className="mt-3">
-    <SkeletonRows label="Loading apps" rows={6} lead="tile" rowClassName="min-h-18 gap-3.5 px-4 py-3.5" />
+    <SkeletonRows label="Loading apps" rows={6} lead="tile" />
   </div>;
 }
 
@@ -351,29 +355,29 @@ function PluginMarketplace() {
 
   return <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
-      <ScreenHeading title="Plugins" action={<button type="button" onClick={() => { void refresh(); void refreshAuth(); }} disabled={loading} aria-label="Refresh apps" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /></button>} />
-      <div className="relative mt-4"><Search className="pointer-events-none absolute left-3.5 top-1/2 z-10 -translate-y-1/2 text-muted-foreground" size={14} /><Input value={query} onChange={event => setQuery(event.target.value)} aria-label="Search apps" placeholder="Search apps" className="h-8 rounded-lg pl-10 text-ui" /></div>
+      <ScreenHeading title="Plugins" action={<Button variant="quiet" size="icon-sm" onClick={() => { void refresh(); void refreshAuth(); }} disabled={loading} aria-label="Refresh apps" tooltip="Refresh apps"><RefreshCw className={loading ? "animate-spin" : undefined} aria-hidden="true" /></Button>} />
+      <InputGroup className="mt-4"><InputGroupAddon><Search aria-hidden="true" /></InputGroupAddon><InputGroupInput size="sm" value={query} onChange={event => setQuery(event.target.value)} aria-label="Search apps" placeholder="Search apps" /></InputGroup>
 
       {catalog?.providers.map(item => item.error && <div key={item.provider} className="mt-3 flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-caption text-warning"><AlertCircle className="mt-0.5 shrink-0" size={12} /><span className="min-w-0 break-words"><b>{providerLabel(item.provider)}:</b> {item.error}</span></div>)}
       {resolvingNames && <p role="status" className="mt-3 flex items-center gap-2 text-caption text-muted-foreground"><LoaderCircle className="animate-spin" size={12} aria-hidden="true" />Resolving connector names…</p>}
-      {namesFailed && <p role="status" className="mt-3 flex flex-wrap items-center gap-2 text-caption text-warning"><AlertCircle size={12} aria-hidden="true" />Connector names could not be resolved.<button type="button" onClick={() => void refreshAuth()} className="font-medium text-foreground transition-colors hover:underline">Retry</button></p>}
+      {namesFailed && <p role="status" className="mt-3 flex flex-wrap items-center gap-2 text-caption text-warning"><AlertCircle size={12} aria-hidden="true" />Connector names could not be resolved.<Button variant="link" size="inline" onClick={() => void refreshAuth()}>Retry</Button></p>}
       {loading && !catalog && <PluginListSkeleton />}
       {catalogFailed && !loading && !catalog && <p role="status" className="mt-5 flex items-center gap-2 text-meta text-warning"><AlertCircle size={12} aria-hidden="true" />Plugins could not be loaded. Use refresh to try again.</p>}
 
       {!!resolved && <>
         <div className="mt-5 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
-          <div className="u-segmented" role="group" aria-label="App views">{PLUGIN_VIEWS.map(value => <button key={value} type="button" data-active={view === value} aria-pressed={view === value} onClick={() => setView(value)} className="u-segmented-item">{pluginViewLabel(value)}</button>)}</div>
+          <Segmented label="App views" value={view} options={PLUGIN_VIEWS.map(value => ({ value, label: pluginViewLabel(value) }))} onChange={setView} />
           <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
-            <div className="u-segmented">{(["public", "personal"] as CatalogScope[]).map(value => <button key={value} type="button" data-active={scope === value} aria-pressed={scope === value} onClick={() => setScope(value)} className="u-segmented-item capitalize">{value}</button>)}</div>
+            <Segmented label="Catalog" value={scope} options={[{ value: "public" as CatalogScope, label: "Public" }, { value: "personal" as CatalogScope, label: "Personal" }]} onChange={setScope} />
             <SlidersHorizontal size={12} aria-hidden="true" />
-            <div className="u-segmented">{(["all", "codex", "claude"] as const).map(value => <button key={value} type="button" data-active={provider === value} aria-pressed={provider === value} onClick={() => setProvider(value)} className="u-segmented-item">{value === "all" ? "All" : providerLabel(value)}</button>)}</div>
+            <Segmented label="Provider" value={provider} options={(["all", "codex", "claude"] as const).map(value => ({ value, label: value === "all" ? "All" : providerLabel(value) }))} onChange={setProvider} />
           </div>
         </div>
 
         {searching || view === "all" ? <>
           {!searching && categories.length > 0 && <div className="mt-4 flex flex-wrap gap-1.5">
-            <button type="button" data-category="all" data-active={category === "all"} aria-pressed={category === "all"} onClick={() => setCategory("all")} className={`rounded-full border px-2.5 py-1 text-caption transition-colors ${category === "all" ? "border-foreground/25 bg-accent text-foreground" : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"}`}>All <span className="text-muted-foreground">{services.length}</span></button>
-            {categories.map(item => <button key={item.key || "other"} type="button" data-category={item.key || "other"} data-active={category === item.key} aria-pressed={category === item.key} onClick={() => setCategory(item.key)} className={`rounded-full border px-2.5 py-1 text-caption transition-colors ${category === item.key ? "border-foreground/25 bg-accent text-foreground" : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"}`}>{item.label} <span className="text-muted-foreground">{item.count}</span></button>)}
+            <Button variant="chip" size="2xs" data-category="all" data-active={category === "all"} aria-pressed={category === "all"} onClick={() => setCategory("all")}>All <span className="text-muted-foreground">{services.length}</span></Button>
+            {categories.map(item => <Button key={item.key || "other"} variant="chip" size="2xs" data-category={item.key || "other"} data-active={category === item.key} aria-pressed={category === item.key} onClick={() => setCategory(item.key)}>{item.label} <span className="text-muted-foreground">{item.count}</span></Button>)}
           </div>}
           <section className="mt-5" aria-labelledby="catalog-heading">
             <div className="flex items-center justify-between gap-3">
@@ -391,16 +395,16 @@ function PluginMarketplace() {
           <section className="mt-5" aria-labelledby="installed-heading">
             <div className="flex items-center justify-between gap-3"><h2 id="installed-heading" className="text-meta font-medium text-muted-foreground">Installed</h2><span className="shrink-0 text-caption text-muted-foreground">{installed.length} apps</span></div>
             {featuredInstalled.length ? <ServiceList services={featuredInstalled} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <p className="mt-3 text-caption text-muted-foreground">No apps installed yet.</p>}
-            {installed.length > featuredInstalled.length && <button type="button" onClick={() => setView("installed")} className="mt-3 text-caption font-medium text-muted-foreground transition-colors hover:text-foreground">{installed.length - featuredInstalled.length} more installed apps</button>}
+            {installed.length > featuredInstalled.length && <Button variant="text" size="2xs" onClick={() => setView("installed")} className="mt-3 -ms-1.5">{installed.length - featuredInstalled.length} more installed apps</Button>}
           </section>
           <section className="mt-6" aria-labelledby="popular-heading">
             <h2 id="popular-heading" className="text-meta font-medium text-muted-foreground">Popular</h2>
             {popular.length ? <ServiceList services={popular} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <p className="mt-3 text-caption text-muted-foreground">Popular apps appear as providers report install counts.</p>}
           </section>
-          <button type="button" onClick={() => setView("all")} className="u-surface mt-6 flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3.5 text-left transition-colors hover:bg-accent">
+          <RowButton size="card" tone="surface" shape="panel" onClick={() => setView("all")} className="mt-6 justify-between">
             <span className="text-ui font-medium text-foreground">Browse all {services.length} {services.length === 1 ? "app" : "apps"}</span>
             <ChevronRight size={15} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-          </button>
+          </RowButton>
         </>}
       </>}
     </div>
@@ -420,7 +424,7 @@ export function MarketplaceScreen({ onOpenApp }: { onOpenApp?: (key: AppKey) => 
   const [section, setSection] = useState<StoreSection>("apps");
   return <div className="flex h-full min-h-0 flex-col">
     <nav className="flex shrink-0 items-center gap-4 border-b border-border px-5 py-2 sm:px-8" aria-label="Store sections">
-      <div className="u-segmented">{STORE_SECTIONS.map(item => <button key={item.id} type="button" data-active={section === item.id} aria-pressed={section === item.id} onClick={() => setSection(item.id)} className="u-segmented-item">{item.label}</button>)}</div>
+      <Segmented label="Store sections" value={section} options={STORE_SECTIONS.map(item => ({ value: item.id, label: item.label }))} onChange={setSection} />
       <p className="text-xs text-muted-foreground">{STORE_SECTIONS.find(item => item.id === section)!.hint}</p>
     </nav>
     <div className="min-h-0 flex-1">{section === "apps" ? <StoreApps onOpenApp={onOpenApp} /> : section === "plugins" ? <PluginMarketplace/> : <SkillMarketplace/>}</div>

@@ -23,7 +23,7 @@ function Strip({ values, max, geometry, index, harness, gradientId }: { values: 
     <svg viewBox={`0 0 ${geometry.width} ${geometry.height}`} preserveAspectRatio="none" className="block h-full w-full overflow-visible" aria-hidden="true">
       <defs><linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="currentColor" stopOpacity={0.36} /><stop offset="1" stopColor="currentColor" stopOpacity={0.02} /></linearGradient></defs>
       <line x1={0} x2={geometry.width} y1={geometry.height} y2={geometry.height} className="stroke-border" vectorEffect="non-scaling-stroke" />
-      <path d={paths.area} fill={`url(#${gradientId})`} className="motion-safe:animate-[chart-rise_600ms_ease-out_both] origin-bottom" />
+      <path d={paths.area} fill={`url(#${gradientId})`} className="motion-safe:animate-chart-rise origin-bottom" />
       <path d={paths.line} fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
     </svg>
     {index !== null && <>

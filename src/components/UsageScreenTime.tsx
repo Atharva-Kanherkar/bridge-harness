@@ -93,8 +93,8 @@ function DailyChart({ result, range }: { result: UsageScreenTimeResult; range: S
             onPointerEnter={() => scrub.setIndex(index)}
             className={cn("flex h-full min-w-0 flex-1 items-end justify-center gap-0.5 rounded-sm px-0.5", scrub.index === index && "bg-accent/70")}
           >
-            <span data-series="you" className={cn("w-full max-w-3.5 rounded-t-xs motion-safe:animate-[chart-rise_600ms_ease-out_both] origin-bottom", YOU)} style={{ height: height(day.humanSeconds) }} />
-            <span data-series="agents" className={cn("w-full max-w-3.5 rounded-t-xs motion-safe:animate-[chart-rise_600ms_ease-out_both] origin-bottom", AGENTS)} style={{ height: height(day.agentSeconds) }} />
+            <span data-series="you" className={cn("w-full max-w-3.5 rounded-t-xs motion-safe:animate-chart-rise origin-bottom", YOU)} style={{ height: height(day.humanSeconds) }} />
+            <span data-series="agents" className={cn("w-full max-w-3.5 rounded-t-xs motion-safe:animate-chart-rise origin-bottom", AGENTS)} style={{ height: height(day.agentSeconds) }} />
           </div>)}
         </div>
       </div>

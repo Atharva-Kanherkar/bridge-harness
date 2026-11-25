@@ -136,7 +136,7 @@ function percentLabel(value: number): string {
  *  read at any value. Null fill means unavailable, never an observed zero. */
 export function QuotaBar({ provider, fill }: { provider: UsageProvider; fill: number | null }) {
   return <div className="relative mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted" aria-hidden="true">
-    {fill != null && fill > 0 && <span className={cn("absolute inset-y-0 left-0 rounded-full motion-safe:animate-[meter-fill_600ms_ease-out] origin-left", harnessChartDot(provider))} style={{ width: `${clamp(fill)}%` }} />}
+    {fill != null && fill > 0 && <span className={cn("absolute inset-y-0 left-0 rounded-full motion-safe:animate-meter-fill origin-left", harnessChartDot(provider))} style={{ width: `${clamp(fill)}%` }} />}
     {[50, 75].map(mark => <span key={mark} data-quota-marker={mark} className="absolute inset-y-0 w-[5px] -translate-x-1/2 bg-popover" style={{ left: `${mark}%` }}>
       <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-foreground/60" />
     </span>)}

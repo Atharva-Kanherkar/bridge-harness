@@ -1585,7 +1585,7 @@ function ScrollFollow({ sessionKey, populated, signature, windowStart, total, co
 /// text still arriving, this is about an operation still running, and
 /// `docs/transcript-behavior-contract.md` keeps the two apart.
 function PulseDot({ size = 8 }: { size?: number }) {
-  return <span className="inline-block flex-none rounded-full bg-muted-foreground/60 animate-[thinking-pulse_1.6s_ease-in-out_infinite]" style={{ width: size, height: size }} aria-hidden="true" />;
+  return <span className="inline-block flex-none rounded-full bg-muted-foreground/60 animate-thinking-pulse" style={{ width: size, height: size }} aria-hidden="true" />;
 }
 
 /// Whether an item's text is still arriving. Both spellings are recognized for

@@ -8,6 +8,7 @@ import { Minimize2, TrendingUp } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogPanel, DialogTitle } from "@/components/ui/dialog";
+import { RowButton } from "@/components/ui/row";
 import { Spinner } from "@/components/ui/spinner";
 import { Tip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -43,13 +44,13 @@ const PRESSURE_BADGE: Record<ContextTone, { label: string; variant: "outline" | 
 
 function PressureBadge({ level }: { level: ContextTone }) {
   const badge = PRESSURE_BADGE[level];
-  return <Badge variant={badge.variant} className="px-1.5">{badge.label}</Badge>;
+  return <Badge variant={badge.variant}>{badge.label}</Badge>;
 }
 
 /** How the number was obtained. An estimate is dashed, like everything else
  *  in the lens that Bridge worked out instead of reading. */
 function StateBadge({ state, className }: { state: ContextReadingState; className?: string }) {
-  return <Badge variant="outline" className={cn("px-1.5 font-normal capitalize text-muted-foreground", state === "estimated" && "border-dashed", className)}>{state}</Badge>;
+  return <Badge variant={state === "estimated" ? "dashed" : "muted"} className={className}><span className="capitalize">{state}</span></Badge>;
 }
 
 function roleTitle(window: ContextWindow): string {
@@ -89,7 +90,7 @@ export function CompositionBar({ reading, tall = false }: { reading: ContextWind
     >
       {composition.used.map((segment, index) => <Tip key={segment.name} label={`${segment.name} · ${compactTokens(segment.tokens)}`}>
         <span
-          className={cn("h-full origin-left motion-safe:animate-[meter-fill_600ms_ease-out_both]", segmentFill(index))}
+          className={cn("h-full origin-left motion-safe:animate-meter-fill", segmentFill(index))}
           style={{ width: width(segment.tokens), animationDelay: `${index * 40}ms` }}
         />
       </Tip>)}
@@ -132,15 +133,13 @@ function Legend({ reading }: { reading: ContextWindowReading }) {
 function WindowTab({ window, selected, onSelect }: { window: ContextWindow; selected: boolean; onSelect: () => void }) {
   const reading = window.current;
   const tone = contextTone(reading?.percent);
-  return <button
-    type="button"
+  return <RowButton
     role="tab"
     aria-selected={selected}
     onClick={onSelect}
-    className={cn(
-      "flex min-w-0 items-center gap-2.5 rounded-lg px-2.5 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-      selected ? "bg-card shadow-control" : "hover:bg-accent",
-    )}
+    size="lg"
+    tone="tab"
+    shape="card"
   >
     <ContextGauge percent={reading?.percent} size={22} />
     <span className="min-w-0 flex-1">
@@ -151,7 +150,7 @@ function WindowTab({ window, selected, onSelect }: { window: ContextWindow; sele
       <span className="block truncate text-caption text-muted-foreground">{window.model ? modelLabel(window.model) : harnessLabel(window.harness)}</span>
     </span>
     <span className={cn("shrink-0 font-mono text-meta tabular-nums", reading ? TONE_TEXT[tone] : "text-muted-foreground")}>{reading ? `${reading.percent}%` : "–"}</span>
-  </button>;
+  </RowButton>;
 }
 
 function SectionTitle({ children, aside }: { children: React.ReactNode; aside?: React.ReactNode }) {
@@ -171,7 +170,7 @@ function Row({ fill, label, detail, tokens, share, relative }: { fill: string; l
       </span>
     </span>
     <span className="hidden h-1 overflow-hidden rounded-full bg-muted @md:block" aria-hidden="true">
-      <span className={cn("block h-full origin-left rounded-full motion-safe:animate-[meter-fill_600ms_ease-out_both]", fill)} style={{ width: `${Math.max(relative, 2)}%` }} />
+      <span className={cn("block h-full origin-left rounded-full motion-safe:animate-meter-fill", fill)} style={{ width: `${Math.max(relative, 2)}%` }} />
     </span>
     <span className="text-right font-mono text-meta tabular-nums text-foreground">{compactTokens(tokens)}</span>
     <span className="text-right font-mono text-caption tabular-nums text-muted-foreground">{share}</span>
@@ -280,7 +279,7 @@ function WindowDetail({ window, bridge, earlier, onCompact }: { window: ContextW
       <div className="p-4 @md:p-5">
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
           {identity}
-          <Badge variant="outline" className="border-dashed px-1.5 font-normal text-muted-foreground">Unavailable</Badge>
+          <Badge variant="dashed">Unavailable</Badge>
         </div>
         <p className="mt-4 font-display text-xl font-semibold leading-none tracking-tight text-foreground">No reading yet</p>
         <p className="mt-2 text-meta leading-relaxed text-muted-foreground">{window.unavailableReason}</p>
@@ -376,10 +375,10 @@ export function ContextLensDialog({ open, sessionId, focusSessionId, refreshKey,
       <DialogHeader className="me-6">
         <div className="flex flex-col gap-1">
           <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-            <DialogTitle className="text-base font-medium">Context lens</DialogTitle>
+            <DialogTitle>Context lens</DialogTitle>
             {result && <span className="text-meta tabular-nums text-muted-foreground">{live} live · {windows.length} window{windows.length === 1 ? "" : "s"}</span>}
           </div>
-          <DialogDescription className="text-meta leading-5">How full each window in this chat is, read from its own harness.</DialogDescription>
+          <DialogDescription>How full each window in this chat is, read from its own harness.</DialogDescription>
         </div>
       </DialogHeader>
       <DialogPanel className="@container/lens">

@@ -106,7 +106,7 @@ export function UsageHeatmap({ periods, resolution, timeZone, metric, className 
               data-step={step}
               data-harness={cell.harness ?? undefined}
               onMouseEnter={() => setHover(cell)}
-              className={cn("size-3 rounded-sm transition-opacity motion-safe:animate-[insight-rise_300ms_ease-out_both]", step === 0 ? "bg-muted/60" : cn(harnessChartDot(cell.harness), DEPTH[step]), hover && hover.period !== cell.period && step > 0 && "opacity-40")}
+              className={cn("size-3 rounded-sm transition-opacity motion-safe:animate-insight-rise", step === 0 ? "bg-muted/60" : cn(harnessChartDot(cell.harness), DEPTH[step]), hover && hover.period !== cell.period && step > 0 && "opacity-40")}
               style={{ gridColumnStart: cell.column + 1, gridRowStart: cell.row + 1, animationDelay: `${Math.min(cell.column, 20) * 15}ms` }}
             />;
           })}

@@ -66,7 +66,7 @@ export function WindowRow({ provider, window, nowMs }: { provider: UsageProvider
       <span className="shrink-0 tabular-nums text-muted-foreground">{Math.round(used)}% used</span>
     </div>
     <button type="button" aria-expanded={expanded} aria-controls={`meter-window-${provider}-${window.id}`} onClick={() => setExpanded(value => !value)} className="mt-1 block h-1.5 w-full overflow-hidden rounded-full bg-muted text-left outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring">
-      <span className={cn("block h-full origin-left rounded-full motion-safe:animate-[meter-fill_600ms_ease-out]", harnessChartDot(provider))} style={{ width: `${used}%` }} />
+      <span className={cn("block h-full origin-left rounded-full motion-safe:animate-meter-fill", harnessChartDot(provider))} style={{ width: `${used}%` }} />
     </button>
     <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-caption text-muted-foreground">
       {reset && <span className="tabular-nums">{reset}</span>}

@@ -25,7 +25,7 @@ export const TONE: Record<UsageInsightTone, { dot: string; label: string }> = {
 const LOADING_STEPS = ["Reading your usage ledger", "Sampling recent prompts", "Checking pull requests", "Asking your harness to write it up"];
 
 export function rise(index: number): { className: string; style: React.CSSProperties } {
-  return { className: "motion-safe:animate-[insight-rise_420ms_ease-out_both]", style: { animationDelay: `${Math.min(index, 8) * 60}ms` } };
+  return { className: "motion-safe:animate-insight-rise", style: { animationDelay: `${Math.min(index, 8) * 60}ms` } };
 }
 
 export function relative(iso: string): string {
@@ -50,7 +50,7 @@ function HarnessBars({ report }: { report: UsageInsightsReport }) {
           <span className="shrink-0 tabular-nums text-muted-foreground">{formatTokens(entry.processedTokens)}</span>
         </div>
         <div className="h-3 w-full overflow-hidden rounded-sm bg-muted/60">
-          <div className={cn("h-full origin-left rounded-r-[4px] motion-safe:animate-[meter-fill_600ms_ease-out_both]", harnessChartDot(entry.harness))} style={{ width: `${Math.max(width, entry.processedTokens > 0 ? 1.5 : 0)}%` }} />
+          <div className={cn("h-full origin-left rounded-r-[4px] motion-safe:animate-meter-fill", harnessChartDot(entry.harness))} style={{ width: `${Math.max(width, entry.processedTokens > 0 ? 1.5 : 0)}%` }} />
         </div>
         {hover === entry.harness && <div role="tooltip" className="u-glass-popover absolute right-0 top-full z-10 mt-1 rounded-lg px-2.5 py-1.5 text-caption leading-4 tabular-nums">
           <div className="text-foreground">{formatUsd(entry.costMicrousd)} at API rates</div>
@@ -71,7 +71,7 @@ function HourColumns({ report }: { report: UsageInsightsReport }) {
   return <figure aria-label="Prompts by hour of day">
     <div className="relative flex h-28 items-end gap-[2px]" onMouseLeave={() => setHover(null)}>
       {report.hours.map((entry, index) => <div key={entry.hour} className="group relative flex h-full flex-1 items-end" onMouseEnter={() => setHover(entry.hour)}>
-        <div className={cn("w-full origin-bottom rounded-t-[3px] motion-safe:animate-[chart-rise_500ms_ease-out_both]", entry.hour === peakHour.hour && entry.prompts > 0 ? "bg-foreground" : "bg-foreground/35 group-hover:bg-foreground/60")} style={{ height: `${Math.max((entry.prompts / peak) * 100, entry.prompts > 0 ? 3 : 1)}%`, animationDelay: `${index * 15}ms` }} />
+        <div className={cn("w-full origin-bottom rounded-t-[3px] motion-safe:animate-chart-rise", entry.hour === peakHour.hour && entry.prompts > 0 ? "bg-foreground" : "bg-foreground/35 group-hover:bg-foreground/60")} style={{ height: `${Math.max((entry.prompts / peak) * 100, entry.prompts > 0 ? 3 : 1)}%`, animationDelay: `${index * 15}ms` }} />
         {hover === entry.hour && <div role="tooltip" className={cn("u-glass-popover pointer-events-none absolute bottom-full z-10 mb-1 whitespace-nowrap rounded-lg px-2 py-1 text-caption tabular-nums", index > 15 ? "right-0" : "left-0")}>
           <span className="text-foreground">{formatCount(entry.prompts)} prompts</span> <span className="text-muted-foreground">at {String(entry.hour).padStart(2, "0")}:00</span>
         </div>}
@@ -106,7 +106,7 @@ function DayArea({ report }: { report: UsageInsightsReport }) {
     <div ref={plotRef} className="relative h-32 w-full" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
       <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="block h-full w-full overflow-visible text-foreground" role="img" aria-label={`${days.length} days of processed tokens`}>
         <line x1={0} x2={width} y1={height} y2={height} className="stroke-border" strokeWidth={1} vectorEffect="non-scaling-stroke" />
-        {area && <path d={area} fill="currentColor" className="origin-bottom opacity-10 motion-safe:animate-[chart-rise_600ms_ease-out_both]" />}
+        {area && <path d={area} fill="currentColor" className="origin-bottom opacity-10 motion-safe:animate-chart-rise" />}
         {line && <path d={line} fill="none" stroke="currentColor" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
         {hovered != null && <>
           <line x1={points[hovered].x} x2={points[hovered].x} y1={0} y2={height} className="stroke-foreground/40" strokeWidth={1} vectorEffect="non-scaling-stroke" />
@@ -132,7 +132,7 @@ export function Themes({ report }: { report: Pick<UsageInsightsReport, "themes">
   if (themes.length === 0) return <p className="text-caption text-muted-foreground">No themes were found in the sampled prompts.</p>;
   return <div>
     <div className="flex h-3 w-full gap-[2px] overflow-hidden rounded-sm" aria-hidden="true">
-      {themes.map((theme, index) => <div key={theme.label} className={cn("h-full origin-left motion-safe:animate-[meter-fill_600ms_ease-out_both]", shades[Math.min(index, shades.length - 1)])} style={{ width: `${Math.max(theme.share * 100, 1)}%`, animationDelay: `${index * 60}ms` }} />)}
+      {themes.map((theme, index) => <div key={theme.label} className={cn("h-full origin-left motion-safe:animate-meter-fill", shades[Math.min(index, shades.length - 1)])} style={{ width: `${Math.max(theme.share * 100, 1)}%`, animationDelay: `${index * 60}ms` }} />)}
     </div>
     <ul className="mt-3 space-y-2" aria-label="Prompt themes">
       {themes.map((theme, index) => <li key={theme.label} className={cn("flex items-start justify-between gap-3", rise(index + 1).className)} style={rise(index + 1).style}>

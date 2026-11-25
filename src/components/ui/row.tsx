@@ -21,6 +21,8 @@ export const rowVariants = cva(
         sm: "min-h-7 gap-1.5 px-1.5 py-0.5 text-caption",
         default: "min-h-8 gap-2 px-2 py-1 text-ui",
         lg: "min-h-10 gap-2.5 px-2.5 py-1.5 text-ui",
+        // A clickable card or panel row.
+        card: "min-h-14 gap-3 px-4 py-3.5 text-ui",
         // The caller sets the padding: cards and multi-line rows.
         bare: "gap-2 text-ui",
       },
@@ -32,12 +34,17 @@ export const rowVariants = cva(
         // Selection is drawn with the selection token rather than the hover fill.
         selection:
           "text-foreground hover:bg-accent data-[active=true]:bg-selection data-[active=true]:text-selection-foreground aria-selected:bg-selection aria-selected:text-selection-foreground",
+        // A vertical tab list: the selected tab is raised like a segmented item.
+        tab: "text-foreground hover:bg-accent aria-selected:bg-card aria-selected:shadow-control aria-selected:hover:bg-card",
+        // A raised card that fills on hover.
+        surface: "u-surface text-foreground hover:bg-accent",
         // No fill at all; the content changes instead (a disclosure, a heading).
         plain: "text-muted-foreground hover:text-foreground",
       },
       shape: {
         rounded: "rounded-md",
         card: "rounded-lg",
+        panel: "rounded-2xl",
         flush: "rounded-none",
       },
     },

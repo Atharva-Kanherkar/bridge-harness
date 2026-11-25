@@ -97,7 +97,7 @@ export function UsageCalendar({ summary, periods, window, metric }: UsageLayoutP
         selected && "shadow-[inset_0_0_0_1.5px_var(--color-ring)]",
       )}
     >
-      {fill > 0 && <span className="absolute inset-x-0 bottom-0 flex motion-safe:animate-[chart-rise_500ms_ease-out_both] origin-bottom" style={{ height: `${fill * 100}%` }} aria-hidden="true">
+      {fill > 0 && <span className="absolute inset-x-0 bottom-0 flex motion-safe:animate-chart-rise origin-bottom" style={{ height: `${fill * 100}%` }} aria-hidden="true">
         {parts.map(part => <span key={part.harness} className="flex flex-col" style={{ flexGrow: part.value }}>
           <span className={cn("h-[2px] shrink-0", harnessChartDot(part.harness))} />
           <span className={cn("flex-1 opacity-[0.18] transition-opacity group-hover:opacity-25", harnessChartDot(part.harness))} />

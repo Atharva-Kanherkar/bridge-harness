@@ -242,7 +242,7 @@ function DiskSummary({ overview, home, onOpen, onEmptyTrash, busy }: {
       <div className="ml-auto"><GhostButton onClick={onEmptyTrash} disabled={busy}><Trash2 size={13} aria-hidden="true" />Empty Trash</GhostButton></div>
     </div>
     <div className="mt-4 flex h-2.5 w-full gap-0.5 overflow-hidden rounded-full bg-muted" role="img" aria-label={`${diskBytes(volume.usedBytes)} used of ${diskBytes(volume.totalBytes)}`}>
-      {top.map((entry, index) => <span key={entry.path} className={cn("h-full origin-left first:rounded-l-full motion-safe:animate-[meter-fill_600ms_ease-out]", SERIES[index])} style={{ width: share(entry.sizeBytes ?? 0) }} />)}
+      {top.map((entry, index) => <span key={entry.path} className={cn("h-full origin-left first:rounded-l-full motion-safe:animate-meter-fill", SERIES[index])} style={{ width: share(entry.sizeBytes ?? 0) }} />)}
       <span className={cn("h-full", OTHER)} style={{ width: share(other) }} />
     </div>
     <ul className="mt-3 grid grid-cols-1 gap-x-4 gap-y-0.5 @md/storage:grid-cols-2 @3xl/storage:grid-cols-3">

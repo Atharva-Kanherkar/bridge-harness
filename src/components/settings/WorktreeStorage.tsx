@@ -53,7 +53,7 @@ function RepoBreakdown({ repositories, totalBytes, onSelect }: {
           onFocus={() => setHover(index)}
           onBlur={() => setHover(current => (current === index ? null : current))}
           onClick={() => onSelect(repo.repoRoot)}
-          className={cn("h-full origin-left cursor-pointer outline-none motion-safe:animate-[meter-fill_600ms_ease-out] first:rounded-l-full last:rounded-r-full", swatch(index), hover === index && "brightness-110")}
+          className={cn("h-full origin-left cursor-pointer outline-none motion-safe:animate-meter-fill first:rounded-l-full last:rounded-r-full", swatch(index), hover === index && "brightness-110")}
           style={{ width: `${width}%` }}
         />;
       })}

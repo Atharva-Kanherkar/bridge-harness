@@ -51,6 +51,8 @@ export const buttonVariants = cva(
         // Toolbar and row actions: recedes until hovered.
         quiet:
           "border-transparent text-muted-foreground hover:bg-accent hover:text-foreground data-pressed:bg-accent data-pressed:text-foreground aria-pressed:bg-accent aria-pressed:text-foreground aria-expanded:bg-accent aria-expanded:text-foreground *:data-[slot=button-loading-indicator]:text-foreground",
+        // A filter pill: outlined at rest, filled while pressed. Pair with size="2xs" and aria-pressed.
+        chip: "rounded-full border-border text-muted-foreground before:rounded-full hover:bg-accent hover:text-foreground aria-pressed:border-foreground/25 aria-pressed:bg-accent aria-pressed:text-foreground",
         // Words that act: no fill at rest or on hover. Pair with size="inline" inside a sentence.
         text: "border-transparent text-muted-foreground hover:text-foreground data-pressed:text-foreground *:data-[slot=button-loading-indicator]:text-foreground",
         link: "border-transparent text-foreground underline-offset-4 hover:underline data-pressed:underline *:data-[slot=button-loading-indicator]:text-foreground",
