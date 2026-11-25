@@ -1752,7 +1752,7 @@ const mockWorkflowOptions: WorkflowOptions = {
   harnesses: [
     { id: "claude", label: "Claude Code", available: true, connectorsAllowed: true, connectorsReason: null, worktreeAllowed: true, defaultModel: "haiku",
       models: [{ id: "haiku", label: "Claude Haiku", tier: "fast", defaultForBriefing: true }, { id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForBriefing: false }] },
-    { id: "codex", label: "Codex", available: true, connectorsAllowed: false, worktreeAllowed: false, defaultModel: "gpt-5.5",
+    { id: "codex", label: "Codex", available: true, connectorsAllowed: false, worktreeAllowed: true, defaultModel: "gpt-5.5",
       connectorsReason: "the app-server protocol has no per-tool authority, so an exact connector read cannot be isolated from a mutation",
       models: [{ id: "gpt-5.5", label: "GPT-5.5", tier: "standard", defaultForBriefing: false }] },
     { id: "opencode", label: "OpenCode", available: true, connectorsAllowed: false, worktreeAllowed: false, defaultModel: null,
@@ -1807,6 +1807,42 @@ mockState.agentEvents.push(
   agentEvent(9004, "wf-run-session", "assistant.message", { role: "assistant", text: "Three mentions need replies. I drafted a note to #team to say I'm on it." }),
   agentEvent(9005, "wf-run-session", "permission.requested", { status: "pending", title: "Use claude_ai_Slack · slack_send_message?", data: { tool_name: "mcp__claude_ai_Slack__slack_send_message", tool_input: { channel: "#team", text: "On it: replying to the three threads this morning." } } }),
 );
+// A multi-step workflow: Claude reads Slack, Codex fixes the code in a
+// worktree, Claude files what changed in Linear. Its run is on step 2.
+mockWorkflows.push({
+  id: "wf-slack-fixes", enabled: true, disabledReason: null, revisionId: "wf-slack-fixes-r1", revision: 1,
+  approved: true, approvedAt: "2026-10-29T09:00:00Z", createdAt: "2026-10-29T09:00:00Z", updatedAt: "2026-10-29T09:00:00Z",
+  definition: {
+    name: "Fix what #bugs reports", projectId: "demo-project",
+    steps: [
+      { harness: "claude", model: "haiku", instructions: "Read today's reports in #bugs and pick the ones with steps to reproduce.", servers: ["claude.ai Slack"], files: "none" },
+      { harness: "codex", model: "gpt-5.5", instructions: "Fix the bugs the earlier step picked, with a test for each.", servers: [], files: "worktree" },
+      { harness: "claude", model: "sonnet", instructions: "File a Linear issue for each fix, linking the reports.", servers: ["claude.ai Linear"], files: "none" },
+    ],
+    trigger: { kind: "schedule", cron: "0 10 * * 1-5", timezone: "Asia/Kolkata" },
+    grants: [{ server: "claude.ai Slack", read: true, write: "never" }, { server: "claude.ai Linear", read: true, write: "ask" }],
+    alwaysAllow: [], files: "worktree",
+    budget: { maxWallSeconds: 1800, maxTurns: 60, maxToolCalls: 128, maxOutputTokens: null, costCeilingMicrousd: null },
+    expectedResult: "Each fix has a Linear issue.", notify: { onSuccess: true },
+  },
+});
+mockWorkflowRuns.unshift({
+  id: "run-slack-fixes-1", workflowId: "wf-slack-fixes", revisionId: "wf-slack-fixes-r1", triggerKind: "schedule", missedSlots: 0,
+  dryRun: false, status: "running", failureCode: null, summary: null, sessionId: "wf-steps-codex", quotaUnknown: false,
+  costMicrousd: null, tokens: 52300, unread: false, scheduledFor: "2026-10-29T04:30:00.000Z", startedAt: "2026-10-29T04:30:02.000Z", finishedAt: null,
+  createdAt: "2026-10-29T04:30:01.000Z",
+  steps: [
+    { index: 0, harness: "claude", model: "haiku", status: "succeeded", sessionId: "wf-steps-claude", failureCode: null, summary: "Two reports have steps to reproduce: export drops the last row, and login loops on an expired token.", tokens: 9100, costMicrousd: 12000, startedAt: "2026-10-29T04:30:02.000Z", finishedAt: "2026-10-29T04:30:40.000Z" },
+    { index: 1, harness: "codex", model: "gpt-5.5", status: "running", sessionId: "wf-steps-codex", failureCode: null, summary: null, tokens: null, costMicrousd: null, startedAt: "2026-10-29T04:30:41.000Z", finishedAt: null },
+  ],
+});
+mockState.agentEvents.push(
+  agentEvent(9101, "wf-steps-claude", "tool.started", { itemId: "slack-read", data: { toolName: "mcp__claude_ai_Slack__slack_read_channel" } }),
+  agentEvent(9105, "wf-steps-claude", "tool.completed", { itemId: "slack-read", status: "completed" }),
+  agentEvent(9102, "wf-steps-claude", "assistant.message", { role: "assistant", text: "Two reports have steps to reproduce: export drops the last row, and login loops on an expired token." }),
+  agentEvent(9103, "wf-steps-codex", "command.started", { data: { toolName: "rg -n 'lastRow' src/export" } }),
+  agentEvent(9104, "wf-steps-codex", "assistant.message", { role: "assistant", text: "Found it: the export loop stops one row early. Fixing it and adding a test." }),
+);
 /** What the mock apps' badges count, from the other mocks, with core's rules. */
 function mockBadgeCounts(): MockBadgeCounts {
   return {
@@ -1821,8 +1857,13 @@ let mockWorkflowSettings: WorkflowSettingsSnapshot = { configured: false, settin
 /** The mock's mirror of `workflows::widens`. */
 function mockWorkflowWidens(previous: WorkflowDefinition, next: WorkflowDefinition): boolean {
   if (previous.projectId !== next.projectId) return true;
-  if (previous.steps[0]?.harness !== next.steps[0]?.harness) return true;
+  if (previous.steps.map(step => step.harness).join("\n") !== next.steps.map(step => step.harness).join("\n")) return true;
   if (previous.files === "none" && next.files === "worktree") return true;
+  const servers = (definition: WorkflowDefinition, index: number) => definition.steps[index]?.servers ?? (definition.grants ?? []).map(grant => grant.server);
+  const files = (definition: WorkflowDefinition, index: number) => definition.steps[index]?.files ?? definition.files;
+  const stepWidens = next.steps.some((_, index) => servers(next, index).some(server => !servers(previous, index).includes(server))
+    || (files(previous, index) === "none" && files(next, index) === "worktree"));
+  if (stepWidens) return true;
   const grantWidens = (next.grants ?? []).some(grant => {
     const old = (previous.grants ?? []).find(candidate => candidate.server === grant.server);
     return !old || (grant.read && !old.read) || (grant.write === "ask" && old.write === "never");

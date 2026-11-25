@@ -190,3 +190,10 @@ export function ordinal(position: number): string {
   if (tens >= 11 && tens <= 13) return `${position}th`;
   return `${position}${["th", "st", "nd", "rd"][position % 10] ?? "th"}`;
 }
+
+const HARNESS_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", opencode: "OpenCode", cursor: "Cursor", grok: "Grok", pi: "Pi" };
+
+/** An agent's name for a person: `codex` reads as Codex. */
+export function harnessName(id: string): string {
+  return HARNESS_NAMES[id] ?? (id ? id[0].toUpperCase() + id.slice(1) : "");
+}

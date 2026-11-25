@@ -25,6 +25,7 @@ use uuid::Uuid;
 const MINIMUM_VERSION: (u64, u64, u64) = (0, 153, 4);
 
 pub mod account;
+mod connectors_off;
 
 /// `turn/start` ids live in their own band so a rejected start is recognisable
 /// from its response alone (see `agent::codex_turn_start_rejection`).
@@ -464,6 +465,9 @@ fn open_thread(
     on_progress: Option<crate::adapters::StartupProgress<'_>>,
     wait: std::time::Duration,
 ) -> Result<Opened, BridgeError> {
+    if tools.is_some_and(|tools| tools.connectors_off) {
+        return open_connectors_off(spawn, cwd, thread_request, on_progress, wait);
+    }
     let mut spawned = spawn(tools)?;
     let mut startup_messages = handshake(&mut spawned, on_progress)?;
     let mut skills_dropped = false;
@@ -487,13 +491,119 @@ fn open_thread(
     Ok(Opened { spawned, response, startup_messages, skills_dropped })
 }
 
+/// The id of the `mcpServerStatus/list` request of a connectors-off launch.
+const STATUS_ID: i64 = 6;
+/// The longest wait for that list: servers that are off report at once.
+const STATUS_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn config_read_request(cwd: &str) -> Value {
+    json!({"method": "config/read", "id": CONFIG_READ_ID, "params": {"cwd": cwd, "includeLayers": true}})
+}
+
+/// Launch a workflow step with every connector off (see [`connectors_off`]).
+/// A first process reports the config of `cwd`; it stops before any thread.
+/// The second launches with every server, plugin and app off, and must show
+/// that in its own config before its thread starts, and report no MCP tool
+/// once it has. Any doubt refuses the launch with the reason.
+fn open_connectors_off(
+    mut spawn: impl FnMut(Option<&ToolLaunch>) -> Result<Spawned, BridgeError>,
+    cwd: &str,
+    thread_request: &Value,
+    on_progress: Option<crate::adapters::StartupProgress<'_>>,
+    wait: std::time::Duration,
+) -> Result<Opened, BridgeError> {
+    let refuse = |reason: String| {
+        BridgeError::Invalid(format!("Bridge could not turn off Codex's connectors for this workflow step: {reason}"))
+    };
+    let mut first = spawn(None)?;
+    handshake(&mut first, on_progress)?;
+    let (first, read, _) = request_within(first, &config_read_request(cwd), CONFIG_READ_ID, wait).map_err(refuse)?;
+    drop(first);
+    let inventory = connectors_off::inventory(read.get("result").unwrap_or(&Value::Null)).map_err(refuse)?;
+    let launch = ToolLaunch { servers_off: inventory.servers, ..ToolLaunch::connectors_off("codex") };
+
+    let mut spawned = spawn(Some(&launch))?;
+    let mut startup_messages = handshake(&mut spawned, on_progress)?;
+    let (mut spawned, read, mut frames) =
+        request_within(spawned, &config_read_request(cwd), CONFIG_READ_ID, wait).map_err(refuse)?;
+    startup_messages.append(&mut frames);
+    connectors_off::isolation_holds(read.get("result").unwrap_or(&Value::Null)).map_err(refuse)?;
+
+    write_value(&spawned.writer, thread_request)?;
+    let (response, mut later_messages) = wait_for_response(&mut spawned.reader, 2)?;
+    startup_messages.append(&mut later_messages);
+    let thread_id = response
+        .pointer("/result/thread/id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| BridgeError::Invalid(format!("Codex app-server returned no thread id: {response}")))?
+        .to_owned();
+    let status_request = json!({
+        "method": "mcpServerStatus/list",
+        "id": STATUS_ID,
+        "params": {"threadId": thread_id, "detail": "toolsAndAuthOnly"},
+    });
+    let (spawned, status, mut frames) = request_within(spawned, &status_request, STATUS_ID, wait.max(STATUS_WAIT)).map_err(refuse)?;
+    startup_messages.append(&mut frames);
+    let reachable = connectors_off::reachable_tools(status.get("result").unwrap_or(&Value::Null)).map_err(refuse)?;
+    if !reachable.is_empty() {
+        return Err(refuse(format!("{} still offer tools", reachable.join(", "))));
+    }
+    Ok(Opened { spawned, response, startup_messages, skills_dropped: false })
+}
+
+/// Send one request and wait at most `wait` for its reply. The process comes
+/// back with the reply and the frames before it. An error reply, a reply
+/// Bridge cannot read and no reply in time are errors; then the process
+/// drops, and its guard stops and reaps it.
+fn request_within(
+    spawned: Spawned,
+    request: &Value,
+    id: i64,
+    wait: std::time::Duration,
+) -> Result<(Spawned, Value, Vec<Value>), String> {
+    write_value(&spawned.writer, request).map_err(|error| error.to_string())?;
+    let Spawned { child, writer, mut reader, stderr_tail, spawned_at } = spawned;
+    // The read runs on its own thread, so the wait has a limit. The thread
+    // ends at the end of the output when the guard stops the process.
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("codex-request".into())
+        .spawn(move || {
+            // A request of the server is not the reply, also with the same id.
+            // It stays with the startup frames.
+            let mut frames = Vec::new();
+            let reply = loop {
+                match wait_for_response(&mut reader, id) {
+                    Ok((frame, mut before)) => {
+                        frames.append(&mut before);
+                        if frame.get("method").is_none() {
+                            break Ok((frame, frames));
+                        }
+                        frames.push(frame);
+                    }
+                    Err(error) => break Err(error),
+                }
+            };
+            // The send fails only when the launch stopped the wait.
+            sender.send((reader, reply))
+        })
+        .map_err(|error| error.to_string())?;
+    let (reader, reply) = receiver.recv_timeout(wait).map_err(|_| "Codex did not answer in time".to_owned())?;
+    let (response, frames) = reply.map_err(|error| error.to_string())?;
+    // A frame with an `error` member is an error reply, also beside a `result`.
+    if let Some(error) = response.get("error") {
+        return Err(format!("Codex refused the request: {error}"));
+    }
+    Ok((Spawned { child, writer, reader, stderr_tail, spawned_at }, response, frames))
+}
+
 /// Send `config/read` to a process before its thread request. The result is
 /// the process and the frames that came before the reply, only when the reply
 /// shows no `skills` key of the user. A user key, an error reply, a reply that
 /// Bridge cannot read and no reply in `wait` give `None`. Then the process
 /// drops, and its guard stops and reaps it.
 fn checked_config(spawned: Spawned, cwd: &str, wait: std::time::Duration) -> Option<(Spawned, Vec<Value>)> {
-    let request = json!({"method": "config/read", "id": CONFIG_READ_ID, "params": {"cwd": cwd, "includeLayers": true}});
+    let request = config_read_request(cwd);
     write_value(&spawned.writer, &request).ok()?;
     let Spawned { child, writer, mut reader, stderr_tail, spawned_at } = spawned;
     // The read runs on its own thread, so the wait has a limit. The thread
@@ -2552,4 +2662,160 @@ done"#;
         runtime.app_control("c1", &json!({"kind": "config"})).unwrap();
         assert_eq!(next(), json!({"id": "bridge-app:config:c1", "method": "config/read", "params": {"cwd": "/work/repo", "includeLayers": true}}));
     }
+
+    /// A stand-in app-server for a connectors-off launch: like [`GATE_SCRIPT`],
+    /// and it answers `mcpServerStatus/list` with `$STATUS_REPLY`.
+    #[cfg(unix)]
+    const OFF_SCRIPT: &str = r#"while IFS= read -r line; do
+  printf '%s %s\n' "$$" "$line" >> "$LOG"
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+    *'"method":"config/read"'*) if [ -n "$CONFIG_REPLY" ]; then printf '%s\n' "$CONFIG_REPLY"; fi ;;
+    *'"method":"thread/'*) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-1"}}}' ;;
+    *'"method":"mcpServerStatus/list"'*) printf '%s\n' "$STATUS_REPLY" ;;
+  esac
+done"#;
+
+    /// Run a connectors-off launch on stand-ins. The first process answers
+    /// `config/read` with `first`; the one launched with values, with `second`.
+    #[cfg(unix)]
+    fn off_launch(first: &Value, second: &Value, status: &Value, wait: std::time::Duration) -> (Result<Opened, BridgeError>, Vec<GateProcess>) {
+        let folder = tempfile::tempdir().unwrap();
+        let log = folder.path().join("requests.log");
+        let spawned = Mutex::new(Vec::new());
+        let reply = |result: &Value| if result.is_null() { String::new() } else { json!({"id": 4, "result": result}).to_string() };
+        let spawn = |tools: Option<&ToolLaunch>| -> Result<Spawned, BridgeError> {
+            let mut command = Command::new("sh");
+            command
+                .args(["-c", OFF_SCRIPT])
+                .env("LOG", &log)
+                .env("CONFIG_REPLY", reply(if tools.is_some() { second } else { first }))
+                .env("STATUS_REPLY", json!({"id": 6, "result": status}).to_string());
+            command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            crate::adapters::configure_process_group(&mut command);
+            let child = command.spawn()?;
+            spawned.lock().unwrap().push((child.id(), config_values(&launch_args(None, tools))));
+            Spawned::new(child, std::time::Instant::now())
+        };
+        let thread_request = json!({"method": "thread/start", "id": 2, "params": {"cwd": GATE_CWD}});
+        let off = ToolLaunch::connectors_off("codex");
+        let opened = open_thread(spawn, Some(&off), GATE_CWD, &thread_request, None, wait);
+        let log = std::fs::read_to_string(&log).unwrap_or_default();
+        let processes = spawned
+            .into_inner()
+            .unwrap()
+            .into_iter()
+            .map(|(pid, values)| {
+                let requests = log
+                    .lines()
+                    .filter_map(|line| line.split_once(' '))
+                    .filter(|(id, _)| id.parse() == Ok(pid))
+                    .map(|(_, request)| serde_json::from_str(request).unwrap())
+                    .collect();
+                GateProcess { pid, values, requests }
+            })
+            .collect();
+        (opened, processes)
+    }
+
+    #[cfg(unix)]
+    fn holding() -> Value {
+        json!({"config": {
+            "mcp_servers": {"railway": {"enabled": true}, "computer-use": {"enabled": false}},
+            "plugins": {"slack@openai-curated": {"enabled": true}},
+            "features": {"apps": true}
+        }, "layers": []})
+    }
+
+    #[cfg(unix)]
+    fn all_off() -> Value {
+        json!({"config": {
+            "mcp_servers": {"railway": {"enabled": false}, "computer-use": {"enabled": false}},
+            "plugins": {"slack@openai-curated": {"enabled": true}},
+            "features": {"apps": false, "plugins": false, "remote_plugin": false, "skill_mcp_dependency_install": false}
+        }, "layers": []})
+    }
+
+    #[cfg(unix)]
+    fn no_tools() -> Value {
+        json!({"data": [{"name": "railway", "tools": {}}, {"name": "computer-use", "tools": {}}], "nextCursor": null})
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_workflow_step_launches_with_every_connector_off_and_checked() {
+        let (opened, processes) = off_launch(&holding(), &all_off(), &no_tools(), GATE_WAIT);
+        let opened = opened.unwrap();
+        assert_eq!(opened.response["result"]["thread"]["id"], "thread-1");
+        assert_eq!(processes.len(), 2, "{processes:#?}");
+        let (first, second) = (&processes[0], &processes[1]);
+        assert_eq!(first.methods(), ["initialize", "initialized", "config/read"], "the inventory process starts no thread");
+        assert!(first.values.is_empty(), "it launches as configured, to read what is there");
+        assert!(reaped(first.pid), "and it is reaped");
+        assert_eq!(
+            second.values,
+            [
+                "mcp_servers.computer-use.enabled=false",
+                "mcp_servers.railway.enabled=false",
+                "features.apps=false",
+                "features.plugins=false",
+                "features.remote_plugin=false",
+                "features.skill_mcp_dependency_install=false",
+            ]
+        );
+        assert_eq!(second.methods(), ["initialize", "initialized", "config/read", "thread/start", "mcpServerStatus/list"]);
+        assert_eq!(second.requests[4]["params"], json!({"threadId": "thread-1", "detail": "toolsAndAuthOnly"}));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_connector_bridge_cannot_turn_off_refuses_the_launch() {
+        let mut unsafe_key = holding();
+        unsafe_key["config"]["mcp_servers"]["my.server"] = json!({"enabled": true});
+        let (opened, processes) = off_launch(&unsafe_key, &all_off(), &no_tools(), GATE_WAIT);
+        let error = opened.err().expect("refused").to_string();
+        assert!(error.contains("cannot turn off safely") && error.contains("my.server"), "{error}");
+        assert_eq!(processes.len(), 1, "nothing launches after the inventory");
+        assert!(reaped(processes[0].pid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_connector_still_on_refuses_the_launch_before_any_thread() {
+        let mut still_on = all_off();
+        still_on["config"]["features"]["remote_plugin"] = json!(true);
+        let mut late = all_off();
+        late["config"]["mcp_servers"]["project-server"] = json!({"command": "x"});
+        let mut apps = all_off();
+        apps["config"]["features"] = json!({});
+        for (case, second, needle) in [("remote plugins", still_on, "remote_plugin"), ("a project server", late, "project-server"), ("apps", apps, "apps")] {
+            let (opened, processes) = off_launch(&holding(), &second, &no_tools(), GATE_WAIT);
+            let error = opened.err().unwrap_or_else(|| panic!("{case}: refused")).to_string();
+            assert!(error.contains(needle) && error.contains("Bridge could not turn off Codex's connectors"), "{case}: {error}");
+            assert_eq!(processes[1].methods(), ["initialize", "initialized", "config/read"], "{case}: no thread starts");
+            assert!(reaped(processes[1].pid), "{case}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tool_still_offered_after_the_thread_starts_refuses_the_launch() {
+        let status = json!({"data": [{"name": "railway", "tools": {}}, {"name": "codex_apps", "tools": {"slack_send": {}}}], "nextCursor": null});
+        let (opened, processes) = off_launch(&holding(), &all_off(), &status, GATE_WAIT);
+        let error = opened.err().expect("refused").to_string();
+        assert!(error.contains("codex_apps still offer tools"), "{error}");
+        assert!(reaped(processes[1].pid), "the process that offered a tool is stopped");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_config_reply_refuses_the_launch_in_time() {
+        let started = std::time::Instant::now();
+        let (opened, processes) = off_launch(&Value::Null, &all_off(), &no_tools(), std::time::Duration::from_millis(300));
+        let error = opened.err().expect("refused").to_string();
+        assert!(error.contains("did not answer in time"), "{error}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        assert_eq!(processes.len(), 1);
+    }
+
 }

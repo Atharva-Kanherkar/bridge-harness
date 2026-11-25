@@ -2170,6 +2170,13 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<(), 
             opencode_config: inherited_opencode_config.as_deref(),
         },
     )?;
+    // A Codex workflow step launches with every connector off: Codex cannot
+    // hold a run to granted tools, so it is held to none, and the adapter
+    // checks that before the step works. Not a chat choice, so it is never
+    // recorded as one.
+    let workflow_isolation =
+        (is_workflow && adapter_id == "codex").then(|| crate::tool_selection::ToolLaunch::connectors_off(adapter_id));
+    let adapter_tools = workflow_isolation.as_ref().or(tool_launch.as_ref());
     // The effective set of this launch, compared with the set of the last
     // change event of the chat.
     let tool_record = crate::tool_selection::LaunchRecord::read(
@@ -2196,7 +2203,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<(), 
                 account: account_launch.as_ref(),
                 on_progress: Some(&on_startup_progress),
             },
-            tool_launch.as_ref(),
+            adapter_tools,
         )
         .map_err(|error| crate::tool_selection::explain_launch_error(tool_launch.as_ref(), error))
     };
@@ -2240,7 +2247,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<(), 
                     account: account_launch.as_ref(),
                     on_progress: Some(&on_startup_progress),
                 },
-                tool_launch.as_ref(),
+                adapter_tools,
             ) {
                 // The fork IS the aside's own thread from here: the runtime
                 // hands back the new forked thread id, which the persistence
@@ -2314,7 +2321,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<(), 
                     account: account_launch.as_ref(),
                     on_progress: Some(&on_startup_progress),
                 },
-                tool_launch.as_ref(),
+                adapter_tools,
             ) {
                 Ok(started) => (started, RestorationMode::Native, ResumeEligibility::Native),
                 Err(error) => {

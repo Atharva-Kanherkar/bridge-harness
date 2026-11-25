@@ -32,6 +32,8 @@ pub const DEFINITION_SCHEMA_VERSION: i64 = 1;
 pub const MAX_NAME_CHARS: usize = 80;
 pub const MAX_INSTRUCTIONS_CHARS: usize = 20_000;
 pub const MAX_EXPECTED_RESULT_CHARS: usize = 2_000;
+/// The most steps one workflow runs.
+pub const MAX_STEPS: usize = 5;
 /// Why Bridge disabled a workflow whose project row or folder is gone.
 pub const DISABLED_PROJECT_REMOVED: &str = "project_removed";
 
@@ -166,6 +168,114 @@ pub fn needs_identity_enforcement(_definition: &wire::WorkflowDefinition) -> boo
     true
 }
 
+/// The granted servers step `index` may use: its own list, or every grant.
+pub fn step_servers(definition: &wire::WorkflowDefinition, index: usize) -> Vec<String> {
+    match definition.steps.get(index).and_then(|step| step.servers.as_ref()) {
+        Some(servers) => servers.clone(),
+        None => definition.grants.iter().map(|grant| grant.server.clone()).collect(),
+    }
+}
+
+/// Which files step `index` works on: its own choice, or the workflow's.
+pub fn step_files(definition: &wire::WorkflowDefinition, index: usize) -> wire::WorkflowFiles {
+    definition.steps.get(index).and_then(|step| step.files).unwrap_or(definition.files)
+}
+
+/// May `harness` run a worktree step? Claude enforces exact identities; Codex
+/// launches a workflow step with every connector turned off and checks it
+/// (`tool_selection::ToolLaunch::connectors_off`). No other adapter can yet.
+pub fn worktree_step_allowed(harness: &str) -> Result<(), String> {
+    if harness == "codex" {
+        return Ok(());
+    }
+    crate::briefing_policy::adapter_may_brief(harness).map(|_| ()).map_err(|refusal| refusal.reason())
+}
+
+/// May `harness` run a step that uses connectors, or no files at all? Only an
+/// adapter that enforces exact tool identities.
+pub fn connector_step_allowed(harness: &str) -> Result<(), String> {
+    crate::briefing_policy::adapter_may_brief(harness).map(|_| ()).map_err(|refusal| refusal.reason())
+}
+
+/// One step's agent, model and instructions. `label` names the step in a
+/// multi-step workflow ("Step 2: "), and is empty in a single-step one.
+fn validate_step(step: &wire::WorkflowStep, label: &str, context: &ValidationContext) -> Result<(), String> {
+    let harness = step.harness.as_str();
+    let Some(adapter) = context.adapters.iter().find(|adapter| adapter.id == harness) else {
+        return Err(format!("{label}`{harness}` is not a registered agent"));
+    };
+    let model = step.model.trim();
+    if model.is_empty() {
+        return Err(format!("{label}Choose a model for the workflow's agent"));
+    }
+    if !adapter.models.is_empty() && !adapter.models.iter().any(|known| known == model) {
+        return Err(format!("{label}`{model}` is not a model `{harness}` offers"));
+    }
+    if step.effort.as_deref().is_some_and(|effort| effort.trim().is_empty()) {
+        return Err(format!("{label}An effort, when set, cannot be empty"));
+    }
+    let instructions = step.instructions.trim();
+    if instructions.is_empty() {
+        return Err(format!("{label}Tell the workflow what to do"));
+    }
+    if instructions.chars().count() > MAX_INSTRUCTIONS_CHARS {
+        return Err(format!("{label}Instructions are at most {MAX_INSTRUCTIONS_CHARS} characters"));
+    }
+    Ok(())
+}
+
+/// What each step may touch: its servers are grants, a worktree step has no
+/// connectors, and its agent can be held to what it was given.
+fn validate_step_authority(definition: &wire::WorkflowDefinition) -> Result<(), String> {
+    let single = definition.steps.len() == 1;
+    let granted: BTreeSet<&str> = definition.grants.iter().map(|grant| grant.server.as_str()).collect();
+    let mut used = BTreeSet::new();
+    let mut any_worktree = false;
+    for (index, step) in definition.steps.iter().enumerate() {
+        let label = if single { String::new() } else { format!("Step {}: ", index + 1) };
+        let harness = step.harness.as_str();
+        if let Some(servers) = &step.servers {
+            let mut seen = BTreeSet::new();
+            for server in servers {
+                if !granted.contains(server.as_str()) {
+                    return Err(format!("{label}it uses `{server}`, which the workflow does not grant"));
+                }
+                if !seen.insert(server.as_str()) {
+                    return Err(format!("{label}`{server}` is listed twice"));
+                }
+            }
+        }
+        let servers = step_servers(definition, index);
+        used.extend(servers.clone());
+        let files = step_files(definition, index);
+        if files == wire::WorkflowFiles::Worktree {
+            any_worktree = true;
+            if !servers.is_empty() {
+                return Err(if single {
+                    "A worktree workflow uses no connectors for now; remove the connectors or turn file access off".into()
+                } else {
+                    format!("{label}a step that works in the worktree uses no connectors for now")
+                });
+            }
+            if needs_identity_enforcement(definition) {
+                worktree_step_allowed(harness).map_err(|reason| format!("{label}`{harness}` cannot run this workflow: {reason}"))?;
+            }
+        } else if needs_identity_enforcement(definition) {
+            connector_step_allowed(harness).map_err(|reason| format!("{label}`{harness}` cannot run this workflow: {reason}"))?;
+        }
+    }
+    if let Some(unused) = granted.iter().find(|server| !used.contains(**server)) {
+        return Err(format!("`{unused}` is granted, but no step uses it"));
+    }
+    if definition.files == wire::WorkflowFiles::Worktree && !any_worktree {
+        return Err("No step works in the worktree; turn file access off".into());
+    }
+    if definition.files == wire::WorkflowFiles::None && any_worktree {
+        return Err("A step works in the worktree; turn file access on for the workflow".into());
+    }
+    Ok(())
+}
+
 /// The authority. A client may pre-empt an obvious mistake; this decides.
 pub fn validate(definition: &wire::WorkflowDefinition, context: &ValidationContext) -> Result<(), String> {
     let name = definition.name.trim();
@@ -176,44 +286,20 @@ pub fn validate(definition: &wire::WorkflowDefinition, context: &ValidationConte
         return Err(format!("A workflow name is at most {MAX_NAME_CHARS} characters"));
     }
 
-    let [step] = definition.steps.as_slice() else {
-        return Err(format!(
-            "A workflow has exactly one step for now; this one has {}",
-            definition.steps.len()
-        ));
-    };
-    let harness = step.harness.as_str();
-    let Some(adapter) = context.adapters.iter().find(|adapter| adapter.id == harness) else {
-        return Err(format!("`{harness}` is not a registered agent"));
-    };
-    let model = step.model.trim();
-    if model.is_empty() {
-        return Err("Choose a model for the workflow's agent".into());
+    if definition.steps.is_empty() {
+        return Err("A workflow needs at least one step".into());
     }
-    if !adapter.models.is_empty() && !adapter.models.iter().any(|known| known == model) {
-        return Err(format!("`{model}` is not a model `{harness}` offers"));
+    if definition.steps.len() > MAX_STEPS {
+        return Err(format!("A workflow has at most {MAX_STEPS} steps; this one has {}", definition.steps.len()));
     }
-    if step.effort.as_deref().is_some_and(|effort| effort.trim().is_empty()) {
-        return Err("An effort, when set, cannot be empty".into());
-    }
-    let instructions = step.instructions.trim();
-    if instructions.is_empty() {
-        return Err("Tell the workflow what to do".into());
-    }
-    if instructions.chars().count() > MAX_INSTRUCTIONS_CHARS {
-        return Err(format!("Instructions are at most {MAX_INSTRUCTIONS_CHARS} characters"));
+    let single = definition.steps.len() == 1;
+    for (index, step) in definition.steps.iter().enumerate() {
+        let label = if single { String::new() } else { format!("Step {}: ", index + 1) };
+        validate_step(step, &label, context)?;
     }
 
     if definition.files == wire::WorkflowFiles::Worktree && definition.project_id.is_none() {
         return Err("A worktree needs a project; choose one or turn file access off".into());
-    }
-    if definition.files == wire::WorkflowFiles::Worktree && !definition.grants.is_empty() {
-        return Err("A worktree workflow uses no connectors for now; remove the connectors or turn file access off".into());
-    }
-    if needs_identity_enforcement(definition) {
-        crate::briefing_policy::adapter_may_brief(harness).map_err(|refusal| {
-            format!("`{harness}` cannot run this workflow: {}", refusal.reason())
-        })?;
     }
 
     if let wire::WorkflowTrigger::Schedule { cron, timezone } = &definition.trigger {
@@ -241,7 +327,7 @@ pub fn validate(definition: &wire::WorkflowDefinition, context: &ValidationConte
             return Err(format!("Bridge could not check Claude's connectors just now ({problem}). Try again in a moment."));
         }
         if !context.servers.contains(server) {
-            return Err(format!("`{server}` is not a connector `{harness}` is configured with"));
+            return Err(format!("`{server}` is not a connector Claude is configured with"));
         }
         // Tools are matched by the server's name inside `mcp__<server>__<tool>`.
         // Two servers that spell the same there would share one grant.
@@ -270,7 +356,7 @@ pub fn validate(definition: &wire::WorkflowDefinition, context: &ValidationConte
     if definition.expected_result.chars().count() > MAX_EXPECTED_RESULT_CHARS {
         return Err(format!("The expected result is at most {MAX_EXPECTED_RESULT_CHARS} characters"));
     }
-    Ok(())
+    validate_step_authority(definition)
 }
 
 /// The same bounds Work briefings enforce, for the same reasons.
@@ -336,12 +422,25 @@ pub fn widens(previous: &wire::WorkflowDefinition, next: &wire::WorkflowDefiniti
     if previous.project_id != next.project_id {
         return true;
     }
-    let harness = |definition: &wire::WorkflowDefinition| definition.steps.first().map(|step| step.harness.clone());
-    if harness(previous) != harness(next) {
+    // Another agent anywhere, or a step added or removed: a new agent run
+    // with the workflow's authority.
+    let agents = |definition: &wire::WorkflowDefinition| definition.steps.iter().map(|step| step.harness.clone()).collect::<Vec<_>>();
+    if agents(previous) != agents(next) {
         return true;
     }
     if previous.files == wire::WorkflowFiles::None && next.files == wire::WorkflowFiles::Worktree {
         return true;
+    }
+    // Each step keeps to what it had: a step that gains a server, or moves
+    // into the worktree, touches more.
+    for index in 0..next.steps.len() {
+        let before: BTreeSet<String> = step_servers(previous, index).into_iter().collect();
+        if step_servers(next, index).iter().any(|server| !before.contains(server)) {
+            return true;
+        }
+        if step_files(previous, index) == wire::WorkflowFiles::None && step_files(next, index) == wire::WorkflowFiles::Worktree {
+            return true;
+        }
     }
     // An event trigger starts runs from what other people write: turning one
     // on, or pointing it at another event, repository, channel or sender,
@@ -789,6 +888,8 @@ pub(crate) mod test_support {
                 model: "haiku".into(),
                 effort: None,
                 instructions: "Summarise my Slack mentions.".into(),
+                servers: None,
+                files: None,
             }],
             trigger: wire::WorkflowTrigger::Schedule { cron: "0 9 * * 1-5".into(), timezone: "UTC".into() },
             grants: vec![wire::WorkflowGrant { server: "claude_ai_Slack".into(), read: true, write: wire::WorkflowWriteAccess::Never }],
@@ -803,6 +904,37 @@ pub(crate) mod test_support {
             },
             expected_result: String::new(),
             notify: wire::WorkflowNotify::default(),
+        }
+    }
+
+    /// Three steps on a project: Claude reads Slack, Codex works in the
+    /// worktree with no connectors, Claude sends through Gmail.
+    pub(crate) fn three_steps() -> bridge_protocol::messages::WorkflowDefinition {
+        use bridge_protocol::messages as wire;
+        let step = |harness: &str, model: &str, instructions: &str, servers: &[&str], files: wire::WorkflowFiles| wire::WorkflowStep {
+            harness: wire::HarnessId::parse(harness).unwrap(),
+            model: model.into(),
+            effort: None,
+            instructions: instructions.into(),
+            servers: Some(servers.iter().map(|server| (*server).to_owned()).collect()),
+            files: Some(files),
+        };
+        wire::WorkflowDefinition {
+            name: "Fix what Slack asks".into(),
+            project_id: Some("project-1".into()),
+            steps: vec![
+                step("claude", "haiku", "Read today's bug reports in Slack.", &["claude_ai_Slack"], wire::WorkflowFiles::None),
+                step("codex", "gpt-5.5", "Fix the bugs the reports describe.", &[], wire::WorkflowFiles::Worktree),
+                step("claude", "sonnet", "Email the reporters what changed.", &["claude_ai_Gmail"], wire::WorkflowFiles::None),
+            ],
+            trigger: wire::WorkflowTrigger::Manual,
+            grants: vec![
+                wire::WorkflowGrant { server: "claude_ai_Slack".into(), read: true, write: wire::WorkflowWriteAccess::Never },
+                wire::WorkflowGrant { server: "claude_ai_Gmail".into(), read: true, write: wire::WorkflowWriteAccess::Ask },
+            ],
+            always_allow: vec!["mcp__claude_ai_Gmail__send_email".into()],
+            files: wire::WorkflowFiles::Worktree,
+            ..definition()
         }
     }
 
@@ -856,6 +988,8 @@ mod tests {
                 model: "haiku".into(),
                 effort: None,
                 instructions: "Summarise my Slack mentions.".into(),
+                servers: None,
+                files: None,
             }],
             trigger: wire::WorkflowTrigger::Schedule { cron: "0 9 * * 1-5".into(), timezone: "Asia/Kolkata".into() },
             grants: vec![wire::WorkflowGrant {
@@ -1120,8 +1254,8 @@ mod tests {
         let cases: Vec<(&str, Box<dyn Fn(&mut wire::WorkflowDefinition)>)> = vec![
             ("needs a name", Box::new(|d| d.name = "  ".into())),
             ("at most 80", Box::new(|d| d.name = "x".repeat(81))),
-            ("exactly one step", Box::new(|d| { let step = d.steps[0].clone(); d.steps.push(step); })),
-            ("exactly one step", Box::new(|d| d.steps.clear())),
+            ("at most 5 steps", Box::new(|d| { let step = d.steps[0].clone(); d.steps = vec![step; 6]; })),
+            ("at least one step", Box::new(|d| d.steps.clear())),
             ("not a registered agent", Box::new(|d| d.steps[0].harness = wire::HarnessId::parse("nope").unwrap())),
             ("Choose a model", Box::new(|d| d.steps[0].model = " ".into())),
             ("not a model", Box::new(|d| d.steps[0].model = "opus-9".into())),
@@ -1153,20 +1287,127 @@ mod tests {
     }
 
     #[test]
-    fn non_claude_worktree_jobs_are_refused_until_they_can_isolate_connectors() {
+    fn worktree_jobs_run_on_claude_or_codex_and_nothing_else() {
         let mut job = definition();
         job.project_id = Some("p".into());
         job.files = wire::WorkflowFiles::Worktree;
         job.grants.clear();
-        for harness in ["codex", "opencode"] {
-            job.steps[0].harness = wire::HarnessId::parse(harness).unwrap();
-            job.steps[0].model = "test-model".into();
-            assert!(validate(&job, &context()).unwrap_err().contains("cannot run this workflow"));
-            assert!(crate::workflow_run::policy_for_definition(&job).is_err(), "saved legacy definitions must fail closed too");
-        }
+        job.steps[0].harness = wire::HarnessId::parse("opencode").unwrap();
+        job.steps[0].model = "test-model".into();
+        assert!(validate(&job, &context()).unwrap_err().contains("cannot run this workflow"));
+        assert!(crate::workflow_run::policy_for_definition(&job).is_err(), "saved legacy definitions must fail closed too");
+        // Codex launches a worktree step with every connector off, so it may
+        // run one, with no Claude policy to carry.
+        job.steps[0].harness = wire::HarnessId::parse("codex").unwrap();
+        assert_eq!(validate(&job, &context()), Ok(()));
+        assert!(crate::workflow_run::policy_for_definition(&job).unwrap().is_none());
         job.steps[0].harness = wire::HarnessId::parse("claude").unwrap();
         job.steps[0].model = "haiku".into();
         assert_eq!(validate(&job, &context()), Ok(()));
+        assert!(crate::workflow_run::policy_for_definition(&job).unwrap().is_some());
+    }
+
+    fn multi_context() -> ValidationContext {
+        let mut context = context();
+        context.servers.insert("claude_ai_Gmail".to_owned());
+        context
+    }
+
+    #[test]
+    fn a_workflow_of_several_steps_is_checked_step_by_step() {
+        let ok = test_support::three_steps();
+        assert_eq!(validate(&ok, &multi_context()), Ok(()));
+        let cases: Vec<(&str, Box<dyn Fn(&mut wire::WorkflowDefinition)>)> = vec![
+            ("Step 2: Choose a model", Box::new(|d| d.steps[1].model = " ".into())),
+            ("Step 3: Tell the workflow what to do", Box::new(|d| d.steps[2].instructions = " ".into())),
+            ("Step 1: `nope` is not a registered agent", Box::new(|d| d.steps[0].harness = wire::HarnessId::parse("nope").unwrap())),
+            ("Step 1: it uses `claude_ai_Linear`, which the workflow does not grant", Box::new(|d| d.steps[0].servers = Some(vec!["claude_ai_Linear".into()]))),
+            ("Step 3: `claude_ai_Gmail` is listed twice", Box::new(|d| d.steps[2].servers = Some(vec!["claude_ai_Gmail".into(), "claude_ai_Gmail".into()]))),
+            ("`claude_ai_Gmail` is granted, but no step uses it", Box::new(|d| d.steps[2].servers = Some(vec!["claude_ai_Slack".into()]))),
+            ("Step 2: a step that works in the worktree uses no connectors", Box::new(|d| d.steps[1].servers = Some(vec!["claude_ai_Slack".into()]))),
+            ("Step 2: a step that works in the worktree uses no connectors", Box::new(|d| d.steps[1].servers = None)),
+            ("Step 1: `codex` cannot run this workflow", Box::new(|d| d.steps[0].harness = wire::HarnessId::parse("codex").unwrap())),
+            ("Step 2: `opencode` cannot run this workflow", Box::new(|d| d.steps[1].harness = wire::HarnessId::parse("opencode").unwrap())),
+            ("No step works in the worktree", Box::new(|d| {
+                d.steps[1].harness = wire::HarnessId::parse("claude").unwrap();
+                d.steps[1].model = "haiku".into();
+                d.steps[1].files = Some(wire::WorkflowFiles::None);
+            })),
+            ("turn file access on", Box::new(|d| d.files = wire::WorkflowFiles::None)),
+            ("A worktree needs a project", Box::new(|d| d.project_id = None)),
+        ];
+        for (needle, change) in cases {
+            let mut candidate = test_support::three_steps();
+            change(&mut candidate);
+            let error = validate(&candidate, &multi_context()).unwrap_err();
+            assert!(error.contains(needle), "expected `{needle}`, got `{error}`");
+        }
+        // Codex at step 2 may work in the worktree: no connectors, no policy.
+        let mut codex_last = test_support::three_steps();
+        codex_last.steps.swap(1, 2);
+        assert_eq!(validate(&codex_last, &multi_context()), Ok(()));
+    }
+
+    #[test]
+    fn a_single_step_keeps_its_own_messages() {
+        let mut job = definition();
+        job.project_id = Some("p".into());
+        job.files = wire::WorkflowFiles::Worktree;
+        let error = validate(&job, &context()).unwrap_err();
+        assert_eq!(error, "A worktree workflow uses no connectors for now; remove the connectors or turn file access off");
+        job.files = wire::WorkflowFiles::None;
+        job.steps[0].model = " ".into();
+        assert_eq!(validate(&job, &context()).unwrap_err(), "Choose a model for the workflow's agent", "no step label with one step");
+    }
+
+    #[test]
+    fn a_step_that_touches_more_clears_approval_and_rewording_does_not() {
+        let before = test_support::three_steps();
+        let widening: Vec<(&str, Box<dyn Fn(&mut wire::WorkflowDefinition)>)> = vec![
+            ("another agent at step 3", Box::new(|d| d.steps[2].harness = wire::HarnessId::parse("codex").unwrap())),
+            ("a step added", Box::new(|d| { let step = d.steps[0].clone(); d.steps.push(step); })),
+            ("a step removed", Box::new(|d| { d.steps.pop(); })),
+            ("steps swapped", Box::new(|d| d.steps.swap(0, 1))),
+            ("step 1 gains Gmail", Box::new(|d| d.steps[0].servers = Some(vec!["claude_ai_Slack".into(), "claude_ai_Gmail".into()]))),
+            ("step 1 gains every grant", Box::new(|d| d.steps[0].servers = None)),
+            ("step 3 moves into the worktree", Box::new(|d| { d.steps[2].servers = Some(vec![]); d.steps[2].files = Some(wire::WorkflowFiles::Worktree); })),
+        ];
+        for (label, change) in widening {
+            let mut after = before.clone();
+            change(&mut after);
+            assert!(widens(&before, &after), "{label} must clear approval");
+        }
+        let keeping: Vec<(&str, Box<dyn Fn(&mut wire::WorkflowDefinition)>)> = vec![
+            ("reworded", Box::new(|d| d.steps[1].instructions = "Fix only the login bug.".into())),
+            ("another model", Box::new(|d| d.steps[2].model = "haiku".into())),
+            ("step 1 drops Slack", Box::new(|d| d.steps[0].servers = Some(vec![]))),
+            ("step 2 leaves the worktree", Box::new(|d| d.steps[1].files = Some(wire::WorkflowFiles::None))),
+        ];
+        for (label, change) in keeping {
+            let mut after = before.clone();
+            change(&mut after);
+            assert!(!widens(&before, &after), "{label} must keep approval");
+        }
+    }
+
+    #[test]
+    fn a_phase_one_definition_reads_back_byte_for_byte() {
+        let stored = serde_json::to_value(definition()).unwrap();
+        assert!(stored["steps"][0].get("servers").is_none() && stored["steps"][0].get("files").is_none());
+        let reread: wire::WorkflowDefinition = serde_json::from_value(stored.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&reread).unwrap(), stored);
+        assert_eq!(digest(&reread).unwrap(), digest(&definition()).unwrap());
+    }
+
+    #[test]
+    fn codex_never_runs_a_step_with_connectors_or_without_files() {
+        let mut job = definition();
+        job.steps[0].harness = wire::HarnessId::parse("codex").unwrap();
+        job.steps[0].model = "test-model".into();
+        assert!(validate(&job, &context()).unwrap_err().contains("cannot run this workflow"), "with a connector");
+        job.grants.clear();
+        assert!(validate(&job, &context()).unwrap_err().contains("cannot run this workflow"), "with no files at all");
+        assert!(crate::workflow_run::policy_for_definition(&job).is_err());
     }
 
     #[test]
@@ -1176,7 +1417,7 @@ mod tests {
         let claude = options.iter().find(|harness| harness.id == "claude").unwrap();
         assert!(claude.connectors_allowed && claude.worktree_allowed);
         let codex = options.iter().find(|harness| harness.id == "codex").unwrap();
-        assert!(!codex.worktree_allowed, "save refuses a Codex worktree workflow, so it is not offered");
+        assert!(codex.worktree_allowed && !codex.connectors_allowed, "Codex is offered for worktree steps only");
         assert!(codex.connectors_reason.as_deref().is_some_and(|reason| !reason.is_empty()), "with the gate's reason");
         let mut job = definition();
         job.project_id = Some("p".into());

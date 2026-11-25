@@ -638,6 +638,67 @@ fn e8_a_linear_assignment_found_by_the_app_read_starts_one_run() {
 }
 
 #[test]
+fn e9_two_steps_run_in_order_each_with_its_own_connector_and_the_first_one_hands_off() {
+    fake_model();
+    let fixture = tempfile::tempdir().unwrap();
+    seed_data_dir(fixture.path());
+    let running = RunningDaemon::start(fixture.path());
+    let mut rpc = running.rpc();
+    let options = rpc.call("workflows/workflow_options", Value::Null);
+    let claude = options["harnesses"].as_array().unwrap().iter().find(|harness| harness["id"] == json!("claude")).unwrap().clone();
+    let models: Vec<String> = claude["models"].as_array().unwrap().iter().filter_map(|model| model["id"].as_str().map(str::to_owned)).collect();
+    let first_model = claude_model(&mut rpc);
+    let second_model = models.iter().find(|model| **model != first_model).cloned().unwrap_or_else(|| first_model.clone());
+    let definition = |marker: &str, name: &str| json!({
+        "name": name,
+        "steps": [
+            { "harness": "claude", "model": first_model, "instructions": format!("{marker} Read today's bug reports."), "servers": ["claude.ai Slack"] },
+            { "harness": "claude", "model": second_model, "instructions": "E2E:step-write File one Linear issue for them.", "servers": ["claude.ai Linear"] },
+        ],
+        "trigger": { "kind": "manual" },
+        "files": "none",
+        "grants": [
+            { "server": "claude.ai Slack", "read": true, "write": "never" },
+            { "server": "claude.ai Linear", "read": false, "write": "ask" },
+        ],
+        "alwaysAllow": ["mcp__claude_ai_Linear__save_issue"],
+        "budget": budget(),
+    });
+
+    let workflow_id = save_and_approve(&mut rpc, definition("E2E:step-read", "Bugs from Slack"));
+    let started = rpc.call("workflows/run_workflow", json!({ "workflowId": workflow_id, "requestId": "two-steps" }));
+    let run_id = started["run"]["id"].as_str().unwrap().to_owned();
+    let run = rpc.wait_run(&workflow_id, &run_id, "the two-step run to finish", |run| run["status"] == json!("succeeded") || run["status"] == json!("failed"));
+    assert_eq!(run["status"], json!("succeeded"), "{run}");
+    let steps = run["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 2, "{run}");
+    assert_eq!((steps[0]["index"].clone(), steps[0]["model"].clone(), steps[0]["status"].clone()), (json!(0), json!(first_model), json!("succeeded")));
+    assert_eq!((steps[1]["index"].clone(), steps[1]["model"].clone(), steps[1]["status"].clone()), (json!(1), json!(second_model), json!("succeeded")));
+    assert_ne!(steps[0]["sessionId"], steps[1]["sessionId"], "each step has its own session");
+    assert_eq!(run["sessionId"], steps[1]["sessionId"], "the run follows its current step");
+    assert!(steps[0]["finishedAt"].as_str().unwrap() <= steps[1]["startedAt"].as_str().unwrap(), "in order: {run}");
+    // Step 1's summary reached step 2 as data, and the run reports step 2's.
+    assert_eq!(steps[0]["summary"], json!("Two bugs: login and export."));
+    assert_eq!(run["summary"], json!("Filed an issue. Step 1 said: Two bugs: login and export."), "{run}");
+    // Slack was step 1's alone; Linear's always-allowed write ran once, in step 2.
+    let folder = session_cwd(&running.daemon, steps[1]["sessionId"].as_str().unwrap());
+    assert_eq!(writes(&folder), ["step 1 read slack", "save_issue"], "step 2 could not reach Slack");
+
+    // A first step that does not finish stops the run: step 2 never starts.
+    let stopped_id = save_and_approve(&mut rpc, definition("E2E:step-read E2E:step-fail", "Quiet Slack"));
+    let started = rpc.call("workflows/run_workflow", json!({ "workflowId": stopped_id, "requestId": "stops" }));
+    let stopped_run = started["run"]["id"].as_str().unwrap().to_owned();
+    let run = rpc.wait_run(&stopped_id, &stopped_run, "the stopped run to settle", |run| run["status"] == json!("failed") || run["status"] == json!("succeeded"));
+    assert_eq!(run["status"], json!("failed"), "{run}");
+    assert_eq!(run["failureCode"], json!("not_done"));
+    assert_eq!(run["summary"], json!("Step 1 of 2: Slack had nothing to act on."), "{run}");
+    assert_eq!(run["steps"].as_array().unwrap().len(), 1, "{run}");
+    let folder = session_cwd(&running.daemon, run["steps"][0]["sessionId"].as_str().unwrap());
+    assert!(!writes(&folder).contains(&"save_issue".to_owned()));
+    running.stop();
+}
+
+#[test]
 fn e7_a_burst_of_runs_never_exceeds_the_cap_and_every_run_finishes() {
     fake_model();
     let fixture = tempfile::tempdir().unwrap();

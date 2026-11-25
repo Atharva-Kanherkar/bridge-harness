@@ -634,7 +634,7 @@ impl Choices {
             _ => Some(self.pick(&SKILLS)),
         };
         let codex_skills_off = self.pick(&SKILLS);
-        ToolLaunch { revision: 1, harness: harness.to_owned(), servers_off, codex_apps_off, claude_skills, codex_skills_off, effective_hash: String::new(), stored_hash: String::new() }
+        ToolLaunch { revision: 1, harness: harness.to_owned(), servers_off, codex_apps_off, claude_skills, codex_skills_off, effective_hash: String::new(), stored_hash: String::new(), connectors_off: false }
     }
 }
 

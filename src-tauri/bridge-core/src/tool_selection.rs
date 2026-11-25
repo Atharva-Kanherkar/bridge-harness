@@ -23,6 +23,10 @@ pub const MAX_ROW_BYTES: usize = 64 * 1024;
 pub const CODEX_APPS: &str = "codex_apps";
 /// The one Codex value that turns off `codex_apps`, with each app inside it.
 pub const CODEX_APPS_OFF: &str = "features.apps=false";
+/// The Codex features that bring MCP servers no config entry names: plugins,
+/// account-level remote plugins that load after the thread starts, and MCP
+/// servers a skill installs. A connectors-off launch turns each off.
+pub const CODEX_CONNECTOR_FEATURES: [&str; 3] = ["plugins", "remote_plugin", "skill_mcp_dependency_install"];
 const MAX_ID_BYTES: usize = 128;
 const MAX_SERVERS: usize = 128;
 const MAX_SKILLS: usize = 384;
@@ -478,6 +482,11 @@ pub struct ToolLaunch {
     /// The hash of the stored choice. It differs from `effective_hash` when
     /// the launch cannot apply a part of the choice.
     pub stored_hash: String,
+    /// A workflow step on Codex: every MCP server off, found from Codex's
+    /// own config at launch, and apps, plugins and skill-installed servers
+    /// off, all checked before the step works. Never set from a stored chat
+    /// choice.
+    pub connectors_off: bool,
 }
 
 impl ToolLaunch {
@@ -501,6 +510,24 @@ impl ToolLaunch {
             codex_skills_off,
             stored_hash: effective_hash.clone(),
             effective_hash,
+            connectors_off: false,
+        }
+    }
+
+    /// The launch of a workflow step on `harness` with every connector off.
+    /// Only the Codex adapter reads it; see `codex_adapter::connectors_off`.
+    pub fn connectors_off(harness: &str) -> Self {
+        let effective_hash = hash_of(harness, &[], true, None, &[]);
+        Self {
+            revision: 0,
+            harness: harness.to_owned(),
+            servers_off: Vec::new(),
+            codex_apps_off: true,
+            claude_skills: None,
+            codex_skills_off: Vec::new(),
+            stored_hash: effective_hash.clone(),
+            effective_hash,
+            connectors_off: true,
         }
     }
 
@@ -987,6 +1014,9 @@ pub fn codex_overrides(tools: &ToolLaunch) -> Vec<String> {
         .collect();
     if tools.codex_apps_off {
         values.push(CODEX_APPS_OFF.to_owned());
+    }
+    if tools.connectors_off {
+        values.extend(CODEX_CONNECTOR_FEATURES.iter().map(|feature| format!("features.{feature}=false")));
     }
     if !tools.codex_skills_off.is_empty() {
         let entries: Vec<String> =

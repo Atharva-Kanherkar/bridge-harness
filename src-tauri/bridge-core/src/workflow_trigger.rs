@@ -188,6 +188,7 @@ fn read_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<wire::WorkflowRun> {
         created_at: row.get(17)?,
         event: None,
         event_count: 0,
+        steps: Vec::new(),
     })
     .map(|mut run| {
         let events = carried_events(row.get::<_, Option<String>>(18).ok().flatten().as_deref());
@@ -208,8 +209,17 @@ pub fn run_events(db: &Connection, run_id: &str) -> Result<Vec<wire::WorkflowEve
     Ok(carried_events(text.as_deref()))
 }
 
+/// A run with its started steps.
+fn with_steps(db: &Connection, mut run: wire::WorkflowRun) -> Result<wire::WorkflowRun, BridgeError> {
+    run.steps = crate::workflow_steps::list(db, &run.id)?;
+    Ok(run)
+}
+
 pub fn get_run(db: &Connection, run_id: &str) -> Result<Option<wire::WorkflowRun>, BridgeError> {
-    Ok(db.query_row(&format!("{SELECT_RUN} WHERE id=?1"), params![run_id], read_run).optional()?)
+    db.query_row(&format!("{SELECT_RUN} WHERE id=?1"), params![run_id], read_run)
+        .optional()?
+        .map(|run| with_steps(db, run))
+        .transpose()
 }
 
 pub fn require_run(db: &Connection, run_id: &str) -> Result<wire::WorkflowRun, BridgeError> {
@@ -218,19 +228,21 @@ pub fn require_run(db: &Connection, run_id: &str) -> Result<wire::WorkflowRun, B
 
 /// The newest run of a workflow, skipped runs included.
 pub fn latest_run(db: &Connection, workflow_id: &str) -> Result<Option<wire::WorkflowRun>, BridgeError> {
-    Ok(db
-        .query_row(
-            &format!("{SELECT_RUN} WHERE workflow_id=?1 ORDER BY created_at DESC, rowid DESC LIMIT 1"),
-            params![workflow_id],
-            read_run,
-        )
-        .optional()?)
+    db.query_row(
+        &format!("{SELECT_RUN} WHERE workflow_id=?1 ORDER BY created_at DESC, rowid DESC LIMIT 1"),
+        params![workflow_id],
+        read_run,
+    )
+    .optional()?
+    .map(|run| with_steps(db, run))
+    .transpose()
 }
 
 pub(crate) fn active_run(db: &Connection, workflow_id: &str) -> Result<Option<wire::WorkflowRun>, BridgeError> {
-    Ok(db
-        .query_row(&format!("{SELECT_RUN} WHERE workflow_id=?1 AND status IN {ACTIVE}"), params![workflow_id], read_run)
-        .optional()?)
+    db.query_row(&format!("{SELECT_RUN} WHERE workflow_id=?1 AND status IN {ACTIVE}"), params![workflow_id], read_run)
+        .optional()?
+        .map(|run| with_steps(db, run))
+        .transpose()
 }
 
 /// Runs newest first, optionally for one workflow or unread only.
@@ -250,7 +262,7 @@ pub fn list_runs(
     let runs = statement
         .query_map(params![workflow_id, unread_only, limit], read_run)?
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(runs)
+    runs.into_iter().map(|run| with_steps(db, run)).collect()
 }
 
 // --- claim -----------------------------------------------------------------------
@@ -526,6 +538,9 @@ pub fn finish(
             stamp(now),
         ],
     )?;
+    if changed == 1 {
+        crate::workflow_steps::close_open(db, run_id, status, outcome.failure_code.as_deref(), now)?;
+    }
     Ok(changed == 1)
 }
 
@@ -541,7 +556,7 @@ pub fn reclaim_expired(db: &Connection, now: DateTime<Utc>) -> Result<Vec<String
         .collect::<Result<Vec<_>, _>>()?;
     let mut reclaimed = Vec::new();
     for (id, expiry, session_id) in expired {
-        let usage = session_id.as_deref().map(|id| crate::workflow_run::usage_used(db, id)).transpose()?.unwrap_or_default();
+        let usage = crate::workflow_run::run_usage(db, &id, session_id.as_deref())?;
         let changed = db.execute(
             &format!(
                 "UPDATE workflow_runs SET status='failed', failure_code='lease_expired', lease_owner=NULL,
@@ -552,6 +567,7 @@ pub fn reclaim_expired(db: &Connection, now: DateTime<Utc>) -> Result<Vec<String
             params![id, expiry, stamp(now), usage.tokens, usage.cost_microusd],
         )?;
         if changed == 1 {
+            crate::workflow_steps::close_open(db, &id, wire::WorkflowRunStatus::Failed, Some("lease_expired"), now)?;
             reclaimed.push(id);
         }
     }
@@ -583,7 +599,7 @@ pub fn settle_interrupted(db: &Connection, now: DateTime<Utc>) -> Result<Vec<Str
         .collect::<Result<Vec<_>, _>>()?;
     let mut settled = Vec::new();
     for (id, session_id) in leased {
-        let usage = session_id.as_deref().map(|id| crate::workflow_run::usage_used(db, id)).transpose()?.unwrap_or_default();
+        let usage = crate::workflow_run::run_usage(db, &id, session_id.as_deref())?;
         let changed = db.execute(
             &format!(
                 "UPDATE workflow_runs SET status='failed', failure_code=?2, summary=?3, lease_owner=NULL,
@@ -600,6 +616,7 @@ pub fn settle_interrupted(db: &Connection, now: DateTime<Utc>) -> Result<Vec<Str
             ],
         )?;
         if changed == 1 {
+            crate::workflow_steps::close_open(db, &id, wire::WorkflowRunStatus::Failed, Some(INTERRUPTED), now)?;
             settled.push(id);
         }
     }
@@ -778,7 +795,7 @@ pub fn queue_positions(db: &Connection) -> Result<Vec<String>, BridgeError> {
 /// holder learns on its next heartbeat, which fails because the lease is gone.
 pub fn cancel(db: &Connection, run_id: &str, now: DateTime<Utc>) -> Result<wire::WorkflowRun, BridgeError> {
     let run = require_run(db, run_id)?;
-    let usage = run.session_id.as_deref().map(|id| crate::workflow_run::usage_used(db, id)).transpose()?.unwrap_or_default();
+    let usage = crate::workflow_run::run_usage(db, run_id, run.session_id.as_deref())?;
     let changed = db.execute(
         &format!(
             "UPDATE workflow_runs SET status='cancelled', lease_owner=NULL, lease_expires_at=NULL, finished_at=?2,
@@ -787,6 +804,9 @@ pub fn cancel(db: &Connection, run_id: &str, now: DateTime<Utc>) -> Result<wire:
         ),
         params![run_id, stamp(now), usage.tokens, usage.cost_microusd],
     )?;
+    if changed == 1 {
+        crate::workflow_steps::close_open(db, run_id, wire::WorkflowRunStatus::Cancelled, None, now)?;
+    }
     let run = require_run(db, run_id)?;
     if changed == 0 {
         return Err(BridgeError::Invalid(format!("workflow run {run_id} already finished")));
@@ -979,16 +999,24 @@ fn tick_with_provider_snapshots(
         let db = core.db.lock().unwrap();
         let reserve = read_settings(&db).ok().map(|stored| stored.settings.quota_reserve_percent);
         for claimed in &mut claimed {
-            let harness = db.query_row(
-                "SELECT json_extract(definition,'$.steps[0].harness') FROM workflow_revisions WHERE id=?1",
-                params![claimed.run.revision_id],
-                |row| row.get::<_, String>(0),
-            ).ok();
+            // Every step's agent: a run waits while any of their plans is
+            // above the reserve.
+            let harnesses = db
+                .prepare(
+                    "SELECT DISTINCT json_extract(step.value,'$.harness')
+                     FROM workflow_revisions, json_each(workflow_revisions.definition,'$.steps') AS step
+                     WHERE workflow_revisions.id=?1",
+                )
+                .and_then(|mut statement| {
+                    statement.query_map(params![claimed.run.revision_id], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()
+                })
+                .ok()
+                .filter(|harnesses| !harnesses.is_empty());
             // Claims already committed. A corrupt revision/settings payload
             // must not strand this batch until lease expiry; the runner can
             // fail that revision independently and still dispatch the others.
-            claimed.quota_verdict = Some(match (reserve, harness) {
-                (Some(reserve), Some(harness)) => crate::workflow_run::quota_for_provider(overviews.as_ref(), &harness, reserve),
+            claimed.quota_verdict = Some(match (reserve, harnesses) {
+                (Some(reserve), Some(harnesses)) => crate::workflow_run::quota_for_providers(overviews.as_ref(), &harnesses, reserve),
                 _ => crate::workflow_run::QuotaVerdict::Proceed { unknown: true },
             });
         }

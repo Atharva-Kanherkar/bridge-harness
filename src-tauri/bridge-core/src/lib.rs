@@ -244,6 +244,7 @@ pub mod work_briefing_live;
 pub mod work_briefing_trigger;
 pub mod work_connectors;
 pub mod workflow_schedule;
+pub mod workflow_steps;
 pub mod workflow_templates;
 pub mod workflow_draft;
 pub mod workflow_events;

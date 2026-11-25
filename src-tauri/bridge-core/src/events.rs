@@ -557,6 +557,7 @@ mod tests {
             created_at: "2026-10-29T09:00:01.000Z".into(),
             event: None,
             event_count: 0,
+            steps: vec![],
         }
     }
 

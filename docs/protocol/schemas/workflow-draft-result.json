@@ -274,13 +274,24 @@
     },
     "WorkflowStep": {
       "additionalProperties": false,
-      "description": "One step of a workflow. Phase 1 accepts exactly one.",
+      "description": "One step of a workflow. Steps run in order, each in its own session.",
       "properties": {
         "effort": {
           "type": [
             "string",
             "null"
           ]
+        },
+        "files": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WorkflowFiles"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Whether this step works in the run's worktree. Unset means the workflow's own `files`."
         },
         "harness": {
           "$ref": "#/definitions/HarnessId"
@@ -290,6 +301,16 @@
         },
         "model": {
           "type": "string"
+        },
+        "servers": {
+          "description": "The workflow's granted servers this step may use. Unset means every grant, as in a single-step workflow.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         }
       },
       "required": [
