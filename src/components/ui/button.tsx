@@ -26,6 +26,9 @@ export const buttonVariants = cva(
           "size-11 sm:size-10 [&_svg:not([class*='size-'])]:size-5 sm:[&_svg:not([class*='size-'])]:size-4.5",
         "2xs":
           "h-6 gap-1 rounded-md px-[calc(--spacing(1.5)-1px)] text-caption before:rounded-[calc(var(--radius-md)-1px)] [&_svg:not([class*='size-'])]:size-3.5",
+        // Inside a 24px pill or chip.
+        "icon-3xs":
+          "size-5 rounded-sm before:rounded-[calc(var(--radius-sm)-1px)] [&_svg:not([class*='size-'])]:size-3",
         "icon-2xs":
           "size-6 rounded-md before:rounded-[calc(var(--radius-md)-1px)] [&_svg:not([class*='size-'])]:size-3.5",
         // Sits in a line of text: no box of its own, so it takes the text's size.

@@ -36,6 +36,8 @@ export const rowVariants = cva(
           "text-foreground hover:bg-accent data-[active=true]:bg-selection data-[active=true]:text-selection-foreground data-[active=true]:hover:bg-selection aria-selected:bg-selection aria-selected:text-selection-foreground aria-selected:hover:bg-selection",
         // A vertical tab list: the selected tab is raised like a segmented item.
         tab: "text-foreground hover:bg-accent aria-selected:bg-card aria-selected:shadow-control aria-selected:hover:bg-card",
+        // A choice card: bordered, and marked when checked or pressed.
+        choice: "border border-border text-foreground hover:border-foreground/25 hover:bg-accent aria-checked:border-info/60 aria-checked:bg-info/10 aria-checked:hover:bg-info/10 aria-pressed:border-info/60 aria-pressed:bg-info/10",
         // A raised card that fills on hover.
         surface: "u-surface text-foreground hover:bg-accent",
         // No fill at all; the content changes instead (a disclosure, a heading).
