@@ -125,7 +125,7 @@ describe("AgentChat", () => {
       vi.spyOn(bridgeApi, "sessionForest").mockResolvedValue({ entries: [], head: { activeEntryId: null } } as unknown as SessionForestSnapshot);
     });
 
-    it("shows a starting spinner with the worker's name and topic, not the chat greeting", async () => {
+    it("draws the reply it waits for as a skeleton named for the worker, not the chat greeting", async () => {
       await mount({
         session: worker({ status: "starting", title: "Rank the gateway repos" }),
         runtime: runtime({ lifecycleState: "starting" }),
@@ -133,9 +133,9 @@ describe("AgentChat", () => {
       const name = agentName("w1");
       const starting = container.querySelector(`[role="status"][aria-label="${name} is starting"]`);
       expect(starting).not.toBeNull();
-      expect(starting!.textContent).toContain("Rank the gateway repos");
-      expect(starting!.textContent).toContain("Waiting for its first message from Claude");
-      expect(starting!.querySelector("svg.animate-spin")).not.toBeNull();
+      expect(starting!.getAttribute("aria-busy")).toBe("true");
+      expect(starting!.textContent).toBe(`${name} is starting`);
+      expect(container.querySelector(".animate-spin")).toBeNull();
       expect(container.textContent).not.toContain("Say the word");
     });
 

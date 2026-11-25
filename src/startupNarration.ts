@@ -58,14 +58,11 @@ const MOUNTED_NONE: NarrationView = {
   reducedMotion: false,
 };
 
-/// No harness or model name in any label: the row's mark already says who.
-function phaseLabel(phase: SessionStartupPhase | null): string {
-  switch (phase) {
-    case "spawning": return "Starting…";
-    case "handshake": return "Connecting…";
-    case "session_open": return "Opening session…";
-    default: return "Thinking";
-  }
+/// One label for every startup phase: spawning, handshake and session open are
+/// Bridge's plumbing, and narrating each one was loading copy. The breathing
+/// mark and the elapsed counter already say the turn is alive.
+function phaseLabel(_phase: SessionStartupPhase | null): string {
+  return "Thinking";
 }
 
 export function computeNarration(input: NarrationInput): NarrationView {
@@ -80,7 +77,7 @@ export function computeNarration(input: NarrationInput): NarrationView {
     return {
       mounted: true,
       collapsed: false,
-      label: `Switching to ${switchingToLabel}…`,
+      label: `Switching to ${switchingToLabel}`,
       showElapsed: elapsedMs >= ELAPSED_VISIBLE_AFTER_MS,
       elapsedSeconds: Math.floor(elapsedMs / 1000),
       reducedMotion,
@@ -94,7 +91,7 @@ export function computeNarration(input: NarrationInput): NarrationView {
     return {
       mounted: true,
       collapsed: false,
-      label: "Compacting context…",
+      label: "Compacting context",
       showElapsed: elapsedMs >= ELAPSED_VISIBLE_AFTER_MS,
       elapsedSeconds: Math.floor(elapsedMs / 1000),
       reducedMotion,

@@ -4,6 +4,7 @@ import { bridgeApi } from "../../api";
 import type { VoiceLocalSetupState, VoiceLocalStatusResult } from "../../protocol/generated/protocol";
 import { VoiceMicrophoneTest } from "./VoiceMicrophoneTest";
 import { GhostButton, SettingsBlockRow, SettingsGroup, SettingsPage, SettingsRow, StatusPill, TextButton, type PillTone } from "./kit";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 const ACTIVE = new Set<VoiceLocalSetupState>(["downloadingRuntime", "downloadingModel", "installing"]);
 const STATE_LABEL: Record<VoiceLocalSetupState, string> = {
@@ -98,7 +99,7 @@ export function VoiceSettingsPage({ onError, onChanged }: {
     <SettingsGroup anchor="local-dictation" label="Local dictation" note="No account or API key required">
       <SettingsRow label="English speech model" description="English (en-US) · audio stays on this Mac"
         lead={<Mic size={14} strokeWidth={1.7} aria-hidden="true" />}
-        control={status ? <StatusPill tone={tone(status.state)}>{STATE_LABEL[status.state]}</StatusPill> : <StatusPill>{loadError ? "Unavailable" : "Checking…"}</StatusPill>} />
+        control={status ? <StatusPill tone={tone(status.state)}>{STATE_LABEL[status.state]}</StatusPill> : loadError ? <StatusPill>Unavailable</StatusPill> : <SkeletonRegion label="Checking voice"><Skeleton className="h-5 w-16 rounded-full" /></SkeletonRegion>} />
       {loadError && <SettingsBlockRow>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p role="alert" className="text-meta text-destructive">{loadError}</p>
@@ -111,9 +112,9 @@ export function VoiceSettingsPage({ onError, onChanged }: {
       {status && status.state !== "ready" && status.state !== "unsupported" && <SettingsBlockRow>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="text-meta text-muted-foreground">{bytes(status.downloadBytes)} download · about {bytes(status.installedBytes)} installed</p>
-          <GhostButton disabled={busy || active} onClick={() => void mutate("setup")}>
+          <GhostButton busy={busy} disabled={busy || active} onClick={() => void mutate("setup")}>
             {status.state === "failed" ? <RotateCcw size={12} aria-hidden="true" /> : <Download size={12} aria-hidden="true" />}
-            {busy ? "Starting…" : active ? STATE_LABEL[status.state] : status.state === "failed" ? "Retry download" : "Download and install"}
+            {active ? STATE_LABEL[status.state] : status.state === "failed" ? "Retry download" : "Download and install"}
           </GhostButton>
         </div>
         <p className="mt-2 text-caption leading-relaxed text-muted-foreground">NVIDIA Open Model License. <a href="https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/" target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-foreground">Review model terms</a> before installing.</p>
@@ -133,7 +134,7 @@ export function VoiceSettingsPage({ onError, onChanged }: {
         </dl>
       </SettingsBlockRow>}
       {status?.state === "ready" && <SettingsBlockRow>
-        <TextButton tone="destructive" disabled={busy || testing} onClick={() => void mutate("remove")}><Trash2 size={12} aria-hidden="true" />{busy ? "Removing…" : "Remove local model"}</TextButton>
+        <TextButton busy={busy} tone="destructive" disabled={busy || testing} onClick={() => void mutate("remove")}><Trash2 size={12} aria-hidden="true" />Remove local model</TextButton>
       </SettingsBlockRow>}
     </SettingsGroup>
   </SettingsPage>;

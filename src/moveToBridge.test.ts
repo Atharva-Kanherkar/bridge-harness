@@ -72,12 +72,12 @@ describe("Move to Bridge logic", () => {
     const start = Date.parse("2026-11-19T10:00:00Z");
     const at = (seconds: number) => start + seconds * 1000;
     const running = (processed: number, total: number) => job({ processed, total, startedAt: "2026-11-19T10:00:00Z" });
-    expect(timeLeft(running(0, 100), at(10))).toBe("Working out the time left…");
-    expect(timeLeft(running(5, 100), at(1))).toBe("Working out the time left…");
+    expect(timeLeft(running(0, 100), at(10))).toBe("Working out the time left");
+    expect(timeLeft(running(5, 100), at(1))).toBe("Working out the time left");
     expect(timeLeft(running(50, 100), at(20))).toBe("Less than a minute left");
     expect(timeLeft(running(1000, 33538), at(15))).toBe("About 8 minutes left");
     expect(timeLeft(running(100, 33538), at(30))).toBe("About 3 hours left");
     expect(timeLeft(running(100, 220), at(60))).toBe("About 1 minute left");
-    expect(timeLeft(running(100, 100), at(60))).toBe("Finishing up…");
+    expect(timeLeft(running(100, 100), at(60))).toBe("Finishing up");
   });
 });

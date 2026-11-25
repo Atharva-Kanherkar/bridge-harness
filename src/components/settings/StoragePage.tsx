@@ -14,7 +14,7 @@
 // person can drag the rail wider; its width is kept per Mac.
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
-import { Check, ChevronDown, ChevronRight, CircleAlert, CircleCheck, File, Folder, FolderOpen, LoaderCircle, Lock, MessageCircle, RefreshCw, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, CircleAlert, CircleCheck, File, Folder, FolderOpen, Lock, MessageCircle, RefreshCw, Trash2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi as api } from "../../api";
 import type { DiskDeleteResult, DiskEntry, DiskListing, DiskOverview, DiskSuggestion } from "../../types";
@@ -26,6 +26,7 @@ import { GhostButton, PrimaryButton, SETTINGS_COLUMN_WIDE, StatusPill, TextButto
 import type { StorageCopilotHost } from "./StorageCopilot";
 import { WorktreeStorage } from "./WorktreeStorage";
 import { PAGES } from "./sections";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 const POLL_MS = 1500;
 
@@ -458,7 +459,6 @@ function ConfirmDialog({ confirming, busy, home, onCancel, onPermanent, onRemove
     : permanent
       ? "This cannot be undone. Nothing goes to the Trash."
       : "You can put it back from the Trash until you empty it. The space comes back when you do.";
-  const spinner = <LoaderCircle size={14} aria-hidden="true" className="animate-spin" />;
   return <Dialog open={confirming !== null} onOpenChange={open => { if (!open && !busy) onCancel(); }}>
     <DialogContent aria-label="Confirm deletion" className="max-w-md" showCloseButton={false}>
       <DialogHeader>
@@ -483,18 +483,18 @@ function ConfirmDialog({ confirming, busy, home, onCancel, onPermanent, onRemove
         {emptying
           ? <>
             <Button variant="ghost" disabled={busy} onClick={onCancel}>Cancel</Button>
-            <Button variant="destructive" disabled={busy} onClick={onEmptyTrash}>{busy && spinner}{busy ? "Emptying…" : "Empty Trash"}</Button>
+            <Button variant="destructive" loading={busy} onClick={onEmptyTrash}>Empty Trash</Button>
           </>
           : permanent
             ? <>
               <Button variant="ghost" className="mr-auto" disabled={busy} onClick={() => onPermanent(false)}>Back</Button>
               <Button variant="ghost" disabled={busy} onClick={onCancel}>Cancel</Button>
-              <Button variant="destructive" disabled={busy} onClick={() => onRemove(entries, true)}>{busy && spinner}{busy ? "Deleting…" : "Delete permanently"}</Button>
+              <Button variant="destructive" loading={busy} onClick={() => onRemove(entries, true)}>Delete permanently</Button>
             </>
             : <>
               <Button variant="ghost" className="mr-auto text-destructive hover:text-destructive" disabled={busy} onClick={() => onPermanent(true)}>Delete permanently…</Button>
               <Button variant="ghost" disabled={busy} onClick={onCancel}>Cancel</Button>
-              <Button disabled={busy} onClick={() => onRemove(entries, false)}>{busy && spinner}{busy ? "Moving…" : "Move to Trash"}</Button>
+              <Button loading={busy} onClick={() => onRemove(entries, false)}>Move to Trash</Button>
             </>}
       </DialogFooter>
     </DialogContent>
@@ -708,12 +708,10 @@ export function StoragePage({ onError, title = PAGES.data.label, extra, copilot 
           <div className="min-w-0 flex-1">
             <h2 className="font-display text-title font-semibold leading-tight tracking-tight text-foreground">{title}</h2>
           </div>
-          {measuring && overview && <span role="status" className="flex items-center gap-1.5 pb-0.5 text-caption text-muted-foreground">
-            <LoaderCircle size={12} aria-hidden="true" className="animate-spin" />Updating sizes
-          </span>}
+          {measuring && overview && <SkeletonRegion label="Updating sizes" className="pb-1"><Skeleton className="h-2.5 w-20" /></SkeletonRegion>}
         </header>
         {error && <p role="alert" className="text-caption text-destructive">{error}</p>}
-        {!overview && !error && <div role="status" aria-label="Looking at your disk" className={cn(TILE, "h-40 motion-safe:animate-pulse")} />}
+        {!overview && !error && <SkeletonRegion label="Looking at your disk"><Skeleton className="h-40 rounded-xl" /></SkeletonRegion>}
         <DiskSummary overview={overview} home={home} onOpen={reveal} onEmptyTrash={() => setConfirming("empty-trash")} busy={busy} />
 
         {overview && <Suggestions overview={overview} onOpen={reveal} onDelete={entry => setConfirming({ entries: [entry], permanent: false })} onAsk={copilot ? item => askAbout(item.label, item.path, item.sizeBytes) : undefined} busy={busy} />}

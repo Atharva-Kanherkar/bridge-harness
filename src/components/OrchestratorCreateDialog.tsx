@@ -1,6 +1,8 @@
 import { GitBranch, GitFork } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { CreateDialogShell } from "./CreateDialogShell";
+import { pendingClass } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 
 export type OrchestratorCreateDialogProps = {
   open: boolean;
@@ -61,9 +63,9 @@ export function OrchestratorCreateDialog({
           <GitBranch className="h-4 w-4" aria-hidden="true" />
           Use current folder
         </button>
-        <button ref={primaryRef} type="button" disabled={busy || !canCreateWorktree} onClick={onCreateWorktree} className="flex items-center justify-center gap-2 min-h-8 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-30">
+        <button aria-busy={busy || undefined} ref={primaryRef} type="button" disabled={busy || !canCreateWorktree} onClick={onCreateWorktree} className={cn("flex items-center justify-center gap-2 min-h-8 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-30", pendingClass(busy))}>
           <GitFork className="h-4 w-4" aria-hidden="true" />
-          {busy ? "Creating…" : "Create worktree"}
+          Create worktree
         </button>
       </div>
       <p className="mt-3 text-meta leading-4 text-muted-foreground">The worktree starts from the repository’s current HEAD. Uncommitted changes are not copied.</p>

@@ -1,5 +1,4 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { LoaderCircle as CircleNotch } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { DetectedImportSource, ImportJob } from "../protocol/generated/protocol";
 import { finishedLabel, folderLabel, importPercent, newerJob, sourceSummary, timeLeft } from "../moveToBridge";
@@ -7,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { HarnessMark } from "./harnessMarks";
 import { ImportTransfer } from "./ImportTransfer";
 import { PrimaryButton, StatusPill } from "./settings/kit";
+import { SkeletonRows } from "@/components/ui/skeleton";
 
 // "Move to Bridge": every tool found on this Mac in its own section, with its
 // mark, what it holds, and its own Import button. A tool's import runs in
@@ -58,7 +58,7 @@ export function MoveToBridge({ onError }: { onError: (message: string) => void }
   const runningTool = Object.values(jobs).find(job => job.status === "running")?.tool ?? starting;
   return <div>
     <h2 className="mb-2 px-0.5 text-meta font-medium text-muted-foreground">Found on this Mac</h2>
-    {sources === null && <p className="flex items-center gap-2 px-0.5 text-meta text-muted-foreground"><CircleNotch size={12} strokeWidth={1.7} className="animate-spin" aria-hidden="true" />Looking for other tools…</p>}
+    {sources === null && <SkeletonRows label="Looking for other tools" rows={3} lead="icon" trailing />}
     <div className="space-y-3">
       {sources?.map(source => <ToolSection
         key={source.tool}
@@ -100,9 +100,8 @@ function ToolSection({ source, job, starting, otherRunning, onImport }: {
         {importable && otherRunning && !running && <p className="mt-1 text-caption text-muted-foreground">Waits for the import that is running.</p>}
       </div>
       {importable
-        ? <PrimaryButton disabled={running || starting || otherRunning} onClick={onImport}>
-            {(running || starting) && <CircleNotch size={12} strokeWidth={1.7} className="animate-spin" aria-hidden="true" />}
-            {running ? "Importing…" : job ? "Import again" : "Import"}
+        ? <PrimaryButton busy={running || starting} disabled={otherRunning} onClick={onImport}>
+            {job && !running ? "Import again" : "Import"}
           </PrimaryButton>
         : <StatusPill tone={source.installed ? "warning" : "neutral"}>{source.installed ? "Coming" : "Not found"}</StatusPill>}
     </div>
@@ -154,8 +153,7 @@ function ImportProgress({ job }: { job: ImportJob }) {
   const now = useNow();
   return <section aria-label="Import progress" data-import-job={job.status}>
     <div className="flex items-center gap-2 text-ui font-medium text-foreground">
-      <CircleNotch size={13} strokeWidth={1.8} className="animate-spin text-muted-foreground" aria-hidden="true" />
-      {counting ? "Finding your chats…" : "Bringing your chats over"}
+      {counting ? "Finding your chats" : "Bringing your chats over"}
       {!counting && <span className="ml-auto font-mono text-caption tabular-nums text-muted-foreground">{percent}%</span>}
     </div>
     <div className="mx-auto mt-4 max-w-md px-2"><ImportTransfer tool={job.tool} /></div>

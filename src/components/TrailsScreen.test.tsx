@@ -174,7 +174,7 @@ describe("TrailsScreen loading", () => {
     await settle();
     expect(refreshButton().getAttribute("aria-busy")).toBe("true");
     expect(refreshButton().disabled).toBe(true);
-    expect(refreshButton().querySelector("svg")?.getAttribute("class")).toContain("animate-spin");
+    expect(refreshButton().querySelector(".animate-spin")).toBeNull();
     // The page stays: no skeleton while GitHub answers.
     expect(host.querySelector("ol[aria-label=Timeline]")).not.toBeNull();
     expect(host.querySelector("[role=status]")).toBeNull();

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { Check, ChevronRight, CircleCheck, LoaderCircle, MessagesSquare, RotateCcw, SquareArrowOutUpRight } from "lucide-react";
+import { Check, ChevronRight, CircleCheck, MessagesSquare, RotateCcw, SquareArrowOutUpRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { relativeTime } from "../workDashboard";
@@ -9,6 +9,7 @@ import { Composer } from "./Composer";
 import { GithubMarkdown } from "./GithubMarkdown";
 import { hunkTail } from "./patch";
 import type { GithubAction, ReviewThread } from "../../protocol/generated/protocol";
+import { pendingClass } from "@/components/ui/skeleton";
 
 // Review conversations: the part of a pull request a reviewer works through
 // and closes. Each one is a card that says where it is, shows the lines it is
@@ -127,10 +128,11 @@ function ThreadCard({ thread, index, number, repositoryUrl, headBranch, checkedO
         {canToggle && <button
           type="button"
           disabled={busy}
+          aria-busy={busy || undefined}
           onClick={() => void toggle()}
-          className="inline-flex min-h-6 items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 text-caption font-medium text-foreground shadow-xs transition-[background-color,transform] hover:bg-accent active:scale-[0.97] disabled:opacity-60"
+          className={cn("inline-flex min-h-6 items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 text-caption font-medium text-foreground shadow-xs transition-[background-color,transform] hover:bg-accent active:scale-[0.97] disabled:opacity-60", pendingClass(busy))}
         >
-          {busy ? <LoaderCircle size={11} className="animate-spin" aria-hidden="true" /> : resolved ? <RotateCcw size={11} aria-hidden="true" /> : <CircleCheck size={11} aria-hidden="true" />}
+          {resolved ? <RotateCcw size={11} aria-hidden="true" /> : <CircleCheck size={11} aria-hidden="true" />}
           {resolved ? "Unresolve" : "Resolve"}
         </button>}
       </span>

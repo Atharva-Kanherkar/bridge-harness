@@ -62,7 +62,8 @@ describe("Run in terminal on chat code blocks", () => {
 
     act(() => runButton()!.click());
     expect(run).toHaveBeenCalledWith("bun install");
-    expect(runButton()?.textContent).toBe("Running…");
+    expect(runButton()?.textContent).toBe("Run");
+    expect(runButton()?.getAttribute("aria-busy")).toBe("true");
     expect(runButton()?.disabled).toBe(true);
 
     act(() => runButton()!.click());

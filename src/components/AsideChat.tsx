@@ -24,6 +24,7 @@ import { type ComposerAttachment, imageFilesFromClipboard, prepareImage } from "
 import { cn } from "@/lib/utils";
 import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session, SlashCommand } from "../types";
 import type { ChatSessionSettings, InteractionResolutionResult, QuestionAction, SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 // An aside: a standalone chat the user delegated to another agent from inside
 // a conversation, shown as a panel floating over that conversation instead of
@@ -50,7 +51,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
   /** Slash commands already loaded by the host; the aside does not refetch them. */
   slashCommands?: SlashCommand[];
   suggestionSettings?: SuggestionSettingsSnapshot;
-  /** This aside's model switch in flight, for the same "Switching to …"
+  /** This aside's model switch in flight, for the same "Switching to"
    *  narration the main conversation shows. */
   modelSwitch?: { harness: string; label: string } | null;
   lifecycle?: { phase: string; handoffStatus?: string; fidelity?: string; error?: string };
@@ -358,8 +359,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
               : lifecycle.handoffStatus === "carried" ? "Context carried" : "No prior context available"}
             {lifecycle.fidelity === "projected_at_boundary" ? " · projected at the handoff boundary" : ""}
           </p>}
-          {lifecycle?.phase === "switching" && <p className="mb-2 px-1 text-caption text-muted-foreground">Preparing a handoff and switching models. This can take up to 30 seconds…</p>}
-          {sending && <p className="mb-2 px-1 text-caption text-muted-foreground">Sending…</p>}
+          {(lifecycle?.phase === "switching" || sending) && <SkeletonRegion label={sending ? "Sending" : "Switching models"} className="mb-2 px-1"><Skeleton className="h-2.5 w-40" /></SkeletonRegion>}
           {queuedFollowUpCount > 0 && <p className="mb-2 px-1 text-caption text-muted-foreground" role="status">{queuedFollowUpCount} follow-up{queuedFollowUpCount === 1 ? "" : "s"} queued; sent when this step finishes</p>}
           {queuedFollowUps.length > 0 && <p className="mb-2 px-1 text-caption text-muted-foreground" role="status">{queuedFollowUps.length} follow-up{queuedFollowUps.length === 1 ? "" : "s"} queued — sent when this send finishes</p>}
           {lifecycle?.error && !composerError && <p className="mb-2 px-1 text-caption text-destructive">{lifecycle.error} You can retry below.</p>}

@@ -1,7 +1,9 @@
 import { useState } from "react";
-import { Download, LoaderCircle } from "lucide-react";
+import { Download } from "lucide-react";
 import { isDevelopmentBuild, UpdateInstallUnavailableError, type UpdateInfo } from "../updater";
 import { ToastCard } from "./ToastCard";
+import { pendingClass } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 
 /** Last in the top-right stack. It stays until installed or dismissed. */
 export function UpdateToast({ update, onInstall, onDismiss }: {
@@ -38,11 +40,11 @@ export function UpdateToast({ update, onInstall, onDismiss }: {
       {developmentBuild ? <span className="mt-2 block text-meta text-muted-foreground">Install updates from a packaged Bridge app.</span> : <button
         type="button"
         disabled={installing}
+        aria-busy={installing || undefined}
         onClick={() => void install()}
-        className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-foreground px-2.5 py-1 text-meta font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-60"
+        className={cn("mt-2 inline-flex items-center gap-1.5 rounded-md bg-foreground px-2.5 py-1 text-meta font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-60", pendingClass(installing))}
       >
-        {installing && <LoaderCircle size={12} aria-hidden="true" className="animate-spin" />}
-        {installing ? "Installing…" : installError ? "Retry" : "Install and restart"}
+        {installError && !installing ? "Retry" : "Install and restart"}
       </button>}
     </>}
   />;

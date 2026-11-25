@@ -7,10 +7,10 @@ const chat = (status: SessionStatus) => ({ id: "chat-new", status }) as Session;
 
 describe("note task status", () => {
   it.each<[SessionStatus, string]>([
-    ["idle", "Chat started"], ["starting", "Starting…"], ["working", "Running"],
-    ["waiting", "Needs you"], ["warm", "Running"], ["checkpointing", "Saving progress…"],
-    ["ready", "Ready to review"], ["stopped", "Stopped"], ["resuming", "Resuming…"],
-    ["restored", "Resuming…"], ["failed", "Failed"], ["completed", "Finished"], ["cancelled", "Cancelled"],
+    ["idle", "Chat started"], ["starting", "Starting"], ["working", "Running"],
+    ["waiting", "Needs you"], ["warm", "Running"], ["checkpointing", "Saving progress"],
+    ["ready", "Ready to review"], ["stopped", "Stopped"], ["resuming", "Resuming"],
+    ["restored", "Resuming"], ["failed", "Failed"], ["completed", "Finished"], ["cancelled", "Cancelled"],
   ])("describes a linked chat that is %s", (status, label) => {
     expect(noteTaskStatus(task({ state: "doing", sessionIds: ["chat-new"] }), chat(status))).toBe(label);
   });

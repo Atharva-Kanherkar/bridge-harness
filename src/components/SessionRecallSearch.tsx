@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { LoaderCircle, Search, X } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { SearchSessionEntriesResult, SessionRecallHit } from "../types";
+import { SkeletonRows, pendingClass } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 
 export type SessionRecallSearchProps = {
   sessionId: string;
@@ -92,7 +94,6 @@ export function SessionRecallSearch({
               aria-label="Search this chat"
               className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground"
             />
-            {status === "loading" && <LoaderCircle size={13} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />}
           </label>
           <button
             type="button"
@@ -105,6 +106,7 @@ export function SessionRecallSearch({
         </div>
         <p className="text-caption text-muted-foreground">This search stays in this chat. It does not look at other sessions or account memory.</p>
         {status === "error" && error && <p className="text-meta text-destructive">{error}</p>}
+        {status === "loading" && hits.length === 0 && <SkeletonRows label="Searching this chat" rows={3} framed={false} className="divide-y-0" rowClassName="min-h-0 px-2 py-1.5" />}
         {status === "ready" && hits.length === 0 && (
           <p className="text-meta text-muted-foreground">No matches in this chat.</p>
         )}
@@ -149,8 +151,9 @@ export function SessionRecallSearch({
                 // would strand it.
                 .finally(() => setLoadingMore(false));
             }}
-            className="self-start rounded-md px-2 py-1 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-          >{loadingMore ? "Loading…" : "Show more"}</button>
+            aria-busy={loadingMore || undefined}
+            className={cn("self-start rounded-md px-2 py-1 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50", pendingClass(loadingMore))}
+          >Show more</button>
         )}
       </div>
     </div>

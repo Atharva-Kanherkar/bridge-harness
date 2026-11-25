@@ -125,10 +125,11 @@ describe("tool row disclosure", () => {
 
   it("shows exactly one status glyph, swapped when the run finishes", async () => {
     // A live run stays collapsed and names the step it is on, so the one
-    // spinner on screen is the current step's, not a row's.
+    // live glyph on screen is the current step's, not a row's.
     mount([command({ status: "inProgress" })]);
     await settle();
-    expect(host.querySelectorAll(".animate-spin")).toHaveLength(1);
+    expect(host.querySelectorAll("[data-skeleton-dot]")).toHaveLength(1);
+    expect(host.querySelector(".animate-spin")).toBeNull();
 
     // Opened by hand, the finished call wears no glyph at all: only running
     // and failed rows earn one.

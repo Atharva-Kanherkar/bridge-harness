@@ -7,6 +7,7 @@ import type { ConversationItem } from "../conversation";
 import type { InteractionResolutionResult, QuestionAction } from "../protocol/generated/protocol";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
 import { answerSummary, canSubmit, cleanAnswers, fieldAnswered, initialAnswers, questionFields, type QuestionField, type QuestionOption } from "../questionFields";
+import { pendingClass } from "@/components/ui/skeleton";
 
 export type ResolveQuestion = (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => Promise<InteractionResolutionResult | void> | void;
 
@@ -131,8 +132,8 @@ export function QuestionCard({ item, onResolve, resolvedCopy }: { item: Conversa
                 {fields.length > 1 && <span aria-hidden="true">·</span>}
                 <kbd className="rounded border border-border px-1 font-sans text-micro">{modKey("↵")}</kbd> to send
               </span>
-              <button type="button" disabled={!!busy} className={BTN_SECONDARY} onClick={() => void act("decline")}><X size={12} aria-hidden="true" />{busy === "decline" ? "Skipping…" : "Skip"}</button>
-              <button type="button" disabled={!!busy || !ready} className={BTN_PRIMARY} onClick={() => void act("answer")}><Check size={12} aria-hidden="true" />{busy === "answer" ? "Sending…" : fields.length > 1 ? "Send answers" : "Send answer"}</button>
+              <button aria-busy={(busy === "decline") || undefined} type="button" disabled={!!busy} className={cn(BTN_SECONDARY, pendingClass(busy === "decline"))} onClick={() => void act("decline")}><X size={12} aria-hidden="true" />Skip</button>
+              <button aria-busy={(busy === "answer") || undefined} type="button" disabled={!!busy || !ready} className={cn(BTN_PRIMARY, pendingClass(busy === "answer"))} onClick={() => void act("answer")}><Check size={12} aria-hidden="true" />{fields.length > 1 ? "Send answers" : "Send answer"}</button>
             </footer>
           </div>
         // The settled card fades in where the form was, so it reads as the

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ExternalLink, ShieldCheck, Terminal } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { UsageProvider } from "../usage";
-import { Skeleton } from "./ui/skeleton";
+import { Skeleton, SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 import { SignInProgress, type SignInStage } from "./SignInProgress";
 import { plainProviderLoginOutput, providerLoginCode, providerLoginTerminalId, providerLoginUrl } from "../providerLoginPresentation";
 
@@ -124,7 +124,7 @@ export function ProviderLoginPane({ provider, label, account, onClose, onExited,
   const optionKeys = provider === "opencode" && <div className="mt-2 flex flex-wrap gap-2">{([
     ["Previous option", "\u001b[A"], ["Next option", "\u001b[B"], ["Choose option", "\r"],
   ] as const).map(([name, key]) => <button key={name} type="button" onClick={() => void writeReply(key)} className="min-h-8 rounded-md border border-border px-2 text-xs text-foreground">{name}</button>)}</div>;
-  const outputPane = <pre ref={outputRef} aria-live="polite" aria-label={`${label} sign-in output`} className="max-h-36 overflow-y-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 font-mono text-caption leading-relaxed text-foreground">{cleanOutput || "Starting secure sign-in…"}</pre>;
+  const outputPane = <pre ref={outputRef} aria-live="polite" aria-label={`${label} sign-in output`} className="max-h-36 overflow-y-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 font-mono text-caption leading-relaxed text-foreground">{cleanOutput || <SkeletonRegion label="Starting secure sign-in"><SkeletonText lines={2} /></SkeletonRegion>}</pre>;
   if (bare) return <div className="grid gap-4" aria-label={`${label} sign-in`}>
     {error ? <div role="alert" className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-meta text-destructive">{error}</div> : <div className="grid gap-3 rounded-xl border border-border-card bg-background/50 p-4">
       {progress}

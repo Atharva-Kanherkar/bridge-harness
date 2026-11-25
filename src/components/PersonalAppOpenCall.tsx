@@ -9,6 +9,7 @@ import { useDarkTheme } from "./Markdown";
 import { connectionLabel, connectionNote, LIVE_READS_UNAVAILABLE } from "./personalAppShared";
 import { VisualActionsContext } from "./VisualCall";
 import { Button } from "./ui/button";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 /** A write waiting in the sheet, and the view's call that waits on it. */
 type Pending = {
@@ -61,7 +62,9 @@ export function PersonalAppOpenCard({ sessionId, openId, contentHash, readOnly }
 
   const settle = (next: Pending | undefined) => { pendingRef.current = next; setPending(next); };
 
-  if (!app) return <div ref={ref} role="status" className="rounded-2xl border border-dashed border-border px-4 py-3 text-xs text-muted-foreground">{error || "Loading app…"}</div>;
+  if (!app) return error
+    ? <div ref={ref} role="alert" className="rounded-2xl border border-dashed border-border px-4 py-3 text-xs text-muted-foreground">{error}</div>
+    : <div ref={ref}><SkeletonRegion label="Loading app"><Skeleton className="h-40 rounded-2xl" /></SkeletonRegion></div>;
 
   const callTool = async (tool: string, args: Record<string, unknown>): Promise<CallToolResult> => {
     if (readOnly) throw new Error("Live tools are unavailable in history");

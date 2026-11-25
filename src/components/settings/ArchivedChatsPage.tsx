@@ -82,13 +82,13 @@ export function ArchivedChatsPage() {
     {selected ? <>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <GhostButton onClick={() => { setSelected(undefined); setConversation(undefined); }}><ArrowLeft size={14} /> All archived chats</GhostButton>
-        <GhostButton disabled={busy} onClick={() => void unarchive(selected)}><ArchiveRestore size={14} />{busy ? "Unarchiving..." : conversation ? "Unarchive root chat" : "Unarchive"}</GhostButton>
+        <GhostButton busy={busy} disabled={busy} onClick={() => void unarchive(selected)}><ArchiveRestore size={14} />{conversation ? "Unarchive root chat" : "Unarchive"}</GhostButton>
       </div>
       <SettingsGroup label={`Archived under ${selected.title}`} note="Workers and side chats stay readable here without unarchiving the root.">
         <div className="flex flex-wrap gap-2 p-3">
           <GhostButton onClick={() => readConversation()}>Root conversation</GhostButton>
           {children.map(child => <GhostButton key={child.id} ariaLabel={`Read ${child.title}`} onClick={() => readConversation(child)}>{child.title}</GhostButton>)}
-          {childrenLoading && <span role="status" className="text-meta text-muted-foreground">Loading related conversations...</span>}
+          {childrenLoading && <SkeletonRegion label="Loading related conversations" className="flex gap-2"><Skeleton className="h-7 w-28 rounded-lg" /><Skeleton index={1} className="h-7 w-24 rounded-lg" /></SkeletonRegion>}
         </div>
         <div className="flex gap-2 px-3 pb-3">
           {childrenOffset > 0 && <GhostButton disabled={childrenLoading} onClick={() => setChildrenOffset(value => Math.max(0, value - 50))}>Previous related chats</GhostButton>}
@@ -104,7 +104,7 @@ export function ArchivedChatsPage() {
       </SettingsGroup>
       <div className="flex gap-2">
         {sequence > 0 && <GhostButton disabled={loading} onClick={() => { setEvents([]); setSequence(0); }}>Beginning</GhostButton>}
-        {moreContent && <GhostButton disabled={loading} onClick={() => setSequence(events[events.length - 1]?.sequence ?? sequence)}>{loading ? "Loading history..." : "Load more history"}</GhostButton>}
+        {moreContent && <GhostButton busy={loading} disabled={loading} onClick={() => setSequence(events[events.length - 1]?.sequence ?? sequence)}>Load more history</GhostButton>}
       </div>
     </> : <>
       <Field type="search" label="Search archived chats" placeholder="Search by chat or project name" width="w-full" value={query} onChange={next => { setQuery(next); setOffset(0); }} />

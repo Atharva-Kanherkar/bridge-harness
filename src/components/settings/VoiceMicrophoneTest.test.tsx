@@ -113,7 +113,7 @@ it.each(["Enter", "Escape"])("pointer start from body makes %s available without
     expect(input().value).toBe("");
   } else {
     expect(mocks.voiceStop).toHaveBeenCalledWith("microphone-test");
-    expect(host.textContent).toContain("Finishing…");
+    expect(host.querySelector('[role="status"][aria-label="Finishing"]')).not.toBeNull();
   }
 });
 

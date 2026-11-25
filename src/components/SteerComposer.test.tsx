@@ -88,7 +88,7 @@ describe("SteerComposer", () => {
     const { container, rerender, unmount } = await mount(<SteerComposer sessionId="w1" steerable onSteer={onSteer}/>);
     await type(box(container), "for worker one");
     await act(async () => container.querySelector<HTMLButtonElement>('button[type="submit"]')!.click());
-    expect(container.textContent).toContain("Sending…");
+    expect(container.querySelector('button[type="submit"]')?.getAttribute("aria-busy")).toBe("true");
 
     await rerender(<SteerComposer sessionId="w2" steerable onSteer={onSteer}/>);
     expect(box(container).value).toBe("");
@@ -112,7 +112,7 @@ describe("SteerComposer", () => {
     await type(box(container), "first thought");
     await act(async () => container.querySelector<HTMLButtonElement>('button[type="submit"]')!.click());
     expect(box(container).value).toBe("");
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Sending guidance…");
+    expect(container.querySelector('button[type="submit"]')?.getAttribute("aria-busy")).toBe("true");
     await type(box(container), "second thought");
     await act(async () => held.resolve());
     expect(box(container).value).toBe("second thought");

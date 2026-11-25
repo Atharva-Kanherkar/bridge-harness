@@ -122,7 +122,7 @@ export function NoteHistoryDialog({ page, open, chatTitle, onClose, onRestore }:
           </ul>
           <div className="flex shrink-0 items-center justify-end gap-1 p-3">
             <Pill onClick={onClose}>Cancel</Pill>
-            <PrimaryButton disabled={!shown || same || restoring} onClick={() => void restore()}>{restoring ? "Restoring…" : "Restore this version"}</PrimaryButton>
+            <PrimaryButton busy={restoring} disabled={!shown || same || restoring} onClick={() => void restore()}>Restore this version</PrimaryButton>
           </div>
         </aside>
       </div>
