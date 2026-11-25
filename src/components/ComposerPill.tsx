@@ -71,8 +71,9 @@ export type ComposerPillProps = {
   /// the access control beside it, rather than riding the far-right `trailing`
   /// slot. Optional so surfaces that keep the model picker on the right still work.
   modelControl?: ReactNode;
-  /// The access / permission control ("Full access ▾"), shown after `modelControl`
-  /// behind a hairline divider in the controls row.
+  /// The chat's controls after `modelControl`, behind a hairline divider:
+  /// tools and chat options. The access mode lives in the model picker's
+  /// footer and only joins this row for a chat drawn without the picker.
   accessControl?: ReactNode;
   /// The context strip, rendered as an attached footer inside the composer frame:
   /// input → controls row → footer. When present it gets a top hairline and the
@@ -373,8 +374,8 @@ export function ComposerPill({
           <VoiceStatus state={voiceState} startingPhase={voiceStartingPhase} audioLevel={voiceAudioLevel} error={voiceError} notice={voiceNotice} />
 
           <div className={cn("flex min-h-8 items-center gap-2", isInline ? "shrink-0" : "flex-wrap justify-between")}>
-            {/* Leading edge of the controls row: the model chip, then the access
-                control behind a hairline divider. */}
+            {/* Leading edge of the controls row: the model chip, then the chat's
+                controls behind a hairline divider. */}
             {(!isInline || modelControl || accessControl) && <div className="flex min-w-0 items-center gap-1.5">
               {modelControl}
               {modelControl && accessControl ? <span aria-hidden="true" className="h-4 w-px shrink-0 bg-border" /> : null}
