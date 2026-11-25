@@ -107,7 +107,8 @@ fn workers_briefings_and_workflows_launch_without_a_tool_launch() {
     let recorded = launches(&core, &calls, &chat);
     assert!(recorded.len() == 1 && recorded[0].0 == "start" && chosen(&recorded[0]), "{recorded:?}");
 
-    // A child session and a worker each hold a row, and neither reads it.
+    // A child session and a worker each hold a row. The generic start refuses
+    // both, so neither reaches the adapter with it.
     {
         let db = core.db.lock().unwrap();
         db.execute(
@@ -124,7 +125,8 @@ fn workers_briefings_and_workflows_launch_without_a_tool_launch() {
     }
     for session in ["child", "worker"] {
         choose(&core, session);
-        assert_eq!(launches(&core, &calls, session), [("start", false, None)], "{session}");
+        assert_eq!(start_chat(&core, session.to_owned()).unwrap_err().to_string(), WORKER_START_REFUSAL, "{session}");
+        assert!(calls.lock().unwrap().is_empty(), "{session}");
     }
 
     // A workflow run launches under its briefing policy, with no tool launch.
@@ -1455,6 +1457,225 @@ fn an_old_claude_usage_entry_of_the_same_provider_session_still_gives_the_seed()
     assert_eq!(seeded[0].2["data"]["totalCostUsd"], json!(0.5));
 }
 
+// --- the worker start guards ---------------------------------------------------
+
+/// A stopped Claude worker of parent, as launch_worker writes it. The
+/// insert names no kind, so the row is an orchestrator, at depth 1, with a
+/// runtime row.
+fn bridge_worker(core: &BridgeCore, id: &str, parent: &str, thread: &str) -> String {
+    let db = core.db.lock().unwrap();
+    db.execute(
+        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,provider_session_id,parent_session_id,depth)
+         SELECT ?1,workspace_id,'claude','Research','stopped','reported','standard',?3,id,1 FROM sessions WHERE id=?2",
+        params![id, parent, thread],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,updated_at) VALUES(?1,?2,'stopped','research','key','reported','now')",
+        params![id, parent],
+    )
+    .unwrap();
+    id.to_owned()
+}
+
+/// The depth, the parent and the kind of a session.
+fn lineage(core: &BridgeCore, session: &str) -> (i64, Option<String>, String) {
+    core.db
+        .lock()
+        .unwrap()
+        .query_row("SELECT depth,parent_session_id,kind FROM sessions WHERE id=?1", [session], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+}
+
+#[test]
+fn start_chat_refuses_a_bridge_worker_and_launches_nothing() {
+    let (dir, core, script) = live();
+    let chat = workspace_chat(&core, dir.path(), "claude", "thread-0");
+    let worker = bridge_worker(&core, "worker", &chat, "worker-thread");
+    let before = lineage(&core, &worker);
+    assert_eq!(before, (1, Some(chat.clone()), "orchestrator".to_owned()));
+
+    // The RPC body of sessions/start_chat, which any daemon client can send.
+    let error = crate::api::start_chat(&core, worker.clone()).unwrap_err().to_string();
+    assert_eq!(error, WORKER_START_REFUSAL);
+    assert!(asked(&script).is_empty(), "nothing reached the launcher");
+    assert!(warm_thread(&core, &worker).is_none());
+    assert_eq!(lineage(&core, &worker), before, "the worker keeps its depth, parent and kind");
+    assert_eq!(row_of(&core, &worker), ("stopped".to_owned(), Some("worker-thread".to_owned())));
+}
+
+#[test]
+fn start_chat_refuses_a_live_worker_without_replacing_its_process() {
+    let (dir, core, script) = live();
+    let chat = workspace_chat(&core, dir.path(), "claude", "thread-0");
+    let worker = bridge_worker(&core, "worker", &chat, "worker-thread");
+    core.db.lock().unwrap().execute("UPDATE sessions SET status='working' WHERE id=?1", [&worker]).unwrap();
+    let runtime = LiveRuntime { number: 1, thread: "worker-thread".into(), turn: Arc::default(), script: script.clone() };
+    core.adapters.lock().unwrap().insert(worker.clone(), Box::new(runtime));
+    let before = lineage(&core, &worker);
+
+    // No prompt record matches the live process, so a start past the guard
+    // would stop it and launch another.
+    let error = start_chat(&core, worker.clone()).unwrap_err().to_string();
+    assert_eq!(error, WORKER_START_REFUSAL);
+    {
+        let script = script.lock().unwrap();
+        assert!(script.asked.is_empty(), "nothing reached the launcher: {:?}", verbs(&script.asked));
+        assert!(script.stopped.is_empty(), "the live process was stopped: {:?}", script.stopped);
+    }
+    assert_eq!(warm_thread(&core, &worker).as_deref(), Some("worker-thread"), "the same process stays in place");
+    assert_eq!(lineage(&core, &worker), before);
+    assert_eq!(row_of(&core, &worker).0, "working");
+}
+
+#[test]
+fn start_chat_still_reaches_the_launcher_for_a_top_level_chat() {
+    let (dir, core, script) = live();
+    // A worker row is an orchestrator too. The control is a top-level
+    // orchestrator of the same workspace and harness, and a direct chat.
+    let chat = workspace_chat(&core, dir.path(), "claude", "thread-0");
+    let worker = bridge_worker(&core, "worker", &chat, "worker-thread");
+    assert_eq!(start_chat(&core, worker.clone()).unwrap_err().to_string(), WORKER_START_REFUSAL);
+    start_chat(&core, chat.clone()).unwrap();
+    let direct = chat_on(&core, "claude", None);
+    start_chat(&core, direct.clone()).unwrap();
+
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-0")), ("start", None)]);
+    assert_eq!(warm_thread(&core, &chat).as_deref(), Some("thread-0"));
+    assert!(warm_thread(&core, &direct).is_some());
+    assert!(warm_thread(&core, &worker).is_none());
+}
+
+#[test]
+fn start_session_reuse_skips_workers_and_harness_subagents() {
+    let (dir, core, script) = live();
+    let chat = workspace_chat(&core, dir.path(), "claude", "thread-0");
+
+    // A newer Bridge worker of the same workspace and harness.
+    let worker = bridge_worker(&core, "worker", &chat, "worker-thread");
+    let worker_lineage = lineage(&core, &worker);
+    start_session(&core, "w".into(), Some(Harness::Claude), None).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-0"))], "the top-level chat is reused, not the worker");
+    assert!(warm_thread(&core, &worker).is_none());
+    assert_eq!(lineage(&core, &worker), worker_lineage);
+
+    // A newer worker row with no parent on the session: an old row from before
+    // the guards. Only its worker runtime keeps it out of the reuse.
+    {
+        let db = core.db.lock().unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind,provider_session_id) VALUES('orphan-worker','w','claude','Research','stopped','reported',0,'direct','orphan-thread')", []).unwrap();
+        db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,updated_at) VALUES('orphan-worker',?1,'stopped','research','key','reported','now')", params![chat]).unwrap();
+    }
+    start_session(&core, "w".into(), Some(Harness::Claude), None).unwrap();
+    let launched = asked(&script);
+    assert!(launched.iter().all(|launch| launch.provider.as_deref() == Some("thread-0")), "{:?}", verbs(&launched));
+    assert!(warm_thread(&core, "orphan-worker").is_none());
+
+    // A newer harness subagent of the chat.
+    core.db
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth,parent_session_id,provider_session_id) VALUES('subagent','w','claude','Subagent','working','estimated',?1,1,?2,'subagent-thread')",
+            params![crate::harness_subagents::KIND, chat],
+        )
+        .unwrap();
+    start_session(&core, "w".into(), Some(Harness::Claude), None).unwrap();
+    let launched = asked(&script);
+    assert!(launched.iter().all(|launch| launch.provider.as_deref() == Some("thread-0")), "{:?}", verbs(&launched));
+    assert!(warm_thread(&core, "subagent").is_none());
+    assert_eq!(lineage(&core, "subagent"), (1, Some(chat.clone()), crate::harness_subagents::KIND.to_owned()));
+
+    // This workspace has a Claude worker and no reusable Claude chat.
+    // Starting Claude makes a new session and leaves the worker as it was.
+    {
+        let db = core.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w2','p','Lima','Other','bridge/other',?1,'stopped','now')",
+            params![dir.path().join("other").to_string_lossy()],
+        )
+        .unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind) VALUES('codex-chat','w2','codex','Orchestrator','stopped','reported',0,'orchestrator')", []).unwrap();
+    }
+    let claude_worker = bridge_worker(&core, "claude-worker", "codex-chat", "claude-worker-thread");
+    start_session(&core, "w2".into(), Some(Harness::Claude), None).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("start", None)], "a new session starts, the worker is not reused");
+    let started = new_session_of(&core, "w2", "claude", &[&claude_worker]);
+    assert!(warm_thread(&core, &started).is_some());
+    assert!(warm_thread(&core, &claude_worker).is_none());
+    assert_eq!(lineage(&core, &claude_worker), (1, Some("codex-chat".to_owned()), "orchestrator".to_owned()));
+}
+
+#[test]
+fn start_session_reuses_only_direct_and_orchestrator_chats() {
+    const OTHER_KINDS: [&str; 3] = ["workflow", "briefing", "imported"];
+
+    for kind in [Some("direct"), Some("orchestrator"), None] {
+        let (dir, core, script) = live();
+        let harness = if kind.is_some() { "claude" } else { "codex" };
+        let chat = workspace_chat(&core, dir.path(), harness, "chat-thread");
+        {
+            let db = core.db.lock().unwrap();
+            if let Some(kind) = kind {
+                db.execute("UPDATE sessions SET kind=?1 WHERE id=?2", params![kind, chat])
+                    .unwrap();
+            }
+            for other in OTHER_KINDS {
+                db.execute(
+                    "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind)
+                     VALUES(?1,'w','claude',?1,'stopped','reported',0,?1)",
+                    [other],
+                )
+                .unwrap();
+            }
+        }
+
+        start_session(&core, "w".into(), Some(Harness::Claude), None).unwrap();
+        if kind.is_some() {
+            assert_eq!(verbs(&asked(&script)), [("resume", Some("chat-thread"))]);
+            assert_eq!(warm_thread(&core, &chat).as_deref(), Some("chat-thread"));
+        } else {
+            assert_eq!(verbs(&asked(&script)), [("start", None)]);
+            let started = new_session_of(&core, "w", "claude", &OTHER_KINDS);
+            assert_eq!(lineage(&core, &started), (0, None, "orchestrator".into()));
+            assert!(warm_thread(&core, &started).is_some());
+        }
+        for other in OTHER_KINDS {
+            assert_eq!(row_of(&core, other), ("stopped".into(), None), "{other}");
+            assert!(warm_thread(&core, other).is_none(), "{other}");
+        }
+    }
+}
+
+/// The one session of the workspace and harness that is not in `known`.
+fn new_session_of(core: &BridgeCore, workspace: &str, harness: &str, known: &[&str]) -> String {
+    let db = core.db.lock().unwrap();
+    let mut statement = db.prepare("SELECT id FROM sessions WHERE workspace_id=?1 AND harness=?2 ORDER BY rowid").unwrap();
+    let ids: Vec<String> = statement
+        .query_map(params![workspace, harness], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .filter(|id: &String| !known.contains(&id.as_str()))
+        .collect();
+    assert_eq!(ids.len(), 1, "{ids:?}");
+    ids[0].clone()
+}
+
+#[test]
+fn start_session_starts_a_new_session_when_none_is_reusable() {
+    let (dir, core, script) = live();
+    // The workspace has a Codex chat only, so no Claude session is reusable.
+    let codex_chat = workspace_chat(&core, dir.path(), "codex", "codex-thread");
+    start_session(&core, "w".into(), Some(Harness::Claude), None).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("start", None)]);
+    let started = new_session_of(&core, "w", "claude", &[]);
+    assert_ne!(started, codex_chat);
+    assert_eq!(lineage(&core, &started), (0, None, "orchestrator".to_owned()));
+    assert_eq!(row_of(&core, &started).1.as_deref(), Some("thread-1"));
+    assert_eq!(warm_thread(&core, &started).as_deref(), Some("thread-1"));
+    assert!(warm_thread(&core, &codex_chat).is_none());
+}
+
 mod off_trace;
 
 /// The off guarantee of `testing/feat-early-compaction.md`. Each later commit
@@ -2504,4 +2725,28 @@ fn with_the_switch_off_the_attempt_table_stays_empty() -> TestResult {
         assert_eq!(world.count("SELECT COUNT(*) FROM early_compaction_attempts", [])?, 0, "{saved:?}");
     }
     Ok(())
+}
+
+#[test]
+fn start_session_skips_an_aside_with_a_pending_fork() {
+    let (dir, core, script) = live();
+    let chat = workspace_chat(&core, dir.path(), "claude", "source-thread");
+    let aside = "aside";
+    {
+        let db = core.db.lock().unwrap();
+        // The aside keeps the thread of its source and a pending fork.
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind,provider_session_id) VALUES(?1,'w','claude','Aside','stopped','reported',0,'direct','source-thread')",
+            params![aside],
+        )
+        .unwrap();
+        restoration::set_head_state(&db, aside, RestorationMode::NativeFork, crate::model::ResumeEligibility::Native, Some("source-thread")).unwrap();
+        db.execute("UPDATE sessions SET harness='codex' WHERE id=?1", params![chat]).unwrap();
+    }
+    start_session(&core, "w".into(), Some(Harness::Claude), None).unwrap();
+    let launched = asked(&script);
+    assert_eq!(verbs(&launched), [("start", None)], "{:?}", verbs(&launched));
+    assert!(warm_thread(&core, aside).is_none());
+    let started = new_session_of(&core, "w", "claude", &[aside]);
+    assert!(warm_thread(&core, &started).is_some());
 }

@@ -7,6 +7,7 @@ use bridge_client::{ClientError, DaemonClient, Endpoint, SessionEventStream};
 use bridge_protocol::MethodName;
 use serde_json::json;
 use std::path::Path;
+use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -22,6 +23,41 @@ fn seed_data_dir(data_dir: &Path) {
         "executablePath": data_dir.join("missing-opencode").to_string_lossy(),
     });
     bridge_core::agent_config::save_harness(&db, opencode).unwrap();
+}
+
+#[test]
+fn tokens_warns_on_stderr_only_for_the_default_database() {
+    let dir = tempfile::tempdir().unwrap();
+    seed_data_dir(dir.path());
+    let database = dir.path().join("bridge.db");
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_bridge"))
+            .env("BRIDGE_DATA_DIR", dir.path())
+            .args(["tokens", "--json", "--since", "2026-01-01"])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    let implicit = run(&[]);
+    assert!(implicit.status.success(), "{implicit:?}");
+    let report: serde_json::Value = serde_json::from_slice(&implicit.stdout).unwrap();
+    assert_eq!(report["cohort"], "orchestrator");
+    let note = format!(
+        "bridge tokens: using the default database at {}. Use --database <path> to report on a backup copy. A report on a live database can delay WAL checkpoints.\n",
+        database.display(),
+    );
+    assert_eq!(std::str::from_utf8(&implicit.stderr).unwrap(), note);
+
+    for args in [
+        ["--database", database.to_str().unwrap()],
+        ["--data-dir", dir.path().to_str().unwrap()],
+    ] {
+        let explicit = run(&args);
+        assert!(explicit.status.success(), "{explicit:?}");
+        assert_eq!(explicit.stdout, implicit.stdout);
+        assert!(explicit.stderr.is_empty(), "{explicit:?}");
+    }
 }
 
 struct RunningDaemon {

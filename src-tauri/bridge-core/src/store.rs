@@ -1735,7 +1735,7 @@ fn migration_22_session_backend_binding(transaction: &Transaction<'_>) -> Result
     Ok(())
 }
 
-fn supported_schema_version(connection: &Connection) -> Result<i64, BridgeError> {
+pub(crate) fn supported_schema_version(connection: &Connection) -> Result<i64, BridgeError> {
     let current = current_schema_version(connection)?;
     if current > LATEST_SCHEMA_VERSION {
         return Err(BridgeError::Invalid(format!(
