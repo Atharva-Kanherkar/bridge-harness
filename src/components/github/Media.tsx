@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { GithubMediaItem } from "../githubMarkdown";
 import { Tip } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
 
 // Images and videos inside a GitHub body.
 //
@@ -145,9 +146,9 @@ function Lightbox({ source, alt, original, onClose }: { source: string; alt: str
       <a href={original} target="_blank" rel="noreferrer" data-system-browser className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-meta text-foreground shadow-xs transition-colors hover:bg-accent">
         <ExternalLink size={12} aria-hidden="true" /> Open original
       </a>
-      <button ref={close} type="button" onClick={onClose} aria-label="Close image" className="grid size-8 place-items-center rounded-md border border-border bg-card text-foreground shadow-xs transition-colors hover:bg-accent">
+      <Button variant="outline" size="icon-sm" ref={close} onClick={onClose} aria-label="Close image">
         <X size={14} aria-hidden="true" />
-      </button>
+      </Button>
     </div>
   </motion.div>;
 }
@@ -160,13 +161,13 @@ function GithubImage({ item }: { item: GithubMediaItem }) {
 
   if (media.phase === "waiting") return <MediaNotice icon={ImageIcon}>
     <span className="min-w-0 flex-1 truncate">{label}</span>
-    <button type="button" onClick={media.allow} className="rounded-md border border-border bg-card px-2 py-0.5 text-caption font-medium text-foreground shadow-xs transition-colors hover:bg-accent active:scale-[0.98]">
+    <Button variant="outline" size="2xs" onClick={media.allow}>
       Load from {hostOf(item.url)}
-    </button>
+    </Button>
   </MediaNotice>;
   if (media.phase === "failed") return <MediaNotice icon={ImageOff}>
     <span className="min-w-0 flex-1 truncate">Couldn’t load {label}</span>
-    <button type="button" onClick={media.retry} className={OPEN_LINK}>Retry</button>
+    <Button variant="quiet" size="2xs" onClick={media.retry}>Retry</Button>
     <OpenOriginal url={item.href ?? item.url} what="original" />
   </MediaNotice>;
 
@@ -179,13 +180,14 @@ function GithubImage({ item }: { item: GithubMediaItem }) {
     referrerPolicy="no-referrer"
     onLoad={media.onLoad}
     onError={media.onError}
-    className={cn("block h-auto max-h-[32rem] w-full object-contain transition-[opacity,transform,filter] duration-300 ease-out motion-reduce:transition-none", ready ? "opacity-100" : "scale-[0.985] opacity-0 blur-[3px]")}
+    className={cn("block h-auto max-h-[32rem] w-full object-contain transition-[opacity,transform,filter] duration-300 ease-out motion-reduce:transition-none", ready ? "opacity-100" : "scale-[0.985] opacity-0 blur-xs")}
   />;
   return <>
     <div className={cn(FRAME, !ready && "min-h-28")}>
       {!ready && <Skeleton className="absolute inset-0 h-full w-full rounded-none" />}
       {item.href
         ? <Tip label={item.alt || undefined}><a href={item.href} target="_blank" rel="noreferrer">{image}</a></Tip>
+        // oxlint-disable-next-line bridge/no-raw-controls -- the image itself is the control; it draws no button chrome
         : <button type="button" onClick={() => ready && setZoomed(true)} aria-label={`Enlarge ${label}`} className="block w-full cursor-zoom-in">{image}</button>}
     </div>
     {createPortal(<AnimatePresence>
@@ -198,13 +200,13 @@ function GithubVideo({ item }: { item: GithubMediaItem }) {
   const media = useMediaSource(item.url);
   if (media.phase === "waiting") return <MediaNotice icon={Play}>
     <span className="min-w-0 flex-1 truncate">{item.alt || "video"}</span>
-    <button type="button" onClick={media.allow} className="rounded-md border border-border bg-card px-2 py-0.5 text-caption font-medium text-foreground shadow-xs transition-colors hover:bg-accent active:scale-[0.98]">
+    <Button variant="outline" size="2xs" onClick={media.allow}>
       Load from {hostOf(item.url)}
-    </button>
+    </Button>
   </MediaNotice>;
   if (media.phase === "failed") return <MediaNotice icon={ImageOff}>
     <span className="min-w-0 flex-1 truncate">Couldn’t play this video</span>
-    <button type="button" onClick={media.retry} className={OPEN_LINK}>Retry</button>
+    <Button variant="quiet" size="2xs" onClick={media.retry}>Retry</Button>
     <OpenOriginal url={item.url} what="original" />
   </MediaNotice>;
   const ready = media.phase === "ready";

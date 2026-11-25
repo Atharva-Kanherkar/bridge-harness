@@ -48,8 +48,8 @@ describe("ForkDialog", () => {
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await act(async () => {
-      const radios = container.querySelectorAll('input[name="fork-worktree"]');
-      (radios[1] as HTMLInputElement).click();
+      const radios = container.querySelectorAll('[role="radio"]');
+      (radios[1] as HTMLButtonElement).click();
     });
     expect(container.textContent).toContain("A Git worktree on a new");
     await click("Create fork");

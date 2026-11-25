@@ -1,6 +1,9 @@
 import { GitFork, GitBranch, ShieldAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { CreateDialogShell } from "./CreateDialogShell";
+import { Input } from "@/components/ui/input";
+import { RowButton } from "@/components/ui/row";
+import { Button } from "@/components/ui/button";
 
 export type ForkWorktreeChoice = "shared" | "new";
 
@@ -76,34 +79,32 @@ export function ForkDialog({
 
       <label className="mt-4 block">
         <span className="text-meta font-medium text-foreground">Fork title</span>
-        <input
+        <Input
+          className="mt-1.5"
           value={title}
           onChange={event => setTitle(event.target.value)}
           placeholder={`Fork of ${sessionLabel}`}
           aria-label="Fork title"
-          className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-ui text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-input-ring focus:ring-1 focus:ring-input-ring"
         />
       </label>
 
       <fieldset className="mt-4">
         <legend className="text-meta font-medium text-foreground">Where the fork works</legend>
-        <div className="mt-1.5 grid grid-cols-2 gap-2">
-          <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-border bg-card px-3 py-2.5 text-ui text-foreground transition-colors has-[[data-state=checked]]:border-foreground/60 has-[[data-state=checked]]:bg-accent">
-            <input type="radio" name="fork-worktree" data-state={worktree === "shared" ? "checked" : "unchecked"} checked={worktree === "shared"} onChange={() => setWorktree("shared")} className="sr-only" />
+        <div role="radiogroup" aria-label="Where the fork works" className="mt-1.5 grid grid-cols-2 gap-2">
+          <RowButton size="card" tone="choice" shape="card" role="radio" aria-checked={worktree === "shared"} data-worktree="shared" onClick={() => setWorktree("shared")}>
             <GitBranch className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
             <span className="min-w-0">
               Share the workspace
               <span className="block text-caption leading-4 text-muted-foreground">same files as the parent</span>
             </span>
-          </label>
-          <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-border bg-card px-3 py-2.5 text-ui text-foreground transition-colors has-[[data-state=checked]]:border-foreground/60 has-[[data-state=checked]]:bg-accent">
-            <input type="radio" name="fork-worktree" data-state={worktree === "new" ? "checked" : "unchecked"} checked={worktree === "new"} onChange={() => setWorktree("new")} className="sr-only" />
+          </RowButton>
+          <RowButton size="card" tone="choice" shape="card" role="radio" aria-checked={worktree === "new"} data-worktree="new" onClick={() => setWorktree("new")}>
             <GitFork className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
             <span className="min-w-0">
               New worktree and branch
               <span className="block text-caption leading-4 text-muted-foreground">isolated copy of the repo</span>
             </span>
-          </label>
+          </RowButton>
         </div>
         {worktree === "shared" ? (
           <p className="mt-2 flex items-start gap-1.5 text-caption leading-4 text-muted-foreground">
@@ -120,11 +121,11 @@ export function ForkDialog({
       {error && <p role="alert" className="mt-3 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-meta leading-4 text-destructive">{error}</p>}
 
       <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-border pt-4">
-        <button type="button" disabled={busy} onClick={onClose} className="mr-auto min-h-8 rounded-lg px-3 text-ui text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30">Cancel</button>
-        <button ref={submitRef} type="button" disabled={busy} onClick={submit} className="flex items-center justify-center gap-2 min-h-8 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-30">
+        <Button variant="quiet" size="sm" className="mr-auto" disabled={busy} onClick={onClose}>Cancel</Button>
+        <Button variant="default" size="sm" ref={submitRef} disabled={busy} onClick={submit}>
           <GitFork className="h-4 w-4" aria-hidden="true" />
           {busy ? "Forking…" : "Create fork"}
-        </button>
+        </Button>
       </div>
     </CreateDialogShell>
   );

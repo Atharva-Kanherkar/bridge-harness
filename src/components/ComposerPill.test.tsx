@@ -201,7 +201,7 @@ describe("ComposerPill", () => {
     const mic = container.querySelector<HTMLButtonElement>('button[aria-label="Hold to dictate"]')!;
     expect(mic).not.toBeNull();
     expect(mic.disabled).toBe(true);
-    expect(mic.title).toBe("Start the Codex chat before dictating");
+    expect(mic.dataset.tip).toBe("Start the Codex chat before dictating");
     act(() => mic.click());
     expect(onVoiceStart).not.toHaveBeenCalled();
   });
