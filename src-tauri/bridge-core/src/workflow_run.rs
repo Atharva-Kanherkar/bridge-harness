@@ -702,10 +702,12 @@ fn run_step(
                 crate::workflow_steps::step_brief(definition, index, &view),
             ],
         )?;
-        crate::workflow_steps::start(&db, &run.id, index, &session_id, &step, &budget, Utc::now())?;
+        // Move the run to this step first: if it was cancelled or lost its
+        // lease while the step was set up, no step row is left running.
         if !workflow_trigger::transition(&db, &run.id, lease_owner, wire::WorkflowRunStatus::Running, Some(&session_id), Utc::now())? {
             return Ok(StepFlow::Done);
         }
+        crate::workflow_steps::start(&db, &run.id, index, &session_id, &step, &budget, Utc::now())?;
     }
     workflow_trigger::publish_runs(core, std::slice::from_ref(&run.id));
 
@@ -1984,6 +1986,28 @@ mod tests {
         let sessions_after: i64 = db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0)).unwrap();
         assert_eq!(sessions_after, sessions_before, "no session for a step that never started");
         assert!(settled.steps.is_empty());
+    }
+
+    #[test]
+    fn a_step_whose_run_ended_during_setup_leaves_no_step_row() {
+        let (dir, core) = test_support::core();
+        let definition = two_steps();
+        let run = bound_run(&core, dir.path(), &definition, false);
+        // The lease ran out while the step was being set up: the runner still
+        // holds the run, but it can no longer move it to this step.
+        core.db.lock().unwrap().execute(
+            "UPDATE workflow_runs SET lease_expires_at=?2 WHERE id=?1",
+            params![run.run.id, workflow_trigger::stamp(Utc::now() - chrono::Duration::minutes(1))],
+        ).unwrap();
+        let mut steps = Steps { definition: &definition, worktree: None, earlier: Vec::new(), spent: crate::workflow_steps::Spent::default() };
+        assert!(matches!(run_step(&core, &run.run, &run.lease_owner, &[], &mut steps, 0, false).unwrap(), StepFlow::Done));
+        let db = core.db.lock().unwrap();
+        assert!(crate::workflow_steps::list(&db, &run.run.id).unwrap().is_empty(), "no step row for a step the run never moved to");
+        // Reclaiming the run leaves nothing marked running behind.
+        workflow_trigger::reclaim_expired(&db, Utc::now()).unwrap();
+        let settled = workflow_trigger::require_run(&db, &run.run.id).unwrap();
+        assert_eq!(settled.status, wire::WorkflowRunStatus::Failed);
+        assert!(settled.steps.iter().all(|step| step.status != wire::WorkflowRunStatus::Running), "{:?}", settled.steps);
     }
 
     #[test]
