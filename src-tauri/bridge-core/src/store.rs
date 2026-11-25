@@ -74,6 +74,14 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
         "CREATE INDEX IF NOT EXISTS idx_session_entries_session_kind ON session_entries(session_id, kind);
          CREATE UNIQUE INDEX IF NOT EXISTS idx_harness_subagent_provider ON sessions(parent_session_id,provider_session_id) WHERE kind='harness_subagent';",
     )?;
+    // The worker maintenance tick asks every second which chats are
+    // checkpointing. Without an index that walked every session row (90k on a
+    // long-lived install, ~150 ms) while holding the core.db mutex, stalling
+    // every live stream once a second. Partial, so it holds only the handful
+    // of rows actually checkpointing.
+    connection.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_checkpointing ON sessions(id) WHERE status='checkpointing';",
+    )?;
     // The audit of early compaction attempts, added the same version-less way.
     crate::early_compaction::install_store(&connection)?;
     // A chat's speed tier (Claude fast mode, Codex service tier). One nullable
@@ -4881,6 +4889,24 @@ mod tests {
         let events = state(&db).unwrap().events;
         assert!(events.iter().all(|event| event.source != "latency"));
         assert!(events.iter().any(|event| event.kind == "session.input.steered"), "a real event outlives any number of latency rows");
+    }
+
+    #[test]
+    fn the_checkpointing_sweep_reads_an_index_not_every_session() {
+        let db = open(Path::new(":memory:")).unwrap();
+        let plan: Vec<String> = db
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT id FROM sessions WHERE status='checkpointing' AND parent_session_id IS NULL ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|step| step.contains("idx_sessions_checkpointing")),
+            "the 1 s maintenance query must not scan the sessions table: {plan:?}"
+        );
     }
 
     #[test]
