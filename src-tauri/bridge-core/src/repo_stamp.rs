@@ -73,7 +73,11 @@ impl Prepared {
         db: &Mutex<Connection>,
         session_id: &str,
     ) -> Result<Self, BridgeError> {
-        let location = store::repository_location_for_session(&db.lock().unwrap(), session_id)?;
+        let location = store::repository_location_for_session(
+            &db.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            session_id,
+        )?;
         Ok(Self::observe(location))
     }
 
@@ -93,7 +97,9 @@ impl Prepared {
         session_id: &str,
     ) -> Result<(MutexGuard<'a, Connection>, Self), BridgeError> {
         loop {
-            let guard = db.lock().unwrap();
+            let guard = db
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let location = store::repository_location_for_session(&guard, session_id)?;
             if location == self.location {
                 return Ok((guard, self));
@@ -246,7 +252,9 @@ fn refresh_invalidated() {
             if due <= now {
                 match &target {
                     Target::Worktree(path) => {
-                        state.worktrees.get_mut(path).unwrap().invalidated_at = None
+                        if let Some(slot) = state.worktrees.get_mut(path) {
+                            slot.invalidated_at = None;
+                        }
                     }
                     Target::Location(location) => {
                         state.cold_refreshes.remove(location);

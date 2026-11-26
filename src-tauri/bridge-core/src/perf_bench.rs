@@ -24,6 +24,9 @@ use rusqlite::{params, Connection};
 
 use crate::store;
 
+const CONCURRENT_CHATS: usize = 12;
+const ENTRIES_PER_CHAT: usize = 40;
+
 fn perf_db() -> Option<PathBuf> {
     std::env::var_os("BRIDGE_PERF_DB").map(PathBuf::from)
 }
@@ -175,12 +178,10 @@ fn perf_bench_concurrent_chat_streams() {
     if repos.is_empty() {
         return;
     }
-    const CHATS: usize = 12;
-    const ENTRIES_PER_CHAT: usize = 40;
     let home = tempfile::tempdir().unwrap();
     let db = store::open(&home.path().join("bridge.db")).unwrap();
     let mut sessions = Vec::new();
-    for index in 0..CHATS {
+    for index in 0..CONCURRENT_CHATS {
         let id = format!("perf-chat-{index}");
         let cwd = repos[index % repos.len()].display().to_string();
         db.execute(
@@ -191,7 +192,7 @@ fn perf_bench_concurrent_chat_streams() {
         sessions.push(id);
     }
     let db = Arc::new(Mutex::new(db));
-    let barrier = Arc::new(Barrier::new(CHATS));
+    let barrier = Arc::new(Barrier::new(CONCURRENT_CHATS));
     let started = Instant::now();
     let handles: Vec<_> = sessions
         .into_iter()
@@ -263,9 +264,18 @@ fn perf_bench_concurrent_chat_streams() {
         locked_git += thread_locked_git;
     }
     let wall = ms(started.elapsed());
+    report_concurrent_chat_streams(&samples, git, locked_git, wall, repos.len());
+}
+
+fn report_concurrent_chat_streams(
+    samples: &[(bool, bool, [f64; 4])],
+    git: u64,
+    locked_git: u64,
+    wall: f64,
+    repos: usize,
+) {
     println!(
-        "B3 {CHATS} chats x {ENTRIES_PER_CHAT} entries over {} repos: wall={wall:.0} ms, git processes on the entry path={git}, while locked={locked_git}",
-        repos.len()
+        "B3 {CONCURRENT_CHATS} chats x {ENTRIES_PER_CHAT} entries over {repos} repos: wall={wall:.0} ms, git processes on the entry path={git}, while locked={locked_git}",
     );
     for (index, label) in [
         "B3 prepare before the lock",

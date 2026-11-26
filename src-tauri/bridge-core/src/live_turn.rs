@@ -12375,6 +12375,17 @@ fn deliver_prepared_input(
             .unwrap()
             .record_delivered(session_id, frame.digest());
     }
+    persist_delivered_turn(state, session_id, prepared, delivery, repository_state)
+}
+
+/// Record the user message when this delivery owns it, then mark the session working.
+fn persist_delivered_turn(
+    state: &BridgeCore,
+    session_id: &str,
+    prepared: &PreparedInput,
+    delivery: DeliveryMode,
+    repository_state: Option<crate::repo_stamp::Prepared>,
+) -> Result<(), BridgeError> {
     let (db, repository_state) = match repository_state {
         Some(prepared) => {
             let (guard, prepared) = prepared.lock_current(&state.db, session_id)?;
@@ -12399,7 +12410,7 @@ fn deliver_prepared_input(
             &prepared.images,
             repository_state.as_ref().map(crate::repo_stamp::Prepared::value),
         )? {
-            core.events.publish(CoreEvent::Agent(event));
+            state.events.publish(CoreEvent::Agent(event));
         }
     }
     let _ = db.execute(
@@ -12407,7 +12418,7 @@ fn deliver_prepared_input(
         params![session_id],
     );
     drop(db);
-    core.events.publish(CoreEvent::StateChanged);
+    state.events.publish(CoreEvent::StateChanged);
     Ok(())
 }
 
