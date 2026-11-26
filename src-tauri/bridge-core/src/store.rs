@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 103;
+const LATEST_SCHEMA_VERSION: i64 = 104;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -913,6 +913,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // Nightly dreaming: a run's trigger and report, the dream hour,
             // and the records an undo restored.
             103 => crate::memory_consolidation::install_dream(&transaction)?,
+            // Memory search stems words, so a question finds a memory phrased
+            // in another form of the same word.
+            104 => crate::memory_ledger::install_stemmed_search(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
