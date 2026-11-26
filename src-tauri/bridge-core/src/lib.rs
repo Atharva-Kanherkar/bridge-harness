@@ -150,6 +150,8 @@ pub mod memory_tools;
 #[cfg(test)]
 mod memory_evals;
 #[cfg(test)]
+mod memory_longmemeval;
+#[cfg(test)]
 mod memory_properties;
 pub mod meter;
 pub mod meter_sources;
