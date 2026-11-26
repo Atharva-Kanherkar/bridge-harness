@@ -5491,17 +5491,24 @@ pub fn usage_insights(
     crate::usage_insights::insights(core, params)
 }
 
-/// Screen Time: stores the minutes the person was active in a Bridge window.
+/// Screen Time: stores the minutes the person was active in a Bridge window,
+/// and which chat was open in some of them.
 pub fn usage_record_presence(
     core: &Arc<BridgeCore>,
     params: &wire::RecordPresenceParams,
 ) -> Result<wire::UsageRecordPresenceResult, BridgeError> {
     let now_minute = chrono::Utc::now().timestamp().div_euclid(60);
-    let recorded = crate::screen_time::record_presence(&lock_db(core), &params.minutes, now_minute)?;
+    let recorded = crate::screen_time::record_presence(
+        &lock_db(core),
+        &params.minutes,
+        params.chats.as_deref().unwrap_or_default(),
+        now_minute,
+    )?;
     Ok(wire::UsageRecordPresenceResult { recorded })
 }
 
-/// Screen Time: your time and agent time per local day, plus all-time totals.
+/// Screen Time: your time and agent time per local day, all-time totals, and
+/// the range split by project, pull request, hour and harness.
 /// The first ask also starts counting agent time from before Screen Time
 /// existed, off the core mutex; the result says `counting` until it is done.
 pub fn usage_screen_time(

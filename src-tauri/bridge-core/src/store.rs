@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 99;
+const LATEST_SCHEMA_VERSION: i64 = 100;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -901,6 +901,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // Memory retention: proposal TTL and cap, retiring unused
             // memories, `last_used_at`, and the sweep log.
             99 => crate::memory_retention::install(&transaction)?,
+            // Screen Time: which chat was open during each minute of your
+            // time, so the Time tab can split it by project. See `screen_time`.
+            100 => crate::screen_time::install_chat_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
