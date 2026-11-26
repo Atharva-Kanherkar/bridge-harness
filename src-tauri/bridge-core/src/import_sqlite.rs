@@ -427,7 +427,7 @@ mod tests {
     #[should_panic(expected = "not on the allowed list")]
     fn missing_never_looks_at_a_table_off_the_allowed_list() {
         let conn = Connection::open_in_memory().unwrap();
-        let _ = ALLOWED.missing(&conn, &[("secrets", &["token"])]);
+        drop(ALLOWED.missing(&conn, &[("secrets", &["token"])]));
     }
 
     #[test]

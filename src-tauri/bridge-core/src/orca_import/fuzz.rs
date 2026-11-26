@@ -226,7 +226,7 @@ fn mutation() -> impl Strategy<Value = Mutation> {
 fn apply(fixture: &Fixture, mutation: &Mutation) {
     // A second rename or drop of the same thing does nothing.
     let rename = |conn: &Connection, table: &str, column: &str| {
-        let _ = conn.execute_batch(&format!("ALTER TABLE {table} RENAME COLUMN {column} TO {column}_gone"));
+        drop(conn.execute_batch(&format!("ALTER TABLE {table} RENAME COLUMN {column} TO {column}_gone")));
     };
     match mutation {
         Mutation::RenameColumn(table, column) => {
@@ -246,8 +246,8 @@ fn apply(fixture: &Fixture, mutation: &Mutation) {
             if *column == "record_json" {
                 // `adopted_native_id` is generated from it.
                 fixture.chats.execute_batch("DROP INDEX IF EXISTS idx_agent_session_records_adopted_native_id").ok();
-                let _ = fixture.chats.execute_batch("BEGIN; ALTER TABLE agent_session_records RENAME TO old_records; CREATE TABLE agent_session_records(session_id TEXT PRIMARY KEY, record_json_gone TEXT); INSERT INTO agent_session_records SELECT session_id, record_json FROM old_records; DROP TABLE old_records; COMMIT;");
-                let _ = fixture.chats.execute_batch("ROLLBACK");
+                drop(fixture.chats.execute_batch("BEGIN; ALTER TABLE agent_session_records RENAME TO old_records; CREATE TABLE agent_session_records(session_id TEXT PRIMARY KEY, record_json_gone TEXT); INSERT INTO agent_session_records SELECT session_id, record_json FROM old_records; DROP TABLE old_records; COMMIT;"));
+                drop(fixture.chats.execute_batch("ROLLBACK"));
             } else {
                 rename(&fixture.chats, table, column);
             }

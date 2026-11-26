@@ -214,7 +214,7 @@ fn mutation() -> impl Strategy<Value = Mutation> {
 /// Apply a mutation; a second rename or drop of the same thing does nothing.
 fn apply(fixture: &Fixture, mutation: &Mutation) {
     let rename = |conn: &Connection, table: &str, column: &str| {
-        let _ = conn.execute_batch(&format!("ALTER TABLE {table} RENAME COLUMN {column} TO {column}_gone"));
+        drop(conn.execute_batch(&format!("ALTER TABLE {table} RENAME COLUMN {column} TO {column}_gone")));
     };
     let journal = |conn: &Connection, when: i64| {
         conn.execute("DELETE FROM __drizzle_migrations", []).unwrap();
