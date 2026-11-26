@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import { historyEntries, lineDiff, type HistoryEntry } from "../../notesHistory";
 import type { NotePage } from "../../types";
 import { Dialog, DialogPopup, DialogTitle } from "@/components/ui/dialog";
@@ -51,14 +52,14 @@ export function NoteHistoryDialog({ page, open, chatTitle, onClose, onRestore }:
       // The newest entry is the page as it is; the one before is what a
       // person usually came here for.
       setSelected(next[1]?.seq ?? next[0]?.seq ?? null);
-    }, error => { if (current) setFailure(error instanceof Error ? error.message : String(error)); });
+    }, error => { if (current) setFailure(friendlyError(error, "Couldn't load the page history.")); });
     return () => { current = false; };
   }, [open, id]);
 
   useEffect(() => {
     if (!open || selected === null) return;
     let current = true;
-    bridgeApi.readNoteVersion(id, selected).then(read => { if (current) setVersion({ seq: read.seq, markdown: read.markdown }); }, error => { if (current) setFailure(error instanceof Error ? error.message : String(error)); });
+    bridgeApi.readNoteVersion(id, selected).then(read => { if (current) setVersion({ seq: read.seq, markdown: read.markdown }); }, error => { if (current) setFailure(friendlyError(error, "Couldn't load this version.")); });
     return () => { current = false; };
   }, [open, id, selected]);
 

@@ -2,6 +2,7 @@ import { useContext, useEffect, useRef, useState } from "react";
 import { AppWindow, Pencil, ShieldCheck } from "lucide-react";
 import type { CallToolResult } from "@modelcontextprotocol/client";
 import { bridgeApi } from "../api";
+import { errorMessage, friendlyError } from "../errors";
 import type { PersonalAppOpen } from "../protocol/generated/protocol";
 import { McpAppFrame, useNearViewport } from "../mcp-apps/McpAppFrame";
 import { ConnectorApprovalSheet } from "./ConnectorApprovalSheet";
@@ -54,7 +55,7 @@ export function PersonalAppOpenCard({ sessionId, openId, contentHash, readOnly }
   }, []);
   useEffect(() => {
     let current = true;
-    void bridgeApi.getPersonalAppOpen({ sessionId, openId, contentHash }).then(value => { if (current) setApp(value); }, reason => { if (current) setError(String(reason)); });
+    void bridgeApi.getPersonalAppOpen({ sessionId, openId, contentHash }).then(value => { if (current) setApp(value); }, reason => { if (current) setError(friendlyError(reason, "Couldn't open this app.")); });
     return () => { current = false; };
   }, [sessionId, openId, contentHash]);
   // A card that goes away settles the view's waiting call instead of leaving it hanging.
@@ -84,7 +85,9 @@ export function PersonalAppOpenCard({ sessionId, openId, contentHash, readOnly }
       if (answer.kind !== "result") throw new Error("The action needs approving again");
       waiting.resolve(asToolResult(answer.result));
     } catch (reason) {
-      waiting.reject(reason instanceof Error ? reason : new Error(String(reason)));
+      // The view's own call rejects with the host's error, not a display string.
+      if (reason instanceof Error) waiting.reject(reason);
+      else waiting.reject(new Error(errorMessage(reason)));
     } finally {
       setBusy(false);
       settle(undefined);

@@ -150,7 +150,7 @@ describe("UsageScreenTime", () => {
     const onError = vi.fn();
     await act(async () => { root.render(<UsageScreenTime onError={onError} />); });
     await settle();
-    expect(onError).toHaveBeenCalledWith("daemon away");
+    expect(onError).toHaveBeenCalledWith("Daemon away.");
   });
 });
 

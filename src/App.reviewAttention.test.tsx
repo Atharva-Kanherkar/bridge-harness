@@ -74,7 +74,7 @@ describe("App review attention", () => {
 
     await emit(job({ id: "j9", number: 9, status: "reviewing" }));
     await emit(job({ id: "j9", number: 9, status: "failed", error: "claude could not review: signed out" }));
-    expect(toast("Review failed on PR #9")!.textContent).toContain("claude could not review: signed out");
+    expect(toast("Review failed on PR #9")!.textContent).toContain("Claude could not review.");
     expect(notifyAttention).toHaveBeenCalledTimes(3);
   });
 

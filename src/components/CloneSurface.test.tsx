@@ -112,7 +112,7 @@ describe("CloneSurface as a dock tenant", () => {
     const img = container.querySelector<HTMLImageElement>("[data-clone-viewport] img")!;
     img.getBoundingClientRect = () => ({ left: 0, top: 0, width: 200, height: 100, right: 200, bottom: 100, x: 0, y: 0, toJSON() {} });
     await act(async () => { img.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 100, clientY: 50 })); });
-    expect(onError).toHaveBeenCalledWith("clone expired");
+    expect(onError).toHaveBeenCalledWith("Clone expired.");
   });
 
   it("fills its host instead of positioning itself", async () => {
@@ -349,7 +349,7 @@ describe("CloneSurface as a dock tenant", () => {
     vi.mocked(bridgeApi.takeoverBrowserClone).mockRejectedValue(new Error("clone is gone"));
     await render({ onError });
     await press("Take over");
-    expect(onError).toHaveBeenCalledWith("clone is gone");
+    expect(onError).toHaveBeenCalledWith("Clone is gone.");
     expect(container.textContent).toContain("Acting");
   });
 

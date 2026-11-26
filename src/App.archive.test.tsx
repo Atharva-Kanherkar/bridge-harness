@@ -90,7 +90,7 @@ it("shows retained unsaved work as part of the archive confirmation", async () =
   await archive();
   expect(trigger()).toBeNull();
   expect(container.textContent).toContain("Chat archived");
-  expect(container.textContent).toContain("Its worktree was kept: uncommitted changes");
+  expect(container.textContent).toContain("Its worktree was kept: Uncommitted changes.");
 });
 
 it("keeps a failed archive visible and allows retry", async () => {

@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridgeApi } from "./api";
+import { friendlyError } from "./errors";
 import type { SearchChatsResult } from "./protocol/generated/protocol";
 
 export const CHAT_SEARCH_MIN_CHARS = 2;
@@ -60,7 +61,7 @@ export function useChatSearch(query: string): ChatSearchState & { runDeep: () =>
       bridgeApi.searchChats(trimmed)
         .then(result => { if (generation.current === current) setState({ result, loading: false, deepRunning: false }); })
         .catch(error => {
-          if (generation.current === current) setState({ loading: false, deepRunning: false, error: error instanceof Error ? error.message : String(error) });
+          if (generation.current === current) setState({ loading: false, deepRunning: false, error: friendlyError(error, "Couldn't search your chats.") });
         });
     }, CHAT_SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
@@ -74,7 +75,7 @@ export function useChatSearch(query: string): ChatSearchState & { runDeep: () =>
       .then(result => { if (generation.current === current) setState({ result, loading: false, deepRunning: false }); })
       .catch(error => {
         if (generation.current === current) {
-          setState(previous => ({ ...previous, deepRunning: false, error: error instanceof Error ? error.message : String(error) }));
+          setState(previous => ({ ...previous, deepRunning: false, error: friendlyError(error, "Couldn't search inside your chats.") }));
         }
       });
   }, [trimmed]);

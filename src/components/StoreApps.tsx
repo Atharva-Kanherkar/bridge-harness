@@ -13,7 +13,7 @@ import { setPinned } from "../apps/pins";
 import { applyAnswer, loadApps, useApps, usePersonalApps } from "../apps/store";
 import { connectionLabel } from "./personalAppShared";
 import { bridgeApi } from "../api";
-import { errorMessage } from "../errors";
+import { friendlyError } from "../errors";
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -69,7 +69,7 @@ export function StoreApps({ onOpenApp }: { onOpenApp?: (key: AppKey) => void }) 
       applyAnswer(await bridgeApi.setAppEnabled(row.id, !enabled));
       setStatus(enabled ? `Turned ${row.name} off. New chats no longer get its tools.` : `Turned ${row.name} on.`);
     } catch (error) {
-      setStatus(errorMessage(error));
+      setStatus(friendlyError(error, enabled ? `Couldn't turn ${row.name} off.` : `Couldn't turn ${row.name} on.`));
     }
   };
 
@@ -142,7 +142,7 @@ function MyApps({ apps, onOpenApp, onStatus }: { apps: readonly PersonalAppEntry
       applyAnswer(await bridgeApi.setAppEnabled(entry.app.id, !entry.enabled));
       onStatus(entry.enabled ? `Turned ${entry.app.name} off. Writes waiting for approval were cancelled.` : `Turned ${entry.app.name} on.`);
     } catch (error) {
-      onStatus(errorMessage(error));
+      onStatus(friendlyError(error, entry.enabled ? `Couldn't turn ${entry.app.name} off.` : `Couldn't turn ${entry.app.name} on.`));
     }
   };
   const remove = async (entry: PersonalAppEntry) => {
@@ -152,7 +152,7 @@ function MyApps({ apps, onOpenApp, onStatus }: { apps: readonly PersonalAppEntry
       await loadApps();
       onStatus(`Deleted ${entry.app.name}.`);
     } catch (error) {
-      onStatus(errorMessage(error));
+      onStatus(friendlyError(error, `Couldn't delete ${entry.app.name}.`));
     }
   };
 

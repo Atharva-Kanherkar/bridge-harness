@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Download } from "lucide-react";
 import { isDevelopmentBuild, UpdateInstallUnavailableError, type UpdateInfo } from "../updater";
+import { friendlyError } from "../errors";
 import { ToastCard } from "./ToastCard";
 import { Button } from "@/components/ui/button";
 
@@ -20,9 +21,8 @@ export function UpdateToast({ update, onInstall, onDismiss }: {
       await onInstall(update);
     } catch (error) {
       setInstalling(false);
-      setInstallError(error instanceof UpdateInstallUnavailableError
-        ? error.message
-        : "Update failed. Check your connection and try again.");
+      const failed = "Update failed. Check your connection and try again.";
+      setInstallError(error instanceof UpdateInstallUnavailableError ? friendlyError(error, failed) : failed);
     }
   }
   return <ToastCard

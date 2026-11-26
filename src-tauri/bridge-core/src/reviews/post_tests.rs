@@ -321,7 +321,7 @@ fn rate_limit_responses_wait_and_permission_refusals_fail() {
         r#"{"message":"API rate limit exceeded for user ID 1."}"#,
     ));
     assert_eq!(wait, Duration::from_secs(120));
-    assert!(message.contains("HTTP 403: API rate limit exceeded"), "{message}");
+    assert_eq!(message, "GitHub is rate limiting Bridge. It will try again shortly.", "plain words, not GitHub's");
     // Secondary limit with Retry-After, as a 403 and as a 429.
     for status in ["403 Forbidden", "429 Too Many Requests"] {
         let (_, wait) = waits(reply(&format!("{status}\r\nRetry-After: 30"), r#"{"message":"You have exceeded a secondary rate limit."}"#));
@@ -339,7 +339,7 @@ fn rate_limit_responses_wait_and_permission_refusals_fail() {
         "403 Forbidden\r\nX-RateLimit-Remaining: 4999\r\nX-RateLimit-Reset: 1800000120",
         r#"{"message":"Resource not accessible by integration"}"#,
     ));
-    assert!(matches!(&refused, Err(StepError::Fatal(message)) if message.contains("HTTP 403: Resource not accessible")), "{refused:?}");
+    assert!(matches!(&refused, Err(StepError::Fatal(message)) if message.contains("can't do that on this repository")), "{refused:?}");
     assert!(matches!(step(reply("404 Not Found", r#"{"message":"Not Found"}"#)), Err(StepError::Fatal(_))));
     assert!(matches!(step(reply("502 Bad Gateway", "")), Err(StepError::Transient(_))));
     assert_eq!(step(reply("201 Created", r#"{"id":1}"#)).unwrap(), br#"{"id":1}"#);
@@ -787,7 +787,7 @@ fn a_rejected_post_returns_the_draft_with_the_reason() {
     assert_eq!(job.status, Status::Drafted);
     assert_eq!(
         job.error.as_deref(),
-        Some("GitHub refused the review: HTTP 422: Unprocessable Entity (Line could not be resolved)")
+        Some("GitHub refused the review.")
     );
     assert_eq!(fixture.posts(), 1, "a refusal is not retried");
     assert_eq!(fixture.findings(&id)[0].decision, ReviewFindingDecision::Kept, "the triage stays");

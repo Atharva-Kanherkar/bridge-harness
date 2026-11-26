@@ -314,7 +314,7 @@ describe("TranscriptPane observability", () => {
     await mountStream(busyStream(), { exportTranscript });
     await click([...container.querySelectorAll("button")].find(button => button.textContent?.includes("Export JSONL"))!);
     await act(async () => { await Promise.resolve(); });
-    expect(container.textContent).toContain("Export failed: disk is full");
+    expect(container.textContent).toContain("Couldn't export the transcript. The disk is full.");
     // Still a working pane, not a dead one.
     await click(chip("Problems")!);
     expect(container.textContent).toContain("1 of 5 events");

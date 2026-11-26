@@ -6,6 +6,7 @@ import { modKey } from "@/lib/platform";
 import type { ConversationItem } from "../conversation";
 import type { InteractionResolutionResult, QuestionAction } from "../protocol/generated/protocol";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
+import { friendlyError } from "../errors";
 import { answerSummary, canSubmit, cleanAnswers, fieldAnswered, initialAnswers, questionFields, type QuestionField, type QuestionOption } from "../questionFields";
 import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
@@ -72,7 +73,7 @@ export function QuestionCard({ item, onResolve, resolvedCopy }: { item: Conversa
       await onResolve(item.eventId, action, payload);
       if (action === "answer") setSent(payload);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(friendlyError(cause, action === "answer" ? "Couldn't send your answer." : action === "decline" ? "Couldn't skip the question." : "Couldn't dismiss the question."));
     } finally {
       setBusy(null);
     }
@@ -153,7 +154,7 @@ export function QuestionCard({ item, onResolve, resolvedCopy }: { item: Conversa
               {sent && item.status === "pending" ? "Answer sent" : resolvedCopy}
             </p>
           </motion.div>}
-    {typeof item.data.failure === "string" && <p role="alert" className="px-3.5 pb-3 text-meta text-destructive sm:px-4">{item.data.failure}</p>}
+    {typeof item.data.failure === "string" && <p role="alert" className="px-3.5 pb-3 text-meta text-destructive sm:px-4">{friendlyError(item.data.failure, "The question couldn't be answered.")}</p>}
     {error && <p role="alert" className="px-3.5 pb-3 text-meta text-destructive sm:px-4">{error}</p>}
   </section>;
 }

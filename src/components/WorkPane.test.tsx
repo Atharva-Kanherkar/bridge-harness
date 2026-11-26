@@ -103,6 +103,8 @@ describe("WorkPane", () => {
     render({ prs: [{ ...running, stale: true, error: "gh: offline" }], onRetry });
     act(() => rowButton(412).click());
     expect(host.textContent).toContain("last state Bridge saw");
+    expect(host.textContent).toContain("Check your network connection");
+    expect(host.textContent).not.toContain("gh: offline");
     act(() => [...host.querySelectorAll("button")].find(button => button.textContent?.includes("Retry"))!.click());
     expect(onRetry).toHaveBeenCalled();
   });

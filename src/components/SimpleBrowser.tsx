@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, ExternalLink, Globe, MousePointer2, Plus, RotateCw, Square, Undo2, X } from "lucide-react";
 import { openExternalUrl } from "../externalLinks";
+import { friendlyError } from "../errors";
 import { browserWorkspaceReducer, defaultBrowserWorkspace, normalizeBrowserUrl, readBrowserWorkspace, writeBrowserWorkspace } from "../browserWorkspace";
 import { sanitizeBrowserSelection, type BrowserSelectionContext } from "../browserSelection";
 import { hasNativeBrowser, type BrowserAction, type BrowserPageSnapshot } from "../browserRuntime";
@@ -88,7 +89,7 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
   const run = async (task: () => Promise<unknown>) => {
     setError(undefined);
     try { await task(); }
-    catch (reason) { if (mounted.current) setError(reason instanceof Error ? reason.message : String(reason)); }
+    catch (reason) { if (mounted.current) setError(friendlyError(reason, "The browser couldn't do that. Try again.")); }
   };
   const navigate = (input: string) => {
     const url = normalizeBrowserUrl(input);
@@ -262,7 +263,7 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
         <BrowserPage ref={page => { if (page) pages.current.set(tab.id, page); else pages.current.delete(tab.id); }} sessionId={sessionId} tabId={tab.id} initialUrl={tab.url} visible={visible && tab.id === active.id && !!tab.url && !snapshots[tab.id]?.error && !selection} onSnapshot={next => acceptSnapshot(tab.id, next)} onError={message => { if (stateRef.current.activeTabId === tab.id) setError(message); }} />
       </div>)}
       {!active.url && <div className="absolute inset-0 bg-background"><PaneState icon={Globe} title="New browser tab">Enter an address above to open a page.</PaneState></div>}
-      {pageError && <div className="absolute inset-0 overflow-auto bg-background"><PaneState role="alert" icon={Globe} title="Page could not load" action={<><Button variant="outline" size="sm" onClick={() => act("reload")}>Retry</Button><Button variant="outline" size="sm" onClick={() => void run(() => openExternalUrl(active.url))}>Open in system browser</Button></>}>{pageError}</PaneState></div>}
+      {pageError && <div className="absolute inset-0 overflow-auto bg-background"><PaneState role="alert" icon={Globe} title="Page could not load" action={<><Button variant="outline" size="sm" onClick={() => act("reload")}>Retry</Button><Button variant="outline" size="sm" onClick={() => void run(() => openExternalUrl(active.url))}>Open in system browser</Button></>}>{friendlyError(pageError, "The page didn't load. Check the address and try again.")}</PaneState></div>}
       {selection && <section aria-label="Selected page element" className="absolute inset-0 flex flex-col gap-3 overflow-auto bg-background p-4">
         <h3 className="font-display text-sm font-semibold">Selected element</h3>
         <p className="break-all text-xs leading-4 text-muted-foreground">{selection.url}</p>

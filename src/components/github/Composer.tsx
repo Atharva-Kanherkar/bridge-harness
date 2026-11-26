@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { Kbd } from "@/components/ui/kbd";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { friendlyError } from "../../errors";
 
 /** A write that reports back: `undefined` when GitHub took it, otherwise the
  *  reason it did not, verbatim. */
@@ -51,7 +52,7 @@ export function Composer({ label, placeholder, submitLabel, onSubmit, onCancel, 
     const failure = await onSubmit(body.trim());
     if (!alive.current) return;
     setBusy(false);
-    if (failure !== undefined) { setError(failure); return; }
+    if (failure !== undefined) { setError(friendlyError(failure, "Couldn't post the comment. Try again.")); return; }
     setBody("");
     if (collapsed) setOpen(false);
     onCancel?.();

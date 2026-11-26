@@ -69,6 +69,20 @@ pub enum StepError {
 }
 
 impl StepError {
+    /// A failure to fix by hand, in `plain` words; `detail` goes to the log.
+    pub fn fatal_logged(plain: impl Into<String>, detail: impl std::fmt::Display) -> StepError {
+        let plain = plain.into();
+        eprintln!("[reviews] {plain} ({detail})");
+        StepError::Fatal(plain)
+    }
+
+    /// A failure worth retrying, in `plain` words; `detail` goes to the log.
+    pub fn transient_logged(plain: impl Into<String>, detail: impl std::fmt::Display) -> StepError {
+        let plain = plain.into();
+        eprintln!("[reviews] {plain} ({detail})");
+        StepError::Transient(plain)
+    }
+
     pub fn message(&self) -> String {
         match self {
             StepError::Transient(message)

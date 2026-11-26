@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CircleAlert, CircleCheck, RotateCcw, SquareArrowOutUpRight, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import { relativeTime } from "../workDashboard";
 import type { ReviewJob, ReviewJobStatus } from "../../protocol/generated/protocol";
 import { ReviewDraft } from "./ReviewDraft";
@@ -61,10 +62,10 @@ function JobRow({ job, now, onChanged }: { job: ReviewJob; now: number; onChange
   const status = STATUS[job.status];
   const time = elapsed(job, now);
   const counts = SEVERITIES.filter(severity => job.findingCounts[severity] > 0);
-  const act = async (call: () => Promise<{ job: ReviewJob }>) => {
+  const act = async (call: () => Promise<{ job: ReviewJob }>, failed: string) => {
     setBusy(true); setError(undefined);
     try { onChanged((await call()).job); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { setError(friendlyError(cause, failed)); }
     finally { setBusy(false); }
   };
   const Icon = status.tone === "failed" ? CircleAlert : status.tone === "done" ? CircleCheck : null;
@@ -89,14 +90,14 @@ function JobRow({ job, now, onChanged }: { job: ReviewJob; now: number; onChange
       {job.status === "posted" && job.postedReviewUrl && <a href={job.postedReviewUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-meta text-foreground hover:bg-accent">
         View on GitHub <SquareArrowOutUpRight size={11} aria-hidden="true" />
       </a>}
-      {RETRYABLE.has(job.status) && <Button variant="quiet" size="2xs" disabled={busy} onClick={() => void act(() => bridgeApi.retryReview(job.id))}>
+      {RETRYABLE.has(job.status) && <Button variant="quiet" size="2xs" disabled={busy} onClick={() => void act(() => bridgeApi.retryReview(job.id), "Couldn't retry the review.")}>
         <RotateCcw size={11} aria-hidden="true" /> Retry
       </Button>}
-      {!TERMINAL.has(job.status) && job.status !== "posting" && <Button variant="quiet" size="2xs" disabled={busy} onClick={() => void act(() => bridgeApi.cancelReview(job.id))} aria-label={job.status === "drafted" ? "Discard this draft" : "Cancel this review"}>
+      {!TERMINAL.has(job.status) && job.status !== "posting" && <Button variant="quiet" size="2xs" disabled={busy} onClick={() => void act(() => bridgeApi.cancelReview(job.id), job.status === "drafted" ? "Couldn't discard the draft." : "Couldn't cancel the review.")} aria-label={job.status === "drafted" ? "Discard this draft" : "Cancel this review"}>
         <X size={11} aria-hidden="true" /> {job.status === "drafted" ? "Discard" : "Cancel"}
       </Button>}
     </span>
-    {(error || job.error) && <p role="alert" className="basis-full text-caption text-destructive">{error ?? job.error}</p>}
+    {(error || job.error) && <p role="alert" className="basis-full text-caption text-destructive">{error ?? friendlyError(job.error, "The review failed.")}</p>}
   </div>;
 }
 
@@ -131,7 +132,7 @@ export function usePullRequestReviews(workspaceId: string, number: number, start
         const result = await bridgeApi.listReviews(workspaceId, number);
         if (active) { setNow(Date.now()); setJobs(current => result.jobs.filter(job => !live.has(job.id)).reduce(upsert, current)); }
       } catch (cause) {
-        if (active) setError(cause instanceof Error ? cause.message : String(cause));
+        if (active) setError(friendlyError(cause, "Couldn't load the reviews."));
       } finally {
         if (active) setLoaded(true);
       }
@@ -248,8 +249,11 @@ export function ReviewStatusLine({ reviews, onShow }: { reviews: PullRequestRevi
     lines.push({ key: "drafts", tone: "waiting", text: `${drafts.length} drafts ready: ${findings(total)}`, action: "Triage", onAction: onShow });
   }
   if (failed && !active.length) {
+    // The reason is the job's raw error made plain; a reason that only reads
+    // like code is dropped rather than shown.
+    const reason = failed.error ? friendlyError(failed.error, "") : "";
     lines.push({
-      key: failed.id, tone: "failed", text: `Review with ${who(failed)} ${failed.status === "interrupted" ? "was interrupted" : "failed"}${failed.error ? `: ${failed.error}` : ""}`, action: "Retry",
+      key: failed.id, tone: "failed", text: `Review with ${who(failed)} ${failed.status === "interrupted" ? "was interrupted" : "failed"}.${reason ? ` ${reason}` : ""}`, action: "Retry",
       onAction: () => {
         setBusy(true);
         bridgeApi.retryReview(failed.id).then(result => update(result.job), () => onShow()).finally(() => setBusy(false));

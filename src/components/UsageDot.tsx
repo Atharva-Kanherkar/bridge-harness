@@ -10,7 +10,7 @@ import { createPortal } from "react-dom";
 import { BarChart3, RefreshCw, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
-import { errorMessage } from "../errors";
+import { friendlyError } from "../errors";
 import type { ProviderUsageOverviews, UsageOverviewSnapshot, UsageQuotaWindow } from "../protocol/generated/protocol";
 import type { AdapterDescriptor } from "../types";
 import { formatReset, type UsageProvider } from "../usage";
@@ -215,7 +215,7 @@ function ProviderSection({ snapshot, adapter, nowSeconds, refreshing, onSignIn, 
       </span>
     </div>
     {snapshot.windows.map(window => <WindowRow key={window.id} provider={provider} window={window} fresh={fresh} nowSeconds={nowSeconds} />)}
-    {snapshot.error ? <ProviderError message={snapshot.error} refreshing={refreshing} onRefresh={onRefresh} />
+    {snapshot.error ? <ProviderError message={friendlyError(snapshot.error, "Couldn't read this account's usage.")} refreshing={refreshing} onRefresh={onRefresh} />
       : !snapshot.windows.length && <p className="mt-1 text-caption leading-relaxed text-muted-foreground">{state === "not_installed" ? `${harnessLabel(provider)} isn't installed. Add it in Settings → Harnesses.` : "No quota reported yet."}</p>}
     {!isAccount && <UsageResetRow snapshot={snapshot} onUpdated={onRefresh} compact />}
   </section>;
@@ -392,7 +392,7 @@ export function useProviderUsageOverviews(): { overviews: ProviderUsageOverviews
   useEffect(() => {
     active.current = true;
     let off: (() => void) | undefined;
-    void bridgeApi.getProviderUsageOverviews().then(accept).catch(value => { if (active.current) setError(errorMessage(value)); });
+    void bridgeApi.getProviderUsageOverviews().then(accept).catch(value => { if (active.current) setError(friendlyError(value, "Couldn't load your usage.")); });
     void bridgeApi.onProviderUsageOverviews(accept).then(fn => { if (active.current) off = fn; else fn(); });
     return () => { active.current = false; off?.(); };
   }, [accept]);
@@ -400,7 +400,7 @@ export function useProviderUsageOverviews(): { overviews: ProviderUsageOverviews
     setRefreshing(true);
     bridgeApi.refreshProviderUsageOverviews()
       .then(accept)
-      .catch(value => { if (active.current) setError(errorMessage(value)); })
+      .catch(value => { if (active.current) setError(friendlyError(value, "Couldn't refresh your usage.")); })
       .finally(() => { if (active.current) setRefreshing(false); });
   }, [accept]);
   return { overviews, refreshing, refresh, error };

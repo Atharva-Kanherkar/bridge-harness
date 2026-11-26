@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ComponentType, type FormEvent } from 
 import { CircleDot, FileText, GitPullRequest, MessagesSquare, Plus, Route, Search, Send } from "lucide-react";
 import type { TrailCandidate, TrailMemberKind, TrailMemberRef, TrailSummary } from "@/protocol/generated/protocol";
 import { bridgeApi } from "@/api";
+import { friendlyError } from "@/errors";
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { HarnessMark } from "@/components/harnessMarks";
@@ -22,10 +23,6 @@ const KINDS: { kind: TrailMemberKind; label: string; plural: string; icon: Compo
 ];
 
 
-function message(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
-
 /** One field: the issue's link, `owner/repo#12`, or `#12` when the trail has
  * a project. The core reads it from GitHub; a refusal shows here. */
 function AddIssueForm({ hasProject, onAdd }: { hasProject: boolean; onAdd: (reference: string) => Promise<void> }) {
@@ -38,7 +35,7 @@ function AddIssueForm({ hasProject, onAdd }: { hasProject: boolean; onAdd: (refe
     setBusy(true);
     setError(undefined);
     try { await onAdd(reference.trim()); setReference(""); }
-    catch (cause) { setError(message(cause)); }
+    catch (cause) { setError(friendlyError(cause, "Couldn't add that issue.")); }
     finally { setBusy(false); }
   }
   return (
@@ -71,7 +68,7 @@ function NewNoteForm({ onCreate }: { onCreate: (title: string) => Promise<void> 
     setBusy(true);
     setError(undefined);
     try { await onCreate(title.trim()); }
-    catch (cause) { setError(message(cause)); setBusy(false); }
+    catch (cause) { setError(friendlyError(cause, "Couldn't make the note.")); setBusy(false); }
   }
   return (
     <form onSubmit={submit} aria-label="New note on this trail" className="rounded-xl bg-card p-3">
@@ -137,7 +134,7 @@ export function TrailAddDialog({ trail, initialKind = "note", onAdd, onAddIssue,
     const timer = window.setTimeout(() => {
       bridgeApi.listTrailCandidates(trail.id, kind, query)
         .then(result => { if (id === request.current) { setCandidates(result.candidates); setError(undefined); } })
-        .catch(cause => { if (id === request.current) { setCandidates([]); setError(message(cause)); } });
+        .catch(cause => { if (id === request.current) { setCandidates([]); setError(friendlyError(cause, "Couldn't load the list. Try again.")); } });
     }, query ? 150 : 0);
     return () => window.clearTimeout(timer);
   }, [trail.id, kind, query, reload]);
@@ -158,7 +155,7 @@ export function TrailAddDialog({ trail, initialKind = "note", onAdd, onAddIssue,
       setAdded(`Added “${candidate.title}”.`);
       setReload(value => value + 1);
     } catch (cause) {
-      setError(message(cause));
+      setError(friendlyError(cause, `Couldn't add “${candidate.title}”.`));
     } finally {
       setBusy(false);
     }

@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../../api";
+import { friendlyError } from "../../../errors";
 import type { DatabaseGroup, DatabaseRow, NoteDatabase, NoteDatabaseView, NoteProperty, NoteSchemaChange, NoteViewInput, QueryDatabaseParams, Workspace } from "../../../types";
 import { DatabaseBoard, GROUP_LIMIT } from "./DatabaseBoard";
 import { DatabaseCalendar } from "./DatabaseCalendar";
@@ -50,7 +51,6 @@ export interface DatabaseViewProps {
 
 interface Pending { row: string; key: string; value: unknown; after: number }
 
-const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 const withView = (database: NoteDatabase, view: NoteDatabaseView): NoteDatabase => ({ ...database, views: database.views.map(candidate => candidate.id === view.id ? view : candidate) });
 
 export function DatabaseView({ databaseId, database: given, viewId, bounded = false, hostPageId, workspaces, chatTitle, onOpenChat, onOpenPage, onError }: DatabaseViewProps) {
@@ -69,7 +69,8 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
   const loaded = useRef(false);
   const latest = useRef({ onError });
   latest.current = { onError };
-  const fail = useCallback((error: unknown) => latest.current.onError(message(error)), []);
+  /** Report a refused read or write as one plain sentence; `fallback` names what failed. */
+  const fail = useCallback((error: unknown, fallback = "Couldn't update the database.") => latest.current.onError(friendlyError(error, fallback)), []);
 
   /** The newest view edit not yet saved, kept over any read that lands first. */
   // Per view, so queued edits to different views (a reorder moves two) each
@@ -85,7 +86,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
     try {
       const page = await bridgeApi.readNotePage(databaseId);
       if (page.database && schemaOrder.accept(ticket)) setDatabase(withDrafts(page.database));
-    } catch (error) { fail(error); }
+    } catch (error) { fail(error, "Couldn't load the database."); }
   }, [databaseId, fail, schemaOrder]);
   useEffect(() => { if (!given) void readDatabase(); }, [given, readDatabase]);
 
@@ -132,7 +133,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
       }
       if (refresh) land();
     } catch (error) {
-      if (mine === ticket.current) fail(error);
+      if (mine === ticket.current) fail(error, "Couldn't load the database's rows.");
     }
   }, [databaseId, viewParams, fail]);
 
@@ -206,7 +207,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
       return true;
     } catch (error) {
       setPending(current => current.filter(item => item !== entry));
-      fail(error);
+      fail(error, "Couldn't save that change.");
       return false;
     }
   }, [query, fail]);
@@ -218,7 +219,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
       if (schemaOrder.accept(ticket)) setDatabase(next);
       void query();
       return next;
-    } catch (error) { fail(error); return null; }
+    } catch (error) { fail(error, "Couldn't change the database's properties."); return null; }
   }, [databaseId, query, fail, schemaOrder]);
 
   // View edits apply at once, each built on the one before it (still unsaved
@@ -252,7 +253,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
       void query();
     }, error => {
       if (mine === saveSeq.current) { viewDrafts.current.clear(); void readDatabase(); }
-      fail(error);
+      fail(error, "Couldn't save the view.");
     });
     return write.then(() => true, () => false);
   }, [databaseId, query, readDatabase, fail]);
@@ -265,7 +266,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
         if (schemaOrder.accept(ticket)) setDatabase(next);
         void query();
         return next.properties.find(candidate => candidate.id === property.id) ?? null;
-      } catch (error) { fail(error); return null; }
+      } catch (error) { fail(error, "Couldn't add the option."); return null; }
     },
     searchRows: async (target, text) => (await bridgeApi.queryDatabase({ databaseId: target, query: text.trim() || null, limit: 20 })).rows.map(row => ({ id: row.note.id, title: row.note.title ?? "" })),
     rowTitle: id => related.get(id) ?? rows?.find(row => row.note.id === id)?.note.title ?? undefined,
@@ -279,7 +280,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
     retype: (property, type) => void change([{ op: "retype", propertyId: property.id, type }]),
     setOptions: (property, options, seen) => {
       const ticket = schemaOrder.take();
-      void saveOptions(databaseId, property.id, options, seen).then(next => { if (schemaOrder.accept(ticket)) setDatabase(next); void query(); }, fail);
+      void saveOptions(databaseId, property.id, options, seen).then(next => { if (schemaOrder.accept(ticket)) setDatabase(next); void query(); }, error => fail(error, "Couldn't save the options."));
     },
     remove: property => void change([{ op: "delete", propertyId: property.id }]),
     addProperty: (name, type) => void change([{ op: "add", property: { name, type, ...(type === "status" ? { options: [{ name: "To do", group: "todo" }, { name: "In progress", group: "inProgress" }, { name: "Done", group: "done" }] } : {}) } }]),
@@ -295,7 +296,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
       if (initial && initial.value !== null && initial.value !== undefined && initial.column.id !== "kind") await commit({ note, values: {} }, initial.column, initial.value);
       void query();
       return note.id;
-    } catch (error) { fail(error); return null; }
+    } catch (error) { fail(error, "Couldn't add a row."); return null; }
   }, [databaseId, query, fail, commit]);
 
   // Views: made, renamed, retyped, duplicated, moved and deleted.
@@ -320,7 +321,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
         const saved = await bridgeApi.saveDatabaseView({ databaseId, view: { name, type, order, ...typeDefaults(type) } });
         setDatabase(current => current && { ...current, views: [...current.views, saved] });
         setActiveId(saved.id);
-      } catch (error) { fail(error); }
+      } catch (error) { fail(error, "Couldn't create the view."); }
     })(),
     rename: (target, name) => saveView(() => ({ name }), target),
     changeType: (target, type) => saveView(() => ({ type, ...typeDefaults(type, target) }), target),
@@ -332,7 +333,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
         setDatabase(current => current && { ...current, views: [...current.views, copy] });
         await saveOrder(ordered);
         setActiveId(copy.id);
-      } catch (error) { fail(error); }
+      } catch (error) { fail(error, "Couldn't duplicate the view."); }
     })(),
     remove: target => void (async () => {
       if (views_.current.length <= 1) return;
@@ -340,12 +341,12 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
         await bridgeApi.deleteDatabaseView({ databaseId, viewId: target.id });
         setDatabase(current => current && { ...current, views: current.views.filter(candidate => candidate.id !== target.id) });
         setActiveId(current => current === target.id ? null : current);
-      } catch (error) { fail(error); }
+      } catch (error) { fail(error, "Couldn't delete the view."); }
     })(),
     move: (target, index) => {
       const ordered = views_.current.filter(candidate => candidate.id !== target.id);
       ordered.splice(Math.max(0, Math.min(index, ordered.length)), 0, target);
-      void saveOrder(ordered).catch(fail);
+      void saveOrder(ordered).catch(error => fail(error, "Couldn't move the view."));
     },
   }), [databaseId, typeDefaults, saveView, saveOrder, fail]);
 

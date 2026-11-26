@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, FolderGit2, Play, Plus, Settings2, Sparkles, Workflow as WorkflowIcon } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type { ForkSessionResult, Project, Workflow, WorkflowDefinition, WorkflowDraft, WorkflowOptions, WorkflowRun, WorkflowSettingsSnapshot, WorkflowSummary, WorkflowTemplate } from "../protocol/generated/protocol";
 import { openExternalUrl } from "../externalLinks";
 import { Button } from "@/components/ui/button";
@@ -13,7 +14,7 @@ import { WorkflowEditor, type EditorSubmit } from "./workflows/WorkflowEditor";
 import { CLAUDE_CONNECTORS_URL, WorkflowRunView } from "./workflows/WorkflowRunView";
 import { ACTIVE_RUN_STATUSES, RUN_STATUS_LABEL, costLine, relativeTime, runTone, triggerSummary } from "./workflows/format";
 import { WorkflowTemplates } from "./workflows/WorkflowTemplates";
-import { CHIP, Dot, ErrorNote, StatusChip, errorText } from "./workflows/parts";
+import { CHIP, Dot, ErrorNote, StatusChip } from "./workflows/parts";
 import { WorkflowInbox } from "./workflows/WorkflowInbox";
 import { needsYouCount } from "./workflows/notify";
 import { RowButton } from "@/components/ui/row";
@@ -83,7 +84,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
       setAllRuns(recent.runs);
       setRows(list.workflows);
     } catch (reason) {
-      setError(errorText(reason));
+      setError(friendlyError(reason, "Couldn't load the workflows."));
       setRows(current => current ?? []);
     }
   }, []);
@@ -100,7 +101,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
 
   useEffect(() => {
     void refreshList();
-    bridgeApi.workflowOptions().then(setOptions).catch(reason => setError(errorText(reason)));
+    bridgeApi.workflowOptions().then(setOptions).catch(reason => setError(friendlyError(reason, "Couldn't load the workflow options.")));
     bridgeApi.readWorkflowSettings().then(setSettings).catch(() => {});
   }, [refreshList]);
 
@@ -136,7 +137,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
       setEditing({ workflow: null, initial: draft.definition, notes: draft.notes });
       setDescribe("");
     } catch (reason) {
-      setError(errorText(reason));
+      setError(friendlyError(reason, "Couldn't draft a workflow from that description."));
     } finally {
       setDrafting(false);
     }
@@ -150,7 +151,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
       await refreshList();
       if (selectedId.current) await refreshSelected(selectedId.current);
     } catch (reason) {
-      setError(errorText(reason));
+      setError(friendlyError(reason, "Something went wrong with the workflow. Try again."));
     } finally {
       setBusy(false);
     }
@@ -182,7 +183,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
         const run = found.find(candidate => candidate.id === focusRun.runId);
         if (run) void openRunOf(run);
       })
-      .catch(reason => setError(errorText(reason)))
+      .catch(reason => setError(friendlyError(reason, "Couldn't open that workflow run.")))
       .finally(() => onRunFocused?.());
   }, [focusRun, onRunFocused, openRunOf]);
   const runWorkflow = (workflowId: string, dryRun: boolean) => act(async () => {
@@ -196,7 +197,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
     try {
       setOptions(await bridgeApi.refreshWorkflowConnectors());
     } catch (reason) {
-      setEditorError(errorText(reason));
+      setEditorError(friendlyError(reason, "Couldn't refresh the connectors."));
     } finally {
       setRefreshing(false);
     }
@@ -243,7 +244,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
         setOpenRun(result.run);
       }
     } catch (reason) {
-      setEditorError(errorText(reason));
+      setEditorError(friendlyError(reason, "Couldn't save the workflow."));
     } finally {
       setBusy(false);
     }
@@ -370,7 +371,7 @@ function WorkflowSettingsDialog({ open, snapshot, onClose, onSaved }: {
       onSaved(await bridgeApi.writeWorkflowSettings({ paused, quotaReservePercent: reserve, maxConcurrentRuns: concurrent }));
       onClose();
     } catch (reason) {
-      setError(errorText(reason));
+      setError(friendlyError(reason, "Couldn't save the workflow settings."));
     }
   };
   return <Dialog open={open} onOpenChange={next => { if (!next) onClose(); }}>{open && <DialogContent>

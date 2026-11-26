@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, Mic, RotateCcw, Trash2 } from "lucide-react";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import type { VoiceLocalSetupState, VoiceLocalStatusResult } from "../../protocol/generated/protocol";
 import { VoiceMicrophoneTest } from "./VoiceMicrophoneTest";
 import { GhostButton, SettingsBlockRow, SettingsGroup, SettingsPage, SettingsRow, StatusPill, TextButton, type PillTone } from "./kit";
@@ -86,7 +87,7 @@ export function VoiceSettingsPage({ onError, onChanged }: {
       const next = await (operation === "setup" ? bridgeApi.voiceLocalSetup() : bridgeApi.voiceLocalRemove());
       if (mounted.current && request === generation.current) acceptStatus(next);
     } catch (error) {
-      if (mounted.current) latest.current.onError(String(error));
+      if (mounted.current) latest.current.onError(friendlyError(error, operation === "setup" ? "Couldn't set up local dictation." : "Couldn't remove local dictation."));
     } finally {
       mutation.current = false;
       if (mounted.current) setBusy(false);
@@ -107,7 +108,7 @@ export function VoiceSettingsPage({ onError, onChanged }: {
         </div>
       </SettingsBlockRow>}
       {status?.reason && <SettingsBlockRow label={status.state === "failed" ? "Setup failed" : "Availability"}>
-        <p role={status.state === "failed" ? "alert" : undefined} className={status.state === "failed" ? "text-meta leading-relaxed text-destructive" : "text-meta leading-relaxed text-muted-foreground"}>{status.reason}</p>
+        <p role={status.state === "failed" ? "alert" : undefined} className={status.state === "failed" ? "text-meta leading-relaxed text-destructive" : "text-meta leading-relaxed text-muted-foreground"}>{status.state === "failed" ? friendlyError(status.reason, "Couldn't set up local dictation. Try again.") : status.reason}</p>
       </SettingsBlockRow>}
       {status && status.state !== "ready" && status.state !== "unsupported" && <SettingsBlockRow>
         <div className="flex flex-wrap items-center justify-between gap-3">

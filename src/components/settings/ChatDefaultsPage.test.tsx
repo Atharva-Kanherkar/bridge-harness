@@ -25,7 +25,7 @@ it("saves a project override on change with the acknowledged project revision an
 });
 it("reports save failures without claiming Saved and shows what is stored",async()=>{
   vi.spyOn(bridgeApi,"saveChatDefaults").mockRejectedValue(new Error("Disk is full"));await render();await press("Default chat access","Ask");
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Disk is full");expect(host.textContent).not.toContain("Saved");expect([...host.querySelectorAll('[aria-label="Default chat access"] button')].find(b=>b.getAttribute("aria-pressed")==="true")?.textContent).toBe("Full access");
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("The disk is full.");expect(host.textContent).not.toContain("Saved");expect([...host.querySelectorAll('[aria-label="Default chat access"] button')].find(b=>b.getAttribute("aria-pressed")==="true")?.textContent).toBe("Full access");
 });
 it("saves Input while running on change and hands it to the composer's resolver",async()=>{
   const save=vi.spyOn(bridgeApi,"saveChatDefaults").mockImplementation(async params=>({application:{revision:3,defaults:params.defaults},project:null}));

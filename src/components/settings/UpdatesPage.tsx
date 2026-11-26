@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { checkForUpdate, getUpdateChannel, setUpdateChannel, UpdateCheckSupersededError, type UpdateInfo } from "../../updater";
+import { friendlyError } from "../../errors";
 import { GhostButton, SettingsGroup, SettingsPage, SettingsRow, Switch } from "./kit";
 import { PAGES } from "./sections";
 
@@ -23,7 +24,7 @@ export function UpdatesPage({ availableUpdate, onUpdate }: { availableUpdate?: U
       onUpdate(update ?? undefined);
       if (!update) setMessage("Bridge is up to date on this channel.");
     } catch (error) {
-      if (!(error instanceof UpdateCheckSupersededError) && id === checkId.current && getUpdateChannel() === next) setMessage(`Could not check for updates: ${String(error)}`);
+      if (!(error instanceof UpdateCheckSupersededError) && id === checkId.current && getUpdateChannel() === next) setMessage(`Could not check for updates. ${friendlyError(error, "")}`.trim());
     } finally { if (id === checkId.current) setChecking(false); }
   }
 

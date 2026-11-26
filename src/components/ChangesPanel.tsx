@@ -4,7 +4,7 @@ import { Suspense, lazy, useCallback, useEffect, useRef, useState, useMemo, type
 import { Check, ChevronDown, Code2, Quote, FileDiff, FolderGit2, CircleAlert } from "lucide-react";
 import type { RiskTier, SessionChangesResult, SessionChangesUnavailable, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "../types";
 import { bridgeApi } from "../api";
-import { errorMessage } from "../errors";
+import { friendlyError } from "../errors";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -235,7 +235,7 @@ export function ChangesPanel({ workspace, sessionId, chatSignal, visible = false
       setLoadError(undefined);
     } catch (error) {
       if (generation !== requestGeneration.current) return;
-      setLoadError(errorMessage(error));
+      setLoadError(friendlyError(error, "Bridge couldn't read the changes. Try again."));
     }
   }, [scope, sessionId, workspace.id]);
 

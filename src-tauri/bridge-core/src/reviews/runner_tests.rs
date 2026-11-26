@@ -357,7 +357,7 @@ fn a_job_fails_when_every_fallback_harness_fails() {
     drain(&Runner::with(core.clone(), fast(), Arc::new(Utc::now)));
     let failed = job(&core, &id);
     assert_eq!(failed.status, Status::Failed);
-    assert_eq!(failed.error.as_deref(), Some("codex could not review: crashed"));
+    assert_eq!(failed.error.as_deref(), Some("Codex could not review. crashed"));
     assert!(!script.calls(&format!("cleanup:{id}")).is_empty());
 }
 
@@ -614,7 +614,8 @@ fn a_panicking_step_fails_the_job_and_frees_its_slot() {
     drain(&runner);
     let failed = job(&core, &id);
     assert_eq!(failed.status, Status::Failed);
-    assert!(failed.error.as_deref().unwrap_or_default().contains("worktree exploded"), "{:?}", failed.error);
+    // The panic's own text goes to the log, not to the person.
+    assert_eq!(failed.error.as_deref(), Some("The review stopped unexpectedly. Try again."));
     assert_eq!(runner.active(), 0);
     assert!(!script.calls(&format!("cleanup:{id}")).is_empty());
 }

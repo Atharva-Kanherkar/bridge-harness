@@ -3,6 +3,7 @@ import { Ban, ChevronRight, CircleAlert, FileSearch, SquareTerminal } from "luci
 import { SkeletonDot, SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import { GithubMarkdown } from "../github/GithubMarkdown";
 import { harnessLabel } from "../github/reviewLabels";
 import type { ReviewActivityEntry, ReviewPass } from "../../protocol/generated/protocol";
@@ -37,11 +38,13 @@ function PromptBubble({ entry }: { entry: ReviewActivityEntry }) {
 
 function Step({ entry }: { entry: ReviewActivityEntry }) {
   const Icon = entry.kind === "command" ? SquareTerminal : entry.kind === "denied" ? Ban : entry.kind === "error" ? CircleAlert : FileSearch;
+  // An error step carries the provider's raw failure; a command its own text.
+  const text = entry.kind === "error" && entry.text ? friendlyError(entry.text, "The reviewer hit an error.") : entry.text;
   return <li className={cn("flex min-w-0 items-baseline gap-2 px-1 text-caption",
     entry.kind === "error" ? "text-destructive" : entry.kind === "denied" ? "text-warning" : "text-muted-foreground")}>
     <Icon size={12} aria-hidden="true" className="shrink-0 translate-y-0.5" />
     <span className={cn("shrink-0 font-medium", entry.kind === "command" && "font-mono")}>{entry.kind === "error" ? "Error" : entry.title}</span>
-    {entry.text && <Tip label={entry.text}><span className="min-w-0 truncate font-mono">{entry.text}</span></Tip>}
+    {text && <Tip label={text}><span className={cn("min-w-0 truncate", entry.kind !== "error" && "font-mono")}>{text}</span></Tip>}
   </li>;
 }
 
@@ -79,7 +82,7 @@ export function ReviewActivity({ jobId, passes, running, repositoryUrl }: {
         const result = await bridgeApi.reviewActivity(jobId);
         if (active) setEntries(current => mergeActivity(result.entries, current ?? []));
       } catch (cause) {
-        if (active) setError(cause instanceof Error ? cause.message : String(cause));
+        if (active) setError(friendlyError(cause, "Couldn't load the review's activity."));
       }
     })();
     return () => { active = false; unlisten?.(); };

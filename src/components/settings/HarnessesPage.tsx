@@ -15,6 +15,7 @@
 import { useMemo, type ReactNode } from "react";
 import type { AdapterDescriptor, HarnessConfig, OpenCodeCatalog, ReasoningEffort } from "../../types";
 import { advertisedEfforts } from "../../modelProfiles";
+import { friendlyError } from "../../errors";
 import { HarnessMark } from "../harnessMarks";
 import { ManagedAgentDetail, ManagedAgentRows, type ManagedAgents } from "../ManagedAgentsPanel";
 import { OpenCodeHarnessSettings, type OpenCodeAdvancedSettings } from "../OpenCodeHarnessSettings";
@@ -120,7 +121,7 @@ function HarnessDetail({
   /** Write the stored record with exactly one field replaced. */
   const persist = async (patch: Partial<HarnessConfig>, key: string) => {
     try { await onSaveHarness({ ...harness, ...patch }); flash(key); }
-    catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    catch (error) { onError(friendlyError(error, `Couldn't save the ${harness.label} setting.`)); }
   };
 
   const save = async () => {
@@ -131,7 +132,7 @@ function HarnessDetail({
         if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("Advanced configuration must be a JSON object");
         nextAdvanced = parsed as Record<string, unknown>;
       } catch (error) {
-        onError(error instanceof Error ? error.message : String(error));
+        onError(friendlyError(error, "The advanced configuration isn't valid JSON."));
         return;
       }
     }
@@ -146,7 +147,7 @@ function HarnessDetail({
       });
       onDiscard(harness.id);
     } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
+      onError(friendlyError(error, `Couldn't save the ${harness.label} settings.`));
     }
   };
 
@@ -217,7 +218,7 @@ function HarnessDetail({
         // Written onto the stored record, never the half-edited JSON draft.
         const { accounts: _previous, ...rest } = (harness.advanced ?? {}) as Record<string, unknown>;
         try { await onSaveHarness({ ...harness, advanced: accounts.length ? { ...rest, accounts } : rest }); }
-        catch (error) { onError(error instanceof Error ? error.message : String(error)); throw error; }
+        catch (error) { onError(friendlyError(error, `Couldn't save the ${harness.label} accounts.`)); throw error; }
       }}
     />}
 

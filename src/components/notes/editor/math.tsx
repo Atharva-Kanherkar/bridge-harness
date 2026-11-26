@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import katex from "katex";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { errorMessage, friendlyError } from "@/errors";
 
 export interface MathEdit {
   kind: "inline" | "block";
@@ -24,7 +25,7 @@ export function MathPopover({ edit, onSave, onRemove, onClose }: { edit: MathEdi
   const preview = useMemo(() => {
     if (!latex.trim()) return { html: "", error: null };
     try { return { html: katex.renderToString(latex, { displayMode: edit.kind === "block", throwOnError: true, output: "htmlAndMathml" }), error: null }; }
-    catch (error) { return { html: "", error: error instanceof Error ? error.message.replace(/^KaTeX parse error: /, "") : String(error) }; }
+    catch (error) { return { html: "", error: friendlyError(errorMessage(error).replace(/^KaTeX parse error: /, ""), "Can't draw this formula yet. Check it for a typo or a missing brace.") }; }
   }, [latex, edit.kind]);
   const rect = edit.rect;
   const left = Math.max(12, Math.min(rect?.left ?? 120, window.innerWidth - 392));

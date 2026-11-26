@@ -314,7 +314,7 @@ it("lists each refusal with its reason where the person can see it", async () =>
   const toast = result()!;
   expect(toast.getAttribute("role")).toBe("alert");
   expect(toast.textContent).toContain("Nothing was moved.");
-  expect(toast.textContent).toContain("Docker disk image macOS protects it");
+  expect(toast.textContent).toMatch(/Docker disk image [mM]acOS protects it/);
   // Nothing went to the Trash, so there is nothing to empty.
   expect([...toast.querySelectorAll("button")].some(node => node.textContent === "Empty Trash")).toBe(false);
   await act(async () => { (toast.querySelector("[aria-label='Dismiss']") as HTMLButtonElement).click(); });

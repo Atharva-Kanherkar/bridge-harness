@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { AlertCircle, Check, Play } from "lucide-react";
 import { commandFromFence } from "../terminal/runCommand";
 import type { TerminalRunResult } from "../terminal/runQueue";
+import { friendlyError } from "../errors";
 import { Button } from "@/components/ui/button";
 
 // A shell block an agent wrote, run in the chat's own terminal with one
@@ -45,14 +46,14 @@ export function RunButton({ lang, body, closed }: { lang: string; body: string; 
     setState({ kind: "running" });
     run(command).then(
       result => settle({ kind: "sent", shell: result.shell }, SENT_MS),
-      (error: unknown) => settle({ kind: "failed", message: error instanceof Error ? error.message : String(error) }, FAILED_MS),
+      (error: unknown) => settle({ kind: "failed", message: friendlyError(error, "") }, FAILED_MS),
     );
   };
 
   const lines = command.split("\n").length;
   const label = state.kind === "running" ? "Run" : state.kind === "sent" ? `Sent to ${state.shell}` : state.kind === "failed" ? "Couldn't run" : "Run";
-  const name = state.kind === "idle" ? "Run in terminal" : state.kind === "failed" ? `Couldn't run: ${state.message}` : label;
-  const title = state.kind === "failed" ? state.message : state.kind === "idle" ? (lines > 1 ? `Run these ${lines} lines in the terminal` : "Run in the terminal") : label;
+  const name = state.kind === "idle" ? "Run in terminal" : state.kind === "failed" ? (state.message ? `Couldn't run. ${state.message}` : "Couldn't run the command.") : label;
+  const title = state.kind === "failed" ? state.message || "Couldn't run the command." : state.kind === "idle" ? (lines > 1 ? `Run these ${lines} lines in the terminal` : "Run in the terminal") : label;
 
   return (
     <Button

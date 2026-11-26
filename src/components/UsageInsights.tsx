@@ -3,6 +3,7 @@ import { SkeletonCards } from "@/components/ui/skeleton";
 import { Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
+import { errorMessage, friendlyError } from "../errors";
 import { harnessLabel } from "../utils";
 import type { UsageInsightsReport, UsageInsightsResult, UsageInsightTone } from "../types";
 import { HarnessMark, harnessChartDot } from "./harnessMarks";
@@ -170,9 +171,8 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
     bridgeApi.usageInsights({ windowDays, refresh })
       .then(setResult)
       .catch(error => {
-        const message = error instanceof Error ? error.message : String(error);
-        setResult({ status: "failed", windowDays, detail: message });
-        onError(message);
+        setResult({ status: "failed", windowDays, detail: errorMessage(error) });
+        onError(friendlyError(error, "Couldn't analyse your usage."));
       })
       .finally(() => { window.clearInterval(ticker); setLoading(false); });
   };
@@ -191,7 +191,7 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
     const status = result?.status ?? "empty";
     return <div className={cn(CARD, "flex flex-col items-start gap-3 py-8")}>
       <h2 className="font-display text-lg font-semibold text-foreground">{status === "unavailable" ? "Insights need a harness" : status === "failed" ? "The analysis did not finish" : "Nothing analysed yet"}</h2>
-      <p className="max-w-xl text-caption text-muted-foreground">{result?.detail ?? `Bridge reads your last ${windowDays} days of usage, a sample of recent prompts, and your open pull requests, then asks your harness to write up what it sees. Nothing is stored except the report.`}</p>
+      <p className="max-w-xl text-caption text-muted-foreground">{result?.detail ? friendlyError(result.detail, status === "failed" ? "The analysis stopped because of an error. Try again." : "Insights can't run right now.") : `Bridge reads your last ${windowDays} days of usage, a sample of recent prompts, and your open pull requests, then asks your harness to write up what it sees. Nothing is stored except the report.`}</p>
       {status !== "unavailable" && analyseButton}
     </div>;
   }

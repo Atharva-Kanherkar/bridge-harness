@@ -5,6 +5,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { openExternalUrl } from "../externalLinks";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { terminalTheme } from "./theme";
 import { attachWebgl } from "./webgl";
 import { TerminalReplay } from "./replay";
@@ -106,9 +107,9 @@ export class TerminalEngine {
     this.terminal.loadAddon(new Unicode11Addon());
     this.terminal.unicode.activeVersion = "11";
     this.terminal.loadAddon(new WebLinksAddon((event, url) => {
-      if ((event.metaKey || event.ctrlKey) && /^https?:\/\//i.test(url)) void openExternalUrl(url).catch(error => this.report(error));
+      if ((event.metaKey || event.ctrlKey) && /^https?:\/\//i.test(url)) void openExternalUrl(url).catch(error => this.report(error, "Couldn't open the link."));
     }));
-    this.input = new TerminalInput((data, binary) => bridgeApi.writeTerminal(workspaceId, terminalId, data, binary), error => this.report(error));
+    this.input = new TerminalInput((data, binary) => bridgeApi.writeTerminal(workspaceId, terminalId, data, binary), error => this.report(error, "Couldn't send input to the terminal."));
     const accepts = () => !this.replaying && this.status === "running";
     const listeners = [
       this.terminal.onData(data => { if (accepts()) this.input.send(data); }),
@@ -121,7 +122,7 @@ export class TerminalEngine {
     this.terminal.attachCustomKeyEventHandler(event => {
       if (event.type !== "keydown") return true;
       if (event.metaKey && event.key.toLowerCase() === "c" && this.terminal.hasSelection()) {
-        void navigator.clipboard.writeText(this.terminal.getSelection()).catch(error => this.report(error));
+        void navigator.clipboard.writeText(this.terminal.getSelection()).catch(error => this.report(error, "Couldn't copy the selection."));
         return false;
       }
       return true;
@@ -145,7 +146,7 @@ export class TerminalEngine {
           this.status = frame.status;
           void bridgeApi.terminalSnapshot(workspaceId, terminalId)
             .then(snapshot => { if (!this.disposed) this.view?.record(snapshot.record); })
-            .catch(error => this.report(error));
+            .catch(error => this.report(error, "Couldn't refresh the terminal's status."));
         }
       },
       error: value => { this.replaying = true; this.setState({ restoring: false }); this.report(value); },
@@ -203,8 +204,10 @@ export class TerminalEngine {
     this.view?.state(state);
   }
 
-  private report(error: unknown) {
-    if (!this.disposed) this.setState({ ...this.viewState, error: String(error) });
+  /** Show a failure under the terminal as one plain sentence; `fallback` says
+   *  what failed when the error's own words are not fit to read. */
+  private report(error: unknown, fallback = "Lost the connection to this terminal.") {
+    if (!this.disposed) this.setState({ ...this.viewState, error: friendlyError(error, fallback) });
   }
 
   private write(data: string) {
@@ -306,7 +309,7 @@ export class TerminalEngine {
         this.pendingSize = undefined;
         await bridgeApi.resizeTerminal(workspaceId, terminalId, size.rows, size.cols);
       }
-    } catch (error) { this.lastSize = ""; this.report(error); }
+    } catch (error) { this.lastSize = ""; this.report(error, "Couldn't resize the terminal."); }
     finally { this.resizing = false; }
   }
 }

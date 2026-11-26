@@ -17,6 +17,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -118,11 +119,11 @@ export function ConnectorPane({ visible = true, focusItemKey, onClose, onUnreadC
         return;
       }
       setPendingApproval(undefined);
-      if (result.status === "refused") setError(result.reason);
+      if (result.status === "refused") setError(friendlyError(result.reason, "The connector refused that action."));
       else setDraft("");
       await refresh();
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : String(failure));
+      setError(friendlyError(failure, "Couldn't send that through the connector."));
     } finally {
       setBusy(false);
     }
@@ -243,7 +244,7 @@ function EmptyState({ state }: { state: NonNullable<ReturnType<typeof emptyState
         className={cn("mx-auto", state.tone === "degraded" ? "text-warning" : "text-muted-foreground")}
       />
       <h2 className="mt-3 font-display text-sm font-semibold text-foreground">{state.title}</h2>
-      <p className="mt-1.5 text-caption leading-5 text-muted-foreground">{state.detail}</p>
+      <p className="mt-1.5 text-caption leading-5 text-muted-foreground">{state.tone === "degraded" ? friendlyError(state.detail, "The last check failed.") : state.detail}</p>
     </div>
   </div>;
 }

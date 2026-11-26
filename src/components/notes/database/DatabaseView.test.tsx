@@ -77,7 +77,7 @@ describe("DatabaseView", () => {
     await act(async () => { refuse(new Error("Rating is a finite number")); });
     await settle();
     expect(ratingCell(0).textContent).toBe("3");
-    expect(onError).toHaveBeenCalledWith("Rating is a finite number");
+    expect(onError).toHaveBeenCalledWith("Rating is a finite number.");
 
     // An accepted write stays through the re-query.
     // The cell is still selected, so one click opens its editor.
@@ -320,7 +320,7 @@ describe("DatabaseView", () => {
     vi.spyOn(bridgeApi, "saveDatabaseView").mockRejectedValueOnce(new Error("disk full"));
     await act(async () => { button("Save for everyone")!.click(); });
     await settle();
-    expect(onError).toHaveBeenCalledWith("disk full");
+    expect(onError).toHaveBeenCalledWith("The disk is full. Free up some space and try again.");
     expect(button("Save for everyone")).toBeDefined();
     expect(button("Sort, 1")).toBeDefined();
     expect(mockReadPage(id).database!.views[0].sorts ?? []).toEqual([]);

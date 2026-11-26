@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { FlaskConical, PencilLine } from "lucide-react";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import type { WorkflowTemplate } from "../../protocol/generated/protocol";
 import { Button } from "@/components/ui/button";
-import { CHIP, ErrorNote, errorText } from "./parts";
+import { CHIP, ErrorNote } from "./parts";
 import { triggerSummary } from "./format";
 import { SkeletonCards } from "@/components/ui/skeleton";
 
@@ -32,7 +33,7 @@ export function WorkflowTemplates({ busy, onTry, onCustomize }: {
     let current = true;
     bridgeApi.listWorkflowTemplates()
       .then(list => { if (current) setTemplates(list.templates); })
-      .catch(reason => { if (current) { setError(errorText(reason)); setTemplates([]); } });
+      .catch(reason => { if (current) { setError(friendlyError(reason, "Couldn't load the workflow templates.")); setTemplates([]); } });
     return () => { current = false; };
   }, []);
 

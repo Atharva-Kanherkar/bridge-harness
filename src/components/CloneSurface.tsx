@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, 
 import { Skeleton, SkeletonRegion, SkeletonRows } from "@/components/ui/skeleton";
 import { AlertTriangle, ArrowRight, Bot, ChevronRight, Eye, EyeOff, Globe, Hand, Lock, MousePointer2, Timer, Trash2 } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { startSerialPoll } from "../polling";
 import type { BrowserCloneSnapshot, BrowserCloneStatus, CloneSignInPath } from "../types";
 import type { CloneInputEvent, CloneBrowserKind } from "../protocol/generated/protocol";
@@ -35,7 +36,6 @@ export type CloneSupervision = { status: BrowserCloneStatus; attention: boolean 
 
 const isLive = (status: BrowserCloneStatus) => status === "starting" || status === "acting" || status === "waiting_for_you" || status === "taken_over";
 const minutesLeft = (expiresAt: string | null) => expiresAt ? Math.max(0, Math.ceil((Date.parse(expiresAt) - Date.now()) / 60_000)) : undefined;
-const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 function StatusDot({ status }: { status: BrowserCloneStatus }) {
   return <span aria-hidden="true" className={cn("size-1.5 shrink-0 rounded-full",
@@ -101,10 +101,10 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
   const run = async (task: () => Promise<unknown>) => {
     setBusy(true);
     try { await task(); await refresh(); }
-    catch (error) { onError(message(error)); }
+    catch (error) { onError(friendlyError(error, "Couldn't do that in the browser copy. Try again.")); }
     finally { if (currentSession.current === sessionId) { setBusy(false); setConfirmingDestroy(false); } }
   };
-  const send = (input: CloneInputEvent) => { void bridgeApi.cloneInput(sessionId ?? "", input).catch(error => onError(message(error))); };
+  const send = (input: CloneInputEvent) => { void bridgeApi.cloneInput(sessionId ?? "", input).catch(error => onError(friendlyError(error, "Couldn't send that to the browser copy."))); };
 
   const attention = status === "requested" || status === "waiting_for_you" || (status === "acting" && !!snapshot?.waitingReason) || !!snapshot?.pendingApproval;
   const supervisionRef = useRef<string>();
@@ -157,7 +157,7 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
         </div>
       : status === "requested" ? <div className="flex flex-1 items-center justify-center overflow-y-auto p-5">
           <div className="w-full max-w-sm">
-            {snapshot.pendingRequestId && <CloneConsentCard key={snapshot.pendingRequestId} request={{ sessionId: sessionId ?? "", requestId: snapshot.pendingRequestId, domain: snapshot.pendingRequest ?? snapshot.domain ?? "", extensionPath: snapshot.extensionPath, additionalDomains: snapshot.additionalDomains }} onError={onError} onResolved={() => void refresh().catch(error => onError(String(error)))} />}
+            {snapshot.pendingRequestId && <CloneConsentCard key={snapshot.pendingRequestId} request={{ sessionId: sessionId ?? "", requestId: snapshot.pendingRequestId, domain: snapshot.pendingRequest ?? snapshot.domain ?? "", extensionPath: snapshot.extensionPath, additionalDomains: snapshot.additionalDomains }} onError={onError} onResolved={() => void refresh().catch(error => onError(friendlyError(error, "Couldn't refresh the browser copy.")))} />}
           </div>
         </div>
       : status === "destroyed" ? <PaneState icon={Trash2} title="Clone destroyed">Its profile, cookies, and session are gone. Nothing from it stays on disk.</PaneState>

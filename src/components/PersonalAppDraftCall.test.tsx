@@ -47,11 +47,11 @@ it("restores locked state and surfaces fetch/lock errors", async () => {
 });
 it("reports unavailable previews without rendering a frame", async () => {
   vi.mocked(bridgeApi.getPersonalAppDraft).mockRejectedValueOnce(new Error("expired"));
-  await render();expect(container.textContent).toContain("expired");expect(container.querySelector('[data-testid="preview"]')).toBeNull();
+  await render();expect(container.textContent).toContain("Couldn't load the app preview.");expect(container.querySelector('[data-testid="preview"]')).toBeNull();
 });
 it("reports failed locks and allows a retry without changing the hash", async () => {
   vi.spyOn(bridgeApi, "lockPersonalApp").mockRejectedValueOnce(new Error("draft changed"));
-  await render();await click("Lock version");expect(container.querySelector('[role="alert"]')?.textContent).toContain("draft changed");expect(button("Lock version").disabled).toBe(false);
+  await render();await click("Lock version");expect(container.querySelector('[role="alert"]')?.textContent).toBe("Draft changed.");expect(button("Lock version").disabled).toBe(false);
 });
 it("mounts the view only after isolation settles, and refuses live reads when it is not isolated", async () => {
   let settleIsolation!: (value: boolean) => void;

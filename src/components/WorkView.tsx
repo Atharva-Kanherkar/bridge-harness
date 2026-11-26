@@ -7,6 +7,7 @@ import { recentIntegrationActivity } from "./workActivity";
 import { logoForSourceKind } from "./connectorLogos";
 import { lastRunLine, toolsReadLine } from "./workDashboard";
 import { Button } from "@/components/ui/button";
+import { friendlyError } from "../errors";
 
 export type WorkActionOutcome = { ok: true } | { ok: false; reason: string };
 
@@ -71,7 +72,7 @@ export function WorkView({ board, error, refreshError, onRefresh, now, onOpenEvi
         {(refreshError || board?.suggestions.state === "degraded") && (
           <div role="status" className="flex items-start gap-2 rounded-lg border border-border p-3 text-xs text-muted-foreground">
             <AlertCircle size={14} className="shrink-0" aria-hidden="true" />
-            <p>Could not refresh all activity. {refreshError ?? board?.suggestions.detail ?? "Try again."} Only previously read items still within the past 24 hours are shown.</p>
+            <p>Could not refresh all activity. {friendlyError(refreshError ?? board?.suggestions.detail, "Try again.")} Only previously read items still within the past 24 hours are shown.</p>
           </div>
         )}
 

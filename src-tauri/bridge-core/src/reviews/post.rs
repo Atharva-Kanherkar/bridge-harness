@@ -312,16 +312,15 @@ pub fn gh_error(error: GithubSurfaceError) -> StepError {
     match error {
         // Throttled: wait as long as GitHub asked, then try again.
         GithubSurfaceError::RateLimited { message, retry_after, .. } => {
-            StepError::RateLimited(format!("GitHub is rate limiting Bridge: {message}"), retry_after)
+            eprintln!("[reviews] GitHub is rate limiting Bridge: {message}");
+            StepError::RateLimited("GitHub is rate limiting Bridge. It will try again shortly.".into(), retry_after)
         }
         GithubSurfaceError::CommandFailed { ref stderr, .. } => {
             let lower = stderr.to_ascii_lowercase();
             // A 403 can be throttling too; one that says so waits, not fails.
             if lower.contains("rate limit") || lower.contains("http 429") {
-                return StepError::RateLimited(
-                    format!("GitHub is rate limiting Bridge: {}", stderr.trim()),
-                    Duration::from_secs(60),
-                );
+                eprintln!("[reviews] GitHub is rate limiting Bridge: {}", stderr.trim());
+                return StepError::RateLimited("GitHub is rate limiting Bridge. It will try again shortly.".into(), Duration::from_secs(60));
             }
             let refused = ["http 401", "http 403", "http 404", "http 422"].iter().any(|code| lower.contains(code));
             let passing = [
@@ -341,22 +340,24 @@ pub fn gh_error(error: GithubSurfaceError) -> StepError {
             .iter()
             .any(|sign| lower.contains(sign));
             if lower.contains("http 422") {
-                StepError::Fatal(format!("GitHub refused the review: {}", stderr.trim()))
+                StepError::fatal_logged("GitHub refused the review.", stderr.trim())
             } else if passing && !refused {
-                StepError::Transient(error.to_string())
+                StepError::transient_logged(error.user_message(), &error)
             } else {
-                StepError::Fatal(error.to_string())
+                StepError::fatal_logged(error.user_message(), &error)
             }
         }
-        GithubSurfaceError::Io(_) => StepError::Transient(error.to_string()),
-        other => StepError::Fatal(other.to_string()),
+        GithubSurfaceError::Io(_) => StepError::transient_logged(error.user_message(), &error),
+        other => StepError::fatal_logged(other.user_message(), &other),
     }
 }
 
 /// The job's workspace, and the repository it reviews on that workspace's
 /// host.
 fn target(core: &BridgeCore, job: &JobRow) -> Result<(PathBuf, GithubRepository), StepError> {
-    let workspace = PathBuf::from(core.workspace_path(&job.workspace_id).map_err(|error| StepError::Fatal(error.to_string()))?);
+    let workspace = PathBuf::from(
+        core.workspace_path(&job.workspace_id).map_err(|error| StepError::fatal_logged("The review's project is no longer in Bridge.", error))?,
+    );
     let repository = super::prepare::job_repository(core, &workspace, job);
     Ok((workspace, repository))
 }
@@ -366,7 +367,7 @@ fn target(core: &BridgeCore, job: &JobRow) -> Result<(PathBuf, GithubRepository)
 /// The job is read again: the runner's copy was claimed before the review,
 /// so its summary (and in auto mode everything the review wrote) is stale.
 fn plan(core: &BridgeCore, job: &JobRow, current_head: Option<String>) -> Result<PostPlan, StepError> {
-    let fatal = |error: crate::BridgeError| StepError::Fatal(error.to_string());
+    let fatal = |error: crate::BridgeError| StepError::fatal_logged("Bridge couldn't read the review it saved. Try again.", error);
     let (job, findings, harness_of, harnesses, hide_attribution) = {
         let db = super::lock_db(core);
         (

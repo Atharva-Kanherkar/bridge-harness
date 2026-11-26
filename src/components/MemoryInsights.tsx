@@ -3,6 +3,7 @@ import { Skeleton, SkeletonRegion, SkeletonText } from "@/components/ui/skeleton
 import { Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { harnessLabel } from "../utils";
 import type { MemoryInsightsResult } from "../types";
 import { CARD, relative, rise, Themes, TONE } from "./UsageInsights";
@@ -28,7 +29,7 @@ export function MemoryInsights({ onError }: { onError: (message: string) => void
     bridgeApi.memoryInsights(refresh)
       .then(setResult)
       .catch(error => {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = friendlyError(error, "Couldn't analyse your memory.");
         setResult({ status: "failed", detail: message });
         onError(message);
       })
@@ -60,7 +61,7 @@ export function MemoryInsights({ onError }: { onError: (message: string) => void
     const status = result?.status ?? "empty";
     return <div className={cn(CARD, "flex flex-col items-start gap-3 py-8")}>
       <h2 className="font-display text-lg font-semibold text-foreground">{status === "unavailable" ? "Insights need a harness" : status === "failed" ? "The analysis did not finish" : "Nothing analysed yet"}</h2>
-      <p className="max-w-xl text-caption text-muted-foreground">{result?.detail ?? "Bridge reads your active memories and how often each reached a prompt, then asks your harness to write up what it sees. The memory text goes only to the harness you already use. Nothing is stored except the report."}</p>
+      <p className="max-w-xl text-caption text-muted-foreground">{status === "failed" && result?.detail ? friendlyError(result.detail, "The analysis stopped before it finished. Try again.") : result?.detail ?? "Bridge reads your active memories and how often each reached a prompt, then asks your harness to write up what it sees. The memory text goes only to the harness you already use. Nothing is stored except the report."}</p>
       {status !== "unavailable" && analyseButton}
     </div>;
   }

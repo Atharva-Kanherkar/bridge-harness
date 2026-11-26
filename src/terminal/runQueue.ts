@@ -4,6 +4,8 @@
 // time fails instead of running minutes later, when the person has moved on.
 // Contract: testing/feat-run-in-terminal.md.
 
+import { errorMessage } from "../errors";
+
 export const TERMINAL_RUN_TIMEOUT_MS = 10_000;
 
 export type TerminalRunResult = { shell: string };
@@ -38,7 +40,7 @@ export function requestTerminalRun(workspaceId: string, command: string, timeout
       command,
       open: () => !done,
       settle: shell => { if (done) return; finish(); resolve({ shell }); },
-      fail: error => { if (done) return; finish(); reject(error instanceof Error ? error : new Error(String(error))); },
+      fail: error => { if (done) return; finish(); reject(error instanceof Error ? error : new Error(errorMessage(error))); }, // raw-error: rethrown to the caller, not shown
     };
     const timer = window.setTimeout(() => run.fail(new Error("The terminal did not open in time.")), timeoutMs);
     const listener = listeners.get(workspaceId);

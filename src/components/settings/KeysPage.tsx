@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { KeyRound } from "lucide-react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import type { ApiKeysSnapshot, ChatApiKey, SavedApiKey } from "../../types";
 import { DEFAULT_KEY_NAMES, DEFAULT_KEY_SITES, guessKeyKind, isValidKeyName, keyKindLabel, parseSites, toKeyName } from "../../apiKeys";
 import { Field, PrimaryButton, SettingsBlockRow, SettingsGroup, SettingsPage, SettingsRow, StatusPill, TextButton, useSavedFlash } from "./kit";
@@ -26,7 +27,7 @@ export function KeysPage({ onError }: { onError: (message: string) => void }) {
     let active = true;
     bridgeApi.listApiKeys()
       .then(next => { if (active) setSnapshot(next); })
-      .catch(error => onError(error instanceof Error ? error.message : String(error)));
+      .catch(error => onError(friendlyError(error, "Couldn't load the API keys.")));
     return () => { active = false; };
   }, [onError]);
 
@@ -37,7 +38,7 @@ export function KeysPage({ onError }: { onError: (message: string) => void }) {
       if (key) flash(key);
       return true;
     } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
+      onError(friendlyError(error, "Couldn't update the API key."));
       return false;
     } finally {
       setBusy(false);

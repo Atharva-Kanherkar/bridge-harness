@@ -65,7 +65,7 @@ describe("Move to Bridge logic", () => {
     expect(importNotice(job({ status: "done", imported: 5, workspaces: 2, alreadyInBridge: 1 }), "T3 Code").body).toBe("5 items and 2 workspaces came over from T3 Code, 1 already in Bridge.");
     expect(importNotice(job({ status: "done", imported: 0, workspaces: 1 }), "T3 Code").body).toBe("1 workspace came over from T3 Code.");
     expect(importNotice(job({ status: "failed", errors: ["Claude Code was not found on this Mac"] })))
-      .toEqual({ title: "Import stopped", body: "Claude Code was not found on this Mac", failed: true });
+      .toEqual({ title: "Import stopped", body: "Claude Code was not found on this Mac.", failed: true });
   });
 
   it("says how long is left from the pace so far, like a file copy", () => {

@@ -38,7 +38,7 @@ import {
   Plus,
 } from "lucide-react";
 import { bridgeApi } from "../api";
-import { errorMessage } from "../errors";
+import { errorMessage, friendlyError } from "../errors";
 import { rememberSurface, surfaceSnapshot } from "../githubSurfaceCache";
 import { cn } from "@/lib/utils";
 import { ActionSheet, ActionSheetHost } from "./github/ActionSheet";
@@ -229,11 +229,11 @@ function ShowInChat({ sessionId, url, number }: { sessionId: string; url: string
       const result = await bridgeApi.githubAttachPr(sessionId, url);
       setState("done"); setMessage(result.message);
     } catch (value) {
-      setState("error"); setMessage(errorMessage(value));
+      setState("error"); setMessage(friendlyError(value, ""));
     }
   };
   const Icon = state === "done" ? MessageSquareDot : MessageSquarePlus;
-  const label = state === "done" ? `#${number} is shown in this chat` : state === "error" ? `Could not show #${number} in this chat: ${message}` : `Show #${number} as a live card in this chat`;
+  const label = state === "done" ? `#${number} is shown in this chat` : state === "error" ? `Couldn't show #${number} in this chat. ${message ?? ""}`.trim() : `Show #${number} as a live card in this chat`;
   return <Button
     variant="quiet"
     size="icon-xs"
@@ -495,7 +495,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
         setTabErrors({});
       }
     } catch (error) {
-      if (current()) setSurfaceError(errorMessage(error));
+      if (current()) setSurfaceError(friendlyError(error, "Bridge couldn't read this repository's status from GitHub."));
     } finally {
       if (current()) setRefreshing(false);
     }
@@ -699,7 +699,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       onJumpToFile={onJumpToFile}
     />;
   } else if (surfaceTab === "pulls" && tabErrors.pulls && !prs) {
-    body = <PaneNotice icon={CircleX} title="Pull requests did not load">{tabErrors.pulls}</PaneNotice>;
+    body = <PaneNotice icon={CircleX} title="Pull requests did not load">{friendlyError(tabErrors.pulls, "GitHub didn't return the list. Try refreshing.")}</PaneNotice>;
   } else if (surfaceTab === "pulls" && !prs) {
     body = <ListSkeleton label="Loading pull requests" />;
   } else if (surfaceTab === "pulls" && prs?.length === 0) {
@@ -721,7 +721,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       onActed={() => { void loadSurface(); void openIssue(selectedIssue, true); }}
     />;
   } else if (surfaceTab === "issues" && tabErrors.issues && !issues) {
-    body = <PaneNotice icon={CircleX} title="Issues did not load">{tabErrors.issues}</PaneNotice>;
+    body = <PaneNotice icon={CircleX} title="Issues did not load">{friendlyError(tabErrors.issues, "GitHub didn't return the list. Try refreshing.")}</PaneNotice>;
   } else if (surfaceTab === "issues" && !issues) {
     body = <ListSkeleton label="Loading issues" />;
   } else if (surfaceTab === "issues" && issues?.length === 0) {
@@ -731,7 +731,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   } else if (surfaceTab === "issues" && visibleIssues) {
     body = issueList;
   } else if (tabErrors.repository && !repositoryOverview) {
-    body = <PaneNotice icon={CircleX} title="Repository did not load">{tabErrors.repository}</PaneNotice>;
+    body = <PaneNotice icon={CircleX} title="Repository did not load">{friendlyError(tabErrors.repository, "GitHub didn't return the repository. Try refreshing.")}</PaneNotice>;
   } else if (!repositoryOverview) {
     body = <DetailSkeleton label="Loading repository" />;
   } else {
@@ -823,7 +823,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       onCancel={() => setConnectOpen(false)}
       onConnected={() => { setConnectOpen(false); void loadSurface(true); }}
     />}
-    {tabErrors[surfaceTab] && ((surfaceTab === "pulls" && prs) || (surfaceTab === "issues" && issues) || (surfaceTab === "repository" && repositoryOverview)) && <p role="alert" className="border-b border-border bg-warning/10 px-4 py-2 text-caption text-warning">Refresh failed: {tabErrors[surfaceTab]}</p>}
+    {tabErrors[surfaceTab] && ((surfaceTab === "pulls" && prs) || (surfaceTab === "issues" && issues) || (surfaceTab === "repository" && repositoryOverview)) && <p role="alert" className="border-b border-border bg-warning/10 px-4 py-2 text-caption text-warning">Refresh failed. {friendlyError(tabErrors[surfaceTab], "Showing what loaded last.")}</p>}
     {sideList
       ? <div className="flex min-h-0 flex-1">
           <div data-pulls-list className="hidden min-h-0 w-[min(420px,38%)] shrink-0 flex-col border-r border-border min-[1100px]:flex">{sideList}</div>
@@ -1437,7 +1437,9 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
     try {
       if (harnesses[0] === BUGBOT.id) {
         const result = await bridgeApi.githubReview(workspaceId, number, BUGBOT.id, sessionId);
-        setReviewNotice({ tone: result.status === "failed" ? "error" : "success", text: result.message });
+        setReviewNotice(result.status === "failed"
+          ? { tone: "error", text: friendlyError(result.message, `Couldn't ask ${BUGBOT.label} to review.`) }
+          : { tone: "success", text: result.message });
         if (result.status !== "failed") onActed();
       } else {
         const existing = activeJobFor(reviews.jobs, harnesses);
@@ -1452,21 +1454,21 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
       }
       setReviewOpen(false);
     } catch (value) {
-      setReviewNotice({ tone: "error", text: errorMessage(value) });
+      setReviewNotice({ tone: "error", text: friendlyError(value, "Couldn't start the review.") });
     } finally { setReviewBusy(false); }
   };
 
   // The only path that reaches `github/act`. A refused `gh` write surfaces its
-  // message verbatim and leaves the PR untouched — no optimistic edit.
+  // reason in plain words and leaves the PR untouched — no optimistic edit.
   const submit = async (action: GithubAction) => {
     setBusy(true); setActionError(undefined);
     try {
       const outcome = await bridgeApi.githubAct(workspaceId, action, true);
       closeOverlays();
-      if (!outcome.executed) { setActionError(outcome.message); return; }
+      if (!outcome.executed) { setActionError(friendlyError(outcome.message, "GitHub refused the change.")); return; }
       onActed();
     } catch (value) {
-      setActionError(errorMessage(value));
+      setActionError(friendlyError(value, "Couldn't make that change on GitHub."));
     } finally { setBusy(false); }
   };
 
@@ -1476,11 +1478,11 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   const write = useCallback(async (action: GithubAction): Promise<string | undefined> => {
     try {
       const outcome = await bridgeApi.githubAct(workspaceId, action, true);
-      if (!outcome.executed) return outcome.message;
+      if (!outcome.executed) return friendlyError(outcome.message, "GitHub refused the change.");
       onActed();
       return undefined;
     } catch (value) {
-      return errorMessage(value);
+      return friendlyError(value, "Couldn't post that to GitHub.");
     }
   }, [workspaceId, onActed]);
 
@@ -1524,7 +1526,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   }, [detailNumber]);
 
   // The merge itself: one confirmed write; the animation only plays on a real
-  // `executed: true`, and a refusal keeps the form with the reason verbatim.
+  // `executed: true`, and a refusal keeps the form with the reason.
   const runMerge = async () => {
     if (merge.phase !== "confirming" && merge.phase !== "failed") return;
     dispatchMerge({ type: "merging" });
@@ -1540,11 +1542,11 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
         body: undefined,
         deleteBranch: merge.deleteBranch || undefined,
       }, true);
-      if (!outcome.executed) { dispatchMerge({ type: "fail", message: outcome.message }); return; }
+      if (!outcome.executed) { dispatchMerge({ type: "fail", message: friendlyError(outcome.message, "GitHub refused the merge.") }); return; }
       dispatchMerge({ type: "succeed" });
       onActed();
     } catch (value) {
-      dispatchMerge({ type: "fail", message: errorMessage(value) });
+      dispatchMerge({ type: "fail", message: friendlyError(value, "Couldn't merge this pull request.") });
     } finally { setBusy(false); }
   };
 
@@ -1576,7 +1578,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
       closeOverlays();
       setCheckout(result);
     } catch (value) {
-      setActionError(errorMessage(value));
+      setActionError(friendlyError(value, "Couldn't check out this pull request."));
     } finally { setBusy(false); }
   };
 
@@ -1586,7 +1588,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
     </Button>
   </div>;
 
-  if (error && !detail) return <div className="flex min-h-0 flex-1 flex-col">{header}<PaneNotice icon={CircleX} title={`Pull request #${number} did not load`}>{error}</PaneNotice></div>;
+  if (error && !detail) return <div className="flex min-h-0 flex-1 flex-col">{header}<PaneNotice icon={CircleX} title={`Pull request #${number} did not load`}>{friendlyError(error, "GitHub didn't return it. Try again.")}</PaneNotice></div>;
   if (!detail) return <div className="flex min-h-0 flex-1 flex-col">{header}<DetailSkeleton label={`Opening pull request #${number}`} /></div>;
 
   const { pullRequest, reviewThreads } = detail.result;
@@ -1798,7 +1800,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
       </div>
 
       {actionError && <p role="alert" className="border-b border-border bg-destructive/10 px-4 py-2 text-meta text-destructive">{actionError}</p>}
-      {error && <p role="alert" className="border-b border-border bg-warning/10 px-4 py-2 text-meta text-warning">Live refresh failed: {error}</p>}
+      {error && <p role="alert" className="border-b border-border bg-warning/10 px-4 py-2 text-meta text-warning">Live refresh failed. {friendlyError(error, "Showing what loaded last.")}</p>}
       {checkout && <p className="border-b border-border bg-success/10 px-4 py-2 text-meta text-success">
         {checkout.reused ? "Reusing the task worktree already on " : "Checked out into a task worktree on "}
         <span className="font-mono">{checkout.branch}</span>
@@ -1935,14 +1937,14 @@ function IssueDetail({ workspaceId, repository, repositoryUrl, number, detail, e
     setBusy(true); setActionError(undefined);
     try {
       const outcome = await bridgeApi.githubAct(workspaceId, action, true);
-      if (!outcome.executed) { setActionError(outcome.message); return; }
+      if (!outcome.executed) { setActionError(friendlyError(outcome.message, "GitHub refused the change.")); return; }
       setPending(undefined); setLabelsOpen(false); onActed();
     } catch (value) {
-      setActionError(errorMessage(value));
+      setActionError(friendlyError(value, "Couldn't make that change on GitHub."));
     } finally { setBusy(false); }
   };
 
-  if (error && !detail) return <div className="flex min-h-0 flex-1 flex-col">{header}<PaneNotice icon={CircleX} title={`Issue #${number} did not load`}>{error}</PaneNotice></div>;
+  if (error && !detail) return <div className="flex min-h-0 flex-1 flex-col">{header}<PaneNotice icon={CircleX} title={`Issue #${number} did not load`}>{friendlyError(error, "GitHub didn't return it. Try again.")}</PaneNotice></div>;
   if (!detail) return <div className="flex min-h-0 flex-1 flex-col">{header}<DetailSkeleton label={`Opening issue #${number}`} /></div>;
   const { issue } = detail;
   const open = issue.summary.state === "open";
@@ -2005,11 +2007,11 @@ function IssueDetail({ workspaceId, repository, repositoryUrl, number, detail, e
               onSubmit={async body => {
                 try {
                   const outcome = await bridgeApi.githubAct(workspaceId, { kind: "comment", target: "issue", number, body }, true);
-                  if (!outcome.executed) return outcome.message;
+                  if (!outcome.executed) return friendlyError(outcome.message, "GitHub refused the comment.");
                   onActed();
                   return undefined;
                 } catch (value) {
-                  return errorMessage(value);
+                  return friendlyError(value, "Couldn't post the comment.");
                 }
               }}
             />
@@ -2075,7 +2077,7 @@ function ConnectRepositoryDialog({ workspaceId, onCancel, onConnected }: {
         .then(result => { if (!cancelled && alive.current) { setCandidates(result.repositories); setSearchError(undefined); } })
         // A failed search is not an empty one. Reporting "no matches" for an
         // unreachable `gh` sends the user hunting for a repository that exists.
-        .catch(value => { if (!cancelled && alive.current) { setCandidates(undefined); setSearchError(errorMessage(value)); } })
+        .catch(value => { if (!cancelled && alive.current) { setCandidates(undefined); setSearchError(`Couldn't search your repositories. ${friendlyError(value, "")}`.trim()); } })
         .finally(() => { if (!cancelled && alive.current) setSearching(false); });
     }, 250);
     return () => { cancelled = true; clearTimeout(timer); setSearching(false); };
@@ -2088,7 +2090,7 @@ function ConnectRepositoryDialog({ workspaceId, onCancel, onConnected }: {
       await bridgeApi.githubConnect(workspaceId, remoteUrl);
       if (alive.current) onConnected();
     } catch (value) {
-      if (alive.current) setError(errorMessage(value));
+      if (alive.current) setError(friendlyError(value, "Couldn't connect this folder to that repository."));
     } finally {
       if (alive.current) setBusy(false);
     }
@@ -2123,7 +2125,7 @@ function ConnectRepositoryDialog({ workspaceId, onCancel, onConnected }: {
             </RowButton>
           </li>)}
       </ul>}
-      {searchError && !pastedUrl && <p role="alert" className="mt-2 text-meta text-destructive">Search failed: {searchError} You can still paste the repository URL.</p>}
+      {searchError && !pastedUrl && <p role="alert" className="mt-2 text-meta text-destructive">{searchError} You can still paste the repository URL.</p>}
       {error && <p role="alert" className="mt-3 text-meta text-destructive">{error}</p>}
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="ghost" size="sm" onClick={onCancel} disabled={busy}>Cancel</Button>

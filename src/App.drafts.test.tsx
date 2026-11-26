@@ -302,7 +302,7 @@ describe("a failed send never overwrites or loses the user's words", () => {
     await settle(6);
     expect(submit).toHaveBeenCalledOnce();
     expect(composer()!.value, "nothing to send twice").toBe("");
-    expect(container.textContent).toContain("refresh failed");
+    expect(container.textContent).toContain("Refresh failed.");
   });
 
   it("a sign-in failure restores ahead of newer typing and offers the retry", async () => {

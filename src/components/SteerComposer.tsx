@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Navigation } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { friendlyError } from "../errors";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
@@ -73,7 +74,7 @@ function SteerBox({ sessionId, steerable, starting = false, onSteer, label = "St
     void onSteer(sessionId, text)
       .catch((cause: unknown) => {
         setDraft(current => current ? `${sent}\n${current}` : sent);
-        setFailure(cause instanceof Error ? cause.message : String(cause));
+        setFailure(friendlyError(cause, "Couldn't send that to the agent. Try again."));
       })
       .finally(() => setBusy(false));
   };

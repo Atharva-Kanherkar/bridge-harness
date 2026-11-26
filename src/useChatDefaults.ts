@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridgeApi } from "./api";
+import { friendlyError } from "./errors";
 import type { ChatDefaults, ResolvedChatSettings } from "./protocol/generated/protocol";
 
 type Resolution = {
@@ -28,7 +29,7 @@ export function useResolvedChatDraft(workspaceId: string | null, overrides: Chat
     void bridgeApi.resolveChatSettings({ workspaceId, overrides }).then(settings => {
       if (generation.current === request) setResult({ key, workspaceId, settings });
     }).catch(error => {
-      if (generation.current === request) setResult({ key, workspaceId, error: error instanceof Error ? error.message : String(error) });
+      if (generation.current === request) setResult({ key, workspaceId, error: friendlyError(error, "Couldn't load this project's chat defaults.") });
     });
     // oxlint-disable-next-line react-hooks/exhaustive-deps -- a request generation counter, not a DOM ref: cleanup must bump its latest value
     return () => { generation.current++; };

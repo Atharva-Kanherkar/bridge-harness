@@ -326,25 +326,45 @@ pub enum SessionError {
 impl SessionError {
     /// What the runner should make of it: try again, try another harness, or
     /// give up.
+    ///
+    /// The message is what a person reads, on the dashboard and in a posted
+    /// summary, so it is plain words. What the provider or the parser said
+    /// word for word goes to the log: it is an HTTP body, a stack or a serde
+    /// position as often as a sentence.
     pub fn into_step(self) -> StepError {
         match self {
             SessionError::Cancelled => StepError::Cancelled,
             SessionError::Start(message) | SessionError::Provider(message) if is_transient(&message) => {
-                StepError::Transient(message)
+                eprintln!("[reviews] the reviewer's provider is busy: {message}");
+                StepError::Transient(transient_reason(&message).into())
             }
-            SessionError::Start(message) => StepError::Harness(format!("The reviewer could not start: {message}")),
-            SessionError::Provider(message) => StepError::Harness(message),
-            SessionError::Ended => StepError::Harness("The reviewer stopped before it finished".into()),
+            SessionError::Start(message) => {
+                eprintln!("[reviews] the reviewer could not start: {message}");
+                StepError::Harness(format!("The reviewer could not start because {}.", provider_reason(&message)))
+            }
+            SessionError::Provider(message) => {
+                eprintln!("[reviews] the reviewer's provider failed: {message}");
+                StepError::Harness(format!("The reviewer stopped because {}.", provider_reason(&message)))
+            }
+            SessionError::Ended => StepError::Harness("The reviewer stopped before it finished.".into()),
             SessionError::Deadline(limit) => {
-                StepError::Harness(format!("The reviewer ran past its {}-minute limit", limit.as_secs().div_ceil(60)))
+                StepError::Harness(format!("The reviewer ran past its {}-minute limit.", limit.as_secs().div_ceil(60)))
             }
-            SessionError::ToolLimit(limit) => StepError::Fatal(format!("The reviewer used more than {limit} tools")),
+            SessionError::ToolLimit(limit) => {
+                StepError::Fatal(format!("The reviewer used more than {limit} tools without finishing."))
+            }
+            // Another harness may well answer in shape: worth falling back.
             SessionError::Contract(message) => {
-                StepError::Fatal(format!("The reviewer's answer did not follow the findings contract: {message}"))
+                eprintln!("[reviews] the reviewer's answer did not follow the findings contract: {message}");
+                StepError::Harness(UNREADABLE_ANSWER.into())
             }
         }
     }
 }
+
+/// What a person reads when the reviewer answered, was asked again, and
+/// still gave nothing Bridge could read as a review.
+pub const UNREADABLE_ANSWER: &str = "The reviewer's answer couldn't be read as a review, even after it was asked again.";
 
 /// Worth another try: the provider is busy, not broken.
 fn is_transient(message: &str) -> bool {
@@ -354,6 +374,31 @@ fn is_transient(message: &str) -> bool {
         .any(|needle| lower.contains(needle))
 }
 
+/// A busy provider, in plain words.
+fn transient_reason(message: &str) -> &'static str {
+    let lower = message.to_lowercase();
+    if ["timed out", "timeout", "connection reset"].iter().any(|needle| lower.contains(needle)) {
+        "The reviewer couldn't reach its provider. Try again in a few minutes."
+    } else {
+        "The reviewer's provider is busy or rate limiting. Try again in a few minutes."
+    }
+}
+
+/// Why a provider failed, as a clause a person can act on.
+fn provider_reason(message: &str) -> &'static str {
+    let lower = message.to_lowercase();
+    let says = |needles: &[&str]| needles.iter().any(|needle| lower.contains(needle));
+    if says(&["usage limit", "quota", "out of credits", "credit balance", "usage cap"]) {
+        "its account has reached its usage limit"
+    } else if says(&["not logged in", "log in", "login", "sign in", "signed out", "unauthorized", "401", "403", "api key", "authenticat"]) {
+        "it needs you to sign in again"
+    } else if says(&["unavailable", "not installed", "not found", "no such file", "command not found"]) {
+        "it isn't installed or Bridge can't find it"
+    } else {
+        "its provider reported an error"
+    }
+}
+
 fn request_id(event: &NormalizedEvent) -> Value {
     ["requestId", "request_id", "id"]
         .iter()
@@ -361,7 +406,6 @@ fn request_id(event: &NormalizedEvent) -> Value {
         .unwrap_or(Value::Null)
 }
 
-/// Drive one turn to its end. Returns the final assistant message.
 /// What one turn reports to the activity sink, each thing once.
 struct TurnLog<'a> {
     sink: Option<&'a dyn ActivitySink>,
@@ -454,8 +498,9 @@ struct TurnAsk<'a> {
     activity: Option<&'a dyn ActivitySink>,
 }
 
-/// Drive one turn to its end. Returns the final assistant message.
-fn turn(session: &mut dyn Session, ask: &TurnAsk<'_>, usage: &mut Usage) -> Result<String, SessionError> {
+/// Drive one turn to its end. Returns what the assistant said, in order: its
+/// messages, then the turn's result text when it carries one.
+fn turn(session: &mut dyn Session, ask: &TurnAsk<'_>, usage: &mut Usage) -> Result<Vec<String>, SessionError> {
     let mut log = TurnLog::new(ask.activity, ask.root);
     log.record(ReviewActivityKind::Prompt, Some(ask.title), Some(ask.text));
     session.send_turn(ask.text).map_err(SessionError::Provider)?;
@@ -547,9 +592,11 @@ fn turn(session: &mut dyn Session, ask: &TurnAsk<'_>, usage: &mut Usage) -> Resu
         }
         if done {
             log.flush(&parts);
-            // The final message: the last thing the assistant said.
-            let last = parts.into_iter().map(|(_, text)| text).filter(|text| !text.trim().is_empty()).last();
-            return Ok(last.or(result_text).unwrap_or_default());
+            let mut said: Vec<String> = parts.into_iter().map(|(_, text)| text).filter(|text| !text.trim().is_empty()).collect();
+            if let Some(result) = result_text.filter(|result| !result.trim().is_empty() && said.last() != Some(result)) {
+                said.push(result);
+            }
+            return Ok(said);
         }
     }
 }
@@ -561,8 +608,30 @@ exactly one fenced ```json block that follows the contract. Do not use any tools
     )
 }
 
-/// Run one reviewer session: the review turn, and one repair turn if its
-/// answer does not parse. Returns the review, and the usage either way.
+/// Repair turns a session gets before its answer counts as unreadable. One
+/// was not always enough: a model asked once sometimes apologises in prose.
+pub const MAX_REPAIRS: usize = 2;
+
+/// The review in what a turn said, read from its last message back: the
+/// review is usually last, but a model may add a closing line after it.
+/// Returns the review and the message it was read from, or the error the
+/// last message gave.
+fn read_review(said: &[String]) -> Result<(RawReview, String), String> {
+    let mut last_error = None;
+    for message in said.iter().rev() {
+        match contract::parse(message) {
+            Ok(review) => return Ok((review, message.clone())),
+            Err(error) => {
+                last_error.get_or_insert(error);
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "The final message was empty: it has no fenced ```json block.".into()))
+}
+
+/// Run one reviewer session: the review turn, and up to [`MAX_REPAIRS`]
+/// repair turns while its answer does not parse. Returns the review, and
+/// the usage either way.
 pub fn run(
     transport: &dyn Transport,
     harness: &str,
@@ -591,23 +660,14 @@ pub fn run_answered(
         Err(error) => return (Err(SessionError::Start(error)), usage),
     };
     let deadline = Instant::now() + limits.max_wall;
-    let result = turn(
-        session.as_mut(),
-        &TurnAsk { root: start.cwd, text: prompt, title: "Bridge asked for a review", deadline, limits, cancel, activity: start.activity },
-        &mut usage,
-    )
-    .and_then(|text| match contract::parse(&text) {
-        Ok(review) => Ok((review, text)),
-        Err(error) => {
-            let repair = repair_prompt(&error);
-            let repaired = turn(
-                session.as_mut(),
-                &TurnAsk { root: start.cwd, text: &repair, title: "Bridge asked for the findings again", deadline, limits, cancel, activity: start.activity },
-                &mut usage,
-            )?;
-            contract::parse(&repaired).map(|review| (review, repaired)).map_err(SessionError::Contract)
-        }
-    });
+    let ask = TurnAsk { root: start.cwd, text: prompt, title: "Bridge asked for a review", deadline, limits, cancel, activity: start.activity };
+    let mut result = turn(session.as_mut(), &ask, &mut usage).and_then(|said| read_review(&said).map_err(SessionError::Contract));
+    for _ in 0..MAX_REPAIRS {
+        let Err(SessionError::Contract(error)) = &result else { break };
+        let repair = repair_prompt(error);
+        let ask = TurnAsk { text: &repair, title: "Bridge asked for the findings again", ..ask };
+        result = turn(session.as_mut(), &ask, &mut usage).and_then(|said| read_review(&said).map_err(SessionError::Contract));
+    }
     session.stop(result.is_ok());
     (result, usage)
 }
@@ -733,9 +793,16 @@ summary which ones they fixed."
 
 // --- one pass -----------------------------------------------------------------
 
+/// A failure in Bridge's own preparation, in plain words; the detail goes to
+/// the log.
+fn internal(what: &str, error: impl std::fmt::Display) -> StepError {
+    eprintln!("[reviews] could not {what}: {error}");
+    StepError::Fatal(format!("Bridge couldn't {what}. Try the review again."))
+}
+
 fn read_json(path: &Path) -> Result<Value, StepError> {
-    let bytes = std::fs::read(path).map_err(|error| StepError::Fatal(format!("Could not read {}: {error}", path.display())))?;
-    serde_json::from_slice(&bytes).map_err(|error| StepError::Fatal(format!("{} is not JSON: {error}", path.display())))
+    let bytes = std::fs::read(path).map_err(|error| internal("read the pull request it prepared", format!("{}: {error}", path.display())))?;
+    serde_json::from_slice(&bytes).map_err(|error| internal("read the pull request it prepared", format!("{}: {error}", path.display())))
 }
 
 /// Copy the context folder into the checkout, where every harness can read
@@ -749,16 +816,16 @@ fn place_context(context: &Path, checkout: &Path) -> Result<(PathBuf, String), S
 
 fn place_context_as(context: &Path, checkout: &Path, name: &str) -> Result<PathBuf, StepError> {
     let target = checkout.join(name);
-    std::fs::create_dir(&target).map_err(|error| StepError::Fatal(format!("Could not make the reviewer's context folder: {error}")))?;
+    std::fs::create_dir(&target).map_err(|error| internal("set up the reviewer's files", error))?;
     let copy_file = |from: &Path, to: &Path, file: &str| -> Result<(), StepError> {
         let mut source =
-            std::fs::File::open(from).map_err(|error| StepError::Fatal(format!("Could not read {file} for the reviewer: {error}")))?;
+            std::fs::File::open(from).map_err(|error| internal("set up the reviewer's files", format!("{file}: {error}")))?;
         let mut copy = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(to)
-            .map_err(|error| StepError::Fatal(format!("Could not place {file} for the reviewer: {error}")))?;
-        std::io::copy(&mut source, &mut copy).map_err(|error| StepError::Fatal(format!("Could not place {file} for the reviewer: {error}")))?;
+            .map_err(|error| internal("set up the reviewer's files", format!("{file}: {error}")))?;
+        std::io::copy(&mut source, &mut copy).map_err(|error| internal("set up the reviewer's files", format!("{file}: {error}")))?;
         Ok(())
     };
     for file in ["pr.json", "diff.patch", "files.json", "threads.json"] {
@@ -777,7 +844,7 @@ fn place_context_as(context: &Path, checkout: &Path, name: &str) -> Result<PathB
         CONVENTION_FILES.iter().map(|file| convention_name(file)).filter(|name| conventions.join(name).is_file()).collect();
     if !present.is_empty() {
         std::fs::create_dir(target.join(CONVENTIONS_DIR))
-            .map_err(|error| StepError::Fatal(format!("Could not place the conventions for the reviewer: {error}")))?;
+            .map_err(|error| internal("set up the reviewer's files", format!("conventions: {error}")))?;
         for name in present {
             copy_file(&conventions.join(name), &target.join(CONVENTIONS_DIR).join(name), name)?;
         }
@@ -844,12 +911,12 @@ pub fn review_pass_with(
     cancel: &CancelToken,
     limits: Limits,
 ) -> Result<PassOutcome, StepError> {
-    let checkout = request.prepared.worktree.as_deref().ok_or_else(|| StepError::Fatal("The review has no checkout".into()))?;
-    let context = request.prepared.context.as_deref().ok_or_else(|| StepError::Fatal("The review has no context".into()))?;
+    let checkout = request.prepared.worktree.as_deref().ok_or_else(|| internal("find the pull request's checkout", "no worktree"))?;
+    let context = request.prepared.context.as_deref().ok_or_else(|| internal("find the pull request it prepared", "no context folder"))?;
     let (placed, context_name) = place_context(context, checkout)?;
     let pr = read_json(&placed.join("pr.json"))?;
     let files = read_json(&placed.join("files.json"))?;
-    let patch = std::fs::read_to_string(placed.join("diff.patch")).map_err(|error| StepError::Fatal(error.to_string()))?;
+    let patch = std::fs::read_to_string(placed.join("diff.patch")).map_err(|error| internal("read the pull request's diff", error))?;
 
     let (user_instructions, hide) = {
         let db = super::lock_db(core);
@@ -961,8 +1028,8 @@ fn read_prior(placed: &Path) -> Result<Vec<Prior>, StepError> {
     if !path.is_file() {
         return Ok(Vec::new());
     }
-    let text = std::fs::read(&path).map_err(|error| StepError::Fatal(format!("Could not read {PRIOR_FINDINGS}: {error}")))?;
-    serde_json::from_slice(&text).map_err(|error| StepError::Fatal(format!("Could not read {PRIOR_FINDINGS}: {error}")))
+    let text = std::fs::read(&path).map_err(|error| internal("read the earlier reviews' findings", error))?;
+    serde_json::from_slice(&text).map_err(|error| internal("read the earlier reviews' findings", error))
 }
 
 /// Leave out what a settled earlier finding already said: the same

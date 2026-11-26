@@ -283,7 +283,7 @@ describe("CodePanel", () => {
     await render();
     await click(rowNamed("src"));
     await click(rowNamed("App.tsx"));
-    expect(text()).toContain("src/App.tsx is not a file");
+    expect(text()).toContain("src/App.tsx is not a file.");
     expect(container.querySelector("[data-testid=editor]")).toBeNull();
   });
 
@@ -406,7 +406,7 @@ describe("CodePanel", () => {
     await render({ reveal: { path: "src/App.tsx", nonce: 1 } });
     await typeInto(editorFor("src/App.tsx"), "mine");
     await click(button("Save"));
-    expect(text()).toContain("permission denied");
+    expect(text()).toContain("Bridge doesn't have permission to do that.");
     expect(container.querySelector("[aria-label*='discarding unsaved changes']")).toBeTruthy();
     expect(button("Save")).toBeTruthy();
   });

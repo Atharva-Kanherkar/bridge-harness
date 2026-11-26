@@ -101,12 +101,21 @@ describe("UsageInsights", () => {
     expect([...container.querySelectorAll("button")].some(item => item.textContent?.includes("Analyse"))).toBe(false);
   });
 
+  it("says a failed analysis in plain words, not the parser's report", async () => {
+    vi.spyOn(bridgeApi, "usageInsights").mockResolvedValue({ status: "failed", windowDays: 30, detail: "The ```json block does not match the contract: invalid type: string, expected a sequence at line 1 column 40" });
+    await act(async () => { root.render(<UsageInsights windowDays={30} onError={() => undefined} />); });
+    await settle();
+    expect(container.textContent).toContain("The analysis did not finish");
+    expect(container.textContent).toContain("The analysis stopped because of an error. Try again.");
+    expect(container.textContent).not.toContain("column 40");
+  });
+
   it("surfaces a transport failure through onError and keeps the retry", async () => {
     vi.spyOn(bridgeApi, "usageInsights").mockRejectedValue(new Error("daemon away"));
     const onError = vi.fn();
     await act(async () => { root.render(<UsageInsights windowDays={7} onError={onError} />); });
     await settle();
-    expect(onError).toHaveBeenCalledWith("daemon away");
+    expect(onError).toHaveBeenCalledWith("Daemon away.");
     expect(container.textContent).toContain("The analysis did not finish");
     expect([...container.querySelectorAll("button")].some(item => item.textContent?.includes("Analyse my usage"))).toBe(true);
   });
