@@ -713,15 +713,23 @@ impl DreamGate {
             .map_err(|error| BridgeError::Invalid(format!("Operations are not a JSON array: {error}")))?;
         let at = now.to_rfc3339();
         let before = self.report.applied();
+        let mut operations = Vec::new();
         for (position, element) in elements.into_iter().enumerate() {
             if position >= MAX_OPERATIONS_PER_BATCH {
                 self.report.refuse("too_many");
                 continue;
             }
-            let Ok(raw) = serde_json::from_value::<RawOperation>(element) else {
-                self.report.invalid += 1;
-                continue;
-            };
+            match serde_json::from_value::<RawOperation>(element) {
+                Ok(raw) => operations.push(raw),
+                Err(_) => self.report.invalid += 1,
+            }
+        }
+        // Approvals go last, whatever order the answer listed them in. An
+        // answer that retires a stale claim and approves its replacement
+        // means both; checked in the other order, the approval would meet the
+        // stale claim still active and be refused as a conflict.
+        operations.sort_by_key(|raw| raw.operation == OPERATION_APPROVE);
+        for raw in operations {
             match self.apply_one(db, batch, &raw, &at) {
                 Ok(Outcome::Applied(mut operation)) => {
                     operation.index = self.report.operations.len();
@@ -1751,10 +1759,14 @@ mod tests {
         assert_eq!(status(&db, &good.id), "proposed");
 
         automatic(&db);
-        let report = dream(&db, answer(ops));
-        assert_eq!(report.applied(), 1);
-        assert_eq!(report.refused.get("already_changed"), Some(&1), "one operation per record");
+        let junk = waiting(&db, "Ships on Fridays this sprint");
+        let j = alias(&db, &junk.id);
+        let report = dream(&db, answer(fenced(&format!(
+            r#"[{{"operation":"approve","targets":["{g}"]}},{{"operation":"reject","targets":["{j}"],"reason":"not durable"}}]"#
+        ))));
+        assert_eq!(report.applied(), 2, "{report:?}");
         assert_eq!(status(&db, &good.id), "active");
+        assert_eq!(status(&db, &junk.id), "rejected");
     }
 
     #[test]
@@ -1774,6 +1786,22 @@ mod tests {
         assert_eq!(report.applied(), 1);
         assert_eq!(status(&db, &repeat.id), "rejected");
         assert_eq!(report.operations[0].reason.as_deref(), Some("repeat"));
+    }
+
+    #[test]
+    fn approvals_apply_after_the_retirements_they_depend_on() {
+        let (_dir, db) = open();
+        automatic(&db);
+        let stale = active(&db, "Prefers tabs over spaces in Go code");
+        let fresh = waiting(&db, "Now prefers spaces over tabs in Go code");
+        let (s, f) = (alias(&db, &stale.id), alias(&db, &fresh.id));
+        let report = dream(&db, answer(fenced(&format!(
+            r#"[{{"operation":"approve","targets":["{f}"]}},{{"operation":"retire","targets":["{s}"]}}]"#
+        ))));
+        assert_eq!(report.applied(), 2, "{report:?}");
+        assert_eq!(status(&db, &stale.id), "expired");
+        assert_eq!(status(&db, &fresh.id), "active", "listed first, applied once the stale claim is gone");
+        assert_eq!(report.operations.iter().map(|operation| operation.operation.as_str()).collect::<Vec<_>>(), vec!["retire", "approve"]);
     }
 
     #[test]
