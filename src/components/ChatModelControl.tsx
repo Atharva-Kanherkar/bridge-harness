@@ -95,9 +95,12 @@ export type ChatModelControlProps = {
 
 const NO_ACCOUNTS: readonly AccountChoice[] = [];
 
-/** The popover's tallest and shortest useful heights, in CSS pixels. */
+/** The popover's tallest and shortest useful heights, in CSS pixels. The
+ *  shortest is what search, the harness rail, a few rows of the list, the
+ *  Thinking row and the footer need together: below it the picker flips to
+ *  the roomier side if there is one, and otherwise scrolls as a whole. */
 const MAX_POPOVER_HEIGHT = 520;
-const MIN_POPOVER_HEIGHT = 240;
+const MIN_POPOVER_HEIGHT = 400;
 const VIEWPORT_MARGIN = 12;
 /** How long an unresolved model stays silent before the pill admits it is
  *  loading. Short enough to explain a slow read, long enough that a local one
@@ -227,8 +230,11 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
     };
   }, [open, placement]);
   const side = fit?.side ?? placement;
-  // Too short for the preferred minimum: the whole popover scrolls instead of
-  // crushing the list under its header.
+  // Too short for the preferred minimum. The list keeps its floor either way
+  // (it used to be the only part allowed to shrink, so a short window crushed
+  // it to a sliver under the Thinking row); here the switch caption also
+  // gives up its line, and whatever still does not fit scrolls with the
+  // popover as a whole.
   const tight = !!fit && fit.maxHeight < MIN_POPOVER_HEIGHT;
   const dialogRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -599,7 +605,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
       <div
         ref={dialogRef}
         role="dialog" aria-label="Choose a model"
-        className={cn("u-glass-popover absolute left-0 z-40 flex max-h-[520px] w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-border bg-popover", side === "down" ? "top-full mt-2" : "bottom-full mb-2", tight && "overflow-y-auto")}
+        className={cn("u-glass-popover absolute left-0 z-40 flex max-h-[520px] w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-y-auto overflow-x-hidden overscroll-contain rounded-xl border border-border bg-popover", side === "down" ? "top-full mt-2" : "bottom-full mb-2")}
         style={fit ? { maxHeight: fit.maxHeight } : undefined}
         onKeyDown={onPickerKeyDown}
       >
@@ -643,7 +649,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
             </Button>}
           </div>
           {refreshError && <p role="alert" className="order-2 px-3 py-2 text-xs text-destructive">{refreshError}</p>}
-          <div ref={listRef} onScroll={onListScroll} role="listbox" aria-label={`${roleLabel} models`} aria-busy={switchInFlight || showAwaiting || undefined} className={cn("relative order-3 min-h-0 flex-1 overflow-y-auto px-2 pb-2", tight && "min-h-24 shrink-0", switchInFlight && "cursor-progress")}>
+          <div ref={listRef} onScroll={onListScroll} role="listbox" aria-label={`${roleLabel} models`} aria-busy={switchInFlight || showAwaiting || undefined} className={cn("relative order-3 min-h-36 flex-1 overflow-y-auto px-2 pb-2", switchInFlight && "cursor-progress")}>
                 {showAwaiting
                   ? <SkeletonRows label="Loading models" rows={4} meta={false} framed={false} density="menu" />
                   : <>
@@ -674,7 +680,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
                     ))}
                   </>}
           </div>
-          {!effortSurface && <div className="order-4">{switchNote}</div>}
+          {!effortSurface && !tight && <div className="order-4">{switchNote}</div>}
         </div>
         {/* Thinking: a label, what the level means, and one segmented row
             under the list, so a model and its effort are set in one open. */}
@@ -689,7 +695,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
               ? <div data-testid="effort-control"><EffortControl {...effortProps} /></div>
               : <p className="px-0.5 text-meta leading-5 text-muted-foreground">No thinking control for this model.</p>}
           </div>
-          {switchNote}
+          {tight ? <div className="h-2" /> : switchNote}
         </div>}
         {/* Footer: speed where the model has a faster tier, and the access
             mode. They wrap rather than overlap when both are wide. */}

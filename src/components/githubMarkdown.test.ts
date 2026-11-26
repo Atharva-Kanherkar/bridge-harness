@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeGithubMarkdown, splitGithubDetails, splitGithubMedia } from "./githubMarkdown";
+import { normalizeGithubMarkdown, resolveReferences, splitGithubDetails, splitGithubMedia } from "./githubMarkdown";
 
 const REPO = "https://github.com/bridge/harness";
 
@@ -19,6 +19,8 @@ describe("normalizeGithubMarkdown", () => {
     expect(normalizeGithubMarkdown("![the pane](https://img.test/a.png)"))
       .toBe("[image: the pane](https://img.test/a.png)");
     expect(normalizeGithubMarkdown('<img width="600" src="https://img.test/b.png" alt="x">'))
+      .toBe("[image: x](https://img.test/b.png)");
+    expect(normalizeGithubMarkdown('<img width="600" src="https://img.test/b.png">'))
       .toBe("[image](https://img.test/b.png)");
   });
 
@@ -226,5 +228,109 @@ describe("splitGithubMedia", () => {
 
   it("reads a tag wrapped across lines", () => {
     expect(media('<img\n  alt="wrapped"\n  src="https://github.com/w.png"\n/>')).toEqual([{ kind: "image", url: "https://github.com/w.png", alt: "wrapped" }]);
+  });
+});
+
+// Bot comments as they really arrive. Each of these printed raw markup in the
+// pane, or blew a sixteen-pixel icon up into a full-width "Load from" row.
+describe("bot comments", () => {
+  // Verbatim shape of a Vercel deployment comment (state hash shortened).
+  const VERCEL = [
+    "[vc]: #avn4y/UsDo+ElbHCQCUXnGCGnuvpWh+E37NdEQkZ6f4=:eyJpc01vbm9yZXBvIjp0cnVlfQ==",
+    "The latest updates on your projects. Learn more about [Vercel for GitHub](https://vercel.link/github-learn-more).",
+    "",
+    "| Project | Deployment | Actions | Updated |",
+    "| :--- | :----- | :------ | :------ |",
+    '| <a href="https://vercel.com/team/bridge-landing"><sup><img src="https://vercel.com/api/www/avatar?projectId=prj_1&s=32" width="16" height="16" align="middle" alt="" /></sup></a> [bridge-landing](https://vercel.com/team/bridge-landing) | ![Ready](https://vercel.com/static/status/ready.svg) [Ready](https://vercel.com/team/bridge-landing/abc) | [Preview](https://bridge-landing-git-x.vercel.app) | <relative-time datetime="2026-11-25T20:49:50.597Z">Nov 25, 2026 8:49pm UTC</relative-time> |',
+  ].join("\n");
+
+  it("renders a Vercel comment as its sentence and one clean table row", () => {
+    expect(splitGithubMedia(VERCEL).every(block => block.kind === "markdown")).toBe(true);
+    const body = normalizeGithubMarkdown(VERCEL);
+    expect(body).not.toContain("[vc]");
+    expect(body).not.toMatch(/<\/?(?:sup|img|a|relative-time)\b/);
+    expect(body.split("\n").at(-1)).toBe("|  [bridge-landing](https://vercel.com/team/bridge-landing) |  [Ready](https://vercel.com/team/bridge-landing/abc) | [Preview](https://bridge-landing-git-x.vercel.app) | Nov 25, 2026 8:49pm UTC |");
+  });
+
+  it("writes a badge as what it says and keeps it in its sentence", () => {
+    const codex = "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Guard the list**";
+    expect(splitGithubMedia(codex)).toEqual([{ kind: "markdown", text: codex }]);
+    expect(normalizeGithubMarkdown(codex)).toBe("**`P1`  Guard the list**");
+    expect(normalizeGithubMarkdown('<img src="https://img.shields.io/badge/build-passing-brightgreen" alt="build">')).toBe("`build: passing`");
+    expect(normalizeGithubMarkdown("[![CI](https://github.com/o/r/actions/workflows/ci.yml/badge.svg)](https://github.com/o/r/actions)"))
+      .toBe("[`CI`](https://github.com/o/r/actions)");
+  });
+
+  it("turns Cursor's picture buttons into plain links", () => {
+    const cursor = '<p><a href="https://cursor.com/open?data=a" target="_blank" rel="noopener noreferrer"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cursor.com/dark.png"><img alt="Fix in Cursor" width="115" height="28" src="https://cursor.com/dark.png"></picture></a>&nbsp;<a href="https://cursor.com/agents?data=a"><picture><img alt="Fix in Web" width="99" height="28" src="https://cursor.com/web.png"></picture></a></p>';
+    expect(splitGithubMedia(cursor).every(block => block.kind === "markdown")).toBe(true);
+    expect(normalizeGithubMarkdown(cursor)).toBe("[Fix in Cursor](https://cursor.com/open?data=a) [Fix in Web](https://cursor.com/agents?data=a)");
+  });
+
+  it("still lifts a real screenshot, and keeps prose tables whole", () => {
+    expect(splitGithubMedia('<img width="900" src="https://github.com/user-attachments/assets/shot.png" alt="pane">')).toEqual([
+      { kind: "media", items: [{ kind: "image", url: "https://github.com/user-attachments/assets/shot.png", alt: "pane" }] },
+    ]);
+    const table = "| Step | Shot |\n|---|---|\n| build | ![s](https://github.com/s.png) |";
+    expect(splitGithubMedia(table)).toEqual([{ kind: "markdown", text: table }]);
+    expect(normalizeGithubMarkdown(table).split("\n").at(-1)).toBe("| build | [image: s](https://github.com/s.png) |");
+  });
+
+  it("decodes entities, expands shortcodes, and unwraps styling tags", () => {
+    expect(normalizeGithubMarkdown("a&nbsp;b &mdash; c &amp; &#8594; &#x2713; &bogus;")).toBe("a b — c & → ✓ &bogus;");
+    expect(normalizeGithubMarkdown(":white_check_mark: done :not_a_code: 12:30:45")).toBe("✅ done :not_a_code: 12:30:45");
+    expect(normalizeGithubMarkdown("<sub>Comment `@coderabbitai help`</sub> H<sup>2</sup> <kbd>⌘</kbd>")).toBe("Comment `@coderabbitai help` H2 `⌘`");
+    // An escaped tag decodes to text, after the tag rewrites have run.
+    expect(normalizeGithubMarkdown("&lt;b&gt;not bold&lt;/b&gt;")).toBe("<b>not bold</b>");
+  });
+
+  it("writes block HTML as the markdown that draws the same thing", () => {
+    expect(normalizeGithubMarkdown('<h3 align="center">Steps</h3>\nthen<hr>after')).toBe("### Steps\n\nthen\n\n---\n\nafter");
+    expect(normalizeGithubMarkdown("<ul>\n<li>one</li>\n<li>two<ol><li>deep</li></ol></li>\n</ul>")).toBe("- one\n- two\n  1. deep");
+    expect(normalizeGithubMarkdown("<blockquote>\n<h2>v1.2</h2>\n<p>Notes</p>\n</blockquote>")).toBe("> ## v1.2\n>\n> Notes");
+    expect(normalizeGithubMarkdown("<table><tr><th>Size</th><th>Delta</th></tr><tr><td><code>a.js</code></td><td>+1 | 2</td></tr></table>"))
+      .toBe("| Size | Delta |\n| --- | --- |\n| `a.js` | +1 ∣ 2 |");
+  });
+
+  it("keeps a table row in one piece when a cell holds a <br>", () => {
+    expect(normalizeGithubMarkdown("| File | Summary |\n|---|---|\n| **Renderer** <br> `a.ts` | ok |"))
+      .toBe("| File | Summary |\n|---|---|\n| **Renderer**   `a.ts` | ok |");
+  });
+
+  it("does not link a reference that is already a link's label", () => {
+    expect(normalizeGithubMarkdown('fixed (<a href="https://redirect.github.com/o/r/issues/7">#7</a>)', REPO))
+      .toBe("fixed ([#7](https://redirect.github.com/o/r/issues/7))");
+  });
+});
+
+describe("resolveReferences", () => {
+  it("resolves reference links and hides their definitions", () => {
+    const body = "See the [design doc][doc], [Rules][] and [faq].\n\n[doc]: https://example.com/design\n[rules]: <https://example.com/rules> \"Rules\"\n[FAQ]: https://example.com/faq";
+    expect(resolveReferences(body)).toBe("See the [design doc](https://example.com/design), [Rules](https://example.com/rules) and [faq](https://example.com/faq).\n");
+  });
+
+  it("drops a definition whose target is not a link, and leaves undefined labels", () => {
+    expect(resolveReferences("[vc]: #R4k+abc=:eyJ0\nText [vc] and [missing].")).toBe("Text vc and [missing].");
+  });
+
+  it("marks footnotes, and leaves code alone", () => {
+    expect(resolveReferences("Claim[^1].\n\n[^1]: Source.")).toBe("Claim¹.\n\n¹ Source.");
+    expect(resolveReferences("`[x]` and\n```\n[x]: kept\n```\n[x]: https://e.test/x")).toBe("`[x]` and\n```\n[x]: kept\n```");
+  });
+
+  it("never links a scheme the shell would not open", () => {
+    expect(resolveReferences("[click][x]\n\n[x]: javascript:alert(1)")).toBe("click\n");
+  });
+});
+
+describe("nested sections", () => {
+  it("keeps a section inside a section, and honours <details open>", () => {
+    const blocks = splitGithubDetails("<details>\n<summary>Outer</summary>\n\n<details>\n<summary>Inner</summary>\n\nbody\n\n</details>\n\n</details>\nafter\n<details open><summary>Shown</summary>x</details>");
+    expect(blocks).toEqual([
+      { kind: "details", summary: "Outer", body: "<details>\n<summary>Inner</summary>\n\nbody\n\n</details>" },
+      { kind: "markdown", text: "\nafter\n" },
+      { kind: "details", summary: "Shown", body: "x", open: true },
+    ]);
+    expect(splitGithubDetails((blocks[0] as { body: string }).body)).toEqual([{ kind: "details", summary: "Inner", body: "body" }]);
   });
 });

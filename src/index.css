@@ -1470,8 +1470,23 @@ html[data-native-fullscreen] .u-traffic-inset {
   white-space: pre-line;
 }
 
-.gh-md .md > :is(h1, h2, h3, h4) {
+.gh-md .md > :is(h1, h2, h3, h4):not(:first-child) {
   margin-top: 1em;
+}
+
+/* Bot comments carry long unbroken tokens (hashes, URLs, base64 state), and a
+   card is only as wide as the pane. They wrap rather than run off the edge. */
+.gh-md .md {
+  overflow-wrap: break-word;
+}
+
+/* GitHub's own table rule: as wide as the content, never wider than the
+   comment, scrolling sideways when a column cannot wrap. */
+.gh-md .md table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 /* ── Connector surface ──────────────────────────────────────────────────────
@@ -1645,6 +1660,10 @@ html[data-native-fullscreen] .u-traffic-inset {
   border-left: 2px solid var(--color-border);
   color: var(--color-muted-foreground);
 }
+/* A quote (and a GitHub alert) holds blocks; its edges are its own padding. */
+.md :is(blockquote, [data-alert-body]) > :first-child { margin-top: 0; }
+.md :is(blockquote, [data-alert-body]) > :last-child { margin-bottom: 0; }
+.md li > :is(ul, ol) { margin: 0.15em 0; }
 .md hr {
   margin: 1.2em 0;
   border: 0;

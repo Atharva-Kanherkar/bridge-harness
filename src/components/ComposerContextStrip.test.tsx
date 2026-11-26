@@ -56,6 +56,19 @@ function mount(overrides: Partial<Parameters<typeof ComposerContextStrip>[0]> = 
 }
 
 describe("ComposerContextStrip", () => {
+  it("lets the named chips shrink so a narrow column cannot push them over the dock", () => {
+    mount({ onSelectAgent: vi.fn() });
+    const strip = container.querySelector('[aria-label="Chat context"]')!;
+    expect(strip.className).toContain("min-w-0");
+    const named = [...strip.querySelectorAll("button")].filter(button => /max-w-\[(?:16|12)rem\]/.test(button.className));
+    // Project, branch and agent.
+    expect(named).toHaveLength(3);
+    for (const chip of named) {
+      expect(chip.className.split(" ")).toContain("shrink");
+      expect(chip.className.split(" ")).not.toContain("shrink-0");
+    }
+  });
+
   it("shows repo, branch, worktree, and the agent chooser", () => {
     mount({ onSelectAgent: vi.fn() });
     const text = container.textContent ?? "";
@@ -67,22 +80,6 @@ describe("ComposerContextStrip", () => {
     expect(container.querySelector('[aria-label="Agent: None"]')).toBeTruthy();
     expect(text).not.toContain("This computer");
     expect(container.querySelector('[aria-label="Chat context"]')).toBeTruthy();
-  });
-
-  it("lets the project and branch give way so the work mode picker stays in the composer", () => {
-    mount({ workspace: workspace({ title: "A project with a very long name", branch: "feat/a-branch-name-long-enough-to-overflow" }) });
-    const buttons = [...container.querySelectorAll<HTMLButtonElement>('[aria-label="Chat context"] > button')];
-    // The Button's own `shrink-0` would defeat `min-w-0`; both free-text
-    // pickers must override it, and the icon-only work mode must not shrink.
-    for (const picker of buttons.slice(0, 2)) {
-      const classes = picker.className.split(/\s+/);
-      expect(classes).toContain("min-w-0");
-      expect(classes).toContain("shrink");
-      expect(classes).not.toContain("shrink-0");
-      expect(picker.querySelector("span")!.className).toContain("truncate");
-    }
-    expect(buttons[2].getAttribute("aria-label")).toBe("Work mode: Work on branch");
-    expect(buttons[2].className.split(/\s+/)).toContain("shrink-0");
   });
 
   it("uses the same type size on every context chip", () => {
