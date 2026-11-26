@@ -40,6 +40,10 @@ const MAX_PIN_CONTEXT: usize = 20;
 /// at `apps::events::MAX_SUMMARY_CHARS`, so the block is bounded on its own.
 const MAX_APP_ACTIVITY: usize = 20;
 const LEASE_MINUTES: i64 = 10;
+/// How long a chat must stay quiet before its extraction runs. Every finished
+/// turn pushes the run out again, so one conversation costs one run rather
+/// than one per turn, and the run reads a conversation that has stopped.
+pub const IDLE_SECONDS: i64 = 600;
 /// The kinds real conversations are stored under: `direct` single-agent chats
 /// and `orchestrator` workspace sessions. No production path writes `chat`.
 const ENQUEUEABLE_SESSION_KINDS: [&str; 2] = ["direct", "orchestrator"];
@@ -77,6 +81,38 @@ pub(crate) fn install(transaction: &Transaction<'_>) -> Result<(), BridgeError> 
         );
         CREATE INDEX IF NOT EXISTS idx_memory_extraction_runs_status
             ON memory_extraction_runs(status, created_at);",
+    )?;
+    Ok(())
+}
+
+/// Migration 100: one queued run per chat, due once the chat goes quiet, and
+/// a watermark so a run reads only what the last one did not.
+///
+/// A queued run from before the upgrade is due at once, as it would have been.
+/// A past completed run gets the newest conversational entry that existed when
+/// it was queued as its watermark, so the first run after the upgrade does not
+/// read an old chat from the start: that run read the newest entries then.
+pub(crate) fn install_idle_schedule(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    for (column, definition) in [
+        ("due_at", "TEXT"),
+        ("through_entry_id", "TEXT"),
+        ("known_count", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        crate::store::add_column_if_missing(transaction, "memory_extraction_runs", column, definition)?;
+    }
+    transaction.execute_batch(
+        "UPDATE memory_extraction_runs SET due_at = created_at WHERE due_at IS NULL;
+         UPDATE memory_extraction_runs
+         SET through_entry_id = (
+             SELECT entry.id FROM session_entries AS entry
+             WHERE entry.session_id = memory_extraction_runs.session_id
+               AND entry.kind IN ('user.message','assistant.message')
+               AND entry.created_at <= memory_extraction_runs.created_at
+             ORDER BY entry.sequence DESC LIMIT 1
+         )
+         WHERE status = 'completed' AND through_entry_id IS NULL;
+         CREATE INDEX IF NOT EXISTS idx_memory_extraction_runs_due
+             ON memory_extraction_runs(status, due_at);",
     )?;
     Ok(())
 }
@@ -150,8 +186,11 @@ pub fn update_settings(
     settings(db, &scope_key)
 }
 
-/// Called after a completed turn. Enqueues at most one open run per session,
-/// only for visible conversational kinds, only when the scope opted in.
+/// Called after a completed turn. Keeps at most one queued run per chat and
+/// moves it to `now + IDLE_SECONDS`, so a run starts only once the chat has
+/// gone quiet. Only visible conversational kinds queue, and only when the
+/// scope opted in. A run already executing does not stop the next one from
+/// queueing: it read the conversation as it stood, and this turn is newer.
 ///
 /// `memory` is the memory model resolved for this instant. The chat's own
 /// harness plays no part: with no memory model there is nothing to run on, and
@@ -160,6 +199,7 @@ pub fn enqueue_after_turn(
     db: &Connection,
     session_id: &str,
     memory: &MemoryModelSettings,
+    now: DateTime<Utc>,
 ) -> Result<bool, BridgeError> {
     let kind: Option<Option<String>> = db
         .query_row(
@@ -186,31 +226,46 @@ pub fn enqueue_after_turn(
     if crate::memory_retention::proposals_full(db, ACCOUNT_MEMORY_SCOPE)? {
         return Ok(false);
     }
-    let open: Option<i64> = db
-        .query_row(
-            "SELECT 1 FROM memory_extraction_runs
-             WHERE session_id=?1 AND status IN ('queued','running') LIMIT 1",
-            params![session_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if open.is_some() {
-        return Ok(false);
+    let due_at = (now + Duration::seconds(IDLE_SECONDS)).to_rfc3339();
+    let at = now.to_rfc3339();
+    // Re-arming keeps the stricter mode: a run queued under review stays a
+    // review run even if a later turn came after Automatic was turned on.
+    let rearmed = db.execute(
+        "UPDATE memory_extraction_runs
+         SET due_at=?2, updated_at=?3,
+             mode = CASE WHEN mode=?4 AND ?5=?4 THEN ?4 ELSE ?6 END
+         WHERE session_id=?1 AND status='queued'",
+        params![session_id, due_at, at, MODE_AUTO_APPLY, current.mode, MODE_PROPOSE],
+    )?;
+    if rearmed > 0 {
+        return Ok(true);
     }
-    let now = Utc::now().to_rfc3339();
     db.execute(
         "INSERT INTO memory_extraction_runs(
-            id, scope_key, session_id, mode, status, created_at, updated_at
-         ) VALUES(?1,?2,?3,?4,'queued',?5,?5)",
+            id, scope_key, session_id, mode, status, due_at, created_at, updated_at
+         ) VALUES(?1,?2,?3,?4,'queued',?5,?6,?6)",
         params![
             Uuid::new_v4().to_string(),
             ACCOUNT_MEMORY_SCOPE,
             session_id,
             current.mode,
-            now
+            due_at,
+            at
         ],
     )?;
     Ok(true)
+}
+
+/// A chat that was archived will not be talked to again, so its queued run
+/// need not wait for the quiet period.
+pub fn due_now(db: &Connection, session_id: &str, now: DateTime<Utc>) -> Result<bool, BridgeError> {
+    let at = now.to_rfc3339();
+    let changed = db.execute(
+        "UPDATE memory_extraction_runs SET due_at=?2, updated_at=?2
+         WHERE session_id=?1 AND status='queued' AND (due_at IS NULL OR due_at > ?2)",
+        params![session_id, at],
+    )?;
+    Ok(changed > 0)
 }
 
 #[derive(Debug, Clone)]
@@ -238,12 +293,19 @@ pub fn claim_due(
     memory: &MemoryModelSettings,
 ) -> Result<Option<ClaimedExtraction>, BridgeError> {
     loop {
+        // A queued run waits for its chat to go quiet, and never starts beside
+        // a run of the same chat that still holds its lease: two runs reading
+        // one chat at once would read the same entries twice.
         let candidate: Option<(String, String, String, String)> = db
             .query_row(
-                "SELECT id, scope_key, session_id, mode FROM memory_extraction_runs
-                 WHERE status='queued'
+                "SELECT id, scope_key, session_id, mode FROM memory_extraction_runs AS run
+                 WHERE (status='queued' AND COALESCE(due_at, created_at) <= ?1
+                        AND NOT EXISTS (
+                            SELECT 1 FROM memory_extraction_runs AS other
+                            WHERE other.session_id = run.session_id AND other.status='running'
+                              AND other.lease_expires_at >= ?1))
                     OR (status='running' AND (lease_expires_at IS NULL OR lease_expires_at < ?1))
-                 ORDER BY created_at LIMIT 1",
+                 ORDER BY COALESCE(due_at, created_at), created_at LIMIT 1",
                 params![now.to_rfc3339()],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
@@ -1577,6 +1639,11 @@ mod tests {
         crate::memory_model::resolve_with(db, |_| None, || Err("no standard choice in tests".into())).unwrap()
     }
 
+    /// An instant after a run queued now has become due.
+    fn quiet() -> DateTime<Utc> {
+        Utc::now() + Duration::seconds(IDLE_SECONDS + 1)
+    }
+
     fn set_new_chat_model(db: &Connection, harness: &str, model: Option<&str>) {
         let record = bridge_protocol::messages::ChatDefaultsRecord {
             revision: 1,
@@ -1639,7 +1706,7 @@ mod tests {
         propose_mode(&db);
         insert_chat_on(&db, "chat", "claude", Some("sonnet"));
         fill_scope(&db, 2);
-        assert!(!enqueue_after_turn(&db, "chat", &memory(&db)).unwrap(), "no run, so no model call");
+        assert!(!enqueue_after_turn(&db, "chat", &memory(&db), Utc::now()).unwrap(), "no run, so no model call");
         let runs: i64 = db.query_row("SELECT COUNT(*) FROM memory_extraction_runs", [], |row| row.get(0)).unwrap();
         assert_eq!(runs, 0);
     }
@@ -1649,9 +1716,9 @@ mod tests {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
         insert_chat_on(&db, "chat", "claude", Some("sonnet"));
-        assert!(enqueue_after_turn(&db, "chat", &memory(&db)).unwrap());
+        assert!(enqueue_after_turn(&db, "chat", &memory(&db), Utc::now()).unwrap());
         fill_scope(&db, 2);
-        assert!(claim_due(&db, Utc::now(), &memory(&db)).unwrap().is_none(), "nothing reaches an adapter");
+        assert!(claim_due(&db, quiet(), &memory(&db)).unwrap().is_none(), "nothing reaches an adapter");
         let (status, detail): (String, String) = db
             .query_row("SELECT status, detail FROM memory_extraction_runs", [], |row| Ok((row.get(0)?, row.get(1)?)))
             .unwrap();
@@ -1665,8 +1732,8 @@ mod tests {
         insert_chat_on(&db, "chat", "claude", Some("sonnet"));
         crate::memory_retention::update_settings(&db, 7, Some(90), Some(10)).unwrap();
         memory_ledger::insert_proposal(&db, ACCOUNT_MEMORY_SCOPE, "One waiting proposal", "fact", Some(7000), None, "chat").unwrap();
-        assert!(enqueue_after_turn(&db, "chat", &memory(&db)).unwrap());
-        assert!(claim_due(&db, Utc::now(), &memory(&db)).unwrap().is_some());
+        assert!(enqueue_after_turn(&db, "chat", &memory(&db), Utc::now()).unwrap());
+        assert!(claim_due(&db, quiet(), &memory(&db)).unwrap().is_some());
     }
 
     #[test]
@@ -1742,8 +1809,8 @@ mod tests {
         );
         auto_apply_mode(&db);
         insert_chat(&db, "s1", "direct");
-        assert!(enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
-        let claimed = claim_due(&db, Utc::now(), &memory(&db)).unwrap().unwrap();
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
+        let claimed = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
         assert_eq!(claimed.mode, MODE_AUTO_APPLY);
     }
 
@@ -1760,10 +1827,10 @@ mod tests {
             "user.message",
             "I prefer spaces for indentation.",
         );
-        assert!(enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
 
         auto_apply_mode(&db);
-        let claimed = claim_due(&db, Utc::now(), &memory(&db)).unwrap().unwrap();
+        let claimed = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
         assert_eq!(claimed.mode, MODE_PROPOSE);
         let report = gate_and_insert(
             &db,
@@ -1787,9 +1854,9 @@ mod tests {
         // The chat's own harness cannot run tool-free; that no longer matters.
         insert_chat_on(&db, "c1", "codex", Some("gpt-5.6-luna"));
         insert_chat_on(&db, "o1", "opencode", None);
-        assert!(enqueue_after_turn(&db, "c1", &memory(&db)).unwrap());
-        assert!(enqueue_after_turn(&db, "o1", &memory(&db)).unwrap());
-        let claimed = claim_due(&db, Utc::now(), &memory(&db)).unwrap().unwrap();
+        assert!(enqueue_after_turn(&db, "c1", &memory(&db), Utc::now()).unwrap());
+        assert!(enqueue_after_turn(&db, "o1", &memory(&db), Utc::now()).unwrap());
+        let claimed = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
         assert_eq!(claimed.mode, MODE_PROPOSE);
         assert_eq!(
             (claimed.harness.as_str(), claimed.model.as_deref()),
@@ -1815,8 +1882,8 @@ mod tests {
         let (_dir, db) = extraction_db();
         set_new_chat_model(&db, "claude", None);
         insert_chat_on(&db, "s1", "claude", Some("opus"));
-        assert!(enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
-        let claimed = claim_due(&db, Utc::now(), &memory(&db)).unwrap().unwrap();
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
+        let claimed = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
         assert_eq!(claimed.harness, "claude");
         assert_eq!(claimed.model, None, "not the chat's opus: the adapter's default");
     }
@@ -1826,9 +1893,9 @@ mod tests {
         let (_dir, db) = extraction_db();
         set_new_chat_model(&db, "claude", Some("claude-opus-5-5"));
         insert_chat_on(&db, "s1", "claude", Some("claude-opus-5-5"));
-        assert!(enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
         pin_memory_model(&db, "claude-haiku-5-5");
-        let claimed = claim_due(&db, Utc::now(), &memory(&db)).unwrap().unwrap();
+        let claimed = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
         assert_eq!(claimed.model.as_deref(), Some("claude-haiku-5-5"), "resolved at claim, not at enqueue");
     }
 
@@ -1838,8 +1905,8 @@ mod tests {
         set_new_chat_model(&db, "codex", Some("gpt-5.6-luna"));
         insert_chat_on(&db, "c1", "codex", Some("gpt-5.6-luna"));
         assert!(memory(&db).resolved.is_none());
-        assert!(!enqueue_after_turn(&db, "c1", &memory(&db)).unwrap());
-        assert!(claim_due(&db, Utc::now(), &memory(&db)).unwrap().is_none());
+        assert!(!enqueue_after_turn(&db, "c1", &memory(&db), Utc::now()).unwrap());
+        assert!(claim_due(&db, quiet(), &memory(&db)).unwrap().is_none());
         assert!(
             last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().is_none(),
             "nothing queued, nothing cancelled"
@@ -1851,9 +1918,9 @@ mod tests {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
         insert_chat_on(&db, "c1", "codex", None);
-        assert!(enqueue_after_turn(&db, "c1", &memory(&db)).unwrap());
+        assert!(enqueue_after_turn(&db, "c1", &memory(&db), Utc::now()).unwrap());
         crate::memory_model::set(&db, None, None).unwrap();
-        assert!(claim_due(&db, Utc::now(), &memory(&db)).unwrap().is_none());
+        assert!(claim_due(&db, quiet(), &memory(&db)).unwrap().is_none());
         let last = last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().unwrap();
         assert_eq!(last.status, "cancelled");
         assert_eq!(last.detail.as_deref(), Some("no_memory_model"));
@@ -1865,7 +1932,7 @@ mod tests {
         remember_mode(&db);
         insert_chat_on(&db, "s1", "claude", Some("sonnet"));
         insert_message(&db, "s1", "e1", 1, "user.message", "I prefer tabs");
-        assert!(!enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
+        assert!(!enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
         let mut model = RefusingModel;
         let _ = &mut model;
     }
@@ -1877,15 +1944,13 @@ mod tests {
         insert_chat(&db, "b1", "briefing");
         insert_chat(&db, "x1", EXTRACTION_SESSION_KIND);
         insert_chat(&db, "w1", "worker");
-        assert!(!enqueue_after_turn(&db, "b1", &memory(&db)).unwrap());
-        assert!(!enqueue_after_turn(&db, "x1", &memory(&db)).unwrap());
-        assert!(!enqueue_after_turn(&db, "w1", &memory(&db)).unwrap());
+        assert!(!enqueue_after_turn(&db, "b1", &memory(&db), Utc::now()).unwrap());
+        assert!(!enqueue_after_turn(&db, "x1", &memory(&db), Utc::now()).unwrap());
+        assert!(!enqueue_after_turn(&db, "w1", &memory(&db), Utc::now()).unwrap());
         insert_chat(&db, "s1", "direct");
-        assert!(enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
-        assert!(
-            !enqueue_after_turn(&db, "s1", &memory(&db)).unwrap(),
-            "one open run per session"
-        );
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap(), "a later turn re-arms it");
+        assert_eq!(queued_rows(&db, "s1").len(), 1, "one queued run per session");
     }
 
     #[test]
@@ -2928,8 +2993,8 @@ mod tests {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
         insert_chat(&db, "s1", "direct");
-        assert!(enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
-        let now = Utc::now();
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
+        let now = quiet();
         let claimed = claim_due(&db, now, &memory(&db)).unwrap().unwrap();
         assert_eq!(claimed.session_id, "s1");
         assert_eq!(claimed.harness, "claude");
@@ -2985,8 +3050,8 @@ mod tests {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
         insert_chat(&db, "s1", "direct");
-        assert!(enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
-        let claimed = claim_due(&db, Utc::now(), &memory(&db)).unwrap().unwrap();
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
+        let claimed = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
         settle(
             &db,
             &claimed.run_id,
@@ -3002,7 +3067,7 @@ mod tests {
         )
         .unwrap();
         insert_chat(&db, "s2", "direct");
-        assert!(enqueue_after_turn(&db, "s2", &memory(&db)).unwrap());
+        assert!(enqueue_after_turn(&db, "s2", &memory(&db), Utc::now()).unwrap());
         let last = last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().unwrap();
         assert_eq!(last.status, "completed", "a queued row is not a report");
         assert_eq!(last.spend_microusd, 1_700);
@@ -3013,9 +3078,9 @@ mod tests {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
         insert_chat(&db, "s1", "direct");
-        assert!(enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
         update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_REMEMBER).unwrap();
-        assert!(claim_due(&db, Utc::now(), &memory(&db)).unwrap().is_none());
+        assert!(claim_due(&db, quiet(), &memory(&db)).unwrap().is_none());
         let last = last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().unwrap();
         assert_eq!(last.status, "cancelled");
         assert_eq!(last.detail.as_deref(), Some("extraction_disabled"));
@@ -3026,8 +3091,8 @@ mod tests {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
         insert_chat(&db, "s1", "direct");
-        assert!(enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
-        let start = Utc::now();
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
+        let start = quiet();
         let first = claim_due(&db, start, &memory(&db)).unwrap().unwrap();
         let later = start + Duration::minutes(LEASE_MINUTES + 1);
         let second = claim_due(&db, later, &memory(&db)).unwrap().unwrap();
@@ -3037,6 +3102,140 @@ mod tests {
             !heartbeat(&db, &first.run_id, &first.lease_owner, later).unwrap(),
             "the reclaimed lease no longer answers to the first owner"
         );
+    }
+
+    fn queued_rows(db: &Connection, session_id: &str) -> Vec<String> {
+        db.prepare("SELECT due_at FROM memory_extraction_runs WHERE session_id=?1 AND status='queued'")
+            .unwrap()
+            .query_map(params![session_id], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    #[test]
+    fn a_turn_re_arms_the_one_queued_run() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        let start = Utc::now();
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), start).unwrap());
+        let first_due = queued_rows(&db, "s1");
+        assert_eq!(first_due, vec![(start + Duration::seconds(IDLE_SECONDS)).to_rfc3339()]);
+        for minute in 1..=2 {
+            let at = start + Duration::minutes(minute);
+            assert!(enqueue_after_turn(&db, "s1", &memory(&db), at).unwrap());
+        }
+        assert_eq!(
+            queued_rows(&db, "s1"),
+            vec![(start + Duration::minutes(2) + Duration::seconds(IDLE_SECONDS)).to_rfc3339()],
+            "one row whose due time follows the newest turn"
+        );
+    }
+
+    #[test]
+    fn a_queued_run_is_not_due_before_the_quiet_period() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        let start = Utc::now();
+        enqueue_after_turn(&db, "s1", &memory(&db), start).unwrap();
+        let early = start + Duration::seconds(IDLE_SECONDS - 1);
+        assert!(claim_due(&db, early, &memory(&db)).unwrap().is_none(), "still talking");
+        let due = start + Duration::seconds(IDLE_SECONDS);
+        assert_eq!(claim_due(&db, due, &memory(&db)).unwrap().unwrap().session_id, "s1");
+    }
+
+    #[test]
+    fn archiving_makes_the_queued_run_due_now() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        let start = Utc::now();
+        enqueue_after_turn(&db, "s1", &memory(&db), start).unwrap();
+        let archived = start + Duration::seconds(30);
+        assert!(due_now(&db, "s1", archived).unwrap());
+        assert_eq!(claim_due(&db, archived, &memory(&db)).unwrap().unwrap().session_id, "s1");
+        assert!(!due_now(&db, "s1", archived).unwrap(), "nothing left waiting");
+    }
+
+    #[test]
+    fn a_running_run_blocks_a_second_claim_for_the_same_chat() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        insert_chat(&db, "s2", "direct");
+        let start = Utc::now();
+        enqueue_after_turn(&db, "s1", &memory(&db), start).unwrap();
+        let due = start + Duration::seconds(IDLE_SECONDS);
+        let running = claim_due(&db, due, &memory(&db)).unwrap().unwrap();
+        // A turn while the run executes queues the next one beside it.
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), due).unwrap());
+        enqueue_after_turn(&db, "s2", &memory(&db), due).unwrap();
+        let later = due + Duration::seconds(IDLE_SECONDS);
+        let next = claim_due(&db, later, &memory(&db)).unwrap().unwrap();
+        assert_eq!(next.session_id, "s2", "s1 still has a run holding its lease");
+        assert!(claim_due(&db, later, &memory(&db)).unwrap().is_none());
+        settle(&db, &running.run_id, &running.lease_owner, "completed", None, None, None, None, 0, 0, 0).unwrap();
+        assert_eq!(claim_due(&db, later, &memory(&db)).unwrap().unwrap().session_id, "s1");
+    }
+
+    #[test]
+    fn thirty_turns_a_minute_apart_make_one_run() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        let start = Utc::now();
+        let mut claims = 0;
+        for minute in 0..30 {
+            let at = start + Duration::minutes(minute);
+            enqueue_after_turn(&db, "s1", &memory(&db), at).unwrap();
+            // The maintenance loop ticks every minute while the chat goes on.
+            if claim_due(&db, at + Duration::seconds(59), &memory(&db)).unwrap().is_some() {
+                claims += 1;
+            }
+        }
+        let quiet = start + Duration::minutes(29) + Duration::seconds(IDLE_SECONDS);
+        if claim_due(&db, quiet, &memory(&db)).unwrap().is_some() {
+            claims += 1;
+        }
+        assert_eq!(claims, 1, "one run for the whole conversation");
+        let rows: i64 = db.query_row("SELECT COUNT(*) FROM memory_extraction_runs", [], |row| row.get(0)).unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    #[test]
+    fn migration_backfills_watermarks_from_past_runs() {
+        let (_dir, db) = extraction_db();
+        insert_chat(&db, "s1", "direct");
+        for (id, sequence, at) in [("e1", 1, "2026-11-01T10:00:00+00:00"), ("e2", 2, "2026-11-01T10:05:00+00:00"), ("e3", 3, "2026-11-01T11:00:00+00:00")] {
+            db.execute(
+                "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+                 VALUES(?1,'s1',NULL,?2,'user.message',json_object('text','hi'),?3)",
+                params![id, sequence, at],
+            )
+            .unwrap();
+        }
+        db.execute_batch(
+            "INSERT INTO memory_extraction_runs(id,scope_key,session_id,status,created_at,updated_at,mode)
+             VALUES('done','account:local','s1','completed','2026-11-01T10:06:00+00:00','2026-11-01T10:07:00+00:00','propose'),
+                   ('waiting','account:local','s1','queued','2026-11-01T11:01:00+00:00','2026-11-01T11:01:00+00:00','propose');
+             UPDATE memory_extraction_runs SET due_at=NULL, through_entry_id=NULL;",
+        )
+        .unwrap();
+        let transaction = db.unchecked_transaction().unwrap();
+        install_idle_schedule(&transaction).unwrap();
+        transaction.commit().unwrap();
+        let (watermark, waiting_due): (Option<String>, Option<String>) = db
+            .query_row(
+                "SELECT (SELECT through_entry_id FROM memory_extraction_runs WHERE id='done'),
+                        (SELECT due_at FROM memory_extraction_runs WHERE id='waiting')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(watermark.as_deref(), Some("e2"), "the newest entry when the past run was queued");
+        assert_eq!(waiting_due.as_deref(), Some("2026-11-01T11:01:00+00:00"), "due at once, as before");
     }
 
     #[test]

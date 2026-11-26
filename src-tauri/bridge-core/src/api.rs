@@ -6091,6 +6091,14 @@ pub fn archive_chat(
             &format!("Chat archived; reclaimed {freed}"),
         )?;
     }
+    {
+        // An archived chat is done: its pending memory extraction need not
+        // wait out the quiet period.
+        let db = lock_db(core);
+        if let Err(error) = crate::memory_extraction::due_now(&db, session_id, chrono::Utc::now()) {
+            eprintln!("[memory] archive could not hurry extraction for {session_id}: {error}");
+        }
+    }
     core.events.publish(CoreEvent::StateChanged);
     Ok(worktree_registry::ArchiveChatResult {
         archived: true,
