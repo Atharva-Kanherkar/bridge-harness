@@ -300,6 +300,10 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         </span>}
       />
 
+      {/* The column these layouts sit in is the window minus the sidebar, and
+          zoom shrinks it further, so their grids break on this container's
+          width. Viewport breakpoints put five columns in room for two. */}
+      <div className="@container/usage">
       {tab === "time" ? <UsageScreenTime onError={onError} refreshKey={refreshTick} /> : tab === "insights" ? <UsageInsights windowDays={preferences.windowDays} onError={onError} /> : <>
       {providerUsage.overviews?.providers.filter(snapshot => !snapshot.accountId).map(snapshot =>
         <div key={snapshot.provider} className="mb-3 empty:hidden"><UsageResetRow snapshot={snapshot} onUpdated={providerUsage.refresh} /></div>)}
@@ -371,6 +375,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         <PriceSection report={report} summary={summary!} overrides={overrides} refreshing={refreshingRates} onRefreshRates={() => void refreshRates()} onChange={changeOverrides} />
       </>}
       </>}
+      </div>
     </div>
   </div>;
 }

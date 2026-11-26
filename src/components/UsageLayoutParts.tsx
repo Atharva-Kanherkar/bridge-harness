@@ -102,7 +102,7 @@ export function TokenComposition({ report, className }: { report: UsageReport; c
     <div className="mt-3.5 flex h-2 gap-0.5" role="img" aria-label={TOKEN_KINDS.map(kind => `${kind.label} ${formatTokens(report.totals[kind.key])}`).join(", ")}>
       {total > 0 ? TOKEN_KINDS.filter(kind => report.totals[kind.key] > 0).map(kind => <span key={kind.key} className={cn("min-w-1 rounded-sm", KIND_SHADE[kind.key].bg)} style={{ flexGrow: report.totals[kind.key] }} />) : <span className="flex-1 rounded-sm bg-muted" />}
     </div>
-    <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4">
+    <dl className="mt-3 grid grid-cols-[repeat(auto-fit,minmax(10.5rem,1fr))] gap-x-6 gap-y-2">
       {TOKEN_KINDS.map(kind => <div key={kind.key} className="flex items-baseline gap-2 text-ui">
         <span className={cn("size-2 shrink-0 translate-y-[-1px] rounded-sm", KIND_SHADE[kind.key].bg)} aria-hidden="true" />
         <dt className="text-muted-foreground">{kind.label}</dt>

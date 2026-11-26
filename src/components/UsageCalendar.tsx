@@ -99,24 +99,24 @@ export function UsageCalendar({ summary, periods, window, metric }: UsageLayoutP
           <span className={cn("flex-1 opacity-20 transition-opacity group-hover:opacity-25", harnessChartDot(part.harness))} />
         </span>)}
       </span>}
-      <span className={cn("relative leading-none tabular-nums", compact ? "text-micro" : "text-caption", value > 0 ? "text-muted-foreground" : "text-muted-foreground/50")}>{monthLabel && <span className="mr-1 font-medium text-foreground">{monthLabel}</span>}{hourly ? formatHourShort(day, window.timeZone) : dayOfMonth}</span>
+      <span className={cn("relative leading-none tabular-nums", compact ? "text-micro" : "text-caption", value > 0 ? "text-muted-foreground" : "text-muted-foreground/50")}>{monthLabel && <span className={cn("mr-1 font-medium text-foreground", !compact && "hidden @2xl/usage:inline")}>{monthLabel}</span>}{hourly ? formatHourShort(day, window.timeZone) : dayOfMonth}</span>
       {!hourly && axis[index] === window.untilDay && <span className={cn("absolute size-1.5 rounded-full bg-foreground", compact ? "right-1.5 top-1.5" : "right-2.5 top-2.5")} aria-hidden="true" />}
-      {!compact && value > 0 && <span className="relative mt-auto text-body font-medium tracking-tight tabular-nums text-foreground">{format(value)}</span>}
+      {!compact && value > 0 && <span className="relative mt-auto hidden text-body font-medium tracking-tight tabular-nums text-foreground @2xl/usage:block">{format(value)}</span>}
     </DataCell></Tip>;
   };
 
   return <div className="space-y-4">
     <section aria-label={hourly ? "Hourly calendar" : "Daily calendar"} className={cn(LAYOUT_CARD, "p-4")}>
-      {hourly ? <div className="grid grid-cols-6 gap-1.5 sm:grid-cols-12">
+      {hourly ? <div className="grid grid-cols-6 gap-1.5 @2xl/usage:grid-cols-12">
         {axis.map((_, index) => cell(index))}
-      </div> : <div className={cn("grid gap-1.5", compact ? "grid-cols-7" : "grid-cols-[repeat(7,minmax(0,1fr))_5.5rem]")}>
+      </div> : <div className={cn("grid gap-1.5", compact ? "grid-cols-7" : "grid-cols-7 @2xl/usage:grid-cols-[repeat(7,minmax(0,1fr))_5.5rem]")}>
         {WEEKDAYS.map(day => <div key={day} className="px-1 pb-1 text-caption text-muted-foreground/70 font-medium">{day}</div>)}
-        {!compact && <div className="px-2 pb-1 text-caption text-muted-foreground/70 font-medium">Week</div>}
+        {!compact && <div className="hidden px-2 pb-1 text-caption font-medium text-muted-foreground/70 @2xl/usage:block">Week</div>}
         {weeks.map((week, row) => {
           const weekTotal = week.reduce<number>((sum, slot) => sum + (slot === null ? 0 : values[slot] ?? 0), 0);
           return [
             ...week.map((slot, column) => (slot === null ? <div key={`empty-${row}-${column}`} aria-hidden="true" /> : cell(slot))),
-            ...(compact ? [] : [<div key={`week-${row}`} className="flex flex-col justify-end border-l border-border pb-2.5 pl-2.5">
+            ...(compact ? [] : [<div key={`week-${row}`} className="hidden flex-col justify-end border-l border-border pb-2.5 pl-2.5 @2xl/usage:flex">
               <span className="text-caption text-muted-foreground/70">Week {row + 1}</span>
               <span className="text-ui tabular-nums text-muted-foreground">{format(weekTotal)}</span>
             </div>]),
@@ -129,7 +129,7 @@ export function UsageCalendar({ summary, periods, window, metric }: UsageLayoutP
       </div>
     </section>
 
-    <section aria-label="Selection" className={cn(LAYOUT_CARD, "grid gap-0 p-0 md:grid-cols-2")}>
+    <section aria-label="Selection" className={cn(LAYOUT_CARD, "grid gap-0 p-0 @2xl/usage:grid-cols-2")}>
       <div className="p-5">
         <div className="flex items-center gap-2.5">
           <span className={cn("rounded-full border px-2 py-0.5 text-caption", range ? "border-ring/40 text-ring" : "border-border text-muted-foreground")}>{range ? "Selected" : "Whole window"}</span>
@@ -151,7 +151,7 @@ export function UsageCalendar({ summary, periods, window, metric }: UsageLayoutP
           </ul>
         </>}
       </div>
-      <div className="border-t border-border p-5 md:border-l md:border-t-0">
+      <div className="border-t border-border p-5 @2xl/usage:border-l @2xl/usage:border-t-0">
         <h2 className="mb-2 text-ui font-medium text-foreground">Top models {range ? "in selection" : "in window"}</h2>
         {topModels.length === 0 ? <p className="py-6 text-caption text-muted-foreground">No activity in this {range ? "selection" : "window"}.</p> : <ul>
           {topModels.map(model => <li key={`${model.harness}:${model.model}`} className="grid h-8 grid-cols-[minmax(0,9rem)_minmax(0,1fr)_4.5rem_4.5rem] items-center gap-3">

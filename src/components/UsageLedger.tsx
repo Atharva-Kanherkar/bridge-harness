@@ -38,7 +38,7 @@ export function UsageLedger({ report, windowDays, metric }: UsageLayoutProps) {
       <div className="flex h-2.5 gap-0.75" role="img" aria-label={`Share of ${metric === "cost" ? "cost" : "processed tokens"}: ${harnesses.map(entry => `${harnessLabel(entry.harness)} ${formatPercent(metric === "cost" ? entry.costShare : entry.tokenShare)}`).join(", ")}`}>
         {harnesses.filter(entry => harnessValue(entry, metric) > 0).map(entry => <span key={entry.harness} className={cn("rounded-sm", harnessChartDot(entry.harness))} style={{ flexGrow: harnessValue(entry, metric) }} />)}
       </div>
-      <ul className="mt-4 grid grid-cols-2 gap-x-6 gap-y-4 md:grid-cols-4">
+      <ul className="mt-4 grid grid-cols-2 gap-x-6 gap-y-4 @2xl/usage:grid-cols-4">
         {harnesses.map(entry => <li key={entry.harness}>
           <span className="flex items-center gap-2 text-ui text-muted-foreground"><span className={cn("size-2 shrink-0 rounded-full", harnessChartDot(entry.harness))} aria-hidden="true" /><HarnessName harness={entry.harness} size={12} /></span>
           <span className="mt-1 block text-xl tracking-tight tabular-nums text-foreground">{format(harnessValue(entry, metric))}</span>

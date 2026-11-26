@@ -4089,9 +4089,9 @@ function AppContent() {
             aria-pressed={dock.open && dock.pane === "changes"}
           >
             <FileDiff size={13} aria-hidden="true" />
-            <span className="hidden md:inline">Review</span>
+            <span className="hidden @min-[620px]/toolbar:inline">Review</span>
             <span>{review.files} {review.files === 1 ? "file" : "files"}</span>
-            <span className="hidden gap-1.5 pl-1 font-mono text-caption tabular-nums xl:inline-flex"><span className="text-success">+{review.additions}</span><span className="text-destructive">−{review.deletions}</span></span>
+            <span className="hidden gap-1.5 pl-1 font-mono text-caption tabular-nums @min-[900px]/toolbar:inline-flex"><span className="text-success">+{review.additions}</span><span className="text-destructive">−{review.deletions}</span></span>
           </Button> : undefined}
           onEnd={sessionConnected ? () => void endChat() : undefined}
           busy={busy}

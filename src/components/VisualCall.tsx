@@ -67,12 +67,14 @@ function VisualCard({ spec, input }: { spec: VisualSpec; input: Record<string, u
   const [ref, near] = useNearViewport<HTMLDivElement>();
 
   const header = (fullscreen: boolean) => (
-    <div className="flex min-w-0 items-center gap-2.5 border-b border-border px-4 py-2.5">
+    // A container: the card is as wide as the conversation, not the window,
+    // so the subtitle and the provenance chip yield to the title by its width.
+    <div className="@container/visual flex min-w-0 items-center gap-2.5 border-b border-border px-4 py-2.5">
       <FamilyIcon spec={spec} />
       <span className="truncate text-ui font-medium text-foreground">{spec.title}</span>
-      {spec.subtitle && <span className="hidden truncate text-meta text-muted-foreground sm:inline">{spec.subtitle}</span>}
+      {spec.subtitle && <span className="hidden truncate text-meta text-muted-foreground @md/visual:inline">{spec.subtitle}</span>}
       <span className="flex-1" />
-      <Tip label="Drawn by Bridge's visualize tool from data the model sent"><span className="hidden shrink-0 items-center gap-1.5 rounded-full border border-border px-2 py-0.5 font-mono text-micro text-muted-foreground sm:inline-flex">
+      <Tip label="Drawn by Bridge's visualize tool from data the model sent"><span className="hidden shrink-0 items-center gap-1.5 rounded-full border border-border px-2 py-0.5 font-mono text-micro text-muted-foreground @md/visual:inline-flex">
         <svg width="6" height="6" aria-hidden="true"><circle cx="3" cy="3" r="3" fill="var(--success)" /></svg>
         bridge.visualize
       </span></Tip>

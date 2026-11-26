@@ -85,7 +85,9 @@ export function TurnChangesCard({ changes, onReview, className }: { changes: Tur
   };
 
   return <section data-turn-changes aria-label={`${count} ${count === 1 ? "file" : "files"} changed in this turn`} className={clsx("min-w-0 overflow-hidden rounded-xl border border-border bg-card", className)}>
-    <header className="flex min-w-0 items-center gap-2 border-b border-border px-3.5 py-2">
+    {/* Wraps: in a narrow conversation the count and the two actions do not
+        fit one row, and without it Review was pushed out of the card. */}
+    <header className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border px-3.5 py-2">
       <FileDiff size={14} className="shrink-0 text-muted-foreground" aria-hidden="true"/>
       <span className="shrink-0 text-ui font-medium text-foreground">{count} {count === 1 ? "file" : "files"} changed</span>
       <DiffCounts additions={changes.additions} deletions={changes.deletions}/>
