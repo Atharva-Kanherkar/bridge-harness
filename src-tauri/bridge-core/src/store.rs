@@ -3291,7 +3291,20 @@ pub fn state_with_background_runs(db: &Connection) -> Result<BridgeState, Bridge
     state_including(db, true)
 }
 
+#[cfg(test)]
+thread_local! {
+    static STATE_BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn state_builds_on_this_thread() -> u64 {
+    STATE_BUILDS.get()
+}
+
 fn state_including(db: &Connection, background_runs: bool) -> Result<BridgeState, BridgeError> {
+    #[cfg(test)]
+    STATE_BUILDS.set(STATE_BUILDS.get() + 1);
+
     let projects = query(
         db,
         "SELECT id,name,path,created_at FROM projects ORDER BY created_at",
