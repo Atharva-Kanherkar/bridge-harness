@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 101;
+const LATEST_SCHEMA_VERSION: i64 = 102;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -907,6 +907,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             101 => add_column_if_missing(
                 &transaction, "worker_completion_inputs", "verification_attempt_id", "TEXT",
             )?,
+            // Extraction once a chat goes quiet: a due time, a watermark, and
+            // how many candidates a run found already known.
+            102 => crate::memory_extraction::install_idle_schedule(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"

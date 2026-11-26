@@ -19,6 +19,12 @@
             "null"
           ]
         },
+        "known": {
+          "default": 0,
+          "description": "Candidates an extraction run found already remembered. 0 for other sources and from a pre-1.62 daemon.",
+          "format": "int64",
+          "type": "integer"
+        },
         "refused": {
           "format": "int64",
           "type": "integer"

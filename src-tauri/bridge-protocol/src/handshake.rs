@@ -253,9 +253,13 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// `projects`, `pullRequests`, `hours` and `harnesses`. Additive: a 1.61
 /// daemon serves older clients; a 1.61 client cannot pair with a 1.60
 /// daemon, which refuses the `chats` field.
+///
+/// **1.62 reconciles extraction against known memories**: `knownCount` on
+/// `MemoryExtractionRun` and `known` on `MemoryActivityEntry`. Additive: both
+/// default to 0, so a 1.62 daemon serves older clients unchanged.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 61,
+    minor: 62,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -706,9 +710,16 @@ mod tests {
     fn a_1_60_client_pairs_with_a_screen_time_breakdown_daemon() {
         let before = ProtocolVersion { major: 1, minor: 60 };
         let breakdown = ProtocolVersion { major: 1, minor: 61 };
-        assert_eq!(PROTOCOL_VERSION, breakdown);
         assert!(breakdown.accepts(before), "a 1.60 client never sends chats and ignores the new result fields");
         assert!(!before.accepts(breakdown), "a 1.61 client sends chats, which a 1.60 daemon refuses");
+    }
+
+    #[test]
+    fn a_1_61_client_pairs_with_a_reconciling_daemon() {
+        let before = ProtocolVersion { major: 1, minor: 61 };
+        let reconcile = ProtocolVersion { major: 1, minor: 62 };
+        assert_eq!(PROTOCOL_VERSION, reconcile);
+        assert!(reconcile.accepts(before), "a 1.61 client reads the new counts as absent");
     }
 
     #[test]

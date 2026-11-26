@@ -4384,7 +4384,7 @@ fn handle_agent_value_timed(
             // Best-effort: a full extraction queue must never fail a turn, and
             // the enqueue itself decides eligibility (mode, kind, open runs).
             if let Ok(memory) = crate::memory_model::resolve(&db, &state.adapter_registry) {
-                let _ = crate::memory_extraction::enqueue_after_turn(&db, session_id, &memory);
+                let _ = crate::memory_extraction::enqueue_after_turn(&db, session_id, &memory, chrono::Utc::now());
             }
             // The same instant debounces consolidation. A turn finishing is
             // what pushes the pending run out again, so the job only ever

@@ -191,6 +191,10 @@ pub struct UpdateExtractionSettingsParams {
 pub struct MemoryExtractionRun {
     pub status: String,
     pub proposal_count: i64,
+    /// Candidates the run found already remembered, so it wrote nothing for
+    /// them. Absent from a pre-1.62 daemon, which reads as 0.
+    #[serde(default)]
+    pub known_count: i64,
     pub observed_tokens: i64,
     pub spend_microusd: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -443,6 +447,10 @@ pub struct MemoryActivityEntry {
     /// Proposals written (extraction) or changes applied (consolidation).
     pub applied: i64,
     pub refused: i64,
+    /// Candidates an extraction run found already remembered. 0 for other
+    /// sources and from a pre-1.62 daemon.
+    #[serde(default)]
+    pub known: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     pub at: String,
@@ -591,6 +599,23 @@ mod tests {
             serde_json::from_value(json!({ "harness": "claude", "model": "claude-haiku-5-5" })).unwrap();
         assert_eq!(pin.model.as_deref(), Some("claude-haiku-5-5"));
         assert!(serde_json::from_value::<SetMemoryModelParams>(json!({ "account": "x" })).is_err());
+    }
+
+    #[test]
+    fn already_known_counts_default_to_zero_from_an_older_daemon() {
+        let run: MemoryExtractionRun = serde_json::from_value(json!({
+            "status": "completed", "proposalCount": 1, "observedTokens": 10, "spendMicrousd": 5, "updatedAt": "now"
+        }))
+        .unwrap();
+        assert_eq!(run.known_count, 0);
+        let wire = serde_json::to_value(MemoryExtractionRun { known_count: 3, ..run }).unwrap();
+        assert_eq!(wire["knownCount"], json!(3));
+        let entry: MemoryActivityEntry = serde_json::from_value(json!({
+            "source": "extraction", "status": "completed", "applied": 2, "refused": 0, "at": "now"
+        }))
+        .unwrap();
+        assert_eq!(entry.known, 0);
+        assert_eq!(serde_json::to_value(MemoryActivityEntry { known: 4, ..entry }).unwrap()["known"], json!(4));
     }
 
     #[test]

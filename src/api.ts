@@ -812,6 +812,8 @@ const mockMemoryRecords: MemoryRecord[] = [
   memRecord("mem_b1e2", "Accent color for the app is orange.", "decision", "superseded", "user_explicit", { confidenceBps: 4200, conflictGroup: "design-direction", createdAt: "2026-08-10T09:00:00Z", validTo: "2026-08-21T09:00:00Z" }),
   memRecord("mem_a5aa", "No loud accents in chrome — orange and purple were rejected for the resting surface.", "constraint", "active", "user_explicit", { confidenceBps: 9000, conflictGroup: "design-direction", supersedes: "mem_b1e2", createdAt: "2026-08-21T09:00:00Z" }),
   memRecord("mem_c1f3", "Uses bun (not npm) for this repo's install, dev, test, and build scripts.", "fact", "active", "model_proposal", { confidenceBps: 7400, rationale: "observed across 6 sessions" }),
+  // An update from reconcile: approving it supersedes mem_c1f3.
+  memRecord("mem_u1c3", "Uses bun for this repo's scripts and pnpm only for the docs site.", "fact", "proposed", "model_proposal", { confidenceBps: 8200, rationale: "[e41] Changed tooling", supersedes: "mem_c1f3" }),
   memRecord("mem_p1a8", "Read-only workers need an injected GH_TOKEN — the sandbox blocks the keychain.", "fact", "proposed", "model_proposal", { confidenceBps: 7100, rationale: "run 8821 · seen in 3 sessions" }),
   memRecord("mem_p2b5", "Prefers vitest -t filters over whole-file runs while triaging.", "preference", "proposed", "model_proposal", { confidenceBps: 6200, rationale: "run 8813" }),
   memRecord("mem_p3c7", "Check the upstream tracker before deep-diving a security-hunt candidate.", "constraint", "proposed", "agent_proposal", { rationale: "The person said to keep this for every future hunt." }),
@@ -846,13 +848,23 @@ function buildMockAudit(ids: string[]): PacketInjection[] {
 const mockPacketAudit = buildMockAudit(RECALL_ELIGIBLE);
 const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
 const mockActivityLog: MemoryActivityEntry[] = [
-  { source: "extraction", status: "completed", applied: 2, refused: 0, at: daysAgo(0.1) },
+  { source: "extraction", status: "completed", applied: 2, refused: 0, known: 3, at: daysAgo(0.1) },
+  { source: "extraction", status: "cancelled", applied: 0, refused: 0, detail: "nothing_new", at: daysAgo(0.5) },
   { source: "consolidation", status: "completed", applied: 3, refused: 1, detail: "merged two worktree notes", at: daysAgo(1) },
   { source: "extraction", status: "failed", applied: 0, refused: 0, detail: "the harness ended before answering", at: daysAgo(3) },
   { source: "extraction", status: "completed", applied: 1, refused: 0, at: daysAgo(6) },
 ];
 let mockMemoryInsights: MemoryInsightsResult = { status: "empty" };
-let mockExtractionSettings: MemoryExtractionSettings = { scopeKey: "account:local", mode: "propose" };
+let mockExtractionSettings: MemoryExtractionSettings = {
+  scopeKey: "account:local",
+  mode: "propose",
+  lastRun: { status: "completed", proposalCount: 2, knownCount: 3, observedTokens: 4180, spendMicrousd: 2100, updatedAt: daysAgo(0.1) },
+};
+/** Like the ledger: approving an update supersedes the memory it replaces. */
+function mockSupersedeTarget(record: MemoryRecord) {
+  const target = record.supersedes ? mockMemoryRecords.find(item => item.id === record.supersedes && item.status === "active") : undefined;
+  if (target) target.status = "superseded";
+}
 let mockMemoryModelPin: MemoryModelChoice | undefined;
 /** Like the host: the pin, then the new-chat default, then the standard
  * choice, skipping any harness that cannot run a tool-free turn. */
@@ -3807,6 +3819,7 @@ export const bridgeApi = {
       if (!record) { result.refused.push({ id, reason: "This memory record does not exist." }); continue; }
       if (record.status !== "proposed") { result.refused.push({ id, reason: `This record is already ${record.status}, not waiting for review.` }); continue; }
       record.status = approving ? "active" : "rejected";
+      if (approving) mockSupersedeTarget(record);
       record.updatedAt = now;
       if (approving) result.approved.push(id); else result.rejected.push(id);
     }
@@ -3846,6 +3859,7 @@ export const bridgeApi = {
     if (!record) throw new Error("Only a proposed memory record can be approved.");
     record.status = "active";
     record.updatedAt = new Date().toISOString();
+    mockSupersedeTarget(record);
     emitMemoryChanged(record.scopeKey);
     return structuredClone(record);
   },

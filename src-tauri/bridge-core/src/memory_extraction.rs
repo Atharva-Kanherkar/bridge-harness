@@ -34,12 +34,35 @@ const AUTO_APPLY_MIN_CONFIDENCE_BPS: u32 = 9_000;
 const MAX_PROPOSALS_PER_RUN: usize = 10;
 const MAX_RATIONALE_CHARS: usize = 500;
 const MAX_DIGEST_CHARS: usize = 24_000;
-const MAX_DIGEST_ENTRIES: usize = 30;
-const MAX_PIN_CONTEXT: usize = 20;
+/// Entries one run reads at most. A longer backlog is read in further runs.
+const MAX_DIGEST_ENTRIES: usize = 60;
+/// A chat with no completed run reads at most its newest this many entries,
+/// so the first run after the upgrade, or on a long old chat, stays bounded.
+const FIRST_RUN_ENTRIES: i64 = 60;
+/// Assistant text is context, never evidence, so it is clipped hard.
+const MAX_ASSISTANT_CHARS: usize = 600;
+/// One pasted user message cannot take the whole digest.
+const MAX_USER_CHARS: usize = 4_000;
+/// Existing memories shown to the model as possible duplicates or targets.
+pub const MAX_KNOWN_MEMORIES: usize = 8;
+/// How many records the similarity ranking reads; the scope's budgets keep the
+/// real number far below it.
+const MAX_RECONCILE_CANDIDATES: i64 = 2_000;
+const MAX_KNOWN_BODY_CHARS: usize = 300;
 /// App activity lines per digest, newest kept. Each summary is already capped
 /// at `apps::events::MAX_SUMMARY_CHARS`, so the block is bounded on its own.
 const MAX_APP_ACTIVITY: usize = 20;
 const LEASE_MINUTES: i64 = 10;
+/// How long a chat must stay quiet before its extraction runs. Every finished
+/// turn pushes the run out again, so one conversation costs one run rather
+/// than one per turn, and the run reads a conversation that has stopped.
+/// Twenty minutes, not ten: on a real week of chats, ten still ran once per
+/// turn for long agent turns (3.9x fewer runs than per-turn extraction);
+/// twenty clears 5x. Archiving a chat makes its run due at once.
+pub const IDLE_SECONDS: i64 = 1_200;
+/// The detail of a run settled without a model call because the chat said
+/// nothing new since the last run.
+pub const NOTHING_NEW: &str = "nothing_new";
 /// The kinds real conversations are stored under: `direct` single-agent chats
 /// and `orchestrator` workspace sessions. No production path writes `chat`.
 const ENQUEUEABLE_SESSION_KINDS: [&str; 2] = ["direct", "orchestrator"];
@@ -77,6 +100,38 @@ pub(crate) fn install(transaction: &Transaction<'_>) -> Result<(), BridgeError> 
         );
         CREATE INDEX IF NOT EXISTS idx_memory_extraction_runs_status
             ON memory_extraction_runs(status, created_at);",
+    )?;
+    Ok(())
+}
+
+/// Migration 102: one queued run per chat, due once the chat goes quiet, and
+/// a watermark so a run reads only what the last one did not.
+///
+/// A queued run from before the upgrade is due at once, as it would have been.
+/// A past completed run gets the newest conversational entry that existed when
+/// it was queued as its watermark, so the first run after the upgrade does not
+/// read an old chat from the start: that run read the newest entries then.
+pub(crate) fn install_idle_schedule(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    for (column, definition) in [
+        ("due_at", "TEXT"),
+        ("through_entry_id", "TEXT"),
+        ("known_count", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        crate::store::add_column_if_missing(transaction, "memory_extraction_runs", column, definition)?;
+    }
+    transaction.execute_batch(
+        "UPDATE memory_extraction_runs SET due_at = created_at WHERE due_at IS NULL;
+         UPDATE memory_extraction_runs
+         SET through_entry_id = (
+             SELECT entry.id FROM session_entries AS entry
+             WHERE entry.session_id = memory_extraction_runs.session_id
+               AND entry.kind IN ('user.message','assistant.message')
+               AND entry.created_at <= memory_extraction_runs.created_at
+             ORDER BY entry.sequence DESC LIMIT 1
+         )
+         WHERE status = 'completed' AND through_entry_id IS NULL;
+         CREATE INDEX IF NOT EXISTS idx_memory_extraction_runs_due
+             ON memory_extraction_runs(status, due_at);",
     )?;
     Ok(())
 }
@@ -150,8 +205,11 @@ pub fn update_settings(
     settings(db, &scope_key)
 }
 
-/// Called after a completed turn. Enqueues at most one open run per session,
-/// only for visible conversational kinds, only when the scope opted in.
+/// Called after a completed turn. Keeps at most one queued run per chat and
+/// moves it to `now + IDLE_SECONDS`, so a run starts only once the chat has
+/// gone quiet. Only visible conversational kinds queue, and only when the
+/// scope opted in. A run already executing does not stop the next one from
+/// queueing: it read the conversation as it stood, and this turn is newer.
 ///
 /// `memory` is the memory model resolved for this instant. The chat's own
 /// harness plays no part: with no memory model there is nothing to run on, and
@@ -160,6 +218,7 @@ pub fn enqueue_after_turn(
     db: &Connection,
     session_id: &str,
     memory: &MemoryModelSettings,
+    now: DateTime<Utc>,
 ) -> Result<bool, BridgeError> {
     let kind: Option<Option<String>> = db
         .query_row(
@@ -186,31 +245,46 @@ pub fn enqueue_after_turn(
     if crate::memory_retention::proposals_full(db, ACCOUNT_MEMORY_SCOPE)? {
         return Ok(false);
     }
-    let open: Option<i64> = db
-        .query_row(
-            "SELECT 1 FROM memory_extraction_runs
-             WHERE session_id=?1 AND status IN ('queued','running') LIMIT 1",
-            params![session_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if open.is_some() {
-        return Ok(false);
+    let due_at = (now + Duration::seconds(IDLE_SECONDS)).to_rfc3339();
+    let at = now.to_rfc3339();
+    // Re-arming keeps the stricter mode: a run queued under review stays a
+    // review run even if a later turn came after Automatic was turned on.
+    let rearmed = db.execute(
+        "UPDATE memory_extraction_runs
+         SET due_at=?2, updated_at=?3,
+             mode = CASE WHEN mode=?4 AND ?5=?4 THEN ?4 ELSE ?6 END
+         WHERE session_id=?1 AND status='queued'",
+        params![session_id, due_at, at, MODE_AUTO_APPLY, current.mode, MODE_PROPOSE],
+    )?;
+    if rearmed > 0 {
+        return Ok(true);
     }
-    let now = Utc::now().to_rfc3339();
     db.execute(
         "INSERT INTO memory_extraction_runs(
-            id, scope_key, session_id, mode, status, created_at, updated_at
-         ) VALUES(?1,?2,?3,?4,'queued',?5,?5)",
+            id, scope_key, session_id, mode, status, due_at, created_at, updated_at
+         ) VALUES(?1,?2,?3,?4,'queued',?5,?6,?6)",
         params![
             Uuid::new_v4().to_string(),
             ACCOUNT_MEMORY_SCOPE,
             session_id,
             current.mode,
-            now
+            due_at,
+            at
         ],
     )?;
     Ok(true)
+}
+
+/// A chat that was archived will not be talked to again, so its queued run
+/// need not wait for the quiet period.
+pub fn due_now(db: &Connection, session_id: &str, now: DateTime<Utc>) -> Result<bool, BridgeError> {
+    let at = now.to_rfc3339();
+    let changed = db.execute(
+        "UPDATE memory_extraction_runs SET due_at=?2, updated_at=?2
+         WHERE session_id=?1 AND status='queued' AND (due_at IS NULL OR due_at > ?2)",
+        params![session_id, at],
+    )?;
+    Ok(changed > 0)
 }
 
 #[derive(Debug, Clone)]
@@ -238,12 +312,19 @@ pub fn claim_due(
     memory: &MemoryModelSettings,
 ) -> Result<Option<ClaimedExtraction>, BridgeError> {
     loop {
+        // A queued run waits for its chat to go quiet, and never starts beside
+        // a run of the same chat that still holds its lease: two runs reading
+        // one chat at once would read the same entries twice.
         let candidate: Option<(String, String, String, String)> = db
             .query_row(
-                "SELECT id, scope_key, session_id, mode FROM memory_extraction_runs
-                 WHERE status='queued'
+                "SELECT id, scope_key, session_id, mode FROM memory_extraction_runs AS run
+                 WHERE (status='queued' AND COALESCE(due_at, created_at) <= ?1
+                        AND NOT EXISTS (
+                            SELECT 1 FROM memory_extraction_runs AS other
+                            WHERE other.session_id = run.session_id AND other.status='running'
+                              AND other.lease_expires_at >= ?1))
                     OR (status='running' AND (lease_expires_at IS NULL OR lease_expires_at < ?1))
-                 ORDER BY created_at LIMIT 1",
+                 ORDER BY COALESCE(due_at, created_at), created_at LIMIT 1",
                 params![now.to_rfc3339()],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
@@ -363,6 +444,7 @@ pub fn settle(
 pub struct ExtractionRunSummary {
     pub status: String,
     pub proposal_count: i64,
+    pub known_count: i64,
     pub observed_tokens: i64,
     pub spend_microusd: i64,
     pub detail: Option<String>,
@@ -379,7 +461,7 @@ pub fn last_run(
 ) -> Result<Option<ExtractionRunSummary>, BridgeError> {
     let scope_key = memory_ledger::parse_scope_key(scope_key)?;
     db.query_row(
-        "SELECT status, proposal_count, observed_tokens, spend_microusd, detail, updated_at
+        "SELECT status, proposal_count, observed_tokens, spend_microusd, detail, updated_at, known_count
          FROM memory_extraction_runs
          WHERE scope_key=?1 AND status IN ('completed','failed','cancelled')
          ORDER BY created_at DESC LIMIT 1",
@@ -388,6 +470,7 @@ pub fn last_run(
             Ok(ExtractionRunSummary {
                 status: row.get(0)?,
                 proposal_count: row.get(1)?,
+                known_count: row.get(6)?,
                 observed_tokens: row.get(2)?,
                 spend_microusd: row.get(3)?,
                 detail: row.get(4)?,
@@ -403,124 +486,326 @@ pub fn last_run(
 pub struct ExtractionDigest {
     pub text: String,
     pub sha256: String,
+    /// The newest entry this digest read. A completed run records it, and the
+    /// next run reads only what came after.
+    pub through_entry_id: String,
+    /// Entries remain after this chunk; a follow-up run reads them.
+    pub more: bool,
+    /// The chunk holds something a proposal may cite: a user message or app
+    /// activity in scope. Without it the run makes no model call.
+    pub has_evidence: bool,
+    /// The existing memories shown as `[m1]`..`[m8]`, by alias. An operation
+    /// may target only these; the ids never leave the server.
+    pub known: Vec<(String, String)>,
 }
 
-/// The session's app activity memory may read, grouped per app under the
-/// scope its manifest declares. Apps that are off, unknown, or declare no
-/// memory scope are left out before the newest [`MAX_APP_ACTIVITY`] are kept.
-fn app_activity(db: &Connection, session_id: &str) -> Result<Option<String>, BridgeError> {
-    let off = crate::apps::registry::disabled_ids(db)?;
-    let mut statement = db.prepare(
-        "SELECT id, coalesce(json_extract(payload,'$.appId'), ''), coalesce(json_extract(payload,'$.summary'), '')
-         FROM session_entries
-         WHERE session_id=?1 AND kind=?2
-         ORDER BY sequence DESC",
-    )?;
-    let rows = statement.query_map(params![session_id, crate::apps::events::APP_EVENT_KIND], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
-    })?;
-    let mut newest_first: Vec<(String, &'static crate::apps::BuiltinApp, String)> = Vec::new();
-    for row in rows {
-        let (id, app_id, summary) = row?;
-        let Some(app) = crate::apps::builtin(&app_id) else { continue };
-        if app.manifest.memory.is_empty() || off.contains(&app_id) {
+/// The records most like what the person just said or did, for the model to
+/// answer "already known" or "update that one" instead of proposing a copy.
+///
+/// Deterministic and lexical, like every other duplicate decision in memory: a
+/// record is offered when it shares at least two content terms with the user's
+/// words and in-scope app activity, or one term that covers at least half of
+/// the record. Assistant text is never the query, since it is never evidence.
+/// Ranked by how much of the record the person's words cover, then by shared
+/// terms, then pins, then active before waiting, then newest.
+pub(crate) fn similar_memories(
+    db: &Connection,
+    scope_key: &str,
+    evidence: &str,
+    limit: usize,
+) -> Result<Vec<MemoryRecord>, BridgeError> {
+    let query = crate::memory_similarity::terms(evidence);
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut scored: Vec<(u32, usize, bool, bool, MemoryRecord)> = Vec::new();
+    for record in memory_ledger::reconcilable_records(db, scope_key, MAX_RECONCILE_CANDIDATES)? {
+        let terms = crate::memory_similarity::terms(&record.body);
+        if terms.is_empty() {
             continue;
         }
-        // One line per event: a summary cannot open a line of its own.
-        let summary = summary.split_whitespace().collect::<Vec<_>>().join(" ");
-        if summary.is_empty() {
-            continue;
-        }
-        newest_first.push((id, app, summary));
-        if newest_first.len() == MAX_APP_ACTIVITY {
-            break;
+        let shared = terms.intersection(&query).count();
+        let coverage = (shared * 10_000 / terms.len()) as u32;
+        if shared >= 2 || (shared == 1 && coverage >= 5_000) {
+            let pin = record.provenance == "user_explicit";
+            let active = record.status == "active";
+            scored.push((coverage, shared, pin, active, record));
         }
     }
-    if newest_first.is_empty() {
-        return Ok(None);
-    }
-    newest_first.reverse();
-    let mut order: Vec<&str> = Vec::new();
-    for (_, app, _) in &newest_first {
-        if !order.contains(&app.manifest.id.as_str()) {
-            order.push(&app.manifest.id);
-        }
-    }
-    let mut text = String::from("App activity (recorded by Bridge apps; the person did not write these lines):\n");
-    for app_id in order {
-        let mut lines = newest_first.iter().filter(|(_, app, _)| app.manifest.id == app_id).peekable();
-        let Some((_, app, _)) = lines.peek() else { continue };
-        text.push_str(&format!("{} (memory may keep only: {})\n", app.manifest.name, app.manifest.memory.join("; ")));
-        for (id, _, summary) in lines {
-            text.push_str(&format!("[{id}] {summary}\n"));
-        }
-    }
-    Ok(Some(text))
+    // The candidates arrive newest first and the sort is stable, so recency
+    // breaks the remaining ties.
+    scored.sort_by(|left, right| {
+        right.0.cmp(&left.0).then(right.1.cmp(&left.1)).then(right.2.cmp(&left.2)).then(right.3.cmp(&left.3))
+    });
+    Ok(scored.into_iter().take(limit).map(|(_, _, _, _, record)| record).collect())
 }
 
-/// Bounded and typed: recent conversational entries by id, the scope's active
-/// pin bodies, and the app activity memory may read. Never a raw transcript,
-/// never another session.
+fn known_label(record: &MemoryRecord) -> &'static str {
+    match (record.status.as_str(), record.provenance.as_str()) {
+        ("active", "user_explicit") => "pin",
+        ("active", _) => "memory",
+        _ => "waiting for review",
+    }
+}
+
+/// Where this chat's next digest starts: after the newest watermark a
+/// completed run recorded, or, for a chat never extracted, before its newest
+/// [`FIRST_RUN_ENTRIES`] readable entries.
+fn read_after_sequence(db: &Connection, session_id: &str) -> Result<i64, BridgeError> {
+    let watermark: Option<i64> = db
+        .query_row(
+            "SELECT MAX(entry.sequence) FROM memory_extraction_runs AS run
+             JOIN session_entries AS entry ON entry.id = run.through_entry_id
+             WHERE run.session_id=?1 AND run.status='completed'",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    if let Some(sequence) = watermark {
+        return Ok(sequence);
+    }
+    let oldest_in_window: Option<i64> = db
+        .query_row(
+            "SELECT MIN(sequence) FROM (
+                 SELECT sequence FROM session_entries
+                 WHERE session_id=?1 AND (
+                     (kind IN ('user.message','assistant.message')
+                      AND context_visibility IN ('eligible','visible'))
+                     OR kind=?2)
+                 ORDER BY sequence DESC LIMIT ?3)",
+            params![session_id, crate::apps::events::APP_EVENT_KIND, FIRST_RUN_ENTRIES],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(oldest_in_window.map_or(i64::MIN, |sequence| sequence - 1))
+}
+
+fn clip(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(max_chars).collect();
+    format!("{} …", head.trim_end())
+}
+
+/// Bounded and typed: the conversational entries and in-scope app activity
+/// after this chat's watermark, oldest first, plus the scope's active pin
+/// bodies. Never a raw transcript, never another session.
+///
+/// `None` means nothing was written after the watermark at all.
 pub fn build_digest(
     db: &Connection,
     scope_key: &str,
     session_id: &str,
 ) -> Result<Option<ExtractionDigest>, BridgeError> {
+    let after = read_after_sequence(db, session_id)?;
     let mut statement = db.prepare(
-        "SELECT id, kind, coalesce(json_extract(payload,'$.text'), '')
+        "SELECT id, kind, coalesce(json_extract(payload,'$.text'), ''),
+                coalesce(json_extract(payload,'$.appId'), ''),
+                coalesce(json_extract(payload,'$.summary'), '')
          FROM session_entries
-         WHERE session_id=?1 AND kind IN ('user.message','assistant.message')
-           AND context_visibility IN ('eligible','visible')
-         ORDER BY sequence DESC LIMIT ?2",
+         WHERE session_id=?1 AND sequence > ?2 AND (
+             (kind IN ('user.message','assistant.message')
+              AND context_visibility IN ('eligible','visible'))
+             OR kind=?3)
+         ORDER BY sequence ASC LIMIT ?4",
     )?;
-    let mut newest_first: Vec<(String, String, String)> = statement
-        .query_map(params![session_id, MAX_DIGEST_ENTRIES as i64], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?
+    let rows: Vec<(String, String, String, String, String)> = statement
+        .query_map(
+            params![session_id, after, crate::apps::events::APP_EVENT_KIND, (MAX_DIGEST_ENTRIES + 1) as i64],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )?
         .collect::<Result<Vec<_>, _>>()?;
-    newest_first.retain(|(_, _, text)| !text.trim().is_empty());
-    let activity = app_activity(db, session_id)?;
-    if newest_first.is_empty() && activity.is_none() {
+    if rows.is_empty() {
         return Ok(None);
     }
+    let off = crate::apps::registry::disabled_ids(db)?;
     let mut used = 0usize;
     let mut lines: Vec<String> = Vec::new();
-    for (id, kind, text) in &newest_first {
-        let role = if kind == "user.message" {
-            "user"
+    let mut activity: Vec<(String, &'static crate::apps::BuiltinApp, String)> = Vec::new();
+    let mut has_evidence = false;
+    let mut evidence = String::new();
+    let mut through_entry_id = String::new();
+    let mut more = rows.len() > MAX_DIGEST_ENTRIES;
+    for (id, kind, text, app_id, summary) in rows.into_iter().take(MAX_DIGEST_ENTRIES) {
+        if kind == crate::apps::events::APP_EVENT_KIND {
+            let Some(app) = crate::apps::builtin(&app_id) else {
+                through_entry_id = id;
+                continue;
+            };
+            // One line per event: a summary cannot open a line of its own.
+            let summary = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+            if app.manifest.memory.is_empty() || off.contains(&app_id) || summary.is_empty() {
+                through_entry_id = id;
+                continue;
+            }
+            if activity.len() == MAX_APP_ACTIVITY || used + summary.len() > MAX_DIGEST_CHARS {
+                more = true;
+                break;
+            }
+            used += summary.len();
+            evidence.push_str(&summary);
+            evidence.push('\n');
+            activity.push((id.clone(), app, summary));
+            has_evidence = true;
+            through_entry_id = id;
+            continue;
+        }
+        let text = text.trim();
+        if text.is_empty() {
+            through_entry_id = id;
+            continue;
+        }
+        let line = if kind == "user.message" {
+            format!("[{id}] user: {}", clip(text, MAX_USER_CHARS))
         } else {
-            "assistant"
+            format!("[{id}] assistant: {}", clip(text, MAX_ASSISTANT_CHARS))
         };
-        let line = format!("[{id}] {role}: {}", text.trim());
-        if used + line.len() > MAX_DIGEST_CHARS {
+        if used + line.len() > MAX_DIGEST_CHARS && !through_entry_id.is_empty() {
+            more = true;
             break;
         }
         used += line.len();
-        lines.push(line);
-    }
-    lines.reverse();
-    let pins = memory_ledger::list(db, scope_key, None)?;
-    let mut text = String::new();
-    if !pins.records.is_empty() {
-        text.push_str("Already pinned (do not re-propose):\n");
-        for record in pins.records.iter().take(MAX_PIN_CONTEXT) {
-            let body: String = record.body.chars().take(200).collect();
-            text.push_str(&format!("- {body}\n"));
+        if kind == "user.message" {
+            has_evidence = true;
+            evidence.push_str(&clip(text, MAX_USER_CHARS));
+            evidence.push('\n');
         }
-        text.push('\n');
+        lines.push(line);
+        through_entry_id = id;
     }
+    let similar = similar_memories(db, scope_key, &evidence, MAX_KNOWN_MEMORIES)?;
+    let (mut text, known) = render_known(&similar);
     if !lines.is_empty() {
         text.push_str("Conversation:\n");
         text.push_str(&lines.join("\n"));
     }
-    if let Some(activity) = activity {
+    if !activity.is_empty() {
         if !lines.is_empty() {
             text.push_str("\n\n");
         }
-        text.push_str(activity.trim_end());
+        text.push_str(render_activity(&activity).trim_end());
     }
     let sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
-    Ok(Some(ExtractionDigest { text, sha256 }))
+    Ok(Some(ExtractionDigest { text, sha256, through_entry_id, more, has_evidence, known }))
+}
+
+/// The similar memories as `[mN]` lines, and the alias map the gate checks.
+fn render_known(similar: &[MemoryRecord]) -> (String, Vec<(String, String)>) {
+    let mut text = String::new();
+    let mut known = Vec::new();
+    if similar.is_empty() {
+        return (text, known);
+    }
+    text.push_str("Known memories that may overlap (refer to them by id):\n");
+    for (index, record) in similar.iter().enumerate() {
+        let alias = format!("m{}", index + 1);
+        let body = crate::memory_packet::render_body(&record.body);
+        text.push_str(&format!("[{alias}] {} · {}: {}\n", known_label(record), record.kind, clip(&body, MAX_KNOWN_BODY_CHARS)));
+        known.push((alias, record.id.clone()));
+    }
+    text.push('\n');
+    (text, known)
+}
+
+/// In-scope app activity, grouped per app under the scope its manifest
+/// declares, in the order the apps first appear.
+fn render_activity(activity: &[(String, &'static crate::apps::BuiltinApp, String)]) -> String {
+    let mut text = String::from("App activity (recorded by Bridge apps; the person did not write these lines):\n");
+    let mut order: Vec<&str> = Vec::new();
+    for (_, app, _) in activity {
+        if !order.contains(&app.manifest.id.as_str()) {
+            order.push(&app.manifest.id);
+        }
+    }
+    for app_id in order {
+        let mut group = activity.iter().filter(|(_, app, _)| app.manifest.id == app_id).peekable();
+        let Some((_, app, _)) = group.peek() else { continue };
+        text.push_str(&format!("{} (memory may keep only: {})\n", app.manifest.name, app.manifest.memory.join("; ")));
+        for (id, _, summary) in group {
+            text.push_str(&format!("[{id}] {summary}\n"));
+        }
+    }
+    text
+}
+
+/// The digest a claimed run reads, or `None` once the run has been settled
+/// with detail `nothing_new` and no model call.
+///
+/// Nothing written after the watermark settles `cancelled`. A chunk that has
+/// entries but nothing a proposal could cite (no user message, no app
+/// activity in scope) still settles `completed` with its watermark, so the
+/// next run starts after it; when entries remain, the follow-up is due at
+/// once. Otherwise a long stretch of assistant messages would be re-read and
+/// cancelled forever, and the user message after it never reached.
+pub fn digest_for_run(
+    db: &Connection,
+    scope_key: &str,
+    session_id: &str,
+    run_id: &str,
+    lease_owner: &str,
+) -> Result<Option<ExtractionDigest>, BridgeError> {
+    match build_digest(db, scope_key, session_id)? {
+        Some(digest) if digest.has_evidence => Ok(Some(digest)),
+        Some(digest) => {
+            record_coverage(db, run_id, lease_owner, &digest.through_entry_id, 0)?;
+            settle(db, run_id, lease_owner, "completed", Some(NOTHING_NEW), None, None, None, 0, 0, 0)?;
+            if digest.more {
+                enqueue_follow_up(db, session_id, Utc::now())?;
+            }
+            Ok(None)
+        }
+        None => {
+            settle(db, run_id, lease_owner, "cancelled", Some(NOTHING_NEW), None, None, None, 0, 0, 0)?;
+            Ok(None)
+        }
+    }
+}
+
+/// After a completed run that left entries behind, the next chunk is due at
+/// once. A run already queued for this chat (a newer turn) covers it.
+pub fn enqueue_follow_up(db: &Connection, session_id: &str, now: DateTime<Utc>) -> Result<bool, BridgeError> {
+    let queued: Option<i64> = db
+        .query_row(
+            "SELECT 1 FROM memory_extraction_runs WHERE session_id=?1 AND status='queued' LIMIT 1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if queued.is_some() {
+        return Ok(false);
+    }
+    let mode = settings(db, ACCOUNT_MEMORY_SCOPE)?.mode;
+    if !extraction_enabled(&mode) {
+        return Ok(false);
+    }
+    let at = now.to_rfc3339();
+    db.execute(
+        "INSERT INTO memory_extraction_runs(
+            id, scope_key, session_id, mode, status, due_at, created_at, updated_at
+         ) VALUES(?1,?2,?3,?4,'queued',?5,?5,?5)",
+        params![Uuid::new_v4().to_string(), ACCOUNT_MEMORY_SCOPE, session_id, mode, at],
+    )?;
+    Ok(true)
+}
+
+/// Record what a completed run covered: its watermark and how many candidates
+/// it found already known. Call under the same lock as `settle`, before it.
+pub fn record_coverage(
+    db: &Connection,
+    run_id: &str,
+    lease_owner: &str,
+    through_entry_id: &str,
+    known_count: i64,
+) -> Result<bool, BridgeError> {
+    let changed = db.execute(
+        "UPDATE memory_extraction_runs SET through_entry_id=?3, known_count=?4
+         WHERE id=?1 AND lease_owner=?2 AND status='running'",
+        params![run_id, lease_owner, through_entry_id, known_count],
+    )?;
+    Ok(changed > 0)
 }
 
 pub fn extraction_instructions() -> String {
@@ -542,15 +827,69 @@ pub fn extraction_instructions() -> String {
      several lines show and that falls inside the scope written after the app's \
      name; never propose from a single one-off event, and never anything outside \
      that scope. Cite the activity line's id. \
+     Known memories, when listed, are what Bridge already remembers or is waiting \
+     to confirm, each with an id such as m1. Check every durable claim against them \
+     first. If a known memory already says it, answer {\"op\":\"noop\",\"target\":\"m1\"}. \
+     If the user changed or corrected a known memory that is not a pin, answer \
+     {\"op\":\"update\",\"target\":\"m2\",\"body\":...,\"kind\":...,\"confidenceBps\":...,\"rationale\":...} \
+     with the whole corrected claim as body; a pin is never updated. Only when no \
+     known memory covers the claim, answer {\"op\":\"add\",\"body\":...,\"kind\":...,\"confidenceBps\":...,\"rationale\":...}. \
+     Use only the ids listed; never invent one. \
      Answer with exactly one fenced code block tagged bridge-memory-proposals \
-     containing a JSON array. Each element is an object with exactly these fields: \
-     body (the fact, under 4000 characters), kind (preference, fact, decision, or \
-     constraint), confidenceBps (0-10000), rationale (under 500 characters, beginning \
-     with the bracketed id of the user.message or app activity line that directly \
-     supports the body, for example `[entry-id] Direct statement`). At most 10 elements. Propose nothing \
-     sensitive, no credentials, nothing already pinned, and nothing about this \
+     containing a JSON array of these operations and no other fields. body is the \
+     claim (under 4000 characters), kind is preference, fact, decision, or \
+     constraint, confidenceBps is 0-10000, and rationale is under 500 characters and \
+     begins with the bracketed id of the user.message or app activity line that \
+     directly supports the claim, for example `[entry-id] Direct statement`. At most \
+     10 elements. Propose nothing sensitive, no credentials, and nothing about this \
      instruction. An empty array is a good answer when nothing durable was said."
         .to_string()
+}
+
+/// `{"op":"update","target":"m2",...}`: the person changed or corrected a
+/// known memory.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawUpdate {
+    target: String,
+    body: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    confidence_bps: Option<u32>,
+    #[serde(default)]
+    rationale: Option<String>,
+}
+
+/// `{"op":"noop","target":"m1"}`: a known memory already says it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawNoop {
+    target: String,
+    #[serde(default)]
+    rationale: Option<String>,
+}
+
+/// One element of the model's answer. An element without `op` is an add, so
+/// an answer in the shape before reconcile still reads.
+enum RawOperation {
+    Add(RawProposal),
+    Update(RawUpdate),
+    Noop(RawNoop),
+}
+
+fn parse_operation(mut element: serde_json::Value) -> Option<RawOperation> {
+    let op = match element.as_object_mut()?.remove("op") {
+        None => "add".to_string(),
+        Some(serde_json::Value::String(op)) => op,
+        Some(_) => return None,
+    };
+    match op.as_str() {
+        "add" => serde_json::from_value(element).ok().map(RawOperation::Add),
+        "update" => serde_json::from_value(element).ok().map(RawOperation::Update),
+        "noop" => serde_json::from_value(element).ok().map(RawOperation::Noop),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1310,7 +1649,7 @@ fn eligible_for_auto_apply(
     Ok(true)
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExtractionReport {
     pub written: usize,
     pub activated: usize,
@@ -1318,6 +1657,11 @@ pub struct ExtractionReport {
     pub invalid: usize,
     pub duplicates: usize,
     pub refused: usize,
+    /// Candidates the model answered `noop` for, or an update that says what
+    /// its target already says: remembered already, nothing written.
+    pub known: usize,
+    /// Proposals that replace a known memory once approved.
+    pub updates: usize,
 }
 
 struct GatedCandidate {
@@ -1349,14 +1693,19 @@ pub(crate) fn contains_secret_material(text: &str) -> bool {
 /// here, and whatever a model claimed, every survivor first lands as
 /// proposed/model_proposal. Auto-apply may then use the ledger's ordinary
 /// approval transition; a stale mode or an ineligible candidate stays queued
-/// for review. An element with any field beyond the four — a status, a
+/// for review. An element with any field beyond its operation's — a status, a
 /// provenance, a scope — is invalid rather than honored.
+///
+/// `known` is the alias map the digest showed. An `update` or `noop` may name
+/// only those aliases, a pin accepts only `noop`, and an `update` must cite a
+/// user message and always waits for review.
 pub fn gate_and_insert(
     db: &Connection,
     scope_key: &str,
     session_id: &str,
     claimed_mode: &str,
     model_text: &str,
+    known: &[(String, String)],
 ) -> Result<ExtractionReport, BridgeError> {
     let scope_key = memory_ledger::parse_scope_key(scope_key)?;
     let current_mode = settings(db, &scope_key)?.mode;
@@ -1372,10 +1721,26 @@ pub fn gate_and_insert(
     })?;
     let mut candidates = Vec::new();
     let mut batch_bodies = BTreeSet::new();
+    let mut known_targets = BTreeSet::new();
     for element in elements.into_iter().take(MAX_PROPOSALS_PER_RUN) {
-        let raw: RawProposal = match serde_json::from_value(element) {
-            Ok(raw) => raw,
-            Err(_) => {
+        let raw: RawProposal = match parse_operation(element) {
+            Some(RawOperation::Add(raw)) => raw,
+            Some(RawOperation::Noop(noop)) => {
+                match known.iter().find(|(alias, _)| *alias == noop.target) {
+                    Some((alias, _)) => {
+                        if known_targets.insert(alias.clone()) {
+                            report.known += 1;
+                        }
+                    }
+                    None => report.invalid += 1,
+                }
+                continue;
+            }
+            Some(RawOperation::Update(update)) => {
+                gate_update(db, &scope_key, session_id, known, update, &mut batch_bodies, &mut report)?;
+                continue;
+            }
+            None => {
                 report.invalid += 1;
                 continue;
             }
@@ -1485,6 +1850,89 @@ pub fn gate_and_insert(
     Ok(report)
 }
 
+/// One `update`: checked like an add, then written as a proposal that
+/// replaces its target on approval. Never auto-applied: replacing what a
+/// person already accepted is theirs to decide.
+fn gate_update(
+    db: &Connection,
+    scope_key: &str,
+    session_id: &str,
+    known: &[(String, String)],
+    update: RawUpdate,
+    batch_bodies: &mut BTreeSet<String>,
+    report: &mut ExtractionReport,
+) -> Result<(), BridgeError> {
+    let Some((_, target_id)) = known.iter().find(|(alias, _)| *alias == update.target) else {
+        report.invalid += 1;
+        return Ok(());
+    };
+    let Some(target) = memory_ledger::load_record(db, target_id)?
+        .filter(|record| record.scope_key == scope_key && matches!(record.status.as_str(), "active" | "proposed"))
+    else {
+        // Decided or forgotten while the model was answering.
+        report.refused += 1;
+        return Ok(());
+    };
+    if target.provenance == "user_explicit" {
+        // A pin is the person's own words; extraction never rewrites it.
+        report.refused += 1;
+        return Ok(());
+    }
+    if contains_secret_material(&update.body) || update.rationale.as_deref().is_some_and(contains_secret_material) {
+        report.refused += 1;
+        return Ok(());
+    }
+    let Ok(body) = memory_ledger::require_body(&update.body) else {
+        report.refused += 1;
+        return Ok(());
+    };
+    let Ok(kind) = memory_ledger::parse_kind(Some(update.kind.as_deref().unwrap_or(&target.kind))) else {
+        report.invalid += 1;
+        return Ok(());
+    };
+    if cited_user_message(db, session_id, update.rationale.as_deref())?.is_none() {
+        report.refused += 1;
+        return Ok(());
+    }
+    if crate::memory_similarity::near_duplicate(&body, &target.body) {
+        report.known += 1;
+        return Ok(());
+    }
+    let body_key = crate::memory_similarity::normalize(&body);
+    if memory_ledger::body_already_known(db, scope_key, &body)?
+        || memory_ledger::near_duplicate_of(db, scope_key, &body)?.is_some_and(|other| other.id != target.id)
+        || !batch_bodies.insert(body_key)
+    {
+        report.duplicates += 1;
+        return Ok(());
+    }
+    let rationale = update
+        .rationale
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.chars().take(MAX_RATIONALE_CHARS).collect::<String>());
+    match memory_ledger::insert_update_proposal(
+        db,
+        scope_key,
+        &target,
+        &body,
+        kind,
+        update.confidence_bps.map(|value| value.min(10_000)),
+        rationale.as_deref(),
+        session_id,
+    ) {
+        Ok(_) => {
+            report.written += 1;
+            report.updates += 1;
+            report.queued_for_review += 1;
+        }
+        Err(BridgeError::Invalid(_)) => report.refused += 1,
+        Err(error) => return Err(error),
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractionOutput {
     pub text: String,
@@ -1509,7 +1957,7 @@ pub fn run_extraction(
     scope_key: &str,
     session_id: &str,
 ) -> Result<(ExtractionReport, ExtractionOutput, Option<String>), BridgeError> {
-    let Some(digest) = build_digest(db, scope_key, session_id)? else {
+    let Some(digest) = build_digest(db, scope_key, session_id)?.filter(|digest| digest.has_evidence) else {
         return Ok((
             ExtractionReport::default(),
             ExtractionOutput {
@@ -1522,7 +1970,7 @@ pub fn run_extraction(
     };
     let claimed_mode = settings(db, scope_key)?.mode;
     let output = model.propose(&extraction_instructions(), &digest.text)?;
-    let report = gate_and_insert(db, scope_key, session_id, &claimed_mode, &output.text)?;
+    let report = gate_and_insert(db, scope_key, session_id, &claimed_mode, &output.text, &digest.known)?;
     Ok((report, output, Some(digest.sha256)))
 }
 
@@ -1575,6 +2023,11 @@ mod tests {
     /// The memory model as the live loop resolves it, with no standard choice.
     fn memory(db: &Connection) -> MemoryModelSettings {
         crate::memory_model::resolve_with(db, |_| None, || Err("no standard choice in tests".into())).unwrap()
+    }
+
+    /// An instant after a run queued now has become due.
+    fn quiet() -> DateTime<Utc> {
+        Utc::now() + Duration::seconds(IDLE_SECONDS + 1)
     }
 
     fn set_new_chat_model(db: &Connection, harness: &str, model: Option<&str>) {
@@ -1639,7 +2092,7 @@ mod tests {
         propose_mode(&db);
         insert_chat_on(&db, "chat", "claude", Some("sonnet"));
         fill_scope(&db, 2);
-        assert!(!enqueue_after_turn(&db, "chat", &memory(&db)).unwrap(), "no run, so no model call");
+        assert!(!enqueue_after_turn(&db, "chat", &memory(&db), Utc::now()).unwrap(), "no run, so no model call");
         let runs: i64 = db.query_row("SELECT COUNT(*) FROM memory_extraction_runs", [], |row| row.get(0)).unwrap();
         assert_eq!(runs, 0);
     }
@@ -1649,9 +2102,9 @@ mod tests {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
         insert_chat_on(&db, "chat", "claude", Some("sonnet"));
-        assert!(enqueue_after_turn(&db, "chat", &memory(&db)).unwrap());
+        assert!(enqueue_after_turn(&db, "chat", &memory(&db), Utc::now()).unwrap());
         fill_scope(&db, 2);
-        assert!(claim_due(&db, Utc::now(), &memory(&db)).unwrap().is_none(), "nothing reaches an adapter");
+        assert!(claim_due(&db, quiet(), &memory(&db)).unwrap().is_none(), "nothing reaches an adapter");
         let (status, detail): (String, String) = db
             .query_row("SELECT status, detail FROM memory_extraction_runs", [], |row| Ok((row.get(0)?, row.get(1)?)))
             .unwrap();
@@ -1665,8 +2118,8 @@ mod tests {
         insert_chat_on(&db, "chat", "claude", Some("sonnet"));
         crate::memory_retention::update_settings(&db, 7, Some(90), Some(10)).unwrap();
         memory_ledger::insert_proposal(&db, ACCOUNT_MEMORY_SCOPE, "One waiting proposal", "fact", Some(7000), None, "chat").unwrap();
-        assert!(enqueue_after_turn(&db, "chat", &memory(&db)).unwrap());
-        assert!(claim_due(&db, Utc::now(), &memory(&db)).unwrap().is_some());
+        assert!(enqueue_after_turn(&db, "chat", &memory(&db), Utc::now()).unwrap());
+        assert!(claim_due(&db, quiet(), &memory(&db)).unwrap().is_some());
     }
 
     #[test]
@@ -1680,7 +2133,7 @@ mod tests {
             {\"body\": \"Keeps the main checkout on main\", \"kind\": \"fact\", \"confidenceBps\": 8000, \"rationale\": \"[e1] said so\"},\n\
             {\"body\": \"keeps the main checkout on main.\", \"kind\": \"fact\", \"confidenceBps\": 8000, \"rationale\": \"[e1] said so\"}\n\
             ]\n```";
-        let report = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "chat", MODE_PROPOSE, text).unwrap();
+        let report = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "chat", MODE_PROPOSE, text, &[]).unwrap();
         assert_eq!(report.duplicates, 2, "one near the pin, one inside the batch");
         assert_eq!(report.written, 1);
     }
@@ -1742,8 +2195,8 @@ mod tests {
         );
         auto_apply_mode(&db);
         insert_chat(&db, "s1", "direct");
-        assert!(enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
-        let claimed = claim_due(&db, Utc::now(), &memory(&db)).unwrap().unwrap();
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
+        let claimed = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
         assert_eq!(claimed.mode, MODE_AUTO_APPLY);
     }
 
@@ -1760,10 +2213,10 @@ mod tests {
             "user.message",
             "I prefer spaces for indentation.",
         );
-        assert!(enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
 
         auto_apply_mode(&db);
-        let claimed = claim_due(&db, Utc::now(), &memory(&db)).unwrap().unwrap();
+        let claimed = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
         assert_eq!(claimed.mode, MODE_PROPOSE);
         let report = gate_and_insert(
             &db,
@@ -1772,7 +2225,7 @@ mod tests {
             &claimed.mode,
             &fenced(
                 r#"[{"body":"Prefers spaces for indentation","kind":"preference","confidenceBps":9500,"rationale":"[e1] Direct preference"}]"#,
-            ),
+            ), &[],
         )
         .unwrap();
         assert_eq!(report.activated, 0);
@@ -1787,9 +2240,9 @@ mod tests {
         // The chat's own harness cannot run tool-free; that no longer matters.
         insert_chat_on(&db, "c1", "codex", Some("gpt-5.6-luna"));
         insert_chat_on(&db, "o1", "opencode", None);
-        assert!(enqueue_after_turn(&db, "c1", &memory(&db)).unwrap());
-        assert!(enqueue_after_turn(&db, "o1", &memory(&db)).unwrap());
-        let claimed = claim_due(&db, Utc::now(), &memory(&db)).unwrap().unwrap();
+        assert!(enqueue_after_turn(&db, "c1", &memory(&db), Utc::now()).unwrap());
+        assert!(enqueue_after_turn(&db, "o1", &memory(&db), Utc::now()).unwrap());
+        let claimed = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
         assert_eq!(claimed.mode, MODE_PROPOSE);
         assert_eq!(
             (claimed.harness.as_str(), claimed.model.as_deref()),
@@ -1815,8 +2268,8 @@ mod tests {
         let (_dir, db) = extraction_db();
         set_new_chat_model(&db, "claude", None);
         insert_chat_on(&db, "s1", "claude", Some("opus"));
-        assert!(enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
-        let claimed = claim_due(&db, Utc::now(), &memory(&db)).unwrap().unwrap();
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
+        let claimed = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
         assert_eq!(claimed.harness, "claude");
         assert_eq!(claimed.model, None, "not the chat's opus: the adapter's default");
     }
@@ -1826,9 +2279,9 @@ mod tests {
         let (_dir, db) = extraction_db();
         set_new_chat_model(&db, "claude", Some("claude-opus-5-5"));
         insert_chat_on(&db, "s1", "claude", Some("claude-opus-5-5"));
-        assert!(enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
         pin_memory_model(&db, "claude-haiku-5-5");
-        let claimed = claim_due(&db, Utc::now(), &memory(&db)).unwrap().unwrap();
+        let claimed = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
         assert_eq!(claimed.model.as_deref(), Some("claude-haiku-5-5"), "resolved at claim, not at enqueue");
     }
 
@@ -1838,8 +2291,8 @@ mod tests {
         set_new_chat_model(&db, "codex", Some("gpt-5.6-luna"));
         insert_chat_on(&db, "c1", "codex", Some("gpt-5.6-luna"));
         assert!(memory(&db).resolved.is_none());
-        assert!(!enqueue_after_turn(&db, "c1", &memory(&db)).unwrap());
-        assert!(claim_due(&db, Utc::now(), &memory(&db)).unwrap().is_none());
+        assert!(!enqueue_after_turn(&db, "c1", &memory(&db), Utc::now()).unwrap());
+        assert!(claim_due(&db, quiet(), &memory(&db)).unwrap().is_none());
         assert!(
             last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().is_none(),
             "nothing queued, nothing cancelled"
@@ -1851,9 +2304,9 @@ mod tests {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
         insert_chat_on(&db, "c1", "codex", None);
-        assert!(enqueue_after_turn(&db, "c1", &memory(&db)).unwrap());
+        assert!(enqueue_after_turn(&db, "c1", &memory(&db), Utc::now()).unwrap());
         crate::memory_model::set(&db, None, None).unwrap();
-        assert!(claim_due(&db, Utc::now(), &memory(&db)).unwrap().is_none());
+        assert!(claim_due(&db, quiet(), &memory(&db)).unwrap().is_none());
         let last = last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().unwrap();
         assert_eq!(last.status, "cancelled");
         assert_eq!(last.detail.as_deref(), Some("no_memory_model"));
@@ -1865,7 +2318,7 @@ mod tests {
         remember_mode(&db);
         insert_chat_on(&db, "s1", "claude", Some("sonnet"));
         insert_message(&db, "s1", "e1", 1, "user.message", "I prefer tabs");
-        assert!(!enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
+        assert!(!enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
         let mut model = RefusingModel;
         let _ = &mut model;
     }
@@ -1877,15 +2330,13 @@ mod tests {
         insert_chat(&db, "b1", "briefing");
         insert_chat(&db, "x1", EXTRACTION_SESSION_KIND);
         insert_chat(&db, "w1", "worker");
-        assert!(!enqueue_after_turn(&db, "b1", &memory(&db)).unwrap());
-        assert!(!enqueue_after_turn(&db, "x1", &memory(&db)).unwrap());
-        assert!(!enqueue_after_turn(&db, "w1", &memory(&db)).unwrap());
+        assert!(!enqueue_after_turn(&db, "b1", &memory(&db), Utc::now()).unwrap());
+        assert!(!enqueue_after_turn(&db, "x1", &memory(&db), Utc::now()).unwrap());
+        assert!(!enqueue_after_turn(&db, "w1", &memory(&db), Utc::now()).unwrap());
         insert_chat(&db, "s1", "direct");
-        assert!(enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
-        assert!(
-            !enqueue_after_turn(&db, "s1", &memory(&db)).unwrap(),
-            "one open run per session"
-        );
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap(), "a later turn re-arms it");
+        assert_eq!(queued_rows(&db, "s1").len(), 1, "one queued run per session");
     }
 
     #[test]
@@ -1980,18 +2431,147 @@ mod tests {
     #[test]
     fn digest_caps_app_activity_at_twenty() {
         let (_dir, db) = extraction_db();
+        propose_mode(&db);
         insert_chat(&db, "s1", "direct");
         for index in 0..25 {
             app_event(&db, "s1", "outgoing", "outgoing.sent", &format!("Sent a Slack message to #c{index}"));
         }
-        // Newer unscoped rows must not push scoped ones out.
+        // Unscoped rows are read past, never shown.
         for index in 0..5 {
             raw_app_event(&db, "s1", &format!("p{index}"), 100 + index, "pulls", "Opened a pull request");
         }
-        let digest = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap().text;
-        let lines: Vec<&str> = digest.lines().filter(|line| line.contains("Sent a Slack message")).collect();
-        assert_eq!(lines.len(), 20, "{digest}");
-        assert!(lines[0].ends_with("#c5") && lines[19].ends_with("#c24"), "{digest}");
+        let first = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        let lines: Vec<&str> = first.text.lines().filter(|line| line.contains("Sent a Slack message")).collect();
+        assert_eq!(lines.len(), 20, "{}", first.text);
+        assert!(lines[0].ends_with("#c0") && lines[19].ends_with("#c19"), "oldest first: {}", first.text);
+        assert!(first.more, "five more wait for the next run");
+        complete_through(&db, "s1", &first.through_entry_id);
+        let second = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        let lines: Vec<&str> = second.text.lines().filter(|line| line.contains("Sent a Slack message")).collect();
+        assert_eq!(lines.len(), 5, "{}", second.text);
+        assert!(lines[0].ends_with("#c20") && !second.text.contains("pull request"), "{}", second.text);
+        assert!(!second.more);
+    }
+
+    /// A completed run that read through `entry_id`, as the live runner leaves it.
+    fn complete_through(db: &Connection, session_id: &str, entry_id: &str) {
+        let id = Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO memory_extraction_runs(id,scope_key,session_id,status,through_entry_id,created_at,updated_at,mode)
+             VALUES(?1,'account:local',?2,'completed',?3,'2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00','propose')",
+            params![id, session_id, entry_id],
+        )
+        .unwrap();
+    }
+
+    fn conversation_ids(digest: &ExtractionDigest) -> Vec<String> {
+        digest
+            .text
+            .lines()
+            .filter_map(|line| line.strip_prefix('[').and_then(|rest| rest.split_once(']')).map(|(id, _)| id.to_string()))
+            .filter(|id| !digest.known.iter().any(|(alias, _)| alias == id))
+            .collect()
+    }
+
+    #[test]
+    fn the_digest_reads_only_entries_after_the_watermark() {
+        let (_dir, db) = extraction_db();
+        insert_chat(&db, "s1", "direct");
+        insert_message(&db, "s1", "e1", 1, "user.message", "I always deploy on Fridays");
+        insert_message(&db, "s1", "e2", 2, "assistant.message", "Noted.");
+        insert_message(&db, "s1", "e3", 3, "user.message", "I prefer tabs");
+        let first = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        assert_eq!(conversation_ids(&first), ["e1", "e2", "e3"]);
+        assert_eq!(first.through_entry_id, "e3");
+        complete_through(&db, "s1", "e2");
+        let after = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        assert_eq!(conversation_ids(&after), ["e3"], "only what the last run did not read");
+        complete_through(&db, "s1", "e3");
+        assert!(build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().is_none(), "nothing new at all");
+        // A failed run's watermark does not count: only completed runs read.
+        db.execute("UPDATE memory_extraction_runs SET status='failed' WHERE through_entry_id='e3'", []).unwrap();
+        assert_eq!(conversation_ids(&build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap()), ["e3"]);
+    }
+
+    #[test]
+    fn a_first_run_reads_at_most_the_last_sixty_entries() {
+        let (_dir, db) = extraction_db();
+        insert_chat(&db, "s1", "direct");
+        for index in 1..=100 {
+            let kind = if index % 2 == 1 { "user.message" } else { "assistant.message" };
+            insert_message(&db, "s1", &format!("e{index}"), index, kind, &format!("line {index}"));
+        }
+        let digest = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        let ids = conversation_ids(&digest);
+        assert_eq!(ids.first().map(String::as_str), Some("e41"), "the newest 60 of 100");
+        assert_eq!(ids.len(), 60);
+        assert!(!digest.more);
+    }
+
+    #[test]
+    fn assistant_text_is_clipped_and_user_text_is_not() {
+        let (_dir, db) = extraction_db();
+        insert_chat(&db, "s1", "direct");
+        let user = format!("I prefer {}", "tabs ".repeat(200));
+        let assistant = "a".repeat(5_000);
+        insert_message(&db, "s1", "e1", 1, "user.message", &user);
+        insert_message(&db, "s1", "e2", 2, "assistant.message", &assistant);
+        let digest = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        assert!(digest.text.contains(user.trim()), "a user message under the cap is whole");
+        let line = digest.text.lines().find(|line| line.starts_with("[e2]")).unwrap();
+        assert!(line.chars().count() <= "[e2] assistant: ".len() + MAX_ASSISTANT_CHARS + 2, "{}", line.len());
+        assert!(line.ends_with('…'));
+    }
+
+    #[test]
+    fn a_long_backlog_is_read_in_chunks_with_a_follow_up_run() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        // 50 messages of 1,000 characters: about twice what one digest holds.
+        for index in 1..=50 {
+            insert_message(&db, "s1", &format!("e{index}"), index, "user.message", &format!("I note {index} {}", "x".repeat(1_000)));
+        }
+        complete_through(&db, "s1", "e1");
+        let first = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        assert!(first.more && first.text.len() <= MAX_DIGEST_CHARS + 2_000, "{}", first.text.len());
+        assert_eq!(conversation_ids(&first).first().map(String::as_str), Some("e2"));
+        let now = Utc::now();
+        assert!(enqueue_follow_up(&db, "s1", now).unwrap(), "the rest is due at once");
+        assert!(!enqueue_follow_up(&db, "s1", now).unwrap(), "one queued run per chat");
+        assert_eq!(claim_due(&db, now, &memory(&db)).unwrap().unwrap().session_id, "s1");
+        complete_through(&db, "s1", &first.through_entry_id);
+        let second = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        let next_id = format!("e{}", first.through_entry_id.trim_start_matches('e').parse::<i64>().unwrap() + 1);
+        assert_eq!(conversation_ids(&second).first(), Some(&next_id), "no gap, no repeat");
+    }
+
+    #[test]
+    fn no_new_user_message_cancels_without_a_model_call() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        insert_message(&db, "s1", "e1", 1, "user.message", "I prefer tabs");
+        complete_through(&db, "s1", "e1");
+        insert_message(&db, "s1", "e2", 2, "assistant.message", "Here is the follow-up you asked for.");
+        enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap();
+        let claimed = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
+        let digest = digest_for_run(&db, ACCOUNT_MEMORY_SCOPE, "s1", &claimed.run_id, &claimed.lease_owner).unwrap();
+        assert!(digest.is_none(), "no model call");
+        let (status, detail, spend): (String, String, i64) = db
+            .query_row("SELECT status, detail, spend_microusd FROM memory_extraction_runs WHERE id=?1", params![claimed.run_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap();
+        assert_eq!((status.as_str(), detail.as_str(), spend), ("completed", NOTHING_NEW, 0), "read past, not retried");
+        // The eval seam makes no call either.
+        let mut model = RefusingModel;
+        let (report, output, digest) = run_extraction(&db, &mut model, ACCOUNT_MEMORY_SCOPE, "s1").unwrap();
+        assert_eq!((report.written, output.spend_microusd, digest), (0, 0, None));
+        // With nothing at all written since, a run is cancelled.
+        enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap();
+        let empty = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
+        assert!(digest_for_run(&db, ACCOUNT_MEMORY_SCOPE, "s1", &empty.run_id, &empty.lease_owner).unwrap().is_none());
+        let status: String = db.query_row("SELECT status FROM memory_extraction_runs WHERE id=?1", params![empty.run_id], |row| row.get(0)).unwrap();
+        assert_eq!(status, "cancelled");
     }
 
     #[test]
@@ -2109,10 +2689,10 @@ mod tests {
         propose_mode(&db);
         insert_chat(&db, "s1", "direct");
         let text = fenced(r#"[{"body":"Keeps the main checkout on main","kind":"fact","confidenceBps":8000,"rationale":"[e1] said so"}]"#);
-        assert_eq!(gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &text).unwrap().written, 1);
+        assert_eq!(gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &text, &[]).unwrap().written, 1);
         let later = Utc::now() + Duration::days(memory_ledger::PROPOSAL_TTL_DAYS + 1);
         assert_eq!(memory_ledger::sweep_stale_proposals(&db, later).unwrap().len(), 1);
-        let again = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &text).unwrap();
+        let again = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &text, &[]).unwrap();
         assert_eq!((again.written, again.duplicates), (1, 0), "an expired proposal never held, so it is not known");
     }
 
@@ -2125,7 +2705,7 @@ mod tests {
             r#"[{"body":"Keeps the main checkout on main","kind":"fact","confidenceBps":8000,"rationale":"[e1] said so"},
                 {"body":"keeps the main checkout on main.","kind":"fact","confidenceBps":8000,"rationale":"[e1] said so"}]"#,
         );
-        let report = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &text).unwrap();
+        let report = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &text, &[]).unwrap();
         assert_eq!((report.written, report.duplicates), (1, 1));
     }
 
@@ -2813,7 +3393,7 @@ mod tests {
             MODE_AUTO_APPLY,
             &fenced(
                 r#"[{"body":"Prefers spaces for indentation","kind":"preference","confidenceBps":9500,"rationale":"[e1] Direct preference"}]"#,
-            ),
+            ), &[],
         )
         .unwrap();
         assert_eq!(first.activated, 0, "current mode downgraded during the run");
@@ -2828,7 +3408,7 @@ mod tests {
             MODE_PROPOSE,
             &fenced(
                 r#"[{"body":"Uses the fish shell","kind":"fact","confidenceBps":9500,"rationale":"[e2] Direct fact"}]"#,
-            ),
+            ), &[],
         )
         .unwrap();
         assert_eq!(second.activated, 0, "claimed mode was never auto");
@@ -2916,7 +3496,7 @@ mod tests {
         assert!(digest
             .text
             .contains("[e1] user: I always deploy on Fridays"));
-        assert!(digest.text.contains("Already pinned"));
+        assert!(!digest.text.contains("Existing pin"), "an unrelated pin is not offered");
         assert!(digest.text.len() <= MAX_DIGEST_CHARS + 1_000);
         assert!(build_digest(&db, ACCOUNT_MEMORY_SCOPE, "empty-session")
             .unwrap()
@@ -2928,8 +3508,8 @@ mod tests {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
         insert_chat(&db, "s1", "direct");
-        assert!(enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
-        let now = Utc::now();
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
+        let now = quiet();
         let claimed = claim_due(&db, now, &memory(&db)).unwrap().unwrap();
         assert_eq!(claimed.session_id, "s1");
         assert_eq!(claimed.harness, "claude");
@@ -2985,8 +3565,8 @@ mod tests {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
         insert_chat(&db, "s1", "direct");
-        assert!(enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
-        let claimed = claim_due(&db, Utc::now(), &memory(&db)).unwrap().unwrap();
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
+        let claimed = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
         settle(
             &db,
             &claimed.run_id,
@@ -3002,7 +3582,7 @@ mod tests {
         )
         .unwrap();
         insert_chat(&db, "s2", "direct");
-        assert!(enqueue_after_turn(&db, "s2", &memory(&db)).unwrap());
+        assert!(enqueue_after_turn(&db, "s2", &memory(&db), Utc::now()).unwrap());
         let last = last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().unwrap();
         assert_eq!(last.status, "completed", "a queued row is not a report");
         assert_eq!(last.spend_microusd, 1_700);
@@ -3013,9 +3593,9 @@ mod tests {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
         insert_chat(&db, "s1", "direct");
-        assert!(enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
         update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_REMEMBER).unwrap();
-        assert!(claim_due(&db, Utc::now(), &memory(&db)).unwrap().is_none());
+        assert!(claim_due(&db, quiet(), &memory(&db)).unwrap().is_none());
         let last = last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().unwrap();
         assert_eq!(last.status, "cancelled");
         assert_eq!(last.detail.as_deref(), Some("extraction_disabled"));
@@ -3026,8 +3606,8 @@ mod tests {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
         insert_chat(&db, "s1", "direct");
-        assert!(enqueue_after_turn(&db, "s1", &memory(&db)).unwrap());
-        let start = Utc::now();
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap());
+        let start = quiet();
         let first = claim_due(&db, start, &memory(&db)).unwrap().unwrap();
         let later = start + Duration::minutes(LEASE_MINUTES + 1);
         let second = claim_due(&db, later, &memory(&db)).unwrap().unwrap();
@@ -3037,6 +3617,379 @@ mod tests {
             !heartbeat(&db, &first.run_id, &first.lease_owner, later).unwrap(),
             "the reclaimed lease no longer answers to the first owner"
         );
+    }
+
+    fn queued_rows(db: &Connection, session_id: &str) -> Vec<String> {
+        db.prepare("SELECT due_at FROM memory_extraction_runs WHERE session_id=?1 AND status='queued'")
+            .unwrap()
+            .query_map(params![session_id], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    #[test]
+    fn a_turn_re_arms_the_one_queued_run() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        let start = Utc::now();
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), start).unwrap());
+        let first_due = queued_rows(&db, "s1");
+        assert_eq!(first_due, vec![(start + Duration::seconds(IDLE_SECONDS)).to_rfc3339()]);
+        for minute in 1..=2 {
+            let at = start + Duration::minutes(minute);
+            assert!(enqueue_after_turn(&db, "s1", &memory(&db), at).unwrap());
+        }
+        assert_eq!(
+            queued_rows(&db, "s1"),
+            vec![(start + Duration::minutes(2) + Duration::seconds(IDLE_SECONDS)).to_rfc3339()],
+            "one row whose due time follows the newest turn"
+        );
+    }
+
+    #[test]
+    fn a_queued_run_is_not_due_before_the_quiet_period() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        let start = Utc::now();
+        enqueue_after_turn(&db, "s1", &memory(&db), start).unwrap();
+        let early = start + Duration::seconds(IDLE_SECONDS - 1);
+        assert!(claim_due(&db, early, &memory(&db)).unwrap().is_none(), "still talking");
+        let due = start + Duration::seconds(IDLE_SECONDS);
+        assert_eq!(claim_due(&db, due, &memory(&db)).unwrap().unwrap().session_id, "s1");
+    }
+
+    #[test]
+    fn archiving_makes_the_queued_run_due_now() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        let start = Utc::now();
+        enqueue_after_turn(&db, "s1", &memory(&db), start).unwrap();
+        let archived = start + Duration::seconds(30);
+        assert!(due_now(&db, "s1", archived).unwrap());
+        assert_eq!(claim_due(&db, archived, &memory(&db)).unwrap().unwrap().session_id, "s1");
+        assert!(!due_now(&db, "s1", archived).unwrap(), "nothing left waiting");
+    }
+
+    #[test]
+    fn a_running_run_blocks_a_second_claim_for_the_same_chat() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        insert_chat(&db, "s2", "direct");
+        let start = Utc::now();
+        enqueue_after_turn(&db, "s1", &memory(&db), start).unwrap();
+        let due = start + Duration::seconds(IDLE_SECONDS);
+        let running = claim_due(&db, due, &memory(&db)).unwrap().unwrap();
+        // A turn while the run executes queues the next one beside it, and an
+        // archive makes that one due at once, still within the first's lease.
+        assert!(enqueue_after_turn(&db, "s1", &memory(&db), due).unwrap());
+        enqueue_after_turn(&db, "s2", &memory(&db), start).unwrap();
+        let archived = due + Duration::seconds(30);
+        assert!(due_now(&db, "s1", archived).unwrap());
+        let next = claim_due(&db, archived, &memory(&db)).unwrap().unwrap();
+        assert_eq!(next.session_id, "s2", "s1 still has a run holding its lease");
+        assert!(claim_due(&db, archived, &memory(&db)).unwrap().is_none());
+        settle(&db, &running.run_id, &running.lease_owner, "completed", None, None, None, None, 0, 0, 0).unwrap();
+        assert_eq!(claim_due(&db, archived, &memory(&db)).unwrap().unwrap().session_id, "s1");
+    }
+
+    #[test]
+    fn thirty_turns_a_minute_apart_make_one_run() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        let start = Utc::now();
+        let mut claims = 0;
+        for minute in 0..30 {
+            let at = start + Duration::minutes(minute);
+            enqueue_after_turn(&db, "s1", &memory(&db), at).unwrap();
+            // The maintenance loop ticks every minute while the chat goes on.
+            if claim_due(&db, at + Duration::seconds(59), &memory(&db)).unwrap().is_some() {
+                claims += 1;
+            }
+        }
+        let quiet = start + Duration::minutes(29) + Duration::seconds(IDLE_SECONDS);
+        if claim_due(&db, quiet, &memory(&db)).unwrap().is_some() {
+            claims += 1;
+        }
+        assert_eq!(claims, 1, "one run for the whole conversation");
+        let rows: i64 = db.query_row("SELECT COUNT(*) FROM memory_extraction_runs", [], |row| row.get(0)).unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    #[test]
+    fn migration_backfills_watermarks_from_past_runs() {
+        let (_dir, db) = extraction_db();
+        insert_chat(&db, "s1", "direct");
+        for (id, sequence, at) in [("e1", 1, "2026-11-01T10:00:00+00:00"), ("e2", 2, "2026-11-01T10:05:00+00:00"), ("e3", 3, "2026-11-01T11:00:00+00:00")] {
+            db.execute(
+                "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+                 VALUES(?1,'s1',NULL,?2,'user.message',json_object('text','hi'),?3)",
+                params![id, sequence, at],
+            )
+            .unwrap();
+        }
+        db.execute_batch(
+            "INSERT INTO memory_extraction_runs(id,scope_key,session_id,status,created_at,updated_at,mode)
+             VALUES('done','account:local','s1','completed','2026-11-01T10:06:00+00:00','2026-11-01T10:07:00+00:00','propose'),
+                   ('waiting','account:local','s1','queued','2026-11-01T11:01:00+00:00','2026-11-01T11:01:00+00:00','propose');
+             UPDATE memory_extraction_runs SET due_at=NULL, through_entry_id=NULL;",
+        )
+        .unwrap();
+        let transaction = db.unchecked_transaction().unwrap();
+        install_idle_schedule(&transaction).unwrap();
+        transaction.commit().unwrap();
+        let (watermark, waiting_due): (Option<String>, Option<String>) = db
+            .query_row(
+                "SELECT (SELECT through_entry_id FROM memory_extraction_runs WHERE id='done'),
+                        (SELECT due_at FROM memory_extraction_runs WHERE id='waiting')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(watermark.as_deref(), Some("e2"), "the newest entry when the past run was queued");
+        assert_eq!(waiting_due.as_deref(), Some("2026-11-01T11:01:00+00:00"), "due at once, as before");
+    }
+
+    fn proposal(db: &Connection, body: &str) -> String {
+        memory_ledger::insert_proposal(db, ACCOUNT_MEMORY_SCOPE, body, "fact", Some(6_000), None, "s1").unwrap().id
+    }
+
+    #[test]
+    fn similar_memories_come_from_user_words_not_assistant_words() {
+        let (_dir, db) = extraction_db();
+        insert_chat(&db, "s1", "direct");
+        let researcher = memory_ledger::save(&db, "Works as an independent researcher", Some("fact"), None).unwrap();
+        memory_ledger::save(&db, "Deploys the website from a Raspberry Pi cluster", Some("fact"), None).unwrap();
+        insert_message(&db, "s1", "e1", 1, "user.message", "As an independent researcher I keep my own hours.");
+        insert_message(&db, "s1", "e2", 2, "assistant.message", "Your website deploys from a Raspberry Pi cluster, right?");
+        let digest = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        assert_eq!(digest.known, vec![("m1".to_string(), researcher.id.clone())], "{}", digest.text);
+        assert!(digest.text.contains("[m1] pin · fact: Works as an independent researcher"), "{}", digest.text);
+        assert!(!digest.text.contains("[m2]"), "assistant words do not retrieve the Raspberry Pi memory: {}", digest.text);
+    }
+
+    #[test]
+    fn similar_memories_include_waiting_proposals_and_cap_at_eight() {
+        let (_dir, db) = extraction_db();
+        insert_chat(&db, "s1", "direct");
+        let waiting = proposal(&db, "Prefers rebase over merge commits");
+        for index in 0..10 {
+            memory_ledger::save(&db, &format!("Prefers rebase workflow variant {index} for merge commits"), None, None).unwrap();
+        }
+        insert_message(&db, "s1", "e1", 1, "user.message", "I prefer rebase over merge commits, always.");
+        let digest = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        assert_eq!(digest.known.len(), MAX_KNOWN_MEMORIES);
+        assert_eq!(digest.known[0].1, waiting, "the closest match leads, waiting or not: {}", digest.text);
+        assert!(digest.text.contains("[m1] waiting for review · fact: Prefers rebase over merge commits"), "{}", digest.text);
+        assert!(!digest.text.contains("[m9]"));
+    }
+
+    #[test]
+    fn unrelated_memories_are_not_offered() {
+        let (_dir, db) = extraction_db();
+        insert_chat(&db, "s1", "direct");
+        memory_ledger::save(&db, "Uses Postgres for every new service", None, None).unwrap();
+        proposal(&db, "Lives in Pune");
+        insert_message(&db, "s1", "e1", 1, "user.message", "I prefer tabs over spaces in Go code.");
+        let digest = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        assert!(digest.known.is_empty(), "{}", digest.text);
+        assert!(!digest.text.contains("Known memories"), "{}", digest.text);
+    }
+
+    fn ops(json: &str) -> String {
+        fenced(json)
+    }
+
+    fn status_of(db: &Connection, id: &str) -> String {
+        db.query_row("SELECT status FROM memory_records WHERE id=?1", params![id], |row| row.get(0)).unwrap()
+    }
+
+    /// A chat whose user message `e1` can be cited, and a known memory `m1`.
+    fn reconcile_fixture(known_body: &str, pin: bool) -> (tempfile::TempDir, Connection, String) {
+        let (dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        insert_message(&db, "s1", "e1", 1, "user.message", "Actually I now prefer spaces over tabs in Go code.");
+        let id = if pin {
+            memory_ledger::save(&db, known_body, Some("preference"), None).unwrap().id
+        } else {
+            let id = memory_ledger::insert_proposal(&db, ACCOUNT_MEMORY_SCOPE, known_body, "preference", Some(9_000), None, "s1").unwrap().id;
+            memory_ledger::approve(&db, &id).unwrap();
+            id
+        };
+        (dir, db, id)
+    }
+
+    #[test]
+    fn noop_writes_nothing_and_counts_known() {
+        let (_dir, db, id) = reconcile_fixture("Prefers tabs over spaces in Go code", false);
+        let before: i64 = db.query_row("SELECT COUNT(*) FROM memory_records", [], |row| row.get(0)).unwrap();
+        let known = vec![("m1".to_string(), id)];
+        let report = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &ops(r#"[{"op":"noop","target":"m1"},{"op":"noop","target":"m1"}]"#), &known).unwrap();
+        assert_eq!((report.known, report.written), (1, 0), "one target counted once");
+        let after: i64 = db.query_row("SELECT COUNT(*) FROM memory_records", [], |row| row.get(0)).unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn update_lands_as_a_proposal_that_supersedes_on_approval() {
+        let (_dir, db, id) = reconcile_fixture("Prefers tabs over spaces in Go code", false);
+        let known = vec![("m1".to_string(), id.clone())];
+        let report = gate_and_insert(
+            &db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE,
+            &ops(r#"[{"op":"update","target":"m1","body":"Prefers spaces over tabs in Go code","confidenceBps":9500,"rationale":"[e1] Changed preference"}]"#),
+            &known,
+        ).unwrap();
+        assert_eq!((report.updates, report.written, report.queued_for_review), (1, 1, 1));
+        let (new_id, supersedes, kind): (String, String, String) = db
+            .query_row("SELECT id, supersedes, kind FROM memory_records WHERE status='proposed'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap();
+        assert_eq!((supersedes.as_str(), kind.as_str()), (id.as_str(), "preference"), "kind defaults to the target's");
+        assert_eq!(status_of(&db, &id), "active", "the target holds until a person approves");
+        memory_ledger::approve(&db, &new_id).unwrap();
+        assert_eq!(status_of(&db, &new_id), "active");
+        assert_eq!(status_of(&db, &id), "superseded");
+    }
+
+    #[test]
+    fn update_of_a_waiting_proposal_replaces_it_in_the_queue() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        insert_message(&db, "s1", "e1", 1, "user.message", "I now live in Berlin.");
+        let waiting = memory_ledger::insert_proposal(&db, ACCOUNT_MEMORY_SCOPE, "Lives in Pune", "fact", Some(6_000), None, "s1").unwrap().id;
+        let known = vec![("m1".to_string(), waiting.clone())];
+        let report = gate_and_insert(
+            &db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE,
+            &ops(r#"[{"op":"update","target":"m1","body":"Lives in Berlin","rationale":"[e1] Moved"}]"#),
+            &known,
+        ).unwrap();
+        assert_eq!(report.updates, 1);
+        assert_eq!(status_of(&db, &waiting), "superseded", "the stale card leaves the queue");
+        let waiting_now: i64 = db.query_row("SELECT COUNT(*) FROM memory_records WHERE status='proposed'", [], |row| row.get(0)).unwrap();
+        assert_eq!(waiting_now, 1, "the queue did not grow");
+    }
+
+    #[test]
+    fn targets_must_come_from_the_prompt() {
+        let (_dir, db, id) = reconcile_fixture("Prefers tabs over spaces in Go code", false);
+        let known = vec![("m1".to_string(), id.clone())];
+        let raw_id = format!(r#"[{{"op":"noop","target":"{id}"}},{{"op":"update","target":"m7","body":"Prefers spaces","rationale":"[e1] x"}},{{"op":"delete","target":"m1"}}]"#);
+        let report = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &ops(&raw_id), &known).unwrap();
+        assert_eq!((report.invalid, report.known, report.written), (3, 0, 0), "a raw id, an unknown alias and an unknown op");
+        assert_eq!(status_of(&db, &id), "active");
+    }
+
+    #[test]
+    fn a_pin_accepts_only_noop() {
+        let (_dir, db, pin) = reconcile_fixture("Prefers tabs over spaces in Go code", true);
+        let known = vec![("m1".to_string(), pin.clone())];
+        let report = gate_and_insert(
+            &db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE,
+            &ops(r#"[{"op":"update","target":"m1","body":"Prefers spaces over tabs in Go code","rationale":"[e1] Changed"},{"op":"noop","target":"m1"}]"#),
+            &known,
+        ).unwrap();
+        assert_eq!((report.refused, report.known, report.written), (1, 1, 0));
+        assert_eq!(status_of(&db, &pin), "active");
+        let edits: i64 = db.query_row("SELECT COUNT(*) FROM memory_records WHERE supersedes=?1", params![pin], |row| row.get(0)).unwrap();
+        assert_eq!(edits, 0, "pins edited: 0");
+    }
+
+    #[test]
+    fn update_without_a_cited_user_message_is_refused() {
+        let (_dir, db, id) = reconcile_fixture("Prefers tabs over spaces in Go code", false);
+        let known = vec![("m1".to_string(), id)];
+        for rationale in [r#""rationale":"I think so""#, r#""rationale":"[e99] made up""#] {
+            let text = format!(r#"[{{"op":"update","target":"m1","body":"Prefers spaces over tabs in Go code",{rationale}}}]"#);
+            let report = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &ops(&text), &known).unwrap();
+            assert_eq!((report.refused, report.written), (1, 0), "{rationale}");
+        }
+    }
+
+    #[test]
+    fn update_never_auto_applies() {
+        let (_dir, db, id) = reconcile_fixture("Prefers tabs over spaces in Go code", false);
+        auto_apply_mode(&db);
+        let known = vec![("m1".to_string(), id.clone())];
+        let report = gate_and_insert(
+            &db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_AUTO_APPLY,
+            &ops(r#"[{"op":"update","target":"m1","body":"Prefers spaces over tabs in Go code","confidenceBps":10000,"rationale":"[e1] Actually I now prefer spaces over tabs in Go code"}]"#),
+            &known,
+        ).unwrap();
+        assert_eq!((report.activated, report.queued_for_review), (0, 1));
+        assert_eq!(status_of(&db, &id), "active");
+    }
+
+    #[test]
+    fn an_element_without_op_is_an_add() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        insert_message(&db, "s1", "e1", 1, "user.message", "I keep a changelog in every repo.");
+        let report = gate_and_insert(
+            &db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE,
+            &ops(r#"[{"body":"Keeps a changelog in every repo","kind":"preference"},{"op":"add","body":"Writes commit messages in English","kind":"preference"},{"op":"add","body":"x","kind":"preference","target":"m1"}]"#),
+            &[],
+        ).unwrap();
+        assert_eq!((report.written, report.invalid), (2, 1), "an add with a target field is invalid");
+    }
+
+    #[test]
+    fn an_update_that_says_what_its_target_says_is_known() {
+        let (_dir, db, id) = reconcile_fixture("Prefers tabs over spaces in Go code", false);
+        let known = vec![("m1".to_string(), id)];
+        let report = gate_and_insert(
+            &db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE,
+            &ops(r#"[{"op":"update","target":"m1","body":"prefers tabs over spaces in go code","rationale":"[e1] Same"}]"#),
+            &known,
+        ).unwrap();
+        assert_eq!((report.known, report.written), (1, 0));
+    }
+
+    #[test]
+    fn coverage_lands_with_the_completion_and_feeds_the_next_digest() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        insert_message(&db, "s1", "e1", 1, "user.message", "I prefer tabs");
+        enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap();
+        let claimed = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
+        let digest = digest_for_run(&db, ACCOUNT_MEMORY_SCOPE, "s1", &claimed.run_id, &claimed.lease_owner).unwrap().unwrap();
+        assert!(record_coverage(&db, &claimed.run_id, &claimed.lease_owner, &digest.through_entry_id, 3).unwrap());
+        settle(&db, &claimed.run_id, &claimed.lease_owner, "completed", None, Some("claude"), Some("haiku"), Some(&digest.sha256), 10, 20, 0).unwrap();
+        assert!(!record_coverage(&db, &claimed.run_id, &claimed.lease_owner, "e1", 9).unwrap(), "a settled run is not rewritten");
+        assert_eq!(last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().unwrap().known_count, 3);
+        assert!(build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().is_none(), "the next run starts after e1");
+    }
+
+    #[test]
+    fn an_assistant_only_chunk_advances_to_the_user_message_after_it() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        insert_message(&db, "s1", "e1", 1, "user.message", "Start the long refactor.");
+        complete_through(&db, "s1", "e1");
+        // More assistant entries than one chunk holds, then the user speaks.
+        for index in 2..=(MAX_DIGEST_ENTRIES as i64 + 5) {
+            insert_message(&db, "s1", &format!("e{index}"), index, "assistant.message", "Still working through the files.");
+        }
+        let last = MAX_DIGEST_ENTRIES as i64 + 6;
+        insert_message(&db, "s1", &format!("e{last}"), last, "user.message", "I prefer small commits for refactors like this.");
+        enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap();
+        let first = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
+        assert!(digest_for_run(&db, ACCOUNT_MEMORY_SCOPE, "s1", &first.run_id, &first.lease_owner).unwrap().is_none(), "no model call");
+        let (status, detail): (String, String) = db
+            .query_row("SELECT status, detail FROM memory_extraction_runs WHERE id=?1", params![first.run_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap();
+        assert_eq!((status.as_str(), detail.as_str()), ("completed", NOTHING_NEW), "progress is recorded");
+        let follow_up = claim_due(&db, quiet(), &memory(&db)).unwrap().expect("the rest is due at once");
+        let digest = digest_for_run(&db, ACCOUNT_MEMORY_SCOPE, "s1", &follow_up.run_id, &follow_up.lease_owner).unwrap().expect("the user message is reached");
+        assert!(digest.text.contains("I prefer small commits"), "{}", digest.text);
     }
 
     #[test]

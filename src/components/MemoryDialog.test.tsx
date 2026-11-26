@@ -692,6 +692,31 @@ describe("MemoryDialog review queue", () => {
     expect(container.textContent).toContain("Last run completed");
     expect(container.textContent).toContain("2 extracted");
     expect(container.textContent).toContain("$0.0017");
+    expect(container.textContent).not.toContain("already known");
+  });
+
+  it("the last run says how many candidates were already known", async () => {
+    extractionSettings = {
+      scopeKey: "account:local",
+      mode: "propose",
+      lastRun: { status: "completed", proposalCount: 1, knownCount: 3, observedTokens: 420, spendMicrousd: 1700, updatedAt: "2026-08-21T00:00:00Z" },
+    };
+    mount();
+    await flush();
+    click(tab("Review"));
+    expect(container.textContent).toContain("1 extracted · 3 already known");
+    expect(container.textContent).toContain("When a chat goes quiet");
+    expect(container.textContent).not.toContain("After a chat turn");
+  });
+
+  it("a proposal that updates a memory names what it replaces", async () => {
+    store.push({ ...record("r-update", "Prefers spaces over tabs", "preference"), status: "proposed", provenance: "model_proposal", supersedes: "r-tabs" });
+    store.push({ ...record("r-orphan", "Lives in Berlin", "fact"), status: "proposed", provenance: "model_proposal", supersedes: "r-gone" });
+    mount();
+    await flush();
+    click(tab("Review"));
+    expect(container.textContent).toContain("Replaces: Prefers tabs over spaces");
+    expect(container.textContent).toContain("Replaces an earlier version");
   });
 });
 
@@ -976,5 +1001,18 @@ describe("MemoryDialog retention", () => {
     click(tab("Activity"));
     expect(container.textContent).toContain("Retired 3 unused memories");
     expect(container.textContent).toContain("12 unreviewed proposals expired");
+  });
+
+  it("shows already-known counts and nothing-new runs in Activity", async () => {
+    vi.mocked(bridgeApi.memoryActivityLog).mockResolvedValue([
+      { source: "extraction", status: "completed", applied: 2, refused: 0, known: 3, at: new Date().toISOString() },
+      { source: "extraction", status: "cancelled", applied: 0, refused: 0, detail: "nothing_new", at: new Date().toISOString() },
+    ]);
+    mount();
+    await flush();
+    click(tab("Activity"));
+    expect(container.textContent).toContain("2 proposals written, 3 already known");
+    expect(container.textContent).toContain("Nothing new to read");
+    expect(container.textContent).not.toContain("nothing_new");
   });
 });

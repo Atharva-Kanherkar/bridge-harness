@@ -529,8 +529,11 @@ pub fn review_batch(
         }
         if approving {
             // A full active budget is this record's refusal, not the batch's:
-            // the approvals before it stand and the rest are reported.
-            if crate::memory_consolidation::scope_full(&transaction, &scope_key)? {
+            // the approvals before it stand and the rest are reported. A
+            // proposal that replaces an active memory does not grow the scope.
+            if active_target_of(&transaction, id)?.is_none()
+                && crate::memory_consolidation::scope_full(&transaction, &scope_key)?
+            {
                 let held = crate::memory_consolidation::held_records(&transaction, &scope_key)?;
                 result.refused.push(MemoryReviewRefusal {
                     id: id.clone(),
@@ -668,6 +671,96 @@ fn insert_proposal_as(
     load(db, &id)?.ok_or_else(|| BridgeError::Invalid("The proposal was not written.".into()))
 }
 
+/// A model proposal that would replace `target` once approved: the reconcile
+/// answer "update that one". It waits for review like any proposal, with
+/// `supersedes` naming the record it replaces.
+///
+/// A target that is itself a waiting proposal is replaced at once rather than
+/// on approval, since it never held: the queue gets the corrected card instead
+/// of a second one, and the card inherits whatever that proposal would have
+/// replaced. An active target stays active until a person approves.
+pub(crate) fn insert_update_proposal(
+    db: &Connection,
+    scope_key: &str,
+    target: &MemoryRecord,
+    body: &str,
+    kind: &str,
+    confidence_bps: Option<u32>,
+    rationale: Option<&str>,
+    source_session_id: &str,
+) -> Result<MemoryRecord, BridgeError> {
+    let replaces_proposal = target.status == STATUS_PROPOSED;
+    if !replaces_proposal {
+        crate::memory_retention::enforce_proposal_cap(db, scope_key)?;
+    }
+    // Replacing a waiting proposal takes over what it would have replaced: an
+    // update of a pending update of A still supersedes A on approval, so A
+    // never stays active beside its successor.
+    let supersedes = if replaces_proposal { target.supersedes.clone() } else { Some(target.id.clone()) };
+    let now = Utc::now().to_rfc3339();
+    let id = Uuid::new_v4().to_string();
+    with_savepoint(db, || {
+        db.execute(
+            "INSERT INTO memory_records(
+                id, scope_key, kind, body, provenance, status, source_session_id,
+                confidence_bps, rationale, valid_from, valid_to, created_at, updated_at, supersedes
+             ) VALUES(?1,?2,?3,?4,?5,'proposed',?6,?7,?8,?9,?9,?9,?9,?10)",
+            params![
+                id,
+                scope_key,
+                kind,
+                body,
+                PROVENANCE_MODEL_PROPOSAL,
+                source_session_id,
+                confidence_bps.map(|value| value as i64),
+                rationale,
+                now,
+                supersedes,
+            ],
+        )?;
+        if replaces_proposal {
+            db.execute(
+                "UPDATE memory_records SET status=?1, superseded_by=?2, updated_at=?3
+                 WHERE id=?4 AND status=?5",
+                params![STATUS_SUPERSEDED, id, now, target.id, STATUS_PROPOSED],
+            )?;
+        }
+        Ok(())
+    })?;
+    load(db, &id)?.ok_or_else(|| BridgeError::Invalid("The proposal was not written.".into()))
+}
+
+/// Run `work` atomically whether or not the caller already holds a
+/// transaction: a savepoint nests inside one and opens one otherwise.
+fn with_savepoint(db: &Connection, work: impl FnOnce() -> Result<(), BridgeError>) -> Result<(), BridgeError> {
+    db.execute_batch("SAVEPOINT memory_ledger_step")?;
+    match work() {
+        Ok(()) => {
+            db.execute_batch("RELEASE memory_ledger_step")?;
+            Ok(())
+        }
+        Err(error) => {
+            db.execute_batch("ROLLBACK TO memory_ledger_step; RELEASE memory_ledger_step")?;
+            Err(error)
+        }
+    }
+}
+
+/// The active record a waiting proposal would replace on approval, if any.
+/// Such an approval swaps one active memory for another, so it never grows
+/// the scope and the budget does not apply to it.
+pub(crate) fn active_target_of(db: &Connection, record_id: &str) -> Result<Option<String>, BridgeError> {
+    Ok(db
+        .query_row(
+            "SELECT target.id FROM memory_records AS proposal
+             JOIN memory_records AS target ON target.id = proposal.supersedes
+             WHERE proposal.id=?1 AND proposal.status=?2 AND target.status=?3",
+            params![record_id, STATUS_PROPOSED, STATUS_ACTIVE],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
 /// Case-insensitive body match against every non-deleted record in scope, so
 /// the extractor cannot re-propose what already exists in any state but gone.
 ///
@@ -755,23 +848,38 @@ pub fn approve(db: &Connection, record_id: &str) -> Result<MemoryRecord, BridgeE
     if record_id.is_empty() {
         return Err(BridgeError::Invalid("Memory approve needs a record id.".into()));
     }
-    // Proposals live outside the active budget, so approval is what grows it.
-    if let Some(record) = load(db, record_id)? {
-        if record.status == STATUS_PROPOSED {
-            crate::memory_consolidation::enforce_scope_budget(db, &record.scope_key)?;
+    // Proposals live outside the active budget, so approval is what grows it,
+    // unless the proposal replaces an active memory: that swaps one for one.
+    let replaces = active_target_of(db, record_id)?;
+    if replaces.is_none() {
+        if let Some(record) = load(db, record_id)? {
+            if record.status == STATUS_PROPOSED {
+                crate::memory_consolidation::enforce_scope_budget(db, &record.scope_key)?;
+            }
         }
     }
     let updated_at = Utc::now().to_rfc3339();
-    let changed = db.execute(
-        "UPDATE memory_records SET status=?1, updated_at=?2, valid_from=?2, valid_to=NULL
-         WHERE id=?3 AND status=?4",
-        params![STATUS_ACTIVE, updated_at, record_id, STATUS_PROPOSED],
-    )?;
-    if changed == 0 {
-        return Err(BridgeError::Invalid(format!(
-            "Only a {STATUS_PROPOSED} memory record can be {STATUS_ACTIVE}; '{record_id}' is not one."
-        )));
-    }
+    with_savepoint(db, || {
+        let changed = db.execute(
+            "UPDATE memory_records SET status=?1, updated_at=?2, valid_from=?2, valid_to=NULL
+             WHERE id=?3 AND status=?4",
+            params![STATUS_ACTIVE, updated_at, record_id, STATUS_PROPOSED],
+        )?;
+        if changed == 0 {
+            return Err(BridgeError::Invalid(format!(
+                "Only a {STATUS_PROPOSED} memory record can be {STATUS_ACTIVE}; '{record_id}' is not one."
+            )));
+        }
+        // The replaced memory stops holding the instant its successor starts.
+        if let Some(target) = &replaces {
+            db.execute(
+                "UPDATE memory_records SET status=?1, superseded_by=?2, valid_to=?3, updated_at=?3
+                 WHERE id=?4 AND status=?5",
+                params![STATUS_SUPERSEDED, record_id, updated_at, target, STATUS_ACTIVE],
+            )?;
+        }
+        Ok(())
+    })?;
     load(db, record_id)?
         .ok_or_else(|| BridgeError::Invalid("The approved record was not written.".into()))
 }
@@ -1133,6 +1241,25 @@ pub(crate) fn active_records(
     ))?;
     let records = statement
         .query_map(params![scope_key, STATUS_ACTIVE, limit], map_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(records)
+}
+
+/// Everything extraction may reconcile a candidate against: the scope's active
+/// memories and the proposals waiting for review, newest first.
+pub(crate) fn reconcilable_records(
+    db: &Connection,
+    scope_key: &str,
+    limit: i64,
+) -> Result<Vec<MemoryRecord>, BridgeError> {
+    let mut statement = db.prepare(&format!(
+        "SELECT {RECORD_COLUMNS} FROM memory_records
+         WHERE scope_key=?1 AND status IN (?2, ?3)
+         ORDER BY updated_at DESC, id
+         LIMIT ?4",
+    ))?;
+    let records = statement
+        .query_map(params![scope_key, STATUS_ACTIVE, STATUS_PROPOSED, limit], map_row)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(records)
 }
@@ -1937,4 +2064,70 @@ mod tests {
             crate::session_recall::search(&db, "s", "unique-account-pin-token-xyz", None).unwrap();
         assert!(hits.hits.is_empty());
     }
+
+    fn update_of(db: &Connection, target: &MemoryRecord, body: &str) -> MemoryRecord {
+        db.execute(
+            "INSERT OR IGNORE INTO sessions(id,workspace_id,harness,label,status,metric_source,kind) VALUES('s1',NULL,'claude','s1','idle','reported','direct')",
+            [],
+        )
+        .unwrap();
+        insert_update_proposal(db, ACCOUNT_MEMORY_SCOPE, target, body, &target.kind, Some(8_000), None, "s1").unwrap()
+    }
+
+    #[test]
+    fn approving_an_update_supersedes_its_active_target_in_one_step() {
+        let (_dir, db) = ledger_db();
+        let target = save(&db, "Prefers tabs", Some("preference"), None).unwrap();
+        let update = update_of(&db, &target, "Prefers spaces");
+        let approved = approve(&db, &update.id).unwrap();
+        assert_eq!(approved.status, STATUS_ACTIVE);
+        let old = load_record(&db, &target.id).unwrap().unwrap();
+        assert_eq!(old.status, STATUS_SUPERSEDED);
+        assert_eq!(old.valid_to.as_deref(), Some(approved.valid_from.as_str()), "the old claim ends as the new one starts");
+        let active: Vec<String> = list(&db, ACCOUNT_MEMORY_SCOPE, None).unwrap().records.into_iter().map(|record| record.body).collect();
+        assert_eq!(active, vec!["Prefers spaces".to_string()]);
+    }
+
+    #[test]
+    fn approving_an_update_at_full_budget_is_allowed() {
+        let (_dir, db) = ledger_db();
+        crate::memory_consolidation::update_settings(&db, ACCOUNT_MEMORY_SCOPE, "off", Some(2), None, None).unwrap();
+        let first = save(&db, "Prefers tabs", Some("preference"), None).unwrap();
+        let second = save(&db, "Uses Postgres", Some("fact"), None).unwrap();
+        let single = update_of(&db, &first, "Prefers spaces");
+        approve(&db, &single.id).unwrap();
+        let bulk = update_of(&db, &second, "Uses SQLite");
+        let result = review_batch(&db, ACCOUNT_MEMORY_SCOPE, &[bulk.id.clone()], &[]).unwrap();
+        assert_eq!(result.approved, vec![bulk.id], "{:?}", result.refused);
+        assert_eq!(list(&db, ACCOUNT_MEMORY_SCOPE, None).unwrap().total, 2, "a swap never grows the scope");
+    }
+
+    #[test]
+    fn rejecting_an_update_leaves_the_target_active() {
+        let (_dir, db) = ledger_db();
+        let target = save(&db, "Prefers tabs", Some("preference"), None).unwrap();
+        let update = update_of(&db, &target, "Prefers spaces");
+        reject(&db, &update.id).unwrap();
+        assert_eq!(load_record(&db, &target.id).unwrap().unwrap().status, STATUS_ACTIVE);
+    }
+
+    #[test]
+    fn an_update_of_a_pending_update_keeps_the_active_predecessor() {
+        for full in [false, true] {
+            let (_dir, db) = ledger_db();
+            let a = save(&db, "Prefers tabs", Some("preference"), None).unwrap();
+            if full {
+                crate::memory_consolidation::update_settings(&db, ACCOUNT_MEMORY_SCOPE, "off", Some(1), None, None).unwrap();
+            }
+            let b = update_of(&db, &a, "Prefers spaces");
+            let c = update_of(&db, &b, "Prefers two-space indents");
+            assert_eq!(c.supersedes.as_deref(), Some(a.id.as_str()), "C inherits B's target");
+            assert_eq!(load_record(&db, &b.id).unwrap().unwrap().status, STATUS_SUPERSEDED, "B leaves the queue");
+            approve(&db, &c.id).unwrap_or_else(|error| panic!("full={full}: {error}"));
+            let active: Vec<String> = list(&db, ACCOUNT_MEMORY_SCOPE, None).unwrap().records.into_iter().map(|record| record.body).collect();
+            assert_eq!(active, vec!["Prefers two-space indents".to_string()], "full={full}");
+            assert_eq!(load_record(&db, &a.id).unwrap().unwrap().status, STATUS_SUPERSEDED);
+        }
+    }
+
 }

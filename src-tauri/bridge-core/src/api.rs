@@ -2697,6 +2697,7 @@ fn extraction_settings_wire(
         wire::MemoryExtractionRun {
             status: run.status,
             proposal_count: run.proposal_count,
+            known_count: run.known_count,
             observed_tokens: run.observed_tokens,
             spend_microusd: run.spend_microusd,
             detail: run.detail,
@@ -6088,6 +6089,14 @@ pub fn archive_chat(
             session_id,
             &format!("Chat archived; reclaimed {freed}"),
         )?;
+    }
+    {
+        // An archived chat is done: its pending memory extraction need not
+        // wait out the quiet period.
+        let db = lock_db(core);
+        if let Err(error) = crate::memory_extraction::due_now(&db, session_id, chrono::Utc::now()) {
+            eprintln!("[memory] archive could not hurry extraction for {session_id}: {error}");
+        }
     }
     core.events.publish(CoreEvent::StateChanged);
     Ok(worktree_registry::ArchiveChatResult {
