@@ -9,7 +9,7 @@ Issue #1148, part of epic #1144. Locked before implementation. Plan note:
 
 - A completed turn in a visible chat (direct or orchestrator) with extraction
   on, a resolved memory model and room in the review queue keeps **one queued
-  run per chat** and sets its `due_at` to `now + 600 s`. Every later turn moves
+  run per chat** and sets its `due_at` to `now + 1,200 s` (20 minutes). Every later turn moves
   `due_at` out again; it never adds a second queued run.
 - A queued run is claimed only once `due_at <= now`, and never while the same
   chat has a running run with a live lease. A running run does not stop a new
@@ -88,7 +88,7 @@ Issue #1148, part of epic #1144. Locked before implementation. Plan note:
 
 ### Scheduling (`memory_extraction::tests`)
 - `a_turn_re_arms_the_one_queued_run`: three turns, one row, and `due_at` moves.
-- `a_queued_run_is_not_due_before_the_quiet_period`: not claimed before 600 s,
+- `a_queued_run_is_not_due_before_the_quiet_period`: not claimed before 1,200 s,
   claimed after.
 - `archiving_makes_the_queued_run_due_now`.
 - `a_running_run_blocks_a_second_claim_for_the_same_chat`.
@@ -163,10 +163,25 @@ Issue #1148, part of epic #1144. Locked before implementation. Plan note:
   dedicated `CARGO_TARGET_DIR`.
 - **Replay estimate:** a read-only script over the local database's last 7
   days counts the runs the old rule made against the runs the new rule would
-  make (10-minute quiet periods per chat). It scales cost by the observed cost
+  make (20-minute quiet periods per chat). It scales cost by the observed cost
   per run. Target: ≥ 5x fewer runs.
 
 ## Manual / cURL Tests
 - N/A for cURL: no HTTP surface.
 - Manual, in mock mode (`bun run dev`): the Review tab heading, the
   already-known count, and the "Replaces" line render. Screenshots go in the PR.
+
+## Amendment: quiet period (decided after the replay)
+
+The issue specified 10 minutes. Replaying the last 7 days of the local
+database, measuring quiet time from the end of each turn, gave:
+
+| Quiet period | Runs | Fewer than the old rule |
+|---|---|---|
+| Old rule | 737 | — |
+| 10 min | 188 | 3.9x |
+| 20 min | 145 | 5.1x |
+| 30 min | 125 | 5.9x |
+
+At 10 minutes the run count misses the 5x target. The owner chose 20 minutes
+on 2026-11-26. Archiving a chat still makes its run due at once.
