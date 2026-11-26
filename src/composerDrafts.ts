@@ -1,15 +1,37 @@
 import type { ComposerAttachment } from "./pasteAttachments";
+import type { ReplyTarget } from "./replyTo";
 
-/** What the chat composer holds for one chat: words and pasted images. */
+/** What the chat composer holds for one chat: words, pasted images, and the reply it answers. */
 export interface ComposerDraft {
   text: string;
   attachments: ComposerAttachment[];
+  /** The earlier agent reply the next message answers, kept with its chat like the words. */
+  replyTo?: ReplyTarget;
 }
 
 export const EMPTY_DRAFT: ComposerDraft = { text: "", attachments: [] };
 
 export function isEmptyDraft(draft: ComposerDraft): boolean {
-  return !draft.text.trim() && draft.attachments.length === 0;
+  return !draft.text.trim() && draft.attachments.length === 0 && !draft.replyTo;
+}
+
+/** Whether two targets are the same reply, so a send only consumes the one it carried. */
+export function sameReplyTarget(left: ReplyTarget | undefined, right: ReplyTarget | undefined): boolean {
+  return !!left && !!right && left.entryId === right.entryId && left.excerpt === right.excerpt;
+}
+
+/** The reply a draft keeps once a send has carried `sent`: a newer target set since stays. */
+export function withoutSentReply(current: ReplyTarget | undefined, sent: ReplyTarget | undefined): ReplyTarget | undefined {
+  return sameReplyTarget(current, sent) ? undefined : current;
+}
+
+/** A failed send's reply goes back, unless another one was chosen while it was in flight. */
+export function mergeFailedReply(current: ReplyTarget | undefined, failed: ReplyTarget | undefined): ReplyTarget | undefined {
+  return current ?? failed;
+}
+
+function withReply(draft: ComposerDraft, replyTo: ReplyTarget | undefined): ComposerDraft {
+  return replyTo ? { ...draft, replyTo } : draft;
 }
 
 /** Between restored words and the typing that came after them. */
@@ -35,7 +57,10 @@ export function mergeFailedAttachments(current: readonly ComposerAttachment[], f
 }
 
 export function mergeFailedSend(current: ComposerDraft, failed: ComposerDraft): ComposerDraft {
-  return { text: mergeFailedText(current.text, failed.text), attachments: mergeFailedAttachments(current.attachments, failed.attachments) };
+  return withReply(
+    { text: mergeFailedText(current.text, failed.text), attachments: mergeFailedAttachments(current.attachments, failed.attachments) },
+    mergeFailedReply(current.replyTo, failed.replyTo),
+  );
 }
 
 /**
@@ -65,7 +90,10 @@ export function withoutSentAttachments(current: readonly ComposerAttachment[], s
 }
 
 export function withoutSent(current: ComposerDraft, sent: ComposerDraft): ComposerDraft {
-  return { text: withoutSentText(current.text, sent.text), attachments: withoutSentAttachments(current.attachments, sent.attachments) };
+  return withReply(
+    { text: withoutSentText(current.text, sent.text), attachments: withoutSentAttachments(current.attachments, sent.attachments) },
+    withoutSentReply(current.replyTo, sent.replyTo),
+  );
 }
 
 /**
@@ -89,7 +117,10 @@ export function restoreFailedTurnAttachments(current: readonly ComposerAttachmen
 }
 
 export function restoreFailedTurn(current: ComposerDraft, failed: ComposerDraft): ComposerDraft {
-  return { text: restoreFailedTurnText(current.text, failed.text), attachments: restoreFailedTurnAttachments(current.attachments, failed.attachments) };
+  return withReply(
+    { text: restoreFailedTurnText(current.text, failed.text), attachments: restoreFailedTurnAttachments(current.attachments, failed.attachments) },
+    mergeFailedReply(current.replyTo, failed.replyTo),
+  );
 }
 
 /**

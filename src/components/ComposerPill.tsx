@@ -8,6 +8,8 @@ import type { ComposerAttachment } from "@/pasteAttachments";
 import type { BrowserSelectionContext } from "../browserSelection";
 import { chipDetail, chipSummary, type ReferenceChipModel } from "../referenceChip";
 import { VoiceControls, VoiceStatus, voiceIsBusy } from "./VoiceControls";
+import { ComposerReplyBanner } from "./ReplyContext";
+import type { ReplyTarget } from "@/replyTo";
 import type { VoiceView, VoiceState } from "@/voiceDictation";
 import type { VoiceRecoveryAction } from "@/protocol/generated/protocol";
 
@@ -28,6 +30,11 @@ export type ComposerPillProps = {
   onRemoveBrowserSelection?: (id: string) => void;
   onAttachFiles?: (files: File[]) => void;
   onRemoveAttachment?: (id: string) => void;
+  /// The earlier agent reply the next message answers, drawn as a banner
+  /// above the input. ✕ calls `onCancelReply`; the preview calls `onRevealReply`.
+  replyTo?: ReplyTarget;
+  onCancelReply?: () => void;
+  onRevealReply?: () => void;
   placeholder?: string;
   disabled?: boolean;
   working?: boolean;
@@ -116,6 +123,9 @@ export function ComposerPill({
   onRemoveBrowserSelection,
   onAttachFiles,
   onRemoveAttachment,
+  replyTo,
+  onCancelReply,
+  onRevealReply,
   placeholder = "Ask Bridge…",
   disabled,
   working,
@@ -242,6 +252,7 @@ export function ComposerPill({
           }}
         >
           {header}
+          {replyTo && <ComposerReplyBanner target={replyTo} onCancel={onCancelReply} onReveal={onRevealReply} />}
           {/* Keep workspace metadata outside the writing surface. */}
           <div className={cn("flex flex-col gap-1", isHero ? "px-4 py-3.5 sm:px-5 sm:py-4" : isInline ? "py-1 pl-2.5 pr-1" : "px-3 py-2")}>
           {references.length > 0 && (
