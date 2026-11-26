@@ -797,15 +797,69 @@ pub fn extraction_instructions() -> String {
      several lines show and that falls inside the scope written after the app's \
      name; never propose from a single one-off event, and never anything outside \
      that scope. Cite the activity line's id. \
+     Known memories, when listed, are what Bridge already remembers or is waiting \
+     to confirm, each with an id such as m1. Check every durable claim against them \
+     first. If a known memory already says it, answer {\"op\":\"noop\",\"target\":\"m1\"}. \
+     If the user changed or corrected a known memory that is not a pin, answer \
+     {\"op\":\"update\",\"target\":\"m2\",\"body\":...,\"kind\":...,\"confidenceBps\":...,\"rationale\":...} \
+     with the whole corrected claim as body; a pin is never updated. Only when no \
+     known memory covers the claim, answer {\"op\":\"add\",\"body\":...,\"kind\":...,\"confidenceBps\":...,\"rationale\":...}. \
+     Use only the ids listed; never invent one. \
      Answer with exactly one fenced code block tagged bridge-memory-proposals \
-     containing a JSON array. Each element is an object with exactly these fields: \
-     body (the fact, under 4000 characters), kind (preference, fact, decision, or \
-     constraint), confidenceBps (0-10000), rationale (under 500 characters, beginning \
-     with the bracketed id of the user.message or app activity line that directly \
-     supports the body, for example `[entry-id] Direct statement`). At most 10 elements. Propose nothing \
-     sensitive, no credentials, nothing already pinned, and nothing about this \
+     containing a JSON array of these operations and no other fields. body is the \
+     claim (under 4000 characters), kind is preference, fact, decision, or \
+     constraint, confidenceBps is 0-10000, and rationale is under 500 characters and \
+     begins with the bracketed id of the user.message or app activity line that \
+     directly supports the claim, for example `[entry-id] Direct statement`. At most \
+     10 elements. Propose nothing sensitive, no credentials, and nothing about this \
      instruction. An empty array is a good answer when nothing durable was said."
         .to_string()
+}
+
+/// `{"op":"update","target":"m2",...}`: the person changed or corrected a
+/// known memory.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawUpdate {
+    target: String,
+    body: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    confidence_bps: Option<u32>,
+    #[serde(default)]
+    rationale: Option<String>,
+}
+
+/// `{"op":"noop","target":"m1"}`: a known memory already says it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawNoop {
+    target: String,
+    #[serde(default)]
+    rationale: Option<String>,
+}
+
+/// One element of the model's answer. An element without `op` is an add, so
+/// an answer in the shape before reconcile still reads.
+enum RawOperation {
+    Add(RawProposal),
+    Update(RawUpdate),
+    Noop(RawNoop),
+}
+
+fn parse_operation(mut element: serde_json::Value) -> Option<RawOperation> {
+    let op = match element.as_object_mut()?.remove("op") {
+        None => "add".to_string(),
+        Some(serde_json::Value::String(op)) => op,
+        Some(_) => return None,
+    };
+    match op.as_str() {
+        "add" => serde_json::from_value(element).ok().map(RawOperation::Add),
+        "update" => serde_json::from_value(element).ok().map(RawOperation::Update),
+        "noop" => serde_json::from_value(element).ok().map(RawOperation::Noop),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1573,6 +1627,11 @@ pub struct ExtractionReport {
     pub invalid: usize,
     pub duplicates: usize,
     pub refused: usize,
+    /// Candidates the model answered `noop` for, or an update that says what
+    /// its target already says: remembered already, nothing written.
+    pub known: usize,
+    /// Proposals that replace a known memory once approved.
+    pub updates: usize,
 }
 
 struct GatedCandidate {
@@ -1604,14 +1663,19 @@ pub(crate) fn contains_secret_material(text: &str) -> bool {
 /// here, and whatever a model claimed, every survivor first lands as
 /// proposed/model_proposal. Auto-apply may then use the ledger's ordinary
 /// approval transition; a stale mode or an ineligible candidate stays queued
-/// for review. An element with any field beyond the four — a status, a
+/// for review. An element with any field beyond its operation's — a status, a
 /// provenance, a scope — is invalid rather than honored.
+///
+/// `known` is the alias map the digest showed. An `update` or `noop` may name
+/// only those aliases, a pin accepts only `noop`, and an `update` must cite a
+/// user message and always waits for review.
 pub fn gate_and_insert(
     db: &Connection,
     scope_key: &str,
     session_id: &str,
     claimed_mode: &str,
     model_text: &str,
+    known: &[(String, String)],
 ) -> Result<ExtractionReport, BridgeError> {
     let scope_key = memory_ledger::parse_scope_key(scope_key)?;
     let current_mode = settings(db, &scope_key)?.mode;
@@ -1627,10 +1691,26 @@ pub fn gate_and_insert(
     })?;
     let mut candidates = Vec::new();
     let mut batch_bodies = BTreeSet::new();
+    let mut known_targets = BTreeSet::new();
     for element in elements.into_iter().take(MAX_PROPOSALS_PER_RUN) {
-        let raw: RawProposal = match serde_json::from_value(element) {
-            Ok(raw) => raw,
-            Err(_) => {
+        let raw: RawProposal = match parse_operation(element) {
+            Some(RawOperation::Add(raw)) => raw,
+            Some(RawOperation::Noop(noop)) => {
+                match known.iter().find(|(alias, _)| *alias == noop.target) {
+                    Some((alias, _)) => {
+                        if known_targets.insert(alias.clone()) {
+                            report.known += 1;
+                        }
+                    }
+                    None => report.invalid += 1,
+                }
+                continue;
+            }
+            Some(RawOperation::Update(update)) => {
+                gate_update(db, &scope_key, session_id, known, update, &mut batch_bodies, &mut report)?;
+                continue;
+            }
+            None => {
                 report.invalid += 1;
                 continue;
             }
@@ -1740,6 +1820,89 @@ pub fn gate_and_insert(
     Ok(report)
 }
 
+/// One `update`: checked like an add, then written as a proposal that
+/// replaces its target on approval. Never auto-applied: replacing what a
+/// person already accepted is theirs to decide.
+fn gate_update(
+    db: &Connection,
+    scope_key: &str,
+    session_id: &str,
+    known: &[(String, String)],
+    update: RawUpdate,
+    batch_bodies: &mut BTreeSet<String>,
+    report: &mut ExtractionReport,
+) -> Result<(), BridgeError> {
+    let Some((_, target_id)) = known.iter().find(|(alias, _)| *alias == update.target) else {
+        report.invalid += 1;
+        return Ok(());
+    };
+    let Some(target) = memory_ledger::load_record(db, target_id)?
+        .filter(|record| record.scope_key == scope_key && matches!(record.status.as_str(), "active" | "proposed"))
+    else {
+        // Decided or forgotten while the model was answering.
+        report.refused += 1;
+        return Ok(());
+    };
+    if target.provenance == "user_explicit" {
+        // A pin is the person's own words; extraction never rewrites it.
+        report.refused += 1;
+        return Ok(());
+    }
+    if contains_secret_material(&update.body) || update.rationale.as_deref().is_some_and(contains_secret_material) {
+        report.refused += 1;
+        return Ok(());
+    }
+    let Ok(body) = memory_ledger::require_body(&update.body) else {
+        report.refused += 1;
+        return Ok(());
+    };
+    let Ok(kind) = memory_ledger::parse_kind(Some(update.kind.as_deref().unwrap_or(&target.kind))) else {
+        report.invalid += 1;
+        return Ok(());
+    };
+    if cited_user_message(db, session_id, update.rationale.as_deref())?.is_none() {
+        report.refused += 1;
+        return Ok(());
+    }
+    if crate::memory_similarity::near_duplicate(&body, &target.body) {
+        report.known += 1;
+        return Ok(());
+    }
+    let body_key = crate::memory_similarity::normalize(&body);
+    if memory_ledger::body_already_known(db, scope_key, &body)?
+        || memory_ledger::near_duplicate_of(db, scope_key, &body)?.is_some_and(|other| other.id != target.id)
+        || !batch_bodies.insert(body_key)
+    {
+        report.duplicates += 1;
+        return Ok(());
+    }
+    let rationale = update
+        .rationale
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.chars().take(MAX_RATIONALE_CHARS).collect::<String>());
+    match memory_ledger::insert_update_proposal(
+        db,
+        scope_key,
+        &target,
+        &body,
+        kind,
+        update.confidence_bps.map(|value| value.min(10_000)),
+        rationale.as_deref(),
+        session_id,
+    ) {
+        Ok(_) => {
+            report.written += 1;
+            report.updates += 1;
+            report.queued_for_review += 1;
+        }
+        Err(BridgeError::Invalid(_)) => report.refused += 1,
+        Err(error) => return Err(error),
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractionOutput {
     pub text: String,
@@ -1777,7 +1940,7 @@ pub fn run_extraction(
     };
     let claimed_mode = settings(db, scope_key)?.mode;
     let output = model.propose(&extraction_instructions(), &digest.text)?;
-    let report = gate_and_insert(db, scope_key, session_id, &claimed_mode, &output.text)?;
+    let report = gate_and_insert(db, scope_key, session_id, &claimed_mode, &output.text, &digest.known)?;
     Ok((report, output, Some(digest.sha256)))
 }
 
@@ -1940,7 +2103,7 @@ mod tests {
             {\"body\": \"Keeps the main checkout on main\", \"kind\": \"fact\", \"confidenceBps\": 8000, \"rationale\": \"[e1] said so\"},\n\
             {\"body\": \"keeps the main checkout on main.\", \"kind\": \"fact\", \"confidenceBps\": 8000, \"rationale\": \"[e1] said so\"}\n\
             ]\n```";
-        let report = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "chat", MODE_PROPOSE, text).unwrap();
+        let report = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "chat", MODE_PROPOSE, text, &[]).unwrap();
         assert_eq!(report.duplicates, 2, "one near the pin, one inside the batch");
         assert_eq!(report.written, 1);
     }
@@ -2032,7 +2195,7 @@ mod tests {
             &claimed.mode,
             &fenced(
                 r#"[{"body":"Prefers spaces for indentation","kind":"preference","confidenceBps":9500,"rationale":"[e1] Direct preference"}]"#,
-            ),
+            ), &[],
         )
         .unwrap();
         assert_eq!(report.activated, 0);
@@ -2490,10 +2653,10 @@ mod tests {
         propose_mode(&db);
         insert_chat(&db, "s1", "direct");
         let text = fenced(r#"[{"body":"Keeps the main checkout on main","kind":"fact","confidenceBps":8000,"rationale":"[e1] said so"}]"#);
-        assert_eq!(gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &text).unwrap().written, 1);
+        assert_eq!(gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &text, &[]).unwrap().written, 1);
         let later = Utc::now() + Duration::days(memory_ledger::PROPOSAL_TTL_DAYS + 1);
         assert_eq!(memory_ledger::sweep_stale_proposals(&db, later).unwrap().len(), 1);
-        let again = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &text).unwrap();
+        let again = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &text, &[]).unwrap();
         assert_eq!((again.written, again.duplicates), (1, 0), "an expired proposal never held, so it is not known");
     }
 
@@ -2506,7 +2669,7 @@ mod tests {
             r#"[{"body":"Keeps the main checkout on main","kind":"fact","confidenceBps":8000,"rationale":"[e1] said so"},
                 {"body":"keeps the main checkout on main.","kind":"fact","confidenceBps":8000,"rationale":"[e1] said so"}]"#,
         );
-        let report = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &text).unwrap();
+        let report = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &text, &[]).unwrap();
         assert_eq!((report.written, report.duplicates), (1, 1));
     }
 
@@ -3194,7 +3357,7 @@ mod tests {
             MODE_AUTO_APPLY,
             &fenced(
                 r#"[{"body":"Prefers spaces for indentation","kind":"preference","confidenceBps":9500,"rationale":"[e1] Direct preference"}]"#,
-            ),
+            ), &[],
         )
         .unwrap();
         assert_eq!(first.activated, 0, "current mode downgraded during the run");
@@ -3209,7 +3372,7 @@ mod tests {
             MODE_PROPOSE,
             &fenced(
                 r#"[{"body":"Uses the fish shell","kind":"fact","confidenceBps":9500,"rationale":"[e2] Direct fact"}]"#,
-            ),
+            ), &[],
         )
         .unwrap();
         assert_eq!(second.activated, 0, "claimed mode was never auto");
@@ -3598,6 +3761,156 @@ mod tests {
         let digest = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
         assert!(digest.known.is_empty(), "{}", digest.text);
         assert!(!digest.text.contains("Known memories"), "{}", digest.text);
+    }
+
+    fn ops(json: &str) -> String {
+        fenced(json)
+    }
+
+    fn status_of(db: &Connection, id: &str) -> String {
+        db.query_row("SELECT status FROM memory_records WHERE id=?1", params![id], |row| row.get(0)).unwrap()
+    }
+
+    /// A chat whose user message `e1` can be cited, and a known memory `m1`.
+    fn reconcile_fixture(known_body: &str, pin: bool) -> (tempfile::TempDir, Connection, String) {
+        let (dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        insert_message(&db, "s1", "e1", 1, "user.message", "Actually I now prefer spaces over tabs in Go code.");
+        let id = if pin {
+            memory_ledger::save(&db, known_body, Some("preference"), None).unwrap().id
+        } else {
+            let id = memory_ledger::insert_proposal(&db, ACCOUNT_MEMORY_SCOPE, known_body, "preference", Some(9_000), None, "s1").unwrap().id;
+            memory_ledger::approve(&db, &id).unwrap();
+            id
+        };
+        (dir, db, id)
+    }
+
+    #[test]
+    fn noop_writes_nothing_and_counts_known() {
+        let (_dir, db, id) = reconcile_fixture("Prefers tabs over spaces in Go code", false);
+        let before: i64 = db.query_row("SELECT COUNT(*) FROM memory_records", [], |row| row.get(0)).unwrap();
+        let known = vec![("m1".to_string(), id)];
+        let report = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &ops(r#"[{"op":"noop","target":"m1"},{"op":"noop","target":"m1"}]"#), &known).unwrap();
+        assert_eq!((report.known, report.written), (1, 0), "one target counted once");
+        let after: i64 = db.query_row("SELECT COUNT(*) FROM memory_records", [], |row| row.get(0)).unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn update_lands_as_a_proposal_that_supersedes_on_approval() {
+        let (_dir, db, id) = reconcile_fixture("Prefers tabs over spaces in Go code", false);
+        let known = vec![("m1".to_string(), id.clone())];
+        let report = gate_and_insert(
+            &db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE,
+            &ops(r#"[{"op":"update","target":"m1","body":"Prefers spaces over tabs in Go code","confidenceBps":9500,"rationale":"[e1] Changed preference"}]"#),
+            &known,
+        ).unwrap();
+        assert_eq!((report.updates, report.written, report.queued_for_review), (1, 1, 1));
+        let (new_id, supersedes, kind): (String, String, String) = db
+            .query_row("SELECT id, supersedes, kind FROM memory_records WHERE status='proposed'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap();
+        assert_eq!((supersedes.as_str(), kind.as_str()), (id.as_str(), "preference"), "kind defaults to the target's");
+        assert_eq!(status_of(&db, &id), "active", "the target holds until a person approves");
+        memory_ledger::approve(&db, &new_id).unwrap();
+        assert_eq!(status_of(&db, &new_id), "active");
+        assert_eq!(status_of(&db, &id), "superseded");
+    }
+
+    #[test]
+    fn update_of_a_waiting_proposal_replaces_it_in_the_queue() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        insert_message(&db, "s1", "e1", 1, "user.message", "I now live in Berlin.");
+        let waiting = memory_ledger::insert_proposal(&db, ACCOUNT_MEMORY_SCOPE, "Lives in Pune", "fact", Some(6_000), None, "s1").unwrap().id;
+        let known = vec![("m1".to_string(), waiting.clone())];
+        let report = gate_and_insert(
+            &db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE,
+            &ops(r#"[{"op":"update","target":"m1","body":"Lives in Berlin","rationale":"[e1] Moved"}]"#),
+            &known,
+        ).unwrap();
+        assert_eq!(report.updates, 1);
+        assert_eq!(status_of(&db, &waiting), "superseded", "the stale card leaves the queue");
+        let waiting_now: i64 = db.query_row("SELECT COUNT(*) FROM memory_records WHERE status='proposed'", [], |row| row.get(0)).unwrap();
+        assert_eq!(waiting_now, 1, "the queue did not grow");
+    }
+
+    #[test]
+    fn targets_must_come_from_the_prompt() {
+        let (_dir, db, id) = reconcile_fixture("Prefers tabs over spaces in Go code", false);
+        let known = vec![("m1".to_string(), id.clone())];
+        let raw_id = format!(r#"[{{"op":"noop","target":"{id}"}},{{"op":"update","target":"m7","body":"Prefers spaces","rationale":"[e1] x"}},{{"op":"delete","target":"m1"}}]"#);
+        let report = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &ops(&raw_id), &known).unwrap();
+        assert_eq!((report.invalid, report.known, report.written), (3, 0, 0), "a raw id, an unknown alias and an unknown op");
+        assert_eq!(status_of(&db, &id), "active");
+    }
+
+    #[test]
+    fn a_pin_accepts_only_noop() {
+        let (_dir, db, pin) = reconcile_fixture("Prefers tabs over spaces in Go code", true);
+        let known = vec![("m1".to_string(), pin.clone())];
+        let report = gate_and_insert(
+            &db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE,
+            &ops(r#"[{"op":"update","target":"m1","body":"Prefers spaces over tabs in Go code","rationale":"[e1] Changed"},{"op":"noop","target":"m1"}]"#),
+            &known,
+        ).unwrap();
+        assert_eq!((report.refused, report.known, report.written), (1, 1, 0));
+        assert_eq!(status_of(&db, &pin), "active");
+        let edits: i64 = db.query_row("SELECT COUNT(*) FROM memory_records WHERE supersedes=?1", params![pin], |row| row.get(0)).unwrap();
+        assert_eq!(edits, 0, "pins edited: 0");
+    }
+
+    #[test]
+    fn update_without_a_cited_user_message_is_refused() {
+        let (_dir, db, id) = reconcile_fixture("Prefers tabs over spaces in Go code", false);
+        let known = vec![("m1".to_string(), id)];
+        for rationale in [r#""rationale":"I think so""#, r#""rationale":"[e99] made up""#] {
+            let text = format!(r#"[{{"op":"update","target":"m1","body":"Prefers spaces over tabs in Go code",{rationale}}}]"#);
+            let report = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &ops(&text), &known).unwrap();
+            assert_eq!((report.refused, report.written), (1, 0), "{rationale}");
+        }
+    }
+
+    #[test]
+    fn update_never_auto_applies() {
+        let (_dir, db, id) = reconcile_fixture("Prefers tabs over spaces in Go code", false);
+        auto_apply_mode(&db);
+        let known = vec![("m1".to_string(), id.clone())];
+        let report = gate_and_insert(
+            &db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_AUTO_APPLY,
+            &ops(r#"[{"op":"update","target":"m1","body":"Prefers spaces over tabs in Go code","confidenceBps":10000,"rationale":"[e1] Actually I now prefer spaces over tabs in Go code"}]"#),
+            &known,
+        ).unwrap();
+        assert_eq!((report.activated, report.queued_for_review), (0, 1));
+        assert_eq!(status_of(&db, &id), "active");
+    }
+
+    #[test]
+    fn an_element_without_op_is_an_add() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        insert_message(&db, "s1", "e1", 1, "user.message", "I keep a changelog in every repo.");
+        let report = gate_and_insert(
+            &db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE,
+            &ops(r#"[{"body":"Keeps a changelog in every repo","kind":"preference"},{"op":"add","body":"Writes commit messages in English","kind":"preference"},{"op":"add","body":"x","kind":"preference","target":"m1"}]"#),
+            &[],
+        ).unwrap();
+        assert_eq!((report.written, report.invalid), (2, 1), "an add with a target field is invalid");
+    }
+
+    #[test]
+    fn an_update_that_says_what_its_target_says_is_known() {
+        let (_dir, db, id) = reconcile_fixture("Prefers tabs over spaces in Go code", false);
+        let known = vec![("m1".to_string(), id)];
+        let report = gate_and_insert(
+            &db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE,
+            &ops(r#"[{"op":"update","target":"m1","body":"prefers tabs over spaces in go code","rationale":"[e1] Same"}]"#),
+            &known,
+        ).unwrap();
+        assert_eq!((report.known, report.written), (1, 0));
     }
 
     #[test]

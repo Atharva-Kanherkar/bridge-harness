@@ -101,7 +101,7 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedExtraction) {
 
     let report = {
         let db = core.db.lock().unwrap();
-        memory_extraction::gate_and_insert(&db, &scope_key, &session_id, &mode, &output.text)
+        memory_extraction::gate_and_insert(&db, &scope_key, &session_id, &mode, &output.text, &digest.known)
     };
     match report {
         Ok(report) => {
@@ -111,10 +111,12 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedExtraction) {
                 });
             }
             let detail = format!(
-                "written {} activated {} review {} invalid {} duplicates {} refused {}",
+                "written {} activated {} review {} updates {} known {} invalid {} duplicates {} refused {}",
                 report.written,
                 report.activated,
                 report.queued_for_review,
+                report.updates,
+                report.known,
                 report.invalid,
                 report.duplicates,
                 report.refused
@@ -123,7 +125,7 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedExtraction) {
                 // The watermark lands with the completion, under one lock, so
                 // a failed run is read again and a completed one never is.
                 let db = core.db.lock().unwrap();
-                if let Err(error) = memory_extraction::record_coverage(&db, &run_id, &lease_owner, &digest.through_entry_id, 0) {
+                if let Err(error) = memory_extraction::record_coverage(&db, &run_id, &lease_owner, &digest.through_entry_id, report.known as i64) {
                     eprintln!("[memory] extraction run {run_id} could not record its watermark: {error}");
                 }
             }

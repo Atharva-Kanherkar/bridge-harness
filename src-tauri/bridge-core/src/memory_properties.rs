@@ -121,7 +121,7 @@ fn apply(db: &Connection, op: &Op) -> Result<(), String> {
     let stringify = |error: crate::BridgeError| error.to_string();
     match op {
         Op::Save(body) => memory_ledger::save(db, body, None, None).map(|_| ()).map_err(stringify),
-        Op::Propose(body) => memory_extraction::gate_and_insert(db, ACCOUNT_MEMORY_SCOPE, CHAT, memory_extraction::MODE_PROPOSE, &proposal_text(body))
+        Op::Propose(body) => memory_extraction::gate_and_insert(db, ACCOUNT_MEMORY_SCOPE, CHAT, memory_extraction::MODE_PROPOSE, &proposal_text(body), &[])
             .map(|_| ())
             .map_err(stringify),
         Op::AgentPropose(body) => memory_tools::run(db, CHAT, true, memory_tools::PROPOSE, &json!({"body": body, "kind": "fact", "rationale": "the person said so"}))
@@ -361,7 +361,7 @@ fn the_extraction_gate_survives_any_model_text_and_writes_only_proposals() {
             reset(&db, budget, memory_extraction::MODE_PROPOSE);
             memory_ledger::save(&db, CLAIMS[0], None, None).unwrap();
             let before = row_count(&db);
-            match memory_extraction::gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, CHAT, memory_extraction::MODE_PROPOSE, &text) {
+            match memory_extraction::gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, CHAT, memory_extraction::MODE_PROPOSE, &text, &[]) {
                 Ok(report) => {
                     prop_assert_eq!(report.activated, 0, "review-first never activates");
                     prop_assert_eq!(row_count(&db) - before, report.written as i64);
