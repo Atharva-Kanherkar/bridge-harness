@@ -156,7 +156,7 @@ fn permission_requests_and_questions_are_declined_at_once_and_counted() {
 }
 
 #[test]
-fn a_broken_answer_gets_one_repair_turn() {
+fn a_broken_answer_gets_a_repair_turn() {
     let script = script(vec![
         vec![Step::Events(vec![event("turn.started"), said("m", "I think it is fine, no JSON."), event("turn.completed")])],
         vec![Step::Events(vec![event("turn.started"), said("r", &answer(json!([]))), event("turn.completed")])],
@@ -169,14 +169,42 @@ fn a_broken_answer_gets_one_repair_turn() {
 }
 
 #[test]
-fn an_answer_still_broken_after_the_repair_fails_the_pass() {
+fn a_second_repair_turn_rescues_an_answer_the_first_did_not() {
+    let prose = |id: &str| vec![Step::Events(vec![event("turn.started"), said(id, "Sorry, here is my review in words."), event("turn.completed")])];
+    let script = script(vec![prose("m"), prose("r1"), vec![Step::Events(vec![event("turn.started"), said("r2", &answer(json!([]))), event("turn.completed")])]]);
+    let (result, _) = run(&ScriptedTransport(script.clone()), "codex", &start(Path::new("/tmp")), "go", &CancelToken::new(), Limits::default());
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(script.sent.lock().unwrap().len(), 1 + MAX_REPAIRS);
+}
+
+#[test]
+fn the_review_is_read_from_any_message_of_the_turn() {
+    // The review, then a closing line after it: the closing line is not the
+    // answer.
+    let script = script(vec![vec![Step::Events(vec![
+        event("turn.started"),
+        said("m1", &answer(json!([]))),
+        said("m2", "Let me know if you want more detail."),
+        event("turn.completed"),
+    ])]]);
+    let (result, _) = run(&ScriptedTransport(script.clone()), "codex", &start(Path::new("/tmp")), "go", &CancelToken::new(), Limits::default());
+    assert_eq!(result.unwrap().summary, "Looks good overall.");
+    assert_eq!(script.sent.lock().unwrap().len(), 1, "no repair needed");
+}
+
+#[test]
+fn an_answer_still_broken_after_the_repairs_falls_back_in_plain_words() {
     let broken = || vec![Step::Events(vec![event("turn.started"), said("m", "```json\n{\"summary\": 1}\n```"), event("turn.completed")])];
-    let script = script(vec![broken(), broken(), good_turn()]);
+    let script = script(vec![broken(), broken(), broken(), good_turn()]);
     let (result, _) = run(&ScriptedTransport(script.clone()), "codex", &start(Path::new("/tmp")), "go", &CancelToken::new(), Limits::default());
     let error = result.unwrap_err();
     assert!(matches!(&error, SessionError::Contract(message) if message.contains("does not match the contract")), "{error:?}");
-    assert!(matches!(error.into_step(), StepError::Fatal(message) if message.contains("findings contract")));
-    assert_eq!(script.sent.lock().unwrap().len(), 2, "one repair turn, not more");
+    // Another harness may answer in shape, and the person reads no parser
+    // output.
+    let step = error.into_step();
+    assert_eq!(step, StepError::Harness(UNREADABLE_ANSWER.into()));
+    assert!(!step.message().contains("```") && !step.message().contains("contract"));
+    assert_eq!(script.sent.lock().unwrap().len(), 1 + MAX_REPAIRS, "the repairs are bounded");
     assert_eq!(script.stopped.lock().unwrap().as_slice(), [false]);
 }
 
@@ -223,6 +251,11 @@ fn errors_tell_the_runner_whether_to_retry_or_fall_back() {
     assert!(matches!(SessionError::Provider("Not logged in".into()).into_step(), StepError::Harness(_)));
     assert!(matches!(SessionError::Start("opencode is unavailable".into()).into_step(), StepError::Harness(message) if message.contains("could not start")));
     assert!(matches!(SessionError::Ended.into_step(), StepError::Harness(_)));
+    // The provider's own words stay in the log.
+    let raw = SessionError::Provider("HTTP 500: {\"error\":{\"type\":\"api_error\"}}".into()).into_step();
+    assert_eq!(raw, StepError::Harness("The reviewer stopped because its provider reported an error.".into()));
+    let signed_out = SessionError::Start("claude: Not logged in · Please run /login".into()).into_step();
+    assert_eq!(signed_out, StepError::Harness("The reviewer could not start because it needs you to sign in again.".into()));
     assert!(matches!(SessionError::Deadline(Duration::from_secs(900)).into_step(), StepError::Harness(message) if message.contains("15-minute")));
     assert!(matches!(SessionError::ToolLimit(300).into_step(), StepError::Fatal(_)));
     assert_eq!(SessionError::Cancelled.into_step(), StepError::Cancelled);
@@ -699,15 +732,15 @@ fn a_failed_pass_still_records_what_it_spent() {
             event("turn.completed"),
         ])]
     };
-    let script = script(vec![broken(), broken()]);
+    let script = script(vec![broken(), broken(), broken()]);
     let meter = crate::reviews::steps::UsageMeter::default();
     let request = PassRequest { job: &job, prepared: &prepared, pass_id: "p", harness: "claude", usage: &meter };
     let failed = review_pass_with(&core, &ScriptedTransport(script), request, &CancelToken::new(), Limits::default());
-    assert!(matches!(failed, Err(StepError::Fatal(_))));
+    assert!(matches!(failed, Err(StepError::Harness(_))));
     assert_eq!(
         meter.total(),
-        PassUsage { tokens_in: 200, tokens_out: 20, cost_microusd: 4_000, denied_requests: 0 },
-        "both turns of a failed pass are on its meter"
+        PassUsage { tokens_in: 300, tokens_out: 30, cost_microusd: 6_000, denied_requests: 0 },
+        "every turn of a failed pass is on its meter"
     );
 }
 

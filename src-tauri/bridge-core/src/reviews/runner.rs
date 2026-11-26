@@ -338,7 +338,7 @@ impl Driver {
                 .cloned()
                 .or_else(|| panic.downcast_ref::<&str>().map(|text| text.to_string()))
                 .unwrap_or_else(|| "unknown panic".into());
-            Err(StepError::Fatal(format!("The review stopped unexpectedly: {detail}")))
+            Err(StepError::fatal_logged("The review stopped unexpectedly. Try again.", detail))
         });
         finished.store(true, Ordering::SeqCst);
         if heartbeat.is_some_and(|heartbeat| heartbeat.join().is_err()) {
@@ -681,7 +681,7 @@ impl Driver {
                             harness = next;
                         }
                         None => {
-                            let error = StepError::Fatal(format!("{harness} could not review: {message}"));
+                            let error = StepError::Fatal(format!("{} could not review. {message}", harness_name(&harness)));
                             return Ok(SlotEnd::Failed(harness, message, error));
                         }
                     }
@@ -806,7 +806,7 @@ fn summaries(finished: &[(String, String)], failed: &[(String, String)]) -> Summ
 }
 
 fn fatal(error: BridgeError) -> StepError {
-    StepError::Fatal(error.to_string())
+    StepError::fatal_logged("Bridge couldn't save the review's progress. Try again.", error)
 }
 
 #[cfg(test)]
