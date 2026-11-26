@@ -33,6 +33,10 @@ function result(params: ScreenTimeParams, overrides: Partial<UsageScreenTimeResu
     days: days(params, fill),
     allTime: { humanSeconds: 120 * HOUR, agentSeconds: 400 * HOUR, humanSinceDay: "2026-09-01", agentSinceDay: "2026-07-04" },
     agentHistory: "complete",
+    projects: [],
+    pullRequests: { opened: 0, merged: 0, open: 0, closed: 0, repos: [], recent: [] },
+    hours: Array.from({ length: 24 }, (_, hour) => ({ hour, humanSeconds: 0, agentSeconds: 0 })),
+    harnesses: [],
     ...overrides,
   };
 }
@@ -177,13 +181,13 @@ describe("startPresenceTracking", () => {
     vi.advanceTimersByTime(TICK_MS);
     vi.advanceTimersByTime(FLUSH_MS - TICK_MS);
     await Promise.resolve();
-    expect(send).toHaveBeenCalledWith([first, first + 1]);
+    expect(send).toHaveBeenCalledWith({ minutes: [first, first + 1] });
     window.dispatchEvent(new Event("keydown"));
     vi.advanceTimersByTime(TICK_MS);
     focused = false;
     window.dispatchEvent(new Event("blur"));
     expect(send).toHaveBeenCalledTimes(2);
-    expect(send).toHaveBeenLastCalledWith([first + 1]);
+    expect(send).toHaveBeenLastCalledWith({ minutes: [first + 1] });
     stop();
   });
 
@@ -192,7 +196,7 @@ describe("startPresenceTracking", () => {
     const stop = startPresenceTracking(send);
     visibility = "hidden";
     document.dispatchEvent(new Event("visibilitychange"));
-    expect(send).toHaveBeenCalledWith([minute()]);
+    expect(send).toHaveBeenCalledWith({ minutes: [minute()] });
     vi.advanceTimersByTime(FLUSH_MS * 3);
     await Promise.resolve();
     expect(send).toHaveBeenCalledTimes(1);

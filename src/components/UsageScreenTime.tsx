@@ -11,10 +11,12 @@ import {
 import { LAYOUT_CARD, UsageLoadingState, useScrub } from "./UsageLayoutParts";
 import { Switch } from "./settings/kit";
 import { Button } from "@/components/ui/button";
+import { HarnessesCard, HoursCard, ProjectsCard, PullRequestsCard } from "./UsageScreenTimeBreakdown";
 
 // The Time tab: Screen Time for Bridge. Your time is minutes the window was
 // focused and in use; agent time is minutes your chats spent working, added
-// across chats. Rules are in testing/feat-usage-screen-time.md.
+// across chats. Rules are in testing/feat-usage-screen-time.md; the project,
+// pull request, hour and harness cards in testing/feat-screen-time-breakdown.md.
 
 /** How often the tab asks again while agent history is still being counted. */
 export const COUNTING_POLL_MS = 3_000;
@@ -233,6 +235,14 @@ export function UsageScreenTime({ onError, refreshKey = 0 }: { onError: (message
         </dl>
       </section>
       <DailyChart result={result} range={shownRange} />
+      <div className="grid gap-5 xl:grid-cols-2">
+        <ProjectsCard projects={result.projects} />
+        <PullRequestsCard pullRequests={result.pullRequests} />
+      </div>
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        <HoursCard hours={result.hours} />
+        <HarnessesCard harnesses={result.harnesses} />
+      </div>
       <CumulativeChart result={result} cumulative={summary.cumulative} />
       <p className="text-caption text-muted-foreground">Your time counts whole minutes the Bridge window was in front and in use, pausing after 5 idle minutes. Agent time adds up every chat and worker, so agents can outpace the clock. Both stay on this Mac.</p>
     </div>}

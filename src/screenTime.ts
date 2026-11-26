@@ -1,4 +1,4 @@
-import type { ScreenTimeParams, UsageScreenTimeResult } from "./types";
+import type { PresenceChat, RecordPresenceParams, ScreenTimeParams, UsageScreenTimeResult } from "./types";
 import { makeUsageWindow, resolveTimeZone } from "./usageReport";
 
 // Screen Time in the webview: the tracker that reports the minutes you spend
@@ -43,13 +43,16 @@ export interface PresenceEnvironment {
   focused: () => boolean;
   visible: () => boolean;
   tracking: () => boolean;
-  send: (minutes: number[]) => Promise<unknown>;
+  /** The chat open in the window, or null on any other screen. */
+  chat?: () => string | null;
+  send: (presence: RecordPresenceParams) => Promise<unknown>;
 }
 
-/** Collects the minutes you were active and sends them in batches. DOM-free, so tests drive it with a fake clock. */
+/** Collects the minutes you were active, and the chat open in each, and sends them in batches. DOM-free, so tests drive it with a fake clock. */
 export class PresenceTracker {
   private lastInputAt: number;
-  private readonly pending = new Set<number>();
+  /** Pending minute to the chat open at its last counting tick. */
+  private readonly pending = new Map<number, string | null>();
   private sending = false;
 
   constructor(private readonly env: PresenceEnvironment) {
@@ -70,7 +73,7 @@ export class PresenceTracker {
     }
     const now = this.env.now();
     if (this.env.focused() && this.env.visible() && now - this.lastInputAt < IDLE_MS) {
-      this.pending.add(Math.floor(now / 60_000));
+      this.pending.set(Math.floor(now / 60_000), this.env.chat?.() || null);
       this.trim();
     }
   }
@@ -82,13 +85,14 @@ export class PresenceTracker {
       return;
     }
     if (this.sending || this.pending.size === 0) return;
-    const minutes = this.pendingMinutes();
+    const batch = new Map(this.pending);
     this.pending.clear();
     this.sending = true;
     try {
-      await this.env.send(minutes);
+      await this.env.send(presenceParams(batch));
     } catch {
-      for (const minute of minutes) this.pending.add(minute);
+      // A minute counted again while sending keeps its newer chat.
+      for (const [minute, chat] of batch) if (!this.pending.has(minute)) this.pending.set(minute, chat);
       this.trim();
     } finally {
       this.sending = false;
@@ -96,7 +100,7 @@ export class PresenceTracker {
   }
 
   pendingMinutes(): number[] {
-    return [...this.pending].sort((a, b) => a - b);
+    return [...this.pending.keys()].sort((a, b) => a - b);
   }
 
   private trim(): void {
@@ -105,10 +109,22 @@ export class PresenceTracker {
   }
 }
 
+/** The minutes in order, and per chat the minutes it was open; `chats` only when there are any. */
+export function presenceParams(pending: ReadonlyMap<number, string | null>): RecordPresenceParams {
+  const minutes = [...pending.keys()].sort((a, b) => a - b);
+  const byChat = new Map<string, number[]>();
+  for (const minute of minutes) {
+    const chat = pending.get(minute);
+    if (chat) byChat.set(chat, [...(byChat.get(chat) ?? []), minute]);
+  }
+  const chats: PresenceChat[] = [...byChat].map(([sessionId, chatMinutes]) => ({ sessionId, minutes: chatMinutes }));
+  return chats.length > 0 ? { minutes, chats } : { minutes };
+}
+
 const INPUT_EVENTS = ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"] as const;
 
-/** Wires a tracker to this window. Returns the cleanup. */
-export function startPresenceTracking(send: (minutes: number[]) => Promise<unknown>, target: Window = window): () => void {
+/** Wires a tracker to this window. `chat` names the chat open in it, if any. Returns the cleanup. */
+export function startPresenceTracking(send: (presence: RecordPresenceParams) => Promise<unknown>, target: Window = window, chat?: () => string | null): () => void {
   let tracking = readScreenTimePreferences().track;
   const doc = target.document;
   const tracker = new PresenceTracker({
@@ -116,6 +132,7 @@ export function startPresenceTracking(send: (minutes: number[]) => Promise<unkno
     focused: () => doc.hasFocus(),
     visible: () => doc.visibilityState === "visible",
     tracking: () => tracking,
+    chat,
     send,
   });
   const onInput = () => tracker.input();
