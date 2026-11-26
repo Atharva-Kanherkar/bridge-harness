@@ -26,7 +26,8 @@ import { isTransportError } from "./webDaemon";
 import { useVoiceDictation } from "./useVoiceDictation";
 import { type ComposerAttachment, imageFilesFromClipboard, prepareImage } from "./pasteAttachments";
 import { scrollBehavior } from "./motion";
-import { ComposerDrafts, EMPTY_DRAFT, mergeFailedAttachments, mergeFailedSend, mergeFailedText, restoreFailedTurnAttachments, restoreFailedTurnText, withoutSent, withoutSentAttachments, withoutSentText, type ComposerDraft } from "./composerDrafts";
+import { ComposerDrafts, EMPTY_DRAFT, mergeFailedAttachments, mergeFailedReply, mergeFailedSend, mergeFailedText, restoreFailedTurnAttachments, restoreFailedTurnText, withoutSent, withoutSentAttachments, withoutSentReply, withoutSentText, type ComposerDraft } from "./composerDrafts";
+import { formatReplyPrompt, parseReplyPrompt, replyTargetFor, withReplyEntry, type ReplyTarget } from "./replyTo";
 import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
 import { parseNoteLink } from "./noteLinks";
 import { appendAgentEventBatch } from "./agentEvents";
@@ -447,6 +448,9 @@ function AppContent() {
     if (setup) acceptModelSetup(setup);
   }, [acceptModelSetup]);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  // The earlier agent reply the next message answers. Part of the chat's
+  // draft, so it waits with that chat's words when another chat is opened.
+  const [replyTo, setReplyTo] = useState<ReplyTarget | undefined>();
   // Draft context belongs to its task. It is intentionally not persisted: a
   // reloaded page must be selected again instead of reusing stale DOM evidence.
   const [browserSelections, setBrowserSelections] = useState<BrowserSelectionContext[]>([]);
@@ -465,7 +469,7 @@ function AppContent() {
   const drafts = useRef(new ComposerDrafts()).current;
   const draftOwnerRef = useRef(selectedSessionId);
   const liveDraftRef = useRef<ComposerDraft>(EMPTY_DRAFT);
-  liveDraftRef.current = { text: composer, attachments };
+  liveDraftRef.current = { text: composer, attachments, ...(replyTo ? { replyTo } : {}) };
   useLayoutEffect(() => {
     const previous = draftOwnerRef.current;
     if (previous === selectedSessionId) return;
@@ -474,6 +478,7 @@ function AppContent() {
     const next = selectedSessionId ? drafts.take(selectedSessionId) : EMPTY_DRAFT;
     setComposer(next.text);
     setAttachments(next.attachments);
+    setReplyTo(next.replyTo);
     setComposerSelection(undefined);
     refreshReferences(next.text);
   }, [selectedSessionId]);
@@ -486,6 +491,7 @@ function AppContent() {
     if (draftOwnerRef.current === sessionId) {
       setComposer(text);
       setAttachments([]);
+      setReplyTo(undefined);
       refreshReferences(text);
     } else {
       drafts.put(sessionId, { text, attachments: [] });
@@ -496,6 +502,7 @@ function AppContent() {
     if (draftOwnerRef.current === sessionId) {
       setComposer(current => withoutSentText(current, sent.text));
       setAttachments(current => withoutSentAttachments(current, sent.attachments));
+      if (sent.replyTo) setReplyTo(current => withoutSentReply(current, sent.replyTo));
     } else if (sessionId) {
       drafts.put(sessionId, withoutSent(drafts.peek(sessionId), sent));
     }
@@ -505,6 +512,7 @@ function AppContent() {
     if (draftOwnerRef.current === sessionId) {
       setComposer(current => mergeFailedText(current, failed.text));
       setAttachments(current => mergeFailedAttachments(current, failed.attachments));
+      if (failed.replyTo) setReplyTo(current => mergeFailedReply(current, failed.replyTo));
     } else if (sessionId) {
       drafts.put(sessionId, mergeFailedSend(drafts.peek(sessionId), failed));
     }
@@ -1198,6 +1206,20 @@ function AppContent() {
     setComposer(current => current.trim() ? `${current.trimEnd()}\n${text}` : text);
     composerRef.current?.focus();
   }, [setComposer]);
+  // Reply on an earlier agent message: the composer answers that message
+  // next. One target per chat, so a second Reply replaces the first. Nothing
+  // is sent until the user presses Send.
+  const replyToComposer = useCallback((item: ConversationItem) => {
+    const target = replyTargetFor(item);
+    if (!target) return;
+    setReplyTo(target);
+    composerRef.current?.focus();
+  }, []);
+  // Stable for the transcript's memoized rows: a reply card in a user bubble
+  // jumps back to the message it answers through this.
+  const revealEntryRef = useRef<(entryId: string) => void>(() => {});
+  revealEntryRef.current = revealEntryInConversation;
+  const revealConversationEntry = useCallback((entryId: string) => revealEntryRef.current(entryId), []);
   function revealEntryInConversation(entryId: string) {
     // The conversation sits beside the dock, so reveal scrolls and highlights
     // rather than navigates — the same jump recall search uses. An expanded
@@ -3080,11 +3102,14 @@ function AppContent() {
   /// holds for it: the live stream always, and the forest when it is the open
   /// chat's. The pending bubble for a new send waits for a turn newer than
   /// this, so repeating an earlier message ("yes", "continue") still shows it.
+  /** The chat's durable transcript, when it is the one loaded: rows that carry entry ids. */
+  function durableConversation(sessionId: string): ConversationItem[] {
+    return forest?.sessionId === sessionId && forest.entries?.length
+      ? projectSessionConversationCached(forest.entries, forest.head?.activeEntryId ?? null) : [];
+  }
   function sendWatermark(sessionId: string, text: string): number | undefined {
     const live = reduceConversation(agentEvents.filter(event => event.sessionId === sessionId));
-    const durable: ConversationItem[] = forest?.sessionId === sessionId && forest.entries?.length
-      ? projectSessionConversationCached(forest.entries, forest.head?.activeEntryId ?? null) : [];
-    return userTurnWatermark(text, live, durable);
+    return userTurnWatermark(text, live, durableConversation(sessionId));
   }
   /// The delivery core both composers share: prepare, cold-start if needed,
   /// submit, with optimistic pending bookkeeping. Slash-command handling stays
@@ -3255,6 +3280,21 @@ function AppContent() {
       await reload().catch(value => setError(errorMessage(value)));
       return;
     }
+    // A reply rides in front of the user's words. Only a composer send takes
+    // the chat's reply target, and never a command: `/compact` answers no one.
+    // A resend (Retry, the sign-in retry) already carries its reply in its text.
+    const fromComposer = forcedText === undefined && forcedAttachments === undefined;
+    const sentReply = fromComposer && !submittedText.startsWith("/") ? replyTo : undefined;
+    const resentReply = fromComposer ? null : parseReplyPrompt(submittedText);
+    const promptBody = sentReply ? formatReplyPrompt(withReplyEntry(sentReply, sentReply.entryId ? [] : durableConversation(session.id)), submittedText) : submittedText;
+    // What a send that does not land hands back: the user's own words and the
+    // reply target, never the raw quote.
+    const failedDraft = (sent: string): ComposerDraft => {
+      const parsed = sentReply || resentReply ? parseReplyPrompt(sent) : null;
+      return parsed
+        ? { text: parsed.text, attachments: sentAttachments, replyTo: sentReply ?? parsed.target }
+        : { text: sent, attachments: sentAttachments };
+    };
     const key = crypto.randomUUID();
     let target = session;
     // An imported chat never changes: the message goes to a new chat that
@@ -3277,17 +3317,19 @@ function AppContent() {
     // and they are back in the composer, as if Send had not been pressed.
     const flight = sessionStops.beginSend(target.id, () => {
       setPending(current => current.filter(item => item.key !== key));
-      restoreFailedSend(origin ?? session.id, { text: submittedText, attachments: sentAttachments });
+      restoreFailedSend(origin ?? session.id, failedDraft(promptBody));
     });
-    let retryText = submittedText;
-    if (forcedText === undefined && forcedAttachments === undefined) {
+    let retryText = promptBody;
+    if (fromComposer) {
       setComposer("");
       setAttachments([]);
+      if (sentReply) setReplyTo(current => withoutSentReply(current, sentReply));
     } else {
       // A retry resends a payload its failure already put back in the
       // composer. Take that copy out, and leave anything typed since.
-      setComposer(current => withoutSentText(current, submittedText));
+      setComposer(current => withoutSentText(current, resentReply?.text ?? submittedText));
       setAttachments(current => withoutSentAttachments(current, sentAttachments));
+      if (resentReply) setReplyTo(current => withoutSentReply(current, resentReply.target));
     }
     setSlashIndex(0);
     // The optimistic row lands synchronously, before the first round-trip: the
@@ -3295,7 +3337,7 @@ function AppContent() {
     // durable row the backend persists carries the same attachment data, so a
     // reload replays it identically. If preparation rewrites the text, the
     // same row is updated in place rather than re-added.
-    setPending(current => [...current, { key, sessionId: target.id, text: submittedText, after: sendWatermark(target.id, submittedText), attachments: sentAttachments.map(item => item.dataUri) }]);
+    setPending(current => [...current, { key, sessionId: target.id, text: promptBody, after: sendWatermark(target.id, promptBody), attachments: sentAttachments.map(item => item.dataUri) }]);
     let localOnly = false;
     const validateSelectedPage = async () => {
       const valid = await Promise.all(selectedBrowserContexts.map(context => validateBrowserSelectionPage(context.sessionId, context.tabId, context.navigationId)));
@@ -3309,11 +3351,11 @@ function AppContent() {
       if (flight.cancelled) return;
       if (selectedBrowserContexts.length) await validateSelectedPage();
       if (flight.cancelled) return;
-      const prepared = await bridgeApi.prepareTurn(target.id, serializeBrowserSelections(submittedText, selectedBrowserContexts, target.id));
+      const prepared = await bridgeApi.prepareTurn(target.id, serializeBrowserSelections(promptBody, selectedBrowserContexts, target.id));
       if (flight.cancelled) return;
       const text = prepared.text;
-      retryText = selectedBrowserContexts.length ? submittedText : text;
-      if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text, after: sendWatermark(target.id, text) } : item));
+      retryText = selectedBrowserContexts.length ? promptBody : text;
+      if (text !== promptBody) setPending(current => current.map(item => item.key === key ? { ...item, text, after: sendWatermark(target.id, text) } : item));
       const resolved = text.startsWith("/") ? await bridgeApi.resolveSlashCommand(target.id, text).catch(() => null) : null;
       if (flight.cancelled) return;
       if (resolved?.switchHarness && target.kind === "direct") {
@@ -3357,13 +3399,13 @@ function AppContent() {
         // Stopped mid-submission and refused: not delivered, so not lost.
         if (!flight.withdrawn) {
           setPending(current => current.filter(item => item.key !== key));
-          restoreFailedSend(origin ?? target.id, { text: retryText, attachments: sentAttachments });
+          restoreFailedSend(origin ?? target.id, failedDraft(retryText));
         }
         return;
       }
       // Back where it was typed, never over what was typed since, and never
       // dropped because another chat is on screen now.
-      restoreFailedSend(origin ?? target.id, { text: retryText, attachments: sentAttachments });
+      restoreFailedSend(origin ?? target.id, failedDraft(retryText));
       setPending(current => current.filter(item => item.key !== key));
       const message = errorMessage(e);
       const provider = needsProviderSignIn(target.harness, message);
@@ -3399,8 +3441,11 @@ function AppContent() {
   }, []);
   const editFailedTurn = useCallback((prompt: ConversationItem) => {
     const failed = userPromptPayload(prompt);
-    setComposer(current => restoreFailedTurnText(current, failed.text));
+    // A failed reply comes back as its words and its target, not the raw quote.
+    const reply = parseReplyPrompt(failed.text);
+    setComposer(current => restoreFailedTurnText(current, reply ? reply.text : failed.text));
     setAttachments(current => restoreFailedTurnAttachments(current, failed.attachments));
+    if (reply) setReplyTo(current => mergeFailedReply(current, reply.target));
     composerRef.current?.focus();
   }, [setComposer]);
   // Rethrow without also raising the global corner alert: the approval/question
@@ -3618,6 +3663,10 @@ function AppContent() {
       if (e.key === "Escape") { e.preventDefault(); setSlashDismissed(true); return; }
       if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || (e.key === "Tab" && !e.shiftKey)) { e.preventDefault(); void applySlash(slashMatches[Math.min(slashIndex, slashMatches.length - 1)]); return; }
     }
+    // Esc in an empty composer lets go of the reply, as the banner's ✕ does.
+    // The reply is the nearest layer, so the window's Escape (an expanded
+    // dock, fullscreen) waits for the next press.
+    if (e.key === "Escape" && replyTo && !composer.trim()) { e.preventDefault(); e.stopPropagation(); setReplyTo(undefined); return; }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void sendPrompt(); }
   }
 
@@ -4214,6 +4263,8 @@ function AppContent() {
                    onResolve={resolveApproval}
                    onAnswerQuestion={resolveQuestion}
                    onFollowUp={session.kind === "harness_subagent" ? undefined : followUpToComposer}
+                   onReply={session.kind === "harness_subagent" ? undefined : replyToComposer}
+                   onRevealEntry={revealConversationEntry}
                    onRetryTurn={session.kind === "harness_subagent" ? undefined : retryFailedTurn}
                    onEditTurn={session.kind === "harness_subagent" ? undefined : editFailedTurn}
                    onReviewChanges={session.kind !== "harness_subagent" && hasRepo && workspace ? reviewTurnChanges : undefined}
@@ -4330,6 +4381,9 @@ function AppContent() {
                     browserSelections={browserSelections.filter(context => context.sessionId === session.id)}
                     onRemoveBrowserSelection={id => setBrowserSelections(current => current.filter(context => context.id !== id))}
                     onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
+                    replyTo={replyTo}
+                    onCancelReply={() => { setReplyTo(undefined); composerRef.current?.focus(); }}
+                    onRevealReply={replyTo?.entryId ? () => revealConversationEntry(replyTo.entryId!) : undefined}
                     autocomplete={slashOpen ? {
                       controls: "slash-listbox", activeDescendant: `slash-option-${Math.min(slashIndex, slashMatches.length - 1)}`,
                     } : agentShortcutOpen ? {
