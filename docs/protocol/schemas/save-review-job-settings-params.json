@@ -122,7 +122,7 @@
         },
         "secondOpinion": {
           "default": false,
-          "description": "Whether a review may run on two harnesses at once. Off (the default), a review runs on one.",
+          "description": "Whether the default reviewers (and so auto-review) may be a pair. Off (the default), they are one harness. A review asked for with two harnesses (the Review menu's Second opinion) runs on both either way.",
           "type": "boolean"
         },
         "skipDraftPrs": {
