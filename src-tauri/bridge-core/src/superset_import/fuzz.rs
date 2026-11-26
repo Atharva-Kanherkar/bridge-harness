@@ -187,19 +187,35 @@ fn mutation() -> impl Strategy<Value = Mutation> {
             ("workspaces", "archived_at"),
             ("terminal_agent_bindings", "agent_session_id"),
             ("host_agent_configs", "env_json"),
+            ("host_settings", "default_codex_home"),
+            ("workspace_pull_requests", "workspace_id"),
         ])
         .prop_map(|(table, column)| Mutation::RenameHost(table, column)),
-        proptest::sample::select(vec![("chat_sessions_local", "scope_id"), ("chat_sessions_local", "harness_session_id"), ("chat_journal", "event_json"), ("chat_journal", "epoch")])
+        proptest::sample::select(vec![
+            ("chat_sessions_local", "scope_id"), ("chat_sessions_local", "harness_session_id"), ("chat_sessions_local", "title"),
+            ("chat_journal", "event_json"), ("chat_journal", "epoch"),
+        ])
             .prop_map(|(table, column)| Mutation::RenameChat(table, column)),
         proptest::sample::select(vec!["terminal_agent_bindings", "host_agent_configs", "workspace_tags", "host_settings", "workspaces"]).prop_map(Mutation::DropHost),
         proptest::sample::select(vec!["chat_journal", "chat_sessions_local"]).prop_map(Mutation::DropChat),
-        prop_oneof![Just(store::HOST_NEWEST + 1), Just(store::HOST_OLDEST - 1), Just(store::HOST_NEWEST)].prop_map(Mutation::HostJournal),
-        prop_oneof![Just(store::CHAT_NEWEST + 1), Just(store::CHAT_OLDEST - 1), Just(store::CHAT_NEWEST)].prop_map(Mutation::ChatJournal),
+        prop_oneof![
+            Just(store::HOST_MIGRATIONS.newest_checked + 1), Just(store::HOST_MIGRATIONS.oldest - 1), Just(store::HOST_MIGRATIONS.newest_checked),
+            Just(store::HOST_MIGRATIONS.oldest), Just(i64::MAX),
+        ]
+        .prop_map(Mutation::HostJournal),
+        prop_oneof![
+            Just(store::CHAT_MIGRATIONS.newest_checked + 1), Just(store::CHAT_MIGRATIONS.oldest - 1), Just(store::CHAT_MIGRATIONS.newest_checked),
+            Just(store::CHAT_MIGRATIONS.oldest), Just(i64::MAX),
+        ]
+        .prop_map(Mutation::ChatJournal),
     ]
 }
 
+/// Apply a mutation; a second rename or drop of the same thing does nothing.
 fn apply(fixture: &Fixture, mutation: &Mutation) {
-    let rename = |conn: &Connection, table: &str, column: &str| conn.execute_batch(&format!("ALTER TABLE {table} RENAME COLUMN {column} TO {column}_gone")).unwrap();
+    let rename = |conn: &Connection, table: &str, column: &str| {
+        drop(conn.execute_batch(&format!("ALTER TABLE {table} RENAME COLUMN {column} TO {column}_gone")));
+    };
     let journal = |conn: &Connection, when: i64| {
         conn.execute("DELETE FROM __drizzle_migrations", []).unwrap();
         conn.execute("INSERT INTO __drizzle_migrations(hash, created_at) VALUES('h', ?1)", [when]).unwrap();
@@ -207,8 +223,8 @@ fn apply(fixture: &Fixture, mutation: &Mutation) {
     match mutation {
         Mutation::RenameHost(table, column) => rename(&fixture.host, table, column),
         Mutation::RenameChat(table, column) => rename(fixture.chat_conn(), table, column),
-        Mutation::DropHost(table) => fixture.host.execute_batch(&format!("DROP TABLE {table}")).unwrap(),
-        Mutation::DropChat(table) => fixture.chat_conn().execute_batch(&format!("DROP TABLE {table}")).unwrap(),
+        Mutation::DropHost(table) => fixture.host.execute_batch(&format!("DROP TABLE IF EXISTS {table}")).unwrap(),
+        Mutation::DropChat(table) => fixture.chat_conn().execute_batch(&format!("DROP TABLE IF EXISTS {table}")).unwrap(),
         Mutation::HostJournal(when) => journal(&fixture.host, *when),
         Mutation::ChatJournal(when) => journal(fixture.chat_conn(), *when),
     }
@@ -221,39 +237,38 @@ proptest! {
     #[test]
     fn a_mutated_schema_fails_closed_or_reads_correctly(
         specs in proptest::collection::vec(spec(), 1..5).prop_map(unique),
-        mutation in mutation(),
+        mutations in proptest::collection::vec(mutation(), 1..4),
     ) {
         let dir = tempfile::tempdir().unwrap();
         let fixture = Fixture::newest(dir.path());
         fill(&fixture, &specs, true, 38);
         fixture.binding("t1", "w0", "claude", Some("11111111-1111-4111-8111-111111111111"), None);
-        apply(&fixture, &mutation);
+        for mutation in &mutations {
+            apply(&fixture, mutation);
+        }
         let result = read(&Paths::at(dir.path()));
-        // The independent oracle: what a correct reader must do.
-        let fails = matches!(
-            mutation,
-            Mutation::RenameHost("projects", "repo_path")
-                | Mutation::RenameHost("workspaces", "worktree_path")
-                | Mutation::DropHost("workspaces")
-                | Mutation::RenameChat("chat_sessions_local", "scope_id")
-                | Mutation::DropChat("chat_sessions_local")
-        ) || matches!(mutation, Mutation::HostJournal(when) if when != store::HOST_NEWEST)
-            || matches!(mutation, Mutation::ChatJournal(when) if when != store::CHAT_NEWEST);
-        prop_assert_eq!(result.is_err(), fails, "{:?}", result.as_ref().err());
+        // The independent oracle, asked of SQLite: what a correct reader must do.
+        let fails = !readable(&fixture.host, store::HOST_MIGRATIONS, &[("projects", "id"), ("projects", "repo_path"), ("workspaces", "id"), ("workspaces", "worktree_path")], store::HOST_NEWEST_READS)
+            || !readable(fixture.chat_conn(), store::CHAT_MIGRATIONS, &[("chat_sessions_local", "session_id"), ("chat_sessions_local", "scope_id"), ("chat_sessions_local", "harness")], store::CHAT_NEWEST_READS);
+        prop_assert_eq!(result.is_err(), fails, "{:?} gave {:?}", mutations, result.as_ref().err());
+        if let Err(reason) = &result {
+            prop_assert!(reason.contains("Superset"), "{}", reason);
+        }
+        let mutation = |wanted: &Mutation| mutations.iter().any(|mutation| format!("{mutation:?}") == format!("{wanted:?}"));
         if let Ok(store) = result {
             let org = &store.orgs[0];
             let got: BTreeSet<&str> = org.chats.iter().map(|chat| chat.id.as_str()).collect();
             let expected: BTreeSet<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
             prop_assert_eq!(got, expected);
-            let bindings_read = !matches!(mutation, Mutation::DropHost("terminal_agent_bindings"));
+            let bindings_read = !mutation(&Mutation::DropHost("terminal_agent_bindings"));
             prop_assert_eq!(org.host.bindings.len(), usize::from(bindings_read));
-            if matches!(mutation, Mutation::RenameHost("host_agent_configs", "env_json")) {
+            if mutation(&Mutation::RenameHost("host_agent_configs", "env_json")) {
                 prop_assert!(org.host.configs.iter().all(|config| config.env_names.is_empty()));
             }
-            if matches!(mutation, Mutation::RenameHost("workspaces", "archived_at")) {
+            if mutation(&Mutation::RenameHost("workspaces", "archived_at")) {
                 prop_assert!(org.host.workspaces.values().all(|workspace| !workspace.archived));
             }
-            if matches!(mutation, Mutation::RenameHost("workspaces", "type")) {
+            if mutation(&Mutation::RenameHost("workspaces", "type")) {
                 prop_assert!(org.host.workspaces.values().all(|workspace| workspace.kind == Kind::Worktree), "an old head without types: all worktrees");
             }
             for chat in &org.chats {
@@ -261,6 +276,19 @@ proptest! {
             }
         }
     }
+}
+
+/// Whether a drizzle database must be read: a version no older than the
+/// oldest, the columns always needed, and for a version newer than the
+/// newest checked every column of `newest_reads`.
+fn readable(conn: &Connection, versions: crate::import_sqlite::Versions, needed: &[(&str, &str)], newest_reads: crate::import_sqlite::Reads) -> bool {
+    let has = |table: &str, column: &str| -> bool {
+        conn.query_row(&format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name=?1"), [column], |row| row.get::<_, i64>(0)).unwrap_or(0) > 0
+    };
+    let version: Option<i64> = conn.query_row("SELECT MAX(created_at) FROM __drizzle_migrations", [], |row| row.get(0)).unwrap_or(None);
+    let Some(version) = version.filter(|version| *version >= versions.oldest) else { return false };
+    needed.iter().all(|(table, column)| has(table, column))
+        && (version <= versions.newest_checked || newest_reads.iter().all(|(table, columns)| columns.iter().all(|column| has(table, column))))
 }
 
 fn store_strategy() -> impl Strategy<Value = Store> {
@@ -273,7 +301,7 @@ fn store_strategy() -> impl Strategy<Value = Store> {
         0..8,
     );
     (chats, bindings, any::<bool>()).prop_map(|(chats, bindings, deleted)| {
-        let mut host = Host { version: store::HOST_NEWEST, ..Host::default() };
+        let mut host = Host { version: store::HOST_MIGRATIONS.newest_checked, ..Host::default() };
         host.projects.insert("p1".into(), store::Project { id: "p1".into(), root: PathBuf::from("/code/shop"), name: None, deleted });
         for (index, path) in TREES.iter().enumerate() {
             let kind = match KINDS[index] {
@@ -310,7 +338,7 @@ fn store_strategy() -> impl Strategy<Value = Store> {
                 id,
             })
             .collect();
-        Store { orgs: vec![Organization { id: "o".into(), host_path: PathBuf::from("/h/host/o/host.db"), chat_path: Some(PathBuf::from("/h/host/o/chat.db")), host, chat_version: Some(store::CHAT_NEWEST), chats }] }
+        Store { orgs: vec![Organization { id: "o".into(), host_path: PathBuf::from("/h/host/o/host.db"), chat_path: Some(PathBuf::from("/h/host/o/chat.db")), host, chat_version: Some(store::CHAT_MIGRATIONS.newest_checked), chats }] }
     })
 }
 

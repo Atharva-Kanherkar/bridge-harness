@@ -99,11 +99,15 @@ fn the_gate_fails_closed_on_any_version_or_shape_bridge_does_not_know() {
     let dir = tempfile::tempdir().unwrap();
     let newer = Fixture::new(&dir.path().join("newer"), 181);
     newer.conn.execute("INSERT INTO _sqlx_migrations(version,description,installed_on,success,checksum,execution_time) VALUES(190,'future',1,1,x'00',1)", []).unwrap();
-    assert!(read(&newer.path).unwrap_err().contains("newer than Bridge knows (version 190)"));
+    newer.conn.execute_batch("ALTER TABLE repos RENAME COLUMN root_path TO path").unwrap();
+    assert_eq!(
+        read(&newer.path).unwrap_err(),
+        "Conductor's database is newer than Bridge knows (version 190) and changed what Bridge reads (repos.root_path); update Bridge and try again"
+    );
 
     let older = Fixture::new(&dir.path().join("older"), 80);
     older.conn.execute("DELETE FROM _sqlx_migrations WHERE version >= 75", []).unwrap();
-    assert!(read(&older.path).unwrap_err().contains("older than Bridge knows"));
+    assert_eq!(read(&older.path).unwrap_err(), "Conductor's database is older than Bridge knows (version 74)");
 
     let failed = Fixture::new(&dir.path().join("failed"), 181);
     failed.conn.execute("UPDATE _sqlx_migrations SET success=0 WHERE version=181", []).unwrap();
@@ -193,11 +197,55 @@ fn a_folder_the_database_knows_is_listed_once_with_its_name() {
 }
 
 #[test]
+fn a_newer_database_with_everything_bridge_reads_is_read_and_one_without_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let future = |fixture: &Fixture, version: i64| {
+        fixture.conn.execute("INSERT INTO _sqlx_migrations(version,description,installed_on,success,checksum,execution_time) VALUES(?1,'future',1,1,x'00',1)", [version]).unwrap();
+    };
+    let newest = Fixture::new(&dir.path().join("newest"), MIGRATIONS.newest_checked);
+    let checked = read(&newest.path).unwrap();
+    let newer = Fixture::new(&dir.path().join("newer"), MIGRATIONS.newest_checked);
+    future(&newer, MIGRATIONS.newest_checked + 1);
+    newer.conn.execute_batch("CREATE TABLE future_secrets(token TEXT); ALTER TABLE workspaces ADD COLUMN future TEXT;").unwrap();
+    let store = read(&newer.path).unwrap();
+    assert_eq!(store.version, MIGRATIONS.newest_checked + 1);
+    assert_eq!(Store { version: checked.version, ..store }, checked, "read as the newest checked version is");
+
+    for (table, columns) in NEWEST_READS {
+        for column in *columns {
+            let fixture = Fixture::new(&dir.path().join(format!("{table}-{column}")), MIGRATIONS.newest_checked);
+            future(&fixture, 300);
+            fixture.conn.execute_batch(&format!("PRAGMA foreign_keys=OFF; ALTER TABLE {table} RENAME COLUMN \"{column}\" TO \"{column}_v2\"")).unwrap();
+            let error = read(&fixture.path).unwrap_err();
+            if *table == "_sqlx_migrations" && *column == "version" {
+                assert!(error.contains("no version") || error.contains("Bridge could not"), "{table}.{column}: {error}");
+                continue;
+            }
+            assert!(error.starts_with("Conductor's database is newer than Bridge knows (version 300) and changed what Bridge reads ("), "{table}.{column}: {error}");
+            assert!(error.contains(&format!("{table}.{column}")), "{error}");
+        }
+    }
+}
+
+#[test]
+fn newest_reads_is_exactly_what_the_reader_reads_at_the_newest_checked_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("conductor.db"), MIGRATIONS.newest_checked);
+    STATEMENTS.with(|statements| statements.borrow_mut().clear());
+    read(&fixture.path).unwrap();
+    let statements = STATEMENTS.with(|statements| statements.borrow().clone());
+    let allowed = crate::import_sqlite::Allowed { tool: "Conductor", tables: ALLOWED_TABLES };
+    crate::import_sqlite::assert_reads_match(&allowed, &fixture.conn, NEWEST_READS, &statements);
+    assert_eq!(MIGRATIONS.newest_checked, *VERSIONS.last().unwrap());
+}
+
+#[test]
 fn a_database_bridge_cannot_read_falls_back_to_folders_and_says_why() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path();
     let fixture = store(home, 181);
     fixture.conn.execute("INSERT INTO _sqlx_migrations(version,description,installed_on,success,checksum,execution_time) VALUES(200,'future',1,1,x'00',1)", []).unwrap();
+    fixture.conn.execute_batch("ALTER TABLE workspaces RENAME COLUMN directory_name TO folder").unwrap();
     std::fs::create_dir_all(home.join("conductor/workspaces/app/tokyo")).unwrap();
 
     let discovery = discover(&paths(home));

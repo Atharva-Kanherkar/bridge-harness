@@ -5,7 +5,7 @@
 //! Both are drizzle databases: the version is the newest migration's
 //! journal time in `__drizzle_migrations.created_at`.
 
-use crate::import_sqlite::{int, text, Allowed, Row};
+use crate::import_sqlite::{int, missing_reason, text, Allowed, Gate, Reads, Row, Versions};
 use crate::import_worktrees::Scripts;
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
@@ -13,13 +13,32 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-/// The host database migrations Bridge reads: 0000 to 0038
-/// (`superset-sh/superset@17bbe650`).
-pub const HOST_OLDEST: i64 = 1_773_188_543_980;
-pub const HOST_NEWEST: i64 = 1_792_467_855_578;
-/// The chat database migrations Bridge reads: 0000 to 0005.
-pub const CHAT_OLDEST: i64 = 1_785_962_456_515;
-pub const CHAT_NEWEST: i64 = 1_794_194_559_956;
+/// The host database migrations Bridge reads: from 0000, checked up to
+/// 0038 (`superset-sh/superset@17bbe650`). A newer database is read while
+/// it has all of [`HOST_NEWEST_READS`].
+pub const HOST_MIGRATIONS: Versions = Versions { oldest: 1_773_188_543_980, newest_checked: 1_792_467_855_578 };
+/// The chat database migrations Bridge reads: from 0000, checked up to
+/// 0005. A newer database is read while it has all of [`CHAT_NEWEST_READS`].
+pub const CHAT_MIGRATIONS: Versions = Versions { oldest: 1_785_962_456_515, newest_checked: 1_794_194_559_956 };
+
+/// Every column Bridge reads from each database at its newest checked
+/// version. A newer database without one of them changed what Bridge reads,
+/// and is refused. (`host_agent_configs.env_json` is listed by key only.)
+pub const HOST_NEWEST_READS: Reads = &[
+    ("__drizzle_migrations", &["created_at"]),
+    ("projects", &["id", "repo_path", "name", "deleted_at"]),
+    ("workspaces", &["id", "project_id", "worktree_path", "branch", "name", "type", "archived_at"]),
+    ("terminal_agent_bindings", &["terminal_id", "workspace_id", "agent_id", "agent_session_id", "transcript_path"]),
+    ("host_agent_configs", &["id", "preset_id", "label", "command", "args_json", "env_json"]),
+    ("workspace_tags", &["workspace_id"]),
+    ("workspace_pull_requests", &["workspace_id"]),
+    ("host_settings", &["default_claude_config_dir", "default_codex_home"]),
+];
+pub const CHAT_NEWEST_READS: Reads = &[
+    ("__drizzle_migrations", &["created_at"]),
+    ("chat_sessions_local", &["session_id", "scope_id", "harness", "harness_session_id", "epoch", "title", "updated_at"]),
+    ("chat_journal", &["session_id", "epoch", "seq", "event_json"]),
+];
 
 pub const HOST_DB: &str = "host.db";
 pub const CHAT_DB: &str = "chat.db";
@@ -188,13 +207,13 @@ fn fail(what: &str) -> impl Fn(rusqlite::Error) -> String + '_ {
     move |error| format!("Bridge could not read Superset's {what}: {error}")
 }
 
-fn has_all(allowed: &Allowed, conn: &Connection, table: &str, needed: &[&str], what: &str) -> Result<bool, String> {
-    let present = allowed.columns(conn, table).map_err(fail(what))?;
-    Ok(needed.iter().all(|column| present.contains(*column)))
+/// The database `what` names, for the person.
+fn database(what: &str) -> String {
+    format!("Superset's {} database", if what == "chats" { "chat" } else { "workspace" })
 }
 
-/// The newest migration a drizzle database applied, gated to `range`.
-fn version(allowed: &Allowed, conn: &Connection, what: &str, oldest: i64, newest: i64) -> Result<i64, String> {
+/// The newest migration a drizzle database applied, and where it falls.
+fn version(allowed: &Allowed, conn: &Connection, what: &str, versions: Versions) -> Result<(i64, Gate), String> {
     let version = allowed
         .select(conn, "__drizzle_migrations", &["created_at"])
         .map_err(fail(what))?
@@ -202,13 +221,18 @@ fn version(allowed: &Allowed, conn: &Connection, what: &str, oldest: i64, newest
         .filter_map(|row| int(row, "created_at"))
         .max()
         .ok_or_else(|| format!("Superset's {what} has no version Bridge can read"))?;
-    if version > newest {
-        return Err(format!("Superset's {what} is newer than Bridge knows (version {version}); update Bridge and try again"));
+    Ok((version, versions.gate(&database(what), version)?))
+}
+
+/// Refuse a database without what Bridge needs; for a newer one, without
+/// any column of `newest_reads`.
+fn require(allowed: &Allowed, conn: &Connection, what: &str, (version, gate): (i64, Gate), needed: Reads, newest_reads: Reads) -> Result<(), String> {
+    let missing = allowed.missing(conn, if gate == Gate::Newer { newest_reads } else { needed }).map_err(fail(what))?;
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(missing_reason(&database(what), version, gate, &missing))
     }
-    if version < oldest {
-        return Err(format!("Superset's {what} is older than Bridge knows (version {version})"));
-    }
-    Ok(version)
 }
 
 fn json(row: &Row, column: &str) -> Value {
@@ -222,12 +246,9 @@ fn absolute(path: Option<String>) -> Option<PathBuf> {
 /// Read one organization's host database, or say why not.
 pub fn read_host(conn: &Connection) -> Result<Host, String> {
     let what = "workspaces";
-    let version = version(&HOST, conn, what, HOST_OLDEST, HOST_NEWEST)?;
-    if !has_all(&HOST, conn, "projects", &["id", "repo_path"], what)?
-        || !has_all(&HOST, conn, "workspaces", &["id", "worktree_path"], what)?
-    {
-        return Err(format!("Superset's workspaces are missing what Bridge reads (version {version})"));
-    }
+    let gated = version(&HOST, conn, what, HOST_MIGRATIONS)?;
+    require(&HOST, conn, what, gated, &[("projects", &["id", "repo_path"]), ("workspaces", &["id", "worktree_path"])], HOST_NEWEST_READS)?;
+    let version = gated.0;
     let mut host = Host { version, ..Host::default() };
     for row in HOST.select(conn, "projects", &["id", "repo_path", "name", "deleted_at"]).map_err(fail(what))? {
         let (Some(id), Some(root)) = (text(&row, "id").and_then(|id| plain_id(&id)), absolute(text(&row, "repo_path"))) else { continue };
@@ -290,10 +311,9 @@ pub fn read_host(conn: &Connection) -> Result<Host, String> {
 /// Read one organization's chats, or say why not.
 pub fn read_chats(conn: &Connection) -> Result<(i64, Vec<Chat>), String> {
     let what = "chats";
-    let version = version(&CHATS, conn, what, CHAT_OLDEST, CHAT_NEWEST)?;
-    if !has_all(&CHATS, conn, "chat_sessions_local", &["session_id", "scope_id", "harness"], what)? {
-        return Err(format!("Superset's chats are missing what Bridge reads (version {version})"));
-    }
+    let gated = version(&CHATS, conn, what, CHAT_MIGRATIONS)?;
+    require(&CHATS, conn, what, gated, &[("chat_sessions_local", &["session_id", "scope_id", "harness"])], CHAT_NEWEST_READS)?;
+    let version = gated.0;
     let wanted = ["session_id", "scope_id", "harness", "harness_session_id", "epoch", "title", "updated_at"];
     let mut out = Vec::new();
     for row in CHATS.select_where(conn, "chat_sessions_local", &wanted, Some("1 ORDER BY session_id"), &[]).map_err(fail(what))? {

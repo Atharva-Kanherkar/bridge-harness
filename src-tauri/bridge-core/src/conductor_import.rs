@@ -11,11 +11,13 @@
 //! - **Path A** always runs. The workspaces are the git worktrees under
 //!   `~/conductor/workspaces/<repo>/`, and under `<repo>/.conductor/` for the
 //!   repositories it knows. Each is named by its folder.
-//! - **Path B** runs when `conductor.db` is a version Bridge knows. It reads
-//!   names, archived state and scripts from Conductor's database, opened
-//!   read-only. Only named columns of [`ALLOWED_TABLES`] are queried, never
-//!   `env_vars`, `settings` or a message table. Any other version, or a
-//!   database that cannot be read, falls back to Path A with a note.
+//! - **Path B** runs when `conductor.db` is a version Bridge reads: from the
+//!   oldest to the newest checked, or newer with every column of
+//!   [`NEWEST_READS`]. It reads names, archived state and scripts from
+//!   Conductor's database, opened read-only. Only named columns of
+//!   [`ALLOWED_TABLES`] are queried, never `env_vars`, `settings` or a
+//!   message table. Any other version, or a database that cannot be read,
+//!   falls back to Path A with a note.
 
 use crate::import_worktrees::{self, Candidate, Scripts};
 use rusqlite::Connection;
@@ -24,10 +26,25 @@ use std::path::{Path, PathBuf};
 
 /// The import id the Import page and the job use.
 pub const PROVIDER: &str = "conductor";
-/// The oldest and newest `_sqlx_migrations` versions Bridge reads. 181 is
-/// Conductor 0.97.0; 80 is the oldest its rollbacks rebuild.
-pub const OLDEST_MIGRATION: i64 = 80;
-pub const NEWEST_MIGRATION: i64 = 181;
+/// The `_sqlx_migrations` versions Bridge reads. 80 is the oldest
+/// Conductor's rollbacks rebuild; 181 is Conductor 0.97.0, the newest Bridge
+/// was checked against. A newer database is read while it has all of
+/// [`NEWEST_READS`].
+pub const MIGRATIONS: Versions = Versions { oldest: 80, newest_checked: 181 };
+
+/// Every column Bridge reads at [`MIGRATIONS`]`.newest_checked` (the
+/// project era: workspaces name a project, not a repository).
+pub const NEWEST_READS: Reads = &[
+    ("_sqlx_migrations", &["version", "success"]),
+    ("repos", &["id", "name", "root_path", "storage_version", "setup_script", "run_script", "run_script_mode", "archive_script"]),
+    ("project_repositories", &["project_id", "repository_id", "position"]),
+    ("workspace_checkouts", &["workspace_id", "repository_id", "path", "position"]),
+    (
+        "workspaces",
+        &["local_id", "id", "project_id", "directory_name", "workspace_name", "branch", "state", "workspace_path", "DEPRECATED_archived"],
+    ),
+    ("sessions", &["workspace_id", "agent_type"]),
+];
 
 /// The only tables Bridge reads from Conductor's database.
 pub const ALLOWED_TABLES: &[&str] = &[
@@ -130,7 +147,7 @@ pub struct Store {
 
 #[cfg(test)]
 pub(crate) use crate::import_sqlite::STATEMENTS;
-use crate::import_sqlite::{int, text, Allowed, Cell};
+use crate::import_sqlite::{int, missing_reason, text, Allowed, Cell, Gate, Reads, Versions};
 
 const ALLOWED: Allowed = Allowed { tool: "Conductor", tables: ALLOWED_TABLES };
 
@@ -156,9 +173,10 @@ fn closed(reason: impl Into<String>) -> String {
     reason.into()
 }
 
-/// Read `conductor.db`, or say why not. Fails closed: any version outside
-/// [`OLDEST_MIGRATION`]..=[`NEWEST_MIGRATION`], any missing column Bridge
-/// needs, or any read error returns the reason instead of a partial store.
+/// Read `conductor.db`, or say why not. Fails closed: a version older than
+/// [`MIGRATIONS`], a missing column Bridge needs (for a version newer than
+/// the newest checked: any column of [`NEWEST_READS`]), or any read error
+/// returns the reason instead of a partial store.
 pub fn read(path: &Path) -> Result<Store, String> {
     let conn = open(path).map_err(|error| closed(format!("Bridge could not open Conductor's database: {error}")))?;
     read_from(&conn)
@@ -173,12 +191,8 @@ fn read_from(conn: &Connection) -> Result<Store, String> {
         .filter_map(|row| int(row, "version"))
         .max()
         .ok_or_else(|| closed("Conductor's database has no version Bridge can read"))?;
-    if version > NEWEST_MIGRATION {
-        return Err(closed(format!("Conductor's database is newer than Bridge knows (version {version})")));
-    }
-    if version < OLDEST_MIGRATION {
-        return Err(closed(format!("Conductor's database is older than Bridge knows (version {version})")));
-    }
+    let what = "Conductor's database";
+    let gate = MIGRATIONS.gate(what, version).map_err(closed)?;
     let workspace_columns = columns(conn, "workspaces").map_err(fail)?;
     let repo_columns = columns(conn, "repos").map_err(fail)?;
     let has = |set: &HashSet<String>, column: &str| set.contains(column);
@@ -186,8 +200,9 @@ fn read_from(conn: &Connection) -> Result<Store, String> {
         && (has(&workspace_columns, "local_id") || has(&workspace_columns, "id"))
         && (has(&workspace_columns, "repository_id") || has(&workspace_columns, "project_id"))
         && ["id", "name", "root_path"].iter().all(|column| has(&repo_columns, column));
-    if !needed {
-        return Err(closed(format!("Conductor's database is missing what Bridge reads (version {version})")));
+    let newer_missing = if gate == Gate::Newer { ALLOWED.missing(conn, NEWEST_READS).map_err(fail)? } else { Vec::new() };
+    if !needed || !newer_missing.is_empty() {
+        return Err(closed(missing_reason(what, version, gate, &newer_missing)));
     }
     let project_era = !has(&workspace_columns, "repository_id");
     let mut store = Store { version, ..Store::default() };

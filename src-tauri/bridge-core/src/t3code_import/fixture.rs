@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 pub const CANARY: &str = "CANARY-t3code-secret";
 
 /// The real schema heads there are fixtures for, oldest first.
-pub const VERSIONS: &[i64] = &[5, 17, 23, 36, 43, 48, 54, 55, 63, 76, 87, 95, 102];
+pub const VERSIONS: &[i64] = &[5, 17, 23, 36, 43, 48, 54, 55, 63, 76, 87, 95, 102, 119];
 
 /// A text value.
 pub fn t(value: impl Into<String>) -> Value {
@@ -85,6 +85,15 @@ impl Fixture {
         for table in ["auth_sessions", "auth_pairing_links", "scheduled_tasks", "peer_environment_links"] {
             fixture.fill(table, &[], CANARY);
         }
+        // Workflow tokens and payloads (110 on): every column a canary.
+        for table in ["workflow_hooks", "workflow_waits", "workflow_mail", "workflow_store", "issue_tracker_accounts"] {
+            let columns = fixture.columns(table);
+            let values: Vec<(&str, Value)> = columns
+                .iter()
+                .map(|(name, kind, ..)| (name.as_str(), if kind.to_ascii_uppercase().contains("INT") { Value::Integer(0) } else { t(CANARY) }))
+                .collect();
+            fixture.fill(table, &values, CANARY);
+        }
         fixture
     }
 
@@ -102,6 +111,10 @@ impl Fixture {
             .unwrap()
             .map(Result::unwrap)
             .collect()
+    }
+
+    pub fn has_table(&self, table: &str) -> bool {
+        !self.columns(table).is_empty()
     }
 
     pub fn has(&self, table: &str, column: &str) -> bool {

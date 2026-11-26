@@ -8,17 +8,18 @@
 //! `state.sqlite`). A thread upgraded from v1 keeps its id, so its native
 //! session is still found in `provider_session_runtime`.
 
-use crate::import_sqlite::{int, text, Allowed, Row};
+use crate::import_sqlite::{int, missing_reason, text, Allowed, Gate, Reads, Row, Versions};
 use crate::import_worktrees::Scripts;
 use rusqlite::Connection;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
-/// The oldest and newest migration ids Bridge reads. 5 creates the thread
-/// tables; 102 is T3 Code's head at `pingdotgg/t3code@ccc1feb15`.
-pub const OLDEST_MIGRATION: i64 = 5;
-pub const NEWEST_MIGRATION: i64 = 102;
+/// The migration ids Bridge reads. 5 creates the thread tables; 119 is
+/// T3 Code's head at `pingdotgg/t3code@d5d5c17ec`, the newest Bridge was
+/// checked against. A newer database is read while it has all of
+/// [`NEWEST_READS`].
+pub const MIGRATIONS: Versions = Versions { oldest: 5, newest_checked: 119 };
 /// The first migration of the v2 era.
 pub const FIRST_V2_MIGRATION: i64 = 55;
 
@@ -36,7 +37,9 @@ pub const ALLOWED_TABLES: &[&str] = &[
 ];
 
 /// Tables that hold credentials, webhooks, links to other machines or raw
-/// event logs. Never read.
+/// event logs. Never read. (From 110, `workflow_hooks` and `workflow_waits`
+/// hold webhook and wait tokens; `workflow_mail` and `workflow_store` hold
+/// whatever a workflow passed along.)
 pub const DENIED_TABLES: &[&str] = &[
     "auth_pairing_links",
     "auth_sessions",
@@ -56,7 +59,33 @@ pub const DENIED_TABLES: &[&str] = &[
     "orchestration_v2_command_receipts",
     "orchestration_v2_effect_outbox",
     "checkpoint_diff_blobs",
+    "issue_tracker_accounts",
+    "workflow_hooks",
+    "workflow_waits",
+    "workflow_mail",
+    "workflow_store",
 ];
+
+/// Every column Bridge reads at [`MIGRATIONS`]`.newest_checked`. A newer
+/// database without one of them changed what Bridge reads, and is refused.
+pub const NEWEST_READS: Reads = &[
+    ("effect_sql_migrations", &["migration_id"]),
+    ("projection_projects", &["project_id", "title", "workspace_root", "scripts_json", "deleted_at", "archived_at"]),
+    ("provider_session_runtime", &["thread_id", "provider_name", "resume_cursor_json"]),
+    ("projection_thread_messages", &["thread_id", "message_id", "role", "text", "is_streaming", "created_at"]),
+    ("orchestration_v2_projection_provider_threads", &["provider_thread_id", "thread_id", "driver", "updated_at", "payload_json"]),
+    ("orchestration_v2_legacy_imports", &["thread_id", "transcript_imported_at"]),
+    (
+        "orchestration_v2_projection_threads",
+        &[
+            "thread_id", "project_id", "title", "default_provider", "active_provider_thread_id", "created_at", "updated_at",
+            "archived_at", "deleted_at", "payload_json",
+        ],
+    ),
+    ("orchestration_v2_projection_messages", &["thread_id", "message_id", "role", "streaming", "created_at", "payload_json"]),
+];
+
+const WHAT: &str = "T3 Code's database";
 
 const ALLOWED: Allowed = Allowed { tool: "T3 Code", tables: ALLOWED_TABLES };
 
@@ -209,9 +238,10 @@ fn fail(error: rusqlite::Error) -> String {
     format!("Bridge could not read T3 Code's database: {error}")
 }
 
-/// Read T3 Code's database, or say why not. Fails closed: a version outside
-/// [`OLDEST_MIGRATION`]..=[`NEWEST_MIGRATION`], a missing column Bridge
-/// needs, or any read error returns the reason instead of a partial store.
+/// Read T3 Code's database, or say why not. Fails closed: a version older
+/// than [`MIGRATIONS`], a missing column Bridge needs (for a version newer
+/// than the newest checked: any column of [`NEWEST_READS`]), or any read
+/// error returns the reason instead of a partial store.
 pub fn read(conn: &Connection) -> Result<Store, String> {
     let version = ALLOWED
         .select(conn, "effect_sql_migrations", &["migration_id"])
@@ -220,23 +250,22 @@ pub fn read(conn: &Connection) -> Result<Store, String> {
         .filter_map(|row| int(row, "migration_id"))
         .max()
         .ok_or_else(|| "T3 Code's database has no version Bridge can read".to_owned())?;
-    if version > NEWEST_MIGRATION {
-        return Err(format!("T3 Code's database is newer than Bridge knows (version {version}); update Bridge and try again"));
-    }
-    if version < OLDEST_MIGRATION {
-        return Err(format!("T3 Code's database is older than Bridge knows (version {version})"));
-    }
-    let has_all = |table: &str, needed: &[&str]| -> Result<bool, String> {
-        let present = ALLOWED.columns(conn, table).map_err(fail)?;
-        Ok(needed.iter().all(|column| present.contains(*column)))
-    };
+    let gate = MIGRATIONS.gate(WHAT, version)?;
     let era = if version >= FIRST_V2_MIGRATION { Era::V2 } else { Era::V1 };
-    let threads_ok = match era {
-        Era::V1 => has_all("projection_threads", &["thread_id", "project_id", "title", "deleted_at"])?,
-        Era::V2 => has_all("orchestration_v2_projection_threads", &["thread_id", "project_id", "title", "deleted_at", "payload_json"])?,
+    let needed: Reads = match (gate, era) {
+        (Gate::Newer, _) => NEWEST_READS,
+        (Gate::Checked, Era::V1) => &[
+            ("projection_threads", &["thread_id", "project_id", "title", "deleted_at"]),
+            ("projection_projects", &["project_id", "workspace_root"]),
+        ],
+        (Gate::Checked, Era::V2) => &[
+            ("orchestration_v2_projection_threads", &["thread_id", "project_id", "title", "deleted_at", "payload_json"]),
+            ("projection_projects", &["project_id", "workspace_root"]),
+        ],
     };
-    if !threads_ok || !has_all("projection_projects", &["project_id", "workspace_root"])? {
-        return Err(format!("T3 Code's database is missing what Bridge reads (version {version})"));
+    let missing = ALLOWED.missing(conn, needed).map_err(fail)?;
+    if !missing.is_empty() {
+        return Err(missing_reason(WHAT, version, gate, &missing));
     }
     let projects = read_projects(conn)?;
     let cursors = read_cursors(conn)?;

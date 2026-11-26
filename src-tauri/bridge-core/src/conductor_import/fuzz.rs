@@ -275,9 +275,15 @@ fn mutation() -> impl Strategy<Value = Mutation> {
         proptest::sample::select(vec![
             ("workspaces", "directory_name"), ("workspaces", "branch"), ("workspaces", "state"), ("workspaces", "workspace_name"),
             ("workspaces", "workspace_path"), ("repos", "root_path"), ("repos", "name"), ("repos", "storage_version"), ("repos", "setup_script"),
+            ("workspaces", "DEPRECATED_archived"), ("project_repositories", "position"), ("workspace_checkouts", "path"), ("sessions", "agent_type"),
+            ("repos", "run_script_mode"),
         ]).prop_map(|(table, column)| Mutation::RenameColumn(table, column)),
         proptest::sample::select(vec!["workspaces", "repos", "sessions"]).prop_map(Mutation::AddColumn),
-        prop_oneof![Just(i64::MIN), Just(-1i64), Just(0i64), 1i64..400, Just(i64::MAX)].prop_map(Mutation::Version),
+        prop_oneof![
+            Just(i64::MIN), Just(-1i64), Just(0i64), 1i64..400, Just(MIGRATIONS.newest_checked), Just(MIGRATIONS.newest_checked + 1),
+            Just(i64::MAX),
+        ]
+        .prop_map(Mutation::Version),
         Just(Mutation::ClearMigrations),
         Just(Mutation::FailMigrations),
         Just(Mutation::WrongTypes),
@@ -327,13 +333,14 @@ proptest! {
             prop_assert!(discovery.candidates.iter().all(|candidate| candidate.title.is_none()), "and brings folders only");
         }
         if let Ok(store) = &read {
-            prop_assert!((OLDEST_MIGRATION..=NEWEST_MIGRATION).contains(&store.version));
+            prop_assert!(store.version >= MIGRATIONS.oldest);
         }
     }
 }
 
-/// Whether a database has everything the reader needs at a version it knows,
-/// asked of SQLite directly rather than through the reader.
+/// Whether a database has everything the reader needs at a version it
+/// reads (for one newer than the newest checked: every column it reads
+/// there), asked of SQLite directly rather than through the reader.
 fn readable(conn: &Connection) -> bool {
     let column = |table: &str, column: &str| -> bool {
         conn.query_row(&format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name=?1"), [column], |row| row.get::<_, i64>(0)).unwrap_or(0) > 0
@@ -344,7 +351,11 @@ fn readable(conn: &Connection) -> bool {
     REQUIRED.iter().all(|(table, name)| column(table, name))
         && (column("workspaces", "local_id") || column("workspaces", "id"))
         && (column("workspaces", "repository_id") || column("workspaces", "project_id"))
-        && version.is_some_and(|version| (OLDEST_MIGRATION..=NEWEST_MIGRATION).contains(&version))
+        && version.is_some_and(|version| {
+            version >= MIGRATIONS.oldest
+                && (version <= MIGRATIONS.newest_checked
+                    || NEWEST_READS.iter().all(|(table, columns)| columns.iter().all(|name| column(table, name))))
+        })
 }
 
 /// What a folder in a filesystem layout is.
