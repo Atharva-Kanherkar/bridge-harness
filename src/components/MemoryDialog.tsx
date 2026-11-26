@@ -829,10 +829,10 @@ function ShowMore({ remaining, loading, disabled, onClick }: { remaining: number
   >Show <span className="tabular-nums">{Math.min(MEMORY_PAGE_SIZE, Math.max(remaining, 1))}</span> more</Button>;
 }
 
-const PROPOSAL_TTL_OPTIONS = [3, 7, 14, 30].map(days => ({ value: String(days), label: `Proposals expire after ${days} days` }));
+const PROPOSAL_TTL_OPTIONS = [3, 7, 14, 30].map(days => ({ value: String(days), label: `Expire after ${days} days` }));
 const RETIRE_OPTIONS = [
-  ...[30, 90, 180].map(days => ({ value: String(days), label: `Retire after ${days} days unused` })),
-  { value: "never", label: "Never retire memories" },
+  ...[30, 90, 180].map(days => ({ value: String(days), label: `Retire after ${days} days` })),
+  { value: "never", label: "Never retire" },
 ];
 
 /** One line for a settled run: what it did, or why it did not. */

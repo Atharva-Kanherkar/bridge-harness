@@ -876,7 +876,7 @@ function mockRetentionSettings(): MemoryRetentionSettings {
     scopeKey: "account:local",
     proposalTtlDays: mockRetention.proposalTtlDays,
     ...(mockRetention.retireUnusedAfterDays ? { retireUnusedAfterDays: mockRetention.retireUnusedAfterDays } : {}),
-    maxProposals: 100,
+    maxProposals: 200,
     maxActive: mockMemoryMaxRecords,
     heldActive: mockMemoryRecords.filter(item => item.status === "active").length,
     heldProposals: mockMemoryRecords.filter(item => item.status === "proposed").length,

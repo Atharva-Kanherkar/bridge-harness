@@ -947,9 +947,9 @@ describe("MemoryDialog retention", () => {
     mount();
     await flush();
     click(tab("Review"));
-    await choose("Proposals expire after", "Proposals expire after 3 days");
+    await choose("Proposals expire after", "Expire after 3 days");
     expect(bridgeApi.setRetentionSettings).toHaveBeenLastCalledWith(3, 90);
-    await choose("Retire unused memories after", "Never retire memories");
+    await choose("Retire unused memories after", "Never retire");
     expect(bridgeApi.setRetentionSettings).toHaveBeenLastCalledWith(3, null);
     expect(container.textContent).toContain("within 3 days expire");
   });
