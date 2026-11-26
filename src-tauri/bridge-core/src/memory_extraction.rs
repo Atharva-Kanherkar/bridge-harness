@@ -1621,7 +1621,7 @@ fn eligible_for_auto_apply(
     Ok(true)
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExtractionReport {
     pub written: usize,
     pub activated: usize,

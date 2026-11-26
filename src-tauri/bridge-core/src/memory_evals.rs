@@ -10,6 +10,7 @@
 //!
 //! ```text
 //! BRIDGE_MEMORY_EVAL=1 cargo test -p bridge-core --lib memory_evals::live_extraction -- --ignored --nocapture
+//! BRIDGE_MEMORY_EVAL=1 cargo test -p bridge-core --lib memory_evals::live_reconcile -- --ignored --nocapture
 //! BRIDGE_MEMORY_TOOLS_EVAL=1 cargo test -p bridge-core --lib memory_evals::live_tools -- --ignored --nocapture
 //! ```
 //!
@@ -331,6 +332,169 @@ fn extraction_cases_reach_the_digest_only_within_scope() {
             assert_eq!(digest.contains(&event.summary), scoped, "{}: {}", case.name, event.summary);
         }
     }
+}
+
+const RECONCILE_CASES: &str = include_str!("../../../testing/evals/memory-extraction/reconcile.json");
+
+#[derive(Deserialize)]
+struct ReconcileFile {
+    cases: Vec<ReconcileCase>,
+}
+
+#[derive(Deserialize)]
+struct ReconcileCase {
+    name: String,
+    known: Vec<KnownRecord>,
+    messages: Vec<EvalMessage>,
+    expect: ReconcileExpectation,
+}
+
+#[derive(Deserialize)]
+struct KnownRecord {
+    body: String,
+    kind: String,
+    /// `active`, `pin`, or `proposed`.
+    state: String,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReconcileExpectation {
+    #[serde(default)]
+    noop: Vec<usize>,
+    #[serde(default)]
+    update: Vec<usize>,
+    #[serde(default)]
+    add: Vec<Vec<String>>,
+    #[serde(default)]
+    pin_untouched: Vec<usize>,
+}
+
+/// A fresh database holding one reconcile case, and the ids of its known
+/// memories in case order.
+fn reconcile_db(case: &ReconcileCase) -> (tempfile::TempDir, Connection, Vec<String>) {
+    let dir = tempfile::tempdir().unwrap();
+    let db = crate::store::open(&dir.path().join("bridge.db")).unwrap();
+    db.execute(
+        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind) VALUES('eval',NULL,'claude','eval','idle','reported','direct')",
+        [],
+    )
+    .unwrap();
+    let ids = case
+        .known
+        .iter()
+        .map(|known| match known.state.as_str() {
+            "pin" => crate::memory_ledger::save(&db, &known.body, Some(&known.kind), None).unwrap().id,
+            state => {
+                let id = crate::memory_ledger::insert_proposal(&db, ACCOUNT_MEMORY_SCOPE, &known.body, &known.kind, Some(8_000), None, "eval").unwrap().id;
+                if state == "active" {
+                    crate::memory_ledger::approve(&db, &id).unwrap();
+                }
+                id
+            }
+        })
+        .collect();
+    for (index, message) in case.messages.iter().enumerate() {
+        let kind = if message.role == "user" { "user.message" } else { "assistant.message" };
+        db.execute(
+            "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+             VALUES(?1,'eval',NULL,?2,?3,json_object('text',?4),'now')",
+            params![format!("e{}", index + 1), index as i64 + 1, kind, message.text],
+        )
+        .unwrap();
+    }
+    (dir, db, ids)
+}
+
+/// Offline: a model can only answer "already known" or "update that one"
+/// about a memory it was shown, so every labeled target must reach the digest.
+#[test]
+fn reconcile_cases_surface_their_target() {
+    let cases = serde_json::from_str::<ReconcileFile>(RECONCILE_CASES).expect("reconcile.json parses").cases;
+    assert!(cases.len() >= 7, "the labeled set covers every expectation kind");
+    for case in &cases {
+        let (_dir, db, ids) = reconcile_db(case);
+        let digest = crate::memory_extraction::build_digest(&db, ACCOUNT_MEMORY_SCOPE, "eval").unwrap().expect("a digest");
+        for index in case.expect.noop.iter().chain(&case.expect.update) {
+            assert!(
+                digest.known.iter().any(|(_, id)| *id == ids[*index]),
+                "{}: '{}' is not among the similar memories:\n{}",
+                case.name,
+                case.known[*index].body,
+                digest.text
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "runs real provider turns"]
+fn live_reconcile() {
+    assert!(std::env::var_os("BRIDGE_MEMORY_EVAL").is_some(), "set BRIDGE_MEMORY_EVAL=1");
+    let cases = serde_json::from_str::<ReconcileFile>(RECONCILE_CASES).expect("reconcile.json parses").cases;
+    let mut model = LiveExtraction { registry: eval_registry(), scratch: std::env::temp_dir().join("bridge-memory-eval") };
+    let (mut noop_cases, mut duplicates, mut wrong_targets, mut pins_edited, mut spend, mut passed) = (0usize, 0usize, 0usize, 0usize, 0i64, 0usize);
+    for case in &cases {
+        let (_dir, db, ids) = reconcile_db(case);
+        let outcome = crate::memory_extraction::run_extraction(&db, &mut model, ACCOUNT_MEMORY_SCOPE, "eval");
+        let (report, error) = match &outcome {
+            Ok((report, output, _)) => {
+                spend += output.spend_microusd;
+                (report.clone(), None)
+            }
+            Err(error) => (Default::default(), Some(error.to_string())),
+        };
+        let fresh: Vec<(String, Option<String>)> = db
+            .prepare("SELECT lower(body), supersedes FROM memory_records WHERE status='proposed' AND source_session_id='eval' AND id NOT IN (SELECT value FROM json_each(?1))")
+            .unwrap()
+            .query_map([serde_json::to_string(&ids).unwrap()], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let adds: Vec<&String> = fresh.iter().filter(|(_, supersedes)| supersedes.is_none()).map(|(body, _)| body).collect();
+        let updates: Vec<&String> = fresh.iter().filter_map(|(_, supersedes)| supersedes.as_ref()).collect();
+        let pins: Vec<&String> = case.known.iter().zip(&ids).filter(|(known, _)| known.state == "pin").map(|(_, id)| id).collect();
+        let case_wrong = updates.iter().filter(|target| !case.expect.update.iter().any(|index| ids[*index] == ***target)).count();
+        let case_pins = updates.iter().filter(|target| pins.contains(target)).count()
+            + case.expect.pin_untouched.iter().filter(|index| {
+                db.query_row("SELECT status FROM memory_records WHERE id=?1", [&ids[**index]], |row| row.get::<_, String>(0)).unwrap() != "active"
+            }).count();
+        let noop_ok = case.expect.noop.is_empty() || (adds.is_empty() && updates.is_empty());
+        if !case.expect.noop.is_empty() {
+            noop_cases += 1;
+            duplicates += usize::from(!adds.is_empty());
+        }
+        let update_ok = case.expect.update.iter().all(|index| updates.iter().any(|target| **target == ids[*index]));
+        let add_ok = case.expect.add.iter().all(|terms| adds.iter().any(|body| terms.iter().all(|term| body.contains(&term.to_lowercase()))));
+        let quiet_ok = !(case.expect.noop.is_empty() && case.expect.update.is_empty() && case.expect.add.is_empty() && case.expect.pin_untouched.is_empty())
+            || fresh.is_empty();
+        wrong_targets += case_wrong;
+        pins_edited += case_pins;
+        let pass = noop_ok && update_ok && add_ok && quiet_ok && case_wrong == 0 && case_pins == 0 && error.is_none();
+        passed += usize::from(pass);
+        println!(
+            "{} {:<28} known {} updates {} adds {} {}",
+            if pass { "PASS" } else { "MISS" },
+            case.name,
+            report.known,
+            updates.len(),
+            adds.len(),
+            error.map(|error| format!("error: {error}")).unwrap_or_default()
+        );
+        for (body, supersedes) in &fresh {
+            println!("       - {body}{}", if supersedes.is_some() { "  (update)" } else { "" });
+        }
+    }
+    let duplicate_rate = if noop_cases == 0 { 0.0 } else { duplicates as f64 / noop_cases as f64 };
+    println!(
+        "passed {passed}/{}, duplicate proposals {duplicates}/{noop_cases} ({:.0}%), wrong-target updates {wrong_targets}, pins edited {pins_edited}, spend ${:.4}",
+        cases.len(),
+        duplicate_rate * 100.0,
+        spend as f64 / 1e6
+    );
+    assert!(duplicate_rate <= 0.10, "duplicate proposal rate {:.0}% is over 10%", duplicate_rate * 100.0);
+    assert_eq!(wrong_targets, 0, "an update named the wrong memory");
+    assert_eq!(pins_edited, 0, "a pin was edited");
 }
 
 #[test]

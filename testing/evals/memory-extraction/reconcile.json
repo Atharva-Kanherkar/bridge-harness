@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "about": "Labeled reconcile cases for extraction against known memories (issue #1148). Each case seeds known memories (state: active, pin or proposed), then one chat. expect.noop / expect.update name the index of the known memory the model should answer about; expect.add lists term sets a new proposal must contain; an empty expect means nothing should be written. Offline, memory_evals checks the expected target is among the similar memories in the digest; live_reconcile runs a real model and gates duplicate proposals, wrong-target updates and pin edits.",
+  "cases": [
+    {
+      "name": "restated-known-fact",
+      "known": [{ "body": "Works as an independent researcher", "kind": "fact", "state": "active" }],
+      "messages": [
+        { "role": "user", "text": "As I mentioned before, I'm an independent researcher, so my hours are my own." },
+        { "role": "assistant", "text": "Got it, I'll keep that in mind." }
+      ],
+      "expect": { "noop": [0] }
+    },
+    {
+      "name": "paraphrased-duplicate",
+      "known": [{ "body": "Avoids em dashes in prose", "kind": "preference", "state": "active" }],
+      "messages": [
+        { "role": "user", "text": "Please never use em dashes in anything you write for me." }
+      ],
+      "expect": { "noop": [0] }
+    },
+    {
+      "name": "restated-waiting-proposal",
+      "known": [{ "body": "Prefers vitest -t filters over whole-file runs while triaging", "kind": "preference", "state": "proposed" }],
+      "messages": [
+        { "role": "user", "text": "When I'm triaging I prefer running vitest with -t filters rather than whole files." }
+      ],
+      "expect": { "noop": [0] }
+    },
+    {
+      "name": "restated-pin",
+      "known": [{ "body": "Never push directly to main", "kind": "constraint", "state": "pin" }],
+      "messages": [
+        { "role": "user", "text": "Remember, never push directly to main. Always open a pull request." }
+      ],
+      "expect": { "noop": [0] }
+    },
+    {
+      "name": "changed-preference",
+      "known": [{ "body": "Prefers tabs over spaces in Go code", "kind": "preference", "state": "active" }],
+      "messages": [
+        { "role": "user", "text": "I've switched: I now prefer spaces over tabs in Go code. Use spaces from now on." },
+        { "role": "assistant", "text": "Understood, spaces from now on." }
+      ],
+      "expect": { "update": [0] }
+    },
+    {
+      "name": "changed-pin",
+      "known": [{ "body": "Works from Pune in IST", "kind": "fact", "state": "pin" }],
+      "messages": [
+        { "role": "user", "text": "I've moved from Pune to Berlin, so I work in CET now." }
+      ],
+      "expect": { "pinUntouched": [0] }
+    },
+    {
+      "name": "new-durable-fact",
+      "known": [{ "body": "Prefers tabs over spaces in Go code", "kind": "preference", "state": "active" }],
+      "messages": [
+        { "role": "user", "text": "I always write commit messages in English, even in repositories where the team speaks Japanese." }
+      ],
+      "expect": { "add": [["commit", "english"]] }
+    },
+    {
+      "name": "assistant-only-claim",
+      "known": [],
+      "messages": [
+        { "role": "user", "text": "Can you check why the build failed?" },
+        { "role": "assistant", "text": "Since you prefer Rust over Go for every new service, I looked at the Rust build first." }
+      ],
+      "expect": {}
+    },
+    {
+      "name": "status-update",
+      "known": [{ "body": "Prefers rebase over merge commits", "kind": "preference", "state": "active" }],
+      "messages": [
+        { "role": "user", "text": "I'm done with the rebase for today, I'll pick up the merge commits tomorrow." }
+      ],
+      "expect": {}
+    }
+  ]
+}
