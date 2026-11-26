@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Plus } from "lucide-react";
 import { bridgeApi } from "../../../api";
+import { friendlyError } from "../../../errors";
 import type { Note, NoteDatabase, NoteProperty, NotePage, NoteSchemaChange, Workspace } from "../../../types";
 import { Floating } from "./Floating";
 import { PropertyCell, type CellHost } from "./PropertyCell";
@@ -25,15 +26,13 @@ export interface RowPropertiesProps {
   onError: (message: string) => void;
 }
 
-const message = (error: unknown) => error instanceof Error ? error.message : String(error);
-
 export function RowProperties({ page, workspaces, notes, chatTitle, onOpenChat, onChanged, onError }: RowPropertiesProps) {
   const databaseId = page.databaseId!;
   const [database, setDatabase] = useState<NoteDatabase | null>(null);
   const [values, setValues] = useState<Record<string, unknown>>(page.values ?? {});
   const [adding, setAdding] = useState(false);
   const addAnchor = useRef<HTMLDivElement>(null);
-  const fail = useCallback((error: unknown) => onError(message(error)), [onError]);
+  const fail = useCallback((error: unknown, fallback = "Couldn't save the change to this row.") => onError(friendlyError(error, fallback)), [onError]);
   useEffect(() => setValues(page.values ?? {}), [page.values]);
   // Schema reads and writes land newest first, whatever order they answer in.
   const schemaOrder = useLatestOnly();
@@ -44,7 +43,7 @@ export function RowProperties({ page, workspaces, notes, chatTitle, onOpenChat, 
     let burst: ReturnType<typeof setTimeout> | undefined;
     const read = () => {
       const ticket = schemaOrder.take();
-      void bridgeApi.readNotePage(databaseId).then(next => { if (alive && schemaOrder.accept(ticket)) setDatabase(next.database ?? null); }, fail);
+      void bridgeApi.readNotePage(databaseId).then(next => { if (alive && schemaOrder.accept(ticket)) setDatabase(next.database ?? null); }, error => fail(error, "Couldn't load this database's properties."));
     };
     read();
     void bridgeApi.onNotesPageChanged(payload => {

@@ -4,6 +4,7 @@ import { HarnessMark } from "./harnessMarks";
 import { dockPaneChord } from "../dockLayout";
 import { formatShortcut } from "@/lib/platform";
 import { harnessLabel } from "../utils";
+import { friendlyError } from "../errors";
 import {
   WORKER_STATE_TEXT,
   fanOutCountParts,
@@ -48,7 +49,7 @@ export function FanOutCard({ summary, rows, readOnly = false, onOpenAgents, onSt
     setStopping(true);
     setError(undefined);
     void onStopWorkers(summary.waiting.map(worker => worker.childSessionId))
-      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .catch((cause: unknown) => setError(friendlyError(cause, summary.waiting.length === 1 ? "Couldn't stop the worker." : "Couldn't stop the workers.")))
       .finally(() => setStopping(false));
   };
   return <div data-fan-out role="group" aria-label={`${summary.total} ${summary.total === 1 ? "worker" : "workers"}`} className="my-1 min-w-0 overflow-hidden rounded-xl border border-border bg-card">

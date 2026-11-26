@@ -9,6 +9,7 @@ import { SelectField } from "@/components/ui/select";
 import { Tip } from "@/components/ui/tooltip";
 import { SCREEN_CONTENT, ScreenHeading } from "@/components/ui/screen";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import { relativeTime } from "../workDashboard";
 import { formatTokens, formatUsd } from "../../usageReport";
 import { GithubMarkdown } from "../github/GithubMarkdown";
@@ -236,7 +237,7 @@ function JobDetail({ jobId, fallback, now, onClose, onOpenChat }: { jobId: strin
   const [error, setError] = useState<string>();
   const closeRef = useRef<HTMLButtonElement>(null);
   const load = useCallback(() => {
-    bridgeApi.getReview(jobId).then(setDetail, cause => setError(cause instanceof Error ? cause.message : String(cause)));
+    bridgeApi.getReview(jobId).then(setDetail, cause => setError(friendlyError(cause, "Couldn't load this review.")));
   }, [jobId]);
   useEffect(() => { setDetail(undefined); setError(undefined); load(); }, [load]);
   // The fresh job from the overview (live) wins over the detail's snapshot.
@@ -276,7 +277,7 @@ function JobDetail({ jobId, fallback, now, onClose, onOpenChat }: { jobId: strin
         {error && <p role="alert" className="mb-3 text-meta text-destructive">{error}</p>}
         {view === "activity" && job && <ReviewActivity jobId={jobId} passes={detail?.passes ?? []} running={tone(job) === "running"} repositoryUrl={repositoryUrl(job)} />}
         {view === "findings" && <>
-        {job?.error && <p role="alert" className="mb-3 text-meta text-destructive">{job.error}</p>}
+        {job?.error && <p role="alert" className="mb-3 text-meta text-destructive">{friendlyError(job.error, "The review stopped because of an error.")}</p>}
         {!detail && !error && <SkeletonRegion label="Loading review details" className="space-y-4"><SkeletonText lines={3} /><SkeletonRows rows={2} /></SkeletonRegion>}
         {detail?.summary && <section aria-label="Summary" className="mb-4">
           <h3 className={cn(EYEBROW, "mb-1.5")}>Summary</h3>
@@ -292,7 +293,7 @@ function JobDetail({ jobId, fallback, now, onClose, onOpenChat }: { jobId: strin
               {!Number.isNaN(took) && <span className="tabular-nums text-muted-foreground">{formatElapsed(took)}</span>}
               <span className="tabular-nums text-muted-foreground">{formatTokens(pass.tokensIn + pass.tokensOut)} tokens</span>
               <span className="tabular-nums text-muted-foreground">{pass.costMicrousd === 0 ? "cost not reported" : formatUsd(pass.costMicrousd)}</span>
-              {pass.error && <span className="basis-full text-caption text-destructive">{pass.error}</span>}
+              {pass.error && <span className="basis-full text-caption text-destructive">{friendlyError(pass.error, "This reviewer stopped because of an error.")}</span>}
             </li>;
           })}</ul>
         </section>}
@@ -335,7 +336,7 @@ export function ReviewsScreen({ onOpenChat }: { onOpenChat?: (sessionId: string)
       .then(next => {
         // A later filter change may have landed first; keep only the current one.
         if (query.current.period === days && query.current.repository === repo) { setOverview(next); setError(undefined); setNow(Date.now()); }
-      }, cause => setError(cause instanceof Error ? cause.message : String(cause)))
+      }, cause => setError(friendlyError(cause, "Couldn't load your reviews.")))
       .finally(() => setLoading(false));
   }, []);
 

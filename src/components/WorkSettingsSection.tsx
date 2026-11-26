@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { CONNECTOR_LOGOS } from "./connectorLogos";
 import type {
   WorkBriefingOptions,
@@ -56,7 +57,7 @@ export function WorkSettingsSection({ onError, onOpenBoard }: { onError: (messag
         setNarrowed(stored.settings.enabledConnectorInstances.length > 0);
         setOptions(briefing);
       })
-      .catch(error => onError(error instanceof Error ? error.message : String(error)));
+      .catch(error => onError(friendlyError(error, "Couldn't load the work briefing settings.")));
     return () => { active = false; };
   }, [onError]);
 
@@ -86,7 +87,7 @@ export function WorkSettingsSection({ onError, onOpenBoard }: { onError: (messag
       setNarrowed(stored.settings.enabledConnectorInstances.length > 0);
       flash(key);
     } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
+      onError(friendlyError(error, "Couldn't save the work briefing settings."));
     } finally {
       setBusy(false);
     }

@@ -18,6 +18,7 @@ import {
 } from "../../modelProfiles";
 import type { AdapterDescriptor, ModelProfileDraft, ProfilePurpose, ReasoningEffort } from "../../types";
 import { HarnessMark } from "../harnessMarks";
+import { friendlyError } from "../../errors";
 import { PAGES } from "./sections";
 import {
   GhostButton, Segmented, Select, SettingsGroup, SettingsPage, SettingsRow, StatusPill, Switch, useSavedFlash,
@@ -59,13 +60,13 @@ export function ModelsPage({ profiles, adapters, version, busy, onSave, onRefres
   const update = (purpose: ProfilePurpose, patch: Partial<ModelProfileDraft>) => {
     const next = profiles.map(profile => profile.purpose === purpose ? { ...profile, ...patch } : profile);
     void onSave(next).then(() => flash(purpose)).catch(error =>
-      onError(error instanceof Error ? error.message : String(error)));
+      onError(friendlyError(error, "Couldn't save the model choice.")));
   };
 
   const refresh = async () => {
     setRefreshing(true);
     try { await onRefreshCatalogs(); }
-    catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    catch (error) { onError(friendlyError(error, "Couldn't refresh the model lists.")); }
     finally { setRefreshing(false); }
   };
 
@@ -100,7 +101,8 @@ export function ModelsPage({ profiles, adapters, version, busy, onSave, onRefres
           lead={<HarnessMark harness={adapter.id} size={14} />}
           label={adapter.label}
           description={catalog?.lastError
-            ?? (catalog?.source === "last_known_good" ? "Using the last successful model list" : `${adapter.models.length} models`)}
+            ? friendlyError(catalog.lastError, `Couldn't read ${adapter.label}'s model list.`)
+            : (catalog?.source === "last_known_good" ? "Using the last successful model list" : `${adapter.models.length} models`)}
           control={isStale
             ? <>
                 <StatusPill tone="warning">Needs refresh</StatusPill>

@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Plus, Route } from "lucide-react";
 import type { TrailSummary } from "@/protocol/generated/protocol";
 import { groupTrails, stageLabel } from "@/trails";
+import { friendlyError } from "@/errors";
 import { HarnessMark } from "@/components/harnessMarks";
 import { Button } from "@/components/ui/button";
 import { ScreenHeading } from "@/components/ui/screen";
@@ -40,7 +41,7 @@ function NewTrailForm({ workspaces, defaultWorkspaceId, onCreate, onCancel }: {
     if (!title.trim() || busy) return;
     setBusy(true); setError(undefined);
     try { await onCreate(title.trim(), workspaceId || null); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { setError(friendlyError(cause, "Couldn't start the trail.")); }
     finally { setBusy(false); }
   }
   return (

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { CircleCheck, CircleDashed, CircleDot, CircleMinus, CircleX, GitMerge, GitPullRequestArrow, GitPullRequestClosed, Link2, Plus } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { cn } from "@/lib/utils";
 import type { SessionPullRequest } from "../protocol/generated/protocol";
 import {
@@ -53,7 +54,7 @@ export function useChatPullRequests(sessionId: string | undefined, workspaceId: 
     } catch (value) {
       if (sessionRef.current !== target) return;
       // Keep the last known cards: an outage is labelled, never blanked.
-      setState(current => ({ ...current, loaded: true, refreshing: false, error: value instanceof Error ? value.message : String(value) }));
+      setState(current => ({ ...current, loaded: true, refreshing: false, error: friendlyError(value, "Couldn't load this chat's pull requests.") }));
     } finally {
       inflight.current = false;
       if (queued.current !== null) { const refreshNext = queued.current; queued.current = null; void load(refreshNext); }
@@ -250,7 +251,7 @@ export function AttachPullRequest({ onAttach, variant = "inline" }: { onAttach: 
       await onAttach(value.trim());
       setValue(""); setOpen(false);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(friendlyError(reason, "Couldn't attach that pull request."));
     } finally { setBusy(false); }
   };
   if (!open) {

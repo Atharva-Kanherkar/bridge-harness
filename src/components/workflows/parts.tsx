@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { Tone } from "./format";
+import { friendlyError } from "../../errors";
 
 export const CHIP = "rounded-full border border-border bg-muted px-2 py-0.5 text-caption text-muted-foreground";
 
@@ -41,4 +42,5 @@ export function ErrorNote({ message }: { message: string | null | undefined }) {
   return <p role="alert" className="mt-3 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-caption text-destructive">{message}</p>;
 }
 
-export const errorText = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
+/** What a person reads when a workflow action fails: one plain sentence, never the raw error. */
+export const errorText = (reason: unknown, fallback = "Something went wrong with the workflow. Try again.") => friendlyError(reason, fallback);

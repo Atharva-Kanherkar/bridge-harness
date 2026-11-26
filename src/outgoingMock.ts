@@ -6,6 +6,7 @@
  */
 
 import type { CopyOutgoingResult, DiscardOutgoingResult, ListOutgoingResult, OutgoingLintFinding, OutgoingMessage, ReadOutgoingAttachmentResult, SendOutgoingResult, UpdateOutgoingResult } from "./protocol/generated/protocol";
+import { errorMessage } from "./errors";
 
 /** A small greyscale error-rate chart, standing in for a screenshot. */
 export const MOCK_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAKAAAABgCAAAAAC/TCZFAAABwklEQVR42u3Y23GEMAwFUBV2+y9ENaSAhGQX1mCD9QJlRvrarztHss2sTV/JiwpYwAIWsIAFLGABC1jAAhawgI8DsVRiIF6VFQjohTcBeam0wJdvISYF8lopgUgP5NxApAdybiDSA7mAtuICFrCABSxgAQtYwAL+E6D+gWceCAPQ8MAjAEINtDzwSIBQArE98GB3K7Oh2Sik1rcjOoyV2bbIdLy9riB8lhdQKqTO7bqBaTf3ECjMos7ldSNajt8JEFIg0EuB8QPRbb17EK+BfF2OQJZsauoP0Es4iMb8+aPJAeoemMfR00IJEI7AlngOnPRpRojJzuEERAzwVEiTR0Q1wunocyBz1AjhkCwCCkcIj95J4pMC+XagSAhZ77gfyB7RJExB0ACH0UKgYIRC3yg6DAg5EB7AaaHYN4iOAuI5IKJ8fSFxxAjxKBAD0vrHDkpfN5pc+sS+WFdOQET5eiMkhz4/SCZed4Rk79NGuhghyNynp6+zOmTt09d3XB0yxjj7DqvDWiCCfO0I1cC/9x/rkb0ULunEemGIr9k+rAdylG8Twgb8CeKg+t3h7/aJ81WzfTICm+2TErgQ37+SArf6BsYsowlIg1IcAAAAAElFTkSuQmCC";
@@ -128,7 +129,7 @@ export async function mockSendOutgoing(id: string, revision: number, approved?: 
     return { kind: "refused", detail: "Sending cancelled" };
   }
   let item: OutgoingMessage;
-  try { item = find(id, revision); } catch (error) { return { kind: "refused", detail: String(error) }; }
+  try { item = find(id, revision); } catch (error) { return { kind: "refused", detail: errorMessage(error) }; }
   if (item.destination.kind === "clipboard") return { kind: "refused", detail: "this destination is copy only" };
   if (approved !== true) {
     const token = crypto.randomUUID();

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Globe, Package, Waypoints } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { startSerialPoll } from "../polling";
 import type { CloneRequest } from "../protocol/generated/protocol";
 import type { CloneSettings, CloneSignInPath } from "../types";
@@ -41,7 +42,7 @@ export function CloneConsentCard({ request, label, onOpen, onResolved, onError }
   useEffect(() => {
     let active = true;
     bridgeApi.readCloneSettings().then(next => { if (active) setSettings({ ...next.settings, agentVision: next.settings.agentVision ?? true, defaultSignInPath: next.settings.defaultBrowser === "safari" ? "sign_in_inside" : next.settings.defaultSignInPath }); })
-      .catch(error => onError(String(error)));
+      .catch(error => onError(friendlyError(error, "Couldn't load the browser settings.")));
     return () => { active = false; };
   }, [request.requestId]);
   const resolve = async (allow: boolean) => {
@@ -51,7 +52,7 @@ export function CloneConsentCard({ request, label, onOpen, onResolved, onError }
       await bridgeApi.resolveCloneRequest(request.sessionId, allow, request.requestId, settings);
       onResolved?.();
       if (allow && settings.defaultSignInPath === "sign_in_inside") onOpen?.();
-    } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { onError(friendlyError(error, allow ? `Couldn't allow the browser request for ${request.domain}.` : `Couldn't deny the browser request for ${request.domain}.`)); }
     finally { setBusy(false); }
   };
   const blank = settings?.defaultSignInPath === "sign_in_inside";
@@ -113,6 +114,6 @@ export function CloneRequestInbox({ sessionLabels, onOpen, onError }: {
   }, []);
   if (!requests.length) return null;
   return <aside aria-label="Browser approvals" aria-live="polite" className="fixed right-4 top-16 z-50 flex max-h-[75dvh] w-96 max-w-[calc(100vw-2rem)] flex-col gap-3 overflow-y-auto">
-    {requests.map(request => <CloneConsentCard key={request.requestId} request={request} label={`${sessionLabels[request.sessionId] ?? "Chat"} · browser request`} onOpen={() => onOpen(request.sessionId)} onResolved={() => void refresh().catch(error => onError(String(error)))} onError={onError} />)}
+    {requests.map(request => <CloneConsentCard key={request.requestId} request={request} label={`${sessionLabels[request.sessionId] ?? "Chat"} · browser request`} onOpen={() => onOpen(request.sessionId)} onResolved={() => void refresh().catch(error => onError(friendlyError(error, "Couldn't refresh the browser requests.")))} onError={onError} />)}
   </aside>;
 }

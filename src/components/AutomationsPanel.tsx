@@ -3,6 +3,7 @@ import { SkeletonRows } from "@/components/ui/skeleton";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Check, ChevronDown, Clock, Pause, Pencil, Play, Plus, RefreshCw, Rocket, Trash2, X } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type { AutomationAction, AutomationActionResult, AutomationCapability, AutomationCatalog, AutomationProvider, SaveAutomationParams, UnifiedAutomation } from "../types";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogTitle } from "@/components/ui/dialog";
@@ -54,7 +55,7 @@ export function AutomationsPanel({ initialCatalog, embedded = false }: { initial
       setCatalog(next);
       setFailure(undefined);
     } catch (error) {
-      if (generation === refreshGeneration.current) setFailure(error instanceof Error ? error.message : String(error));
+      if (generation === refreshGeneration.current) setFailure(friendlyError(error, "Couldn't load your automations."));
     } finally {
       if (generation === refreshGeneration.current) setLoading(false);
     }
@@ -83,7 +84,7 @@ export function AutomationsPanel({ initialCatalog, embedded = false }: { initial
       setResults(current => [...current, { provider: result.provider, message: result.message, key: `${result.id}:${result.action}:${Date.now()}` }]);
       await refresh();
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : String(error));
+      setFailure(friendlyError(error, `Couldn't ${action === "runNow" ? "run" : action} that automation.`));
     } finally {
       setBusy(false); setConfirmDelete(undefined);
     }
@@ -104,7 +105,7 @@ export function AutomationsPanel({ initialCatalog, embedded = false }: { initial
       setDraft(undefined);
       await refresh();
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : String(error));
+      setFailure(friendlyError(error, "Couldn't save the automation."));
     } finally {
       setBusy(false);
     }
@@ -158,11 +159,15 @@ export function AutomationsPanel({ initialCatalog, embedded = false }: { initial
       <details className="mt-5 text-caption text-muted-foreground">
         <summary className="min-h-8 w-fit cursor-pointer rounded py-1.5">Provider support</summary>
       <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card" aria-label="Automation provider capabilities">
-        {(catalog?.providers ?? []).map(state => <section key={state.provider} className="px-4 py-3" aria-label={`${providerLabel(state.provider)} automation support`}>
+        {(catalog?.providers ?? []).map(state => {
+          // An unreadable store's detail is the read error itself.
+          const detail = state.available ? state.detail : friendlyError(state.detail, `${providerLabel(state.provider)}'s automations are unreadable.`);
+          return <section key={state.provider} className="px-4 py-3" aria-label={`${providerLabel(state.provider)} automation support`}>
           <div className="flex items-center justify-between gap-2 text-caption font-medium text-foreground"><span>{providerLabel(state.provider)}</span><span className={`h-1.5 w-1.5 rounded-full ${state.available ? "bg-success" : "bg-muted-foreground/40"}`}/></div>
-          <Tip label={state.detail}><p className="mt-1 text-caption leading-relaxed text-muted-foreground">{state.available ? `${state.count} native schedule${state.count === 1 ? "" : "s"}` : state.detail}</p></Tip>
+          <Tip label={detail}><p className="mt-1 text-caption leading-relaxed text-muted-foreground">{state.available ? `${state.count} native schedule${state.count === 1 ? "" : "s"}` : detail}</p></Tip>
           <div className="mt-2 flex flex-wrap gap-1">{state.available && state.capabilities.length ? state.capabilities.map(capability => <span key={capability} className="rounded-full border border-border bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">{capabilityLabel(capability)}</span>) : <span className="text-caption text-muted-foreground">No native automation controls</span>}</div>
-        </section>)}
+          </section>;
+        })}
       </div>
 
       </details>

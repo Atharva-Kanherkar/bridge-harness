@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Clock3, TriangleAlert, X } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type { AdapterDescriptor } from "../types";
 import type { LimitRecoveryView } from "../protocol/generated/protocol";
 import { limitRecoveryNotice } from "../limitRecovery";
@@ -39,7 +40,7 @@ export function LimitRecoveryBanner({ sessionId, sessionStatus, adapters, onErro
     try {
       const status = action === "resume" ? await bridgeApi.resumeLimitRecovery(sessionId) : await bridgeApi.cancelLimitRecovery(sessionId);
       setView(status.recovery ?? null);
-    } catch (cause) { onError?.(cause instanceof Error ? cause.message : String(cause)); }
+    } catch (cause) { onError?.(friendlyError(cause, action === "resume" ? "Couldn't resume this chat." : "Couldn't cancel the automatic resume.")); }
     finally { setBusy(false); }
   };
   const Icon = notice.tone === "problem" ? TriangleAlert : Clock3;

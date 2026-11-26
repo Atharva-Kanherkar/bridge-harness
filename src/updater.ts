@@ -1,3 +1,5 @@
+import { errorMessage } from "./errors";
+
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 export type UpdateChannel = "stable" | "beta";
@@ -42,7 +44,7 @@ export async function installUpdateAndRestart(update: UpdateInfo): Promise<void>
   const { invoke } = await import("@tauri-apps/api/core");
   try { await invoke("ensure_update_installable"); }
   catch (error) {
-    const message = String(error);
+    const message = errorMessage(error);
     if (message.includes("development build cannot replace itself safely")) throw new UpdateInstallUnavailableError(message);
     throw error;
   }

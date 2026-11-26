@@ -9,7 +9,7 @@ import { bridgeApi } from "../api";
 import { allOn, baseChoice, fits, leavesOut, overlay, removed, switched, type Choice } from "../chatToolChoice";
 import { relativeTime } from "../connectorSurface";
 import { formatTokens } from "../contextBreakdown";
-import { errorMessage } from "../errors";
+import { friendlyError } from "../errors";
 import { normalizeAccount } from "../providerAccounts";
 import type { ChatToolItem, ChatTools, ChatToolSelection, ChatToolsDraft } from "../types";
 import { RowButton } from "@/components/ui/row";
@@ -94,7 +94,7 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
       if (ticket === generation.current) setView({ key, data });
     } catch (error) {
       // A failed read keeps the last list of this chat on screen.
-      if (ticket === generation.current) setView(current => ({ key, data: current.key === key ? current.data : undefined, error: errorMessage(error) }));
+      if (ticket === generation.current) setView(current => ({ key, data: current.key === key ? current.data : undefined, error: friendlyError(error, "Couldn't load this chat's tools.") }));
     }
   }, [key, read]);
 
@@ -195,7 +195,7 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
       if (outcome.refusal) {
         end();
         setPending(null);
-        setNotice({ tone: "refusal", text: outcome.refusal });
+        setNotice({ tone: "refusal", text: friendlyError(outcome.refusal, "The tool choice wasn't saved.") });
         return;
       }
       const ticket = ++generation.current;
@@ -215,7 +215,7 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
       end();
       if (!here()) return;
       setPending(null);
-      setNotice({ tone: "error", text: errorMessage(error) });
+      setNotice({ tone: "error", text: friendlyError(error, "Couldn't save the tool choice.") });
       // A stale revision means another window saved first: show its choice.
       void load(true);
     }

@@ -148,7 +148,7 @@ describe("capture", () => {
     const failed = host.querySelector("ul[aria-label='Notes'] li[data-capture='failed']")!;
     expect(failed.textContent).toContain("keep me");
     expect(failed.textContent).toContain("Couldn't save");
-    expect(given.onError).toHaveBeenCalledWith("disk full");
+    expect(given.onError).toHaveBeenCalledWith("The disk is full. Free up some space and try again.");
     await click(button("Discard", failed));
     expect(host.querySelector("li[data-capture='failed']")).toBeNull();
   });
@@ -269,7 +269,7 @@ describe("loading and failure", () => {
     await openNote("Local-first sync libraries");
     const alert = main().querySelector("[role='alert']")!;
     expect(alert.textContent).toContain("This page didn't open");
-    expect(alert.textContent).toContain("database is locked");
+    expect(alert.textContent).toContain("Bridge is busy saving something else. Try again in a moment.");
     await click(button("Try again", alert));
     expect(main().querySelector("[role='alert']")).toBeNull();
     expect(main().querySelector("article")?.getAttribute("aria-label")).toBe("Local-first sync libraries");
@@ -306,7 +306,7 @@ describe("loading and failure", () => {
     await render();
     const alert = list().querySelector("[role='alert']")!;
     expect(alert.textContent).toContain("Notes didn't load");
-    expect(alert.textContent).toContain("bridged is not answering");
+    expect(alert.textContent).toContain("bridged is not answering.");
     expect(list().querySelector("[aria-label='Loading notes']")).toBeNull();
     await click(button("Try again", alert));
     expect(list().querySelector("[role='alert']")).toBeNull();
@@ -771,7 +771,7 @@ describe("Structure", () => {
     await click(button("Structure"));
     await click(button("Structure", host.querySelector("[aria-label='Structure options']")!));
     await settle(120);
-    expect(host.querySelector("[role='alert']")?.textContent).toBe("Structure couldn't run: There is nothing to structure yet.");
+    expect(host.querySelector("[role='alert']")?.textContent).toBe("Structure couldn't run. There is nothing to structure yet.");
   });
 
   it("explains why nothing can run when no harness is signed in, and capture still works", async () => {

@@ -205,11 +205,12 @@ describe("describeError", () => {
     expect(result.message).not.toContain("undefined");
   });
 
-  it("passes generic errors through as their raw text", () => {
-    expect(describeError("boom: file not found")).toEqual({
+  it("passes generic errors through as plain text, never raw", () => {
+    expect(describeError("The worktree was removed")).toEqual({
       kind: "generic",
       title: "Something went wrong",
-      message: "boom: file not found",
+      message: "The worktree was removed.",
     });
+    expect(describeError("thread 'main' panicked at src/lib.rs:12:5").message).toBe("Something went wrong. Try again.");
   });
 });

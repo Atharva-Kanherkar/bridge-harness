@@ -173,7 +173,7 @@ import { installZoom, nudgeZoom, ownsZoom, resetZoom } from "./zoom";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
 import { extractUsageSnapshot, type UsageProvider, type UsageSnapshot } from "./usage";
-import { describeError, errorMessage, isThrottleKind } from "./errors";
+import { describeError, errorMessage, friendlyError, isThrottleKind } from "./errors";
 import { isCodexVersionError, isOlderCodexVersion, latestCodexVersion, withCodexRefreshDeadline } from "./codexUpdate";
 import { CodexUpdateDialog, type CodexUpdatePhase } from "./components/CodexUpdateDialog";
 import { mergeForestSnapshot } from "./forest";
@@ -218,6 +218,12 @@ type HarnessShortcutOpenResult =
   | { kind: "opened" }
   | { kind: "unknownHarness"; requested: string; availableHarnessIds: string[]; suggestion?: string }
   | { kind: "unavailableHarness"; message: string };
+
+/** "<Harness> isn't available", with the adapter's reason when it reads as a sentence. */
+function unavailableHarnessText(adapter: { label: string; unavailableReason?: string | null }): string {
+  const reason = friendlyError(adapter.unavailableReason, "");
+  return reason ? `${adapter.label} isn't available: ${reason}` : `${adapter.label} isn't available.`;
+}
 
 function harnessShortcutError(result: Exclude<HarnessShortcutOpenResult, { kind: "notShortcut" | "opened" }>): string {
   if (result.kind === "unavailableHarness") return result.message;
@@ -410,7 +416,8 @@ function AppContent() {
         setCodexUpdateSuccess(true);
       }
     } catch (cause) {
-      setError(`The Codex installer finished, but Bridge could not refresh its runtime: ${errorMessage(cause)}. Restart Bridge to check the new version.`);
+      console.warn("[codex-update] runtime refresh failed", cause);
+      setError("The Codex installer finished, but Bridge could not refresh its runtime. Restart Bridge to check the new version.");
     } finally {
       setCodexUpdatePrompt(false);
       setCodexUpdatePhase(null);
@@ -613,7 +620,7 @@ function AppContent() {
       setWorkflowDraft(draft);
       setView("workflows");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(friendlyError(reason, "Couldn't turn this chat into a workflow."));
     }
   };
 
@@ -628,7 +635,7 @@ function AppContent() {
       }
       setForkDraft({ sessionId: chat.id, entryId: resolved.activeEntryId });
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(friendlyError(reason, "Couldn't open this chat to fork it."));
     }
   };
 
@@ -692,7 +699,7 @@ function AppContent() {
     deliver: events => setAgentEvents(current => appendAgentEventBatch(current, events)),
   }));
   const browserSessionRef = useRef<string>();
-  const workQueryError = workBoardQueryError ? errorMessage(workBoardQueryError) : undefined;
+  const workQueryError = workBoardQueryError ? friendlyError(workBoardQueryError, "Try again.") : undefined;
   const workError = workBoard === undefined ? workQueryError : undefined;
   const workRefreshError = workBoard === undefined ? undefined : workBriefingError ?? workQueryError;
 
@@ -1855,7 +1862,7 @@ function AppContent() {
 
   // The inline typeahead's own settings — loaded once; Settings' save path
   // keeps this fresh via `onSuggestionSettingsChange`.
-  useEffect(() => { void bridgeApi.getSuggestionSettings().then(setSuggestionSettings).catch(value => setError(`Could not load composer settings: ${errorMessage(value)}`)); }, []);
+  useEffect(() => { void bridgeApi.getSuggestionSettings().then(setSuggestionSettings).catch(value => setError(`Could not load composer settings. ${friendlyError(value, "")}`.trim())); }, []);
 
   // A new configured model/provider earns its own one-time fallback notice.
   useEffect(() => { fallbackNoticeShownRef.current = false; }, [suggestionSettings?.settings.provider, suggestionSettings?.settings.model]);
@@ -1947,7 +1954,7 @@ function AppContent() {
   const pendingStopIds = useMemo(() => new Set(pending.map(item => item.sessionId)), [pending]);
   const sessionStops = useSessionStops(state.sessions, pendingStopIds,
     id => bridgeApi.interruptTurn(id),
-    (id, error) => setError(`Could not stop chat ${id}: ${errorMessage(error)}`),
+    (_id, error) => setError(`Couldn't stop the chat. ${friendlyError(error, "")}`.trim()),
   );
   const stopping = sessionStops.has(session?.id);
   const requestStop = useCallback(() => {
@@ -2132,7 +2139,7 @@ function AppContent() {
       setState(await bridgeApi.state());
       setForest(undefined);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(friendlyError(reason, "Couldn't rewind to that message."));
     }
   }
 
@@ -2148,7 +2155,7 @@ function AppContent() {
       setState(result.state);
       openSession(result.sessionId);
     } catch (reason) {
-      setForkError(reason instanceof Error ? reason.message : String(reason));
+      setForkError(friendlyError(reason, "Couldn't fork the chat."));
     } finally {
       setForkBusy(false);
     }
@@ -2180,9 +2187,11 @@ function AppContent() {
         return { ...current, sessions: current.sessions.filter(session => !hidden.has(session.id)) };
       });
       setSelectedSessionId(current => (current === chat.id ? undefined : current));
+      // Why the checkout stayed is the reclaim's own refusal; shown only when it reads as a sentence.
+      const keptBecause = friendlyError(result.worktreeDetail, "");
       setArchiveNotice({
         message: result.worktreeDetail
-          ? `${name} was archived. Its worktree was kept: ${result.worktreeDetail}`
+          ? `${name} was archived. Its worktree was kept${keptBecause ? `: ${keptBecause}` : "."}`
           : `${name} was archived. Its history is kept in Settings > Archived chats.`,
         retained: !!result.worktreeDetail,
       });
@@ -2227,7 +2236,7 @@ function AppContent() {
       await refetchWorkBoard();
       return { ok: true };
     } catch (error) {
-      return { ok: false, reason: errorMessage(error) };
+      return { ok: false, reason: friendlyError(error, "Couldn't update the task.") };
     }
   }, [adapters, refetchWorkBoard]);
 
@@ -2238,7 +2247,7 @@ function AppContent() {
       await refetchWorkBoard();
       return { ok: true };
     } catch (error) {
-      return { ok: false, reason: errorMessage(error) };
+      return { ok: false, reason: friendlyError(error, task.pinned ? "Couldn't unpin the task." : "Couldn't pin the task.") };
     }
   }, [refetchWorkBoard]);
 
@@ -2279,12 +2288,12 @@ function AppContent() {
       const receipt = await bridgeApi.runWorkBriefing(trigger);
       if (receipt.outcome !== "refused" && receipt.runId) followWorkBriefing(receipt.runId);
       if (receipt.outcome === "refused" && trigger === "manual") {
-        setWorkBriefingError(receipt.detail ?? receipt.code ?? "the briefing was refused");
+        setWorkBriefingError(friendlyError(receipt.detail ?? receipt.code, "The briefing was refused."));
       } else if (trigger === "manual") {
         setWorkBriefingError(undefined);
       }
     } catch (error) {
-      if (trigger === "manual") setWorkBriefingError(errorMessage(error));
+      if (trigger === "manual") setWorkBriefingError(friendlyError(error, "The briefing didn't run."));
     }
     void refetchWorkBoard();
   }, [refetchWorkBoard, followWorkBriefing]);
@@ -2325,7 +2334,7 @@ function AppContent() {
           return { ok: true };
       }
     } catch (error) {
-      return { ok: false, reason: errorMessage(error) };
+      return { ok: false, reason: friendlyError(error, "Couldn't run that action.") };
     }
   }, [refetchWorkBoard]);
   // Preserve the current direct chat's harness/model so switching to OpenCode also
@@ -2673,7 +2682,7 @@ function AppContent() {
     if (!adapter.available) {
       return {
         kind: "unavailableHarness",
-        message: `${adapter.label} isn't available${adapter.unavailableReason ? `: ${adapter.unavailableReason}` : ""}.`,
+        message: unavailableHarnessText(adapter),
       };
     }
     // Inside a conversation the shortcut is a delegation the user makes, not a
@@ -2734,19 +2743,17 @@ function AppContent() {
       try {
         await deliverPrompt(created, text, sentAttachments);
       } catch (e) {
-        const message = errorMessage(e);
         setAsideLifecycle(current => current && {
           ...current,
           phase: "failed",
-          error: message,
+          error: friendlyError(e, "Your question wasn't sent."),
           recoveryDraft: text,
         });
         throw e;
       }
     } catch (e) {
-      const message = errorMessage(e);
-      setError(message);
-      setAsideLifecycle(current => current && { ...current, phase: "failed", error: message });
+      setError(errorMessage(e));
+      setAsideLifecycle(current => current && { ...current, phase: "failed", error: friendlyError(e, "Couldn't open the side chat.") });
       throw e;
     }
     finally { newChatPendingRef.current = false; }
@@ -2770,7 +2777,7 @@ function AppContent() {
       return false;
     }
     if (!adapter.available) {
-      setError(`${adapter.label} isn't available${adapter.unavailableReason ? `: ${adapter.unavailableReason}` : ""}.`);
+      setError(unavailableHarnessText(adapter));
       return false;
     }
     if (!query.trim()) {
@@ -2893,7 +2900,7 @@ function AppContent() {
     } catch (error) {
       if (branchRequestGeneration.current !== generation) return;
       setWorkspaceBranches([]);
-      setBranchError(errorMessage(error));
+      setBranchError(friendlyError(error, "Couldn't list the branches."));
     } finally {
       if (branchRequestGeneration.current === generation) setBranchBusy(false);
     }
@@ -2921,9 +2928,8 @@ function AppContent() {
       }
     } catch (error) {
       if (branchRequestGeneration.current !== generation) return;
-      const message = errorMessage(error);
-      setBranchError(message);
-      setError(message);
+      setBranchError(friendlyError(error, `Couldn't switch to ${branch}.`));
+      setError(errorMessage(error));
     } finally {
       if (branchRequestGeneration.current === generation) setBranchBusy(false);
     }
@@ -3807,7 +3813,7 @@ function AppContent() {
       onOpenChange={setCodexUpdatePrompt} onConfirm={() => void confirmCodexUpdate()} />
   </>;
   if (!health || !modelSetup || !stateLoaded) return startupError
-    ? <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div role="alert" className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs"><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</div></div>
+    ? <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div role="alert" className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs"><X size={14} className="text-destructive" aria-hidden="true" />{friendlyError(startupError, "Bridge couldn't finish starting. Restart Bridge to try again.")}</div></div>
     : <AppShellSkeleton />;
   const hasExistingBridgeData = state.projects.length > 0 || state.workspaces.length > 0 || state.sessions.length > 0;
   if (shouldShowAgentOnboarding(modelSetup, agentOnboardingComplete, hasExistingBridgeData)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard
@@ -3815,7 +3821,7 @@ function AppContent() {
     onHealthChange={invalidateHealth}
     onComplete={finishAgentOnboarding}
     onError={setError}
-  />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
+  />{error && <TransientAlert title="Setup failed" message={friendlyError(error, "Setup didn't finish. Try again.")} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
   const chromeTitle = view === "workflows" ? "Workflows" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "trails" ? "Trails" : view === "marketplace" ? "Store" : view === "personal-app" ? (personalApps.find(entry => entry.app.id === personalAppId)?.app.name ?? "App") : view === "usage" ? "Usage" : view === "pulls" ? "Pulls" : view === "reviews" ? "Reviews" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
@@ -4119,7 +4125,7 @@ function AppContent() {
                 setAsideLifecycle(current => current && { ...current, phase: "ready", error: undefined, recoveryDraft: undefined });
               } catch (e) {
                 setError(errorMessage(e));
-                setAsideLifecycle(current => current && { ...current, phase: "failed", error: errorMessage(e) });
+                setAsideLifecycle(current => current && { ...current, phase: "failed", error: friendlyError(e, "Your message wasn't sent.") });
                 throw e;
               }
             }}
@@ -4139,7 +4145,7 @@ function AppContent() {
                 setState(await bridgeApi.updateChatModel(asideSession.id, harness, model, undefined, account ?? harness));
                 setAsideLifecycle(current => current && { ...current, phase: "ready", error: undefined });
               } catch (e) {
-                setAsideLifecycle(current => current && { ...current, phase: "failed", error: errorMessage(e) });
+                setAsideLifecycle(current => current && { ...current, phase: "failed", error: friendlyError(e, "Couldn't switch the model.") });
                 throw e;
               }
               finally { setModelSwitch(null); }
@@ -4857,7 +4863,7 @@ function Welcome({ defaultsLoading, adapters, accounts, account, harness, model,
       ...(await prepareImage(file)),
     })))
       .then(pasted => setAttachments(current => [...current, ...pasted]))
-      .catch(error => setComposerError(errorMessage(error)));
+      .catch(error => setComposerError(friendlyError(error, "Couldn't attach the image.")));
   };
   const failure = composerError ?? harnessShortcutFailure;
   const modeToggle = !!workspace && !agent;

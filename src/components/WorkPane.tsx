@@ -5,6 +5,7 @@ import { formatElapsed, type BackgroundTaskView } from "../backgroundTasks";
 import { chatPrKey, chatPrStatus, checkTone, freshness, orderChecks } from "../chatPullRequests";
 import { orderPullRequests, shelfPhrase } from "../workSummary";
 import { cn } from "@/lib/utils";
+import { friendlyError } from "../errors";
 import { AttachPullRequest, CHECK_ICON, PullRequestGlyph } from "./ChatPullRequests";
 import { SHELF_TONE, TaskKindGlyph } from "./WorkShelf";
 import { useBackgroundTasks } from "./useBackgroundTasks";
@@ -42,10 +43,12 @@ function PullRequestDetail({ pr, now, onFix, onOpenGithub, onRetry, retrying }: 
 }) {
   const ordered = orderChecks(pr.checkDetails);
   const failing = pr.state === "open" && chatPrStatus(pr).phase === "failing";
+  // The banner already says GitHub didn't answer; the detail only adds to it.
+  const staleReason = pr.error ? friendlyError(pr.error, "") : "";
   return <div data-work-pr-detail className="mb-2 ml-[1.15rem] border-l border-border pl-3">
     {pr.stale && <div role="status" className="my-1.5 flex items-center gap-2 rounded-lg border border-border px-2.5 py-1.5 text-caption text-muted-foreground">
       <CloudOff size={12} className="shrink-0" aria-hidden="true" />
-      <span className="min-w-0 flex-1">GitHub didn’t answer, so this is the last state Bridge saw{pr.error ? <Tip label={pr.error}><span className="block truncate text-micro text-faint">{pr.error}</span></Tip> : null}</span>
+      <span className="min-w-0 flex-1">GitHub didn’t answer, so this is the last state Bridge saw{staleReason ? <Tip label={staleReason}><span className="block truncate text-micro text-faint">{staleReason}</span></Tip> : null}</span>
       <Button variant="outline" size="2xs" onClick={onRetry} disabled={retrying} loading={retrying}>
         <RotateCw size={11} aria-hidden="true" /> Retry
       </Button>

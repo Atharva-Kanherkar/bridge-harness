@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Skeleton, SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
 import { Archive, ArrowLeft, ArchiveRestore } from "lucide-react";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import type { ArchivedChat } from "../../protocol/generated/protocol";
 import type { AgentEvent } from "../../types";
 import { Field, GhostButton, SettingsGroup, SettingsPage, TextButton } from "./kit";
@@ -47,7 +48,7 @@ export function ArchivedChatsPage() {
           if (!active) return;
           setChats(page.chats); setHasMore(page.hasMore);
         });
-    void request.catch(cause => { if (active) setError(String(cause)); })
+    void request.catch(cause => { if (active) setError(friendlyError(cause, viewing ? "Couldn't load this conversation." : "Couldn't load your archived chats.")); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [query, offset, viewing, revision, sequence]);
@@ -58,7 +59,7 @@ export function ArchivedChatsPage() {
     setChildrenLoading(true);
     void bridgeApi.listArchivedChats("", childrenOffset, selected.id).then(page => {
       if (active) { setChildren(page.chats); setMoreChildren(page.hasMore); }
-    }).catch(cause => { if (active) setError(String(cause)); })
+    }).catch(cause => { if (active) setError(friendlyError(cause, "Couldn't load the chats inside this one.")); })
       .finally(() => { if (active) setChildrenLoading(false); });
     return () => { active = false; };
   }, [selected, childrenOffset, revision]);
@@ -73,7 +74,7 @@ export function ArchivedChatsPage() {
       await bridgeApi.unarchiveChat(chat.id);
       setNote(`"${chat.title}" returned to chat history. Its checkout was not restored.`);
       setSelected(undefined); setConversation(undefined); setOffset(0); setRevision(value => value + 1);
-    } catch (cause) { setError(String(cause)); }
+    } catch (cause) { setError(friendlyError(cause, `Couldn't unarchive "${chat.title}".`)); }
     finally { setBusy(false); }
   };
 

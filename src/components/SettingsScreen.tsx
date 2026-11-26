@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../api";
+import { errorMessage, friendlyError } from "../errors";
 import { MenuBarSettingsPage } from "../features/menu-bar/MenuBarSettingsPage";
 import { profileDraftsFromSetup } from "../modelProfiles";
 import type { AdapterDescriptor, AgentDefinition, BridgeEvent, ConfigState, HarnessConfig, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PermissionPolicy } from "../types";
@@ -123,7 +124,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       if (!active) return;
       setConfig(next);
       setModelSetup(setup); setProfiles(profileDraftsFromSetup(setup));
-    }).catch(error => onError(String(error))).finally(() => { if (active) setBusy(false); });
+    }).catch(error => onError(friendlyError(error, "Couldn't load your settings."))).finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
   }, [onError]);
 
@@ -133,7 +134,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
   async function savePolicy(policy: PermissionPolicy) {
     setBusy(true);
     try { setConfig(await bridgeApi.savePermissionPolicy(policy)); flashSaved(); }
-    catch (error) { onError(String(error)); }
+    catch (error) { onError(friendlyError(error, "Couldn't save the permission setting.")); }
     finally { setBusy(false); }
   }
 
@@ -144,7 +145,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     let active = true;
     bridgeApi.refreshOpenCodeCatalog()
       .then(catalog => { if (active) setOpenCodeCatalog(catalog); })
-      .catch(error => { if (active) setOpenCodeDiscoveryError(error instanceof Error ? error.message : String(error)); });
+      .catch(error => { if (active) setOpenCodeDiscoveryError(errorMessage(error)); });
     return () => { active = false; };
   }, [openCodeCatalog, openCodeDiscoveryError]);
 
@@ -217,7 +218,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       setPresetDetailId(restored ? (restored.id ?? null) : null);
       flashSaved();
     }
-    catch (error) { onError(String(error)); } finally { setBusy(false); }
+    catch (error) { onError(friendlyError(error, `Couldn't ${verb.toLowerCase()} ${agent.name}.`)); } finally { setBusy(false); }
   };
 
   const makeDefault = async (agent: AgentDefinition) => {
@@ -232,7 +233,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       });
       flashSaved();
     }
-    catch (error) { onError(String(error)); } finally { setBusy(false); }
+    catch (error) { onError(friendlyError(error, `Couldn't make ${agent.name} the default.`)); } finally { setBusy(false); }
   };
 
   const saveHarness = async (next: HarnessConfig) => {
@@ -258,7 +259,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       }
       flashSaved();
     }
-    catch (error) { onError(String(error)); } finally { setBusy(false); }
+    catch (error) { onError(friendlyError(error, "Couldn't reset the coding agent.")); } finally { setBusy(false); }
   };
 
   const saveModels = async (next: ModelProfileDraft[]) => {
@@ -277,7 +278,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       setResets(count => count + 1);
       setModelSetup(setup); setProfiles(profileDraftsFromSetup(setup)); onModelSetupChange(setup); flashSaved();
     }
-    catch (error) { onError(String(error)); } finally { setBusy(false); }
+    catch (error) { onError(friendlyError(error, "Couldn't reset your settings.")); } finally { setBusy(false); }
   };
 
   const navigate = (next: PageId) => { setSection(next); setQuery(""); setPresetDetailId(null); setHarnessDetailId(null); };

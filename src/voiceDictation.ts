@@ -1,6 +1,7 @@
 import type { VoiceStartResult, VoiceProviderId } from "./protocol/generated/protocol";
 import type { VoiceTranscriptPayload as VoiceTranscriptEvent } from "./api";
 import { applyVoiceTranscriptDraft, type VoiceChunk, type VoiceDraftTranscript } from "./voiceCapture";
+import { friendlyError } from "./errors";
 
 export type VoiceState = "idle" | "starting" | "recording" | "stopping" | "error";
 export type VoiceView = {
@@ -120,7 +121,7 @@ export class VoiceDictationController {
     this.publish(take);
     take.startTimer = this.timer(take, VOICE_START_TIMEOUT_MS, () => this.fail(take, "Dictation did not become ready. Check microphone permission and retry."));
     try {
-      const capture = await this.deps.capture(chunk => this.enqueue(take, chunk), error => this.fail(take, error.message));
+      const capture = await this.deps.capture(chunk => this.enqueue(take, chunk), error => this.fail(take, friendlyError(error, "The microphone stopped working. Please retry.")));
       if (!this.owns(take)) { void capture.stop().catch(() => undefined); return; }
       take.capture = capture;
       take.startingPhase = "model";
@@ -141,7 +142,7 @@ export class VoiceDictationController {
       take.earlyChars = 0;
       for (const event of early) this.receive(event);
     } catch (error) {
-      this.fail(take, error instanceof Error ? error.message : "Could not start dictation.");
+      this.fail(take, friendlyError(error, "Could not start dictation."));
     }
   }
 
@@ -159,7 +160,7 @@ export class VoiceDictationController {
       return;
     }
     if (event.voiceSessionId !== take.id) return;
-    if (event.kind === "error") { this.fail(take, event.error ?? "Dictation failed."); return; }
+    if (event.kind === "error") { this.fail(take, friendlyError(event.error, "Dictation failed.")); return; }
     if (event.kind === "closed") { this.finish(take); return; }
     if (event.kind === "started" && !take.ready) {
       take.ready = true;
@@ -203,7 +204,7 @@ export class VoiceDictationController {
       if (!take.ready && !take.queuedBytes && !take.totalBytes) { this.cancel(); return; }
       if (take.ready && take.id) await this.completeStop(take);
     } catch (error) {
-      this.fail(take, error instanceof Error ? error.message : "Could not finish dictation.");
+      this.fail(take, friendlyError(error, "Could not finish dictation."));
     } finally {
       clearTimeout(timeout);
       take.timers.delete(timeout);
@@ -225,7 +226,7 @@ export class VoiceDictationController {
         await this.deps.transport.stop(take.id);
         // Completion is the terminal notification, not a pipe write.
       } catch (error) {
-        this.fail(take, error instanceof Error ? error.message : "Could not finish dictation.");
+        this.fail(take, friendlyError(error, "Could not finish dictation."));
       } finally {
         clearTimeout(drainTimeout);
         take.timers.delete(drainTimeout);
@@ -299,7 +300,7 @@ export class VoiceDictationController {
         take.totalBytes += bytes;
         take.sequence += 1;
       }
-    })().catch(error => this.fail(take, error instanceof Error ? error.message : "Dictation audio delivery failed."))
+    })().catch(error => this.fail(take, friendlyError(error, "Dictation audio delivery failed.")))
       .finally(() => {
         take.pumping = undefined;
         if (this.take === take && take.queue.length) this.pump(take);

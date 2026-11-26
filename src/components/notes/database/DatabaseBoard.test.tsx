@@ -83,7 +83,7 @@ describe("DatabaseBoard", () => {
     await settle();
     expect(cardsIn("Read")).toEqual(["DDIA"]);
     expect(cardsIn("Reading")).toEqual([]);
-    expect(onError).toHaveBeenCalledWith("refused");
+    expect(onError).toHaveBeenCalledWith("Couldn't save that change.");
   });
 
   it("Move to… moves a card from the keyboard", async () => {

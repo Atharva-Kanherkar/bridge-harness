@@ -317,7 +317,7 @@ describe("UsageScreen", () => {
     scanSpy.mockRejectedValue(new Error("cannot read history"));
     await mount();
     expect(scanSpy).toHaveBeenCalledTimes(1);
-    expect(text()).toContain("cannot read history");
+    expect(text()).toContain("History could not finish. Cannot read history.");
     expect(text()).toContain("History scan failed");
   });
 

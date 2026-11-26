@@ -65,11 +65,11 @@ export function pcm16Level(samples: Int16Array): number {
 }
 
 function microphoneError(error: unknown): Error {
-  const name = error instanceof Error ? error.name : "";
+  const name = error instanceof Error ? error.name : ""; // raw-error: reads the DOMException name, shows nothing
   if (name === "NotAllowedError" || name === "SecurityError") return new Error("Microphone access was denied. Allow Bridge in System Settings → Privacy & Security → Microphone, then try again.");
   if (name === "NotFoundError" || name === "OverconstrainedError") return new Error("No microphone was found. Connect or select a microphone in System Settings → Sound → Input, then try again.");
   if (name === "NotReadableError" || name === "AbortError") return new Error("Could not open the microphone. Check your input device or close other apps using it, then try again.");
-  return error instanceof Error ? error : new Error("Could not access the microphone. Please retry.");
+  return error instanceof Error ? error : new Error("Could not access the microphone. Please retry."); // raw-error: passes the Error on; voiceDictation shows it through friendlyError
 }
 
 export class VoiceCapture {
@@ -120,7 +120,7 @@ export class VoiceCapture {
         worklet.port.onmessage = event => {
           if (event.data?.type === "chunk" && event.data.samples instanceof ArrayBuffer) {
             try { deliver(new Int16Array(event.data.samples)); }
-            catch (error) { onError(error instanceof Error ? error : new Error("Audio capture failed.")); }
+            catch (error) { onError(error instanceof Error ? error : new Error("Audio capture failed.")); } // raw-error: passes the Error on; voiceDictation shows it through friendlyError
           } else if (event.data?.type === "flushed" && pendingFlush) {
             clearTimeout(pendingFlush.timer);
             pendingFlush.resolve();
@@ -158,7 +158,7 @@ export class VoiceCapture {
         const resampler = new ContinuousPcm16Resampler(context.sampleRate, 16_000, 1_600, deliver);
         processor.onaudioprocess = event => {
           try { resampler.push(event.inputBuffer.getChannelData(0)); }
-          catch (error) { onError(error instanceof Error ? error : new Error("Audio capture failed.")); }
+          catch (error) { onError(error instanceof Error ? error : new Error("Audio capture failed.")); } // raw-error: passes the Error on; voiceDictation shows it through friendlyError
         };
         node = processor;
         flush = async () => resampler.flush();

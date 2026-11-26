@@ -26,7 +26,7 @@ describe("loadBuffer", () => {
     read.mockRejectedValue(new Error("a.ts is not a file"));
     const result = await loadBuffer("w", "a.ts");
     expect(result.state).toBe("error");
-    expect(result.message).toBe("a.ts is not a file");
+    expect(result.message).toBe("a.ts is not a file.");
   });
 
   it("carries the seed through, so a reload re-seeds the editor", async () => {

@@ -3,6 +3,7 @@
 // (bridge-core `import_job`), which also adds up what came over. Pure, so it
 // is tested without a DOM.
 import type { DetectedImportSource, ImportJob } from "./protocol/generated/protocol";
+import { friendlyError } from "./errors";
 
 /**
  * "312 chats in 14 projects · 1 setup item" for a found tool, or why it is
@@ -55,7 +56,7 @@ export function finishedLabel(job: ImportJob): string | undefined {
 /** What Bridge says when an import ends: in a toast, and as a system notification. */
 export function importNotice(job: ImportJob, toolLabel = "Claude Code"): { title: string; body: string; failed: boolean } {
   if (job.status === "failed") {
-    return { title: "Import stopped", body: job.errors?.[0] ?? `The import from ${toolLabel} could not finish.`, failed: true };
+    return { title: "Import stopped", body: friendlyError(job.errors?.[0], `The import from ${toolLabel} could not finish.`), failed: true };
   }
   const failed = job.failed > 0 ? ` ${job.failed.toLocaleString()} could not be imported.` : "";
   const workspaces = job.workspaces ?? 0;

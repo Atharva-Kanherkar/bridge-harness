@@ -103,7 +103,7 @@ describe("Clones settings", () => {
     vi.spyOn(bridgeApi, "writeCloneSettings").mockRejectedValue(new Error("write refused"));
     await mount();
     await pick("Close browser copy after", "2 hours");
-    expect(onError).toHaveBeenCalledWith("write refused");
+    expect(onError).toHaveBeenCalledWith("Write refused.");
     expect(trigger("Close browser copy after").textContent).toContain("30 minutes");
   });
 

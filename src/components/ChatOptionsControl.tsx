@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Settings2 } from "lucide-react";
 import { Select } from "./settings/kit";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { defaultsFromSettings, settingSourceLabel } from "../chatDefaults";
 import type { ActiveTurnInput, ResolvedChatSettings } from "../protocol/generated/protocol";
 import { Button } from "@/components/ui/button";
@@ -18,7 +19,7 @@ export function ChatOptionsControl({ settings, disabled, onInputChange, onContin
       const view = await bridgeApi.getChatDefaults(projectId);
       await bridgeApi.saveChatDefaults({ projectId, expectedRevision: (projectId ? view.project : view.application)?.revision ?? 0, defaults: defaultsFromSettings(settings) });
       setNotice(projectId ? "Saved for future chats in this project" : "Saved for future chats");
-    } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { setNotice(friendlyError(error, "Couldn't save these settings as defaults.")); }
     finally { setBusy(false); }
   };
   return <details className="relative shrink-0">

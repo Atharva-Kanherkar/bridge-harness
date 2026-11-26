@@ -33,7 +33,8 @@ it("renders an unavailable replay entry between the surviving messages", () => {
     expect(rows).toHaveLength(3);
     expect(rows[0].textContent).toContain("Before damaged entry");
     expect(rows[1].querySelector('[role="alert"]')?.textContent).toContain("Unavailable history entry");
-    expect(rows[1].textContent).toContain("payload is not an object");
+    expect(rows[1].textContent).toContain("This history entry could not be read.");
+    expect(rows[1].textContent).not.toContain("payload is not an object");
     expect(rows[1].getAttribute("data-entry-id")).toBe("damaged");
     expect(rows[2].textContent).toContain("After damaged entry");
     expect(host.textContent).not.toContain("Using a tool");

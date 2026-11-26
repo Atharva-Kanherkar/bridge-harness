@@ -183,7 +183,8 @@ describe("TrailsScreen loading", () => {
     expect(refreshButton().getAttribute("aria-busy")).not.toBe("true");
     expect(refreshButton().disabled).toBe(false);
     expect(host.querySelector("ol[aria-label=Timeline]")).not.toBeNull();
-    expect(host.textContent).toContain("gh: rate limited");
+    expect(host.textContent).not.toContain("gh: rate limited");
+    expect(host.textContent).toContain("rate limit");
     // Refresh by hand reads from GitHub again.
     act(() => refreshButton().click());
     expect(calls.at(-1)?.refresh).toBe(true);
@@ -225,7 +226,7 @@ describe("TrailsScreen loading", () => {
     await settle();
     await act(async () => { calls[1].reject(new Error("database is locked")); });
     await settle();
-    expect(host.querySelector("[role=alert]")?.textContent).toContain("database is locked");
+    expect(host.querySelector("[role=alert]")?.textContent).toContain("Bridge is busy saving something else. Try again in a moment.");
     act(() => button(/^Retry$/)!.click());
     expect(calls.at(-1)).toMatchObject({ id: "trail-archive", refresh: false });
     await act(async () => { calls.at(-1)!.resolve(); });

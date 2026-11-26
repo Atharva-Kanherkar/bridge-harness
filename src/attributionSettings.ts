@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridgeApi } from "./api";
+import { friendlyError } from "./errors";
 
 export function readHideAiAttribution(value: { hideAiAttribution?: boolean | null } | null | undefined): boolean {
   return value?.hideAiAttribution === true;
@@ -33,7 +34,7 @@ export function useAttributionSettings(): {
       })
       .catch(cause => {
         if (!active) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
+        setError(friendlyError(cause, "Couldn't load the attribution setting."));
         setLoaded(true);
       });
     return () => {
@@ -56,7 +57,7 @@ export function useAttributionSettings(): {
         // Roll back to the last confirmed value so the switch never shows
         // an unpersisted state as if the backend had accepted it.
         setHideState(confirmedRef.current);
-        setError(cause instanceof Error ? cause.message : String(cause));
+        setError(friendlyError(cause, "Couldn't save the attribution setting."));
       })
       .finally(() => setSaving(false));
   }, []);

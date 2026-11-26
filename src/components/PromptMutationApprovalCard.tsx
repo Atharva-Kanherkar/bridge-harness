@@ -4,6 +4,7 @@ import type { ConversationItem } from "../conversation";
 import type { ApprovalDecision } from "../types";
 import type { InteractionResolutionResult } from "../protocol/generated/protocol";
 import { Button } from "@/components/ui/button";
+import { friendlyError } from "../errors";
 
 
 function text(data: Record<string, unknown>, key: string): string {
@@ -52,7 +53,7 @@ export function PromptMutationApprovalCard({ item, onResolve }: {
       const resolved = await onResolve(item.eventId, decision);
       if (resolved) setResult(resolved);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(friendlyError(cause, decision === "accept" ? "Couldn't approve the prompt change." : "Couldn't decline the prompt change."));
     } finally {
       resolving.current = false;
       setBusy(null);

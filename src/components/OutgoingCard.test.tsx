@@ -270,7 +270,7 @@ describe("Outgoing send approval", () => {
   });
   it("shows failed sends and requires another review on Retry", async () => {
     resetMockOutgoing([draft({ state: "failed", lastError: "Slack unavailable" })]);
-    await mount(); expect(container.querySelector('[role="alert"]')?.textContent).toBe("Slack unavailable");
+    await mount(); expect(container.querySelector('[role="alert"]')?.textContent).toBe("Slack unavailable.");
     await click("Retry"); expect(container.querySelector('[role="dialog"]')).toBeTruthy();
   });
   it("clears the old failure alert when the draft is copied", async () => {

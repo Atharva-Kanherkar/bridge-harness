@@ -3,6 +3,7 @@ import { AlertTriangle, Check, ChevronRight, Copy, Download, Eye } from "lucide-
 import type { AgentEvent, ExportSessionTranscriptResult, SessionEntry } from "../types";
 import type { SessionHead } from "../protocol/generated/protocol";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -167,7 +168,7 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
           setExportState({ status: "running" });
           void exportTranscript(sessionId)
             .then(result => setExportState({ status: "done", result }))
-            .catch(cause => setExportState({ status: "error", message: cause instanceof Error ? cause.message : String(cause) }));
+            .catch(cause => setExportState({ status: "error", message: `Couldn't export the transcript. ${friendlyError(cause, "")}`.trim() }));
         }}
         tooltip="Write the whole durable record to a JSONL file"
       >
@@ -205,7 +206,7 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
       </Button>
     </div>}
     {exportState.status === "error" && <p className="shrink-0 border-b border-border px-2 py-1.5 font-mono text-caption text-destructive">
-      Export failed: {exportState.message}
+      {exportState.message}
     </p>}
 
     {view === "stream" && <div className="min-h-0 flex-1 overflow-y-auto font-mono text-caption leading-loose">

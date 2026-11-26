@@ -11,6 +11,7 @@
 import { useEffect, useState } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import type { AdapterDescriptor } from "../../types";
 import type { ChatSearchSettings, SuggestionSettings, SuggestionSettingsSnapshot } from "../../protocol/generated/protocol";
 import { HarnessMark } from "../harnessMarks";
@@ -34,10 +35,10 @@ export function ComposerPage({ adapters, onChange, onError }: {
     let active = true;
     bridgeApi.getSuggestionSettings()
       .then(snapshot => { if (active) setDraft(structuredClone(snapshot.settings)); })
-      .catch(error => onError(error instanceof Error ? error.message : String(error)));
+      .catch(error => onError(friendlyError(error, "Couldn't load the suggestion settings.")));
     bridgeApi.chatSearchSettings()
       .then(settings => { if (active) setSearch(settings); })
-      .catch(error => onError(error instanceof Error ? error.message : String(error)));
+      .catch(error => onError(friendlyError(error, "Couldn't load the chat search settings.")));
     return () => { active = false; };
   }, [onError]);
 
@@ -48,7 +49,7 @@ export function ComposerPage({ adapters, onChange, onError }: {
       setSearch(await bridgeApi.saveChatSearchSettings(next));
       flash(key);
     } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
+      onError(friendlyError(error, "Couldn't save the chat search settings."));
     } finally {
       setBusy(false);
     }
@@ -65,7 +66,7 @@ export function ComposerPage({ adapters, onChange, onError }: {
       onChange(snapshot);
       flash(key);
     } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
+      onError(friendlyError(error, "Couldn't save the suggestion settings."));
     } finally {
       setBusy(false);
     }

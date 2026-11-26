@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ArrowUp, Route } from "lucide-react";
 import type { PreviewTrailBriefResult, TrailSummary } from "@/protocol/generated/protocol";
 import { bridgeApi } from "@/api";
+import { friendlyError } from "@/errors";
 import { briefTotal, chosenInOrder, defaultBriefSelection, formatTokens } from "@/trails";
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { HarnessMark } from "@/components/harnessMarks";
@@ -35,7 +36,7 @@ export function TrailStartDialog({ trail, harnesses, defaultHarness, initialText
     let live = true;
     bridgeApi.previewTrailBrief(trail.id)
       .then(result => { if (!live) return; setPreview(result); setChosen(defaultBriefSelection(result.items)); })
-      .catch(cause => { if (live) setError(cause instanceof Error ? cause.message : String(cause)); });
+      .catch(cause => { if (live) setError(friendlyError(cause, "Couldn't load what the chat starts with.")); });
     return () => { live = false; };
   }, [trail.id]);
 
@@ -50,7 +51,7 @@ export function TrailStartDialog({ trail, harnesses, defaultHarness, initialText
     try {
       await onStart({ trail, text: text.trim(), harness, items: chosenInOrder(preview.items, chosen) });
     } catch (cause) {
-      const reason = cause instanceof Error ? cause.message : String(cause);
+      const reason = friendlyError(cause, "Couldn't start the chat.");
       // Nothing was sent. Re-read what the chat can start with, untick what
       // left the trail and say which, and keep the text for another try.
       const fresh = await bridgeApi.previewTrailBrief(trail.id).catch(() => null);

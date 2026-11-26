@@ -51,11 +51,11 @@ it("reports a failed resume and lets a problem be dismissed", async () => {
   await act(async () => { root.render(<LimitRecoveryBanner sessionId="s" sessionStatus="failed" adapters={[]} onError={onError} />); });
   vi.spyOn(bridgeApi, "resumeLimitRecovery").mockRejectedValue(new Error("Backup harness is unavailable"));
   await act(async () => { button("Resume now")!.click(); });
-  expect(onError).toHaveBeenCalledWith("Backup harness is unavailable");
+  expect(onError).toHaveBeenCalledWith("Backup harness is unavailable.");
 
   vi.spyOn(bridgeApi, "limitRecoveryStatus").mockResolvedValue({ recovery: { ...pending, state: "failed", outcome: "boom" } });
   await act(async () => { root.render(<LimitRecoveryBanner sessionId="s" sessionStatus="idle" adapters={[]} />); });
-  expect(host.textContent).toContain("could not continue this chat after the usage limit: boom");
+  expect(host.textContent).toContain("could not continue this chat after the usage limit. Send a message to try again.");
   expect(button("Resume now")).toBeUndefined();
   await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Dismiss"]')!.click(); });
   expect(host.innerHTML).toBe("");

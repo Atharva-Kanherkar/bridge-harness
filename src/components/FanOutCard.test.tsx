@@ -132,7 +132,7 @@ describe("the fan-out card", () => {
     const onStopWorker = vi.fn(async () => { throw new Error("worker is gone"); });
     await mount({ events: [spawn("a")], onStopWorker });
     await click(button(cards()[0]!, "Stop"));
-    expect(cards()[0]!.querySelector('[role="alert"]')?.textContent).toBe("worker is gone");
+    expect(cards()[0]!.querySelector('[role="alert"]')?.textContent).toBe("Worker is gone.");
   });
 
   it("opens the Agents pane from its chevron", async () => {

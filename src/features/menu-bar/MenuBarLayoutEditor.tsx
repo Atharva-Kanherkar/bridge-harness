@@ -3,9 +3,12 @@ import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import type { MenuBarLayoutToken } from "../../protocol/generated/protocol";
 import { GhostButton, PrimaryButton, SettingsBlockRow, TextArea, TextButton } from "../../components/settings/kit";
 import { layoutExample, layoutTokens, parseLayout } from "./layout";
+import { friendlyError } from "../../errors";
 import { Button } from "@/components/ui/button";
 
 type Props = { layout: MenuBarLayoutToken[][]; busy: boolean; onSave: (layout: MenuBarLayoutToken[][]) => Promise<void> };
+/** Pasted text that is not a layout; a JSON parser's position report says nothing a person can use. */
+const UNREADABLE_LAYOUT = "That text isn't a layout. Use Copy layout to get one.";
 /** A token you can add: smaller than a GhostButton because there are fourteen. */
 
 // A bounded token compositor, following CodexBar's array-of-lines model.
@@ -86,7 +89,7 @@ export function MenuBarLayoutEditor({ layout, busy, onSave }: Props) {
         <TextArea label="Layout JSON" rows={3} value={transfer} placeholder={JSON.stringify(draft)} onChange={setTransfer} />
         <div className="flex flex-wrap gap-2">
           <GhostButton onClick={() => { const text = JSON.stringify(draft); setTransfer(text); void (async () => { try { await navigator.clipboard.writeText(text); setMessage("Layout copied."); } catch { setMessage("Select the layout text above to copy it."); } })(); }}>Copy layout</GhostButton>
-          <GhostButton disabled={busy} onClick={() => { try { setDraft(parseLayout(transfer)); setActiveLine(0); setMessage("Layout loaded. Apply to save it."); } catch (error) { setMessage(error instanceof Error ? error.message : "Invalid layout"); } }}>Load pasted layout</GhostButton>
+          <GhostButton disabled={busy} onClick={() => { try { setDraft(parseLayout(transfer)); setActiveLine(0); setMessage("Layout loaded. Apply to save it."); } catch (error) { setMessage(error instanceof SyntaxError ? UNREADABLE_LAYOUT : friendlyError(error, UNREADABLE_LAYOUT)); } }}>Load pasted layout</GhostButton>
         </div>
       </div>
       {message && <p role="status" className="mt-2 text-meta text-muted-foreground">{message}</p>}

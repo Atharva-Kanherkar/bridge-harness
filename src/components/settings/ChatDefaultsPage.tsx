@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import { layerChatDefaults, WORKER_EFFORTS } from "../../chatDefaults";
 import type { AdapterDescriptor, AgentDefinition, Project } from "../../types";
 import type { ChatDefaults, ChatDefaultsView, ChatLaunchTarget } from "../../protocol/generated/protocol";
@@ -46,7 +47,7 @@ export function ChatDefaultsPage({ adapters, agents }: { adapters: AdapterDescri
       if (generation.current !== request) return;
       setProjects(state.projects); setView(next); setDraft(structuredClone((scope ? next.project : next.application)?.defaults ?? {}));
       if (!scope) acceptApplicationChatDefaults(next);
-    }).catch(error => { if (generation.current === request) setError(String(error)); })
+    }).catch(error => { if (generation.current === request) setError(friendlyError(error, "Couldn't load the chat defaults.")); })
       .finally(() => { if (generation.current === request) setBusy(false); });
     // oxlint-disable-next-line react-hooks/exhaustive-deps -- a request generation counter, not a DOM ref: cleanup must bump its latest value
     return () => { generation.current++; };
@@ -88,7 +89,7 @@ export function ChatDefaultsPage({ adapters, agents }: { adapters: AdapterDescri
       flash(key ?? "reset");
     } catch (error) {
       if (generation.current !== request) return;
-      setError(error instanceof Error ? error.message : String(error));
+      setError(friendlyError(error, "Couldn't save the chat defaults."));
       setDraft(structuredClone((scope ? view.project : view.application)?.defaults ?? {}));
     }
     finally { if (generation.current === request) setBusy(false); }

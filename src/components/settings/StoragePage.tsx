@@ -17,6 +17,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSPrope
 import { ChevronDown, ChevronRight, CircleAlert, CircleCheck, File, Folder, FolderOpen, Lock, MessageCircle, RefreshCw, Trash2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi as api } from "../../api";
+import { friendlyError } from "../../errors";
 import type { DiskDeleteResult, DiskEntry, DiskListing, DiskOverview, DiskSuggestion } from "../../types";
 import { cleanupTotal, diskBytes, displayPath, storageSnapshot, withSnapshot, type StoragePlanItem } from "../../diskSpace";
 import { StorageAgentContext, type StorageAgentHost } from "../StoragePlanCard";
@@ -159,13 +160,9 @@ function outcomeOf(result: DiskDeleteResult, entries: readonly DiskEntry[]): Out
     : result.trashed ? `Moved ${what} to the Trash. The space comes back when you empty it.` : `Deleted ${what}.`;
   return {
     summary,
-    failures: result.failed.map(failure => ({ name: named.get(failure.path) ?? (failure.path.split("/").pop() || failure.path), reason: failure.reason })),
+    failures: result.failed.map(failure => ({ name: named.get(failure.path) ?? (failure.path.split("/").pop() || failure.path), reason: friendlyError(failure.reason, result.trashed ? "Couldn't move it to the Trash." : "Couldn't delete it.") })),
     offerEmptyTrash: result.trashed && count > 0,
   };
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** Descriptions mark commands with backticks; show them as code. */
@@ -548,9 +545,11 @@ export function StoragePage({ onError, title = PAGES.data.label, extra, copilot 
   const railId = useId();
   useEffect(() => { localStorage.setItem(RAIL_KEY, String(railWidth)); }, [railWidth]);
 
-  const fail = useCallback((caught: unknown) => {
-    setError(message(caught));
-    onError?.(message(caught));
+  const fail = useCallback((caught: unknown, fallback: string) => {
+    const text = friendlyError(caught, fallback);
+    setError(text);
+    onError?.(text);
+    return text;
   }, [onError]);
 
   const load = useCallback(async (target: string | null, refresh = false) => {
@@ -565,7 +564,7 @@ export function StoragePage({ onError, title = PAGES.data.label, extra, copilot 
       setListing(nextListing);
       if (nextListing.path === nextOverview.home) setHome(nextListing);
       else if (!home || home.measuring) setHome(await api.scanDirectory(null));
-    } catch (caught) { fail(caught); }
+    } catch (caught) { fail(caught, "Couldn't measure your disk."); }
   }, [fail, home]);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- once per visit
@@ -625,7 +624,7 @@ export function StoragePage({ onError, title = PAGES.data.label, extra, copilot 
       });
       setConfirming(null);
       await load(pathRef.current);
-    } catch (caught) { setConfirming(null); fail(caught); } finally { setBusy(false); }
+    } catch (caught) { setConfirming(null); fail(caught, entries.length === 1 ? `Couldn't remove ${entries[0].name}.` : "Couldn't remove those items."); } finally { setBusy(false); }
   };
 
   const emptyTrash = async () => {
@@ -634,10 +633,10 @@ export function StoragePage({ onError, title = PAGES.data.label, extra, copilot 
       const result = await api.emptyTrash();
       setOutcome(result.emptied
         ? { summary: "The Trash is empty.", failures: [], offerEmptyTrash: false }
-        : { summary: "The Trash was not emptied.", failures: [{ name: "Trash", reason: result.detail ?? "Finder did not say why." }], offerEmptyTrash: false });
+        : { summary: "The Trash was not emptied.", failures: [{ name: "Trash", reason: friendlyError(result.detail, "Finder did not say why.") }], offerEmptyTrash: false });
       setConfirming(null);
       await load(pathRef.current);
-    } catch (caught) { setConfirming(null); fail(caught); } finally { setBusy(false); }
+    } catch (caught) { setConfirming(null); fail(caught, "Couldn't empty the Trash."); } finally { setBusy(false); }
   };
 
   // Each message carries what the page measured, but only when that changed
@@ -677,9 +676,9 @@ export function StoragePage({ onError, title = PAGES.data.label, extra, copilot 
         });
         await load(pathRef.current);
         const done = moved.length === 0 ? "" : `Moved ${moved.length} item${moved.length === 1 ? "" : "s"}${result.bytesFreed ? `, ${diskBytes(result.bytesFreed)},` : ""} to the Trash. Empty the Trash to get the space back.`;
-        const refused = result.failed.map(failure => `${failure.path.split("/").pop()}: ${failure.reason}`).join(" ");
+        const refused = result.failed.map(failure => `${failure.path.split("/").pop()}: ${friendlyError(failure.reason, "Couldn't move it to the Trash.")}`).join(" ");
         return [done, refused].filter(Boolean).join(" ") || "Nothing was removed.";
-      } catch (caught) { fail(caught); return message(caught); } finally { setBusy(false); }
+      } catch (caught) { return fail(caught, "Couldn't move those to the Trash."); } finally { setBusy(false); }
     },
     select: items => setSelected(current => {
       const next = new Map(current);

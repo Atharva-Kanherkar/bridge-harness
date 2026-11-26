@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { Download as DownloadSimple, Plus } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type { CompiledPromptPreviewResult, PromptSectionStatePayload, PromptSectionView, PromptStackView, PromptTargetChoice } from "../types";
 import { CodeEditor } from "./editor/CodeEditor";
 import {
@@ -57,30 +58,33 @@ function docKeyFor(target: PromptTargetChoice, sectionId: string): string {
   return `${target}:${sectionId}`;
 }
 
+/** A problem with an import file, worded for the person who chose the file. */
+class ImportFileError extends Error {}
+
 /** Structural validation only — every entry that survives this pass is
  *  guaranteed to be a `{ target, sectionId, text }` triple, so applying it
  *  later can never encounter a shape surprise mid-import. */
 function parseOverridesFile(raw: unknown, stacksByTarget: Record<PromptTargetChoice, PromptStackView>): { target: PromptTargetChoice; sectionId: string; text: string }[] {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    throw new Error("Import file must be a JSON object keyed by prompt target.");
+    throw new ImportFileError("Import file must be a JSON object keyed by prompt target.");
   }
   const entries: { target: PromptTargetChoice; sectionId: string; text: string }[] = [];
   for (const [targetKey, sectionsValue] of Object.entries(raw as Record<string, unknown>)) {
-    if (!TARGET_IDS.has(targetKey as PromptTargetChoice)) throw new Error(`Unknown prompt target "${targetKey}".`);
+    if (!TARGET_IDS.has(targetKey as PromptTargetChoice)) throw new ImportFileError(`Unknown prompt target "${targetKey}".`);
     const target = targetKey as PromptTargetChoice;
     if (typeof sectionsValue !== "object" || sectionsValue === null || Array.isArray(sectionsValue)) {
-      throw new Error(`Sections for "${targetKey}" must be a JSON object.`);
+      throw new ImportFileError(`Sections for "${targetKey}" must be a JSON object.`);
     }
     const validSectionIds = new Set(stacksByTarget[target].sections.map(section => section.id));
     for (const [sectionId, entryValue] of Object.entries(sectionsValue as Record<string, unknown>)) {
-      if (!validSectionIds.has(sectionId)) throw new Error(`Unknown section "${sectionId}" for target "${targetKey}".`);
+      if (!validSectionIds.has(sectionId)) throw new ImportFileError(`Unknown section "${sectionId}" for target "${targetKey}".`);
       if (typeof entryValue !== "object" || entryValue === null || Array.isArray(entryValue)) {
-        throw new Error(`Malformed override entry for "${targetKey}.${sectionId}".`);
+        throw new ImportFileError(`Malformed override entry for "${targetKey}.${sectionId}".`);
       }
       const entry = entryValue as Record<string, unknown>;
       const text = entry.text;
       if (entry.state !== "overridden" || typeof text !== "string") {
-        throw new Error(`Malformed override entry for "${targetKey}.${sectionId}".`);
+        throw new ImportFileError(`Malformed override entry for "${targetKey}.${sectionId}".`);
       }
       entries.push({ target, sectionId, text });
     }
@@ -144,7 +148,7 @@ export function PromptStudio() {
       if (!active) return;
       setStacks(current => ({ ...current, [target]: next }));
       setSectionId(current => (current && next.sections.some(item => item.id === current)) ? current : undefined);
-    }).catch(err => { if (active) setError(err instanceof Error ? err.message : String(err)); });
+    }).catch(err => { if (active) setError(friendlyError(err, "Couldn't load the prompt sections.")); });
     return () => { active = false; };
   }, [target]);
 
@@ -159,7 +163,7 @@ export function PromptStudio() {
       setPrefixChanged(previousHash !== undefined && previousHash !== next.prefixHash);
       previousPrefixHashByTarget.current[target] = next.prefixHash;
       setPreview(next);
-    }).catch(err => { if (active) setPreviewError(err instanceof Error ? err.message : String(err)); });
+    }).catch(err => { if (active) setPreviewError(friendlyError(err, "Couldn't build the prompt preview.")); });
     return () => { active = false; };
   }, [target, stack]);
 
@@ -188,9 +192,9 @@ export function PromptStudio() {
     setError(undefined);
     try { await action(); }
     catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = err instanceof ImportFileError ? err.message : friendlyError(err, "Couldn't update the prompt. Try again."); // raw-error: ImportFileError text is written for the reader
       setError(message);
-      setAnnouncement(`Failed: ${message}`);
+      setAnnouncement(message);
     }
     finally { setBusy(false); }
   }
@@ -264,7 +268,7 @@ export function PromptStudio() {
       const text = await readFileText(file);
       let parsed: unknown;
       try { parsed = JSON.parse(text); }
-      catch { throw new Error("Import file is not valid JSON."); }
+      catch { throw new ImportFileError("Import file is not valid JSON."); }
 
       const stacksByTarget = Object.fromEntries(
         await Promise.all(TARGETS.map(async item => [item.id, await bridgeApi.promptStack(item.id)] as const)),
@@ -278,7 +282,7 @@ export function PromptStudio() {
           await bridgeApi.savePromptSection(entry.target, entry.sectionId, entry.text);
           return { key: `${entry.target}:${entry.sectionId}`, ok: true as const };
         } catch (err) {
-          return { key: `${entry.target}:${entry.sectionId}`, ok: false as const, message: err instanceof Error ? err.message : String(err) };
+          return { key: `${entry.target}:${entry.sectionId}`, ok: false as const, message: friendlyError(err, "Couldn't save this section.") };
         }
       }));
       setImportResults(results);
@@ -456,7 +460,7 @@ export function PromptStudio() {
         key={item.key}
         label={<span className={cn("font-mono text-caption", !item.ok && "text-destructive")}>{item.key}</span>}
         control={<span className={cn("text-caption", item.ok ? "text-muted-foreground" : "text-destructive")}>
-          {item.ok ? "saved" : `failed (${item.message})`}
+          {item.ok ? "saved" : item.message ?? "Couldn't save this section."}
         </span>}
       />)}
     </SettingsGroup>}

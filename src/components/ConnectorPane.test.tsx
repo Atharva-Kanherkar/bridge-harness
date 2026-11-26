@@ -181,7 +181,7 @@ describe("ConnectorPane", () => {
     stub(inbox([], "provider timed out"));
     const node = await mount(<ConnectorPane />);
     expect(node.textContent).toContain("Couldn’t read your inbox");
-    expect(node.textContent).toContain("provider timed out");
+    expect(node.textContent).toContain("Provider timed out.");
     expect(node.textContent).not.toContain("all caught up");
   });
 

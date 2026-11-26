@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Plus, Route } from "lucide-react";
 import type { TrailMemberRef, TrailSummary } from "@/protocol/generated/protocol";
 import { bridgeApi } from "@/api";
+import { friendlyError } from "@/errors";
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { StageBar } from "./TrailParts";
@@ -29,7 +30,7 @@ export function AddToTrailDialog({ member, title: subjectTitle, workspaceId, tra
     if (busy) return;
     setBusy(true); setError(undefined);
     try { await action(); onDone(); onClose(); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); setBusy(false); }
+    catch (cause) { setError(friendlyError(cause, `Couldn't add this ${noun} to the trail.`)); setBusy(false); }
   }
 
   function create(event: FormEvent) {

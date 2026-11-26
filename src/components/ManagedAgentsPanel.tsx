@@ -3,6 +3,7 @@ import { SkeletonRows } from "@/components/ui/skeleton";
 import type { UsageProvider } from "../usage";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type {
   ManagedAgentOperationResult,
   ManagedAgentStatus,
@@ -114,7 +115,7 @@ export function useManagedAgents(initialAgents?: ManagedAgentStatus[], onChanged
     setListError(null);
     return bridgeApi.listManagedAgents()
       .then(list => { if (read === latestRead.current && before === writes.current) setAgents(list.agents); })
-      .catch(error => { if (read === latestRead.current && before === writes.current) setListError(error instanceof Error ? error.message : String(error)); });
+      .catch(error => { if (read === latestRead.current && before === writes.current) setListError(friendlyError(error, "Couldn't check how your agents are installed.")); });
   }, []);
 
   useEffect(() => {
@@ -143,7 +144,7 @@ export function useManagedAgents(initialAgents?: ManagedAgentStatus[], onChanged
     } catch (error) {
       setErrors(current => ({
         ...current,
-        [agentId]: error instanceof Error ? error.message : String(error),
+        [agentId]: friendlyError(error, `Couldn't finish ${verb.toLowerCase()} ${agent.label}.`),
       }));
     } finally {
       // Only this agent's slot, so a sibling operation still in flight keeps its

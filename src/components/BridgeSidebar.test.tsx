@@ -757,7 +757,7 @@ describe("BridgeSidebar chat menu early compaction", () => {
     const save = vi.spyOn(bridgeApi, "saveEarlyCompactionSettings").mockRejectedValueOnce(new Error("the store is read-only"));
     act(() => optOut()!.click()); await settle();
     expect(save).toHaveBeenCalledWith(direct.id, false);
-    expect(alert()?.textContent).toBe("the store is read-only");
+    expect(alert()?.textContent).toBe("The store is read-only.");
     expect(alert()?.className).toContain("text-destructive");
     expect(optOut()?.getAttribute("aria-checked"), "a refused save keeps the confirmed value").toBe("true");
 

@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { browserCommand, browserViewportVisible, hasNativeBrowser, registerBrowserPageValidator, type BrowserAction, type BrowserPageSnapshot } from "../browserRuntime";
 import { createCoalescedRefresh, startSerialPoll } from "../polling";
+import { friendlyError } from "../errors";
 import { appliedZoom, onZoomChange } from "../zoom";
 
 export type BrowserPageHandle = {
@@ -46,7 +47,7 @@ export const BrowserPage = forwardRef<BrowserPageHandle, BrowserPageProps>(funct
     });
     let stop = () => {};
     let dispose = () => {};
-    const fail = (error: unknown) => { if (!disposed) current.current.onError(error instanceof Error ? error.message : String(error)); };
+    const fail = (error: unknown, fallback = "The browser page isn't responding. Try reloading it.") => { if (!disposed) current.current.onError(friendlyError(error, fallback)); };
     if (hasNativeBrowser()) {
       ready.current = browserCommand("create", sessionId, tabId, { url: initialUrl }).then(async () => {
         if (disposed) { await browserCommand("close", sessionId, tabId); return; }
@@ -106,7 +107,7 @@ export const BrowserPage = forwardRef<BrowserPageHandle, BrowserPageProps>(funct
       });
       // Report initialization errors without converting readiness to a success:
       // subsequent navigation must fail visibly instead of silently doing nothing.
-      void ready.current.catch(fail);
+      void ready.current.catch(error => fail(error, "Couldn't open the browser page."));
     } else {
       // Web-only preview: browser security limits cross-origin iframe inspection.
       // The desktop uses independent native pages and is not subject to framing.

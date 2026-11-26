@@ -14,6 +14,7 @@ import { useCallback, useEffect, useState } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { bridgeApi as api } from "../../api";
+import { friendlyError } from "../../errors";
 import type { WorktreeInventoryEntry, WorktreeUsage } from "../../types";
 import { GhostButton, Select, StatusPill, TextButton, type PillTone } from "./kit";
 import { Tip } from "@/components/ui/tooltip";
@@ -157,8 +158,9 @@ export function WorktreeStorage({ onError }: { onError?: (message: string) => vo
       setUsage(nextUsage);
       setEntries(nextEntries);
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
-      onError?.(error instanceof Error ? error.message : String(error));
+      const message = friendlyError(error, "Couldn't load your worktrees.");
+      setError(message);
+      onError?.(message);
     } finally { setLoading(false); }
   }, [onError]);
 
@@ -172,11 +174,12 @@ export function WorktreeStorage({ onError }: { onError?: (message: string) => vo
       const result = await api.reclaimWorktree(entry.id, force);
       setNote(result.reclaimed
         ? `${force ? "Deleted" : "Reclaimed"} ${bytes(result.bytesFreed)} from ${repoName(entry.path)}.`
-        : result.detail ?? "Nothing was reclaimed.");
+        : friendlyError(result.detail, "Nothing was reclaimed."));
       await load();
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
-      onError?.(error instanceof Error ? error.message : String(error));
+      const message = friendlyError(error, force ? "Couldn't delete the checkout." : "Couldn't reclaim the checkout.");
+      setError(message);
+      onError?.(message);
     } finally {
       setBusy(null);
     }
@@ -195,8 +198,9 @@ export function WorktreeStorage({ onError }: { onError?: (message: string) => vo
         + (result.overBudgetBytes ? ` ${bytes(result.overBudgetBytes)} remains over budget and is protected.` : ""));
       await load();
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
-      onError?.(error instanceof Error ? error.message : String(error));
+      const message = friendlyError(error, "Couldn't reclaim the checkouts.");
+      setError(message);
+      onError?.(message);
     } finally {
       setBusy(null);
     }

@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { RefreshCw } from "lucide-react";
 import { bridgeApi } from "../../api";
+import { errorMessage, friendlyError } from "../../errors";
 import type { MenuBarSettings, ProviderUsageOverviews } from "../../protocol/generated/protocol";
 import { PAGES } from "../../components/settings/sections";
 import { Field, GhostButton, PrimaryButton, Segmented, SettingsPage, SettingsGroup, SettingsRow, Select, Switch, useSavedFlash } from "../../components/settings/kit";
@@ -37,18 +38,18 @@ export function MenuBarSettingsPage() {
   useEffect(() => {
     let active = true;
     const subscriptions: (() => void)[] = [];
-    const subscribe = (promise: Promise<() => void>) => { void promise.then(off => { if (active) subscriptions.push(off); else off(); }).catch(error => { if (active) setError(String(error)); }); };
+    const subscribe = (promise: Promise<() => void>) => { void promise.then(off => { if (active) subscriptions.push(off); else off(); }).catch(error => { if (active) setError(friendlyError(error, "Couldn't keep the menu bar settings up to date.")); }); };
     // A failed usage read must not prevent disabling or changing the menu.
     void bridgeApi.getMenuBarSettings().then(settings => {
       if (active) { confirmedSettings.current = settings; setSettings(settings); }
-    }).catch(error => { if (active) setError(String(error)); });
+    }).catch(error => { if (active) setError(friendlyError(error, "Couldn't load the menu bar settings.")); });
     void bridgeApi.getProviderUsageOverviews().then(usage => {
       if (active) setUsage(usage);
-    }).catch(error => { if (active) setError(String(error)); });
+    }).catch(error => { if (active) setError(friendlyError(error, "Couldn't load provider usage.")); });
     subscribe(bridgeApi.onProviderUsageOverviews(value => { if (active) setUsage(value); }));
     subscribe(bridgeApi.onMenuBarConnection(message => { if (active) setConnection(message); }));
     subscribe(bridgeApi.onMenuBarSettingsChanged(() => {
-      void bridgeApi.getMenuBarSettings().then(value => { if (active && pendingSaves.current === 0) { confirmedSettings.current = value; setSettings(value); } }).catch(error => { if (active) setError(String(error)); });
+      void bridgeApi.getMenuBarSettings().then(value => { if (active && pendingSaves.current === 0) { confirmedSettings.current = value; setSettings(value); } }).catch(error => { if (active) setError(friendlyError(error, "Couldn't load the menu bar settings.")); });
     }));
     return () => { active = false; subscriptions.forEach(off => off()); };
   }, []);
@@ -63,7 +64,7 @@ export function MenuBarSettingsPage() {
         confirmedSettings.current = value;
         setSettings(value);
         for (const key of Object.keys(patch)) flash(key);
-      } catch (error) { setError(String(error)); }
+      } catch (error) { setError(friendlyError(error, "Couldn't save the menu bar settings.")); }
       finally { pendingSaves.current -= 1; if (pendingSaves.current === 0) setBusy(false); }
     });
     saves.current = operation;
@@ -73,7 +74,7 @@ export function MenuBarSettingsPage() {
   async function refresh() {
     setBusy(true); setError(null);
     try { setUsage(await bridgeApi.refreshProviderUsageOverviews()); }
-    catch (error) { setError(String(error)); }
+    catch (error) { setError(friendlyError(error, "Couldn't refresh usage.")); }
     finally { setBusy(false); }
   }
 
@@ -86,7 +87,7 @@ export function MenuBarSettingsPage() {
       setConnection("OpenCode Go API key saved. Enable OpenCode usage and add it to favorites to show its limits in the menu.");
       if (settings?.opencodeEnabled) setUsage(await bridgeApi.refreshProviderUsageOverviews());
     } catch (error) {
-      setError(String(error).includes("OPENCODE_AUTH_CONTENT")
+      setError(errorMessage(error).includes("OPENCODE_AUTH_CONTENT")
         ? "OpenCode authentication is managed by OPENCODE_AUTH_CONTENT. Update that environment setting instead."
         : "Could not save the OpenCode Go API key. Check that OpenCode is installed, then try again.");
     } finally { setBusy(false); }
@@ -153,11 +154,11 @@ export function MenuBarSettingsPage() {
           const extra = (usage?.providers ?? []).filter(value => value.provider === provider.id && !!value.accountId);
           return <Fragment key={provider.id}>
             <SettingsRow label={provider.name}
-              description={!settings[provider.key] ? provider.description : account?.account ? `${account.account}${account.plan ? ` · ${account.plan}` : ""}` : account?.error ?? (account?.quotaSource ? `Usage via ${account.quotaSource}` : provider.description)}
+              description={!settings[provider.key] ? provider.description : account?.account ? `${account.account}${account.plan ? ` · ${account.plan}` : ""}` : account?.error ? friendlyError(account.error, `Couldn't read ${provider.name} usage.`) : (account?.quotaSource ? `Usage via ${account.quotaSource}` : provider.description)}
               control={<Switch label={`Read ${provider.name} usage`} checked={settings[provider.key] ?? false} disabled={busy}
                 onChange={value => void save({ [provider.key]: value })} />} />
             {extra.map(row => <SettingsRow key={row.accountId} label={`${provider.name} · ${row.accountLabel || row.accountId}`}
-              description={!settings[provider.key] ? `Shown when ${provider.name} usage is on.` : row.account ? `${row.account}${row.plan ? ` · ${row.plan}` : ""}` : row.error ?? "Not read yet."}
+              description={!settings[provider.key] ? `Shown when ${provider.name} usage is on.` : row.account ? `${row.account}${row.plan ? ` · ${row.plan}` : ""}` : row.error ? friendlyError(row.error, `Couldn't read ${provider.name} usage.`) : "Not read yet."}
               control={<span className="text-caption text-muted-foreground">{settings[provider.key] ? "Included" : "Off"}</span>} />)}
           </Fragment>;
         })}

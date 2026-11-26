@@ -3,6 +3,7 @@ import { Skeleton, SkeletonRegion, SkeletonRows } from "@/components/ui/skeleton
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Check, ChevronLeft, ChevronRight, ExternalLink, Package, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Unplug, X } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { applyAppAuthStates, authenticationLabel, categoryLabel, compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, isUnnamedService, MARKETPLACE_ALIASES, serviceCategory, servicePopularity, verifiedBrandLogoUrl, type MarketplaceService } from "../marketplace";
 import type { MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MarketplaceVariant } from "../types";
 import { Badge } from "@/components/ui/badge";
@@ -199,7 +200,7 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
 
       {!!results.length && <section className="mt-6">
         <div className="u-surface rounded-2xl p-4 text-caption">
-          {results.map(result => <div key={`${result.provider}:${result.pluginId}`} className="flex items-start gap-2 py-1">{result.success ? <Check className="mt-0.5 shrink-0 text-success" size={12} /> : <X className="mt-0.5 shrink-0 text-destructive" size={12} />}<span className="min-w-0 break-words text-muted-foreground"><b className="font-medium text-foreground">{providerLabel(result.provider)}:</b> {result.error ?? result.message}</span></div>)}
+          {results.map(result => <div key={`${result.provider}:${result.pluginId}`} className="flex items-start gap-2 py-1">{result.success ? <Check className="mt-0.5 shrink-0 text-success" size={12} /> : <X className="mt-0.5 shrink-0 text-destructive" size={12} />}<span className="min-w-0 break-words text-muted-foreground"><b className="font-medium text-foreground">{providerLabel(result.provider)}:</b> {result.error ? friendlyError(result.error, `Couldn't ${result.action} it.`) : result.message}</span></div>)}
           {!!failed.length && <Button size="xs" variant="secondary" className="mt-2" disabled={!!busyKey} onClick={onRetry}><RefreshCw size={10} /> Retry failed provider</Button>}
         </div>
       </section>}
@@ -358,7 +359,7 @@ function PluginMarketplace() {
       <ScreenHeading title="Plugins" action={<Button variant="quiet" size="icon-sm" onClick={() => { void refresh(); void refreshAuth(); }} disabled={loading} loading={loading} aria-label="Refresh apps" tooltip="Refresh apps"><RefreshCw aria-hidden="true" /></Button>} />
       <InputGroup className="mt-4"><InputGroupAddon><Search aria-hidden="true" /></InputGroupAddon><InputGroupInput size="sm" value={query} onChange={event => setQuery(event.target.value)} aria-label="Search apps" placeholder="Search apps" /></InputGroup>
 
-      {catalog?.providers.map(item => item.error && <div key={item.provider} className="mt-3 flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-caption text-warning"><AlertCircle className="mt-0.5 shrink-0" size={12} /><span className="min-w-0 break-words"><b>{providerLabel(item.provider)}:</b> {item.error}</span></div>)}
+      {catalog?.providers.map(item => item.error && <div key={item.provider} className="mt-3 flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-caption text-warning"><AlertCircle className="mt-0.5 shrink-0" size={12} /><span className="min-w-0 break-words"><b>{providerLabel(item.provider)}:</b> {friendlyError(item.error, "Couldn't load its plugins.")}</span></div>)}
       {resolvingNames && <SkeletonRegion label="Resolving connector names" className="mt-3"><Skeleton className="h-2.5 w-40" /></SkeletonRegion>}
       {namesFailed && <p role="status" className="mt-3 flex flex-wrap items-center gap-2 text-caption text-warning"><AlertCircle size={12} aria-hidden="true" />Connector names could not be resolved.<Button variant="link" size="inline" onClick={() => void refreshAuth()}>Retry</Button></p>}
       {loading && !catalog && <PluginListSkeleton />}

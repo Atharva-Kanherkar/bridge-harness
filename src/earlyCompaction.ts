@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { bridgeApi } from "./api";
+import { friendlyError } from "./errors";
 import type { EarlyCompactionSettings } from "./types";
 
 /** The text of both controls. The chat item shows only while the global switch is on, so its note names no default. */
@@ -22,7 +23,7 @@ export function useEarlyCompaction(sessionId?: string): {
     bridgeApi
       .earlyCompactionSettings(sessionId)
       .then(next => { if (active) setView(next); })
-      .catch(cause => { if (active) setError(cause instanceof Error ? cause.message : String(cause)); });
+      .catch(cause => { if (active) setError(friendlyError(cause, "Couldn't load the early compaction setting.")); });
     return () => { active = false; };
   }, [sessionId]);
   const set = useCallback((enabled: boolean | null) => {
@@ -31,7 +32,7 @@ export function useEarlyCompaction(sessionId?: string): {
     bridgeApi
       .saveEarlyCompactionSettings(sessionId ?? null, enabled)
       .then(setView)
-      .catch(cause => setError(cause instanceof Error ? cause.message : String(cause)))
+      .catch(cause => setError(friendlyError(cause, "Couldn't save the early compaction setting.")))
       .finally(() => setBusy(false));
   }, [sessionId]);
   return { view, error, busy, set };

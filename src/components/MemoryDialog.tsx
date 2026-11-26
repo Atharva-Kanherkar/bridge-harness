@@ -12,6 +12,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { bridgeApi, MEMORY_PAGE_SIZE } from "../api";
+import { friendlyError } from "../errors";
 import { searchRecords } from "../memoryStats";
 import { harnessLabel } from "../utils";
 import { relative } from "./UsageInsights";
@@ -190,7 +191,7 @@ export function MemoryDialog({
       });
     } catch (error) {
       failedCursor.current = cursor;
-      if (generation === readGeneration.current) onError(error instanceof Error ? error.message : String(error));
+      if (generation === readGeneration.current) onError(friendlyError(error, "Couldn't load more memories."));
     } finally {
       setLoadingMore(current => current === status ? null : current);
     }
@@ -269,16 +270,16 @@ export function MemoryDialog({
       }).catch(error => {
         // The generation gate covers the failure path too: a slow read that
         // errors after a newer one rendered must not toast over it.
-        if (active && generation === readGeneration.current) onError(String(error));
+        if (active && generation === readGeneration.current) onError(friendlyError(error, "Couldn't load your memories."));
       });
     };
     load();
     bridgeApi.getMemoryCapabilities().then(value => { if (active) setCapabilities(value); })
-      .catch(error => { if (active) onError(String(error)); });
+      .catch(error => { if (active) onError(friendlyError(error, "Couldn't check what memory can do here.")); });
     void bridgeApi.onMemoryChanged(() => load()).then(fn => {
       if (!active) { fn(); return; }
       off = fn;
-    }).catch(error => { if (active) onError(String(error)); });
+    }).catch(error => { if (active) onError(friendlyError(error, "Couldn't watch for memory changes.")); });
     return () => { active = false; off?.(); };
   }, [onError, open]);
 
@@ -306,10 +307,10 @@ export function MemoryDialog({
   const usedPct = stats && stats.activeRecords > 0 ? Math.round((stats.recalledRecords / stats.activeRecords) * 100) : null;
   const budgetPct = stats && stats.budgetCharsMax > 0 ? Math.round((stats.budgetCharsUsed / stats.budgetCharsMax) * 100) : 0;
 
-  const act = async (work: () => Promise<unknown>) => {
+  const act = async (work: () => Promise<unknown>, fallback = "Couldn't update your memory.") => {
     setBusy(true);
     try { await work(); }
-    catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    catch (error) { onError(friendlyError(error, fallback)); }
     finally { setBusy(false); }
   };
   /** One decision for every ticked proposal, in batches core accepts. */
@@ -322,8 +323,8 @@ export function MemoryDialog({
       refused.push(...result.refused.map(refusal => refusal.reason));
     }
     setSelected(new Set());
-    if (refused.length) onError(`${refused.length} of ${ids.length} could not be ${approving ? "approved" : "rejected"}: ${refused[0]}`);
-  });
+    if (refused.length) onError(`${refused.length} of ${ids.length} could not be ${approving ? "approved" : "rejected"}. ${friendlyError(refused[0], "")}`.trim());
+  }, approving ? "Couldn't approve those proposals." : "Couldn't reject those proposals.");
   const toggleSelected = (id: string) => setSelected(current => {
     const next = new Set(current);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -337,7 +338,7 @@ export function MemoryDialog({
       await bridgeApi.saveMemoryRecord(body, kind, undefined);
     }
     setBody("");
-  });
+  }, "Couldn't save the memory.");
   const beginEdit = (record: MemoryRecord) => {
     setEditingId(record.id);
     setBody(record.body);
@@ -352,7 +353,7 @@ export function MemoryDialog({
   };
   const setMode = (mode: string) => act(async () => {
     setSettings(await bridgeApi.updateExtractionSettings(mode));
-  });
+  }, "Couldn't change how memories are captured.");
   /** Store a pin, or clear it with neither half, and show the stored answer. */
   const saveMemoryModel = (harness?: string, model?: string) => act(async () => {
     try {
@@ -363,7 +364,7 @@ export function MemoryDialog({
       // Saved or refused, the pickers go back to what is stored.
       setModelDraft(null);
     }
-  });
+  }, "Couldn't change the memory model.");
   // A pin names both halves, so picking a harness only drafts it until a model
   // is chosen; "Use my new-chat model" clears the pin at once.
   const pickMemoryHarness = (harness: string) => {
@@ -402,7 +403,7 @@ export function MemoryDialog({
               void act(async () => {
                 const applied = await bridgeApi.setMemoryInjection(next);
                 setInjection(applied.enabled);
-              });
+              }, "Couldn't change whether new chats use memory.");
             }}
           />
         </label>}
@@ -509,7 +510,7 @@ export function MemoryDialog({
                   <Button variant="quiet" size="icon-xs" aria-label="Edit" tooltip="Edit" disabled={busy} onClick={() => beginEdit(record)}>
                     <Pencil aria-hidden="true" />
                   </Button>
-                  <Button variant="quiet" size="icon-xs" aria-label="Forget" tooltip="Forget" disabled={busy} onClick={() => void act(() => bridgeApi.deleteMemoryRecord(record.id))}>
+                  <Button variant="quiet" size="icon-xs" aria-label="Forget" tooltip="Forget" disabled={busy} onClick={() => void act(() => bridgeApi.deleteMemoryRecord(record.id), "Couldn't forget that memory.")}>
                     <X aria-hidden="true" />
                   </Button>
                 </div>
@@ -653,8 +654,8 @@ export function MemoryDialog({
                       </p>
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
-                      <Button variant="quiet" size="xs" disabled={busy} onClick={() => void act(() => bridgeApi.rejectMemoryRecord(record.id))}>Reject</Button>
-                      <Button size="xs" disabled={busy} onClick={() => void act(() => bridgeApi.approveMemoryRecord(record.id))}><Check aria-hidden="true" />Approve</Button>
+                      <Button variant="quiet" size="xs" disabled={busy} onClick={() => void act(() => bridgeApi.rejectMemoryRecord(record.id), "Couldn't reject that proposal.")}>Reject</Button>
+                      <Button size="xs" disabled={busy} onClick={() => void act(() => bridgeApi.approveMemoryRecord(record.id), "Couldn't approve that proposal.")}><Check aria-hidden="true" />Approve</Button>
                     </div>
                   </li>
                 ))}
@@ -764,7 +765,7 @@ function ShowMore({ remaining, loading, disabled, onClick }: { remaining: number
 
 /** One line for a settled run: what it did, or why it did not. */
 function runDetail(entry: MemoryActivityEntry): string {
-  if (entry.status !== "completed") return entry.detail ? `${entry.status}: ${entry.detail}` : entry.status;
+  if (entry.status !== "completed") return entry.detail ? `${entry.status}: ${friendlyError(entry.detail, "The memory job hit an error.")}` : entry.status;
   if (entry.source === "extraction") return `${entry.applied} ${entry.applied === 1 ? "proposal" : "proposals"} written`;
   return `${entry.applied} applied, ${entry.refused} refused${entry.detail ? ` · ${entry.detail}` : ""}`;
 }

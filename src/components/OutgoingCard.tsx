@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, AtSign, Check, ChevronRight, ClipboardCopy, ExternalLink, Hash, ImageIcon, MessageSquareText, Pencil, Send, Trash2, Wand2, X } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import type { ConversationItem } from "../conversation";
@@ -122,7 +123,7 @@ function Attachment({ draftId, index, attachment, readOnly, canRemove, busy, onR
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1600);
     } catch (cause) {
-      onError(cause instanceof Error ? cause.message : "could not copy the image");
+      onError(friendlyError(cause, "Couldn't copy the image."));
     }
   };
   return (
@@ -178,7 +179,7 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
       onChange(await action());
       return true;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(friendlyError(cause, "Something went wrong with this message. Try again."));
       return false;
     } finally {
       actionInFlight.current = false;
@@ -297,7 +298,7 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
           </ul>
         )}
 
-        {draft.lastError && <p role="alert" className="mt-2.5 text-meta text-destructive">{draft.lastError}</p>}
+        {draft.lastError && <p role="alert" className="mt-2.5 text-meta text-destructive">{friendlyError(draft.lastError, draft.state === "sent" ? "The message was sent, but part of it couldn't be shared." : "Couldn't send the message.")}</p>}
         {draft.state === "sent" && draft.permalink && <a href={draft.permalink} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1 text-meta text-foreground underline underline-offset-2"><ExternalLink size={12} aria-hidden="true" />View sent message</a>}
         {error && <p role="alert" className="mt-2.5 text-meta text-destructive">{error}</p>}
 

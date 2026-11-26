@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { UsageOverviewSnapshot, UsageResetCredit } from "../protocol/generated/protocol";
 import { bridgeApi } from "../api";
-import { errorMessage } from "../errors";
+import { friendlyError } from "../errors";
 import { harnessLabel } from "../utils";
 import { Button } from "@/components/ui/button";
 
@@ -72,7 +72,7 @@ export function UsageResetRow({ snapshot, onUpdated, compact = false }: { snapsh
       if (response.outcome !== "unconfirmed") pending.current = null;
       onUpdated?.();
     } catch (error) {
-      setResult(errorMessage(error));
+      setResult(friendlyError(error, "Couldn't use the reset."));
     } finally { setBusy(false); }
   };
   return <div className={compact ? "mt-2 border-t border-border pt-2 text-caption" : "u-glass-soft rounded-xl p-3 text-caption"}>

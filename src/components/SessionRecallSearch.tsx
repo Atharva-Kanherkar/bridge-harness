@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Search, X } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type { SearchSessionEntriesResult, SessionRecallHit } from "../types";
 import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
@@ -72,7 +73,7 @@ export function SessionRecallSearch({
           setHits([]);
           setHasMore(false);
           setStatus("error");
-          setError(cause instanceof Error ? cause.message : String(cause));
+          setError(friendlyError(cause, "Couldn't search this chat."));
         });
     }, 180);
     return () => {
@@ -141,7 +142,7 @@ export function SessionRecallSearch({
                 .catch(cause => {
                   if (requested !== generation.current) return;
                   setStatus("error");
-                  setError(cause instanceof Error ? cause.message : String(cause));
+                  setError(friendlyError(cause, "Couldn't load more results."));
                 })
                 // Always cleared: a superseded request leaves no page in
                 // flight for the new query, so holding the button disabled

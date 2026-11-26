@@ -5,6 +5,7 @@
 // deleting options someone else added or clearing the rows that use them.
 
 import { bridgeApi } from "../../../api";
+import { errorMessage } from "../../../errors";
 import type { NoteDatabase, NoteOption, NoteOptionInput } from "../../../types";
 
 const asInput = (option: NoteOption): NoteOptionInput => ({ id: option.id, name: option.name, color: option.color ?? null, group: option.group ?? null });
@@ -23,9 +24,6 @@ export function reconcileOptions(seen: string[], edited: NoteOptionInput[], stor
 /** The refusal a conditional write gets when the list moved under it. */
 const CHANGED = "changed since they were read";
 const ATTEMPTS = 3;
-/** An error's words, whether the host rejects with an Error, a string or a
- *  `{message}` object. */
-const errorText = (error: unknown): string => error instanceof Error ? error.message : typeof error === "object" && error && "message" in error ? String((error as { message: unknown }).message) : String(error);
 
 async function stored(databaseId: string, propertyId: string): Promise<NoteOption[]> {
   const page = await bridgeApi.readNotePage(databaseId);
@@ -42,7 +40,7 @@ async function writeOptions(databaseId: string, propertyId: string, build: (curr
     try {
       return await bridgeApi.updateDatabaseSchema({ id: databaseId, changes: [{ op: "setOptions", propertyId, options: build(current), base: current.map(option => option.id) }] });
     } catch (error) {
-      if (attempt >= ATTEMPTS || !errorText(error).includes(CHANGED)) throw error;
+      if (attempt >= ATTEMPTS || !errorMessage(error).includes(CHANGED)) throw error;
     }
   }
 }

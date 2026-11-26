@@ -5,7 +5,7 @@
 // this client reaches core it moves those pins over once and forgets the key.
 
 import { bridgeApi } from "../api";
-import { errorMessage } from "../errors";
+import { friendlyError } from "../errors";
 import { applyAnswer, pinsOf, useApps, usePersonalApps } from "./store";
 import { coreIdOf, type AppKey } from "./registry";
 
@@ -19,7 +19,7 @@ export async function setPinned(key: AppKey, pinned: boolean): Promise<PinResult
     applyAnswer(await bridgeApi.setAppPinned(coreIdOf(key), pinned));
     return { ok: true };
   } catch (error) {
-    return { ok: false, message: errorMessage(error) };
+    return { ok: false, message: friendlyError(error, "Couldn't change the pin.") };
   }
 }
 
