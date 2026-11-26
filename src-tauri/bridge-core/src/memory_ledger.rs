@@ -677,7 +677,8 @@ fn insert_proposal_as(
 ///
 /// A target that is itself a waiting proposal is replaced at once rather than
 /// on approval, since it never held: the queue gets the corrected card instead
-/// of a second one. An active target stays active until a person approves.
+/// of a second one, and the card inherits whatever that proposal would have
+/// replaced. An active target stays active until a person approves.
 pub(crate) fn insert_update_proposal(
     db: &Connection,
     scope_key: &str,
@@ -692,6 +693,10 @@ pub(crate) fn insert_update_proposal(
     if !replaces_proposal {
         crate::memory_retention::enforce_proposal_cap(db, scope_key)?;
     }
+    // Replacing a waiting proposal takes over what it would have replaced: an
+    // update of a pending update of A still supersedes A on approval, so A
+    // never stays active beside its successor.
+    let supersedes = if replaces_proposal { target.supersedes.clone() } else { Some(target.id.clone()) };
     let now = Utc::now().to_rfc3339();
     let id = Uuid::new_v4().to_string();
     with_savepoint(db, || {
@@ -710,7 +715,7 @@ pub(crate) fn insert_update_proposal(
                 confidence_bps.map(|value| value as i64),
                 rationale,
                 now,
-                target.id,
+                supersedes,
             ],
         )?;
         if replaces_proposal {
@@ -2104,6 +2109,25 @@ mod tests {
         let update = update_of(&db, &target, "Prefers spaces");
         reject(&db, &update.id).unwrap();
         assert_eq!(load_record(&db, &target.id).unwrap().unwrap().status, STATUS_ACTIVE);
+    }
+
+    #[test]
+    fn an_update_of_a_pending_update_keeps_the_active_predecessor() {
+        for full in [false, true] {
+            let (_dir, db) = ledger_db();
+            let a = save(&db, "Prefers tabs", Some("preference"), None).unwrap();
+            if full {
+                crate::memory_consolidation::update_settings(&db, ACCOUNT_MEMORY_SCOPE, "off", Some(1), None, None).unwrap();
+            }
+            let b = update_of(&db, &a, "Prefers spaces");
+            let c = update_of(&db, &b, "Prefers two-space indents");
+            assert_eq!(c.supersedes.as_deref(), Some(a.id.as_str()), "C inherits B's target");
+            assert_eq!(load_record(&db, &b.id).unwrap().unwrap().status, STATUS_SUPERSEDED, "B leaves the queue");
+            approve(&db, &c.id).unwrap_or_else(|error| panic!("full={full}: {error}"));
+            let active: Vec<String> = list(&db, ACCOUNT_MEMORY_SCOPE, None).unwrap().records.into_iter().map(|record| record.body).collect();
+            assert_eq!(active, vec!["Prefers two-space indents".to_string()], "full={full}");
+            assert_eq!(load_record(&db, &a.id).unwrap().unwrap().status, STATUS_SUPERSEDED);
+        }
     }
 
 }

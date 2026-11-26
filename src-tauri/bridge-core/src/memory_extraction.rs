@@ -732,9 +732,14 @@ fn render_activity(activity: &[(String, &'static crate::apps::BuiltinApp, String
 }
 
 /// The digest a claimed run reads, or `None` once the run has been settled
-/// `cancelled` / `nothing_new` without a model call: nothing was written after
-/// the watermark, or nothing written was a user message or app activity in
-/// scope, so there is nothing a proposal could cite.
+/// with detail `nothing_new` and no model call.
+///
+/// Nothing written after the watermark settles `cancelled`. A chunk that has
+/// entries but nothing a proposal could cite (no user message, no app
+/// activity in scope) still settles `completed` with its watermark, so the
+/// next run starts after it; when entries remain, the follow-up is due at
+/// once. Otherwise a long stretch of assistant messages would be re-read and
+/// cancelled forever, and the user message after it never reached.
 pub fn digest_for_run(
     db: &Connection,
     scope_key: &str,
@@ -744,7 +749,15 @@ pub fn digest_for_run(
 ) -> Result<Option<ExtractionDigest>, BridgeError> {
     match build_digest(db, scope_key, session_id)? {
         Some(digest) if digest.has_evidence => Ok(Some(digest)),
-        _ => {
+        Some(digest) => {
+            record_coverage(db, run_id, lease_owner, &digest.through_entry_id, 0)?;
+            settle(db, run_id, lease_owner, "completed", Some(NOTHING_NEW), None, None, None, 0, 0, 0)?;
+            if digest.more {
+                enqueue_follow_up(db, session_id, Utc::now())?;
+            }
+            Ok(None)
+        }
+        None => {
             settle(db, run_id, lease_owner, "cancelled", Some(NOTHING_NEW), None, None, None, 0, 0, 0)?;
             Ok(None)
         }
@@ -2548,11 +2561,17 @@ mod tests {
         let (status, detail, spend): (String, String, i64) = db
             .query_row("SELECT status, detail, spend_microusd FROM memory_extraction_runs WHERE id=?1", params![claimed.run_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
             .unwrap();
-        assert_eq!((status.as_str(), detail.as_str(), spend), ("cancelled", NOTHING_NEW, 0));
+        assert_eq!((status.as_str(), detail.as_str(), spend), ("completed", NOTHING_NEW, 0), "read past, not retried");
         // The eval seam makes no call either.
         let mut model = RefusingModel;
         let (report, output, digest) = run_extraction(&db, &mut model, ACCOUNT_MEMORY_SCOPE, "s1").unwrap();
         assert_eq!((report.written, output.spend_microusd, digest), (0, 0, None));
+        // With nothing at all written since, a run is cancelled.
+        enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap();
+        let empty = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
+        assert!(digest_for_run(&db, ACCOUNT_MEMORY_SCOPE, "s1", &empty.run_id, &empty.lease_owner).unwrap().is_none());
+        let status: String = db.query_row("SELECT status FROM memory_extraction_runs WHERE id=?1", params![empty.run_id], |row| row.get(0)).unwrap();
+        assert_eq!(status, "cancelled");
     }
 
     #[test]
@@ -3946,6 +3965,31 @@ mod tests {
         assert!(!record_coverage(&db, &claimed.run_id, &claimed.lease_owner, "e1", 9).unwrap(), "a settled run is not rewritten");
         assert_eq!(last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().unwrap().known_count, 3);
         assert!(build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().is_none(), "the next run starts after e1");
+    }
+
+    #[test]
+    fn an_assistant_only_chunk_advances_to_the_user_message_after_it() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        insert_message(&db, "s1", "e1", 1, "user.message", "Start the long refactor.");
+        complete_through(&db, "s1", "e1");
+        // More assistant entries than one chunk holds, then the user speaks.
+        for index in 2..=(MAX_DIGEST_ENTRIES as i64 + 5) {
+            insert_message(&db, "s1", &format!("e{index}"), index, "assistant.message", "Still working through the files.");
+        }
+        let last = MAX_DIGEST_ENTRIES as i64 + 6;
+        insert_message(&db, "s1", &format!("e{last}"), last, "user.message", "I prefer small commits for refactors like this.");
+        enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap();
+        let first = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
+        assert!(digest_for_run(&db, ACCOUNT_MEMORY_SCOPE, "s1", &first.run_id, &first.lease_owner).unwrap().is_none(), "no model call");
+        let (status, detail): (String, String) = db
+            .query_row("SELECT status, detail FROM memory_extraction_runs WHERE id=?1", params![first.run_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap();
+        assert_eq!((status.as_str(), detail.as_str()), ("completed", NOTHING_NEW), "progress is recorded");
+        let follow_up = claim_due(&db, quiet(), &memory(&db)).unwrap().expect("the rest is due at once");
+        let digest = digest_for_run(&db, ACCOUNT_MEMORY_SCOPE, "s1", &follow_up.run_id, &follow_up.lease_owner).unwrap().expect("the user message is reached");
+        assert!(digest.text.contains("I prefer small commits"), "{}", digest.text);
     }
 
     #[test]
