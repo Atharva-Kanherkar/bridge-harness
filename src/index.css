@@ -593,8 +593,18 @@ html[data-native-fullscreen] .u-traffic-inset {
     border-radius: 10px;
     background: var(--color-muted);
     border: 1px solid var(--color-border);
+    /* Never wider than the row it sits in. A track that cannot fit scrolls
+       sideways, rather than widening the page or running under its neighbour. */
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .u-segmented::-webkit-scrollbar {
+    display: none;
   }
   .u-segmented-item {
+    flex-shrink: 0;
+    white-space: nowrap;
     border-radius: 8px;
     min-height: 28px;
     padding: 4px 12px;

@@ -211,7 +211,7 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
       </p>
     </section>
 
-    {report.highlights.length > 0 && <section className="grid gap-3 md:grid-cols-3" aria-label="Highlights">
+    {report.highlights.length > 0 && <section className="grid gap-3 @2xl/usage:grid-cols-3" aria-label="Highlights">
       {report.highlights.map((item, index) => <article key={item.title} className={cn(CARD, "py-3", rise(index + 1).className)} style={rise(index + 1).style}>
         <div className="mb-1 flex items-center gap-1.5 text-caption text-muted-foreground"><span className={cn("size-1.5 rounded-full", TONE[item.tone].dot)} aria-hidden="true" />{TONE[item.tone].label}</div>
         <h3 className="text-ui font-medium text-foreground">{item.title}</h3>
@@ -219,7 +219,7 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
       </article>)}
     </section>}
 
-    <section className="grid gap-4 lg:grid-cols-2" aria-label="Charts">
+    <section className="grid gap-4 @3xl/usage:grid-cols-2" aria-label="Charts">
       <div className={cn(CARD, rise(3).className)} style={rise(3).style}>
         <h3 className="mb-3 text-ui font-medium text-foreground">Where the tokens went</h3>
         <HarnessBars report={report} />
@@ -238,7 +238,7 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
       </div>
     </section>
 
-    <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]" aria-label="GitHub and recommendations">
+    <section className="grid gap-4 @3xl/usage:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]" aria-label="GitHub and recommendations">
       <div className={cn(CARD, rise(7).className)} style={rise(7).style}>
         <h3 className="mb-3 text-ui font-medium text-foreground">Pull requests</h3>
         {report.github ? <dl className="grid grid-cols-2 gap-3">

@@ -92,7 +92,7 @@ export function MemoryInsights({ onError }: { onError: (message: string) => void
       </p>
     </section>
 
-    {report.highlights.length > 0 && <section className="grid gap-3 sm:grid-cols-3" aria-label="Highlights">
+    {report.highlights.length > 0 && <section className="grid grid-cols-[repeat(auto-fit,minmax(13rem,1fr))] gap-3" aria-label="Highlights">
       {report.highlights.map((item, index) => <article key={item.title} className={cn(CARD, "py-3", rise(index + 1).className)} style={rise(index + 1).style}>
         <div className="mb-1 flex items-center gap-1.5 text-caption text-muted-foreground"><span className={cn("size-1.5 rounded-full", TONE[item.tone].dot)} aria-hidden="true" />{TONE[item.tone].label}</div>
         <h3 className="text-ui font-medium text-foreground">{item.title}</h3>

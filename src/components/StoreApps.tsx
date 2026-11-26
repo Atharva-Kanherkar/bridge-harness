@@ -78,7 +78,10 @@ export function StoreApps({ onOpenApp }: { onOpenApp?: (key: AppKey) => void }) 
     <div className={SCREEN_CONTENT}>
       <ScreenHeading title="Apps" />
       <p role="status" className={status ? "mb-3 text-meta text-foreground" : "sr-only"}>{status}</p>
-      <ul aria-label="Installed apps" className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+      {/* A container, so the grid counts its columns from this column's own
+          width: the sidebar and the zoom level narrow it without touching the
+          window, and viewport breakpoints kept two columns in half the room. */}
+      <div className="@container"><ul aria-label="Installed apps" className="grid gap-2.5 @min-[560px]:grid-cols-2 @min-[880px]:grid-cols-3">
         {rows(apps).map(row => {
           const Icon = row.icon;
           const enabled = row.summary?.enabled ?? true;
@@ -99,7 +102,7 @@ export function StoreApps({ onOpenApp }: { onOpenApp?: (key: AppKey) => void }) 
               </div>
               <div className="mt-auto flex flex-wrap items-center gap-1">
                 {row.slots.map(slot => <span key={slot} className="whitespace-nowrap rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">{slot}</span>)}
-                <span className="ml-auto flex items-center gap-1">
+                <span className="ml-auto flex flex-wrap items-center justify-end gap-1">
                   {canDisable && (
                     <Button size="sm" variant="ghost" onClick={() => void power(row, enabled)} aria-label={`Turn ${row.name} ${enabled ? "off" : "on"}`}>
                       {enabled ? <PowerOff aria-hidden="true" /> : <Power aria-hidden="true" />}
@@ -118,7 +121,7 @@ export function StoreApps({ onOpenApp }: { onOpenApp?: (key: AppKey) => void }) 
             </li>
           );
         })}
-      </ul>
+      </ul></div>
       <MyApps apps={personal} onOpenApp={onOpenApp} onStatus={setStatus} />
     </div>
     </div>
@@ -157,7 +160,7 @@ function MyApps({ apps, onOpenApp, onStatus }: { apps: readonly PersonalAppEntry
     <h2 id="my-apps-heading" className="mb-1 text-body font-medium text-foreground">My apps</h2>
     {apps.length === 0
       ? <p className="rounded-xl border border-dashed border-border px-3.5 py-3 text-meta text-muted-foreground">No apps yet. Ask a chat to build one for an MCP server you use, then lock it.</p>
-      : <ul aria-label="My apps" className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+      : <div className="@container"><ul aria-label="My apps" className="grid gap-2.5 @min-[560px]:grid-cols-2 @min-[880px]:grid-cols-3">
         {apps.map(entry => {
           const { app, enabled } = entry;
           const pinned = entry.pinned !== null && entry.pinned !== undefined;
@@ -194,6 +197,6 @@ function MyApps({ apps, onOpenApp, onStatus }: { apps: readonly PersonalAppEntry
               </div>}
           </li>;
         })}
-      </ul>}
+      </ul></div>}
   </section>;
 }

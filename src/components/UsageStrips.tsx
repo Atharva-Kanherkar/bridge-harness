@@ -129,7 +129,7 @@ export function UsageStrips({ report, window, metric }: UsageLayoutProps) {
         <h2 className="text-ui font-medium text-foreground">By model</h2>
         <span className="text-caption text-muted-foreground">{metric === "cost" ? "share of cost" : "share of processed tokens"}</span>
       </div>
-      <ul className="grid gap-x-10 md:grid-cols-2">
+      <ul className="grid gap-x-10 @3xl/usage:grid-cols-2">
         {models.map(model => <li key={`${model.harness}:${model.model}`} className="grid h-8 grid-cols-[minmax(0,9rem)_minmax(0,1fr)_4.5rem_4.5rem] items-center gap-3">
           <span className="flex min-w-0 items-center gap-1.5"><span className="truncate font-mono text-caption text-foreground/85">{model.model}</span>{model.costSource === "unpriced" && <span className="shrink-0 text-caption text-muted-foreground">unpriced</span>}</span>
           <span className="h-1.5 overflow-hidden rounded-full bg-muted"><span className={cn("block h-full rounded-full", harnessChartDot(model.harness))} style={{ width: `${topModel > 0 ? (modelValue(model, metric) / topModel) * 100 : 0}%` }} /></span>
