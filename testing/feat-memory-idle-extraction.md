@@ -74,7 +74,7 @@ Issue #1148, part of epic #1144. Locked before implementation. Plan note:
 
 ### Wire and UI
 
-- Protocol 1.61 adds `knownCount` (default 0) on `MemoryExtractionRun` and
+- Protocol 1.62 adds `knownCount` (default 0) on `MemoryExtractionRun` and
   `known` (default 0) on `MemoryActivityEntry`. An extraction activity entry
   reports its run's `known_count`.
 - Memory screen, Review tab:
@@ -124,7 +124,7 @@ Issue #1148, part of epic #1144. Locked before implementation. Plan note:
 - `rejecting_an_update_leaves_the_target_active`.
 
 ### Protocol (`bridge-protocol`)
-- camelCase `knownCount` and `known` with default 0, and the 1.60 → 1.61
+- camelCase `knownCount` and `known` with default 0, and the 1.61 → 1.62
   pairing test.
 
 ### Frontend (`MemoryDialog.test.tsx`)

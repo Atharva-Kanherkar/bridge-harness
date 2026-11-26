@@ -192,7 +192,7 @@ pub struct MemoryExtractionRun {
     pub status: String,
     pub proposal_count: i64,
     /// Candidates the run found already remembered, so it wrote nothing for
-    /// them. Absent from a pre-1.61 daemon, which reads as 0.
+    /// them. Absent from a pre-1.62 daemon, which reads as 0.
     #[serde(default)]
     pub known_count: i64,
     pub observed_tokens: i64,
@@ -448,7 +448,7 @@ pub struct MemoryActivityEntry {
     pub applied: i64,
     pub refused: i64,
     /// Candidates an extraction run found already remembered. 0 for other
-    /// sources and from a pre-1.61 daemon.
+    /// sources and from a pre-1.62 daemon.
     #[serde(default)]
     pub known: i64,
     #[serde(skip_serializing_if = "Option::is_none")]

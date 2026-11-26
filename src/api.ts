@@ -1077,6 +1077,39 @@ function mockScreenTime(params: ScreenTimeParams): UsageScreenTimeResult {
   if (today) today.humanSeconds += mockPresenceMinutes.size * 60;
   const humanSeconds = days.reduce((sum, day) => sum + day.humanSeconds, 0);
   const agentSeconds = days.reduce((sum, day) => sum + day.agentSeconds, 0);
+  // Split the range across projects and harnesses by fixed shares, rounded
+  // to whole minutes, the remainder on the first.
+  const split = (total: number, shares: number[]) => {
+    const parts = shares.map(share => Math.floor((total / 60) * share) * 60);
+    parts[0] += total - parts.reduce((sum, part) => sum + part, 0);
+    return parts;
+  };
+  const scale = days.length / 7;
+  const projectNames: [string | null, string][] = [["demo-project", "Bridge"], ["mock-atlas", "atlas-api"], ["mock-site", "marketing-site"], ["mock-cli", "deploy-cli"], ["mock-notes", "field-notes"], ["mock-infra", "infra"], ["mock-docs", "docs"], [null, "No project"]];
+  const yours = split(Math.round(humanSeconds * 0.86), [0.52, 0.2, 0.1, 0.07, 0.05, 0.03, 0.02, 0.01]);
+  const theirs = split(agentSeconds, [0.48, 0.24, 0.1, 0.07, 0.04, 0.03, 0.02, 0.02]);
+  const pullCounts = [9, 5, 3, 2, 1, 0, 1, 0].map(count => Math.round(count * scale));
+  const projects = projectNames.map(([projectId, name], index) => ({
+    projectId, name, humanSeconds: yours[index], agentSeconds: theirs[index],
+    chats: Math.max(1, Math.round([14, 8, 5, 4, 3, 2, 2, 3][index] * scale)), pullRequests: pullCounts[index],
+  }));
+  const harnessSeconds = split(agentSeconds, [0.58, 0.3, 0.1, 0.02]);
+  const harnesses = ["claude", "codex", "opencode", "cursor"].map((harness, index) => ({ harness, agentSeconds: harnessSeconds[index], chats: Math.max(1, Math.round([22, 12, 5, 1][index] * scale)) }));
+  const hourWeights = Array.from({ length: 24 }, (_, hour) => hour < 8 ? 0.02 : Math.exp(-((hour - 14.5) ** 2) / 14));
+  const weightTotal = hourWeights.reduce((sum, weight) => sum + weight, 0);
+  const agentWeights = hourWeights.map((weight, hour) => weight + (hour < 8 ? 0.15 : 0.1));
+  const agentWeightTotal = agentWeights.reduce((sum, weight) => sum + weight, 0);
+  const hours = hourWeights.map((weight, hour) => ({
+    hour,
+    humanSeconds: Math.round((humanSeconds * weight) / weightTotal / 60) * 60,
+    agentSeconds: Math.round((agentSeconds * agentWeights[hour]) / agentWeightTotal / 60) * 60,
+  }));
+  const repos = [["you/bridge", 0], ["you/atlas-api", 1], ["you/marketing-site", 2], ["you/deploy-cli", 3], ["you/field-notes", 4], ["you/docs", 6]] as const;
+  const opened = pullCounts.reduce((sum, count) => sum + count, 0);
+  const merged = Math.round(opened * 0.75);
+  const open = Math.max(0, opened - merged - 1);
+  const titles = ["fix(usage): count chats once per range", "feat(api): page the audit log", "docs: explain local-only Screen Time", "fix(cli): keep the deploy lock on retry", "feat(site): pricing table for teams", "chore: bump the pinned toolchain"];
+  const states = ["open", "merged", "merged", "closed", "merged", "merged"] as const;
   return {
     sinceDay: params.sinceDay,
     untilDay: params.untilDay,
@@ -1084,6 +1117,18 @@ function mockScreenTime(params: ScreenTimeParams): UsageScreenTimeResult {
     days,
     allTime: { humanSeconds: humanSeconds + 212 * 3_600, agentSeconds: agentSeconds + 731 * 3_600, humanSinceDay: shift(params.untilDay, -79), agentSinceDay: shift(params.untilDay, -140) },
     agentHistory: "complete",
+    projects,
+    pullRequests: {
+      opened, merged, open, closed: opened - merged - open,
+      repos: repos.map(([repo, index]) => ({ repo, opened: pullCounts[index], merged: Math.round(pullCounts[index] * 0.75) })).filter(repo => repo.opened > 0),
+      recent: titles.map((title, index) => {
+        const repo = repos[Math.min(index, repos.length - 1)][0];
+        const number = 1_204 - index * 7;
+        return { repo, number, title, url: `https://github.com/${repo}/pull/${number}`, state: states[index], openedDay: shift(params.untilDay, -Math.floor(index / 2)) };
+      }),
+    },
+    hours,
+    harnesses,
   };
 }
 
@@ -2735,14 +2780,14 @@ export const bridgeApi = {
   // comes back at once when `refresh` is false.
   usageInsights: (params: InsightsParams): Promise<UsageInsightsResult> =>
     hasBackend() ? call("usage/insights", params) : new Promise(resolve => setTimeout(() => resolve(mockUsageInsights(params)), params.refresh ? 900 : 0)),
-  /** Screen Time: the minutes you were active in this window. Recording one twice stores it once. */
+  /** Screen Time: the minutes you were active in this window, and which chat was open in them. Recording one twice stores it once. */
   recordPresence: (params: RecordPresenceParams): Promise<UsageRecordPresenceResult> => {
     if (hasBackend()) return call("usage/record_presence", params);
     const before = mockPresenceMinutes.size;
     for (const minute of params.minutes) mockPresenceMinutes.add(minute);
     return Promise.resolve({ recorded: mockPresenceMinutes.size - before });
   },
-  /** Screen Time: your time and agent time per local day, and the all-time totals. */
+  /** Screen Time: your time and agent time per local day, the all-time totals, and the range by project, pull request, hour and harness. */
   screenTime: (params: ScreenTimeParams): Promise<UsageScreenTimeResult> =>
     hasBackend() ? call("usage/screen_time", params) : Promise.resolve(mockScreenTime(params)),
   listUsagePriceOverrides: (): Promise<UsagePriceOverride[]> =>

@@ -367,7 +367,10 @@ function AppContent() {
   const [error, setError] = useState<string>();
   // Screen Time: report the minutes this window is in front and in use. The
   // minutes stay in the local database; the Time tab under Usage reads them.
-  useEffect(() => startPresenceTracking(minutes => bridgeApi.recordPresence({ minutes })), []);
+  // Each minute also names the chat open then, so the tab can split your
+  // time by project.
+  const presenceChatRef = useRef<string | null>(null);
+  useEffect(() => startPresenceTracking(presence => bridgeApi.recordPresence(presence), window, () => presenceChatRef.current), []);
 
   const codexVersion = health?.adapters.find(adapter => adapter.id === "codex")?.version ?? undefined;
   const [latestCodex, setLatestCodex] = useState<string>();
@@ -1060,6 +1063,7 @@ function AppContent() {
   const session = state.sessions.find(s => s.id === selectedSessionId && s.harness !== "shell" && !isHiddenSession(s));
   const composerOwnerRef = useRef<string>();
   composerOwnerRef.current = view === "workspace" && paradigm !== "grid" ? session?.id : undefined;
+  presenceChatRef.current = view === "workspace" ? session?.id ?? null : null;
   // Selection changes before the history effect runs. Never paint the prior
   // chat under the new header, even for that first render.
   const forest = loadedForest?.sessionId === session?.id ? loadedForest : undefined;

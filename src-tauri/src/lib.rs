@@ -1859,10 +1859,11 @@ async fn insights(
 #[tauri::command]
 async fn record_presence(
     minutes: Vec<i64>,
+    chats: Option<Vec<bridge_protocol::messages::PresenceChat>>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::UsageRecordPresenceResult, BridgeError> {
     let core = state.inner().clone();
-    let params = bridge_protocol::messages::RecordPresenceParams { minutes };
+    let params = bridge_protocol::messages::RecordPresenceParams { minutes, chats };
     tauri::async_runtime::spawn_blocking(move || api::usage_record_presence(&core, &params))
         .await
         .map_err(|error| BridgeError::Invalid(error.to_string()))?

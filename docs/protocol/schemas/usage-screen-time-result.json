@@ -32,6 +32,198 @@
       ],
       "type": "object"
     },
+    "ScreenTimeHarness": {
+      "properties": {
+        "agentSeconds": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "chats": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "harness": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agentSeconds",
+        "chats",
+        "harness"
+      ],
+      "type": "object"
+    },
+    "ScreenTimeHour": {
+      "properties": {
+        "agentSeconds": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "hour": {
+          "format": "uint8",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "humanSeconds": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agentSeconds",
+        "hour",
+        "humanSeconds"
+      ],
+      "type": "object"
+    },
+    "ScreenTimeProject": {
+      "description": "One project's share of the range. Your time counts only minutes recorded with a chat of this project open; agent time follows the agent-time rules. `chats` is top-level chats that worked in the range.",
+      "properties": {
+        "agentSeconds": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "chats": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "humanSeconds": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "projectId": {
+          "description": "Null for chats with no project.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pullRequests": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agentSeconds",
+        "chats",
+        "humanSeconds",
+        "name",
+        "pullRequests"
+      ],
+      "type": "object"
+    },
+    "ScreenTimePullRequest": {
+      "properties": {
+        "number": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "openedDay": {
+          "description": "Local day it was opened.",
+          "type": "string"
+        },
+        "repo": {
+          "description": "`owner/name`.",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/ScreenTimePullRequestState"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "number",
+        "openedDay",
+        "repo",
+        "state",
+        "title",
+        "url"
+      ],
+      "type": "object"
+    },
+    "ScreenTimePullRequestState": {
+      "description": "The last state Bridge read for the pull request.",
+      "enum": [
+        "open",
+        "merged",
+        "closed",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "ScreenTimePullRequests": {
+      "properties": {
+        "closed": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "merged": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "open": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "opened": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "recent": {
+          "description": "The newest pull requests opened in the range, at most 6.",
+          "items": {
+            "$ref": "#/definitions/ScreenTimePullRequest"
+          },
+          "type": "array"
+        },
+        "repos": {
+          "description": "One entry per repository, most opened first.",
+          "items": {
+            "$ref": "#/definitions/ScreenTimeRepo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "closed",
+        "merged",
+        "open",
+        "opened",
+        "recent",
+        "repos"
+      ],
+      "type": "object"
+    },
+    "ScreenTimeRepo": {
+      "properties": {
+        "merged": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "opened": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "repo": {
+          "description": "`owner/name`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "merged",
+        "opened",
+        "repo"
+      ],
+      "type": "object"
+    },
     "ScreenTimeTotals": {
       "description": "Everything ever recorded, regardless of the range asked for.",
       "properties": {
@@ -79,6 +271,35 @@
       },
       "type": "array"
     },
+    "harnesses": {
+      "description": "Agent time per harness in the range, largest first.",
+      "items": {
+        "$ref": "#/definitions/ScreenTimeHarness"
+      },
+      "type": "array"
+    },
+    "hours": {
+      "description": "Hours 0 to 23 in the range's zone, every hour present.",
+      "items": {
+        "$ref": "#/definitions/ScreenTimeHour"
+      },
+      "type": "array"
+    },
+    "projects": {
+      "description": "Projects with any time or pull request in the range, busiest first.",
+      "items": {
+        "$ref": "#/definitions/ScreenTimeProject"
+      },
+      "type": "array"
+    },
+    "pullRequests": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ScreenTimePullRequests"
+        }
+      ],
+      "description": "Pull requests agents opened from Bridge chats in the range."
+    },
     "sinceDay": {
       "type": "string"
     },
@@ -93,6 +314,10 @@
     "agentHistory",
     "allTime",
     "days",
+    "harnesses",
+    "hours",
+    "projects",
+    "pullRequests",
     "sinceDay",
     "timeZone",
     "untilDay"
