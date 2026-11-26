@@ -193,6 +193,9 @@ methods![
     (UpdateConsolidationSettings, "memory", "update_consolidation_settings"),
     (GetMemoryModel, "memory", "get_memory_model"),
     (SetMemoryModel, "memory", "set_memory_model"),
+    (GetRetentionSettings, "memory", "get_retention_settings"),
+    (SetRetentionSettings, "memory", "set_retention_settings"),
+    (RestoreMemoryRecord, "memory", "restore_memory_record"),
     // approvals
     (ResolveApproval, "approvals", "resolve_approval"),
     (ResolveQuestion, "approvals", "resolve_question"),

@@ -996,6 +996,27 @@
       "resultSchema": "memory-model-settings.json"
     },
     {
+      "command": "get_retention_settings",
+      "domain": "memory",
+      "method": "memory/get_retention_settings",
+      "paramsSchema": null,
+      "resultSchema": "memory-retention-settings.json"
+    },
+    {
+      "command": "set_retention_settings",
+      "domain": "memory",
+      "method": "memory/set_retention_settings",
+      "paramsSchema": "set-retention-settings-params.json",
+      "resultSchema": "memory-retention-settings.json"
+    },
+    {
+      "command": "restore_memory_record",
+      "domain": "memory",
+      "method": "memory/restore_memory_record",
+      "paramsSchema": "restore-memory-record-params.json",
+      "resultSchema": "memory-record.json"
+    },
+    {
       "command": "resolve_approval",
       "domain": "approvals",
       "method": "approvals/resolve_approval",
@@ -2622,7 +2643,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 59
+    "minor": 60
   },
   "reserved": {
     "cancel": "$/cancel",

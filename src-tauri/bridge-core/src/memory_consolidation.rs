@@ -243,14 +243,14 @@ pub fn update_settings(
     settings(db, &scope_key)
 }
 
-/// What the scope occupies against its budget: everything a reviewer would
-/// have to deal with. A proposal waiting for a decision is held space, so a
-/// backlog of them counts — that backlog is the accumulation the budget exists
-/// to make visible.
+/// What the scope occupies against its active budget: the memories that can
+/// reach a prompt. Proposals have their own allowance
+/// ([`crate::memory_retention`]), so a review backlog can no longer block a
+/// save or an approval.
 pub fn held_records(db: &Connection, scope_key: &str) -> Result<i64, BridgeError> {
     db.query_row(
         "SELECT COUNT(*) FROM memory_records
-         WHERE scope_key=?1 AND status IN ('active','proposed')",
+         WHERE scope_key=?1 AND status='active'",
         params![scope_key],
         |row| row.get(0),
     )
@@ -285,12 +285,11 @@ pub(crate) fn enforce_scope_budget(db: &Connection, scope_key: &str) -> Result<(
         return Ok(());
     }
     // The remedies named here must all actually work in a full scope: forget
-    // clears an active pin, reviewing clears a proposal, and consolidation
-    // only ever reorganises active records — so a proposal-heavy scope is
-    // pointed at its review queue, not at a job that cannot reach it.
+    // clears an active memory, unused ones retire on their own, and
+    // consolidation reorganises active records.
     Err(BridgeError::Invalid(format!(
-        "Memory scope '{scope_key}' holds {held} of {budget} records and nothing was written. \
-         Forget a pinned record, review pending proposals, or let consolidation make room."
+        "Memory scope '{scope_key}' holds {held} of {budget} memories and nothing was written. \
+         Forget a memory you no longer need, or let unused ones retire or consolidation make room."
     )))
 }
 
@@ -1440,32 +1439,31 @@ mod tests {
         let second = pin(&db, "Second pin");
 
         let refusal = memory_ledger::save(&db, "Third pin", None, None).unwrap_err().to_string();
-        assert!(refusal.contains("holds 2 of 2 records"), "{refusal}");
+        assert!(refusal.contains("holds 2 of 2 memories"), "{refusal}");
         assert!(refusal.contains("account:local"), "{refusal}");
-        // Every remedy named has to be one that works in a full scope:
-        // consolidation only reorganises active records, so a scope full of
-        // proposals needs the review queue named too.
-        assert!(refusal.contains("Forget a pinned record"), "{refusal}");
-        assert!(refusal.contains("review pending proposals"), "{refusal}");
+        // Every remedy named has to be one that works in a full scope.
+        // Proposals no longer count, so the queue is not named.
+        assert!(refusal.contains("Forget a memory"), "{refusal}");
+        assert!(!refusal.contains("proposal"), "{refusal}");
         assert_eq!(
             active_ids(&db),
             vec![second.id.clone(), first.id.clone()],
             "the scope is left exactly as it was: nothing evicted, nothing trimmed"
         );
 
-        assert!(
-            memory_ledger::insert_proposal(
-                &db,
-                ACCOUNT_MEMORY_SCOPE,
-                "A proposal that would overflow",
-                "fact",
-                None,
-                None,
-                "s1",
-            )
-            .is_err(),
-            "a proposal is refused before it is stored"
-        );
+        // Proposals have their own allowance, so a full active budget still
+        // accepts one; approving it is what the budget refuses.
+        let waiting = memory_ledger::insert_proposal(
+            &db,
+            ACCOUNT_MEMORY_SCOPE,
+            "A proposal that waits for room",
+            "fact",
+            None,
+            None,
+            "s1",
+        )
+        .expect("the review queue is apart from the active budget");
+        assert!(memory_ledger::approve(&db, &waiting.id).is_err(), "approval is growth");
 
         let edited = memory_ledger::supersede(&db, &first.id, "First pin, corrected", None)
             .expect("a replacement is not growth and stays possible at the ceiling");

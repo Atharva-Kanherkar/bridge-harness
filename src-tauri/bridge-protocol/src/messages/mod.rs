@@ -320,6 +320,9 @@ typed_methods![
     (UpdateConsolidationSettings, UpdateConsolidationSettingsParams, MemoryConsolidationSettings),
     (GetMemoryModel, _, MemoryModelSettings),
     (SetMemoryModel, SetMemoryModelParams, MemoryModelSettings),
+    (GetRetentionSettings, _, MemoryRetentionSettings),
+    (SetRetentionSettings, SetRetentionSettingsParams, MemoryRetentionSettings),
+    (RestoreMemoryRecord, RestoreMemoryRecordParams, MemoryRecord),
     // approvals
     (ResolveApproval, ResolveApprovalParams, InteractionResolutionResult),
     (ResolveQuestion, ResolveQuestionParams, InteractionResolutionResult),

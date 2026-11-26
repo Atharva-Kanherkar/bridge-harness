@@ -24,7 +24,7 @@
           "type": "integer"
         },
         "source": {
-          "description": "`extraction` or `consolidation`.",
+          "description": "`extraction`, `consolidation`, or `retention` (a sweep that expired proposals or retired unused memories).",
           "type": "string"
         },
         "status": {

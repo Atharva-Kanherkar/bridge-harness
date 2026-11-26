@@ -23,7 +23,7 @@
       "type": "string"
     },
     "status": {
-      "description": "`active` (default) or `proposed`. Nothing else lists.",
+      "description": "`active` (default), `proposed`, or `expired` (retired or expired records a person can restore). Nothing else lists.",
       "type": [
         "string",
         "null"

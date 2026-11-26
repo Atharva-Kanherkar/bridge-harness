@@ -562,6 +562,20 @@ pub fn dispatch(
             let p: wire::UpdateExtractionSettingsParams = decode(method, params)?;
             reply(api::update_extraction_settings(core, &p.mode))
         }
+        MethodName::GetRetentionSettings => reply(api::get_retention_settings(core)),
+        MethodName::SetRetentionSettings => {
+            let p: wire::SetRetentionSettingsParams = decode(method, params)?;
+            reply(api::set_retention_settings(
+                core,
+                p.proposal_ttl_days,
+                p.retire_unused_after_days,
+                p.max_proposals,
+            ))
+        }
+        MethodName::RestoreMemoryRecord => {
+            let p: wire::RestoreMemoryRecordParams = decode(method, params)?;
+            reply(api::restore_memory_record(core, &p.record_id))
+        }
         MethodName::GetMemoryModel => reply(api::get_memory_model(core)),
         MethodName::SetMemoryModel => {
             let p: wire::SetMemoryModelParams = decode(method, params)?;

@@ -148,6 +148,8 @@ fn search(db: &Connection, args: &Value) -> Result<Outcome, ToolError> {
     let limit = args.limit.unwrap_or(10).clamp(1, MAX_SEARCH_RESULTS);
     let records = memory_ledger::search(db, ACCOUNT_MEMORY_SCOPE, &args.query, Some(limit), args.offset)
         .map_err(|error| bad(error.to_string()))?;
+    crate::memory_retention::stamp_used(db, records.iter().map(|record| record.id.as_str()), chrono::Utc::now())
+        .map_err(|error| bad(error.to_string()))?;
     Ok(Outcome {
         result: json!({
             "records": records.iter().map(summary).collect::<Vec<_>>(),
@@ -378,11 +380,13 @@ mod tests {
     #[test]
     fn a_full_scope_refuses_the_proposal_and_says_why() {
         let (_dir, db) = tools_db();
-        crate::memory_consolidation::update_settings(&db, ACCOUNT_MEMORY_SCOPE, "off", Some(1), None, None).unwrap();
-        memory_ledger::save(&db, "Already holding one", None, None).unwrap();
+        crate::memory_retention::update_settings(&db, 7, Some(90), Some(10)).unwrap();
+        for index in 0..10 {
+            memory_ledger::insert_proposal(&db, ACCOUNT_MEMORY_SCOPE, &format!("Waiting proposal {index} on topic {index}"), "fact", None, None, "other").unwrap();
+        }
         let error = run(&db, "chat", true, PROPOSE, &propose_args("A brand new durable rule")).unwrap_err();
         assert_eq!(error.status, 409);
-        assert!(error.message.contains("holds 1 of 1"), "{}", error.message);
+        assert!(error.message.contains("holds 10 of 10 proposals"), "{}", error.message);
     }
 
     #[test]

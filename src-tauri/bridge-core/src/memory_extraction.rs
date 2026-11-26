@@ -183,7 +183,7 @@ pub fn enqueue_after_turn(
     // A full scope refuses every proposal the run could produce, so the run
     // would be a model call that can only be thrown away. The Memory surface
     // shows the full scope; the remedy is review, not another paid turn.
-    if crate::memory_consolidation::scope_full(db, ACCOUNT_MEMORY_SCOPE)? {
+    if crate::memory_retention::proposals_full(db, ACCOUNT_MEMORY_SCOPE)? {
         return Ok(false);
     }
     let open: Option<i64> = db
@@ -259,7 +259,7 @@ pub fn claim_due(
         };
         // A run queued before the scope filled must not spend a turn whose
         // every proposal the budget will refuse.
-        let full = profile.is_some() && crate::memory_consolidation::scope_full(db, &scope_key)?;
+        let full = profile.is_some() && crate::memory_retention::proposals_full(db, &scope_key)?;
         let profile = if full { None } else { profile };
         let Some((harness, model)) = profile else {
             let detail = if full {
@@ -1463,7 +1463,12 @@ pub fn gate_and_insert(
         ) {
             Ok(proposal) => {
                 report.written += 1;
-                if auto_eligible && !batch_conflict {
+                // A full active budget leaves an eligible candidate in the
+                // queue for review rather than failing the run.
+                if auto_eligible
+                    && !batch_conflict
+                    && !crate::memory_consolidation::scope_full(db, &scope_key)?
+                {
                     memory_ledger::approve(db, &proposal.id)?;
                     report.activated += 1;
                 } else {
@@ -1610,18 +1615,21 @@ mod tests {
         .unwrap();
     }
 
-    fn fill_scope(db: &Connection, max_records: i64) {
-        crate::memory_consolidation::update_settings(
-            db,
-            ACCOUNT_MEMORY_SCOPE,
-            "off",
-            Some(max_records),
-            None,
-            None,
-        )
-        .unwrap();
-        for index in 0..max_records {
-            memory_ledger::save(db, &format!("pin number {index} about topic {index}"), None, None).unwrap();
+    /// Fill the review queue's allowance: a run only proposes, so that is
+    /// what makes extraction pointless. The active budget does not matter.
+    fn fill_scope(db: &Connection, _max_records: i64) {
+        crate::memory_retention::update_settings(db, 7, Some(90), Some(10)).unwrap();
+        for index in 0..10 {
+            memory_ledger::insert_proposal(
+                db,
+                ACCOUNT_MEMORY_SCOPE,
+                &format!("proposal number {index} about topic {index}"),
+                "fact",
+                Some(7000),
+                None,
+                "chat",
+            )
+            .unwrap();
         }
     }
 
@@ -1655,8 +1663,8 @@ mod tests {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
         insert_chat_on(&db, "chat", "claude", Some("sonnet"));
-        fill_scope(&db, 1);
-        crate::memory_consolidation::update_settings(&db, ACCOUNT_MEMORY_SCOPE, "off", Some(2), None, None).unwrap();
+        crate::memory_retention::update_settings(&db, 7, Some(90), Some(10)).unwrap();
+        memory_ledger::insert_proposal(&db, ACCOUNT_MEMORY_SCOPE, "One waiting proposal", "fact", Some(7000), None, "chat").unwrap();
         assert!(enqueue_after_turn(&db, "chat", &memory(&db)).unwrap());
         assert!(claim_due(&db, Utc::now(), &memory(&db)).unwrap().is_some());
     }
@@ -2763,18 +2771,19 @@ mod tests {
             r#"[{"body":"Prefers spaces for indentation","kind":"preference","confidenceBps":9500,"rationale":"[e1] Direct preference"}]"#,
         ));
 
+        // Proposals live outside the active budget, so the candidate is
+        // written; with the active budget full it is not promoted, and waits
+        // for review instead of evicting anything.
         let (report, _, _) = run_extraction(&db, &mut model, ACCOUNT_MEMORY_SCOPE, "s1").unwrap();
-        assert_eq!(report.written, 0);
+        assert_eq!(report.written, 1);
         assert_eq!(report.activated, 0);
-        assert_eq!(report.refused, 1);
+        assert_eq!(report.refused, 0);
         let active = memory_ledger::list(&db, ACCOUNT_MEMORY_SCOPE, None).unwrap();
         assert_eq!(active.records.len(), 1);
         assert_eq!(active.records[0].body, "Keeps release notes");
-        assert!(
-            memory_ledger::list(&db, ACCOUNT_MEMORY_SCOPE, Some("proposed"))
-                .unwrap()
-                .records
-                .is_empty()
+        assert_eq!(
+            memory_ledger::list(&db, ACCOUNT_MEMORY_SCOPE, Some("proposed")).unwrap().records.len(),
+            1
         );
     }
 

@@ -242,9 +242,14 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// extraction and consolidation settings become read-only mirrors of it.
 /// Additive: a 1.59 daemon serves older clients; a 1.59 client cannot pair
 /// with a 1.58 daemon, which lacks the new methods.
+///
+/// **1.60 adds memory retention**: `memory/get_retention_settings`,
+/// `memory/set_retention_settings`, `memory/restore_memory_record`, and
+/// `expired` as a listable status. Additive: a 1.60 daemon serves older
+/// clients; a 1.60 client cannot pair with a 1.59 daemon.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 59,
+    minor: 60,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -679,9 +684,17 @@ mod tests {
     fn one_memory_model_is_additive_for_older_clients() {
         let before = ProtocolVersion { major: 1, minor: 58 };
         let memory_model = ProtocolVersion { major: 1, minor: 59 };
-        assert_eq!(PROTOCOL_VERSION, memory_model);
         assert!(memory_model.accepts(before), "a 1.58 client never asks for the memory model");
         assert!(!before.accepts(memory_model), "a 1.59 client needs memory/get_memory_model");
+    }
+
+    #[test]
+    fn memory_retention_is_additive_for_older_clients() {
+        let before = ProtocolVersion { major: 1, minor: 59 };
+        let retention = ProtocolVersion { major: 1, minor: 60 };
+        assert_eq!(PROTOCOL_VERSION, retention);
+        assert!(retention.accepts(before), "a 1.59 client never asks for retention settings");
+        assert!(!before.accepts(retention), "a 1.60 client needs memory/get_retention_settings");
     }
 
     #[test]

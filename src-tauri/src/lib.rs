@@ -3207,6 +3207,37 @@ async fn update_extraction_settings(
 }
 
 #[tauri::command]
+async fn get_retention_settings(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRetentionSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get memory retention", move || api::get_retention_settings(&core)).await
+}
+
+#[tauri::command]
+async fn set_retention_settings(
+    proposal_ttl_days: i64,
+    retire_unused_after_days: Option<i64>,
+    max_proposals: Option<i64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRetentionSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Set memory retention", move || {
+        api::set_retention_settings(&core, proposal_ttl_days, retire_unused_after_days, max_proposals)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn restore_memory_record(
+    record_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Restore memory record", move || api::restore_memory_record(&core, &record_id)).await
+}
+
+#[tauri::command]
 async fn get_memory_model(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::MemoryModelSettings, BridgeError> {
@@ -4296,6 +4327,9 @@ pub fn run() -> i32 {
             update_consolidation_settings,
             get_memory_model,
             set_memory_model,
+            get_retention_settings,
+            set_retention_settings,
+            restore_memory_record,
             interrupt_turn,
             retry_worker_task,
             refresh_account_usage,
