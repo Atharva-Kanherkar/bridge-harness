@@ -1087,38 +1087,100 @@ impl DreamGate {
     }
 }
 
-/// One dream against any model, on one connection: plan, then one bounded
-/// call per batch under the spend cap, each answer gated as it arrives. The
-/// live binding runs the same steps with the lock released around each call.
-pub fn run_dream(
-    db: &Connection,
+/// Where a dream reads and writes: a bare connection in tests and evals, the
+/// core's locked store live. Each call holds the store only for `work`, so
+/// no lock is ever held across a model call.
+pub trait DreamDb {
+    fn with<R>(&self, work: impl FnOnce(&Connection) -> R) -> R;
+}
+
+impl DreamDb for Connection {
+    fn with<R>(&self, work: impl FnOnce(&Connection) -> R) -> R {
+        work(self)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DreamOutcome {
+    pub report: DreamReport,
+    pub output: ConsolidationOutput,
+    /// Digest of everything the dream read; `None` when there was nothing.
+    pub sha256: Option<String>,
+}
+
+/// One dream: plan, then one bounded call per batch under the spend cap, each
+/// answer gated as it arrives.
+///
+/// `after_batch` runs under the store after every gated batch, with the
+/// report so far; returning `false` stops the dream (a lost lease). A model
+/// error on the first batch fails the dream; on a later one it stops it,
+/// keeping what the earlier batches applied. `on_change` runs outside the
+/// store after a batch that applied something.
+pub fn drive<D: DreamDb>(
+    db: &D,
     model: &mut dyn ConsolidationModel,
     scope_key: &str,
     now: DateTime<Utc>,
-) -> Result<(DreamReport, ConsolidationOutput), BridgeError> {
-    memory_ledger::sweep_expired(db, now)?;
-    let plan = plan(db, scope_key)?;
-    let mut gate = DreamGate::new(db, scope_key)?;
+    mut after_batch: impl FnMut(&Connection, &DreamReport) -> bool,
+    mut on_change: impl FnMut(),
+) -> Result<DreamOutcome, BridgeError> {
+    let (plan, mut gate) = db.with(|db| -> Result<_, BridgeError> {
+        memory_ledger::sweep_expired(db, now)?;
+        Ok((plan(db, scope_key)?, DreamGate::new(db, scope_key)?))
+    })?;
     gate.report.deferred = plan.deferred;
     let mut spent = ConsolidationOutput { text: String::new(), observed_tokens: 0, spend_microusd: 0 };
+    if plan.batches.is_empty() {
+        return Ok(DreamOutcome { report: gate.report, output: spent, sha256: None });
+    }
     for (index, batch) in plan.batches.iter().enumerate() {
         if spent.spend_microusd >= SPEND_CAP_MICROUSD {
             gate.report.deferred += plan.batches[index..].iter().map(|batch| batch.aliases.len()).sum::<usize>();
             break;
         }
         gate.report.batches += 1;
-        let output = model.consolidate(&compose_prompt(batch, gate.automatic(), now))?;
+        let output = match model.consolidate(&compose_prompt(batch, gate.automatic(), now)) {
+            Ok(output) => output,
+            Err(error) if index == 0 => return Err(error),
+            Err(error) => {
+                eprintln!("memory dream: batch {} failed: {error}", index + 1);
+                gate.report.failed_batches += 1;
+                break;
+            }
+        };
         spent.observed_tokens += output.observed_tokens;
         spent.spend_microusd += output.spend_microusd;
         if !spent.text.is_empty() {
             spent.text.push('\n');
         }
         spent.text.push_str(&output.text);
-        if gate.apply(db, batch, &output.text, now).is_err() {
-            gate.report.failed_batches += 1;
+        let (applied, keep_going) = db.with(|db| {
+            let applied = gate.apply(db, batch, &output.text, now).unwrap_or_else(|error| {
+                eprintln!("memory dream: batch {} answer refused: {error}", index + 1);
+                gate.report.failed_batches += 1;
+                0
+            });
+            (applied, after_batch(db, &gate.report))
+        });
+        if applied > 0 {
+            on_change();
+        }
+        if !keep_going {
+            break;
         }
     }
-    Ok((gate.report, spent))
+    Ok(DreamOutcome { report: gate.report, output: spent, sha256: Some(plan.sha256) })
+}
+
+/// [`drive`] on one connection with nothing to persist between batches.
+pub fn run_dream(
+    db: &Connection,
+    model: &mut dyn ConsolidationModel,
+    scope_key: &str,
+    now: DateTime<Utc>,
+) -> Result<(DreamReport, ConsolidationOutput), BridgeError> {
+    let outcome = drive(db, model, scope_key, now, |_, _| true, || {})?;
+    Ok((outcome.report, outcome.output))
 }
 
 #[cfg(test)]

@@ -1295,25 +1295,6 @@ pub(crate) fn assign_conflict_group(
     Ok(survivor)
 }
 
-/// Every active record in one scope, oldest first. The consolidation job's
-/// entire view of the world.
-pub(crate) fn active_records(
-    db: &Connection,
-    scope_key: &str,
-    limit: i64,
-) -> Result<Vec<MemoryRecord>, BridgeError> {
-    let mut statement = db.prepare(&format!(
-        "SELECT {RECORD_COLUMNS} FROM memory_records
-         WHERE scope_key=?1 AND status=?2
-         ORDER BY created_at, id
-         LIMIT ?3",
-    ))?;
-    let records = statement
-        .query_map(params![scope_key, STATUS_ACTIVE, limit], map_row)?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(records)
-}
-
 /// Everything extraction may reconcile a candidate against: the scope's active
 /// memories and the proposals waiting for review, newest first.
 pub(crate) fn reconcilable_records(
