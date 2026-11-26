@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, Bell, Check, Circle, ExternalLink, MessageSquare, ShieldCheck, Square, X } from "lucide-react";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import { openExternalUrl } from "../../externalLinks";
 import type { AgentEvent } from "../../types";
 import { readWireKind } from "../../transcript/wire";
@@ -97,7 +98,7 @@ export function runSteps(events: AgentEvent[], active = true): Step[] {
     if (step.icon === "say") return step;
     if (step.pending) return { ...step, icon: "ask", detail: "write: asking you" };
     if (outcome === "ran") return { ...step, icon: "ok", detail: decided ? `${decided}, then ran` : "ran" };
-    if (outcome === "failed" || decided) return { ...step, icon: "denied", detail: decided ?? failure ?? "failed" };
+    if (outcome === "failed" || decided) return { ...step, icon: "denied", detail: decided ?? (failure ? friendlyError(failure, "failed") : "failed") };
     return { ...step, detail: active ? "running" : "did not finish" };
   });
 }
@@ -144,7 +145,7 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
     try {
       setEvents(await allSessionEvents(run.sessionId));
     } catch (reason) {
-      setError(errorText(reason));
+      setError(errorText(reason, "Couldn't load this run's steps."));
     }
   }, [run.sessionId]);
 
@@ -155,14 +156,14 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
     return () => window.clearInterval(timer);
   }, [active, load]);
 
-  const act = async (work: () => Promise<unknown>) => {
+  const act = async (work: () => Promise<unknown>, fallback?: string) => {
     setBusy(true);
     setError(null);
     try {
       await work();
       await load();
     } catch (reason) {
-      setError(errorText(reason));
+      setError(errorText(reason, fallback));
     } finally {
       setBusy(false);
     }
@@ -174,7 +175,7 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
     const last = [...forest.entries].sort((a, b) => b.sequence - a.sequence)[0];
     if (!last) throw new Error("This run has no conversation to continue.");
     onContinue(await bridgeApi.forkSession(run.sessionId, last.id, `${workflow.definition.name} (continued)`, null, null, "shared"));
-  });
+  }, "Couldn't continue this run in a chat.");
 
   const steps = runSteps(events, active);
   const when = run.startedAt ?? run.createdAt;
@@ -186,16 +187,16 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
     cost ? `≈ ${cost}` : null, run.quotaUnknown ? "quota unknown" : null].filter(Boolean).join(" · ");
 
   return <div>
-    <button type="button" onClick={onBack} className="mb-3 inline-flex items-center gap-1 text-caption text-muted-foreground hover:text-foreground"><ArrowLeft size={12}/>{workflow.definition.name}</button>
+    <Button variant="text" size="xs" className="mb-3" onClick={onBack}><ArrowLeft size={12}/>{workflow.definition.name}</Button>
     <ScreenHeading title={`Run · ${new Date(when).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`}
       description={<span className="inline-flex flex-wrap items-center gap-2"><StatusChip label={RUN_STATUS_LABEL[run.status]} tone={runTone(run.status)}/><span>{meta}</span></span>}
       action={<>
-        {active && <Button size="xs" variant="ghost" disabled={busy} onClick={() => void act(() => bridgeApi.cancelWorkflowRun(run.id))}><Square size={11}/>Stop</Button>}
+        {active && <Button size="xs" variant="ghost" disabled={busy} onClick={() => void act(() => bridgeApi.cancelWorkflowRun(run.id), "Couldn't stop the run.")}><Square size={11}/>Stop</Button>}
         <Button size="xs" variant="secondary" disabled={busy || !run.sessionId} onClick={() => void continueInChat()}><MessageSquare size={11}/>Continue in chat</Button>
       </>}/>
     {run.event && <Card className="mb-3"><p className="text-caption font-medium text-muted-foreground">{eventCount > 1 ? `Started by ${eventCount} events, first:` : "Started by"}</p>
       <p className="mt-0.5 text-ui text-foreground">{run.event.url
-        ? <button type="button" className="inline-flex items-center gap-1 text-left hover:underline" onClick={() => void openExternalUrl(run.event!.url!)}>{run.event.title}<ExternalLink size={11}/></button>
+        ? <Button variant="link" size="inline" onClick={() => void openExternalUrl(run.event!.url!)}>{run.event.title}<ExternalLink size={11}/></Button>
         : run.event.title}</p></Card>}
     {run.status === "queued" && !run.sessionId && <Card className="mb-3"><p className="text-ui text-foreground">{queuedLine(queuePosition)}</p><p className="mt-0.5 text-caption text-muted-foreground">At most a few workflows run at once, so your plan is not spent in one burst. Change it in Workflow settings.</p></Card>}
     {run.summary && <Card className="mb-3"><p className="text-ui leading-relaxed text-foreground">{run.summary}</p>{run.failureCode && <p className="mt-1 font-mono text-caption text-muted-foreground">{run.failureCode}</p>}
@@ -203,7 +204,7 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
     <div className="rounded-xl border border-border bg-card px-4 py-2">
       {!run.sessionId && <p className="py-3 text-caption text-muted-foreground">{run.status === "skipped" ? "Skipped: another run of this workflow was still going." : run.status === "queued" ? "It starts when a slot frees." : "This run has not started a conversation."}</p>}
       {run.sessionId && steps.length === 0 && (active
-        ? <SkeletonRows label="Working" rows={3} lead="dot" framed={false} className="divide-y-0" rowClassName="px-0" />
+        ? <SkeletonRows label="Working" rows={3} lead="dot" framed={false} density="menu" />
         : <p className="py-3 text-caption text-muted-foreground">Nothing was recorded for this run.</p>)}
       <div className="divide-y divide-border">{steps.map(step => <div key={step.key} className="flex items-start gap-3 py-2.5">
         <div className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border ${step.icon === "ask" ? "border-foreground text-foreground" : "border-border text-muted-foreground"}`}>
@@ -217,9 +218,9 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
             ? <div className="mt-0.5 break-words text-caption text-muted-foreground [&_.md]:text-caption!"><Markdown text={step.detail} richFences={false}/></div>
             : <p className="mt-0.5 whitespace-pre-wrap break-words text-caption text-muted-foreground">{step.detail}</p>}
           {step.pending && <div className="mt-2.5 flex flex-wrap gap-1.5">
-            <Button size="xs" disabled={busy} onClick={() => void act(() => bridgeApi.resolveApproval(run.sessionId!, step.pending!.sequence, "accept"))}><Check size={10}/>Allow once</Button>
-            <Button size="xs" variant="secondary" disabled={busy} onClick={() => void act(() => bridgeApi.alwaysAllowWorkflowTool(workflow.id, run.sessionId!, step.pending!.sequence, step.identity ?? step.title))}><ShieldCheck size={10}/>Always allow for this workflow</Button>
-            <Button size="xs" variant="ghost" disabled={busy} onClick={() => void act(() => bridgeApi.resolveApproval(run.sessionId!, step.pending!.sequence, "decline"))}><X size={10}/>Decline</Button>
+            <Button size="xs" disabled={busy} onClick={() => void act(() => bridgeApi.resolveApproval(run.sessionId!, step.pending!.sequence, "accept"), "Couldn't allow that step.")}><Check size={10}/>Allow once</Button>
+            <Button size="xs" variant="secondary" disabled={busy} onClick={() => void act(() => bridgeApi.alwaysAllowWorkflowTool(workflow.id, run.sessionId!, step.pending!.sequence, step.identity ?? step.title), "Couldn't allow that tool for this workflow.")}><ShieldCheck size={10}/>Always allow for this workflow</Button>
+            <Button size="xs" variant="ghost" disabled={busy} onClick={() => void act(() => bridgeApi.resolveApproval(run.sessionId!, step.pending!.sequence, "decline"), "Couldn't decline that step.")}><X size={10}/>Decline</Button>
           </div>}
         </div>
       </div>)}</div>

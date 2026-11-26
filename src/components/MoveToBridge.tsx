@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type { DetectedImportSource, ImportJob } from "../protocol/generated/protocol";
 import { finishedLabel, folderLabel, importPercent, newerJob, sourceSummary, timeLeft } from "../moveToBridge";
 import { cn } from "@/lib/utils";
@@ -23,7 +24,7 @@ export function MoveToBridge({ onError }: { onError: (message: string) => void }
   const [sources, setSources] = useState<DetectedImportSource[] | null>(null);
   const [jobs, setJobs] = useState<Record<string, ImportJob>>({});
   const [starting, setStarting] = useState<string | null>(null);
-  const report = (error: unknown) => onError(error instanceof Error ? error.message : String(error));
+  const report = (error: unknown, fallback: string) => onError(friendlyError(error, fallback));
   const merge = (next: ImportJob) => setJobs(current => ({ ...current, [next.tool]: newerJob(current[next.tool] ?? null, next) }));
 
   useEffect(() => {
@@ -31,7 +32,7 @@ export function MoveToBridge({ onError }: { onError: (message: string) => void }
     let stop: (() => void) | undefined;
     bridgeApi.detectImportSources()
       .then(found => { if (!cancelled) setSources(found.sources); })
-      .catch(error => { if (!cancelled) { setSources([]); report(error); } });
+      .catch(error => { if (!cancelled) { setSources([]); report(error, "Couldn't look for other tools on this Mac."); } });
     // The page may open in the middle of an import, or after earlier ones:
     // each tool's section shows its own latest.
     bridgeApi.importStatus()
@@ -51,7 +52,7 @@ export function MoveToBridge({ onError }: { onError: (message: string) => void }
     setStarting(tool);
     try {
       merge(await bridgeApi.startImport(tool));
-    } catch (error) { report(error); }
+    } catch (error) { report(error, "Couldn't start the import."); }
     finally { setStarting(null); }
   }
 
@@ -190,7 +191,8 @@ function Stat({ label, children }: { label: string; children: ReactNode }) {
 
 function ImportSummary({ job }: { job: ImportJob }) {
   const failed = job.status === "failed";
-  const errors = job.errors ?? [];
+  // One plain sentence per problem; the same sentence twice says nothing new.
+  const errors = [...new Set((job.errors ?? []).map(error => friendlyError(error, "Part of the import didn't come over.")))];
   const notCarried = job.notCarried ?? [];
   const extraErrors = errors.length - ERRORS_SHOWN;
   return <div aria-label="Import result">

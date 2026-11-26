@@ -42,7 +42,7 @@ async function settle(rounds = 6) {
   }
 }
 
-const chatRows = () => [...container.querySelectorAll<HTMLButtonElement>('button[title*=" — "]')];
+const chatRows = () => [...container.querySelectorAll<HTMLButtonElement>('button[data-tip*=" — "]')];
 const composer = () => container.querySelector<HTMLTextAreaElement>("textarea");
 const stopButton = () => container.querySelector<HTMLButtonElement>('button[aria-label="Stop"], button[aria-label="Stopping"]');
 

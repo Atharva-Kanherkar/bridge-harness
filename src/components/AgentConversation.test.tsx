@@ -158,7 +158,7 @@ describe("AgentConversation", () => {
     const chips = [...container.querySelectorAll<HTMLElement>("[data-subagent]")];
     expect(chips.map(chip => chip.dataset.subagent)).toEqual(["ses_child"]);
     expect(chips[0].textContent).toContain("general");
-    expect(chips[0].title).toBe("Subagent: Look up the facts");
+    expect(chips[0].dataset.tip).toBe("Subagent: Look up the facts");
     const rows = [...container.querySelectorAll<HTMLElement>("[data-tool-row]")];
     expect(rows).toHaveLength(2);
     expect(rows[0].querySelector("[data-subagent]")).toBeNull();
@@ -169,7 +169,7 @@ describe("AgentConversation", () => {
 
   it("leaves the tool path inert without an opener", async () => {
     const { container, unmount } = await mountConversation({});
-    expect(container.querySelector('[title="src/App.tsx"]')?.textContent).toBe("src");
+    expect(container.querySelector('[data-tip="src/App.tsx"]')?.textContent).toBe("src");
     expect(container.querySelector('button[aria-label="Open src/App.tsx in the Code pane"]')).toBeNull();
     await unmount();
   });
@@ -353,7 +353,7 @@ describe("AgentConversation", () => {
     expect(retry.disabled).toBe(true);
 
     await act(async () => rejectRetry(new Error("The provider is still offline")));
-    expect(container.textContent).toContain("The provider is still offline");
+    expect(container.textContent).toContain("The provider is still offline.");
     expect(retry.disabled).toBe(false);
     await act(async () => root.unmount());
     container.remove();

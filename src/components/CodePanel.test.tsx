@@ -210,7 +210,7 @@ describe("CodePanel", () => {
 
   it("honours a reveal request: the file opens and its tab is active", async () => {
     await render({ reveal: { path: "src/App.tsx", nonce: 1 } });
-    const tab = [...container.querySelectorAll("button")].find(node => node.getAttribute("title") === "src/App.tsx");
+    const tab = [...container.querySelectorAll("button")].find(node => node.getAttribute("data-tip") === "src/App.tsx");
     expect(tab).toBeTruthy();
     expect(read).toHaveBeenCalledWith("w", "src/App.tsx");
   });
@@ -221,7 +221,7 @@ describe("CodePanel", () => {
     expect(read).toHaveBeenCalledTimes(1);
 
     await click(rowNamed("README.md"));
-    const activeTab = () => [...container.querySelectorAll('[class*="group/tab"]')].find(node => node.className.includes("bg-code"))?.querySelector("button[title]")?.getAttribute("title");
+    const activeTab = () => [...container.querySelectorAll('[class*="group/tab"]')].find(node => node.className.includes("bg-code"))?.querySelector("button[data-tip]")?.getAttribute("data-tip");
     expect(activeTab()).toBe("README.md");
 
     await render({ reveal: { path: "src/App.tsx", nonce: 1 } });
@@ -283,7 +283,7 @@ describe("CodePanel", () => {
     await render();
     await click(rowNamed("src"));
     await click(rowNamed("App.tsx"));
-    expect(text()).toContain("src/App.tsx is not a file");
+    expect(text()).toContain("src/App.tsx is not a file.");
     expect(container.querySelector("[data-testid=editor]")).toBeNull();
   });
 
@@ -366,7 +366,7 @@ describe("CodePanel", () => {
     await render({ reveal: { path: "src/App.tsx", nonce: 1 } });
     await typeInto(editorFor("src/App.tsx"), "unsaved work");
     await click(rowNamed("README.md"));
-    await click([...container.querySelectorAll("button[title='src/App.tsx']")][0]);
+    await click([...container.querySelectorAll("button[data-tip='src/App.tsx']")][0]);
     expect(editorFor("src/App.tsx").value).toBe("unsaved work");
     expect(text()).toContain("Unsaved changes");
   });
@@ -406,7 +406,7 @@ describe("CodePanel", () => {
     await render({ reveal: { path: "src/App.tsx", nonce: 1 } });
     await typeInto(editorFor("src/App.tsx"), "mine");
     await click(button("Save"));
-    expect(text()).toContain("permission denied");
+    expect(text()).toContain("Bridge doesn't have permission to do that.");
     expect(container.querySelector("[aria-label*='discarding unsaved changes']")).toBeTruthy();
     expect(button("Save")).toBeTruthy();
   });
@@ -432,7 +432,7 @@ describe("CodePanel", () => {
     await click(rowNamed("a.ts"));
     await click(rowNamed("b.ts"));
     await click(rowNamed("c.ts"));
-    await click([...container.querySelectorAll("button[title='b.ts']")][0]);
+    await click([...container.querySelectorAll("button[data-tip='b.ts']")][0]);
     await click(container.querySelector("[aria-label='Close b.ts']"));
     expect(confirm).not.toHaveBeenCalled();
     expect(editorFor("c.ts").parentElement!.className).not.toContain("hidden");

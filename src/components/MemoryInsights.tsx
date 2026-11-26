@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
-import { Skeleton, SkeletonRegion, SkeletonText, pendingClass } from "@/components/ui/skeleton";
+import { Skeleton, SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 import { Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { harnessLabel } from "../utils";
 import type { MemoryInsightsResult } from "../types";
 import { CARD, relative, rise, Themes, TONE } from "./UsageInsights";
+import { Button } from "@/components/ui/button";
 
 // The Memory Insights tab: the same harness-written report as usage Insights,
 // over the memory ledger. Figures are Bridge's own (recall counts, budget);
@@ -27,7 +29,7 @@ export function MemoryInsights({ onError }: { onError: (message: string) => void
     bridgeApi.memoryInsights(refresh)
       .then(setResult)
       .catch(error => {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = friendlyError(error, "Couldn't analyse your memory.");
         setResult({ status: "failed", detail: message });
         onError(message);
       })
@@ -37,9 +39,9 @@ export function MemoryInsights({ onError }: { onError: (message: string) => void
   useEffect(() => { load(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const report = result?.report ?? null;
-  const analyseButton = <button type="button" onClick={() => load(true)} disabled={loading} aria-busy={loading || undefined} className={cn("inline-flex h-8 shrink-0 items-center gap-2 rounded-lg border border-border px-3 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-40", pendingClass(loading))}>
+  const analyseButton = <Button variant="outline" size="sm" className="shrink-0" onClick={() => load(true)} disabled={loading} loading={loading}>
     <Sparkles size={13} aria-hidden="true" />{report ? "Analyse again" : "Analyse my memory"}
-  </button>;
+  </Button>;
 
   if (loading && !report) {
     return <div className="space-y-4">
@@ -59,7 +61,7 @@ export function MemoryInsights({ onError }: { onError: (message: string) => void
     const status = result?.status ?? "empty";
     return <div className={cn(CARD, "flex flex-col items-start gap-3 py-8")}>
       <h2 className="font-display text-lg font-semibold text-foreground">{status === "unavailable" ? "Insights need a harness" : status === "failed" ? "The analysis did not finish" : "Nothing analysed yet"}</h2>
-      <p className="max-w-xl text-caption text-muted-foreground">{result?.detail ?? "Bridge reads your active memories and how often each reached a prompt, then asks your harness to write up what it sees. The memory text goes only to the harness you already use. Nothing is stored except the report."}</p>
+      <p className="max-w-xl text-caption text-muted-foreground">{status === "failed" && result?.detail ? friendlyError(result.detail, "The analysis stopped before it finished. Try again.") : result?.detail ?? "Bridge reads your active memories and how often each reached a prompt, then asks your harness to write up what it sees. The memory text goes only to the harness you already use. Nothing is stored except the report."}</p>
       {status !== "unavailable" && analyseButton}
     </div>;
   }
@@ -91,7 +93,7 @@ export function MemoryInsights({ onError }: { onError: (message: string) => void
       </p>
     </section>
 
-    {report.highlights.length > 0 && <section className="grid gap-3 sm:grid-cols-3" aria-label="Highlights">
+    {report.highlights.length > 0 && <section className="grid grid-cols-[repeat(auto-fit,minmax(13rem,1fr))] gap-3" aria-label="Highlights">
       {report.highlights.map((item, index) => <article key={item.title} className={cn(CARD, "py-3", rise(index + 1).className)} style={rise(index + 1).style}>
         <div className="mb-1 flex items-center gap-1.5 text-caption text-muted-foreground"><span className={cn("size-1.5 rounded-full", TONE[item.tone].dot)} aria-hidden="true" />{TONE[item.tone].label}</div>
         <h3 className="text-ui font-medium text-foreground">{item.title}</h3>

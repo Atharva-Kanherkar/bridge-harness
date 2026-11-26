@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { FlaskConical, PencilLine } from "lucide-react";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import type { WorkflowTemplate } from "../../protocol/generated/protocol";
 import { Button } from "@/components/ui/button";
-import { CHIP, ErrorNote, errorText } from "./parts";
+import { CHIP, ErrorNote } from "./parts";
 import { triggerSummary } from "./format";
 import { SkeletonCards } from "@/components/ui/skeleton";
 
@@ -32,7 +33,7 @@ export function WorkflowTemplates({ busy, onTry, onCustomize }: {
     let current = true;
     bridgeApi.listWorkflowTemplates()
       .then(list => { if (current) setTemplates(list.templates); })
-      .catch(reason => { if (current) { setError(errorText(reason)); setTemplates([]); } });
+      .catch(reason => { if (current) { setError(friendlyError(reason, "Couldn't load the workflow templates.")); setTemplates([]); } });
     return () => { current = false; };
   }, []);
 
@@ -41,7 +42,7 @@ export function WorkflowTemplates({ busy, onTry, onCustomize }: {
   }
   return <div className="mt-4">
     <p className="mb-3 text-caption text-muted-foreground">Try one first: it runs as a dry run, so every change it would make is only shown to you. Nothing runs for real until you approve it.</p>
-    <div className="grid gap-3 sm:grid-cols-2">{templates.map(template => {
+    <div className="@container"><div className="grid gap-3 @min-[520px]:grid-cols-2">{templates.map(template => {
       const blocker = templateBlocker(template);
       return <article key={template.id} aria-label={template.name} className="flex flex-col rounded-xl border border-border bg-card p-4">
         <h3 className="text-ui font-semibold text-foreground">{template.name}</h3>
@@ -52,12 +53,12 @@ export function WorkflowTemplates({ busy, onTry, onCustomize }: {
           {template.needsProject && <span className={CHIP}>a project</span>}
         </div>
         {blocker && <p className="mt-2 text-caption text-muted-foreground">{blocker}</p>}
-        <div className="mt-3 flex gap-1.5">
+        <div className="mt-3 flex flex-wrap gap-1.5">
           <Button size="xs" disabled={busy || !template.ready} onClick={() => onTry(template)}><FlaskConical size={11}/>Try it (dry run)</Button>
           <Button size="xs" variant="secondary" disabled={busy} onClick={() => onCustomize(template)}><PencilLine size={11}/>Customize</Button>
         </div>
       </article>;
-    })}</div>
+    })}</div></div>
     <ErrorNote message={error}/>
   </div>;
 }

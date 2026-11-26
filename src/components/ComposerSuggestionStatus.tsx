@@ -1,7 +1,9 @@
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
 export function ComposerSuggestionStatus({ error, onRetry }: { error?: string; onRetry: () => void }) {
   if (!error) return null;
-  return <p role="status" className="mt-2 text-xs text-muted-foreground" title={error}>
+  return <Tip label={error}><p role="status" className="mt-2 text-xs text-muted-foreground">
     Inline suggestions unavailable. Check Settings → Composer.{" "}
-    <button type="button" onClick={onRetry} className="rounded text-foreground underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-ring">Retry</button>
-  </p>;
+    <Button variant="link" size="inline" onClick={onRetry}>Retry</Button>
+  </p></Tip>;
 }

@@ -25,7 +25,8 @@ pub struct SaveMemoryRecordParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListMemoryRecordsParams {
     pub scope_key: String,
-    /// `active` (default) or `proposed`. Nothing else lists.
+    /// `active` (default), `proposed`, or `expired` (retired or expired
+    /// records a person can restore). Nothing else lists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// The `nextCursor` of the previous page. Absent reads the first page. A
@@ -176,6 +177,9 @@ pub struct ReviewMemoryRecordsResult {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateExtractionSettingsParams {
     pub mode: String,
+    /// Deprecated and ignored: extraction runs on the memory model
+    /// (`memory/set_memory_model`). Accepted for one release so older
+    /// clients still decode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -199,6 +203,8 @@ pub struct MemoryExtractionRun {
 pub struct MemoryExtractionSettings {
     pub scope_key: String,
     pub mode: String,
+    /// Deprecated read-only mirror of the resolved memory model
+    /// (`memory/get_memory_model`). Absent when none resolves.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -209,13 +215,15 @@ pub struct MemoryExtractionSettings {
 }
 
 /// Consolidation is opt-in per scope. `off` is the default and means nothing
-/// automatic; `propose` runs the pinned profile once a scope has been quiet
-/// for the debounce window. The job is bookkeeping rather than judgement, so
-/// the profile it points at is deliberately the user's choice of a cheap one.
+/// automatic; `propose` runs on the memory model once a scope has been quiet
+/// for the debounce window.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateConsolidationSettingsParams {
     pub mode: String,
+    /// Deprecated and ignored: consolidation runs on the memory model
+    /// (`memory/set_memory_model`). Accepted for one release so older
+    /// clients still decode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -251,6 +259,8 @@ pub struct MemoryConsolidationRun {
 pub struct MemoryConsolidationSettings {
     pub scope_key: String,
     pub mode: String,
+    /// Deprecated read-only mirror of the resolved memory model
+    /// (`memory/get_memory_model`). Absent when none resolves.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -264,6 +274,69 @@ pub struct MemoryConsolidationSettings {
     /// The newest settled run in this scope, spend observed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_run: Option<MemoryConsolidationRun>,
+}
+
+/// The harness and model the user pinned for memory jobs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryModelChoice {
+    pub harness: String,
+    pub model: String,
+}
+
+/// Where the memory model came from: the user's pin, the new-chat default,
+/// or what a new chat starts on when that default is unset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryModelSource {
+    User,
+    ChatDefault,
+    Standard,
+}
+
+/// The one harness and model every memory job runs on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedMemoryModel {
+    pub harness: String,
+    /// Absent runs the harness on its default model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub source: MemoryModelSource,
+}
+
+/// A choice the resolver passed over, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedMemoryModel {
+    pub harness: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub source: MemoryModelSource,
+    pub reason: String,
+}
+
+/// Extraction, consolidation and automatic approval all run on `resolved`.
+/// It is absent only when no choice can run a tool-free turn; `skipped` then
+/// says why for each.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryModelSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<MemoryModelChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<ResolvedMemoryModel>,
+    pub skipped: Vec<SkippedMemoryModel>,
+}
+
+/// Pin both a harness and a model, or neither to clear the pin.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetMemoryModelParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -363,7 +436,8 @@ pub struct MemoryRecallStats {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryActivityEntry {
-    /// `extraction` or `consolidation`.
+    /// `extraction`, `consolidation`, or `retention` (a sweep that expired
+    /// proposals or retired unused memories).
     pub source: String,
     pub status: String,
     /// Proposals written (extraction) or changes applied (consolidation).
@@ -489,6 +563,37 @@ mod tests {
     }
 
     #[test]
+    fn memory_model_settings_have_camel_case_wire_shapes() {
+        let settings = MemoryModelSettings {
+            pinned: None,
+            resolved: Some(ResolvedMemoryModel {
+                harness: "claude".into(),
+                model: Some("claude-haiku-5-5".into()),
+                source: MemoryModelSource::ChatDefault,
+            }),
+            skipped: vec![SkippedMemoryModel {
+                harness: "codex".into(),
+                model: None,
+                source: MemoryModelSource::User,
+                reason: "no per-tool authority".into(),
+            }],
+        };
+        let wire = serde_json::to_value(&settings).unwrap();
+        assert!(wire.get("pinned").is_none(), "no pin is absent, not null");
+        assert_eq!(wire["resolved"]["source"], json!("chat_default"));
+        assert_eq!(wire["resolved"]["model"], json!("claude-haiku-5-5"));
+        assert_eq!(wire["skipped"][0]["source"], json!("user"));
+        assert!(wire["skipped"][0].get("model").is_none());
+
+        let clear: SetMemoryModelParams = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(clear, SetMemoryModelParams { harness: None, model: None });
+        let pin: SetMemoryModelParams =
+            serde_json::from_value(json!({ "harness": "claude", "model": "claude-haiku-5-5" })).unwrap();
+        assert_eq!(pin.model.as_deref(), Some("claude-haiku-5-5"));
+        assert!(serde_json::from_value::<SetMemoryModelParams>(json!({ "account": "x" })).is_err());
+    }
+
+    #[test]
     fn save_and_list_refuse_unknown_fields_and_null_scope() {
         assert!(
             serde_json::from_value::<SaveMemoryRecordParams>(json!({})).is_err(),
@@ -519,4 +624,42 @@ mod tests {
         }))
         .is_ok());
     }
+}
+
+/// How the account scope cleans itself up, and what it holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryRetentionSettings {
+    pub scope_key: String,
+    /// Days a proposal waits for review before it expires: 3, 7, 14 or 30.
+    pub proposal_ttl_days: i64,
+    /// Days without use before an active memory that is not a pin retires:
+    /// 30, 90 or 180. Absent means never.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retire_unused_after_days: Option<i64>,
+    /// Proposals the scope may hold at once, apart from the active budget.
+    pub max_proposals: i64,
+    /// The active budget (`max_records` on the consolidation settings).
+    pub max_active: i64,
+    pub held_active: i64,
+    pub held_proposals: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetRetentionSettingsParams {
+    pub proposal_ttl_days: i64,
+    /// Absent or null: never retire unused memories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retire_unused_after_days: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_proposals: Option<i64>,
+}
+
+/// Bring back a retired or expired memory as a new active record that
+/// supersedes it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RestoreMemoryRecordParams {
+    pub record_id: String,
 }

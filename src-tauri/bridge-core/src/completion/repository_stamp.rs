@@ -115,7 +115,38 @@ impl Inventory {
     }
 }
 
+type Fingerprint = (u64, u64, u32, u64, i64, i64, i64, i64);
+
+/// One worktree's collected state, kept until the whole tree is validated.
+struct Worktree {
+    root: PathBuf,
+    identity: (u64, u64),
+    inventory: Inventory,
+    fingerprints: Vec<(PathBuf, Option<Fingerprint>)>,
+}
+
+impl Worktree {
+    fn open_observed_root(&self) -> Result<Dir, BridgeError> {
+        let directory = Dir::open_ambient_dir(&self.root, cap_std::ambient_authority())?;
+        let metadata = directory.dir_metadata()?;
+        if (metadata.dev(), metadata.ino()) != self.identity {
+            return Err(changed());
+        }
+        Ok(directory)
+    }
+}
+
 fn measure(root: &Path) -> Result<RepositoryMeasurement, BridgeError> {
+    let mut worktrees = Vec::new();
+    let measurement = collect(root, &mut worktrees)?;
+    validate_tree(&worktrees)?;
+    Ok(measurement)
+}
+
+fn collect(
+    root: &Path,
+    worktrees: &mut Vec<Worktree>,
+) -> Result<RepositoryMeasurement, BridgeError> {
     let directory = Dir::open_ambient_dir(root, cap_std::ambient_authority())?;
     let root_meta = directory.dir_metadata()?;
     let inventory = Inventory::read(root)?;
@@ -123,31 +154,21 @@ fn measure(root: &Path) -> Result<RepositoryMeasurement, BridgeError> {
     let mut checkout = Sha256::new();
     field(&mut revision, &inventory.index);
     field(&mut revision, &inventory.staged_paths);
-    let mut observed = Vec::new();
+    let mut fingerprints = Vec::new();
     for (bytes, gitlink) in inventory.paths()? {
         let path = Path::new(OsStr::from_bytes(bytes));
         let entry = checkout_entry(&directory, path)?;
         if let Some(entry) = &entry {
             field(&mut checkout, bytes);
-            if let Some(child) = hash_entry(&mut checkout, root, path, gitlink, entry)? {
+            if let Some(child) = hash_entry(&mut checkout, root, path, gitlink, entry, worktrees)? {
                 field(&mut revision, bytes);
                 field(&mut revision, &child.revision_digest);
             }
         }
-        observed.push((path, entry.map(|entry| fingerprint(&entry.metadata))));
-    }
-    if inventory != Inventory::read(root)? {
-        return Err(changed());
-    }
-    for (path, before) in observed {
-        let after = checkout_entry(&directory, path)?.map(|entry| fingerprint(&entry.metadata));
-        if before != after {
-            return Err(changed());
-        }
-    }
-    let current_root = Dir::open_ambient_dir(root, cap_std::ambient_authority())?.dir_metadata()?;
-    if (root_meta.dev(), root_meta.ino()) != (current_root.dev(), current_root.ino()) {
-        return Err(changed());
+        fingerprints.push((
+            path.to_owned(),
+            entry.map(|entry| fingerprint(&entry.metadata)),
+        ));
     }
     let checkout_digest: [u8; 32] = checkout.finalize().into();
     field(&mut revision, &checkout_digest);
@@ -156,14 +177,44 @@ fn measure(root: &Path) -> Result<RepositoryMeasurement, BridgeError> {
     field(&mut stamp, b"completion repository stamp v2");
     field(&mut stamp, root.as_os_str().as_bytes());
     field(&mut stamp, &revision_digest);
+    let head = inventory.head.clone();
+    worktrees.push(Worktree {
+        root: root.to_owned(),
+        identity: (root_meta.dev(), root_meta.ino()),
+        inventory,
+        fingerprints,
+    });
     Ok(RepositoryMeasurement {
         stamp: RepositoryStamp {
-            head: inventory.head,
+            head,
             dirty_digest: format!("sha256:v2:{:x}", stamp.finalize()),
         },
         checkout_digest,
         revision_digest,
     })
+}
+
+/// Worktrees are collected child-first. Reread the parent inventories first,
+/// then recheck every tracked path after all Git commands have finished.
+fn validate_tree(worktrees: &[Worktree]) -> Result<(), BridgeError> {
+    for worktree in worktrees.iter().rev() {
+        if Inventory::read(&worktree.root)? != worktree.inventory {
+            return Err(changed());
+        }
+    }
+    for worktree in worktrees {
+        let directory = worktree.open_observed_root()?;
+        for (path, before) in &worktree.fingerprints {
+            let after =
+                checkout_entry(&directory, path)?.map(|entry| fingerprint(&entry.metadata));
+            if *before != after {
+                return Err(changed());
+            }
+        }
+        // Reopen the path to catch replacement while the descriptor was in use.
+        worktree.open_observed_root()?;
+    }
+    Ok(())
 }
 
 struct Entry<'a> {
@@ -206,6 +257,7 @@ fn hash_entry(
     path: &Path,
     gitlink: bool,
     entry: &Entry<'_>,
+    worktrees: &mut Vec<Worktree>,
 ) -> Result<Option<RepositoryMeasurement>, BridgeError> {
     let file_type = entry.metadata.file_type();
     if file_type.is_symlink() {
@@ -230,7 +282,7 @@ fn hash_entry(
     } else if file_type.is_dir() {
         field(digest, b"directory");
         if gitlink {
-            return hash_submodule(digest, root, path, entry);
+            return hash_submodule(digest, root, path, entry, worktrees);
         }
     } else {
         return Err(invalid("a special worktree file cannot be measured"));
@@ -243,6 +295,7 @@ fn hash_submodule(
     root: &Path,
     path: &Path,
     entry: &Entry<'_>,
+    worktrees: &mut Vec<Worktree>,
 ) -> Result<Option<RepositoryMeasurement>, BridgeError> {
     let directory = Dir::from_std_file(open_at(&entry.dir, entry.name, libc::O_DIRECTORY)?);
     match directory.symlink_metadata(".git") {
@@ -251,7 +304,9 @@ fn hash_submodule(
             if worktree_root(&child_root)? != child_root {
                 return Err(invalid("Git reported a different submodule worktree"));
             }
-            let child = measure(&child_root)?;
+            let child = collect(&child_root, worktrees)?;
+            #[cfg(test)]
+            tests::after_child_measurement();
             field(digest, b"submodule");
             field(digest, child.stamp.head.as_bytes());
             field(digest, &child.checkout_digest);
@@ -283,7 +338,7 @@ fn open_at(dir: &Dir, name: &OsStr, flags: libc::c_int) -> io::Result<File> {
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
-fn fingerprint(m: &Metadata) -> (u64, u64, u32, u64, i64, i64, i64, i64) {
+fn fingerprint(m: &Metadata) -> Fingerprint {
     (
         m.dev(),
         m.ino(),
@@ -335,4 +390,57 @@ fn git_read(path: &Path, args: &[&str]) -> Result<Vec<u8>, BridgeError> {
         return Err(invalid(&format!("Git returned {}", output.status)));
     }
     Ok(output.stdout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::measure_repository;
+    use crate::completion::tests::{git, repository};
+    use std::cell::Cell;
+    use std::path::{Path, PathBuf};
+
+    thread_local! {
+        static EDIT_AFTER_CHILD_MEASUREMENT: Cell<Option<PathBuf>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn after_child_measurement() {
+        if let Some(file) = EDIT_AFTER_CHILD_MEASUREMENT.with(Cell::take) {
+            std::fs::write(file, b"edited while the parent measures\n").unwrap();
+        }
+    }
+
+    #[test]
+    fn child_file_edit_after_the_child_measurement_is_rejected() {
+        let (_parent_fixture, parent) = repository();
+        let (_origin_fixture, origin) = repository();
+        let parent = Path::new(&parent);
+        git(
+            parent,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                &origin,
+                "nested",
+            ],
+        );
+        let child_file = parent.join("nested").join("README.md");
+        let baseline = measure_repository(parent).unwrap();
+
+        EDIT_AFTER_CHILD_MEASUREMENT.with(|edit| edit.set(Some(child_file)));
+        let measured = measure_repository(parent);
+
+        let error = measured
+            .err()
+            .expect("a child edit during the parent measurement must fail the stamp");
+        assert!(
+            error.to_string().contains("changed while measuring"),
+            "{error:?}"
+        );
+        let after = measure_repository(parent).unwrap();
+        assert_eq!(baseline.stamp.head, after.stamp.head);
+        assert_ne!(baseline.stamp.dirty_digest, after.stamp.dirty_digest);
+    }
 }

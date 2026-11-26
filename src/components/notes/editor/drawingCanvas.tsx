@@ -14,6 +14,7 @@ import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import "@excalidraw/excalidraw/index.css";
 import { Check } from "lucide-react";
 import { completeScene, keptAppState, keptFiles, mergeScenes, parseScene, serializeScene, type ConvertSkeletons, type SceneFile, type StoredElement } from "./drawingScene";
+import { Button } from "@/components/ui/button";
 
 const convert: ConvertSkeletons = (skeletons, opts) => convertToExcalidrawElements(skeletons as never, opts) as unknown as StoredElement[];
 const SAVE_MS = 800;
@@ -126,9 +127,9 @@ export function DrawingEditor({ body, dark, title, onSave, onClose }: {
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
       <h2 className="m-0 min-w-0 flex-1 truncate text-ui font-semibold text-foreground">{title ? `Drawing in ${title}` : "Drawing"}</h2>
       <p className="m-0 hidden text-caption text-muted-foreground sm:block">Saved to the page as you draw. Agents can read and add to it.</p>
-      <button type="button" onClick={() => { flush(); onClose(); }} className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground px-3 text-meta font-medium text-background transition-opacity hover:opacity-90">
+      <Button variant="default" size="sm" onClick={() => { flush(); onClose(); }}>
         <Check size={14} aria-hidden="true" />Done
-      </button>
+      </Button>
     </header>
     <div className="min-h-0 flex-1">
       <Excalidraw

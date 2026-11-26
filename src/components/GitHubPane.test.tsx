@@ -122,6 +122,31 @@ describe("GitHubPane", () => {
     expect(host!.textContent).not.toContain("REVIEW THREADS");
   });
 
+  it("renders a page too narrow for the table as the stacked dock layout", async () => {
+    mockReads();
+    const measure = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect");
+    const sized = (width: number) => measure.mockImplementation(function (this: HTMLElement) {
+      return { width: this.hasAttribute("data-gh-pane-root") ? width : 0, height: 0, top: 0, left: 0, right: 0, bottom: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    });
+    const tabs = () => host!.querySelector('[aria-label="GitHub repository actions"]')!;
+
+    sized(1200);
+    await mount({ layout: "page" });
+    // Roomy: labelled tabs and the four-column table with its header row.
+    expect(tabs().textContent).toContain("Pull requests");
+    expect(host!.textContent).toContain("Checks");
+
+    await act(async () => { root?.unmount(); });
+    host?.remove();
+    sized(560);
+    await mount({ layout: "page" });
+    // Narrow: icon tabs, no table header, and the pull request is still listed.
+    expect(tabs().textContent).not.toContain("Pull requests");
+    expect(tabs().querySelector('[aria-label="Pull requests"]')).not.toBeNull();
+    expect(host!.textContent).not.toContain("Checks");
+    expect(host!.textContent).toContain("Safe GitHub surface");
+  });
+
   it("switches between pull requests, issues, and the repository overview", async () => {
     mockReads();
     vi.spyOn(bridgeApi, "githubIssues").mockResolvedValue({ issues: [{
@@ -164,9 +189,10 @@ describe("GitHubPane", () => {
     ]);
     expect([...toolbar.children].every(node => node.className.includes("size-7"))).toBe(true);
     const copy = host!.querySelector('button[aria-label="Copy bridge/harness"]')!;
-    expect(copy.className).toMatch(/\bmin-w-0\b/);
-    expect(copy.className).toMatch(/\bshrink\b/);
-    expect(copy.className).not.toMatch(/\bshrink-0\b/);
+    const copyClasses = copy.className.split(/\s+/);
+    expect(copyClasses).toContain("min-w-0");
+    expect(copyClasses).toContain("shrink");
+    expect(copyClasses).not.toContain("shrink-0");
     expect(host!.querySelector("header")!.className).toContain("p-1.5");
     expect(host!.querySelector("header")!.className).not.toContain("u-glass");
   });
@@ -295,7 +321,7 @@ describe("GitHubPane", () => {
     list.mockRejectedValueOnce(new Error("temporary GitHub outage"));
     await click(host!.querySelector('button[aria-label="Refresh GitHub"]') as HTMLButtonElement);
     expect(host!.textContent).toContain("Safe GitHub surface");
-    expect(host!.textContent).toContain("Refresh failed: temporary GitHub outage");
+    expect(host!.textContent).toContain("Refresh failed. Temporary GitHub outage.");
     expect(statusRead).toHaveBeenLastCalledWith("w", true);
     expect(surfaceSnapshot("w")?.prs).toEqual([summary]);
   });
@@ -442,7 +468,7 @@ describe("GitHubPane", () => {
     statusSpy.mockRejectedValue(new Error("gh exploded"));
     await mount();
     expect(host!.textContent).toContain("GitHub is unreachable");
-    expect(host!.textContent).toContain("gh exploded");
+    expect(host!.textContent).toContain("gh exploded.");
   });
 
   it("jumps to the commented file and line through the callback", async () => {
@@ -892,7 +918,7 @@ describe("GitHubPane", () => {
       defaultStrategy: "squash" as const,
       strategies: { merge: true, squash: true, rebase: false },
     });
-    const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: false, message: 'Required status check "build" is expected.' });
+    vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: false, message: 'Required status check "build" is expected.' });
     await mount();
     await click(buttonByText("Safe GitHub surface"));
     await click(buttonByText("Squash and merge"));
@@ -1055,11 +1081,11 @@ describe("GitHubPane", () => {
     ]));
     await mount();
     await click(buttonByText("Safe GitHub surface"));
-    const radio = (name: string) => [...host!.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(button => button.textContent?.startsWith(name))!;
+    const radio = (name: string) => [...host!.querySelectorAll<HTMLButtonElement>('[aria-label="Filter conversations"] button')].find(button => button.textContent?.startsWith(name))!;
     expect(radio("Open").textContent).toContain("1");
     await click(radio("Resolved"));
     expect(host!.querySelector('[data-thread="done-one"]')).not.toBeNull();
-    expect(radio("Resolved").getAttribute("aria-checked")).toBe("true");
+    expect(radio("Resolved").getAttribute("aria-pressed")).toBe("true");
     await click(radio("Open"));
     expect(host!.querySelector('[data-thread="open-one"]')).not.toBeNull();
   });
@@ -1302,7 +1328,7 @@ describe("GitHubPane", () => {
     await act(async () => { vi.advanceTimersByTime(300); await flush(); });
 
     expect(search).toHaveBeenCalledWith("harness");
-    expect(document.body.textContent).toContain("GitHub CLI unavailable: gh is not installed");
+    expect(document.body.textContent).toContain("Couldn't search your repositories. GitHub CLI unavailable.");
     // "No repository matches that" would send the user hunting for a repo that exists.
     expect(document.body.textContent).not.toContain("No repository matches that");
   });

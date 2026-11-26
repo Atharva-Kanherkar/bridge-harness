@@ -2,8 +2,8 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FileLinkContext, Markdown, MentionText, mermaidClamp, renderMathToHtml, RichFence, richFenceKind, splitBlocks, type FileLinks } from "./Markdown";
+import { afterEach, beforeEach, describe, expect, it, vi, beforeAll } from "vitest";
+import { FileLinkContext, Markdown, MentionText, renderMathToHtml, RichFence, richFenceKind, splitBlocks, type FileLinks, loadMath } from "./Markdown";
 import * as highlight from "./highlight";
 import { withNotesContext } from "../notesBrief";
 
@@ -265,6 +265,20 @@ describe("GFM table rendering", () => {
   it("renders ~~text~~ as <del> strikethrough inline", () => {
     const html = renderToStaticMarkup(<Markdown text="this is ~~wrong~~ but this is right" />);
     expect(html).toMatch(/<del>.*wrong.*<\/del>/);
+  });
+});
+
+// Math renders through KaTeX loaded on first use; synchronous renders below
+// need it loaded up front.
+beforeAll(() => loadMath());
+
+describe("math loading", () => {
+  it("keeps KaTeX out of the module graph until math is shown", async () => {
+    vi.resetModules();
+    const fresh = await import("./Markdown");
+    expect(fresh.renderMathToHtml("x^2", false), "nothing renders before the renderer loads").toBeNull();
+    await fresh.loadMath();
+    expect(fresh.renderMathToHtml("x^2", false)).toContain("katex");
   });
 });
 
@@ -575,6 +589,38 @@ describe("existing markdown behavior is preserved", () => {
   });
 });
 
+describe("lists and quotes as GitHub draws them", () => {
+  it("nests an indented list under its item and keeps the outer numbering", () => {
+    const html = renderToStaticMarkup(<Markdown text={"1. Open the picker\n   - pick Claude\n   - set Thinking\n2. Shrink the window\n3. Check\n   1. four rows\n   2. it scrolls"} />);
+    expect(html).toBe('<div class="md"><ol><li>Open the picker<ul><li>pick Claude</li><li>set Thinking</li></ul></li><li>Shrink the window</li><li>Check<ol><li>four rows</li><li>it scrolls</li></ol></li></ol></div>');
+  });
+
+  it("keeps counting across blank lines and from the number the list starts at", () => {
+    expect(renderToStaticMarkup(<Markdown text={"1. one\n\n2. two\n\n3. three"} />)).toBe('<div class="md"><ol><li>one</li><li>two</li><li>three</li></ol></div>');
+    expect(renderToStaticMarkup(<Markdown text={"Then:\n\n4. four\n5. five"} />)).toContain('<ol start="4"><li>four</li><li>five</li></ol>');
+  });
+
+  it("does not swallow a fence that follows a list item", () => {
+    const blocks = splitBlocks("1. Run it\n\n   ```sh\n   bun test\n   ```\n2. Next");
+    expect(blocks.map(block => block.kind)).toEqual(["list", "code", "list"]);
+    expect(blocks[2]).toMatchObject({ kind: "list", ordered: true, start: 2 });
+  });
+
+  it("renders the blocks inside a quote", () => {
+    const html = renderToStaticMarkup(<Markdown text={"> ## v1.2\n>\n> - fixed a crash\n> - faster"} />);
+    expect(html).toBe('<div class="md"><blockquote><h2>v1.2</h2><ul><li>fixed a crash</li><li>faster</li></ul></blockquote></div>');
+  });
+
+  it("draws a GitHub alert as a labelled note instead of printing [!WARNING]", () => {
+    const html = renderToStaticMarkup(<Markdown text={"> [!WARNING]\n> Back up first."} />);
+    expect(html).not.toContain("[!WARNING]");
+    expect(html).toContain('role="note" aria-label="Warning" data-alert="warning"');
+    expect(html).toContain("<p>Back up first.</p>");
+    // Only the five GitHub kinds are alerts; anything else is a quote.
+    expect(renderToStaticMarkup(<Markdown text={"> [!SHOUT]\n> hi"} />)).toContain("<blockquote>");
+  });
+});
+
 describe("file links out of prose", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -720,7 +766,7 @@ describe("storage agent blocks", () => {
     expect(html).toContain('aria-label="API key, kept by Bridge"');
     expect(html).toContain('aria-label="OPENAI_API_KEY, kept by Bridge"');
     expect(html).toContain(" please");
-    expect(html.replace(/title="[^"]*"/g, "")).not.toContain("[secret:");
+    expect(html.replace(/data-tip="[^"]*"/g, "")).not.toContain("[secret:");
   });
 
   it("leaves bracketed text that is not a placeholder alone", () => {

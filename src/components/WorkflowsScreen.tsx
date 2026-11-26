@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, FolderGit2, Play, Plus, Settings2, Sparkles, Workflow as WorkflowIcon } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type { ForkSessionResult, Project, Workflow, WorkflowDefinition, WorkflowDraft, WorkflowOptions, WorkflowRun, WorkflowSettingsSnapshot, WorkflowSummary, WorkflowTemplate } from "../protocol/generated/protocol";
 import { openExternalUrl } from "../externalLinks";
 import { Button } from "@/components/ui/button";
@@ -13,9 +14,12 @@ import { WorkflowEditor, type EditorSubmit } from "./workflows/WorkflowEditor";
 import { CLAUDE_CONNECTORS_URL, WorkflowRunView } from "./workflows/WorkflowRunView";
 import { ACTIVE_RUN_STATUSES, RUN_STATUS_LABEL, costLine, relativeTime, runTone, triggerSummary } from "./workflows/format";
 import { WorkflowTemplates } from "./workflows/WorkflowTemplates";
-import { CHIP, Dot, ErrorNote, StatusChip, errorText } from "./workflows/parts";
+import { CHIP, Dot, ErrorNote, StatusChip } from "./workflows/parts";
 import { WorkflowInbox } from "./workflows/WorkflowInbox";
 import { needsYouCount } from "./workflows/notify";
+import { RowButton } from "@/components/ui/row";
+import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
+import { Checkbox } from "@/components/ui/checkbox";
 import { SkeletonRows } from "@/components/ui/skeleton";
 
 type Tab = "workflows" | "templates" | "inbox" | "native";
@@ -80,7 +84,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
       setAllRuns(recent.runs);
       setRows(list.workflows);
     } catch (reason) {
-      setError(errorText(reason));
+      setError(friendlyError(reason, "Couldn't load the workflows."));
       setRows(current => current ?? []);
     }
   }, []);
@@ -97,7 +101,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
 
   useEffect(() => {
     void refreshList();
-    bridgeApi.workflowOptions().then(setOptions).catch(reason => setError(errorText(reason)));
+    bridgeApi.workflowOptions().then(setOptions).catch(reason => setError(friendlyError(reason, "Couldn't load the workflow options.")));
     bridgeApi.readWorkflowSettings().then(setSettings).catch(() => {});
   }, [refreshList]);
 
@@ -133,7 +137,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
       setEditing({ workflow: null, initial: draft.definition, notes: draft.notes });
       setDescribe("");
     } catch (reason) {
-      setError(errorText(reason));
+      setError(friendlyError(reason, "Couldn't draft a workflow from that description."));
     } finally {
       setDrafting(false);
     }
@@ -147,7 +151,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
       await refreshList();
       if (selectedId.current) await refreshSelected(selectedId.current);
     } catch (reason) {
-      setError(errorText(reason));
+      setError(friendlyError(reason, "Something went wrong with the workflow. Try again."));
     } finally {
       setBusy(false);
     }
@@ -179,7 +183,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
         const run = found.find(candidate => candidate.id === focusRun.runId);
         if (run) void openRunOf(run);
       })
-      .catch(reason => setError(errorText(reason)))
+      .catch(reason => setError(friendlyError(reason, "Couldn't open that workflow run.")))
       .finally(() => onRunFocused?.());
   }, [focusRun, onRunFocused, openRunOf]);
   const runWorkflow = (workflowId: string, dryRun: boolean) => act(async () => {
@@ -193,7 +197,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
     try {
       setOptions(await bridgeApi.refreshWorkflowConnectors());
     } catch (reason) {
-      setEditorError(errorText(reason));
+      setEditorError(friendlyError(reason, "Couldn't refresh the connectors."));
     } finally {
       setRefreshing(false);
     }
@@ -240,7 +244,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
         setOpenRun(result.run);
       }
     } catch (reason) {
-      setEditorError(errorText(reason));
+      setEditorError(friendlyError(reason, "Couldn't save the workflow."));
     } finally {
       setBusy(false);
     }
@@ -270,19 +274,18 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
       {heading}
       <form className="mb-5 flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2" onSubmit={event => { event.preventDefault(); void draftFromText(); }}>
         <Sparkles size={14} className="shrink-0 text-muted-foreground"/>
-        <input aria-label="Describe a job" value={describe} onChange={event => setDescribe(event.target.value)} disabled={drafting}
-          placeholder={'Describe a job: "every weekday at 9, summarise my Slack mentions and Linear issues"'}
-          className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground"/>
+        <Input unstyled className="min-w-0 flex-1" aria-label="Describe a job" value={describe} onChange={event => setDescribe(event.target.value)} disabled={drafting}
+          placeholder={'Describe a job: "every weekday at 9, summarise my Slack mentions and Linear issues"'}/>
         <Button size="xs" type="submit" loading={drafting} disabled={!describe.trim()}>Draft it</Button>
       </form>
-      <div className="u-segmented w-fit" role="tablist" aria-label="Workflows sections">
-        <button type="button" role="tab" data-active={tab === "workflows"} aria-selected={tab === "workflows"} className="u-segmented-item" onClick={() => setTab("workflows")}>Workflows</button>
-        <button type="button" role="tab" data-active={tab === "templates"} aria-selected={tab === "templates"} className="u-segmented-item" onClick={() => setTab("templates")}>Templates</button>
-        <button type="button" role="tab" data-active={tab === "inbox"} aria-selected={tab === "inbox"} className="u-segmented-item" onClick={() => setTab("inbox")}>
+      <SegmentedGroup tabs label="Workflows sections" className="w-fit">
+        <SegmentedItem tab active={tab === "workflows"} onClick={() => setTab("workflows")}>Workflows</SegmentedItem>
+        <SegmentedItem tab active={tab === "templates"} onClick={() => setTab("templates")}>Templates</SegmentedItem>
+        <SegmentedItem tab active={tab === "inbox"} onClick={() => setTab("inbox")}>
           <span className="inline-flex items-center gap-1.5">Inbox{needsYouCount(allRuns) > 0 && <span aria-label={`${needsYouCount(allRuns)} need you`} className="rounded-full bg-foreground px-1.5 text-micro font-semibold leading-4 text-background">{needsYouCount(allRuns)}</span>}</span>
-        </button>
-        <button type="button" role="tab" data-active={tab === "native"} aria-selected={tab === "native"} className="u-segmented-item" onClick={() => setTab("native")}>Native schedules</button>
-      </div>
+        </SegmentedItem>
+        <SegmentedItem tab active={tab === "native"} onClick={() => setTab("native")}>Native schedules</SegmentedItem>
+      </SegmentedGroup>
       {tab === "native" ? <div className="mt-4"><AutomationsPanel embedded/></div>
         : tab === "templates" ? <WorkflowTemplates busy={busy} onTry={template => void tryTemplate(template)} onCustomize={customizeTemplate}/>
         : tab === "inbox" ? <WorkflowInbox runs={allRuns} names={new Map((rows ?? []).map(row => [row.id, row.name]))} onOpenRun={run => void act(() => openRunOf(run))} onChanged={() => void refreshList()}/>
@@ -290,7 +293,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
         ? <SkeletonRows label="Loading workflows" rows={4} lead="icon" trailing className="mt-4" />
         : rows.length === 0
           ? <div className="mt-6 flex flex-col items-center rounded-2xl border border-dashed border-border px-6 py-12 text-center">
-            <div className="flex h-11 w-11 items-center justify-center rounded-[14px] border border-border bg-accent text-muted-foreground"><WorkflowIcon size={18}/></div>
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-border bg-accent text-muted-foreground"><WorkflowIcon size={18}/></div>
             <h2 className="mt-4 text-message font-semibold text-foreground">Automate a job you do every day</h2>
             <Button size="sm" className="mt-5" onClick={() => setEditing({ workflow: null })}><Plus size={13}/>New workflow</Button>
           </div>
@@ -302,12 +305,12 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
             const cost = costLine(row.averageRunCostMicrousd, row.monthlyCostEstimateMicrousd);
             const needsYou = !row.approved || last?.status === "waiting_approval" || last?.status === "failed" || Boolean(trouble);
             return <article key={row.id} className="flex items-start gap-3.5 px-4 py-3.5 hover:bg-accent">
-              <button type="button" onClick={() => open(row.id)} className="flex min-w-0 flex-1 items-start gap-3.5 text-left">
+              <RowButton size="bare" tone="plain" className="flex-1 items-start" onClick={() => open(row.id)}><span className="flex min-w-0 flex-1 items-start gap-3.5 text-foreground">
                 <div className="relative mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border bg-accent text-muted-foreground">
                   <WorkflowIcon size={15}/>{needsYou && <span aria-label="Needs you" className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-foreground ring-2 ring-card"/>}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2"><h3 className="truncate text-ui font-semibold tracking-[-0.008em] text-foreground">{row.name}</h3><StatusChip label={status.label} tone={status.tone}/></div>
+                  <div className="flex items-center gap-2"><h3 className="truncate text-ui font-semibold text-foreground">{row.name}</h3><StatusChip label={status.label} tone={status.tone}/></div>
                   <p className="mt-1 text-meta text-muted-foreground">{triggerSummary(row.trigger)}{row.files === "worktree" ? " · worktree" : ""}</p>
                   <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-muted-foreground">
                     <span className={CHIP}>{row.projectId ? <span className="inline-flex items-center gap-1"><FolderGit2 size={10}/>{projectName.get(row.projectId) ?? "missing project"}</span> : "No project"}</span>
@@ -318,7 +321,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
                   </div>
                   {trouble && <p className="mt-1.5 text-caption text-foreground">{trouble} in Claude.</p>}
                 </div>
-              </button>
+              </span></RowButton>
               {trouble
                 ? <Button size="xs" variant="secondary" onClick={() => void openExternalUrl(CLAUDE_CONNECTORS_URL)}><ExternalLink size={10}/>Reconnect</Button>
                 : <Button size="xs" variant="secondary" disabled={busy || !row.approved || !row.enabled} onClick={() => void runWorkflow(row.id, false)}><Play size={10}/>Run now</Button>}
@@ -368,13 +371,13 @@ function WorkflowSettingsDialog({ open, snapshot, onClose, onSaved }: {
       onSaved(await bridgeApi.writeWorkflowSettings({ paused, quotaReservePercent: reserve, maxConcurrentRuns: concurrent }));
       onClose();
     } catch (reason) {
-      setError(errorText(reason));
+      setError(friendlyError(reason, "Couldn't save the workflow settings."));
     }
   };
   return <Dialog open={open} onOpenChange={next => { if (!next) onClose(); }}>{open && <DialogContent>
     <DialogHeader><DialogTitle>Workflow settings</DialogTitle><DialogDescription>These apply to every workflow.</DialogDescription></DialogHeader>
-    <DialogPanel className="space-y-3">
-      <label className="flex items-center gap-2 text-ui text-foreground"><input type="checkbox" aria-label="Pause all workflows" checked={paused} onChange={event => setPaused(event.target.checked)} className="size-3.5 accent-foreground"/>Pause all workflows</label>
+    <DialogPanel><div className="space-y-3">
+      <label className="flex items-center gap-2 text-ui text-foreground"><Checkbox aria-label="Pause all workflows" checked={paused} onCheckedChange={checked => setPaused(checked === true)}/>Pause all workflows</label>
       <label className="block text-caption font-medium text-muted-foreground">Keep this much of each plan for my own chats (percent)
         <Input aria-label="Quota reserve" type="number" min={0} max={90} className="mt-1 w-28" value={reserve} onChange={event => setReserve(Number(event.target.value))}/>
       </label>
@@ -384,7 +387,7 @@ function WorkflowSettingsDialog({ open, snapshot, onClose, onSaved }: {
       </label>
       <p className="text-caption text-muted-foreground">The rest wait in line and start as soon as one finishes.</p>
       <ErrorNote message={error}/>
-    </DialogPanel>
+    </div></DialogPanel>
     <DialogFooter><Button variant="ghost" onClick={onClose}>Cancel</Button><Button onClick={() => void save()}>Save</Button></DialogFooter>
   </DialogContent>}</Dialog>;
 }

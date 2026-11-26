@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { Search, X } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type { SearchSessionEntriesResult, SessionRecallHit } from "../types";
-import { SkeletonRows, pendingClass } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
+import { Input } from "@/components/ui/input";
+import { SkeletonRows } from "@/components/ui/skeleton";
 
 export type SessionRecallSearchProps = {
   sessionId: string;
@@ -70,7 +73,7 @@ export function SessionRecallSearch({
           setHits([]);
           setHasMore(false);
           setStatus("error");
-          setError(cause instanceof Error ? cause.message : String(cause));
+          setError(friendlyError(cause, "Couldn't search this chat."));
         });
     }, 180);
     return () => {
@@ -83,30 +86,28 @@ export function SessionRecallSearch({
     <div className="shrink-0 border-b border-border px-3 py-2 sm:px-6">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-2">
         <div className="flex items-center gap-2">
-          <label className="u-glass-soft flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5">
+          <label className="u-glass-soft flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 text-ui">
             <Search size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-            <input
+            <Input unstyled size="bare"
               type="search"
               value={query}
               onChange={event => setQuery(event.target.value)}
               autoFocus
               placeholder="Search this chat…"
               aria-label="Search this chat"
-              className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground"
+              className="min-w-0 flex-1"
             />
           </label>
-          <button
-            type="button"
+          <Button variant="quiet" size="icon-sm" className="shrink-0"
             onClick={onClose}
             aria-label="Close search"
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
             <X size={14} strokeWidth={1.8} aria-hidden="true" />
-          </button>
+          </Button>
         </div>
         <p className="text-caption text-muted-foreground">This search stays in this chat. It does not look at other sessions or account memory.</p>
         {status === "error" && error && <p className="text-meta text-destructive">{error}</p>}
-        {status === "loading" && hits.length === 0 && <SkeletonRows label="Searching this chat" rows={3} framed={false} className="divide-y-0" rowClassName="min-h-0 px-2 py-1.5" />}
+        {status === "loading" && hits.length === 0 && <SkeletonRows label="Searching this chat" rows={3} framed={false} density="menu" />}
         {status === "ready" && hits.length === 0 && (
           <p className="text-meta text-muted-foreground">No matches in this chat.</p>
         )}
@@ -114,22 +115,19 @@ export function SessionRecallSearch({
           <ul className="max-h-48 overflow-y-auto">
             {hits.map(hit => (
               <li key={hit.entryId}>
-                <button
-                  type="button"
-                  onClick={() => onJump(hit.entryId)}
-                  className="flex w-full flex-col gap-0.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-accent"
-                >
+                <RowButton size="bare" tone="default" shape="card"
+                  onClick={() => onJump(hit.entryId)}><span className="flex w-full flex-col gap-0.5 px-2 py-1.5">
                   <span className="font-mono text-caption text-muted-foreground">{hit.kind} · #{hit.sequence}</span>
                   <span className="line-clamp-2 text-ui text-foreground">{hit.snippet}</span>
-                </button>
+                </span></RowButton>
               </li>
             ))}
           </ul>
         )}
         {hasMore && (
-          <button
-            type="button"
+          <Button variant="quiet" size="xs" className="self-start"
             disabled={loadingMore}
+            loading={loadingMore}
             onClick={() => {
               const requested = generation.current;
               setLoadingMore(true);
@@ -144,16 +142,14 @@ export function SessionRecallSearch({
                 .catch(cause => {
                   if (requested !== generation.current) return;
                   setStatus("error");
-                  setError(cause instanceof Error ? cause.message : String(cause));
+                  setError(friendlyError(cause, "Couldn't load more results."));
                 })
                 // Always cleared: a superseded request leaves no page in
                 // flight for the new query, so holding the button disabled
                 // would strand it.
                 .finally(() => setLoadingMore(false));
             }}
-            aria-busy={loadingMore || undefined}
-            className={cn("self-start rounded-md px-2 py-1 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50", pendingClass(loadingMore))}
-          >Show more</button>
+          >Show more</Button>
         )}
       </div>
     </div>

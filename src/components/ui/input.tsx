@@ -1,31 +1,41 @@
 "use client";
 
 import { Input as InputPrimitive } from "@base-ui/react/input";
-import type * as React from "react";
+import * as React from "react";
 import { cn } from "@/lib/utils";
 
 export type InputProps = Omit<
   InputPrimitive.Props & React.RefAttributes<HTMLInputElement>,
   "size"
 > & {
-  size?: "sm" | "default" | "lg" | number;
+  /** `bare`: no box of its own, for a field drawn inside a composer or popover frame. */
+  size?: "sm" | "default" | "lg" | "bare" | number;
   unstyled?: boolean;
   nativeInput?: boolean;
+  /** Code-like values: paths, ids, cron expressions. */
+  mono?: boolean;
 };
 
-export function Input({
+export const Input = React.forwardRef<HTMLInputElement, InputProps>(function Input({
   className,
   size = "default",
   unstyled = false,
   nativeInput = false,
+  mono = false,
   style,
   ...props
-}: InputProps): React.ReactElement {
+}, ref): React.ReactElement {
   const inputClassName = cn(
-    "h-8.5 w-full min-w-0 rounded-[inherit] px-[calc(--spacing(3)-1px)] leading-8.5 outline-none [transition:background-color_5000000s_ease-in-out_0s] placeholder:text-muted-foreground sm:h-7.5 sm:leading-7.5",
+    // The type size lives on the field too, so an unstyled input (one drawn
+    // inside a header or a composer) keeps the UI size instead of the body's.
+    unstyled && size !== "bare" && "text-ui",
+    "w-full min-w-0 rounded-[inherit] outline-none [transition:background-color_5000000s_ease-in-out_0s] placeholder:text-muted-foreground",
+    size !== "bare" && "h-8.5 px-[calc(--spacing(3)-1px)] leading-8.5 sm:h-7.5 sm:leading-7.5",
+    size === "bare" && "bg-transparent",
     size === "sm" &&
       "h-7.5 px-[calc(--spacing(2.5)-1px)] leading-7.5 sm:h-6.5 sm:leading-6.5",
     size === "lg" && "h-9.5 leading-9.5 sm:h-8.5 sm:leading-8.5",
+    mono && "font-mono",
     props.type === "search" &&
       "[&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:appearance-none [&::-webkit-search-results-button]:appearance-none [&::-webkit-search-results-decoration]:appearance-none",
     props.type === "file" &&
@@ -46,6 +56,7 @@ export function Input({
     >
       {nativeInput ? (
         <input
+          ref={ref}
           className={inputClassName}
           data-slot="input"
           size={typeof size === "number" ? size : undefined}
@@ -54,6 +65,7 @@ export function Input({
         />
       ) : (
         <InputPrimitive
+          ref={ref}
           className={inputClassName}
           data-slot="input"
           size={typeof size === "number" ? size : undefined}
@@ -63,6 +75,6 @@ export function Input({
       )}
     </span>
   );
-}
+});
 
 export { InputPrimitive };

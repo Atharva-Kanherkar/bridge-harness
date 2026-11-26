@@ -35,7 +35,7 @@ export function UsageMosaic({ report, window, metric }: UsageLayoutProps) {
   return <div className="space-y-4">
     <section aria-label="Summary" className="flex flex-wrap items-end gap-x-10 gap-y-4 pb-2">
       <div>
-        <div className="text-[2.75rem] font-light leading-none tracking-[-0.04em] tabular-nums text-foreground">{format(metric === "cost" ? report.totals.costMicrousd : report.totals.processedTokens)}{metric === "cost" && <EstimateMark report={report} large />}</div>
+        <div className="text-5xl font-light leading-none tracking-display tabular-nums text-foreground">{format(metric === "cost" ? report.totals.costMicrousd : report.totals.processedTokens)}{metric === "cost" && <EstimateMark report={report} large />}</div>
         <p className="mt-2 text-ui text-muted-foreground">{metric === "cost"
           ? <>at API rates · <span className="font-medium tabular-nums text-foreground">{formatTokens(report.totals.processedTokens)}</span> tokens</>
           : <>tokens · <span className="font-medium tabular-nums text-foreground">{formatUsd(report.totals.costMicrousd)}</span><EstimateMark report={report} /> at API rates</>}</p>
@@ -44,12 +44,12 @@ export function UsageMosaic({ report, window, metric }: UsageLayoutProps) {
       <ul className="flex flex-wrap gap-x-7 gap-y-3 pb-1" aria-label="By harness">
         {harnesses.map(entry => <li key={entry.harness}>
           <span className="flex items-center gap-1.5 text-caption text-muted-foreground"><span className={cn("size-2 rounded-full", harnessChartDot(entry.harness))} aria-hidden="true" /><HarnessName harness={entry.harness} size={11} /></span>
-          <span className="mt-0.5 block text-[17px] tabular-nums text-foreground">{format(harnessValue(entry, metric))} <span className="text-caption text-muted-foreground">{formatPercent(metric === "cost" ? entry.costShare : entry.tokenShare, 0)}</span></span>
+          <span className="mt-0.5 block text-lg tabular-nums text-foreground">{format(harnessValue(entry, metric))} <span className="text-caption text-muted-foreground">{formatPercent(metric === "cost" ? entry.costShare : entry.tokenShare, 0)}</span></span>
         </li>)}
       </ul>
     </section>
 
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)]">
+    <div className="grid gap-4 @2xl/usage:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)]">
       <section aria-label={title} className={cn(LAYOUT_CARD, "relative min-w-0")}>
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="text-ui font-medium text-foreground">{title}</h2>
@@ -116,13 +116,13 @@ export function UsageMosaic({ report, window, metric }: UsageLayoutProps) {
       </section>
     </div>
 
-    <section aria-label="Token composition" className={cn(LAYOUT_CARD, "grid grid-cols-2 gap-0 p-0 sm:grid-cols-5")}>
-      {TOKEN_KINDS.map(kind => <div key={kind.key} className="border-border px-5 py-4 sm:border-l sm:first:border-l-0">
+    <section aria-label="Token composition" className={cn(LAYOUT_CARD, "grid grid-cols-2 gap-0 p-0 @2xl/usage:grid-cols-5")}>
+      {TOKEN_KINDS.map(kind => <div key={kind.key} className="border-border px-5 py-4 @2xl/usage:border-l @2xl/usage:first:border-l-0">
         <div className="flex items-center gap-1.5 text-caption text-muted-foreground"><span className={cn("size-2 rounded-sm", KIND_SHADE[kind.key].bg)} aria-hidden="true" />{kind.label}</div>
         <div className="mt-1 text-lg tracking-tight tabular-nums text-foreground">{formatTokens(report.totals[kind.key])}</div>
         <div className="text-caption tabular-nums text-muted-foreground/70">{formatPercent(report.totals.processedTokens > 0 ? report.totals[kind.key] / report.totals.processedTokens : 0)} of processed</div>
       </div>)}
-      <div className="border-border px-5 py-4 sm:border-l">
+      <div className="border-border px-5 py-4 @2xl/usage:border-l">
         <div className="text-caption text-muted-foreground">Cache saved</div>
         <div className="mt-1 text-lg tracking-tight tabular-nums text-foreground">{formatUsd(report.totals.cacheSavingsMicrousd)}</div>
         <div className="text-caption text-muted-foreground/70">reasoning {formatTokens(report.totals.reasoningTokens)}, inside output</div>

@@ -148,7 +148,7 @@ describe("ChatModelControl", () => {
     await act(async () => root.render(
       <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact maxWidthClassName="max-w-[190px]" onChange={vi.fn()} />,
     ));
-    expect(trigger().className).toContain("max-w-[190px]");
+    expect(trigger().parentElement!.className).toContain("max-w-[190px]");
     const label = trigger().querySelector("span")!;
     expect(label.className).toContain("overflow-hidden");
     expect(label.className).toContain("text-ellipsis");
@@ -158,7 +158,7 @@ describe("ChatModelControl", () => {
     await act(async () => root.render(
       <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact maxWidthClassName="max-w-[190px]" onChange={vi.fn()} />,
     ));
-    expect(trigger().title).toBe("Codex · GPT Balanced");
+    expect(trigger().dataset.tip).toBe("Codex · GPT Balanced");
   });
 
   it("strips the trailing (Unlimited) suffix from the displayed label", async () => {
@@ -178,7 +178,7 @@ describe("ChatModelControl", () => {
     ));
     expect(trigger().textContent).toContain("Cursor · default");
     expect(trigger().textContent).not.toContain("[");
-    expect(trigger().title).toBe("Cursor · default");
+    expect(trigger().dataset.tip).toBe("Cursor · default");
     expect(trigger().getAttribute("aria-label")).toBe("Chat model: Cursor default");
   });
 
@@ -231,7 +231,7 @@ describe("ChatModelControl", () => {
     await act(async () => root.render(
       <ChatModelControl adapters={stuttering} harness="opencode" model="oc-go-mimo" compact onChange={vi.fn()} />,
     ));
-    expect(trigger().title).toBe("OpenCode Go · MiMo V2.5");
+    expect(trigger().dataset.tip).toBe("OpenCode Go · MiMo V2.5");
     expect(trigger().title).not.toContain("OpenCode · OpenCode");
   });
 
@@ -239,7 +239,7 @@ describe("ChatModelControl", () => {
     await act(async () => root.render(
       <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact onChange={vi.fn()} />,
     ));
-    expect(trigger().title).toBe("Codex · GPT Balanced");
+    expect(trigger().dataset.tip).toBe("Codex · GPT Balanced");
   });
 
   it("opens the picker and calls onChange when a model is chosen", async () => {
@@ -514,7 +514,7 @@ describe("ChatModelControl effort control", () => {
       const thinking = panel().querySelector('[data-picker-zone="thinking"]')!;
       expect(thinking.textContent).toContain("Thinking");
       expect(thinking.textContent).toContain("Long reasoning chains.");
-      expect(segment("max").title).toBe("Longest Claude allows.");
+      expect(segment("max").dataset.tip).toBe("Longest Claude allows.");
     });
 
     it("fits Codex's six levels in one row", async () => {
@@ -735,12 +735,12 @@ describe("ChatModelControl effort control", () => {
     });
 
     it("stays up and shortens itself when the room above is between the bounds", async () => {
-      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(box(300));
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(box(450));
       Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
       await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} effort="high" onEffortChange={vi.fn()} />));
       await act(async () => trigger().click());
       expect(panel().className).toContain("bottom-full");
-      expect(panel().style.maxHeight).toBe("288px");
+      expect(panel().style.maxHeight).toBe("438px");
     });
 
     it("keeps the search header inside a clipping pane, even when neither side fits the preferred minimum", async () => {
@@ -757,6 +757,21 @@ describe("ChatModelControl effort control", () => {
       await act(async () => window.dispatchEvent(new Event("resize")));
       expect(panel().className).toContain("bottom-full");
       expect(panel().style.maxHeight).toBe("148px");
+    });
+
+    it("never crushes the list under the Thinking row on a short window", async () => {
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(box(330));
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: 380 });
+      await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} effort="high" onEffortChange={vi.fn()} />));
+      await act(async () => trigger().click());
+      expect(panel().style.maxHeight).toBe("318px");
+      // The list keeps a floor of rows; whatever does not fit scrolls with
+      // the popover as a whole, and the switch caption gives up its line.
+      const list = panel().querySelector('[role="listbox"]')!;
+      expect(list.className).toContain("min-h-36");
+      expect(list.className).not.toContain("min-h-0");
+      expect(panel().className).toContain("overflow-y-auto");
+      expect(panel().textContent).not.toContain("Switching restarts the provider session");
     });
 
     it("leaves the defaults alone when the trigger has no box", async () => {
@@ -899,7 +914,7 @@ describe("ChatModelControl while the host resolves the model", () => {
     await act(async () => root.render(<ChatModelControl adapters={discovering} harness="opencode" model={null} loading onChange={vi.fn()} />));
     expect(trigger().textContent).not.toContain("Loading models");
     await act(async () => { vi.advanceTimersByTime(600); });
-    expect(trigger().title).toBe("Loading models");
+    expect(trigger().dataset.tip).toBe("Loading models");
     expect(trigger().textContent).toBe("");
     expect(trigger().getAttribute("aria-busy")).toBe("true");
     expect(trigger().getAttribute("aria-label")).toBe("Chat model: loading");

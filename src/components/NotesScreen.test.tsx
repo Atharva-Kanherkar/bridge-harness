@@ -7,6 +7,7 @@ import { mockCreateDatabase, mockCreatePage, mockDeleteNote, mockListNotes, mock
 import type { AdapterDescriptor, Session, Workspace } from "../types";
 import type { Editor } from "@tiptap/core";
 import { NotesScreen, type NotesScreenProps } from "./NotesScreen";
+import { chooseOption } from "@/testing/select";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -71,10 +72,6 @@ const field = <T extends HTMLElement>(label: string) => host.querySelector<T>(`[
 const typeInto = async (node: HTMLTextAreaElement | HTMLInputElement, value: string) => {
   const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(node), "value")!.set!;
   await act(async () => { setter.call(node, value); node.dispatchEvent(new Event("input", { bubbles: true })); });
-};
-const choose = async (node: HTMLSelectElement, value: string) => {
-  await act(async () => { node.value = value; node.dispatchEvent(new Event("change", { bubbles: true })); });
-  await settle();
 };
 const press = async (node: HTMLElement, key: string, init: KeyboardEventInit = {}) => {
   let prevented = false;
@@ -151,7 +148,7 @@ describe("capture", () => {
     const failed = host.querySelector("ul[aria-label='Notes'] li[data-capture='failed']")!;
     expect(failed.textContent).toContain("keep me");
     expect(failed.textContent).toContain("Couldn't save");
-    expect(given.onError).toHaveBeenCalledWith("disk full");
+    expect(given.onError).toHaveBeenCalledWith("The disk is full. Free up some space and try again.");
     await click(button("Discard", failed));
     expect(host.querySelector("li[data-capture='failed']")).toBeNull();
   });
@@ -272,7 +269,7 @@ describe("loading and failure", () => {
     await openNote("Local-first sync libraries");
     const alert = main().querySelector("[role='alert']")!;
     expect(alert.textContent).toContain("This page didn't open");
-    expect(alert.textContent).toContain("database is locked");
+    expect(alert.textContent).toContain("Bridge is busy saving something else. Try again in a moment.");
     await click(button("Try again", alert));
     expect(main().querySelector("[role='alert']")).toBeNull();
     expect(main().querySelector("article")?.getAttribute("aria-label")).toBe("Local-first sync libraries");
@@ -309,7 +306,7 @@ describe("loading and failure", () => {
     await render();
     const alert = list().querySelector("[role='alert']")!;
     expect(alert.textContent).toContain("Notes didn't load");
-    expect(alert.textContent).toContain("bridged is not answering");
+    expect(alert.textContent).toContain("bridged is not answering.");
     expect(list().querySelector("[aria-label='Loading notes']")).toBeNull();
     await click(button("Try again", alert));
     expect(list().querySelector("[role='alert']")).toBeNull();
@@ -774,7 +771,7 @@ describe("Structure", () => {
     await click(button("Structure"));
     await click(button("Structure", host.querySelector("[aria-label='Structure options']")!));
     await settle(120);
-    expect(host.querySelector("[role='alert']")?.textContent).toBe("Structure couldn't run: There is nothing to structure yet.");
+    expect(host.querySelector("[role='alert']")?.textContent).toBe("Structure couldn't run. There is nothing to structure yet.");
   });
 
   it("explains why nothing can run when no harness is signed in, and capture still works", async () => {
@@ -1181,7 +1178,7 @@ describe("tabs as saved views", () => {
     await click(menuItem("Edit view"));
     await click(button("Filter, 2"));
     await click(floating("Add a filter"));
-    const choose = async (label: string, value: string) => { const node = document.querySelector(`select[aria-label="${label}"]`) as HTMLSelectElement; await act(async () => { node.value = value; node.dispatchEvent(new Event("change", { bubbles: true })); }); await settle(); };
+    const choose = async (label: string, value: string) => { await chooseOption(document.querySelector<HTMLElement>(`[role="combobox"][aria-label="${label}"]`)!, value); await settle(); };
     await choose("Filter 3 property", "state");
     await choose("Filter 3 value", "doing");
     expect(rowTitles()).toHaveLength(1);

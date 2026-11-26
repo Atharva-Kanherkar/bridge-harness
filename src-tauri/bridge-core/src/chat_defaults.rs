@@ -75,6 +75,14 @@ pub(crate) fn write<T: serde::Serialize>(
 fn record(db: &Connection, key: &str) -> Result<ChatDefaultsRecord, BridgeError> {
     Ok(read(db, DEFAULTS_KIND, key)?.unwrap_or_default())
 }
+/// The model the application new-chat default names, if any. Memory is
+/// account-wide, so project overrides and the chosen login do not apply.
+pub(crate) fn application_model(db: &Connection) -> Result<Option<ChatModelChoice>, BridgeError> {
+    Ok(record(db, "application")?.defaults.model.map(|model| ChatModelChoice {
+        account: None,
+        ..model
+    }))
+}
 pub fn view(db: &Connection, project_id: Option<&str>) -> Result<ChatDefaultsView, BridgeError> {
     let key = project_key(db, project_id)?;
     Ok(ChatDefaultsView {
@@ -107,7 +115,7 @@ fn validate_shape(settings: &ChatDefaults) -> Result<(), BridgeError> {
     }
     Ok(())
 }
-fn validate_model(
+pub(crate) fn validate_model(
     choice: &ChatModelChoice,
     effort: Option<&str>,
     descriptors: &[AdapterDescriptor],

@@ -13,9 +13,8 @@ import { setPinned } from "../apps/pins";
 import { applyAnswer, loadApps, useApps, usePersonalApps } from "../apps/store";
 import { connectionLabel } from "./personalAppShared";
 import { bridgeApi } from "../api";
-import { errorMessage } from "../errors";
+import { friendlyError } from "../errors";
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
-import { chordLabel } from "../keymap";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { AppSummary, PersonalAppEntry } from "../protocol/generated/protocol";
@@ -70,7 +69,7 @@ export function StoreApps({ onOpenApp }: { onOpenApp?: (key: AppKey) => void }) 
       applyAnswer(await bridgeApi.setAppEnabled(row.id, !enabled));
       setStatus(enabled ? `Turned ${row.name} off. New chats no longer get its tools.` : `Turned ${row.name} on.`);
     } catch (error) {
-      setStatus(errorMessage(error));
+      setStatus(friendlyError(error, enabled ? `Couldn't turn ${row.name} off.` : `Couldn't turn ${row.name} on.`));
     }
   };
 
@@ -79,7 +78,10 @@ export function StoreApps({ onOpenApp }: { onOpenApp?: (key: AppKey) => void }) 
     <div className={SCREEN_CONTENT}>
       <ScreenHeading title="Apps" />
       <p role="status" className={status ? "mb-3 text-meta text-foreground" : "sr-only"}>{status}</p>
-      <ul aria-label="Installed apps" className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+      {/* A container, so the grid counts its columns from this column's own
+          width: the sidebar and the zoom level narrow it without touching the
+          window, and viewport breakpoints kept two columns in half the room. */}
+      <div className="@container"><ul aria-label="Installed apps" className="grid gap-2.5 @min-[560px]:grid-cols-2 @min-[880px]:grid-cols-3">
         {rows(apps).map(row => {
           const Icon = row.icon;
           const enabled = row.summary?.enabled ?? true;
@@ -88,7 +90,7 @@ export function StoreApps({ onOpenApp }: { onOpenApp?: (key: AppKey) => void }) 
           return (
             <li key={row.id} data-app={row.id} data-enabled={enabled ? "true" : "false"} className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3.5">
               <div className="flex items-start gap-3">
-                <span className={cn("flex size-10 shrink-0 items-center justify-center rounded-[11px] border border-border-card bg-background shadow-control", !enabled && "opacity-50")}><Icon size={18} strokeWidth={1.5} aria-hidden="true" /></span>
+                <span className={cn("flex size-10 shrink-0 items-center justify-center rounded-xl border border-border-card bg-background shadow-control", !enabled && "opacity-50")}><Icon size={18} strokeWidth={1.5} aria-hidden="true" /></span>
                 <div className="min-w-0 flex-1">
                   <h3 className="flex items-center gap-1.5 text-ui font-medium text-foreground">
                     {row.name}
@@ -100,7 +102,7 @@ export function StoreApps({ onOpenApp }: { onOpenApp?: (key: AppKey) => void }) 
               </div>
               <div className="mt-auto flex flex-wrap items-center gap-1">
                 {row.slots.map(slot => <span key={slot} className="whitespace-nowrap rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">{slot}</span>)}
-                <span className="ml-auto flex items-center gap-1">
+                <span className="ml-auto flex flex-wrap items-center justify-end gap-1">
                   {canDisable && (
                     <Button size="sm" variant="ghost" onClick={() => void power(row, enabled)} aria-label={`Turn ${row.name} ${enabled ? "off" : "on"}`}>
                       {enabled ? <PowerOff aria-hidden="true" /> : <Power aria-hidden="true" />}
@@ -119,7 +121,7 @@ export function StoreApps({ onOpenApp }: { onOpenApp?: (key: AppKey) => void }) 
             </li>
           );
         })}
-      </ul>
+      </ul></div>
       <MyApps apps={personal} onOpenApp={onOpenApp} onStatus={setStatus} />
     </div>
     </div>
@@ -140,7 +142,7 @@ function MyApps({ apps, onOpenApp, onStatus }: { apps: readonly PersonalAppEntry
       applyAnswer(await bridgeApi.setAppEnabled(entry.app.id, !entry.enabled));
       onStatus(entry.enabled ? `Turned ${entry.app.name} off. Writes waiting for approval were cancelled.` : `Turned ${entry.app.name} on.`);
     } catch (error) {
-      onStatus(errorMessage(error));
+      onStatus(friendlyError(error, entry.enabled ? `Couldn't turn ${entry.app.name} off.` : `Couldn't turn ${entry.app.name} on.`));
     }
   };
   const remove = async (entry: PersonalAppEntry) => {
@@ -150,7 +152,7 @@ function MyApps({ apps, onOpenApp, onStatus }: { apps: readonly PersonalAppEntry
       await loadApps();
       onStatus(`Deleted ${entry.app.name}.`);
     } catch (error) {
-      onStatus(errorMessage(error));
+      onStatus(friendlyError(error, `Couldn't delete ${entry.app.name}.`));
     }
   };
 
@@ -158,13 +160,13 @@ function MyApps({ apps, onOpenApp, onStatus }: { apps: readonly PersonalAppEntry
     <h2 id="my-apps-heading" className="mb-1 text-body font-medium text-foreground">My apps</h2>
     {apps.length === 0
       ? <p className="rounded-xl border border-dashed border-border px-3.5 py-3 text-meta text-muted-foreground">No apps yet. Ask a chat to build one for an MCP server you use, then lock it.</p>
-      : <ul aria-label="My apps" className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+      : <div className="@container"><ul aria-label="My apps" className="grid gap-2.5 @min-[560px]:grid-cols-2 @min-[880px]:grid-cols-3">
         {apps.map(entry => {
           const { app, enabled } = entry;
           const pinned = entry.pinned !== null && entry.pinned !== undefined;
           return <li key={app.id} data-personal-app={app.id} data-enabled={enabled ? "true" : "false"} className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3.5">
             <div className="flex items-start gap-3">
-              <span className={cn("flex size-10 shrink-0 items-center justify-center rounded-[11px] border border-border-card bg-background shadow-control", !enabled && "opacity-50")}><AppWindow size={18} strokeWidth={1.5} aria-hidden="true" /></span>
+              <span className={cn("flex size-10 shrink-0 items-center justify-center rounded-xl border border-border-card bg-background shadow-control", !enabled && "opacity-50")}><AppWindow size={18} strokeWidth={1.5} aria-hidden="true" /></span>
               <div className="min-w-0 flex-1">
                 <h3 className="flex items-center gap-1.5 text-ui font-medium text-foreground">
                   {app.name}
@@ -195,6 +197,6 @@ function MyApps({ apps, onOpenApp, onStatus }: { apps: readonly PersonalAppEntry
               </div>}
           </li>;
         })}
-      </ul>}
+      </ul></div>}
   </section>;
 }

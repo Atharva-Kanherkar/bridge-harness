@@ -140,8 +140,10 @@ pub mod memory_consolidation_live;
 pub mod memory_extraction;
 pub mod memory_extraction_live;
 pub mod memory_ledger;
+pub mod memory_model;
 pub mod memory_insights;
 pub mod memory_packet;
+pub mod memory_retention;
 pub mod memory_similarity;
 pub mod memory_tools;
 #[cfg(test)]

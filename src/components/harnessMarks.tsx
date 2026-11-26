@@ -59,11 +59,11 @@ const UNKNOWN_PATH = "M12 3.4A8.6 8.6 0 1 1 3.4 12";
 /** Cursor's five facets, dark to light, plus the outline. The values live in
  *  `src/index.css` so Paper can invert the ladder without a second component. */
 const CURSOR_FACETS: { points: string; facet: string }[] = [
-  { points: "12.00 3.40 19.45 7.70 4.55 7.70", facet: "fill-[color:var(--cursor-facet-mid)]" },
-  { points: "4.55 7.70 19.45 7.70 12 12", facet: "fill-[color:var(--cursor-facet-lightest)]" },
-  { points: "4.55 7.70 12 12 12.00 20.60 4.55 16.30", facet: "fill-[color:var(--cursor-facet-light)]" },
-  { points: "19.45 7.70 19.45 16.30 12.00 20.60", facet: "fill-[color:var(--cursor-facet-darkest)]" },
-  { points: "12 12 19.45 7.70 12.00 20.60", facet: "fill-[color:var(--cursor-facet-lighter)]" },
+  { points: "12.00 3.40 19.45 7.70 4.55 7.70", facet: "fill-cursor-facet-mid" },
+  { points: "4.55 7.70 19.45 7.70 12 12", facet: "fill-cursor-facet-lightest" },
+  { points: "4.55 7.70 12 12 12.00 20.60 4.55 16.30", facet: "fill-cursor-facet-light" },
+  { points: "19.45 7.70 19.45 16.30 12.00 20.60", facet: "fill-cursor-facet-darkest" },
+  { points: "12 12 19.45 7.70 12.00 20.60", facet: "fill-cursor-facet-lighter" },
 ];
 
 /** Tint stays beside the figure so adding a harness cannot update only one. */
@@ -145,7 +145,7 @@ function figure(harness?: string | null) {
           fill="none"
           strokeWidth={0.6}
           strokeLinejoin="round"
-          className="stroke-[color:var(--cursor-facet-light)]"
+          className="stroke-cursor-facet-light"
         />
       </>;
     default:

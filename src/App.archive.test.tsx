@@ -90,7 +90,7 @@ it("shows retained unsaved work as part of the archive confirmation", async () =
   await archive();
   expect(trigger()).toBeNull();
   expect(container.textContent).toContain("Chat archived");
-  expect(container.textContent).toContain("Its worktree was kept: uncommitted changes");
+  expect(container.textContent).toContain("Its worktree was kept: Uncommitted changes.");
 });
 
 it("keeps a failed archive visible and allows retry", async () => {
@@ -112,7 +112,7 @@ it("does nothing when the archive confirmation is cancelled", async () => {
 });
 
 it("preserves the selected conversation when archiving a background chat", async () => {
-  const row = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.title.startsWith("Keep me"));
+  const row = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => (button.dataset.tip ?? "").startsWith("Keep me"));
   expect(row).toBeTruthy();
   await act(async () => row!.click());
   await settle();
@@ -121,12 +121,12 @@ it("preserves the selected conversation when archiving a background chat", async
     return { archived: true, bytesFreed: 0, worktreeDetail: null };
   });
   await archive();
-  const selected = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.title.startsWith("Keep me"));
+  const selected = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => (button.dataset.tip ?? "").startsWith("Keep me"));
   expect(selected?.getAttribute("aria-current")).toBe("page");
 });
 
 it("leaves the selected chat surface when its archive succeeds", async () => {
-  const row = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.title.startsWith("Archive me"));
+  const row = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => (button.dataset.tip ?? "").startsWith("Archive me"));
   await act(async () => row!.click());
   await settle();
   expect(row!.getAttribute("aria-current")).toBe("page");

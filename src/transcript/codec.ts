@@ -100,7 +100,7 @@ function errorText(payload: Record<string, unknown>): string {
   if (direct) return direct;
   const data = objectValue(payload.data);
   const error = objectValue(data.error);
-  return stringValue(error.message) ?? stringValue(data.message) ?? stringValue(data.reason) ?? "";
+  return stringValue(error.message) ?? stringValue(data.message) ?? stringValue(data.reason) ?? ""; // raw-error: decoded as is; the error card classifies it and shows it through describeError
 }
 
 function invalidEntryEvent(envelope: TranscriptEnvelope, payload: Record<string, unknown>): TranscriptEvent {

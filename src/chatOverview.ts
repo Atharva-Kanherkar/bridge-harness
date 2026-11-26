@@ -9,6 +9,7 @@
  */
 
 import { alignTurns, isToolItem, mergeConversationProjections, reduceConversation, toolCallDisplay, type ConversationItem } from "./conversation";
+import { parseReplyPrompt } from "./replyTo";
 import { turnChangesByTurn, type TurnChanges as TurnFileChanges } from "./turnChanges";
 import { projectSessionConversationCached } from "./transcript/projectionCache";
 import type { AgentEvent, BaseBranchDivergence, CompletionSummary, SessionEntry } from "./types";
@@ -125,9 +126,11 @@ export function checksRow(completion: CompletionSummary | null | undefined, item
   return undefined;
 }
 
-/** The prompt's first line, whitespace folded. CSS truncates the rest. */
+/** The prompt's first line, whitespace folded. CSS truncates the rest. A
+ *  reply is titled by the user's own words, not by the quote it carries. */
 export function turnTitle(text: string): string {
-  const line = text.split("\n").map(part => part.trim()).find(Boolean) ?? "";
+  const words = parseReplyPrompt(text)?.text ?? text;
+  const line = words.split("\n").map(part => part.trim()).find(Boolean) ?? "";
   return line.replace(/\s+/g, " ") || "Message with no text";
 }
 

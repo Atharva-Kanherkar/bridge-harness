@@ -588,7 +588,7 @@ describe("ChatToolsControl", () => {
     await openPanel();
     expect(row("pdf")!.textContent).toContain("4,120 tokens · codex.skills/list bytes_div4_v1");
     // The row cuts a long source, so the full text stays on the element.
-    expect(row("pdf")!.querySelector('[title="4,120 tokens · codex.skills/list bytes_div4_v1"]')?.textContent).toBe("4,120 tokens · codex.skills/list bytes_div4_v1");
+    expect([...row("pdf")!.querySelectorAll("span")].some(span => span.textContent === "4,120 tokens · codex.skills/list bytes_div4_v1")).toBe(true);
     expect(row("linear")!.textContent).toBe("linear");
     expect(row("linear")!.textContent).not.toContain("tokens");
   });

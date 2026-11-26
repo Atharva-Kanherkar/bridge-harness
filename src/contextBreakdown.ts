@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { bridgeApi } from "./api";
+import { errorMessage } from "./errors";
 import { startSerialPoll } from "./polling";
 import type { ContextBreakdownResult, ContextBreakdownSegment } from "./protocol/generated/protocol";
 
@@ -175,7 +176,7 @@ export function useContextBreakdown(
         setState({ result, reconciledAt: new Date().toISOString(), unavailable: false });
       } catch (error) {
         if (dead) return;
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         if (MISSING_METHOD_PATTERN.test(message) || ++failuresRef.current >= MAX_CONSECUTIVE_FAILURES) {
           dead = true;
           cancel?.();

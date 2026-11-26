@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import type { AdapterDescriptor } from "../../types";
 import type { ReviewerHarnessSettings, ReviewerSettings, ReviewJobSettings } from "../../protocol/generated/protocol";
 import { NumberField, SavedFlash, SaveBar, Segmented, Select, SettingsBlockRow, SettingsGroup, SettingsRow, Switch, TextArea, TextButton, useSavedFlash } from "../settings/kit";
@@ -65,7 +66,7 @@ function ReviewJobSettingsGroup() {
     let active = true;
     void bridgeApi.getReviewJobSettings()
       .then(result => { if (active) setStored(normalizeJobs(result)); })
-      .catch(cause => { if (active) setError(String(cause)); });
+      .catch(cause => { if (active) setError(friendlyError(cause, "Couldn't load the review settings.")); });
     return () => { active = false; };
   }, []);
   const save = async (patch: Partial<JobForm>, key: string) => {
@@ -74,7 +75,7 @@ function ReviewJobSettingsGroup() {
     try {
       setStored(normalizeJobs(await bridgeApi.saveReviewJobSettings({ ...stored, ...patch })));
       flash(key);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    } catch (cause) { setError(friendlyError(cause, "Couldn't save the review settings.")); }
     finally { setBusy(false); }
   };
   if (error && !stored) return <p role="alert" className="text-ui text-destructive">{error}</p>;
@@ -142,7 +143,7 @@ export function ReviewSettings({ adapters }: { adapters: AdapterDescriptor[] }) 
     let active = true;
     void bridgeApi.reviewerSettings()
       .then(result => { if (active) { setStored(normalize(result.settings)); setDefaultPrompt(result.defaultSystemPrompt); } })
-      .catch(cause => { if (active) setError(String(cause)); });
+      .catch(cause => { if (active) setError(friendlyError(cause, "Couldn't load the reviewer settings.")); });
     return () => { active = false; };
   }, []);
   const save = async (next: FormSettings, key: string) => {
@@ -152,7 +153,7 @@ export function ReviewSettings({ adapters }: { adapters: AdapterDescriptor[] }) 
       setStored(normalize(result.settings)); setDefaultPrompt(result.defaultSystemPrompt);
       flash(key);
       return true;
-    } catch (cause) { setError(String(cause)); return false; }
+    } catch (cause) { setError(friendlyError(cause, "Couldn't save the reviewer settings.")); return false; }
     finally { setBusy(false); }
   };
   const changeHarness = (id: string, patch: Partial<ReviewerHarnessSettings>, key: string) => {

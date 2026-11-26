@@ -43,9 +43,11 @@ pub const OUTPUT_CONTRACT: &str = r#"End your final message with exactly one fen
 - On a re-review only, add `"fixed":["<id>"]` with the `id` of each earlier finding in prior_findings.json that the new commits fixed. Leave it out otherwise."#;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct RawReview {
+    #[serde(default)]
     pub summary: String,
+    #[serde(default)]
     pub findings: Vec<RawFinding>,
     /// On a re-review, the earlier findings the new commits fixed.
     #[serde(default)]
@@ -53,17 +55,21 @@ pub struct RawReview {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct RawFinding {
     pub path: String,
+    #[serde(deserialize_with = "line_number")]
     pub line: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "optional_line_number")]
     pub start_line: Option<u32>,
-    #[serde(default = "right")]
+    #[serde(default = "right", deserialize_with = "side")]
     pub side: ReviewSide,
+    #[serde(deserialize_with = "severity")]
     pub severity: ReviewSeverity,
     pub title: String,
+    #[serde(default)]
     pub body: String,
+    #[serde(default = "middling", deserialize_with = "confidence")]
     pub confidence: f64,
 }
 
@@ -71,47 +77,170 @@ fn right() -> ReviewSide {
     ReviewSide::Right
 }
 
-/// Read the one fenced `json` block out of a final message.
-pub fn parse(message: &str) -> Result<RawReview, String> {
-    let blocks = json_blocks(message);
-    match blocks.len() {
-        0 => Err("The final message has no fenced ```json block.".into()),
-        1 => serde_json::from_str::<RawReview>(blocks[0]).map_err(|error| format!("The ```json block does not match the contract: {error}.")),
-        count => Err(format!("The final message has {count} fenced ```json blocks; it must have exactly one.")),
+/// A finding that gave no confidence is neither sure nor a guess.
+fn middling() -> f64 {
+    0.5
+}
+
+/// A number, or a number written as text (`"42"`): models write both.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Numeric {
+    Number(serde_json::Number),
+    Text(String),
+}
+
+impl Numeric {
+    fn as_f64(&self) -> Option<f64> {
+        match self {
+            Numeric::Number(number) => number.as_f64(),
+            Numeric::Text(text) => text.trim().parse().ok(),
+        }
     }
 }
 
-/// The bodies of every ```json fence, in order.
-fn json_blocks(message: &str) -> Vec<&str> {
-    let mut blocks = Vec::new();
-    let mut rest = message;
-    while let Some(open) = rest.find("```json") {
-        let after = &rest[open + "```json".len()..];
-        // The info string ends the line; the body starts on the next.
-        let Some(newline) = after.find('\n') else { break };
-        if !after[..newline].trim().is_empty() {
-            rest = &after[newline..];
+fn line_number<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+    let value = Numeric::deserialize(deserializer)?;
+    value
+        .as_f64()
+        .filter(|line| line.fract() == 0.0 && *line >= 1.0 && *line <= f64::from(u32::MAX))
+        .map(|line| line as u32)
+        .ok_or_else(|| serde::de::Error::custom("invalid value: a line number must be a whole number from 1"))
+}
+
+fn optional_line_number<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<u32>, D::Error> {
+    let value = Option::<Numeric>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| value.as_f64()).filter(|line| line.fract() == 0.0 && *line >= 1.0).map(|line| line as u32))
+}
+
+fn confidence<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+    Ok(Option::<Numeric>::deserialize(deserializer)?.and_then(|value| value.as_f64()).unwrap_or_else(middling))
+}
+
+fn side<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<ReviewSide, D::Error> {
+    let text = Option::<String>::deserialize(deserializer)?.unwrap_or_default();
+    match text.trim().to_ascii_lowercase().as_str() {
+        "" | "right" | "new" => Ok(ReviewSide::Right),
+        "left" | "old" => Ok(ReviewSide::Left),
+        other => Err(serde::de::Error::custom(format!("unknown variant `{other}`, expected `RIGHT` or `LEFT`"))),
+    }
+}
+
+/// The contract's four severities, and the words models use for them.
+fn severity<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<ReviewSeverity, D::Error> {
+    let text = String::deserialize(deserializer)?;
+    match text.trim().to_ascii_lowercase().as_str() {
+        "critical" | "blocker" | "severe" => Ok(ReviewSeverity::Critical),
+        "major" | "high" | "error" | "important" => Ok(ReviewSeverity::Major),
+        "minor" | "medium" | "moderate" | "warning" => Ok(ReviewSeverity::Minor),
+        "nit" | "low" | "info" | "trivial" | "style" | "suggestion" => Ok(ReviewSeverity::Nit),
+        other => Err(serde::de::Error::custom(format!("unknown variant `{other}`, expected one of critical, major, minor, nit"))),
+    }
+}
+
+/// Read the review out of a final message.
+///
+/// The contract asks for one fenced `json` block, and that is what is read
+/// first. Models drift from it in harmless ways — a bare JSON object, a fence
+/// labelled `JSON` or nothing, an example block before the real one, a
+/// field the contract does not name — and a review lost to any of those is
+/// a review the person waited for and did not get. So every JSON object the
+/// message holds is a candidate, the last first, and the first that reads as
+/// a review wins. An error means no candidate did, worded so a repair turn
+/// can quote it back.
+pub fn parse(message: &str) -> Result<RawReview, String> {
+    let mut candidates = fenced_blocks(message);
+    if candidates.is_empty() {
+        candidates = bare_objects(message);
+    }
+    let mut mismatch = None;
+    for candidate in candidates.iter().rev() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate) else {
+            mismatch.get_or_insert_with(|| {
+                let error = serde_json::from_str::<serde_json::Value>(candidate).err().map(|error| error.to_string()).unwrap_or_default();
+                format!("The ```json block does not match the contract: {error}.")
+            });
+            continue;
+        };
+        let Some(object) = value.as_object() else { continue };
+        if !object.contains_key("findings") && !object.contains_key("summary") {
             continue;
         }
-        let body = &after[newline + 1..];
-        let Some(close) = find_closing_fence(body) else { break };
-        blocks.push(body[..close].trim());
-        rest = &body[close + 3..];
+        match serde_json::from_value::<RawReview>(value) {
+            Ok(review) => return Ok(review),
+            Err(error) => {
+                mismatch.get_or_insert_with(|| format!("The ```json block does not match the contract: {error}."));
+            }
+        }
+    }
+    Err(mismatch.unwrap_or_else(|| "The final message has no fenced ```json block.".into()))
+}
+
+/// The bodies of every fence that could hold JSON (labelled `json`, or not
+/// labelled at all), in order. A fence still open when the message ends runs
+/// to its end.
+fn fenced_blocks(message: &str) -> Vec<&str> {
+    let mut blocks = Vec::new();
+    // The open fence's marker, its length, where its body starts, and
+    // whether it can hold JSON. Every fence is tracked, so the end of a
+    // ```rust block is never read as the start of another.
+    let mut open: Option<(char, usize, usize, bool)> = None;
+    let mut offset = 0;
+    for line in message.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        let trimmed = line.trim();
+        match open {
+            Some((marker, length, body, json)) => {
+                let run = trimmed.chars().take_while(|character| *character == marker).count();
+                if run >= length && trimmed.len() == run {
+                    if json {
+                        blocks.push(message[body..start].trim());
+                    }
+                    open = None;
+                }
+            }
+            None => {
+                let at_start = trimmed.starts_with("```") || trimmed.starts_with("~~~");
+                // "Here it is: ```json" opens a block too.
+                let lower = trimmed.to_ascii_lowercase();
+                let trailing = ["```json", "~~~json"].iter().find_map(|fence| lower.ends_with(fence).then(|| trimmed.len() - fence.len()));
+                let Some(at) = (if at_start { Some(0) } else { trailing }) else { continue };
+                let marker = trimmed[at..].chars().next().unwrap_or('`');
+                let length = trimmed[at..].chars().take_while(|character| *character == marker).count();
+                let info = trimmed[at + length..].trim().to_ascii_lowercase();
+                if at_start && info.contains(marker) {
+                    // A one-line span, ```like this```: not a block.
+                    continue;
+                }
+                let json = info.is_empty() || matches!(info.as_str(), "json" | "jsonc" | "json5");
+                open = Some((marker, length, offset, json));
+            }
+        }
+    }
+    if let Some((_, _, body, true)) = open {
+        blocks.push(message[body..].trim());
     }
     blocks
 }
 
-/// Where the fence closing a block starts: three backticks at the start of a
-/// line.
-fn find_closing_fence(body: &str) -> Option<usize> {
-    let mut offset = 0;
-    for line in body.split_inclusive('\n') {
-        if line.trim_start().starts_with("```") {
-            return Some(offset + (line.len() - line.trim_start().len()));
+/// Every top-level JSON object written straight into the message, in order.
+fn bare_objects(message: &str) -> Vec<&str> {
+    let mut objects = Vec::new();
+    let mut from = 0;
+    while let Some(found) = message[from..].find('{') {
+        let start = from + found;
+        let mut stream = serde_json::Deserializer::from_str(&message[start..]).into_iter::<serde_json::Value>();
+        match stream.next() {
+            Some(Ok(serde_json::Value::Object(_))) => {
+                let end = start + stream.byte_offset();
+                objects.push(&message[start..end]);
+                from = end;
+            }
+            _ => from = start + 1,
         }
-        offset += line.len();
     }
-    None
+    objects
 }
 
 /// One hunk of one file, with the line numbers each side covers.

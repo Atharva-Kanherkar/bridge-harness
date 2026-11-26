@@ -3,9 +3,12 @@ import { Ban, ChevronRight, CircleAlert, FileSearch, SquareTerminal } from "luci
 import { SkeletonDot, SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import { GithubMarkdown } from "../github/GithubMarkdown";
 import { harnessLabel } from "../github/reviewLabels";
 import type { ReviewActivityEntry, ReviewPass } from "../../protocol/generated/protocol";
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
 
 // What each reviewer pass did, as a chat: Bridge's request, then the
 // reviewer's messages, tools and commands in order. Live while the review
@@ -24,10 +27,10 @@ function PromptBubble({ entry }: { entry: ReviewActivityEntry }) {
   const [open, setOpen] = useState(false);
   return <li className="flex justify-end">
     <div className="max-w-[85%] rounded-xl rounded-tr-sm border border-border bg-muted/50 px-3 py-2 text-meta">
-      <button type="button" aria-expanded={open} onClick={() => setOpen(value => !value)} className="flex items-center gap-1 font-medium text-foreground">
+      <Button variant="link" size="inline" aria-expanded={open} onClick={() => setOpen(value => !value)}>
         <ChevronRight size={12} aria-hidden="true" className={cn("transition-transform", open && "rotate-90")} />
         {entry.title ?? "Bridge's request"}
-      </button>
+      </Button>
       {open && <pre className="mt-1.5 max-h-64 overflow-auto whitespace-pre-wrap font-mono text-caption text-muted-foreground">{entry.text}</pre>}
     </div>
   </li>;
@@ -35,11 +38,13 @@ function PromptBubble({ entry }: { entry: ReviewActivityEntry }) {
 
 function Step({ entry }: { entry: ReviewActivityEntry }) {
   const Icon = entry.kind === "command" ? SquareTerminal : entry.kind === "denied" ? Ban : entry.kind === "error" ? CircleAlert : FileSearch;
+  // An error step carries the provider's raw failure; a command its own text.
+  const text = entry.kind === "error" && entry.text ? friendlyError(entry.text, "The reviewer hit an error.") : entry.text;
   return <li className={cn("flex min-w-0 items-baseline gap-2 px-1 text-caption",
     entry.kind === "error" ? "text-destructive" : entry.kind === "denied" ? "text-warning" : "text-muted-foreground")}>
     <Icon size={12} aria-hidden="true" className="shrink-0 translate-y-0.5" />
     <span className={cn("shrink-0 font-medium", entry.kind === "command" && "font-mono")}>{entry.kind === "error" ? "Error" : entry.title}</span>
-    {entry.text && <span className="min-w-0 truncate font-mono" title={entry.text}>{entry.text}</span>}
+    {text && <Tip label={text}><span className={cn("min-w-0 truncate", entry.kind !== "error" && "font-mono")}>{text}</span></Tip>}
   </li>;
 }
 
@@ -77,7 +82,7 @@ export function ReviewActivity({ jobId, passes, running, repositoryUrl }: {
         const result = await bridgeApi.reviewActivity(jobId);
         if (active) setEntries(current => mergeActivity(result.entries, current ?? []));
       } catch (cause) {
-        if (active) setError(cause instanceof Error ? cause.message : String(cause));
+        if (active) setError(friendlyError(cause, "Couldn't load the review's activity."));
       }
     })();
     return () => { active = false; unlisten?.(); };

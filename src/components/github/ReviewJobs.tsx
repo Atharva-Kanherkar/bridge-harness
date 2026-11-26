@@ -2,11 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CircleAlert, CircleCheck, RotateCcw, SquareArrowOutUpRight, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import { relativeTime } from "../workDashboard";
 import type { ReviewJob, ReviewJobStatus } from "../../protocol/generated/protocol";
 import { ReviewDraft } from "./ReviewDraft";
 import { harnessLabel, REVIEW_STATUS, SEVERITIES, SEVERITY_TEXT } from "./reviewLabels";
-import { SkeletonDot, pendingClass } from "@/components/ui/skeleton";
+import { Tip } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
+import { SkeletonDot } from "@/components/ui/skeleton";
 
 // The PR's review jobs, newest first, kept current by `reviews/job_updated`:
 // a review started here, from another window, or while another chat was open
@@ -59,10 +62,10 @@ function JobRow({ job, now, onChanged }: { job: ReviewJob; now: number; onChange
   const status = STATUS[job.status];
   const time = elapsed(job, now);
   const counts = SEVERITIES.filter(severity => job.findingCounts[severity] > 0);
-  const act = async (call: () => Promise<{ job: ReviewJob }>) => {
+  const act = async (call: () => Promise<{ job: ReviewJob }>, failed: string) => {
     setBusy(true); setError(undefined);
     try { onChanged((await call()).job); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { setError(friendlyError(cause, failed)); }
     finally { setBusy(false); }
   };
   const Icon = status.tone === "failed" ? CircleAlert : status.tone === "done" ? CircleCheck : null;
@@ -82,19 +85,19 @@ function JobRow({ job, now, onChanged }: { job: ReviewJob; now: number; onChange
       {job.findingCounts.total === 0 ? "No findings" : counts.map(severity => <span key={severity} className={cn("mr-1.5", SEVERITY_TEXT[severity])}>{job.findingCounts[severity]} {severity}</span>)}
     </span>}
     {job.trigger === "push" && <span className="text-caption text-muted-foreground">On push</span>}
-    {job.incrementalFromSha && <span className="text-caption text-muted-foreground" title={`Reviews the commits since ${job.incrementalFromSha}`}>Re-review since <span className="font-mono">{job.incrementalFromSha.slice(0, 7)}</span></span>}
+    {job.incrementalFromSha && <Tip label={`Reviews the commits since ${job.incrementalFromSha}`}><span className="text-caption text-muted-foreground">Re-review since <span className="font-mono">{job.incrementalFromSha.slice(0, 7)}</span></span></Tip>}
     <span className="ml-auto flex items-center gap-1">
       {job.status === "posted" && job.postedReviewUrl && <a href={job.postedReviewUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-meta text-foreground hover:bg-accent">
         View on GitHub <SquareArrowOutUpRight size={11} aria-hidden="true" />
       </a>}
-      {RETRYABLE.has(job.status) && <button type="button" disabled={busy} onClick={() => void act(() => bridgeApi.retryReview(job.id))} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-meta text-foreground hover:bg-accent disabled:opacity-50">
+      {RETRYABLE.has(job.status) && <Button variant="quiet" size="2xs" disabled={busy} onClick={() => void act(() => bridgeApi.retryReview(job.id), "Couldn't retry the review.")}>
         <RotateCcw size={11} aria-hidden="true" /> Retry
-      </button>}
-      {!TERMINAL.has(job.status) && job.status !== "posting" && <button type="button" disabled={busy} onClick={() => void act(() => bridgeApi.cancelReview(job.id))} aria-label={job.status === "drafted" ? "Discard this draft" : "Cancel this review"} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-meta text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50">
+      </Button>}
+      {!TERMINAL.has(job.status) && job.status !== "posting" && <Button variant="quiet" size="2xs" disabled={busy} onClick={() => void act(() => bridgeApi.cancelReview(job.id), job.status === "drafted" ? "Couldn't discard the draft." : "Couldn't cancel the review.")} aria-label={job.status === "drafted" ? "Discard this draft" : "Cancel this review"}>
         <X size={11} aria-hidden="true" /> {job.status === "drafted" ? "Discard" : "Cancel"}
-      </button>}
+      </Button>}
     </span>
-    {(error || job.error) && <p role="alert" className="basis-full text-caption text-destructive">{error ?? job.error}</p>}
+    {(error || job.error) && <p role="alert" className="basis-full text-caption text-destructive">{error ?? friendlyError(job.error, "The review failed.")}</p>}
   </div>;
 }
 
@@ -129,7 +132,7 @@ export function usePullRequestReviews(workspaceId: string, number: number, start
         const result = await bridgeApi.listReviews(workspaceId, number);
         if (active) { setNow(Date.now()); setJobs(current => result.jobs.filter(job => !live.has(job.id)).reduce(upsert, current)); }
       } catch (cause) {
-        if (active) setError(cause instanceof Error ? cause.message : String(cause));
+        if (active) setError(friendlyError(cause, "Couldn't load the reviews."));
       } finally {
         if (active) setLoaded(true);
       }
@@ -210,9 +213,9 @@ export function ReviewJobsView({ reviews, repositoryUrl, reveal, sectionRef }: {
         {job.status === "drafted" && <ReviewDraft job={job} repositoryUrl={repositoryUrl} onPosting={update} />}
       </div>)}
     </div>
-    {hidden > 0 && <button type="button" onClick={() => setShowAll(true)} className="mt-1.5 rounded-md px-2 py-0.5 text-meta text-muted-foreground hover:bg-accent hover:text-foreground">
+    {hidden > 0 && <Button variant="quiet" size="2xs" className="mt-1.5" onClick={() => setShowAll(true)}>
       Show {hidden} more
-    </button>}
+    </Button>}
   </section>;
 }
 
@@ -246,8 +249,11 @@ export function ReviewStatusLine({ reviews, onShow }: { reviews: PullRequestRevi
     lines.push({ key: "drafts", tone: "waiting", text: `${drafts.length} drafts ready: ${findings(total)}`, action: "Triage", onAction: onShow });
   }
   if (failed && !active.length) {
+    // The reason is the job's raw error made plain; a reason that only reads
+    // like code is dropped rather than shown.
+    const reason = failed.error ? friendlyError(failed.error, "") : "";
     lines.push({
-      key: failed.id, tone: "failed", text: `Review with ${who(failed)} ${failed.status === "interrupted" ? "was interrupted" : "failed"}${failed.error ? `: ${failed.error}` : ""}`, action: "Retry",
+      key: failed.id, tone: "failed", text: `Review with ${who(failed)} ${failed.status === "interrupted" ? "was interrupted" : "failed"}.${reason ? ` ${reason}` : ""}`, action: "Retry",
       onAction: () => {
         setBusy(true);
         bridgeApi.retryReview(failed.id).then(result => update(result.job), () => onShow()).finally(() => setBusy(false));
@@ -259,9 +265,9 @@ export function ReviewStatusLine({ reviews, onShow }: { reviews: PullRequestRevi
       line.tone === "failed" ? "border-destructive/25 bg-destructive/10 text-destructive" : line.tone === "waiting" ? "border-border bg-card text-foreground" : "border-border bg-muted/40 text-muted-foreground")}>
       {line.tone === "running" ? <SkeletonDot />
         : line.tone === "failed" ? <CircleAlert size={12} aria-hidden="true" className="shrink-0" /> : <CircleCheck size={12} aria-hidden="true" className="shrink-0 text-success" />}
-      <span className="min-w-0 flex-1 truncate" title={line.text}>{line.text}</span>
+      <Tip label={line.text}><span className="min-w-0 flex-1 truncate">{line.text}</span></Tip>
       {line.time && <span className="shrink-0 font-mono text-caption tabular-nums">{line.time}</span>}
-      <button type="button" disabled={line.tone === "failed" && busy} aria-busy={(line.tone === "failed" && busy) || undefined} onClick={line.onAction} className={cn("shrink-0 rounded px-1.5 py-0.5 text-meta font-medium text-foreground hover:bg-accent disabled:opacity-50", pendingClass(line.tone === "failed" && busy))}>{line.action}</button>
+      <Button variant="quiet" size="2xs" className="shrink-0" disabled={line.tone === "failed" && busy} loading={line.tone === "failed" && busy} onClick={line.onAction}>{line.action}</Button>
     </div>)}
   </div>;
 }

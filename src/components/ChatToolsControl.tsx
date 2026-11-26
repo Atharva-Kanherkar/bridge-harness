@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, Lock, RotateCw, ToggleRight, Wrench, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
 import { Skeleton, SkeletonRows, pendingClass } from "@/components/ui/skeleton";
+import { Tip } from "@/components/ui/tooltip";
 import { bridgeApi } from "../api";
 import { allOn, baseChoice, fits, leavesOut, overlay, removed, switched, type Choice } from "../chatToolChoice";
 import { relativeTime } from "../connectorSurface";
 import { formatTokens } from "../contextBreakdown";
-import { errorMessage } from "../errors";
+import { friendlyError } from "../errors";
 import { normalizeAccount } from "../providerAccounts";
 import type { ChatToolItem, ChatTools, ChatToolSelection, ChatToolsDraft } from "../types";
+import { RowButton } from "@/components/ui/row";
 
 /**
  * The connectors and skills a chat starts with, beside the access control.
@@ -91,7 +94,7 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
       if (ticket === generation.current) setView({ key, data });
     } catch (error) {
       // A failed read keeps the last list of this chat on screen.
-      if (ticket === generation.current) setView(current => ({ key, data: current.key === key ? current.data : undefined, error: errorMessage(error) }));
+      if (ticket === generation.current) setView(current => ({ key, data: current.key === key ? current.data : undefined, error: friendlyError(error, "Couldn't load this chat's tools.") }));
     }
   }, [key, read]);
 
@@ -192,7 +195,7 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
       if (outcome.refusal) {
         end();
         setPending(null);
-        setNotice({ tone: "refusal", text: outcome.refusal });
+        setNotice({ tone: "refusal", text: friendlyError(outcome.refusal, "The tool choice wasn't saved.") });
         return;
       }
       const ticket = ++generation.current;
@@ -212,7 +215,7 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
       end();
       if (!here()) return;
       setPending(null);
-      setNotice({ tone: "error", text: errorMessage(error) });
+      setNotice({ tone: "error", text: friendlyError(error, "Couldn't save the tool choice.") });
       // A stale revision means another window saved first: show its choice.
       void load(true);
     }
@@ -240,17 +243,18 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
   };
 
   return <>
-    <button
+    <Button
       ref={menu.triggerRef}
-      type="button"
+      variant="quiet"
+      size="sm"
       disabled={disabled}
       onClick={toggle}
       aria-haspopup="menu"
       aria-expanded={menu.open}
       aria-busy={loading || undefined}
       aria-label={chipLabel}
-      title={notApplied ?? (offCount ? `${offCount} left out of this chat` : "The connectors and skills of this chat")}
-      className="flex h-8 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors enabled:hover:bg-accent disabled:cursor-default disabled:opacity-60"
+      tooltip={notApplied ?? (offCount ? `${offCount} left out of this chat` : "The connectors and skills of this chat")}
+      className="min-w-0"
     >
       <Wrench size={13} aria-hidden="true" className="shrink-0" />
       <span className="whitespace-nowrap">Tools</span>
@@ -260,45 +264,47 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
         ? <span className="whitespace-nowrap text-warning">not applied</span>
         : offCount > 0 && <span className="whitespace-nowrap rounded-full bg-accent px-1.5 tabular-nums text-foreground">{offCount} off</span>}
       <ChevronDown size={14} className={cn("shrink-0 transition-transform", menu.open && "rotate-180")} aria-hidden="true" />
-    </button>
+    </Button>
     <MenuPanel controller={menu} label="Tools of this chat">
       <div className="px-2 pb-1.5 pt-1">
         <p className="text-ui font-medium text-foreground">Tools of this chat</p>
         <p className="text-caption leading-4 text-muted-foreground">
           {props.draft ? "Leave out what this chat does not need. The chat starts with this choice." : "Leave out what this chat does not need. A change applies at the next turn."}
         </p>
-        {base && leavesOut(base) && <button
-          type="button"
+        {base && leavesOut(base) && <Button
+          variant="ghost"
+          size="xs"
           role="menuitem"
           tabIndex={-1}
           disabled={!!pending || disabled}
           onClick={turnAllOn}
-          aria-busy={turningAllOn || undefined}
-          className={cn("-ml-1.5 mt-1 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-meta text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40", pendingClass(turningAllOn))}
-        ><ToggleRight size={12} aria-hidden="true" />Turn all on</button>}
+          loading={turningAllOn}
+          className="-ml-2 mt-1"
+        ><ToggleRight className="size-3" aria-hidden="true" />Turn all on</Button>}
       </div>
       {notApplied && <div className="mx-1 mb-1 rounded-md bg-accent px-2 py-1.5">
         <p role="note" className="text-caption leading-4 text-warning">{notApplied}</p>
         {/* The create refuses a draft choice for another target, so the draft can drop it. */}
-        {props.draft && draftTarget && <button
-          type="button"
+        {props.draft && draftTarget && <Button
+          variant="outline"
+          size="xs"
           role="menuitem"
           tabIndex={-1}
           disabled={disabled}
           onClick={() => { setNotice(null); props.onChoiceChange(null); }}
-          className="mt-1 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-meta text-foreground transition-colors hover:bg-background/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
-        ><X size={12} aria-hidden="true" />Clear this choice</button>}
+          className="mt-1"
+        ><X className="size-3" aria-hidden="true" />Clear this choice</Button>}
       </div>}
       {notice && <p
         role={notice.tone === "saved" ? "status" : "alert"}
         className={cn("mx-1 mb-1 px-1 text-caption leading-4", notice.tone === "error" ? "text-destructive" : notice.tone === "refusal" ? "text-warning" : "text-muted-foreground")}
       >{notice.text}</p>}
-      {loading && <SkeletonRows label="Loading tools" rows={4} meta={false} trailing framed={false} rowClassName="min-h-8 px-2 py-1.5" />}
+      {loading && <SkeletonRows label="Loading tools" rows={4} meta={false} trailing framed={false} density="menu" />}
       {!data && loadError && <div className="px-2 py-1.5">
         <p role="alert" className="text-caption leading-4 text-destructive">{loadError}</p>
-        <button type="button" role="menuitem" tabIndex={-1} onClick={() => void load()} className="mt-1 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-meta text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
-          <RotateCw size={12} aria-hidden="true" />Try again
-        </button>
+        <Button variant="ghost" size="xs" role="menuitem" tabIndex={-1} onClick={() => void load()} className="-ml-2 mt-1">
+          <RotateCw className="size-3" aria-hidden="true" />Try again
+        </Button>
       </div>}
       {data && base && <>
         {!items.length && <p className="px-2 py-1.5 text-meta text-muted-foreground">
@@ -353,20 +359,20 @@ function ToolRow({ item, pending, busy, onSwitch, onRemove }: {
   onRemove: () => void;
 }) {
   const figure = figureText(item);
-  const remove = !item.seen && <button
-    type="button"
+  const remove = !item.seen && <Button
+    variant="quiet"
+    size="icon-xs"
     role="menuitem"
     tabIndex={-1}
     disabled={busy}
     onClick={onRemove}
     aria-label={`Remove ${item.label} from the choice`}
-    title="Remove from the choice"
-    aria-busy={pending?.on === null || undefined}
-    className={cn("flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40", pendingClass(pending?.on === null))}
-  ><X size={13} aria-hidden="true" /></button>;
+    tooltip="Remove from the choice"
+    loading={pending?.on === null}
+  ><X aria-hidden="true" /></Button>;
   const meta = <>
     {item.fixedReason && <span className="block text-caption leading-4 text-muted-foreground">{item.fixedReason}</span>}
-    {figure && <span title={figure} className="block truncate text-caption leading-4 text-muted-foreground">{figure}</span>}
+    {figure && <Tip label={figure}><span className="block truncate text-caption leading-4 text-muted-foreground">{figure}</span></Tip>}
     {!item.seen && <span className="block text-caption leading-4 text-faint">Saved, not listed now</span>}
   </>;
   if (item.state === "fixed") {
@@ -381,24 +387,22 @@ function ToolRow({ item, pending, busy, onSwitch, onRemove }: {
   }
   const on = pending?.on ?? item.state === "on";
   return <div data-tool-kind={item.kind} data-tool-item={item.id} className="flex items-center gap-1">
-    <button
-      type="button"
+    <RowButton size="bare" tone="default" shape="card"
       role="menuitemcheckbox"
       tabIndex={-1}
       aria-checked={on}
       disabled={busy}
       onClick={() => onSwitch(!on)}
-      aria-busy={pending?.on != null || undefined}
-      className={cn("flex min-h-7 min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-default disabled:hover:bg-transparent", pendingClass(pending?.on != null))}
-    >
+      aria-busy={pending?.on != null || undefined}><span className={cn("flex min-h-7 min-w-0 flex-1 items-center gap-2 px-2 py-1", pendingClass(pending?.on != null))}>
       <span className="min-w-0 flex-1">
         <span className={cn("block truncate text-ui", on ? "text-foreground" : "text-muted-foreground")}>{item.label}</span>
         {meta}
       </span>
+
       <span aria-hidden="true" className={cn("relative h-[18px] w-8 shrink-0 rounded-full transition-colors", on ? "bg-foreground" : "bg-foreground/15", busy && "opacity-60")}>
         <span className={cn("absolute top-[2px] size-[14px] rounded-full bg-background transition-[left] duration-150", on ? "left-4" : "left-[2px]")} />
       </span>
-    </button>
+    </span></RowButton>
     {remove}
   </div>;
 }

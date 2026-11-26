@@ -1,9 +1,18 @@
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
-import { pendingClass, SkeletonRows } from "@/components/ui/skeleton";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { useEffect, useRef, useState } from "react";
 import { Check, Pencil, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { RowButton } from "@/components/ui/row";
+import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
+import { Select, SelectItem, SelectPopup, SelectTrigger } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
+import { Tip } from "@/components/ui/tooltip";
 import { bridgeApi, MEMORY_PAGE_SIZE } from "../api";
+import { friendlyError } from "../errors";
 import { searchRecords } from "../memoryStats";
 import { harnessLabel } from "../utils";
 import { relative } from "./UsageInsights";
@@ -13,14 +22,33 @@ import type {
   MemoryCapabilities,
   MemoryActivityEntry,
   MemoryExtractionSettings,
+  MemoryModelSettings,
+  MemoryModelSource,
   MemoryRecallStats,
+  MemoryRetentionSettings,
   MemoryRecord,
 } from "../types";
+import { Checkbox } from "@/components/ui/checkbox";
 
 const KINDS = ["preference", "fact", "decision", "constraint"] as const;
 type Kind = typeof KINDS[number];
 const KIND_LABEL: Record<Kind, string> = { preference: "Preference", fact: "Fact", decision: "Decision", constraint: "Constraint" };
 const KIND_PLURAL: Record<Kind, string> = { preference: "Preferences", fact: "Facts", decision: "Decisions", constraint: "Constraints" };
+
+/** Where the memory model came from: the tail of the sentence naming the model in use. */
+const MEMORY_MODEL_SOURCE: Record<MemoryModelSource, string> = {
+  user: "your pick",
+  chat_default: "your new-chat model",
+  standard: "Bridge's standard choice",
+};
+
+/** A model's label from the adapter list, else its id, else the harness default. */
+function memoryModelLabel(adapters: AdapterDescriptor[], harness: string, model?: string | null): string {
+  const adapter = adapters.find(item => item.id === harness);
+  const harnessName = adapter?.label ?? harnessLabel(harness);
+  if (!model) return `${harnessName}'s default model`;
+  return adapter?.models.find(item => item.id === model)?.label ?? model;
+}
 
 /** What each extraction mode does after a chat turn, said once beside its choice. */
 const MODES = [
@@ -43,7 +71,7 @@ export function bodyLength(text: string): number {
   return [...text.trim()].length;
 }
 
-type MemoryStatus = "active" | "proposed";
+type MemoryStatus = "active" | "proposed" | "expired";
 /** What one memory list holds: the pages read so far, where the next starts, and the true total. */
 type MemoryList = { records: MemoryRecord[]; total: number; cursor?: string };
 
@@ -104,10 +132,14 @@ export function MemoryDialog({
   const [tab, setTab] = useState<"pins" | "queue" | "activity" | "insights">("pins");
   const [activeList, setActiveList] = useState<MemoryList>();
   const [proposedList, setProposedList] = useState<MemoryList>();
+  // Retired and expired memories a person can restore.
+  const [retiredList, setRetiredList] = useState<MemoryList>();
+  const [retention, setRetention] = useState<MemoryRetentionSettings>();
   // Proposals ticked for one bulk decision. Pruned whenever the queue reloads.
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [loadingMore, setLoadingMore] = useState<MemoryStatus | null>(null);
   const [settings, setSettings] = useState<MemoryExtractionSettings>();
+  const [memoryModel, setMemoryModel] = useState<MemoryModelSettings>();
   const [budget, setBudget] = useState<{ held: number; max: number }>();
   const [capabilities, setCapabilities] = useState<MemoryCapabilities>();
   const [injection, setInjection] = useState<boolean>();
@@ -120,17 +152,21 @@ export function MemoryDialog({
   // Edit is supersession: the row's body moves here, and saving writes a
   // superseding record — never save-then-forget, never an in-place update.
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [profileHarness, setProfileHarness] = useState("");
-  const [profileModel, setProfileModel] = useState("");
+  // A harness picked with no model yet. The pickers otherwise always show the
+  // stored pin, so a pin changed or cleared elsewhere shows up on the next read.
+  const [modelDraft, setModelDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // Which read is the newest. The initial load and every memory-changed hint
   // read, so a slow earlier call must not land over a fresher one. Same shape
   // as RouterSettingsDialog's learningReadGeneration.
   const readGeneration = useRef(0);
+  // Bumped by every memory-model write that succeeds. A read that began before
+  // one must not put back the model that write replaced.
+  const modelRevision = useRef(0);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   // How many records each list shows, and the last one on screen, read by the
   // change-driven reload.
-  const loadedCount = useRef<Record<MemoryStatus, number>>({ active: 0, proposed: 0 });
+  const loadedCount = useRef<Record<MemoryStatus, number>>({ active: 0, proposed: 0, expired: 0 });
   const lastLoaded = useRef<Partial<Record<MemoryStatus, ListPosition>>>({});
   // A page that failed to load is not retried by the automatic read below.
   const failedCursor = useRef<string | undefined>(undefined);
@@ -138,13 +174,13 @@ export function MemoryDialog({
   const proposed = proposedList?.records;
 
   useEffect(() => {
-    loadedCount.current = { active: activeList?.records.length ?? 0, proposed: proposedList?.records.length ?? 0 };
-    lastLoaded.current = { active: activeList?.records.at(-1), proposed: proposedList?.records.at(-1) };
-  }, [activeList, proposedList]);
+    loadedCount.current = { active: activeList?.records.length ?? 0, proposed: proposedList?.records.length ?? 0, expired: retiredList?.records.length ?? 0 };
+    lastLoaded.current = { active: activeList?.records.at(-1), proposed: proposedList?.records.at(-1), expired: retiredList?.records.at(-1) };
+  }, [activeList, proposedList, retiredList]);
 
   /** Append the next page of one list. A reload that lands meanwhile wins. */
   const showMore = async (status: MemoryStatus) => {
-    const list = status === "active" ? activeList : proposedList;
+    const list = status === "active" ? activeList : status === "proposed" ? proposedList : retiredList;
     const cursor = list?.cursor;
     if (!cursor) return;
     const generation = readGeneration.current;
@@ -152,14 +188,14 @@ export function MemoryDialog({
     try {
       const page = await bridgeApi.listMemoryRecords("account:local", status === "active" ? undefined : status, { cursor });
       if (generation !== readGeneration.current) return;
-      (status === "active" ? setActiveList : setProposedList)(current => current?.cursor !== cursor ? current : {
+      (status === "active" ? setActiveList : status === "proposed" ? setProposedList : setRetiredList)(current => current?.cursor !== cursor ? current : {
         records: [...current.records, ...page.records],
         total: page.total ?? current.total,
         cursor: page.nextCursor ?? undefined,
       });
     } catch (error) {
       failedCursor.current = cursor;
-      if (generation === readGeneration.current) onError(error instanceof Error ? error.message : String(error));
+      if (generation === readGeneration.current) onError(friendlyError(error, "Couldn't load more memories."));
     } finally {
       setLoadingMore(current => current === status ? null : current);
     }
@@ -182,9 +218,11 @@ export function MemoryDialog({
     setTab("pins");
     setActiveList(undefined);
     setProposedList(undefined);
+    setRetiredList(undefined);
+    setRetention(undefined);
     setSelected(new Set());
     setLoadingMore(null);
-    loadedCount.current = { active: 0, proposed: 0 };
+    loadedCount.current = { active: 0, proposed: 0, expired: 0 };
     lastLoaded.current = {};
     setSettings(undefined);
     setBudget(undefined);
@@ -197,8 +235,8 @@ export function MemoryDialog({
     setBody("");
     setKind("preference");
     setEditingId(null);
-    setProfileHarness("");
-    setProfileModel("");
+    setModelDraft(null);
+    setMemoryModel(undefined);
   }, [open]);
 
   useEffect(() => {
@@ -211,6 +249,7 @@ export function MemoryDialog({
     let off: (() => void) | undefined;
     const load = () => {
       const generation = ++readGeneration.current;
+      const revision = modelRevision.current;
       Promise.all([
         readMemoryPages("active", loadedCount.current.active, lastLoaded.current.active),
         readMemoryPages("proposed", loadedCount.current.proposed, lastLoaded.current.proposed),
@@ -219,8 +258,13 @@ export function MemoryDialog({
         bridgeApi.memoryRecallStats("account:local"),
         bridgeApi.memoryActivityLog("account:local"),
         bridgeApi.getConsolidationSettings(),
-      ]).then(([activeRead, proposedRead, extraction, injectionSettings, recallStats, activity, consolidation]) => {
+        bridgeApi.getMemoryModel(),
+        readMemoryPages("expired", loadedCount.current.expired, lastLoaded.current.expired),
+        bridgeApi.getRetentionSettings(),
+      ]).then(([activeRead, proposedRead, extraction, injectionSettings, recallStats, activity, consolidation, model, retiredRead, retentionSettings]) => {
         if (!active || generation !== readGeneration.current) return;
+        setRetiredList(retiredRead);
+        setRetention(retentionSettings);
         setActiveList(activeRead);
         setBudget({ held: consolidation.heldRecords, max: consolidation.maxRecords });
         setProposedList(proposedRead);
@@ -232,21 +276,20 @@ export function MemoryDialog({
         setInjection(injectionSettings.enabled);
         setStats(recallStats);
         setLog(activity);
-        setProfileHarness(current => current || extraction.harness || "");
-        setProfileModel(current => current || extraction.model || "");
+        if (revision === modelRevision.current) setMemoryModel(model);
       }).catch(error => {
         // The generation gate covers the failure path too: a slow read that
         // errors after a newer one rendered must not toast over it.
-        if (active && generation === readGeneration.current) onError(String(error));
+        if (active && generation === readGeneration.current) onError(friendlyError(error, "Couldn't load your memories."));
       });
     };
     load();
     bridgeApi.getMemoryCapabilities().then(value => { if (active) setCapabilities(value); })
-      .catch(error => { if (active) onError(String(error)); });
+      .catch(error => { if (active) onError(friendlyError(error, "Couldn't check what memory can do here.")); });
     void bridgeApi.onMemoryChanged(() => load()).then(fn => {
       if (!active) { fn(); return; }
       off = fn;
-    }).catch(error => { if (active) onError(String(error)); });
+    }).catch(error => { if (active) onError(friendlyError(error, "Couldn't watch for memory changes.")); });
     return () => { active = false; off?.(); };
   }, [onError, open]);
 
@@ -274,10 +317,10 @@ export function MemoryDialog({
   const usedPct = stats && stats.activeRecords > 0 ? Math.round((stats.recalledRecords / stats.activeRecords) * 100) : null;
   const budgetPct = stats && stats.budgetCharsMax > 0 ? Math.round((stats.budgetCharsUsed / stats.budgetCharsMax) * 100) : 0;
 
-  const act = async (work: () => Promise<unknown>) => {
+  const act = async (work: () => Promise<unknown>, fallback = "Couldn't update your memory.") => {
     setBusy(true);
     try { await work(); }
-    catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    catch (error) { onError(friendlyError(error, fallback)); }
     finally { setBusy(false); }
   };
   /** One decision for every ticked proposal, in batches core accepts. */
@@ -290,8 +333,11 @@ export function MemoryDialog({
       refused.push(...result.refused.map(refusal => refusal.reason));
     }
     setSelected(new Set());
-    if (refused.length) onError(`${refused.length} of ${ids.length} could not be ${approving ? "approved" : "rejected"}: ${refused[0]}`);
-  });
+    if (refused.length) onError(`${refused.length} of ${ids.length} could not be ${approving ? "approved" : "rejected"}. ${friendlyError(refused[0], "")}`.trim());
+  }, approving ? "Couldn't approve those proposals." : "Couldn't reject those proposals.");
+  const saveRetention = (proposalTtlDays: number, retireUnusedAfterDays: number | null) => act(async () => {
+    setRetention(await bridgeApi.setRetentionSettings(proposalTtlDays, retireUnusedAfterDays));
+  }, "Couldn't save the clean-up settings.");
   const toggleSelected = (id: string) => setSelected(current => {
     const next = new Set(current);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -305,7 +351,7 @@ export function MemoryDialog({
       await bridgeApi.saveMemoryRecord(body, kind, undefined);
     }
     setBody("");
-  });
+  }, "Couldn't save the memory.");
   const beginEdit = (record: MemoryRecord) => {
     setEditingId(record.id);
     setBody(record.body);
@@ -319,16 +365,37 @@ export function MemoryDialog({
     setKind("preference");
   };
   const setMode = (mode: string) => act(async () => {
-    const next = mode === "propose" || mode === "auto_apply"
-      ? await bridgeApi.updateExtractionSettings(mode, profileHarness, profileModel)
-      : await bridgeApi.updateExtractionSettings(mode);
-    setSettings(next);
-  });
+    setSettings(await bridgeApi.updateExtractionSettings(mode));
+  }, "Couldn't change how memories are captured.");
+  /** Store a pin, or clear it with neither half, and show the stored answer. */
+  const saveMemoryModel = (harness?: string, model?: string) => act(async () => {
+    try {
+      const next = harness && model ? await bridgeApi.setMemoryModel(harness, model) : await bridgeApi.setMemoryModel();
+      modelRevision.current += 1;
+      setMemoryModel(next);
+    } finally {
+      // Saved or refused, the pickers go back to what is stored.
+      setModelDraft(null);
+    }
+  }, "Couldn't change the memory model.");
+  // A pin names both halves, so picking a harness only drafts it until a model
+  // is chosen; "Use my new-chat model" clears the pin at once.
+  const pickMemoryHarness = (harness: string) => {
+    if (harness) {
+      setModelDraft(harness);
+    } else if (memoryModel?.pinned) {
+      void saveMemoryModel();
+    } else {
+      setModelDraft(null);
+    }
+  };
+  const pickMemoryModel = (model: string) => {
+    if (pickedHarness && model) void saveMemoryModel(pickedHarness, model);
+  };
 
-  const fieldClass = "rounded-lg border border-border-card bg-card text-foreground outline-none transition-colors placeholder:text-faint focus:border-ring/60 disabled:opacity-45";
-  const quietSelect = "h-7 min-w-0 rounded-lg border border-transparent bg-transparent px-1.5 text-caption text-muted-foreground outline-none transition-colors hover:text-foreground focus:border-border-card disabled:opacity-45";
-  const iconButton = "grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45";
-  const models = adapters.find(adapter => adapter.id === profileHarness)?.models ?? [];
+  const pickedHarness = modelDraft ?? memoryModel?.pinned?.harness ?? "";
+  const pickedModel = modelDraft === null ? memoryModel?.pinned?.model ?? "" : "";
+  const models = adapters.find(adapter => adapter.id === pickedHarness)?.models ?? [];
   const composing = editingId !== null || body.length > 0;
   const memoryCount = activeList?.total ?? 0;
   const allShownSelected = (proposed?.length ?? 0) > 0 && (proposed ?? []).every(record => selected.has(record.id));
@@ -341,52 +408,46 @@ export function MemoryDialog({
         title="Memory"
         action={<label className="flex cursor-pointer items-center gap-2.5 text-caption text-muted-foreground">
           Use in new chats
-          <input
-            type="checkbox"
-            role="switch"
-            className="peer sr-only"
+          <Switch
             checked={injection ?? true}
             disabled={busy || injection === undefined}
             aria-label="Use active memory in new chats"
-            onChange={event => {
-              const next = event.target.checked;
+            onCheckedChange={next => {
               void act(async () => {
                 const applied = await bridgeApi.setMemoryInjection(next);
                 setInjection(applied.enabled);
-              });
+              }, "Couldn't change whether new chats use memory.");
             }}
           />
-          <span aria-hidden="true" className="relative h-[18px] w-8 shrink-0 rounded-full bg-foreground/15 transition-colors after:absolute after:left-[2px] after:top-[2px] after:size-[14px] after:rounded-full after:bg-background after:transition-[left] after:duration-150 peer-checked:bg-foreground peer-checked:after:left-4 peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-disabled:opacity-40" />
         </label>}
       />
-      <div className="u-segmented mb-6 max-w-full" role="group" aria-label="Memory views">
-        <button type="button" aria-pressed={tab === "pins"} data-active={tab === "pins"} className="u-segmented-item" onClick={() => setTab("pins")}>
+      <SegmentedGroup label="Memory views" className="mb-6 max-w-full">
+        <SegmentedItem active={tab === "pins"} onClick={() => setTab("pins")}>
           Memories{memoryCount > 0 && <span className="ml-1.5 tabular-nums text-faint">{memoryCount}</span>}
-        </button>
-        <button type="button" aria-pressed={tab === "queue"} data-active={tab === "queue"} className="u-segmented-item" onClick={() => setTab("queue")}>
+        </SegmentedItem>
+        <SegmentedItem active={tab === "queue"} onClick={() => setTab("queue")}>
           Review{queueCount > 0 && <span className="ml-1.5 tabular-nums text-faint">{queueCount}</span>}
-        </button>
-        <button type="button" aria-pressed={tab === "activity"} data-active={tab === "activity"} className="u-segmented-item" onClick={() => setTab("activity")}>Activity</button>
-        <button type="button" aria-pressed={tab === "insights"} data-active={tab === "insights"} className="u-segmented-item" onClick={() => setTab("insights")}>Insights</button>
-      </div>
+        </SegmentedItem>
+        <SegmentedItem active={tab === "activity"} onClick={() => setTab("activity")}>Activity</SegmentedItem>
+        <SegmentedItem active={tab === "insights"} onClick={() => setTab("insights")}>Insights</SegmentedItem>
+      </SegmentedGroup>
       {full && budget && <div role="status" className="mb-6 flex flex-wrap items-center gap-3 rounded-xl border border-border-card bg-card px-4 py-3">
         <p className="min-w-0 flex-1 basis-64 text-caption text-muted-foreground">
           <span className="font-medium text-foreground">Memory is full.</span>{" "}
-          It holds <span className="tabular-nums">{budget.held}</span> of <span className="tabular-nums">{budget.max}</span> records, counting proposals, so nothing new is saved or proposed and no extraction runs. Review proposals or forget memories you no longer need.
+          It holds <span className="tabular-nums">{budget.held}</span> of <span className="tabular-nums">{budget.max}</span> memories, so nothing new is saved or approved. Proposals still wait for you. Forget memories you no longer need, or let unused ones retire.
         </p>
-        {queueCount > 0 && tab !== "queue" && <button
-          type="button"
-          className="h-7 shrink-0 rounded-lg px-2.5 text-caption font-medium text-foreground transition-colors hover:bg-accent"
-          onClick={() => setTab("queue")}
-        >Review {queueCount}</button>}
+        {(retiredList?.total ?? 0) > 0 && tab !== "pins" && <Button variant="ghost" size="xs" onClick={() => setTab("pins")}>Retired {retiredList?.total}</Button>}
       </div>}
       {tab === "pins" && <div>
         <section aria-label="Memory editor" className="overflow-hidden rounded-xl border border-border-card bg-card transition-colors focus-within:border-ring/60">
           {editingId && <p className="px-4 pt-3 text-caption text-muted-foreground">Editing memory</p>}
-          <textarea
+          <div className="px-1 py-1.5 text-ui leading-relaxed">
+          <Textarea
+            unstyled
             ref={editorRef}
             rows={composing ? 3 : 1}
-            className="block w-full resize-none bg-transparent px-4 py-3 text-ui leading-relaxed text-foreground outline-none placeholder:text-faint disabled:opacity-45"
+            // One line at rest, three while composing: the primitive's own floor is taller than one line.
+            style={{ minHeight: composing ? "calc(3lh + 0.625rem)" : "calc(1lh + 0.625rem)", resize: "none" }}
             placeholder="Add something Bridge should remember about you or how you work"
             value={body}
             disabled={busy}
@@ -399,56 +460,44 @@ export function MemoryDialog({
             }}
             aria-label="New memory"
           />
+          </div>
           {composing && <div className="flex flex-wrap items-center gap-2 border-t border-border px-2.5 py-2">
-            <select className={quietSelect} value={kind} disabled={busy} onChange={event => setKind(event.target.value)} aria-label="Kind">
-              {KINDS.map(item => <option key={item} value={item}>{KIND_LABEL[item]}</option>)}
-            </select>
+            <div className="w-32 shrink-0">
+              <Choice label="Kind" value={kind} disabled={busy} onChange={setKind} options={KINDS.map(item => ({ value: item, label: KIND_LABEL[item] }))} />
+            </div>
             <span className={`ml-auto shrink-0 text-caption tabular-nums ${overLimit ? "text-destructive" : "text-faint"}`}>{bodyChars} / {MAX_MEMORY_BODY_CHARS}</span>
-            {editingId && <button
-              type="button"
-              className="h-7 shrink-0 rounded-lg px-2.5 text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              disabled={busy}
-              onClick={cancelEdit}
-            >Cancel</button>}
-            <button
-              type="button"
-              className="h-7 shrink-0 rounded-lg bg-primary px-3 text-caption font-medium text-primary-foreground transition-opacity disabled:opacity-40"
-              disabled={busy || !trimmed || overLimit}
-              onClick={() => void save()}
-            >{editingId ? "Update" : "Save"}</button>
+            {editingId && <Button variant="quiet" size="xs" disabled={busy} onClick={cancelEdit}>Cancel</Button>}
+            <Button size="xs" disabled={busy || !trimmed || overLimit} onClick={() => void save()}>{editingId ? "Update" : "Save"}</Button>
           </div>}
         </section>
         {fromReply && <p className="mt-2 px-0.5 text-caption text-muted-foreground">This is the whole reply. Cut it down to the one rule or fact worth keeping, then pick a kind.</p>}
         {overLimit && <p className="mt-2 px-0.5 text-caption text-destructive">Memories are capped at {MAX_MEMORY_BODY_CHARS} characters. Trim the text; nothing is clipped for you.</p>}
 
         <div className="mb-3 mt-8 flex flex-wrap items-center gap-2">
-          <div className="relative min-w-48 flex-1">
-            <Search size={13} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-faint" />
-            <input
+          <InputGroup className="min-w-48 flex-1">
+            <InputGroupAddon><Search aria-hidden="true" /></InputGroupAddon>
+            <InputGroupInput
+              size="sm"
               type="text"
               value={query}
               onChange={event => setQuery(event.target.value)}
               placeholder="Search"
               aria-label="Search memory"
-              className={`${fieldClass} h-8 w-full pl-8 pr-3 text-caption`}
             />
-          </div>
-          <div className="u-segmented" role="group" aria-label="Filter by kind">
-            <button type="button" aria-pressed={filter === null} data-active={filter === null} className="u-segmented-item" onClick={() => setFilter(null)}>All</button>
+          </InputGroup>
+          <SegmentedGroup label="Filter by kind">
+            <SegmentedItem active={filter === null} onClick={() => setFilter(null)}>All</SegmentedItem>
             {KINDS.map(item => (
-              <button
+              <SegmentedItem
                 key={item}
-                type="button"
-                aria-pressed={filter === item}
-                data-active={filter === item}
-                className="u-segmented-item"
+                active={filter === item}
                 onClick={() => setFilter(current => current === item ? null : item)}
-              >{KIND_PLURAL[item]}</button>
+              >{KIND_PLURAL[item]}</SegmentedItem>
             ))}
-          </div>
+          </SegmentedGroup>
         </div>
         {records === undefined
-          ? <div data-testid="memory-loading"><SkeletonRows label="Loading memories" rows={3} rowClassName="px-4 py-3" /></div>
+          ? <div data-testid="memory-loading"><SkeletonRows label="Loading memories" rows={3} /></div>
           : visible.length === 0
           ? <p className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-caption text-muted-foreground">
             {query.trim() ? "No memories match your search." : filter ? `No ${KIND_PLURAL[filter as Kind].toLowerCase()} yet.` : "Nothing remembered yet. Add a memory above, or use /pin in any chat."}
@@ -471,12 +520,12 @@ export function MemoryDialog({
                   </p>
                 </div>
                 <div className="-my-0.5 flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                  <button type="button" className={iconButton} aria-label="Edit" title="Edit" disabled={busy} onClick={() => beginEdit(record)}>
-                    <Pencil size={13} aria-hidden="true" />
-                  </button>
-                  <button type="button" className={iconButton} aria-label="Forget" title="Forget" disabled={busy} onClick={() => void act(() => bridgeApi.deleteMemoryRecord(record.id))}>
-                    <X size={14} aria-hidden="true" />
-                  </button>
+                  <Button variant="quiet" size="icon-xs" aria-label="Edit" tooltip="Edit" disabled={busy} onClick={() => beginEdit(record)}>
+                    <Pencil aria-hidden="true" />
+                  </Button>
+                  <Button variant="quiet" size="icon-xs" aria-label="Forget" tooltip="Forget" disabled={busy} onClick={() => void act(() => bridgeApi.deleteMemoryRecord(record.id), "Couldn't forget that memory.")}>
+                    <X aria-hidden="true" />
+                  </Button>
                 </div>
               </li>;
             })}
@@ -487,6 +536,29 @@ export function MemoryDialog({
           disabled={loadingMore !== null}
           onClick={() => void showMore("active")}
         />}
+
+        {retiredList !== undefined && retiredList.total > 0 && <section aria-label="Retired memories" className="mt-10">
+          <h2 className="mb-1 px-0.5 text-caption font-medium text-muted-foreground">Retired <span className="tabular-nums text-faint">{retiredList.total}</span></h2>
+          <p className="mb-2 px-0.5 text-caption text-faint">Memories that expired or went unused. They no longer reach chats until you restore them.</p>
+          <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border-card bg-card">
+            {retiredList.records.map(record => <li key={record.id} className="flex flex-wrap items-start gap-3 px-4 py-3">
+              <div className="min-w-0 flex-1 basis-64">
+                <p className="whitespace-pre-wrap break-words text-ui leading-relaxed text-muted-foreground">{record.body}</p>
+                <p className="mt-1 text-caption text-faint">
+                  {KIND_LABEL[record.kind as Kind] ?? record.kind}
+                  {record.validTo && <> · retired {relative(record.validTo)}</>}
+                </p>
+              </div>
+              <Button variant="ghost" size="xs" disabled={busy} onClick={() => void act(() => bridgeApi.restoreMemoryRecord(record.id), "Couldn't restore that memory.")}>Restore</Button>
+            </li>)}
+          </ul>
+          {retiredList.cursor && <ShowMore
+            remaining={retiredList.total - retiredList.records.length}
+            loading={loadingMore === "expired"}
+            disabled={loadingMore !== null}
+            onClick={() => void showMore("expired")}
+          />}
+        </section>}
 
         {capabilities && capabilities.providerNative.length > 0 && (
           <section className="mt-10">
@@ -508,46 +580,98 @@ export function MemoryDialog({
           <div role="group" aria-label="Extraction mode" className="divide-y divide-border overflow-hidden rounded-xl border border-border-card bg-card">
             {MODES.map(mode => {
               const selected = settings?.mode === mode.id;
-              return <button
+              return <RowButton
                 key={mode.id}
-                type="button"
+                size="bare"
+                shape="flush"
                 aria-pressed={selected}
                 disabled={busy}
                 onClick={() => void setMode(mode.id)}
-                className="flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/50 disabled:opacity-60"
               >
-                <span aria-hidden="true" className={cn("mt-[3px] grid size-3.5 shrink-0 place-items-center rounded-full border transition-colors", selected ? "border-foreground" : "border-foreground/25")}>
-                  {selected && <span className="size-1.5 rounded-full bg-foreground" />}
+                <span className="flex w-full items-start gap-3 px-4 py-3">
+                  <span aria-hidden="true" className={cn("mt-0.75 grid size-3.5 shrink-0 place-items-center rounded-full border transition-colors", selected ? "border-foreground" : "border-foreground/25")}>
+                    {selected && <span className="size-1.5 rounded-full bg-foreground" />}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-ui text-foreground">{mode.label}</span>
+                    <span className="mt-0.5 block text-caption leading-relaxed text-muted-foreground">{mode.description}</span>
+                  </span>
                 </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-ui text-foreground">{mode.label}</span>
-                  <span className="mt-0.5 block text-caption leading-relaxed text-muted-foreground">{mode.description}</span>
-                </span>
-              </button>;
+              </RowButton>;
             })}
           </div>
           <p className="mt-2 px-0.5 text-caption text-faint">Invalid, unsafe, duplicate, or over-budget output is refused.</p>
         </section>
         <section>
-          <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border-card bg-card px-4 py-3">
-            <span className="min-w-0 flex-1 basis-48">
-              <span className="block text-ui text-foreground">Extraction model</span>
-              <span className="mt-0.5 block text-caption leading-relaxed text-muted-foreground">Runs on each chat&apos;s own model unless you pin a helper.</span>
-            </span>
-            <select className={`${fieldClass} h-7 w-40 px-2 text-caption`} value={profileHarness} disabled={busy} onChange={event => { setProfileHarness(event.target.value); setProfileModel(""); }} aria-label="Extraction harness">
-              <option value="">Chat&apos;s own model</option>
-              {adapters.map(adapter => <option key={adapter.id} value={adapter.id}>{adapter.label}</option>)}
-            </select>
-            <select className={`${fieldClass} h-7 w-44 px-2 text-caption`} value={profileModel} disabled={busy || !profileHarness} onChange={event => setProfileModel(event.target.value)} aria-label="Extraction model">
-              <option value="">Model…</option>
-              {models.map(model => <option key={model.id} value={model.id}>{model.label ?? model.id}</option>)}
-            </select>
+          <div className="rounded-xl border border-border-card bg-card px-4 py-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="min-w-0 flex-1 basis-48">
+                <span className="block text-ui text-foreground">Memory model</span>
+                <span className="mt-0.5 block text-caption leading-relaxed text-muted-foreground">Runs extraction after chats, nightly cleanup and automatic approval.</span>
+              </span>
+              <div className="w-44 shrink-0">
+                <Choice
+                  label="Memory harness"
+                  value={pickedHarness}
+                  disabled={busy}
+                  onChange={pickMemoryHarness}
+                  options={[{ value: "", label: "Use my new-chat model" }, ...adapters.map(adapter => ({ value: adapter.id, label: adapter.label }))]}
+                />
+              </div>
+              <div className="w-44 shrink-0">
+                <Choice
+                  label="Memory model"
+                  value={pickedModel}
+                  disabled={busy || !pickedHarness}
+                  onChange={pickMemoryModel}
+                  options={[{ value: "", label: "Model…" }, ...models.map(model => ({ value: model.id, label: model.label ?? model.id }))]}
+                />
+              </div>
+            </div>
+            {memoryModel && <div className="mt-2 space-y-1 text-caption leading-relaxed">
+              {memoryModel.resolved
+                ? <p className="text-muted-foreground" data-testid="memory-model-source">
+                  Using {memoryModelLabel(adapters, memoryModel.resolved.harness, memoryModel.resolved.model)}, {MEMORY_MODEL_SOURCE[memoryModel.resolved.source]}.
+                </p>
+                : <p className="text-warning">No memory job can run: none of these can run a tool-free turn. Pick a Claude model.</p>}
+              {memoryModel.skipped.map(skip => <p key={`${skip.source}:${skip.harness}`} className="text-faint">
+                Skipped {memoryModelLabel(adapters, skip.harness, skip.model)}, {MEMORY_MODEL_SOURCE[skip.source]}: {skip.reason}.
+              </p>)}
+            </div>}
           </div>
           {settings?.lastRun && (
             <p className="mt-2 px-0.5 text-caption tabular-nums text-faint">
               Last run {settings.lastRun.status} · {settings.lastRun.proposalCount} extracted · {settings.lastRun.observedTokens} tokens · ${(settings.lastRun.spendMicrousd / 1_000_000).toFixed(4)}
             </p>
           )}
+        </section>
+        <section aria-label="Clean up">
+          <div className="rounded-xl border border-border-card bg-card px-4 py-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="min-w-0 flex-1 basis-48">
+                <span className="block text-ui text-foreground">Clean up</span>
+                <span className="mt-0.5 block text-caption leading-relaxed text-muted-foreground">Runs on its own, with no model. Pins you saved never retire, and anything retired can be restored.</span>
+              </span>
+              <div className="w-44 shrink-0">
+                <Choice
+                  label="Proposals expire after"
+                  value={String(retention?.proposalTtlDays ?? 7)}
+                  disabled={busy || !retention}
+                  onChange={next => void saveRetention(Number(next), retention?.retireUnusedAfterDays ?? null)}
+                  options={PROPOSAL_TTL_OPTIONS}
+                />
+              </div>
+              <div className="w-44 shrink-0">
+                <Choice
+                  label="Retire unused memories after"
+                  value={String(retention?.retireUnusedAfterDays ?? "never")}
+                  disabled={busy || !retention}
+                  onChange={next => void saveRetention(retention?.proposalTtlDays ?? 7, next === "never" ? null : Number(next))}
+                  options={RETIRE_OPTIONS}
+                />
+              </div>
+            </div>
+          </div>
         </section>
         <section>
           <h2 className="mb-2 px-0.5 text-ui font-medium text-foreground">Waiting for review</h2>
@@ -556,15 +680,16 @@ export function MemoryDialog({
               Nothing to review. Candidates that need your approval land here.
             </p>
             : <>
-              {proposed !== undefined && <p className="mb-2 px-0.5 text-caption text-faint">Proposals you don't review within 30 days expire, which frees their space.</p>}
+              {proposed !== undefined && <p className="mb-2 px-0.5 text-caption text-faint">
+                Proposals you don't review within {retention?.proposalTtlDays ?? 7} days expire.
+                {retention && <> The queue holds <span className="tabular-nums">{retention.heldProposals}</span> of <span className="tabular-nums">{retention.maxProposals}</span>; when it is full, extraction waits.</>}
+              </p>}
               {proposed !== undefined && <div className="mb-2 flex min-h-7 flex-wrap items-center gap-2 px-0.5" role="toolbar" aria-label="Review selected proposals">
                 <label className="flex cursor-pointer items-center gap-2 text-caption text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    className="size-3.5 rounded border-border accent-foreground"
+                  <Checkbox
                     checked={allShownSelected}
                     disabled={busy || proposed.length === 0}
-                    onChange={() => setSelected(allShownSelected ? new Set() : new Set(proposed.map(record => record.id)))}
+                    onCheckedChange={() => setSelected(allShownSelected ? new Set() : new Set(proposed.map(record => record.id)))}
                     aria-label="Select all shown proposals"
                   />
                   {selected.size > 0
@@ -572,29 +697,18 @@ export function MemoryDialog({
                     : <span>Select all shown <span className="tabular-nums text-faint">{proposed.length} of {queueCount}</span></span>}
                 </label>
                 {selected.size > 0 && <div className="ml-auto flex items-center gap-1">
-                  <button
-                    type="button"
-                    className="h-7 rounded-lg px-2.5 text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45"
-                    disabled={busy}
-                    onClick={() => void review(false)}
-                  >Reject selected</button>
-                  <button
-                    type="button"
-                    className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-primary px-2.5 text-caption font-medium text-primary-foreground transition-opacity disabled:opacity-40"
-                    disabled={busy}
-                    onClick={() => void review(true)}
-                  ><Check size={12} aria-hidden="true" />Approve selected</button>
+                  <Button variant="quiet" size="xs" disabled={busy} onClick={() => void review(false)}>Reject selected</Button>
+                  <Button size="xs" disabled={busy} onClick={() => void review(true)}><Check size={12} aria-hidden="true" />Approve selected</Button>
                 </div>}
               </div>}
               <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border-card bg-card">
                 {(proposed ?? []).map(record => (
                   <li key={record.id} className={cn("flex flex-wrap items-start gap-3 px-4 py-3 transition-colors", selected.has(record.id) && "bg-accent/50")}>
-                    <input
-                      type="checkbox"
-                      className="mt-1 size-3.5 shrink-0 rounded border-border accent-foreground"
+                    <Checkbox
+                      className="mt-1"
                       checked={selected.has(record.id)}
                       disabled={busy}
-                      onChange={() => toggleSelected(record.id)}
+                      onCheckedChange={() => toggleSelected(record.id)}
                       aria-label={`Select proposal: ${record.body.slice(0, 80)}`}
                     />
                     <div className="min-w-0 flex-1 basis-64">
@@ -607,18 +721,8 @@ export function MemoryDialog({
                       </p>
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
-                      <button
-                        type="button"
-                        className="h-7 rounded-lg px-2.5 text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45"
-                        disabled={busy}
-                        onClick={() => void act(() => bridgeApi.rejectMemoryRecord(record.id))}
-                      >Reject</button>
-                      <button
-                        type="button"
-                        className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-primary px-2.5 text-caption font-medium text-primary-foreground transition-opacity disabled:opacity-40"
-                        disabled={busy}
-                        onClick={() => void act(() => bridgeApi.approveMemoryRecord(record.id))}
-                      ><Check size={12} aria-hidden="true" />Approve</button>
+                      <Button variant="quiet" size="xs" disabled={busy} onClick={() => void act(() => bridgeApi.rejectMemoryRecord(record.id), "Couldn't reject that proposal.")}>Reject</Button>
+                      <Button size="xs" disabled={busy} onClick={() => void act(() => bridgeApi.approveMemoryRecord(record.id), "Couldn't approve that proposal.")}><Check aria-hidden="true" />Approve</Button>
                     </div>
                   </li>
                 ))}
@@ -694,7 +798,7 @@ export function MemoryDialog({
               {(log ?? []).map((entry, index) => (
                 <li key={index} className="flex items-baseline gap-3 py-2 text-caption">
                   <span className="w-24 shrink-0 font-mono text-caption text-faint font-medium">{entry.source}</span>
-                  <span className="min-w-0 flex-1 truncate text-foreground" title={runDetail(entry)}>{runDetail(entry)}</span>
+                  <Tip label={runDetail(entry)}><span className="min-w-0 flex-1 truncate text-foreground">{runDetail(entry)}</span></Tip>
                   <span className="shrink-0 tabular-nums text-faint">{relative(entry.at)}</span>
                 </li>
               ))}
@@ -716,18 +820,31 @@ const EXCLUSION_LABEL: Record<string, string> = {
 /** The next page of a memory list, sized to what is left. */
 function ShowMore({ remaining, loading, disabled, onClick }: { remaining: number; loading: boolean; disabled: boolean; onClick: () => void }) {
   // While the page loads the label stays and shimmers: one loading state.
-  return <button
-    type="button"
-    aria-busy={loading}
-    className={cn("mt-2 h-8 w-full rounded-lg text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45", pendingClass(loading))}
-    disabled={disabled || loading}
+  return <Button
+    variant="quiet"
+    size="sm"
+    className="mt-2 w-full"
+    loading={loading}
+    disabled={disabled}
     onClick={onClick}
-  >Show <span className="tabular-nums">{Math.min(MEMORY_PAGE_SIZE, Math.max(remaining, 1))}</span> more</button>;
+  >Show <span className="tabular-nums">{Math.min(MEMORY_PAGE_SIZE, Math.max(remaining, 1))}</span> more</Button>;
 }
+
+const PROPOSAL_TTL_OPTIONS = [3, 7, 14, 30].map(days => ({ value: String(days), label: `Expire after ${days} days` }));
+const RETIRE_OPTIONS = [
+  ...[30, 90, 180].map(days => ({ value: String(days), label: `Retire after ${days} days` })),
+  { value: "never", label: "Never retire" },
+];
 
 /** One line for a settled run: what it did, or why it did not. */
 function runDetail(entry: MemoryActivityEntry): string {
-  if (entry.status !== "completed") return entry.detail ? `${entry.status}: ${entry.detail}` : entry.status;
+  if (entry.source === "retention") {
+    const plural = entry.applied === 1 ? "" : "s";
+    return entry.detail === "unused_retired"
+      ? `Retired ${entry.applied} unused memor${entry.applied === 1 ? "y" : "ies"}`
+      : `${entry.applied} unreviewed proposal${plural} expired`;
+  }
+  if (entry.status !== "completed") return entry.detail ? `${entry.status}: ${friendlyError(entry.detail, "The memory job hit an error.")}` : entry.status;
   if (entry.source === "extraction") return `${entry.applied} ${entry.applied === 1 ? "proposal" : "proposals"} written`;
   return `${entry.applied} applied, ${entry.refused} refused${entry.detail ? ` · ${entry.detail}` : ""}`;
 }
@@ -737,12 +854,31 @@ function dayAge(day: number): string {
   return day >= 13 ? "today" : `${13 - day}d ago`;
 }
 
+/** A compact choice from a short list. The caller's wrapper sets the width. */
+function Choice({ label, value, options, onChange, disabled }: {
+  label: string;
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (next: string) => void;
+  disabled?: boolean;
+}) {
+  const selected = options.find(option => option.value === value);
+  return <Select value={value} disabled={disabled} onValueChange={next => { if (next !== null) onChange(next); }}>
+    <SelectTrigger size="sm" aria-label={label} className="min-w-0">
+      <span className="min-w-0 flex-1 truncate">{selected?.label ?? value}</span>
+    </SelectTrigger>
+    <SelectPopup alignItemWithTrigger={false}>
+      {options.map(option => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+    </SelectPopup>
+  </Select>;
+}
+
 /** A tiny achromatic bar sparkline. `values` are non-negative counts; the
  *  tallest bar is full height. Pure presentation, no axis. */
 function Sparkbars({ values, className }: { values: number[]; className?: string }) {
   const max = values.length ? Math.max(1, ...values) : 1;
   return (
-    <div className={cn("flex h-8 items-end gap-[3px]", className)} aria-hidden="true">
+    <div className={cn("flex h-8 items-end gap-0.75", className)} aria-hidden="true">
       {values.map((value, index) => (
         <div
           key={index}

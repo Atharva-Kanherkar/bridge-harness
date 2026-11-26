@@ -78,7 +78,7 @@ describe("TranscriptPane stream", () => {
   it("insets stream rows evenly from both edges", async () => {
     const loader = vi.fn<TranscriptLoader>().mockResolvedValue([event(1, 1, "message.completed", { status: "completed" })]);
     await mount(<TranscriptPane sessionId="s" events={[]} loadOlder={loader} />);
-    const row = container.querySelector("button[aria-expanded]")!;
+    const row = container.querySelector("button[aria-expanded]")!.firstElementChild!;
     expect(row.className).toMatch(/(?:^|\s)px-2(?:\s|$)/);
     expect(row.className).not.toContain("px-2.5");
     const sequence = row.querySelector("span")!;
@@ -278,7 +278,7 @@ describe("TranscriptPane observability", () => {
       event(4, 4, "turn.started"),
       event(5, 5, "assistant.message", { text: "two" }),
     ]);
-    const turns = [...container.querySelectorAll('span[title^="Turn "]')].map(span => span.textContent);
+    const turns = [...container.querySelectorAll("button[aria-expanded]")].map(row => row.firstElementChild!.children[1].textContent);
     expect(turns).toEqual(["t0", "t1", "t1", "t2", "t2"]);
   });
 
@@ -314,7 +314,7 @@ describe("TranscriptPane observability", () => {
     await mountStream(busyStream(), { exportTranscript });
     await click([...container.querySelectorAll("button")].find(button => button.textContent?.includes("Export JSONL"))!);
     await act(async () => { await Promise.resolve(); });
-    expect(container.textContent).toContain("Export failed: disk is full");
+    expect(container.textContent).toContain("Couldn't export the transcript. The disk is full.");
     // Still a working pane, not a dead one.
     await click(chip("Problems")!);
     expect(container.textContent).toContain("1 of 5 events");

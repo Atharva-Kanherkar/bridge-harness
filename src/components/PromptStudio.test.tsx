@@ -342,7 +342,7 @@ describe("PromptStudio", () => {
     expect(saveSpy).not.toHaveBeenCalled();
     // Failures are announced through the same live region as successes.
     const liveRegion = () => container.querySelector('[aria-live="polite"]')!;
-    expect(liveRegion().textContent).toContain("Failed:");
+    expect(liveRegion().textContent).toMatch(/JSON object/);
 
     await selectFile(fileInput(container), JSON.stringify({ "not-a-real-target": { bridge_role: { state: "overridden", text: "x" } } }));
     expect(container.textContent).toMatch(/Unknown prompt target/);

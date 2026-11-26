@@ -54,6 +54,7 @@
       "type": "integer"
     },
     "harness": {
+      "description": "Deprecated read-only mirror of the resolved memory model (`memory/get_memory_model`). Absent when none resolves.",
       "type": [
         "string",
         "null"

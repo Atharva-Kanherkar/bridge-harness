@@ -3039,6 +3039,24 @@
         "created_at": "<time>",
         "updated_at": "<time>",
         "mode": "propose"
+      },
+      {
+        "id": "<id-15>",
+        "scope_key": "account:local",
+        "session_id": "codex-chat",
+        "status": "queued",
+        "adapter": null,
+        "model": null,
+        "prompt_digest": null,
+        "observed_tokens": 0,
+        "spend_microusd": 0,
+        "proposal_count": 0,
+        "detail": null,
+        "lease_owner": null,
+        "lease_expires_at": null,
+        "created_at": "<time>",
+        "updated_at": "<time>",
+        "mode": "propose"
       }
     ],
     "queued_session_input": [
@@ -3055,7 +3073,7 @@
     ],
     "session_entries": [
       {
-        "id": "<id-15>",
+        "id": "<id-16>",
         "session_id": "claude-chat",
         "parent_entry_id": null,
         "sequence": 1,
@@ -3085,9 +3103,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-16>",
+        "id": "<id-17>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-15>",
+        "parent_entry_id": "<id-16>",
         "sequence": 2,
         "kind": "session.started",
         "payload": {
@@ -3127,9 +3145,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-17>",
+        "id": "<id-18>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-16>",
+        "parent_entry_id": "<id-17>",
         "sequence": 3,
         "kind": "session.status",
         "payload": {
@@ -3162,9 +3180,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-18>",
+        "id": "<id-19>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-17>",
+        "parent_entry_id": "<id-18>",
         "sequence": 4,
         "kind": "turn.started",
         "payload": {
@@ -3194,9 +3212,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-19>",
+        "id": "<id-20>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-18>",
+        "parent_entry_id": "<id-19>",
         "sequence": 5,
         "kind": "tool.started",
         "payload": {
@@ -3232,9 +3250,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-20>",
+        "id": "<id-21>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-19>",
+        "parent_entry_id": "<id-20>",
         "sequence": 6,
         "kind": "tool.completed",
         "payload": {
@@ -3268,9 +3286,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-21>",
+        "id": "<id-22>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-20>",
+        "parent_entry_id": "<id-21>",
         "sequence": 7,
         "kind": "session.status",
         "payload": {
@@ -3303,9 +3321,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-22>",
+        "id": "<id-23>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-21>",
+        "parent_entry_id": "<id-22>",
         "sequence": 8,
         "kind": "turn.started",
         "payload": {
@@ -3335,9 +3353,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-23>",
+        "id": "<id-24>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-22>",
+        "parent_entry_id": "<id-23>",
         "sequence": 9,
         "kind": "assistant.message",
         "payload": {
@@ -3381,9 +3399,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-24>",
+        "id": "<id-25>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-23>",
+        "parent_entry_id": "<id-24>",
         "sequence": 10,
         "kind": "turn.completed",
         "payload": {
@@ -3415,9 +3433,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-25>",
+        "id": "<id-26>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-24>",
+        "parent_entry_id": "<id-25>",
         "sequence": 11,
         "kind": "usage.updated",
         "payload": {
@@ -3485,9 +3503,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-26>",
+        "id": "<id-27>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-25>",
+        "parent_entry_id": "<id-26>",
         "sequence": 12,
         "kind": "session.status",
         "payload": {
@@ -3520,9 +3538,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-27>",
+        "id": "<id-28>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-26>",
+        "parent_entry_id": "<id-27>",
         "sequence": 13,
         "kind": "session.status",
         "payload": {
@@ -3556,9 +3574,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-28>",
+        "id": "<id-29>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-27>",
+        "parent_entry_id": "<id-28>",
         "sequence": 14,
         "kind": "session.started",
         "payload": {
@@ -3598,9 +3616,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-29>",
+        "id": "<id-30>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-28>",
+        "parent_entry_id": "<id-29>",
         "sequence": 15,
         "kind": "context.compacted",
         "payload": {
@@ -3633,9 +3651,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-30>",
+        "id": "<id-31>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-29>",
+        "parent_entry_id": "<id-30>",
         "sequence": 16,
         "kind": "turn.completed",
         "payload": {
@@ -3667,9 +3685,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-31>",
+        "id": "<id-32>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-30>",
+        "parent_entry_id": "<id-31>",
         "sequence": 17,
         "kind": "usage.updated",
         "payload": {
@@ -3734,9 +3752,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-32>",
+        "id": "<id-33>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-31>",
+        "parent_entry_id": "<id-32>",
         "sequence": 18,
         "kind": "user.message",
         "payload": {
@@ -3764,9 +3782,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-33>",
+        "id": "<id-34>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-32>",
+        "parent_entry_id": "<id-33>",
         "sequence": 19,
         "kind": "session.started",
         "payload": {
@@ -3806,9 +3824,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-34>",
+        "id": "<id-35>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-33>",
+        "parent_entry_id": "<id-34>",
         "sequence": 20,
         "kind": "session.status",
         "payload": {
@@ -3841,9 +3859,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-35>",
+        "id": "<id-36>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-34>",
+        "parent_entry_id": "<id-35>",
         "sequence": 21,
         "kind": "turn.started",
         "payload": {
@@ -3873,9 +3891,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-36>",
+        "id": "<id-37>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-35>",
+        "parent_entry_id": "<id-36>",
         "sequence": 22,
         "kind": "session.status",
         "payload": {
@@ -3908,9 +3926,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-37>",
+        "id": "<id-38>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-36>",
+        "parent_entry_id": "<id-37>",
         "sequence": 23,
         "kind": "session.status",
         "payload": {
@@ -3944,9 +3962,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-38>",
+        "id": "<id-39>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-37>",
+        "parent_entry_id": "<id-38>",
         "sequence": 24,
         "kind": "context.compacted",
         "payload": {
@@ -3979,9 +3997,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-39>",
+        "id": "<id-40>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-38>",
+        "parent_entry_id": "<id-39>",
         "sequence": 25,
         "kind": "session.status",
         "payload": {
@@ -4014,9 +4032,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-40>",
+        "id": "<id-41>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-39>",
+        "parent_entry_id": "<id-40>",
         "sequence": 26,
         "kind": "turn.started",
         "payload": {
@@ -4046,9 +4064,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-41>",
+        "id": "<id-42>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-40>",
+        "parent_entry_id": "<id-41>",
         "sequence": 27,
         "kind": "assistant.message",
         "payload": {
@@ -4092,9 +4110,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-42>",
+        "id": "<id-43>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-41>",
+        "parent_entry_id": "<id-42>",
         "sequence": 28,
         "kind": "turn.completed",
         "payload": {
@@ -4126,9 +4144,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-43>",
+        "id": "<id-44>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-42>",
+        "parent_entry_id": "<id-43>",
         "sequence": 29,
         "kind": "usage.updated",
         "payload": {
@@ -4196,9 +4214,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-44>",
+        "id": "<id-45>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-43>",
+        "parent_entry_id": "<id-44>",
         "sequence": 30,
         "kind": "session.status",
         "payload": {
@@ -4231,9 +4249,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-45>",
+        "id": "<id-46>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-44>",
+        "parent_entry_id": "<id-45>",
         "sequence": 31,
         "kind": "session.status",
         "payload": {
@@ -4267,9 +4285,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-46>",
+        "id": "<id-47>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-45>",
+        "parent_entry_id": "<id-46>",
         "sequence": 32,
         "kind": "session.started",
         "payload": {
@@ -4309,9 +4327,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-47>",
+        "id": "<id-48>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-46>",
+        "parent_entry_id": "<id-47>",
         "sequence": 33,
         "kind": "context.compacted",
         "payload": {
@@ -4344,9 +4362,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-48>",
+        "id": "<id-49>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-47>",
+        "parent_entry_id": "<id-48>",
         "sequence": 34,
         "kind": "turn.completed",
         "payload": {
@@ -4378,9 +4396,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-49>",
+        "id": "<id-50>",
         "session_id": "claude-chat",
-        "parent_entry_id": "<id-48>",
+        "parent_entry_id": "<id-49>",
         "sequence": 35,
         "kind": "usage.updated",
         "payload": {
@@ -4445,7 +4463,7 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-50>",
+        "id": "<id-51>",
         "session_id": "codex-chat",
         "parent_entry_id": null,
         "sequence": 1,
@@ -4475,9 +4493,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-51>",
+        "id": "<id-52>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-50>",
+        "parent_entry_id": "<id-51>",
         "sequence": 2,
         "kind": "session.status",
         "payload": {
@@ -4510,9 +4528,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-52>",
+        "id": "<id-53>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-51>",
+        "parent_entry_id": "<id-52>",
         "sequence": 3,
         "kind": "turn.started",
         "payload": {
@@ -4550,9 +4568,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-53>",
+        "id": "<id-54>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-52>",
+        "parent_entry_id": "<id-53>",
         "sequence": 4,
         "kind": "message.started",
         "payload": {
@@ -4584,9 +4602,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-54>",
+        "id": "<id-55>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-53>",
+        "parent_entry_id": "<id-54>",
         "sequence": 5,
         "kind": "assistant.message",
         "payload": {
@@ -4618,9 +4636,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-55>",
+        "id": "<id-56>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-54>",
+        "parent_entry_id": "<id-55>",
         "sequence": 6,
         "kind": "usage.updated",
         "payload": {
@@ -4677,9 +4695,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-56>",
+        "id": "<id-57>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-55>",
+        "parent_entry_id": "<id-56>",
         "sequence": 7,
         "kind": "session.status",
         "payload": {
@@ -4711,9 +4729,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-57>",
+        "id": "<id-58>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-56>",
+        "parent_entry_id": "<id-57>",
         "sequence": 8,
         "kind": "turn.completed",
         "payload": {
@@ -4750,9 +4768,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-58>",
+        "id": "<id-59>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-57>",
+        "parent_entry_id": "<id-58>",
         "sequence": 9,
         "kind": "turn.started",
         "payload": {
@@ -4790,9 +4808,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-59>",
+        "id": "<id-60>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-58>",
+        "parent_entry_id": "<id-59>",
         "sequence": 10,
         "kind": "user.message",
         "payload": {
@@ -4820,9 +4838,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-60>",
+        "id": "<id-61>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-59>",
+        "parent_entry_id": "<id-60>",
         "sequence": 11,
         "kind": "turn.completed",
         "payload": {
@@ -4859,9 +4877,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-61>",
+        "id": "<id-62>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-60>",
+        "parent_entry_id": "<id-61>",
         "sequence": 12,
         "kind": "session.status",
         "payload": {
@@ -4894,9 +4912,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-62>",
+        "id": "<id-63>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-61>",
+        "parent_entry_id": "<id-62>",
         "sequence": 13,
         "kind": "turn.started",
         "payload": {
@@ -4934,9 +4952,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-63>",
+        "id": "<id-64>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-62>",
+        "parent_entry_id": "<id-63>",
         "sequence": 14,
         "kind": "message.started",
         "payload": {
@@ -4968,9 +4986,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-64>",
+        "id": "<id-65>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-63>",
+        "parent_entry_id": "<id-64>",
         "sequence": 15,
         "kind": "assistant.message",
         "payload": {
@@ -5002,9 +5020,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-65>",
+        "id": "<id-66>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-64>",
+        "parent_entry_id": "<id-65>",
         "sequence": 16,
         "kind": "usage.updated",
         "payload": {
@@ -5061,9 +5079,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-66>",
+        "id": "<id-67>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-65>",
+        "parent_entry_id": "<id-66>",
         "sequence": 17,
         "kind": "session.status",
         "payload": {
@@ -5095,9 +5113,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-67>",
+        "id": "<id-68>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-66>",
+        "parent_entry_id": "<id-67>",
         "sequence": 18,
         "kind": "turn.completed",
         "payload": {
@@ -5134,9 +5152,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-68>",
+        "id": "<id-69>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-67>",
+        "parent_entry_id": "<id-68>",
         "sequence": 19,
         "kind": "assistant.message",
         "payload": {
@@ -5164,9 +5182,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-69>",
+        "id": "<id-70>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-68>",
+        "parent_entry_id": "<id-69>",
         "sequence": 20,
         "kind": "turn.started",
         "payload": {
@@ -5204,9 +5222,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-70>",
+        "id": "<id-71>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-69>",
+        "parent_entry_id": "<id-70>",
         "sequence": 21,
         "kind": "usage.updated",
         "payload": {
@@ -5263,9 +5281,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-71>",
+        "id": "<id-72>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-70>",
+        "parent_entry_id": "<id-71>",
         "sequence": 22,
         "kind": "context.compacted",
         "payload": {
@@ -5294,9 +5312,9 @@
         "semantic_schema_version": 2
       },
       {
-        "id": "<id-72>",
+        "id": "<id-73>",
         "session_id": "codex-chat",
-        "parent_entry_id": "<id-71>",
+        "parent_entry_id": "<id-72>",
         "sequence": 23,
         "kind": "turn.completed",
         "payload": {
@@ -5336,7 +5354,7 @@
     "session_heads": [
       {
         "session_id": "claude-chat",
-        "active_entry_id": "<id-49>",
+        "active_entry_id": "<id-50>",
         "native_provider_session_id": "claude-thread-1",
         "restoration_mode": "fresh",
         "latest_checkpoint_entry_id": null,
@@ -5345,7 +5363,7 @@
       },
       {
         "session_id": "codex-chat",
-        "active_entry_id": "<id-72>",
+        "active_entry_id": "<id-73>",
         "native_provider_session_id": "codex-thread-1",
         "restoration_mode": "fresh",
         "latest_checkpoint_entry_id": null,

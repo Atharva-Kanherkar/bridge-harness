@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import { Check, Maximize2, Minimize2, Monitor, MoreHorizontal, PanelLeft, PanelRight, Route, Search, Settings2, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
 import { MenuItem, MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
 import type { DockPaneId } from "../dockLayout";
 import type { DockPaneDescriptor } from "./SessionDock";
@@ -81,13 +83,6 @@ const MENU_HEIGHT_ESTIMATE = 316;
 // returns to rather than a panel it peeks at.
 const OVERFLOW_PANE_IDS: readonly DockPaneId[] = ["changes", "code", "terminal", "browser", "transcript", "tasks"];
 
-function toolButtonClass(active: boolean) {
-  return cn(
-    "relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors",
-    active ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-  );
-}
-
 export function SessionToolbar({
   title,
   trail,
@@ -126,7 +121,10 @@ export function SessionToolbar({
   return (
     <div
       className={cn(
-        "flex h-11 shrink-0 select-none items-center gap-2 border-b border-border pr-4 sm:pr-6",
+        // A container, because the strip's room is the window minus the
+        // sidebar: viewport breakpoints kept the trail chip on screen while
+        // the title beside it had already collapsed to a single letter.
+        "@container/toolbar flex h-11 shrink-0 select-none items-center gap-2 border-b border-border pr-4 sm:pr-6",
         sidebarHidden ? "u-traffic-inset pl-24" : "pl-4 sm:pl-6",
       )}
       // The window has no native titlebar, so this strip is the grab handle:
@@ -136,22 +134,23 @@ export function SessionToolbar({
       {leading && <div className="hidden shrink-0 items-center gap-0.5 sm:flex">{leading}</div>}
 
       {onOpenNav && (
-        <button
-          type="button"
+        <Button
+          variant="quiet"
+          size="icon-sm"
           onClick={onOpenNav}
-          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground sm:hidden"
+          className="sm:hidden"
           aria-label="Open navigation"
           aria-expanded={navOpen}
         >
           <PanelLeft size={16} strokeWidth={1.7} aria-hidden="true" />
-        </button>
+        </Button>
       )}
 
       {/* Keep the task visible when the sidebar is hidden or a pane is open. */}
-      <div className="min-w-0 flex-1" title={projectName ? `${projectName} / ${title}` : title}>
+      <Tip label={projectName ? `${projectName} / ${title}` : title} side="bottom"><div className="min-w-12 flex-1">
         <h1 className="truncate text-ui font-semibold leading-4 text-foreground">{title}</h1>
         {projectName && <p className="truncate text-caption leading-4 text-muted-foreground">{projectName}</p>}
-      </div>
+      </div></Tip>
 
       {trail && onOpenTrail && (
         <TrailPeek
@@ -159,32 +158,34 @@ export function SessionToolbar({
           onOpen={onOpenTrail}
           side="bottom"
           align="end"
-          trigger={<button
-            type="button"
+          trigger={<Button
+            variant="secondary"
+            size="2xs"
             onClick={() => onOpenTrail(trail.id)}
             aria-label={`Open trail ${trail.title}`}
             data-testid="trail-chip"
-            className="hidden h-6 max-w-[220px] shrink-0 items-center gap-1.5 rounded-md bg-muted px-2 text-caption font-medium text-muted-foreground transition-colors hover:text-foreground data-popup-open:text-foreground sm:inline-flex"
+            // Gives way before the title does, and steps aside entirely
+            // once the strip cannot hold both.
+            className="hidden min-w-0 max-w-[220px] shrink @min-[620px]/toolbar:inline-flex"
           >
-            <Route size={12} strokeWidth={1.8} aria-hidden="true" />
+            <Route aria-hidden="true" />
             <span className="truncate">{trail.title}</span>
-          </button>}
+          </Button>}
         />
       )}
 
-      {sourceBadge && <span data-testid="import-source-badge" title={sourceBadge} className="hidden max-w-[260px] shrink-0 truncate rounded-full border border-border px-2 py-0.5 font-mono text-caption font-medium text-muted-foreground sm:inline">{sourceBadge}</span>}
+      {sourceBadge && <Tip label={sourceBadge}><span data-testid="import-source-badge" className="hidden max-w-[260px] min-w-0 truncate rounded-full border border-border px-2 py-0.5 font-mono text-caption font-medium text-muted-foreground @min-[620px]/toolbar:inline">{sourceBadge}</span></Tip>}
 
       {(modelControl || tierLabel) && (
-        <div className="hidden shrink-0 items-center gap-2 lg:flex">
+        <div className="hidden shrink-0 items-center gap-2 @min-[900px]/toolbar:flex">
           {modelControl}
           {tierLabel && (
-            <span
+            <Tip label={tierLabel}><span
               className="max-w-[260px] truncate text-caption text-muted-foreground"
-              title={tierLabel}
               data-testid="tier-label"
             >
               {tierLabel}
-            </span>
+            </span></Tip>
           )}
         </div>
       )}
@@ -192,28 +193,28 @@ export function SessionToolbar({
       <span className="mx-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
 
       <div className="flex shrink-0 items-center gap-0.5 rounded-lg p-0.5">
-        <button
-          type="button"
+        <Tip label="Dock" shortcut={formatShortcut({ meta: true, alt: true }, "0")} side="bottom"><Button
+          variant="quiet"
+          size="icon-xs"
           onClick={onToggleDock}
           aria-pressed={dockOpen}
           aria-label="Toggle dock"
-          title={`Dock  ${formatShortcut({ meta: true, alt: true }, "0")}`}
-          className={toolButtonClass(dockOpen)}
         >
           <PanelRight size={15} strokeWidth={1.8} aria-hidden="true" />
-        </button>
+        </Button></Tip>
 
         {onToggleRecall && (
-          <button
-            type="button"
+          <Button
+            variant="quiet"
+            size="icon-xs"
             onClick={onToggleRecall}
             aria-pressed={recallOpen}
             aria-label="Search this chat"
-            title="Search this chat"
-            className={toolButtonClass(recallOpen)}
+            tooltip="Search this chat"
+            tooltipSide="bottom"
           >
             <Search size={15} strokeWidth={1.8} aria-hidden="true" />
-          </button>
+          </Button>
         )}
 
         {toolbarPanes.map((pane, index) => {
@@ -221,35 +222,34 @@ export function SessionToolbar({
           const chordIndex = (dockPanes?.findIndex(item => item.id === pane.id) ?? index) + 1;
           const active = pane.id === activePane;
           return (
-            <button
-              key={pane.id}
-              type="button"
+            <Tip key={pane.id} label={`${pane.label}${pane.available ? "" : ` — ${pane.unavailableReason ?? "unavailable"}`}`} shortcut={formatShortcut({ meta: true, alt: true }, String(chordIndex))} side="bottom"><Button
+              variant="quiet"
+              size="icon-xs"
               onClick={() => onOpenPane?.(pane.id)}
               aria-pressed={dockOpen && active}
               aria-label={pane.label}
-              title={`${pane.label}  ${formatShortcut({ meta: true, alt: true }, String(chordIndex))}${pane.available ? "" : ` — ${pane.unavailableReason ?? "unavailable"}`}`}
-              className={cn(toolButtonClass(dockOpen && active), !pane.available && "opacity-40")}
             >
-              <Icon size={15} strokeWidth={1.7} aria-hidden="true" />
+              <Icon size={15} strokeWidth={1.7} className={cn(!pane.available && "opacity-40")} aria-hidden="true" />
               {!!pane.badge && pane.available && !pane.alert && (
                 <span className="pointer-events-none absolute right-1 top-1 h-[5px] w-[5px] rounded-full bg-muted-foreground/70" />
               )}
               {pane.alert && pane.available && (
                 <span data-testid={`dock-alert-rail-${pane.id}`} className="mission-live-accent pointer-events-none absolute right-1 top-1 h-[5px] w-[5px] rounded-full bg-warning" />
               )}
-            </button>
+            </Button></Tip>
           );
         })}
 
-        <button
+        <Button
           ref={menu.triggerRef}
-          type="button"
+          variant="quiet"
+          size="icon-xs"
           onClick={menu.toggle}
           aria-expanded={menu.open}
           aria-haspopup="menu"
           aria-label="Session actions"
-          title="Session actions"
-          className={toolButtonClass(menu.open)}
+          tooltip="Session actions"
+          tooltipSide="bottom"
         >
           <MoreHorizontal size={15} strokeWidth={1.8} aria-hidden="true" />
           {overflowAlert && (
@@ -258,7 +258,7 @@ export function SessionToolbar({
           {!overflowAlert && overflowBadge && (
             <span className="pointer-events-none absolute right-1 top-1 h-[5px] w-[5px] rounded-full bg-muted-foreground/70" />
           )}
-        </button>
+        </Button>
       </div>
 
       {actions && <div className="flex shrink-0 items-center gap-1.5">{actions}</div>}

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { bridgeApi } from "./api";
+import { friendlyError } from "./errors";
 import type { DelegationNotifyLevel, DelegationNotifySettingsView } from "./protocol/generated/protocol";
 
 export const NOTIFY_LEVELS: { value: DelegationNotifyLevel; label: string; description: string }[] = [
@@ -22,7 +23,7 @@ export function useDelegationNotify(sessionId?: string): {
     bridgeApi
       .delegationNotifySettings(sessionId)
       .then(next => { if (active) setView(next); })
-      .catch(cause => { if (active) setError(cause instanceof Error ? cause.message : String(cause)); });
+      .catch(cause => { if (active) setError(friendlyError(cause, "Couldn't load the orchestrator notice setting.")); });
     return () => { active = false; };
   }, [sessionId]);
   const set = useCallback((level: DelegationNotifyLevel | null) => {
@@ -30,7 +31,7 @@ export function useDelegationNotify(sessionId?: string): {
     bridgeApi
       .saveDelegationNotifySettings(sessionId ?? null, level)
       .then(setView)
-      .catch(cause => setError(cause instanceof Error ? cause.message : String(cause)));
+      .catch(cause => setError(friendlyError(cause, "Couldn't save the orchestrator notice setting.")));
   }, [sessionId]);
   return { view, error, set };
 }

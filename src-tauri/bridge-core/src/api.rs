@@ -2674,10 +2674,25 @@ pub fn review_memory_records(
     Ok(result)
 }
 
+/// The memory model's harness and model, mirrored onto the deprecated
+/// `harness` and `model` fields of the per-job settings.
+fn memory_model_mirror(
+    core: &Arc<BridgeCore>,
+    db: &rusqlite::Connection,
+) -> Result<(Option<String>, Option<String>), BridgeError> {
+    let memory = crate::memory_model::resolve(db, &core.adapter_registry)?;
+    Ok(match crate::memory_model::profile(&memory) {
+        Some((harness, model)) => (Some(harness), model),
+        None => (None, None),
+    })
+}
+
 fn extraction_settings_wire(
+    core: &Arc<BridgeCore>,
     db: &rusqlite::Connection,
     settings: crate::memory_extraction::ExtractionSettings,
 ) -> Result<wire::MemoryExtractionSettings, BridgeError> {
+    let (harness, model) = memory_model_mirror(core, db)?;
     let last_run = crate::memory_extraction::last_run(db, &settings.scope_key)?.map(|run| {
         wire::MemoryExtractionRun {
             status: run.status,
@@ -2691,8 +2706,8 @@ fn extraction_settings_wire(
     Ok(wire::MemoryExtractionSettings {
         scope_key: settings.scope_key,
         mode: settings.mode,
-        harness: settings.harness,
-        model: settings.model,
+        harness,
+        model,
         last_run,
     })
 }
@@ -2703,30 +2718,104 @@ pub fn get_extraction_settings(
     let db = core.db.lock().unwrap();
     let settings =
         crate::memory_extraction::settings(&db, memory_ledger::account_memory_scope())?;
-    extraction_settings_wire(&db, settings)
+    extraction_settings_wire(core, &db, settings)
 }
 
+/// The wire's `harness` and `model` are deprecated and not taken here: what an
+/// extraction runs on is `memory/set_memory_model`.
 pub fn update_extraction_settings(
     core: &Arc<BridgeCore>,
     mode: &str,
-    harness: Option<&str>,
-    model: Option<&str>,
 ) -> Result<wire::MemoryExtractionSettings, BridgeError> {
     let db = core.db.lock().unwrap();
     let settings = crate::memory_extraction::update_settings(
         &db,
         memory_ledger::account_memory_scope(),
         mode,
-        harness,
-        model,
     )?;
-    extraction_settings_wire(&db, settings)
+    extraction_settings_wire(core, &db, settings)
+}
+
+pub fn get_retention_settings(core: &Arc<BridgeCore>) -> Result<wire::MemoryRetentionSettings, BridgeError> {
+    let db = lock_db(core);
+    crate::memory_retention::wire(&db)
+}
+
+pub fn set_retention_settings(
+    core: &Arc<BridgeCore>,
+    proposal_ttl_days: i64,
+    retire_unused_after_days: Option<i64>,
+    max_proposals: Option<i64>,
+) -> Result<wire::MemoryRetentionSettings, BridgeError> {
+    let settings = {
+        let db = lock_db(core);
+        crate::memory_retention::update_settings(&db, proposal_ttl_days, retire_unused_after_days, max_proposals)?;
+        crate::memory_retention::wire(&db)?
+    };
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: memory_ledger::account_memory_scope().to_string(),
+    });
+    Ok(settings)
+}
+
+pub fn restore_memory_record(
+    core: &Arc<BridgeCore>,
+    record_id: &str,
+) -> Result<wire::MemoryRecord, BridgeError> {
+    let record = {
+        let db = lock_db(core);
+        crate::memory_retention::restore(&db, record_id)?
+    };
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: record.scope_key.clone(),
+    });
+    Ok(record)
+}
+
+pub fn get_memory_model(core: &Arc<BridgeCore>) -> Result<wire::MemoryModelSettings, BridgeError> {
+    let db = lock_db(core);
+    crate::memory_model::resolve(&db, &core.adapter_registry)
+}
+
+/// Both a harness and a model pin the memory model; neither clears the pin.
+/// The next extraction and consolidation run on the answer.
+///
+/// The one write path, for the Memory page, the daemon and the settings tool
+/// alike. A pin is checked against the registry the way a new-chat default is
+/// (registered, available, turned on, and a model it lists as available and
+/// compatible) before anything is stored, so a refusal keeps the old pin. Every
+/// open Memory screen hears about the change once the lock is released.
+pub fn set_memory_model(
+    core: &Arc<BridgeCore>,
+    harness: Option<&str>,
+    model: Option<&str>,
+) -> Result<wire::MemoryModelSettings, BridgeError> {
+    let settings = {
+        let db = lock_db(core);
+        let trimmed = |value: Option<&str>| value.map(str::trim).filter(|text| !text.is_empty()).map(str::to_owned);
+        if let (Some(harness), Some(model)) = (trimmed(harness), trimmed(model)) {
+            crate::chat_defaults::validate_model(
+                &wire::ChatModelChoice { harness, model: Some(model), account: None },
+                None,
+                &core.adapter_registry.descriptors(),
+                &db,
+            )?;
+        }
+        crate::memory_model::set(&db, harness, model)?;
+        crate::memory_model::resolve(&db, &core.adapter_registry)?
+    };
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: memory_ledger::account_memory_scope().to_string(),
+    });
+    Ok(settings)
 }
 
 fn consolidation_settings_wire(
+    core: &Arc<BridgeCore>,
     db: &rusqlite::Connection,
     settings: crate::memory_consolidation::ConsolidationSettings,
 ) -> Result<wire::MemoryConsolidationSettings, BridgeError> {
+    let (harness, model) = memory_model_mirror(core, db)?;
     let last_run = crate::memory_consolidation::last_run(db, &settings.scope_key)?.map(|run| {
         wire::MemoryConsolidationRun {
             status: run.status,
@@ -2742,8 +2831,8 @@ fn consolidation_settings_wire(
     Ok(wire::MemoryConsolidationSettings {
         scope_key: settings.scope_key,
         mode: settings.mode,
-        harness: settings.harness,
-        model: settings.model,
+        harness,
+        model,
         max_records: settings.max_records,
         allow_removal: settings.allow_removal,
         debounce_seconds: settings.debounce_seconds,
@@ -2775,15 +2864,14 @@ pub fn get_consolidation_settings(
     let db = core.db.lock().unwrap();
     let settings =
         crate::memory_consolidation::settings(&db, memory_ledger::account_memory_scope())?;
-    consolidation_settings_wire(&db, settings)
+    consolidation_settings_wire(core, &db, settings)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The wire's `harness` and `model` are deprecated and not taken here: what a
+/// consolidation runs on is `memory/set_memory_model`.
 pub fn update_consolidation_settings(
     core: &Arc<BridgeCore>,
     mode: &str,
-    harness: Option<&str>,
-    model: Option<&str>,
     max_records: Option<i64>,
     allow_removal: Option<bool>,
     debounce_seconds: Option<i64>,
@@ -2793,13 +2881,11 @@ pub fn update_consolidation_settings(
         &db,
         memory_ledger::account_memory_scope(),
         mode,
-        harness,
-        model,
         max_records,
         allow_removal,
         debounce_seconds,
     )?;
-    consolidation_settings_wire(&db, settings)
+    consolidation_settings_wire(core, &db, settings)
 }
 
 /// The scope as it stood at one instant. History is a read, never a rewrite:
@@ -5396,17 +5482,24 @@ pub fn usage_insights(
     crate::usage_insights::insights(core, params)
 }
 
-/// Screen Time: stores the minutes the person was active in a Bridge window.
+/// Screen Time: stores the minutes the person was active in a Bridge window,
+/// and which chat was open in some of them.
 pub fn usage_record_presence(
     core: &Arc<BridgeCore>,
     params: &wire::RecordPresenceParams,
 ) -> Result<wire::UsageRecordPresenceResult, BridgeError> {
     let now_minute = chrono::Utc::now().timestamp().div_euclid(60);
-    let recorded = crate::screen_time::record_presence(&lock_db(core), &params.minutes, now_minute)?;
+    let recorded = crate::screen_time::record_presence(
+        &lock_db(core),
+        &params.minutes,
+        params.chats.as_deref().unwrap_or_default(),
+        now_minute,
+    )?;
     Ok(wire::UsageRecordPresenceResult { recorded })
 }
 
-/// Screen Time: your time and agent time per local day, plus all-time totals.
+/// Screen Time: your time and agent time per local day, all-time totals, and
+/// the range split by project, pull request, hour and harness.
 /// The first ask also starts counting agent time from before Screen Time
 /// existed, off the core mutex; the result says `counting` until it is done.
 pub fn usage_screen_time(
@@ -6444,6 +6537,8 @@ pub fn save_harness_config(
     if accounts_may_change {
         core.events.publish(crate::events::CoreEvent::StateChanged);
     }
+    // Turning a harness on or off changes what an unpinned memory model is.
+    publish_memory_model_inputs_changed(core);
     Ok(next)
 }
 
@@ -6457,6 +6552,7 @@ pub fn reset_harness_config(
     if crate::provider_accounts::supports_accounts(id) {
         core.events.publish(crate::events::CoreEvent::StateChanged);
     }
+    publish_memory_model_inputs_changed(core);
     if id == "opencode" {
         let directory = opencode_directory(None)?;
         let _ = core
@@ -9252,7 +9348,16 @@ pub fn get_chat_defaults(core: &Arc<BridgeCore>, project_id: Option<&str>) -> Re
 pub fn save_chat_defaults(core: &Arc<BridgeCore>, params: &wire::SaveChatDefaultsParams) -> Result<wire::ChatDefaultsView, BridgeError> {
     let result = crate::chat_defaults::save(&core.db.lock().unwrap(), &core.adapter_registry.descriptors(), params)?;
     core.events.publish(CoreEvent::StateChanged);
+    publish_memory_model_inputs_changed(core);
     Ok(result)
+}
+
+/// The new-chat default and harness settings feed an unpinned memory model,
+/// so an open Memory screen re-reads what memory jobs now run on.
+fn publish_memory_model_inputs_changed(core: &Arc<BridgeCore>) {
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: memory_ledger::account_memory_scope().to_string(),
+    });
 }
 pub fn get_app_preferences(core: &Arc<BridgeCore>) -> Result<wire::AppPreferences, BridgeError> {
     crate::app_preferences::read(&core.db.lock().unwrap())

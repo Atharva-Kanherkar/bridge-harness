@@ -30,8 +30,7 @@ import type {
   SkillProvider,
   AutomationAction,
   AutomationProvider,
-  SaveAutomationParams,
-} from "./protocol/generated/protocol";
+  } from "./protocol/generated/protocol";
 import type { WireKind } from "./transcript/wire";
 
 // ---------------------------------------------------------------------------
@@ -135,11 +134,17 @@ export type {
   MemoryRecord,
   ListMemoryRecordsResult,
   ReviewMemoryRecordsResult,
+  MemoryRetentionSettings,
   MemoryReviewRefusal,
   MemoryCapabilities,
   ProviderMemoryCommand,
   MemoryExtractionSettings,
   MemoryConsolidationSettings,
+  MemoryModelChoice,
+  MemoryModelSettings,
+  MemoryModelSource,
+  ResolvedMemoryModel,
+  SkippedMemoryModel,
   MemoryExtractionRun,
   MemoryInjectionSettings,
   MemoryPacketAudit,
@@ -188,6 +193,14 @@ export type {
   ScreenTimeDay,
   ScreenTimeTotals,
   ScreenTimeAgentHistory,
+  PresenceChat,
+  ScreenTimeProject,
+  ScreenTimePullRequests,
+  ScreenTimeRepo,
+  ScreenTimePullRequest,
+  ScreenTimePullRequestState,
+  ScreenTimeHour,
+  ScreenTimeHarness,
   VerifierCandidate,
   VerifierManifest,
   WorkerRepositoryBinding,

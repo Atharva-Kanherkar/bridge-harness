@@ -139,7 +139,7 @@ describe("ChatUsageDot", () => {
     await act(async () => { trigger().click(); });
     await act(async () => { panel().querySelector<HTMLButtonElement>('button[aria-label="Refresh usage"]')!.click(); });
     await act(async () => { await Promise.resolve(); });
-    expect(panel().querySelector('[role="alert"]')!.textContent).toContain("timed out");
+    expect(panel().querySelector('[role="alert"]')!.textContent).toBe("Codex account refresh timed out. Try again.");
     expect(panel().textContent).toContain("63% used");
     expect(panel().querySelector<HTMLButtonElement>('button[aria-label="Refresh usage"]')!.disabled).toBe(false);
   });

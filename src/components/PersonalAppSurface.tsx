@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { bridgeApi } from "../api";
 import { applyAnswer, usePersonalApps } from "../apps/store";
-import { errorMessage } from "../errors";
+import { friendlyError } from "../errors";
 import type { PersonalAppSurfaceOpen } from "../protocol/generated/protocol";
 import { PersonalAppOpenCard } from "./PersonalAppOpenCall";
 import { Button } from "./ui/button";
@@ -52,7 +52,7 @@ export function PersonalAppSurface({ appId }: { appId: string }) {
         made = value.openId;
         setOpen(value);
       } catch (reason) {
-        if (current) setError(errorMessage(reason));
+        if (current) setError(friendlyError(reason, "Couldn't open this app."));
       }
     });
     return () => {
@@ -67,7 +67,7 @@ export function PersonalAppSurface({ appId }: { appId: string }) {
     try {
       applyAnswer(await bridgeApi.setAppEnabled(appId, true));
     } catch (reason) {
-      setError(errorMessage(reason));
+      setError(friendlyError(reason, "Couldn't turn this app on."));
     }
   };
 

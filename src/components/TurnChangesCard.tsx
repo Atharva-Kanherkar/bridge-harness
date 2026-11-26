@@ -1,7 +1,10 @@
 import { useMemo, useState } from "react";
 import { clsx } from "clsx";
 import { ChevronDown, FileCode2, FileDiff, Folder } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
+import { RowButton } from "@/components/ui/row";
+import { Tip } from "@/components/ui/tooltip";
 import { formatShortcut } from "@/lib/platform";
 import { dockPaneChord } from "../dockLayout";
 import { shortcutFor } from "../keymap";
@@ -82,48 +85,50 @@ export function TurnChangesCard({ changes, onReview, className }: { changes: Tur
   };
 
   return <section data-turn-changes aria-label={`${count} ${count === 1 ? "file" : "files"} changed in this turn`} className={clsx("min-w-0 overflow-hidden rounded-xl border border-border bg-card", className)}>
-    <header className="flex min-w-0 items-center gap-2 border-b border-border px-3.5 py-2">
+    {/* Wraps: in a narrow conversation the count and the two actions do not
+        fit one row, and without it Review was pushed out of the card. */}
+    <header className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border px-3.5 py-2">
       <FileDiff size={14} className="shrink-0 text-muted-foreground" aria-hidden="true"/>
       <span className="shrink-0 text-ui font-medium text-foreground">{count} {count === 1 ? "file" : "files"} changed</span>
       <DiffCounts additions={changes.additions} deletions={changes.deletions}/>
       <span className="min-w-0 truncate text-caption text-faint">in this turn</span>
       <span className="ml-auto flex shrink-0 items-center gap-1">
-        {expandable.length > 0 && <button
-          type="button"
+        {expandable.length > 0 && <Button
+          variant="text"
+          size="xs"
           data-expand-all
           aria-expanded={allOpen}
           onClick={toggleAll}
-          className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
-          <ChevronDown size={12} className={clsx("transition-transform", allOpen && "rotate-180")} aria-hidden="true"/>
+          <ChevronDown className={clsx("size-3 transition-transform", allOpen && "rotate-180")} aria-hidden="true"/>
           {allOpen ? "Collapse all" : "Expand all"}
-        </button>}
-        {onReview && <button
-          type="button"
+        </Button>}
+        {onReview && <Button
+          variant="outline"
+          size="xs"
           data-review-changes
           onClick={onReview}
-          title={chord ? `Open the Changes pane  ${chord}` : "Open the Changes pane"}
-          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background px-2 text-meta text-foreground transition-colors hover:bg-accent"
+          tooltip={chord ? `Open the Changes pane  ${chord}` : "Open the Changes pane"}
         >
           Review
           {chord && <Kbd>{chord}</Kbd>}
-        </button>}
+        </Button>}
       </span>
     </header>
     <div className="px-2 py-1.5">
       {shown.map(group => {
         const closed = closedFolders.has(group.folder);
         return <div key={group.folder || "."} role="group" aria-label={group.folder || "Working directory"}>
-          {group.folder && <button
-            type="button"
+          {group.folder && <RowButton
+            size="sm"
+            tone="plain"
             aria-expanded={!closed}
             onClick={() => toggleFolder(group.folder)}
-            className="flex h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left font-mono text-caption text-muted-foreground transition-colors hover:text-foreground"
           >
             <ChevronDown size={12} className={clsx("shrink-0 text-muted-foreground/60 transition-transform", closed && "-rotate-90")} aria-hidden="true"/>
             <Folder size={13} className="shrink-0" aria-hidden="true"/>
-            <span className="truncate">{group.folder}</span>
-          </button>}
+            <span className="truncate font-mono">{group.folder}</span>
+          </RowButton>}
           {!closed && group.files.map(file => <FileRow
             key={file.path}
             file={file}
@@ -133,11 +138,11 @@ export function TurnChangesCard({ changes, onReview, className }: { changes: Tur
           />)}
         </div>;
       })}
-      {hidden > 0 && <button
-        type="button"
+      {hidden > 0 && <RowButton
+        size="sm"
+        tone="muted"
         onClick={() => setShowAll(true)}
-        className="flex h-7 w-full items-center rounded-md px-1.5 text-left text-meta text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-      >Show {hidden} more {hidden === 1 ? "file" : "files"}</button>}
+      >Show {hidden} more {hidden === 1 ? "file" : "files"}</RowButton>}
     </div>
   </section>;
 }
@@ -145,16 +150,17 @@ export function TurnChangesCard({ changes, onReview, className }: { changes: Tur
 function FileRow({ file, nested, open, onToggle }: { file: TurnFileChange; nested: boolean; open: boolean; onToggle: () => void }) {
   const expandable = file.patches.length > 0;
   const body = <>
-    <span className={clsx("w-3 shrink-0 font-mono text-caption", MARK_TONE[file.mark])} title={MARK_WORD[file.mark]}>{file.mark}</span>
+    {nested && <span aria-hidden="true" className="w-4 shrink-0"/>}
+    <span className={clsx("w-3 shrink-0 font-mono text-caption", MARK_TONE[file.mark])}>{file.mark}</span>
     <FileCode2 size={13} className="shrink-0 text-muted-foreground" aria-hidden="true"/>
     <span className="min-w-0 truncate font-mono text-meta text-foreground">{fileName(file.path)}</span>
     {file.additions !== undefined && <span className="ml-auto pl-2"><DiffCounts additions={file.additions} deletions={file.deletions ?? 0}/></span>}
   </>;
-  const row = clsx("flex h-7 w-full min-w-0 items-center gap-2 rounded-md pr-1.5 text-left", nested ? "pl-7" : "pl-1.5");
+  const hint = `${file.path} · ${MARK_WORD[file.mark]}`;
   return <div data-turn-file={file.path}>
     {expandable
-      ? <button type="button" aria-expanded={open} title={file.path} onClick={onToggle} className={clsx(row, "transition-colors hover:bg-accent/50")}>{body}</button>
-      : <div title={file.path} className={row}>{body}</div>}
+      ? <Tip label={hint}><RowButton size="sm" tone="muted" aria-expanded={open} onClick={onToggle}>{body}</RowButton></Tip>
+      : <Tip label={hint}><div className="flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left">{body}</div></Tip>}
     {expandable && open && <div className={clsx("my-1 overflow-hidden rounded-lg border border-border/60", nested ? "ml-7" : "ml-1.5")}>
       <PatchView patch={file.patches.map(patchBody).join("\n")} path={file.path} className="max-h-[360px]" foldAfterHunks={2}/>
     </div>}

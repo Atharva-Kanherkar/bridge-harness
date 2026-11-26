@@ -69,7 +69,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const chatRows = () => [...container.querySelectorAll<HTMLButtonElement>('button[title*=" — "]')];
+const chatRows = () => [...container.querySelectorAll<HTMLButtonElement>('button[data-tip*=" — "]')];
 const click = async (element: Element) => {
   await act(async () => { element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 })); });
   await settle(2);

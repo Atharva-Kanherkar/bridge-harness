@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Code2, FileCode2, TerminalSquare } from "lucide-react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_DOCK_WIDTH, defaultDockState, MIN_DOCK_WIDTH, type DockAction, type DockState } from "../dockLayout";
+import { DEFAULT_DOCK_WIDTH, defaultDockState, MIN_CONVERSATION_WIDTH, MIN_DOCK_WIDTH, type DockAction, type DockState } from "../dockLayout";
 import { DOCK_TAB_LABEL_MIN_WIDTH, SessionDock, type DockPaneDescriptor } from "./SessionDock";
 
 // Contract: testing/feat-dock-shell.md §3.
@@ -42,6 +42,7 @@ type MountOptions = {
   state?: DockState;
   panes?: DockPaneDescriptor[];
   sheet?: boolean;
+  availableWidth?: number;
   concealed?: boolean;
   onAction?: (action: DockAction) => void;
   onConnectFolder?: () => void;
@@ -55,7 +56,7 @@ function mount(options: MountOptions = {}) {
       <SessionDock
         state={options.state ?? open()}
         panes={options.panes ?? PANES}
-        availableWidth={1280}
+        availableWidth={options.availableWidth ?? 1280}
         sheet={options.sheet ?? false}
         concealed={options.concealed ?? false}
         onAction={options.onAction ?? (() => {})}
@@ -168,6 +169,21 @@ describe("SessionDock", () => {
     expect(onAction).toHaveBeenCalledWith({ type: "set-width", width: DEFAULT_DOCK_WIDTH, available: 1280 });
   });
 
+  it("never renders a stored width that starves the conversation", () => {
+    // A width dragged on a large window, restored into a smaller one.
+    const onAction = vi.fn();
+    mount({ state: open({ width: 1080 }), availableWidth: 900, onAction });
+    const dock = container.querySelector<HTMLElement>('aside[aria-label="Dock"]')!;
+    expect(dock.style.width).toBe(`${900 - MIN_CONVERSATION_WIDTH}px`);
+    const divider = container.querySelector<HTMLElement>('[role="separator"]')!;
+    expect(divider.getAttribute("aria-valuenow")).toBe(String(900 - MIN_CONVERSATION_WIDTH));
+    // Resizing starts from what is on screen, not from the stale record.
+    act(() => {
+      divider.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    });
+    expect(onAction).toHaveBeenCalledWith({ type: "set-width", width: 900 - MIN_CONVERSATION_WIDTH - 16, available: 900 });
+  });
+
   it("hides the divider in sheet mode and offers the scrim instead", () => {
     const onAction = vi.fn();
     mount({ sheet: true, onAction });
@@ -237,7 +253,7 @@ describe("SessionDock", () => {
     mount({ state: open({ pane: "github", visited: ["github"], width: MIN_DOCK_WIDTH }), panes: ALL_PANES });
     expect(activeTab().textContent).toBe("");
     expect(activeTab().getAttribute("aria-label")).toBe("GitHub");
-    expect(activeTab().title).toContain("GitHub");
+    expect(activeTab().dataset.tip).toContain("GitHub");
   });
 
   it("shows the active tab's inline label at the default width", () => {
@@ -273,7 +289,7 @@ describe("SessionDock", () => {
 describe("dock keyboard navigation", () => {
   it("takes each tab's chord from DOCK_PANES, so a pane drawn first borrows no digit", () => {
     mount({ panes: [{ id: "work", label: "Work", icon: Code2, available: true }, ...ALL_PANES] });
-    const title = (label: string) => tabs().find(tab => tab.getAttribute("aria-label") === label)!.title;
+    const title = (label: string) => tabs().find(tab => tab.getAttribute("aria-label") === label)!.dataset.tip;
     expect(title("Work")).toBe("Work");
     expect(title("Changes")).toMatch(/^Changes\s+\S*1$/);
     expect(title("GitHub")).toMatch(/^GitHub\s+\S*7$/);
@@ -316,7 +332,7 @@ describe("SessionDock + menu", () => {
     act(() => plus()!.click());
     const items = [...document.body.querySelectorAll<HTMLButtonElement>('[role="menu"][aria-label="Add a pane to this chat"] [role="menuitem"]')];
     expect(items.map(item => item.textContent)).toEqual(["Transcript", "GitHubUnavailable here"]);
-    expect(items[1].title).toBe("GitHub needs a repository.");
+    expect(items[1].dataset.tip).toBe("GitHub needs a repository.");
     act(() => items[0].click());
     expect(onAddPane).toHaveBeenCalledWith("transcript");
     expect(document.body.querySelector('[role="menu"][aria-label="Add a pane to this chat"]')).toBeNull();

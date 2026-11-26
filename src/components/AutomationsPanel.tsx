@@ -3,11 +3,16 @@ import { SkeletonRows } from "@/components/ui/skeleton";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Check, ChevronDown, Clock, Pause, Pencil, Play, Plus, RefreshCw, Rocket, Trash2, X } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type { AutomationAction, AutomationActionResult, AutomationCapability, AutomationCatalog, AutomationProvider, SaveAutomationParams, UnifiedAutomation } from "../types";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Tip } from "@/components/ui/tooltip";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Segmented } from "@/components/ui/segmented";
+import { RowButton } from "@/components/ui/row";
 
 const PROVIDER_LABELS: Record<AutomationProvider, string> = { claude: "Claude Code", codex: "Codex", cursor: "Cursor", opencode: "OpenCode" };
 const providerLabel = (provider: AutomationProvider) => PROVIDER_LABELS[provider] ?? provider;
@@ -50,7 +55,7 @@ export function AutomationsPanel({ initialCatalog, embedded = false }: { initial
       setCatalog(next);
       setFailure(undefined);
     } catch (error) {
-      if (generation === refreshGeneration.current) setFailure(error instanceof Error ? error.message : String(error));
+      if (generation === refreshGeneration.current) setFailure(friendlyError(error, "Couldn't load your automations."));
     } finally {
       if (generation === refreshGeneration.current) setLoading(false);
     }
@@ -79,7 +84,7 @@ export function AutomationsPanel({ initialCatalog, embedded = false }: { initial
       setResults(current => [...current, { provider: result.provider, message: result.message, key: `${result.id}:${result.action}:${Date.now()}` }]);
       await refresh();
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : String(error));
+      setFailure(friendlyError(error, `Couldn't ${action === "runNow" ? "run" : action} that automation.`));
     } finally {
       setBusy(false); setConfirmDelete(undefined);
     }
@@ -100,7 +105,7 @@ export function AutomationsPanel({ initialCatalog, embedded = false }: { initial
       setDraft(undefined);
       await refresh();
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : String(error));
+      setFailure(friendlyError(error, "Couldn't save the automation."));
     } finally {
       setBusy(false);
     }
@@ -117,8 +122,8 @@ export function AutomationsPanel({ initialCatalog, embedded = false }: { initial
         : <ScreenHeading title="Scheduled tasks" action={actions} />}
 
       <div className="mt-5 flex flex-wrap gap-2">
-        <div className="u-segmented flex-wrap w-fit" aria-label="Filter automations by provider">{(["all", ...(catalog?.providers ?? []).map(state => state.provider)] as Array<AutomationProvider | "all">).map(value => <button type="button" key={value} data-active={provider === value} aria-pressed={provider === value} onClick={() => setProvider(value)} className="u-segmented-item">{value === "all" ? "All providers" : providerLabel(value)}</button>)}</div>
-        <div className="u-segmented flex-wrap w-fit" aria-label="Filter automations by status">{(["all", "active", "paused"] as const).map(value => <button type="button" key={value} data-active={status === value} aria-pressed={status === value} onClick={() => setStatus(value)} className="u-segmented-item">{value === "all" ? "All statuses" : value[0].toUpperCase() + value.slice(1)}</button>)}</div>
+        <Segmented label="Filter automations by provider" className="w-fit flex-wrap" value={provider} options={(["all", ...(catalog?.providers ?? []).map(state => state.provider)] as Array<AutomationProvider | "all">).map(value => ({ value, label: value === "all" ? "All providers" : providerLabel(value) }))} onChange={setProvider} />
+        <Segmented label="Filter automations by status" className="w-fit flex-wrap" value={status} options={(["all", "active", "paused"] as const).map(value => ({ value, label: value === "all" ? "All statuses" : value[0].toUpperCase() + value.slice(1) }))} onChange={setStatus} />
       </div>
 
       {failure && <div className="mt-3 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-caption text-destructive"><AlertTriangle className="mt-0.5 shrink-0" size={12}/><span className="min-w-0 break-words">{failure}</span></div>}
@@ -131,11 +136,11 @@ export function AutomationsPanel({ initialCatalog, embedded = false }: { initial
         const nextRun = relativeTime(automation.nextRunAt, now);
         const lastRun = relativeTime(automation.lastRunAt, now);
         return <article key={key} className={`px-4 py-3.5 transition-colors ${open ? "bg-accent" : "hover:bg-accent"}`}>
-          <button type="button" aria-expanded={open} onClick={() => setExpanded(open ? undefined : key)} className="flex w-full items-start gap-3.5 text-left">
+          <RowButton size="bare" tone="plain" aria-expanded={open} onClick={() => setExpanded(open ? undefined : key)} className="items-start"><span className="flex w-full items-start gap-3.5 text-foreground">
             <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border bg-accent text-muted-foreground"><Clock size={15}/></div>
-            <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h3 className="truncate text-ui font-semibold tracking-[-0.008em] text-foreground">{automation.name}</h3><span className={`inline-flex shrink-0 rounded-full border px-1.5 py-0.5 text-caption font-medium ${automation.status === "active" ? "border-success/30 bg-success/10 text-success" : automation.status === "paused" ? "border-warning/30 bg-warning/10 text-warning" : "border-border bg-muted text-muted-foreground"}`}>{automation.status}</span></div><p className={`mt-1 text-meta leading-[1.55] text-muted-foreground ${open ? "" : "truncate"}`}>{automation.schedule.human}{!automation.recurring && " · one-shot"}</p><div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-muted-foreground"><span className="rounded-full border border-border bg-muted px-2 py-0.5 text-caption text-muted-foreground">{providerLabel(automation.provider)}</span>{nextRun && <span>next {nextRun}</span>}{lastRun && <span>last ran {lastRun}</span>}{automation.model && <span className="font-mono">{automation.model}</span>}</div></div>
+            <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h3 className="truncate text-ui font-semibold tracking-snug text-foreground">{automation.name}</h3><span className={`inline-flex shrink-0 rounded-full border px-1.5 py-0.5 text-caption font-medium ${automation.status === "active" ? "border-success/30 bg-success/10 text-success" : automation.status === "paused" ? "border-warning/30 bg-warning/10 text-warning" : "border-border bg-muted text-muted-foreground"}`}>{automation.status}</span></div><p className={`mt-1 text-meta leading-relaxed text-muted-foreground ${open ? "" : "truncate"}`}>{automation.schedule.human}{!automation.recurring && " · one-shot"}</p><div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-muted-foreground"><span className="rounded-full border border-border bg-muted px-2 py-0.5 text-caption text-muted-foreground">{providerLabel(automation.provider)}</span>{nextRun && <span>next {nextRun}</span>}{lastRun && <span>last ran {lastRun}</span>}{automation.model && <span className="font-mono">{automation.model}</span>}</div></div>
             <ChevronDown size={13} className={`mt-1 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`}/>
-          </button>
+          </span></RowButton>
           {open && <div className="mt-3 rounded-xl border border-border bg-background p-3.5 text-caption text-muted-foreground sm:ml-[50px]">
             <p className="mb-1.5 text-meta font-medium text-muted-foreground">Prompt</p><p className="whitespace-pre-wrap break-words leading-relaxed">{automation.prompt}</p>
             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-caption"><span>{automation.schedule.kind}: {automation.schedule.expression}</span>{automation.effort && <span>effort {automation.effort}</span>}</div>
@@ -154,18 +159,22 @@ export function AutomationsPanel({ initialCatalog, embedded = false }: { initial
       <details className="mt-5 text-caption text-muted-foreground">
         <summary className="min-h-8 w-fit cursor-pointer rounded py-1.5">Provider support</summary>
       <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card" aria-label="Automation provider capabilities">
-        {(catalog?.providers ?? []).map(state => <section key={state.provider} className="px-4 py-3" aria-label={`${providerLabel(state.provider)} automation support`}>
+        {(catalog?.providers ?? []).map(state => {
+          // An unreadable store's detail is the read error itself.
+          const detail = state.available ? state.detail : friendlyError(state.detail, `${providerLabel(state.provider)}'s automations are unreadable.`);
+          return <section key={state.provider} className="px-4 py-3" aria-label={`${providerLabel(state.provider)} automation support`}>
           <div className="flex items-center justify-between gap-2 text-caption font-medium text-foreground"><span>{providerLabel(state.provider)}</span><span className={`h-1.5 w-1.5 rounded-full ${state.available ? "bg-success" : "bg-muted-foreground/40"}`}/></div>
-          <p className="mt-1 text-caption leading-relaxed text-muted-foreground" title={state.detail}>{state.available ? `${state.count} native schedule${state.count === 1 ? "" : "s"}` : state.detail}</p>
+          <Tip label={detail}><p className="mt-1 text-caption leading-relaxed text-muted-foreground">{state.available ? `${state.count} native schedule${state.count === 1 ? "" : "s"}` : detail}</p></Tip>
           <div className="mt-2 flex flex-wrap gap-1">{state.available && state.capabilities.length ? state.capabilities.map(capability => <span key={capability} className="rounded-full border border-border bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">{capabilityLabel(capability)}</span>) : <span className="text-caption text-muted-foreground">No native automation controls</span>}</div>
-        </section>)}
+          </section>;
+        })}
       </div>
 
       </details>
-      {!!results.length && <div className="u-glass-popover fixed bottom-5 right-5 z-40 w-80 max-w-[calc(100vw-2.5rem)] rounded-2xl p-3.5"><button type="button" aria-label="Dismiss automation results" onClick={() => setResults([])} className="absolute right-1 top-1 grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:text-foreground"><X size={12}/></button>{results.map(result => <p key={result.key} className="flex gap-2 py-1 text-caption text-muted-foreground"><Check size={12} className="shrink-0 text-success"/><span><b className="text-foreground">{providerLabel(result.provider)}:</b> {result.message}</span></p>)}</div>}
+      {!!results.length && <div className="u-glass-popover fixed bottom-5 right-5 z-40 w-80 max-w-[calc(100vw-2.5rem)] rounded-2xl p-3.5"><Button variant="quiet" size="icon-xs" aria-label="Dismiss automation results" tooltip="Dismiss" onClick={() => setResults([])} className="absolute right-1 top-1"><X aria-hidden="true"/></Button>{results.map(result => <p key={result.key} className="flex gap-2 py-1 text-caption text-muted-foreground"><Check size={12} className="shrink-0 text-success"/><span><b className="text-foreground">{providerLabel(result.provider)}:</b> {result.message}</span></p>)}</div>}
     </div>
 
-    <Dialog open={!!draft} onOpenChange={open => { if (!open && !busy) setDraft(undefined); }}>{draft && <DialogContent showCloseButton={!busy}><DialogHeader><DialogTitle>{draft.mode === "create" ? "New Claude automation" : "Edit Claude automation"}</DialogTitle><DialogDescription>Saved directly to Claude Code's native schedule file. Claude Code remains responsible for execution.</DialogDescription></DialogHeader><DialogPanel className="space-y-3"><label className="block text-caption font-medium text-muted-foreground">Prompt<Textarea aria-label="Automation prompt" className="mt-1" value={draft.prompt} onChange={event => setDraft(current => current ? { ...current, prompt: event.target.value } : current)}/></label><label className="block text-caption font-medium text-muted-foreground">Cron schedule<Input aria-label="Automation cron schedule" className="mt-1 font-mono" value={draft.scheduleExpression} onChange={event => setDraft(current => current ? { ...current, scheduleExpression: event.target.value } : current)}/>{!!draft.scheduleExpression.trim() && !looksLikeCron(draft.scheduleExpression) && <p className="mt-1 text-caption text-destructive">{CRON_HINT}</p>}</label><label className="flex items-center gap-2 text-caption text-muted-foreground"><input type="checkbox" checked={draft.recurring} onChange={event => setDraft(current => current ? { ...current, recurring: event.target.checked } : current)} className="size-3.5 rounded border-border accent-foreground"/>Recurring</label></DialogPanel><DialogFooter><Button variant="ghost" disabled={busy} onClick={() => setDraft(undefined)}>Cancel</Button><Button loading={busy} disabled={!draft.prompt.trim() || !looksLikeCron(draft.scheduleExpression)} onClick={() => void saveDraft()}>Save in Claude Code</Button></DialogFooter></DialogContent>}</Dialog>
+    <Dialog open={!!draft} onOpenChange={open => { if (!open && !busy) setDraft(undefined); }}>{draft && <DialogContent showCloseButton={!busy}><DialogHeader><DialogTitle>{draft.mode === "create" ? "New Claude automation" : "Edit Claude automation"}</DialogTitle><DialogDescription>Saved directly to Claude Code's native schedule file. Claude Code remains responsible for execution.</DialogDescription></DialogHeader><DialogPanel><div className="space-y-3"><label className="block text-caption font-medium text-muted-foreground">Prompt<Textarea aria-label="Automation prompt" className="mt-1" value={draft.prompt} onChange={event => setDraft(current => current ? { ...current, prompt: event.target.value } : current)}/></label><label className="block text-caption font-medium text-muted-foreground">Cron schedule<Input mono aria-label="Automation cron schedule" className="mt-1" value={draft.scheduleExpression} onChange={event => setDraft(current => current ? { ...current, scheduleExpression: event.target.value } : current)}/>{!!draft.scheduleExpression.trim() && !looksLikeCron(draft.scheduleExpression) && <p className="mt-1 text-caption text-destructive">{CRON_HINT}</p>}</label><label className="flex items-center gap-2 text-caption text-muted-foreground"><Checkbox checked={draft.recurring} onCheckedChange={checked => setDraft(current => current ? { ...current, recurring: checked === true } : current)}/>Recurring</label></div></DialogPanel><DialogFooter><Button variant="ghost" disabled={busy} onClick={() => setDraft(undefined)}>Cancel</Button><Button loading={busy} disabled={!draft.prompt.trim() || !looksLikeCron(draft.scheduleExpression)} onClick={() => void saveDraft()}>Save in Claude Code</Button></DialogFooter></DialogContent>}</Dialog>
     <Dialog open={!!confirmDelete} onOpenChange={open => { if (!open && !busy) setConfirmDelete(undefined); }}>{confirmDelete && <DialogContent showCloseButton={!busy}><DialogHeader><DialogTitle>Delete this automation?</DialogTitle><DialogDescription>This removes it from {providerLabel(confirmDelete.provider)}'s native schedule. There is no undo from Bridge.</DialogDescription></DialogHeader><DialogPanel><p className="rounded-xl border border-border bg-muted p-3 text-caption text-foreground">{confirmDelete.name}</p></DialogPanel><DialogFooter><Button variant="ghost" disabled={busy} onClick={() => setConfirmDelete(undefined)}>Cancel</Button><Button variant="destructive" disabled={busy} onClick={() => void act(confirmDelete, "delete")}>Delete</Button></DialogFooter></DialogContent>}</Dialog>
   </div>;
 }

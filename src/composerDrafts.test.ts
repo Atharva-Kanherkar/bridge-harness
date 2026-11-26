@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ComposerDrafts, EMPTY_DRAFT, isEmptyDraft, mergeFailedAttachments, mergeFailedSend, mergeFailedText, restoreFailedTurn, withoutSent, withoutSentAttachments, withoutSentText } from "./composerDrafts";
+import { ComposerDrafts, EMPTY_DRAFT, isEmptyDraft, mergeFailedAttachments, mergeFailedReply, mergeFailedSend, mergeFailedText, restoreFailedTurn, sameReplyTarget, withoutSent, withoutSentAttachments, withoutSentReply, withoutSentText } from "./composerDrafts";
 import type { ComposerAttachment } from "./pasteAttachments";
 
 const image = (id: string): ComposerAttachment => ({ id, mediaType: "image/png", dataUri: `data:image/png;base64,${id}` });
@@ -145,5 +145,33 @@ describe("ComposerDrafts", () => {
     expect(isEmptyDraft(EMPTY_DRAFT)).toBe(true);
     expect(isEmptyDraft({ text: " ", attachments: [] })).toBe(true);
     expect(isEmptyDraft({ text: "", attachments: [image("1")] })).toBe(false);
+  });
+});
+
+describe("the reply a draft holds", () => {
+  const first = { entryId: "e-1", excerpt: "First answer" };
+  const second = { entryId: "e-2", excerpt: "Second answer" };
+
+  it("makes a draft worth keeping on its own", () => {
+    expect(isEmptyDraft({ text: "", attachments: [], replyTo: first })).toBe(false);
+    const drafts = new ComposerDrafts();
+    drafts.put("a", { text: "", attachments: [], replyTo: first });
+    expect(drafts.take("a")).toEqual({ text: "", attachments: [], replyTo: first });
+  });
+
+  it("is consumed by the send that carried it, and a newer one chosen since stays", () => {
+    expect(sameReplyTarget(first, { ...first })).toBe(true);
+    expect(sameReplyTarget(first, second)).toBe(false);
+    expect(sameReplyTarget(undefined, undefined)).toBe(false);
+    expect(withoutSentReply(first, first)).toBeUndefined();
+    expect(withoutSentReply(second, first)).toBe(second);
+    expect(withoutSent({ text: "more", attachments: [], replyTo: first }, { text: "", attachments: [], replyTo: first })).toEqual({ text: "more", attachments: [] });
+  });
+
+  it("comes back with a failed send, unless another was chosen while it was in flight", () => {
+    expect(mergeFailedReply(undefined, first)).toBe(first);
+    expect(mergeFailedReply(second, first)).toBe(second);
+    expect(mergeFailedSend(EMPTY_DRAFT, { text: "go", attachments: [], replyTo: first })).toEqual({ text: "go", attachments: [], replyTo: first });
+    expect(restoreFailedTurn({ text: "", attachments: [], replyTo: second }, { text: "go", attachments: [], replyTo: first }).replyTo).toBe(second);
   });
 });

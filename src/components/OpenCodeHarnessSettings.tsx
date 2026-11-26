@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { RefreshCw as ArrowsClockwise, Key, Plug as Plugs } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type { OpenCodeCatalog } from "../types";
 import {
   GhostButton, PrimaryButton, SettingsGroup, SettingsRow, StatusPill, Switch, TextButton,
 } from "./settings/kit";
-import { cn } from "@/lib/utils";
+import { Input } from "@/components/ui/input";
 
 // The two groups only OpenCode's harness detail page shows: which providers it
 // has credentials for, and which of their models Bridge is allowed to offer.
@@ -45,7 +46,7 @@ export function OpenCodeHarnessSettings({
   const refresh = async () => {
     setRefreshing(true);
     try { onCatalog(await bridgeApi.refreshOpenCodeCatalog()); }
-    catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    catch (error) { onError(friendlyError(error, "Couldn't refresh OpenCode's providers.")); }
     finally { setRefreshing(false); }
   };
 
@@ -56,14 +57,14 @@ export function OpenCodeHarnessSettings({
     try {
       onCatalog(await bridgeApi.setOpenCodeProviderApiKey(providerId, apiKey));
       setProviderKeys(current => ({ ...current, [providerId]: "" }));
-    } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { onError(friendlyError(error, "Couldn't connect that provider.")); }
     finally { setWorkingProvider(undefined); }
   };
 
   const disconnect = async (providerId: string) => {
     setWorkingProvider(providerId);
     try { onCatalog(await bridgeApi.removeOpenCodeProviderAuth(providerId)); }
-    catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    catch (error) { onError(friendlyError(error, "Couldn't disconnect that provider.")); }
     finally { setWorkingProvider(undefined); }
   };
 
@@ -77,7 +78,7 @@ export function OpenCodeHarnessSettings({
     });
   };
 
-  return <div className="space-y-[26px]" data-testid="opencode-provider-settings">
+  return <div className="space-y-6.5" data-testid="opencode-provider-settings">
     <SettingsGroup
       label="Providers"
       note={catalog ? `OpenCode ${catalog.version}` : undefined}
@@ -89,7 +90,7 @@ export function OpenCodeHarnessSettings({
           <ArrowsClockwise size={12} strokeWidth={1.7} aria-hidden="true" />Refresh
         </GhostButton>}
       />
-      {discoveryError && <SettingsRow label={<span role="alert" className="text-destructive">{discoveryError}</span>} />}
+      {discoveryError && <SettingsRow label={<span role="alert" className="text-destructive">{friendlyError(discoveryError, "Couldn't load OpenCode's providers.")}</span>} />}
       {catalog?.providers.map(provider => <SettingsRow
         key={provider.id}
         label={provider.name}
@@ -112,7 +113,8 @@ export function OpenCodeHarnessSettings({
           : provider.authMethods.some(method => method.kind === "api")
             ? <>
                 <label className="sr-only" htmlFor={`opencode-key-${provider.id}`}>{provider.name} API key</label>
-                <input
+                <Input
+                  size="sm"
                   id={`opencode-key-${provider.id}`}
                   type="password"
                   autoComplete="off"
@@ -120,7 +122,7 @@ export function OpenCodeHarnessSettings({
                   placeholder={`${provider.name} API key`}
                   value={providerKeys[provider.id] ?? ""}
                   onChange={event => setProviderKeys(current => ({ ...current, [provider.id]: event.target.value }))}
-                  className="h-7 w-44 shrink-0 rounded-lg border border-border-card bg-popover px-2.5 text-xs text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-foreground/25"
+                  className="w-44 shrink-0"
                 />
                 <PrimaryButton
                   busy={workingProvider === provider.id}

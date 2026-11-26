@@ -41,6 +41,9 @@ jobs:
       - name: Typecheck + build (tsc -b && vite build)
         run: bun run build
 
+      - name: Lint ratchet (oxlint, design system and correctness)
+        run: bun run lint
+
       - name: Web tests (vitest)
         run: bunx vitest run
 

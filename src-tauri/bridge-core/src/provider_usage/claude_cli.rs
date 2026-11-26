@@ -28,6 +28,18 @@ static RESET_MONTH_GAP: LazyLock<regex::Regex> =
 static RESET_HOUR: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?i)(^|\s)(\d{1,2})(\s*(?:am|pm))?$").expect("valid reset hour regex")
 });
+// Compiled once: the usage probe runs these over every screen of `/usage`
+// output, and compiling a regex costs far more than running it.
+static ANSI: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))").expect("valid ANSI regex")
+});
+static SCOPED_WEEK_LABEL: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?i)current\s*week\s*\(([^)]+)\)").expect("valid scoped weekly label regex")
+});
+static PERCENT: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?i)([0-9]{1,3}(?:\.[0-9]+)?)\s*%\s*(used|spent|consumed|left|remaining|available)")
+        .expect("valid percent regex")
+});
 
 #[derive(Default)]
 struct ProbeState {
@@ -326,9 +338,7 @@ fn hydrated_path() -> Option<std::ffi::OsString> {
 }
 
 fn strip_ansi(text: &str) -> String {
-    regex::Regex::new(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
-        .expect("valid ANSI regex")
-        .replace_all(text, "")
+    ANSI.replace_all(text, "")
         .replace('\r', "\n")
 }
 
@@ -433,12 +443,8 @@ fn parse_at(text: &str, now: i64) -> Result<AccountUsage, ParseError> {
 
 fn scoped_weekly_windows(text: &str, now: i64) -> Vec<bridge_protocol::messages::UsageQuotaWindow> {
     let lines: Vec<&str> = text.lines().collect();
-    let label = regex::Regex::new(r"(?i)current\s*week\s*\(([^)]+)\)")
-        .expect("valid scoped weekly label regex");
-    let percent = regex::Regex::new(
-        r"(?i)([0-9]{1,3}(?:\.[0-9]+)?)\s*%\s*(used|spent|consumed|left|remaining|available)",
-    )
-    .expect("valid percent regex");
+    let label = &*SCOPED_WEEK_LABEL;
+    let percent = &*PERCENT;
     let mut windows: Vec<bridge_protocol::messages::UsageQuotaWindow> = Vec::new();
 
     for (index, line) in lines.iter().enumerate() {
@@ -572,11 +578,7 @@ fn quota_in_latest_section(
                 .unwrap_or(after_label.len());
             let boundary = safe_prefix_len(after_label, boundary.min(800));
             let section = &text[index..index + boundary];
-            let capture = regex::Regex::new(
-                r"(?i)([0-9]{1,3}(?:\.[0-9]+)?)\s*%\s*(used|spent|consumed|left|remaining|available)",
-            )
-                .expect("valid percent regex")
-                .captures(section)?;
+            let capture = PERCENT.captures(section)?;
             let raw = capture.get(1)?.as_str().parse::<f64>().ok()?;
             let direction = capture.get(2)?.as_str().to_ascii_lowercase();
             let used = if matches!(direction.as_str(), "left" | "remaining" | "available") {

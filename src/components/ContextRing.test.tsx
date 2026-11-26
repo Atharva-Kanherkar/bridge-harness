@@ -31,7 +31,7 @@ describe("ContextRing", () => {
     const button = render(38.4);
     expect(button.textContent).toBe("38%");
     expect(button.getAttribute("aria-label")).toBe("Context window: 38% used");
-    expect(button.title).toBe("38% of Opus 5.5's context window");
+    expect(button.dataset.tip).toBe("38% of Opus 5.5's context window");
     expect(container.querySelectorAll("circle")).toHaveLength(2);
   });
 
@@ -40,7 +40,7 @@ describe("ContextRing", () => {
       const button = render(value);
       expect(button.textContent).toBe("–");
       expect(button.getAttribute("aria-label")).toBe("Context window: no reading yet");
-      expect(button.title).toBe("No context reading yet");
+      expect(button.dataset.tip).toBe("No context reading yet");
       expect(container.querySelectorAll("circle")).toHaveLength(1);
     }
   });

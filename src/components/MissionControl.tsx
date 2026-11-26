@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { ArrowLeft, ArrowRight, ArrowUpRight, Hand, LayoutGrid, Maximize2, Minimize2, MessageSquarePlus, Pin, PinOff, Square, X } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type { WorkflowRun } from "../protocol/generated/protocol";
 import { activeWorkflowRuns, WorkflowRunsStrip } from "./workflows/WorkflowInbox";
 import { useShowWorkerChatsInMissionControl } from "../missionControlSettings";
 import { cn } from "@/lib/utils";
-import { MenuPanel, useMenuPanel } from "@/components/ui/menu-panel";
+import { Button } from "@/components/ui/button";
+import { MenuItem, MenuPanel, useMenuPanel } from "@/components/ui/menu-panel";
+import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
+import { Tip } from "@/components/ui/tooltip";
 import type { AgentEvent, Project, Session, SessionForestSnapshot, Workspace, WorkerRuntimeRecord } from "../types";
 import type { ApprovalDecision, InteractionResolutionResult, QuestionAction } from "../protocol/generated/protocol";
 import { formatElapsed, harnessLabel } from "../utils";
@@ -106,7 +110,7 @@ type TileActions = {
 };
 
 function IconButton({ title, onClick, children }: { title: string; onClick: () => void; children: ReactNode }) {
-  return <button type="button" title={title} aria-label={title} onClick={onClick} className="grid h-6 w-6 place-items-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">{children}</button>;
+  return <Button variant="quiet" size="icon-2xs" tooltip={title} aria-label={title} onClick={onClick}>{children}</Button>;
 }
 
 // durable history per tile, reloaded shortly after that session's live events move.
@@ -176,7 +180,7 @@ function Tile({ id, actions }: { id: string; actions: TileActions }) {
     setSending(true); setError(null);
     const shown = askText(text);
     setSent(shown ? { text: shown, over: recordedAsk } : null);
-    try { await bridgeApi.submitInput(session!.id, text); setDraft(""); } catch (cause) { setSent(null); setError(cause instanceof Error ? cause.message : String(cause)); } finally { setSending(false); }
+    try { await bridgeApi.submitInput(session!.id, text); setDraft(""); } catch (cause) { setSent(null); setError(friendlyError(cause, "Couldn't send the message.")); } finally { setSending(false); }
   }
   async function interrupt() {
     setStopping(true);
@@ -208,17 +212,20 @@ function Tile({ id, actions }: { id: string; actions: TileActions }) {
       focused && "ring-1 ring-ring/60",
       dimmed && "opacity-40",
       lifted && "opacity-50")}>
+    {/* oxlint-disable-next-line bridge/no-native-title-tooltip -- the whole header is the drag handle; a Tip here would stack on top of every hint inside it */}
     <header draggable title="Drag to reorder. Drop on the left or right half of another tile." onDragStart={event => { event.dataTransfer.setData(TILE_DRAG, id); event.dataTransfer.effectAllowed = "move"; actions.setDragging(id); }}
       className="group/header flex shrink-0 cursor-grab select-none flex-col gap-0.5 border-b border-border bg-card py-1.5 pl-3 pr-1.5 active:cursor-grabbing">
       <div className="relative flex h-6 min-w-0 items-center gap-2">
-        {project && <span title={workspace?.branch ? `${project} · ${workspace.branch}` : project} className="max-w-[40%] shrink-0 truncate rounded bg-accent px-1.5 py-px text-caption font-medium leading-4 text-muted-foreground">{project}</span>}
-        <h2 className="min-w-0 flex-1 truncate text-ui font-medium text-foreground" title={stored}>{title}</h2>
-        <span className={cn("flex shrink-0 items-center gap-1.5 text-caption", ink.text)} title={status.detail ?? undefined}>
+        {project && <Tip label={workspace?.branch ? `${project} · ${workspace.branch}` : project}><span className="max-w-[40%] shrink-0 truncate rounded bg-accent px-1.5 py-px text-caption font-medium leading-4 text-muted-foreground">{project}</span></Tip>}
+        <Tip label={stored}><h2 className="min-w-0 flex-1 truncate text-ui font-medium text-foreground">{title}</h2></Tip>
+        <span className={cn("flex shrink-0 items-center gap-1.5 text-caption", ink.text)}>
           {pinned && <Pin size={11} aria-label="Pinned" className="text-muted-foreground" />}
-          {attention
-            ? <span className="inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 font-medium text-primary-foreground"><Hand size={11} aria-hidden="true" />{sentenceCase(status.label)}</span>
-            : <><span aria-hidden="true" className={cn("h-1.5 w-1.5 rounded-full", ink.dot)} /><span className="font-medium">{sentenceCase(status.label)}</span></>}
-          <span className="font-mono text-muted-foreground group-hover/header:hidden group-focus-within/header:hidden" title="Elapsed">{formatElapsed(session.startedAt, actions.now)}</span>
+          <Tip label={status.detail}>
+            {attention
+              ? <span className="inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 font-medium text-primary-foreground"><Hand size={11} aria-hidden="true" />{sentenceCase(status.label)}</span>
+              : <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className={cn("h-1.5 w-1.5 rounded-full", ink.dot)} /><span className="font-medium">{sentenceCase(status.label)}</span></span>}
+          </Tip>
+          <Tip label="Elapsed"><span className="font-mono text-muted-foreground group-hover/header:hidden group-focus-within/header:hidden">{formatElapsed(session.startedAt, actions.now)}</span></Tip>
         </span>
         {/* on header hover or keyboard focus the actions take the elapsed time's
             place and the title gives up width; the status pill never hides, since
@@ -237,8 +244,8 @@ function Tile({ id, actions }: { id: string; actions: TileActions }) {
         <IconButton title="Close chat" onClick={() => actions.dismiss(id)}><X size={13} /></IconButton>
       </div>
       <p className="flex h-4 min-w-0 items-center gap-1.5 pr-1.5 text-caption text-muted-foreground">
-        <span title={[harnessLabel(session.harness), session.model].filter(Boolean).join(" · ")} className="shrink-0"><HarnessMark harness={session.harness} size={11} /></span>
-        <span data-tile-subtitle className="min-w-0 truncate" title={subtitle}>{subtitle}</span>
+        <Tip label={[harnessLabel(session.harness), session.model].filter(Boolean).join(" · ")}><span className="shrink-0"><HarnessMark harness={session.harness} size={11} /></span></Tip>
+        <Tip label={subtitle}><span data-tile-subtitle className="min-w-0 truncate">{subtitle}</span></Tip>
       </p>
     </header>
     <div className="relative min-h-0 flex-1 overflow-hidden">
@@ -319,8 +326,8 @@ function QueueCard({ id, actions, strip, onPromote }: QueueCardProps) {
   const pill = attention
     ? <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary px-1.5 py-px text-micro font-medium text-primary-foreground"><Hand size={10} aria-hidden="true" />{sentenceCase(status.label)}</span>
     : <span className={cn("inline-flex shrink-0 items-center gap-1 text-micro", ink.text)}><span aria-hidden="true" className={cn("h-1.5 w-1.5 rounded-full", ink.dot)} />{sentenceCase(status.label)}</span>;
-  return <button type="button" data-queue-id={id} data-attention={attention || undefined} draggable
-    title={`Bring ${title} onto the stage`}
+  // oxlint-disable-next-line bridge/no-raw-controls -- a draggable bordered card; RowButton has no bordered card look yet
+  return <Tip label={`Bring ${title} onto the stage`}><button type="button" data-queue-id={id} data-attention={attention || undefined} draggable
     onClick={() => onPromote(id)}
     onDragStart={event => { event.dataTransfer.setData(TILE_DRAG, id); event.dataTransfer.effectAllowed = "move"; actions.setDragging(id); }}
     className={cn("min-w-0 cursor-grab rounded-md border bg-background text-left transition-[opacity,background-color] hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring active:cursor-grabbing",
@@ -343,7 +350,7 @@ function QueueCard({ id, actions, strip, onPromote }: QueueCardProps) {
         {pill}
       </span>
     </>}
-  </button>;
+  </button></Tip>;
 }
 
 export function MissionControl({ sessions, workspaces, projects = [], events, activeSessionId, onFocusSession, onStopWorker, onNewChat, onOpenWork, workflowRuns = [], workflowNames, onOpenWorkflowRun, onStageChange }: MissionControlProps) {
@@ -402,8 +409,11 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
   }), [stored.order, stored.expandedId, sessionMap, dismissedSessionIds, pinnedSessionIds, visible, incoming, isActive]);
   const orderKey = order.join("\u0000");
   const expandedId = stored.expandedId && order.includes(stored.expandedId) ? stored.expandedId : null;
+  const pinnedKey = pinnedSessionIds.join("\u0000");
+  const dismissedKey = dismissedSessionIds.join("\u0000");
+  // Keyed by content, not identity: the arrays are rebuilt every render.
   const layout: MissionLayout = useMemo(() => ({ version: 2, order, pinnedSessionIds, dismissedSessionIds, expandedId, stageLimit: stored.stageLimit }),
-    [orderKey, pinnedSessionIds.join("\u0000"), dismissedSessionIds.join("\u0000"), expandedId, stored.stageLimit]); // eslint-disable-line react-hooks/exhaustive-deps
+    [orderKey, pinnedKey, dismissedKey, expandedId, stored.stageLimit]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { setStored(prev => sameLayout(prev, layout) ? prev : layout); writeLayout(layout); }, [layout]);
 
   const statuses = useMemo(() => new Map(order.flatMap(id => { const session = sessionMap.get(id); return session ? [[id, tileStatus(session, runtimes.get(id))] as const] : []; })), [order, sessionMap, runtimes]);
@@ -491,7 +501,6 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
   const setLimit = (limit: StageLimit | null) => update(() => ({ stageLimit: limit, expandedId: null }));
   const hasBoard = order.length > 0;
   const showRuns = !!onOpenWorkflowRun && activeWorkflowRuns(workflowRuns).length > 0;
-  const toolButton = "inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring";
 
   const queue = queueIds.length > 0 && <div role="list" aria-label="More chats"
     className={cn("flex shrink-0 gap-2", plan.queue === "rail" ? "w-64 flex-col overflow-y-auto" : "h-9 overflow-x-auto")}>
@@ -516,45 +525,41 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
       {hasBoard && <div className="relative flex shrink-0 items-center gap-3">
         {/* announces only what needs you; the working count changes too often to speak. */}
         <span aria-live="polite" className="sr-only">{waitingIds.length > 0 ? `${waitingIds.length} needs you` : ""}</span>
-        {waitingIds.length > 0 && <button type="button" onClick={jumpToAttention} title="Go to the next chat waiting for you"
-          className="inline-flex items-center gap-1.5 rounded-full bg-primary px-2.5 py-1 font-medium text-primary-foreground transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
-          <Hand size={12} aria-hidden="true" />{waitingIds.length} needs you
-        </button>}
+        {waitingIds.length > 0 && <Button size="2xs" onClick={jumpToAttention} tooltip="Go to the next chat waiting for you">
+          <Hand aria-hidden="true" />{waitingIds.length} needs you
+        </Button>}
         <span className="inline-flex items-center gap-1.5 text-muted-foreground"><span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />{workingCount} working</span>
         {pinnedSessionIds.length > 0 && <span className="inline-flex items-center gap-1 text-muted-foreground"><Pin size={11} aria-hidden="true" />{pinnedSessionIds.length} pinned</span>}
       </div>}
       {showRuns && <div className={cn("flex min-w-0 items-center", hasBoard && "border-l border-border pl-3")}><WorkflowRunsStrip variant="chips" runs={workflowRuns} names={workflowNames ?? new Map()} onOpenRun={onOpenWorkflowRun!}/></div>}
       {legend.length > 1 && <div role="group" aria-label="Projects on the board" className="flex min-w-0 items-center gap-1 overflow-hidden border-l border-border pl-3" onMouseLeave={() => setHoveredProject(null)}>
-        {legend.map(([name, count]) => <button key={name} type="button" aria-pressed={heldProject === name}
+        {legend.map(([name, count]) => <Button key={name} variant="quiet" size="2xs" aria-pressed={heldProject === name}
           onMouseEnter={() => setHoveredProject(name)} onFocus={() => setHoveredProject(name)} onBlur={() => setHoveredProject(null)}
           onClick={() => setHeldProject(prev => prev === name ? null : name)}
-          title={heldProject === name ? `Stop highlighting ${name}` : `Highlight ${name}'s chats`}
-          className={cn("inline-flex max-w-40 shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring", heldProject === name && "bg-accent text-foreground")}>
-          <span className="truncate font-medium">{name}</span><span className="font-mono text-micro text-muted-foreground">{count}</span>
-        </button>)}
+          tooltip={heldProject === name ? `Stop highlighting ${name}` : `Highlight ${name}'s chats`}
+          className="max-w-40">
+          <span className="truncate">{name}</span><span className="font-mono text-micro text-muted-foreground">{count}</span>
+        </Button>)}
       </div>}
       {/* below 600px only one tile fits anyway, so the control would only crowd the bar. */}
-      {hasBoard && <div role="group" aria-label="Tiles on the stage" className="ml-auto flex shrink-0 items-center rounded-md bg-muted p-0.5 @max-[600px]:hidden">
-        {([null, ...STAGE_LIMITS] as const).map(limit => <button key={limit ?? "auto"} type="button" aria-pressed={stored.stageLimit === limit}
-          title={limit == null ? "Fit as many tiles as the board holds" : `Show at most ${limit} ${limit === 1 ? "tile" : "tiles"}`}
-          onClick={() => setLimit(limit)}
-          className={cn("h-6 min-w-6 rounded px-1.5 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring", stored.stageLimit === limit && "bg-background text-foreground shadow-xs")}>
-          {limit ?? "Auto"}
-        </button>)}
-      </div>}
+      {hasBoard && <SegmentedGroup label="Tiles on the stage" className="ml-auto @max-[600px]:hidden">
+        {([null, ...STAGE_LIMITS] as const).map(limit => <Tip key={limit ?? "auto"} label={limit == null ? "Fit as many tiles as the board holds" : `Show at most ${limit} ${limit === 1 ? "tile" : "tiles"}`}>
+          <span className="flex">
+            <SegmentedItem active={stored.stageLimit === limit} onClick={() => setLimit(limit)}>{limit ?? "Auto"}</SegmentedItem>
+          </span>
+        </Tip>)}
+      </SegmentedGroup>}
       {onNewChat && workspaces.length > 0 && <>
-        <button ref={newChatMenu.triggerRef} type="button" aria-haspopup="menu" aria-expanded={newChatMenu.open}
-          onClick={() => workspaces.length === 1 ? onNewChat(workspaces[0].id) : newChatMenu.toggle()} title="Start a new chat"
-          className={cn(toolButton, "@max-[600px]:ml-auto", !hasBoard && "ml-auto")}>
-          <MessageSquarePlus size={13} aria-hidden="true" /><span className="@max-[480px]:sr-only">New chat</span>
-        </button>
+        <Button ref={newChatMenu.triggerRef} variant="quiet" size="2xs" aria-haspopup="menu" aria-expanded={newChatMenu.open}
+          onClick={() => workspaces.length === 1 ? onNewChat(workspaces[0].id) : newChatMenu.toggle()} tooltip="Start a new chat"
+          className={cn("@max-[600px]:ml-auto", !hasBoard && "ml-auto")}>
+          <MessageSquarePlus aria-hidden="true" /><span className="@max-[480px]:sr-only">New chat</span>
+        </Button>
         <MenuPanel controller={newChatMenu} label="Choose a project">
           <p className="px-2 py-1 text-caption font-medium text-muted-foreground">New chat in…</p>
-          {workspaces.map(workspace => <button key={workspace.id} type="button" role="menuitem"
-            onClick={() => { newChatMenu.close(); onNewChat(workspace.id); }}
-            className="flex h-7 w-full items-center rounded-md px-2 text-left text-ui transition-colors hover:bg-accent">
-            <span className="min-w-0 flex-1 truncate">{projectLabel({} as Session, workspace, projects) ?? workspace.title}</span>
-          </button>)}
+          {workspaces.map(workspace => <MenuItem key={workspace.id}
+            label={projectLabel({} as Session, workspace, projects) ?? workspace.title}
+            onClick={() => { newChatMenu.close(); onNewChat(workspace.id); }} />)}
         </MenuPanel>
       </>}
     </div>}

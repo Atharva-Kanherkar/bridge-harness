@@ -1,5 +1,5 @@
 import { bridgeApi } from "../../api";
-import { errorMessage } from "../../errors";
+import { errorMessage, friendlyError } from "../../errors";
 
 /** How a buffer stands relative to the bytes on disk. */
 export type FileState = "clean" | "dirty" | "saving" | "conflict" | "error";
@@ -28,6 +28,9 @@ export const isReadOnly = (buffer: FileBuffer): boolean => buffer.binary || buff
 export const isDirty = (buffer: FileBuffer): boolean =>
   buffer.state === "dirty" || buffer.state === "conflict" || (buffer.state === "error" && buffer.baseSha !== "");
 
+/** A path's last part, which is how a message names the file. */
+const fileName = (path: string): string => path.split("/").filter(Boolean).pop() ?? path;
+
 /** Read a file into a fresh buffer. Failures become an `error` buffer, so a
  *  caller never has to special-case "the tab exists but the read threw". */
 export async function loadBuffer(workspaceId: string, path: string, seed = 0): Promise<FileBuffer> {
@@ -46,7 +49,7 @@ export async function loadBuffer(workspaceId: string, path: string, seed = 0): P
   } catch (error) {
     return {
       path, baseSha: "", saved: "", binary: false, tooLarge: false, sizeBytes: 0,
-      seed, state: "error", message: errorMessage(error),
+      seed, state: "error", message: friendlyError(error, `Couldn't open ${fileName(path)}.`),
     };
   }
 }
@@ -65,10 +68,11 @@ export async function saveBuffer(workspaceId: string, buffer: FileBuffer, conten
     const { sha256 } = await bridgeApi.writeWorkspaceFile(workspaceId, buffer.path, content, base);
     return { ...buffer, baseSha: sha256, saved: content, state: "clean", message: undefined };
   } catch (error) {
-    const message = errorMessage(error);
+    const raw = errorMessage(error);
     // The backend phrases the lost-update refusal this way; anything else is
     // a genuine failure the user cannot resolve by choosing a side.
-    const conflict = message.includes("changed on disk") || message.includes("no longer exists");
+    const conflict = raw.includes("changed on disk") || raw.includes("no longer exists");
+    const message = friendlyError(raw, conflict ? `${fileName(buffer.path)} changed on disk since you opened it.` : `Couldn't save ${fileName(buffer.path)}.`);
     return { ...buffer, state: conflict ? "conflict" : "error", message };
   }
 }

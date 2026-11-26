@@ -13,11 +13,17 @@
 // Shared controls use the same Lucide symbols as the rest of Bridge.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Select as SelectPrimitive } from "@base-ui/react/select";
 import { ChevronDown as CaretDown, ChevronRight as CaretRight, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { RowButton } from "@/components/ui/row";
+import { Select as SelectRoot, SelectGroup, SelectGroupLabel, SelectItem, SelectPopup, SelectTrigger } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { Switch as SwitchControl } from "@/components/ui/switch";
 import { SETTINGS_COLUMN } from "./layout";
-import { pendingClass } from "@/components/ui/skeleton";
+
+export { Segmented } from "@/components/ui/segmented";
 
 /* ── page ─────────────────────────────────────────────────────────────────── */
 
@@ -42,7 +48,7 @@ export function SettingsPage({ title, description, breadcrumb, action, children 
       {breadcrumb.map((crumb, index) => <span key={`${crumb.label}-${index}`} className="flex items-center gap-1.5">
         {index > 0 && <span aria-hidden="true" className="text-muted-foreground">/</span>}
         {crumb.onClick
-          ? <button type="button" onClick={crumb.onClick} className="rounded text-muted-foreground transition-colors hover:text-foreground">{crumb.label}</button>
+          ? <Button variant="text" size="inline" onClick={crumb.onClick}>{crumb.label}</Button>
           : <span className="text-foreground">{crumb.label}</span>}
       </span>)}
     </nav>}
@@ -154,15 +160,20 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
   // A row that only opens a page is the button, so the hit target matches what
   // the chevron promises.
   if (onOpen && !control) {
-    return <button
-      type="button"
+    return <RowButton
+      size="bare"
+      shape="flush"
       data-settings-row={anchor}
       disabled={disabled}
       aria-label={openLabel}
       aria-expanded={expanded}
       onClick={onOpen}
-      className={cn("flex min-h-11 w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-accent disabled:opacity-45", ROW_HIGHLIGHT, className)}
-    >{lead && <RowLead>{lead}</RowLead>}{text}{trailing}</button>;
+      className={className}
+    >
+      <span className="flex min-h-11 w-full min-w-0 items-center gap-3 px-3.5 py-2.5 transition-colors duration-300 in-data-search-highlight:bg-accent">
+        {lead && <RowLead>{lead}</RowLead>}{text}{trailing}
+      </span>
+    </RowButton>;
   }
 
   // A row that both opens a page and carries an action (Install next to a
@@ -171,12 +182,13 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
   // name each, and the whole row is still the target for "open this".
   if (onOpen) {
     return <div data-settings-row={anchor} className={cn("relative flex min-h-11 flex-wrap items-center gap-3 px-3.5 py-2.5", ROW_HIGHLIGHT, className)}>
-      <button
-        type="button"
+      <RowButton
+        size="bare"
+        shape="flush"
         disabled={disabled}
         aria-label={openLabel ?? (typeof label === "string" ? label : "Open")}
         onClick={onOpen}
-        className="absolute inset-0 z-0 transition-colors hover:bg-accent disabled:opacity-45"
+        className="absolute inset-0 z-0"
       />
       {lead && <span className="pointer-events-none relative z-10"><RowLead>{lead}</RowLead></span>}
       <span className="pointer-events-none relative z-10 flex min-w-0 flex-1">{text}</span>
@@ -245,30 +257,13 @@ export function useSavedFlash(): [(key: string) => boolean, (key: string) => voi
 
 /* ── controls ─────────────────────────────────────────────────────────────── */
 
-/** 32x18. On is a foreground track with a background knob; there is no hue. */
 export function Switch({ checked, onChange, disabled, label }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   disabled?: boolean;
   label: string;
 }) {
-  return <button
-    type="button"
-    role="switch"
-    aria-checked={checked}
-    aria-label={label}
-    disabled={disabled}
-    onClick={() => onChange(!checked)}
-    className={cn(
-      "relative h-[18px] w-8 shrink-0 rounded-full transition-colors disabled:opacity-40",
-      checked ? "bg-foreground" : "bg-foreground/15",
-    )}
-  >
-    <span className={cn(
-      "absolute top-[2px] size-[14px] rounded-full transition-[left] duration-150",
-      checked ? "left-4 bg-background" : "left-[2px] bg-background",
-    )} />
-  </button>;
+  return <SwitchControl checked={checked} disabled={disabled} aria-label={label} onCheckedChange={onChange} />;
 }
 
 export type SelectOption = {
@@ -281,34 +276,9 @@ export type SelectOption = {
   group?: string;
 };
 
-/** Two or three short choices, all visible at once. Saves on click. */
-export function Segmented<T extends string>({ value, options, onChange, disabled, label }: {
-  value: T;
-  options: { value: T; label: string }[];
-  onChange: (next: T) => void;
-  disabled?: boolean;
-  label: string;
-}) {
-  return <div role="group" aria-label={label} className="u-segmented flex shrink-0">
-    {options.map(option => <button
-      key={option.value}
-      type="button"
-      className="u-segmented-item disabled:opacity-45"
-      disabled={disabled}
-      data-active={value === option.value}
-      aria-pressed={value === option.value}
-      onClick={() => { if (option.value !== value) onChange(option.value); }}
-    >{option.label}</button>)}
-  </div>;
-}
-
-const CONTROL = "h-7 rounded-lg border border-border-card bg-popover px-2.5 text-xs text-foreground outline-none transition-colors disabled:opacity-45";
-
 /**
- * A select that renders no native select element.
- *
- * Base UI supplies typeahead, arrow keys, focus management, and a portal that
- * keeps the model catalog clear of scrolling group cards.
+ * A select that renders no native select element: the shared Select primitive
+ * with the kit's width and option shape (lead, description, groups).
  */
 export function Select({ value, options, onChange, disabled, label, placeholder = "Choose", width = "w-56" }: {
   value: string;
@@ -319,69 +289,39 @@ export function Select({ value, options, onChange, disabled, label, placeholder 
   placeholder?: string;
   width?: string;
 }) {
-  const [open, setOpen] = useState(false);
   const selected = options.find(option => option.value === value);
-  return <SelectPrimitive.Root
-    value={value}
-    onValueChange={next => { if (next !== null) onChange(next); }}
-    open={open}
-    onOpenChange={setOpen}
-    disabled={disabled || options.length === 0}
-    items={options}
-  >
-    <SelectPrimitive.Trigger
-      aria-label={label}
-      className={cn(CONTROL, width, "flex max-w-full shrink-0 items-center gap-1.5 hover:bg-accent")}
+  const groups = [...new Set(options.map(option => option.group))];
+  const item = (option: SelectOption) => <SelectItem key={option.value} value={option.value} label={option.label} disabled={option.disabled}>
+    <span className="flex min-w-0 items-center gap-2">
+      {option.lead}
+      <span className="min-w-0 flex-1">
+        <span className="block">{option.label}</span>
+        {option.description && <span className="mt-0.5 block text-caption text-muted-foreground">{option.description}</span>}
+      </span>
+    </span>
+  </SelectItem>;
+  // The width sits on a wrapper: the trigger owns its own box.
+  return <span className={cn(width, "inline-flex max-w-full shrink-0")}>
+    <SelectRoot
+      value={value}
+      onValueChange={next => { if (next !== null) onChange(next); }}
+      disabled={disabled || options.length === 0}
+      items={options}
     >
-      {selected?.lead}
-      <span className="min-w-0 flex-1 truncate text-left">{selected?.label ?? (value || placeholder)}</span>
-      <CaretDown size={12} strokeWidth={1.7} aria-hidden="true" className={cn("shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
-    </SelectPrimitive.Trigger>
-    {/* Escape the cards' overflow clipping and flip above the trigger when
-        there is not enough room below it. */}
-    <SelectPrimitive.Portal>
-      <SelectPrimitive.Positioner
-        align="end"
-        sideOffset={4}
-        collisionPadding={8}
-        alignItemWithTrigger={false}
-        positionMethod="fixed"
-        className="z-50 data-closed:hidden"
-      >
-        <SelectPrimitive.Popup
-          aria-label={label}
-          className="u-glass-popover max-h-[min(18rem,var(--available-height))] min-w-(--anchor-width) max-w-(--available-width) overflow-y-auto rounded-lg border border-border bg-popover p-1 outline-none"
-        >
-          {options.map((option, index) => <SelectItemWithGroup key={option.value} option={option} first={index === 0 || options[index - 1].group !== option.group}><SelectPrimitive.Item
-            key={option.value}
-            value={option.value}
-            label={option.label}
-            disabled={option.disabled}
-            className={cn(
-              "flex w-full cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs outline-none transition-colors data-disabled:opacity-40 data-highlighted:bg-accent",
-              option.value === value ? "bg-accent text-foreground" : "text-foreground hover:bg-accent",
-            )}
-          >
-            {option.lead}
-            <span className="min-w-0 flex-1">
-              <SelectPrimitive.ItemText render={<span />}>{option.label}</SelectPrimitive.ItemText>
-              {option.description && <span className="mt-0.5 block text-caption text-muted-foreground">{option.description}</span>}
-            </span>
-            {option.value === value && <Check size={12} strokeWidth={1.7} aria-hidden="true" className="shrink-0" />}
-          </SelectPrimitive.Item></SelectItemWithGroup>)}
-        </SelectPrimitive.Popup>
-      </SelectPrimitive.Positioner>
-    </SelectPrimitive.Portal>
-  </SelectPrimitive.Root>;
-}
-
-/** A group label above the first option of each group. */
-function SelectItemWithGroup({ option, first, children }: { option: SelectOption; first: boolean; children: ReactNode }) {
-  if (!option.group || !first) return <>{children}</>;
-  return <>
-    <div role="presentation" className="px-2 pb-1 pt-2 text-caption font-medium text-muted-foreground first:pt-1">{option.group}</div>
-    {children}
-  </>;
+      <SelectTrigger size="sm" aria-label={label}>
+        {selected?.lead}
+        <span className="min-w-0 flex-1 truncate">{selected?.label ?? (value || placeholder)}</span>
+      </SelectTrigger>
+      {/* Portalled, so the cards' overflow clipping cannot cut it off. */}
+      <SelectPopup aria-label={label} align="end" alignItemWithTrigger={false}>
+        {groups.length === 1 && groups[0] === undefined
+          ? options.map(item)
+          : groups.map(group => group === undefined
+            ? options.filter(option => option.group === undefined).map(item)
+            : <SelectGroup key={group}><SelectGroupLabel>{group}</SelectGroupLabel>{options.filter(option => option.group === group).map(item)}</SelectGroup>)}
+      </SelectPopup>
+    </SelectRoot>
+  </span>;
 }
 
 /** A single-line text field. Same box as the select, without the chevron. */
@@ -396,7 +336,9 @@ export function Field({ value, onChange, disabled, label, placeholder, type = "t
   mono?: boolean;
   onKeyDown?: (event: React.KeyboardEvent<HTMLInputElement>) => void;
 }) {
-  return <input
+  // The width and the mono face sit on a wrapper: the field owns its own box and type.
+  return <span className={cn(width, "inline-flex max-w-full shrink-0", mono && "font-mono")}><Input
+    size="sm"
     type={type}
     value={value}
     disabled={disabled}
@@ -406,8 +348,7 @@ export function Field({ value, onChange, disabled, label, placeholder, type = "t
     spellCheck={false}
     onKeyDown={onKeyDown}
     onChange={event => onChange(event.target.value)}
-    className={cn(CONTROL, width, "max-w-full shrink-0 placeholder:text-muted-foreground focus:border-foreground/25", mono && "font-mono text-caption")}
-  />;
+  /></span>;
 }
 
 /**
@@ -438,7 +379,8 @@ export function NumberField({ value, min, max, onChange, disabled, label, width 
     const parsed = parse(raw);
     if (parsed !== null && parsed !== value) onChange(parsed);
   };
-  return <input
+  return <span className={cn(width, "inline-flex max-w-full shrink-0 tabular-nums")}><Input
+    size="sm"
     type="number"
     inputMode="numeric"
     aria-label={label}
@@ -455,8 +397,7 @@ export function NumberField({ value, min, max, onChange, disabled, label, width 
       timer.current = window.setTimeout(() => commit(raw), 400);
     }}
     onBlur={event => commit(event.target.value)}
-    className={cn(CONTROL, width, "max-w-full shrink-0 tabular-nums focus:border-foreground/25 aria-invalid:border-destructive")}
-  />;
+  /></span>;
 }
 
 /** A multi-line editor for a system prompt. Dirties the page; never saves. */
@@ -468,7 +409,7 @@ export function TextArea({ value, onChange, disabled, label, placeholder, rows =
   placeholder?: string;
   rows?: number;
 }) {
-  return <textarea
+  return <div className="flex font-mono"><Textarea
     value={value}
     rows={rows}
     disabled={disabled}
@@ -476,13 +417,12 @@ export function TextArea({ value, onChange, disabled, label, placeholder, rows =
     placeholder={placeholder}
     spellCheck={false}
     onChange={event => onChange(event.target.value)}
-    className="w-full resize-y rounded-lg border border-border-card bg-popover px-2.5 py-2 font-mono text-caption leading-relaxed text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-foreground/25 disabled:opacity-45"
-  />;
+    // The primitive sizes to its content, which ignores `rows`; keep the asked height as a floor.
+    style={{ minHeight: `calc(${rows}lh + 0.625rem)` }}
+  /></div>;
 }
 
 /* ── buttons ──────────────────────────────────────────────────────────────── */
-
-const BUTTON = "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs transition-colors disabled:opacity-40";
 
 /** Foreground fill. Reserved for Save and Connect, and nothing else. */
 export function PrimaryButton({ children, onClick, disabled, busy, type = "button" }: {
@@ -490,7 +430,7 @@ export function PrimaryButton({ children, onClick, disabled, busy, type = "butto
   /** The action is in flight: disabled, and the label wears the skeleton sweep. */
   busy?: boolean;
 }) {
-  return <button type={type} disabled={disabled || busy} aria-busy={busy || undefined} onClick={onClick} className={cn(BUTTON, "bg-foreground font-medium text-background hover:opacity-90", pendingClass(busy))}>{children}</button>;
+  return <Button size="xs" type={type} disabled={disabled} loading={busy} onClick={onClick}>{children}</Button>;
 }
 
 /** Bordered. Install, Repair, Retry, and the wizard's step actions. */
@@ -499,21 +439,14 @@ export function GhostButton({ children, onClick, disabled, busy, ariaLabel }: {
   /** The action is in flight: disabled, and the label wears the skeleton sweep. */
   busy?: boolean;
 }) {
-  return <button type="button" aria-label={ariaLabel} disabled={disabled || busy} aria-busy={busy || undefined} onClick={onClick} className={cn(BUTTON, "border border-border-card bg-popover text-foreground hover:bg-accent", pendingClass(busy))}>{children}</button>;
+  return <Button size="xs" variant="outline" aria-label={ariaLabel} disabled={disabled} loading={busy} onClick={onClick}>{children}</Button>;
 }
 
 /** Text only. `tone="destructive"` is Remove; the default muted tone is Reset. */
 export function TextButton({ children, onClick, disabled, busy, tone = "muted", ariaLabel }: {
   children: ReactNode; onClick?: () => void; disabled?: boolean; busy?: boolean; tone?: "muted" | "destructive"; ariaLabel?: string;
 }) {
-  return <button
-    type="button"
-    aria-label={ariaLabel}
-    disabled={disabled || busy}
-    aria-busy={busy || undefined}
-    onClick={onClick}
-    className={cn(BUTTON, tone === "destructive" ? "text-destructive hover:bg-destructive/10" : "text-muted-foreground hover:bg-accent hover:text-foreground", pendingClass(busy))}
-  >{children}</button>;
+  return <Button size="xs" variant={tone === "destructive" ? "destructive-ghost" : "quiet"} aria-label={ariaLabel} disabled={disabled} loading={busy} onClick={onClick}>{children}</Button>;
 }
 
 /* ── pills ────────────────────────────────────────────────────────────────── */

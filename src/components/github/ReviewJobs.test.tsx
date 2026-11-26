@@ -79,7 +79,7 @@ describe("ReviewJobs", () => {
     const cancel = vi.spyOn(bridgeApi, "cancelReview").mockResolvedValue({ job: reviewJob({ id: "running", status: "cancelled" }) });
     const retry = vi.spyOn(bridgeApi, "retryReview").mockResolvedValue({ job: reviewJob({ id: "retry", status: "queued", retryOf: "failed", createdAt: "2026-11-24T11:00:00.000Z" }) });
     await mount(<ReviewJobs workspaceId="w" number={7} />);
-    expect(row("failed")!.querySelector('[role="alert"]')!.textContent).toBe("claude could not review: signed out");
+    expect(row("failed")!.querySelector('[role="alert"]')!.textContent).toBe("Claude could not review.");
     expect(button(row("failed")!, "Cancel")).toBeUndefined();
 
     await act(async () => { button(row("running")!, "Cancel").click(); await flush(); });
@@ -202,7 +202,7 @@ describe("ReviewStatusLine", () => {
     const retried = reviewJob({ id: "again", status: "queued" });
     const retry = vi.spyOn(bridgeApi, "retryReview").mockResolvedValue({ job: retried });
     await mount(<ReviewStatusLine onShow={vi.fn()} reviews={reviews([reviewJob({ id: "bad", status: "failed", error: "Codex is signed out", harnesses: ["codex"], finishedAt: "2026-11-24T10:04:00.000Z" })], update)} />);
-    expect(line()!.textContent).toContain("Review with Codex failed: Codex is signed out");
+    expect(line()!.textContent).toContain("Review with Codex failed. Codex is signed out.");
     await act(async () => { button(line()!, "Retry").click(); await flush(); });
     expect(retry).toHaveBeenCalledWith("bad");
     expect(update).toHaveBeenCalledWith(retried);
@@ -210,6 +210,16 @@ describe("ReviewStatusLine", () => {
     host!.remove();
     await mount(<ReviewStatusLine onShow={vi.fn()} reviews={reviews([reviewJob({ id: "old", status: "failed", finishedAt: "2026-11-22T10:00:00.000Z" })])} />);
     expect(line(), "an old failure is not news").toBeNull();
+  });
+
+  it("shows a failure's reason as one plain sentence, never the parser's report", async () => {
+    await mount(<ReviewStatusLine onShow={vi.fn()} reviews={reviews([reviewJob({ id: "bad", status: "failed", error: "The reviewer's answer did not follow the findings contract: The final message has no fenced ```json block.", harnesses: ["codex"], finishedAt: "2026-11-24T10:04:00.000Z" })])} />);
+    expect(line()!.textContent).toContain("Review with Codex failed. The reviewer's answer did not follow the findings contract.");
+    expect(line()!.textContent).not.toContain("```json");
+    act(() => root?.unmount());
+    host!.remove();
+    await mount(<ReviewStatusLine onShow={vi.fn()} reviews={reviews([reviewJob({ id: "code", status: "failed", error: "{\"code\":1001,\"kind\":\"io\",\"message\":\"serde_json::Error at line 1 column 4\"}", harnesses: ["codex"], finishedAt: "2026-11-24T10:04:00.000Z" })])} />);
+    expect(line()!.querySelector(".truncate")!.textContent, "a reason that reads like code is dropped").toBe("Review with Codex failed.");
   });
 
   it("says nothing when no review is running, waiting or newly failed", async () => {

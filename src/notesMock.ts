@@ -573,7 +573,7 @@ export function mockStructureNote(params: StructureNoteParams): NoteJobQueued {
   });
 }
 
-const tasksOf = (page: MockPage) => page.history[page.history.length - 1].split("\n").map(line => line.trim()).filter(line => /^- /.test(line) || /\b(need to|todo)\b/i.test(line));
+const tasksOf = (page: MockPage) => page.history[page.history.length - 1].split("\n").map(line => line.trim()).filter(line => line.startsWith("- ") || /\b(need to|todo)\b/i.test(line));
 
 export function mockExtractTasks(params: StructureNoteParams): NoteJobQueued {
   const reply = (page: MockPage) => JSON.stringify({ tasks: tasksOf(page).map(excerpt => ({ excerpt, title: lineTitle(excerpt), detail: "", doneWhen: "", project: null })) });
@@ -797,7 +797,7 @@ function checkCells(page: MockPage, patch: Record<string, unknown>, parentId: st
   const parent = parentId ? pages.find(candidate => candidate.note.id === parentId && !candidate.deleted && candidate.database) : undefined;
   if (!parent) throw new Error("only a row of a database has values");
   const properties = parent.database!.properties;
-  const next = { ...(page.values ?? {}) };
+  const next = { ...page.values };
   for (const [prop, value] of Object.entries(patch)) {
     const property = properties[prop];
     if (!property) throw new Error(`no property with id ${prop}; this database has ${Object.values(properties).map(candidate => candidate.name).sort().join(", ")}`);

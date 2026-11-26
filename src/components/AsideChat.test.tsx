@@ -180,7 +180,7 @@ describe("AsideChat", () => {
     expect(document.body.textContent).toContain("2 follow-ups queued");
     await act(async () => setDefault("steer"));
     await mount({ working: true });
-    expect(document.body.querySelector<HTMLButtonElement>('button[aria-label="Steer"]')!.title).toContain("interrupts");
+    expect(document.body.querySelector<HTMLButtonElement>('button[aria-label="Steer"]')!.dataset.tip).toContain("interrupts");
   });
 
   it("disables the model control while the aside is working", async () => {
@@ -277,7 +277,7 @@ describe("AsideChat", () => {
     await act(async () => { rejectSend?.(new Error("provider refused the send")); });
     expect(box.value).toBe("keep this retry");
     expect(document.body.querySelectorAll("img")).toHaveLength(1);
-    expect(dialog().textContent).toContain("provider refused the send");
+    expect(dialog().textContent).toContain("Provider refused the send.");
   });
 
   it("delivers attachments pasted onto a queued follow-up", async () => {
@@ -377,7 +377,7 @@ describe("AsideChat", () => {
     expect(listbox.textContent).toContain("Files");
     expect(listbox.textContent).toContain("matching “App”");
     const option = listbox.querySelector<HTMLElement>("#aside-file-mention-option-0")!;
-    expect(option.getAttribute("title")).toBe("src/App.tsx");
+    expect(option.dataset.tip).toBe("src/App.tsx");
     expect(option.querySelector("[data-mention-name]")!.textContent).toBe("App.tsx");
     expect(option.querySelector("[data-mention-folder]")!.textContent).toBe("src");
     await act(async () => {
@@ -401,7 +401,7 @@ describe("AsideChat", () => {
       box.dispatchEvent(new Event("input", { bubbles: true }));
     });
     const options = [...dialog().querySelectorAll<HTMLElement>('#aside-file-mention-listbox [role="option"]')];
-    const marks = Object.fromEntries(options.map(option => [option.title, option.querySelector("[data-mention-change]")?.textContent ?? null]));
+    const marks = Object.fromEntries(options.map(option => [option.dataset.tip, option.querySelector("[data-mention-change]")?.textContent ?? null]));
     expect(marks).toEqual({ "src/App.tsx": null, "src/api.ts": "M" });
     await act(async () => {
       box.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
@@ -409,7 +409,7 @@ describe("AsideChat", () => {
     await act(async () => {
       box.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
     });
-    expect(box.value).toBe(`@${options[1].title} `);
+    expect(box.value).toBe(`@${options[1].dataset.tip} `);
   });
 
   it("completes slash tokens without sending, and never offers a $harness shortcut", async () => {

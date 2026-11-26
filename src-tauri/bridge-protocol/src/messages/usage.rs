@@ -496,6 +496,20 @@ mod tests {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RecordPresenceParams {
     pub minutes: Vec<i64>,
+    /// Which chat was open in the window during some of those minutes, so
+    /// your time can be split by project. A chat minute is kept only when
+    /// the same minute is accepted from `minutes`; a minute keeps the first
+    /// chat stored for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chats: Option<Vec<PresenceChat>>,
+}
+
+/// Minutes spent with one chat open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PresenceChat {
+    pub session_id: String,
+    pub minutes: Vec<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -560,4 +574,88 @@ pub struct UsageScreenTimeResult {
     pub days: Vec<ScreenTimeDay>,
     pub all_time: ScreenTimeTotals,
     pub agent_history: ScreenTimeAgentHistory,
+    /// Projects with any time or pull request in the range, busiest first.
+    pub projects: Vec<ScreenTimeProject>,
+    /// Pull requests agents opened from Bridge chats in the range.
+    pub pull_requests: ScreenTimePullRequests,
+    /// Hours 0 to 23 in the range's zone, every hour present.
+    pub hours: Vec<ScreenTimeHour>,
+    /// Agent time per harness in the range, largest first.
+    pub harnesses: Vec<ScreenTimeHarness>,
+}
+
+/// One project's share of the range. Your time counts only minutes recorded
+/// with a chat of this project open; agent time follows the agent-time
+/// rules. `chats` is top-level chats that worked in the range.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenTimeProject {
+    /// Null for chats with no project.
+    pub project_id: Option<String>,
+    pub name: String,
+    pub human_seconds: i64,
+    pub agent_seconds: i64,
+    pub chats: i64,
+    pub pull_requests: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenTimePullRequests {
+    pub opened: i64,
+    pub merged: i64,
+    pub open: i64,
+    pub closed: i64,
+    /// One entry per repository, most opened first.
+    pub repos: Vec<ScreenTimeRepo>,
+    /// The newest pull requests opened in the range, at most 6.
+    pub recent: Vec<ScreenTimePullRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenTimeRepo {
+    /// `owner/name`.
+    pub repo: String,
+    pub opened: i64,
+    pub merged: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenTimePullRequest {
+    /// `owner/name`.
+    pub repo: String,
+    pub number: i64,
+    pub title: String,
+    pub url: String,
+    pub state: ScreenTimePullRequestState,
+    /// Local day it was opened.
+    pub opened_day: String,
+}
+
+/// The last state Bridge read for the pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenTimePullRequestState {
+    Open,
+    Merged,
+    Closed,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenTimeHour {
+    pub hour: u8,
+    pub human_seconds: i64,
+    pub agent_seconds: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenTimeHarness {
+    pub harness: String,
+    pub agent_seconds: i64,
+    pub chats: i64,
 }

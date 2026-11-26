@@ -491,7 +491,10 @@ async fn github_attach_pr(session_id: String, reference: String, state: State<'_
 async fn browser_bridge_state(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<browser_bridge::BrowserBridgeSnapshot, BridgeError> {
-    api::browser_bridge_state(state.inner())
+    // Off the async runtime like every other core call: these take the
+    // browser supervisor's lock and copy screenshot data while holding it.
+    let core = state.inner().clone();
+    blocking("Browser state", move || api::browser_bridge_state(&core)).await
 }
 
 #[tauri::command]
@@ -499,7 +502,8 @@ async fn browser_frame(
     state: State<'_, Arc<BridgeCore>>,
     after_revision: u64,
 ) -> Result<Option<browser_bridge::BrowserFrame>, BridgeError> {
-    api::browser_frame(state.inner(), after_revision)
+    let core = state.inner().clone();
+    blocking("Browser frame", move || api::browser_frame(&core, after_revision)).await
 }
 
 #[tauri::command]
@@ -513,7 +517,8 @@ async fn browser_action(
     request: browser_bridge::BrowserActionRequest,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<String, BridgeError> {
-    api::browser_action(state.inner(), request)
+    let core = state.inner().clone();
+    blocking("Browser action", move || api::browser_action(&core, request)).await
 }
 
 #[tauri::command]
@@ -521,7 +526,8 @@ async fn set_browser_permission(
     permission: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    api::set_browser_permission(state.inner(), &permission)
+    let core = state.inner().clone();
+    blocking("Browser permission", move || api::set_browser_permission(&core, &permission)).await
 }
 
 #[tauri::command]
@@ -530,12 +536,14 @@ async fn resolve_browser_approval(
     allow: bool,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    api::resolve_browser_approval(state.inner(), &approval_id, allow)
+    let core = state.inner().clone();
+    blocking("Browser approval", move || api::resolve_browser_approval(&core, &approval_id, allow)).await
 }
 
 #[tauri::command]
 async fn takeover_browser(state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
-    api::takeover_browser(state.inner())
+    let core = state.inner().clone();
+    blocking("Browser takeover", move || api::takeover_browser(&core)).await
 }
 
 #[tauri::command]
@@ -657,7 +665,8 @@ async fn clone_requests(state: State<'_, Arc<BridgeCore>>) -> Result<Vec<bridge_
 
 #[tauri::command]
 async fn detach_browser(state: State<'_, Arc<BridgeCore>>) -> Result<String, BridgeError> {
-    api::detach_browser(state.inner())
+    let core = state.inner().clone();
+    blocking("Browser detach", move || api::detach_browser(&core)).await
 }
 
 #[tauri::command]
@@ -1850,10 +1859,11 @@ async fn insights(
 #[tauri::command]
 async fn record_presence(
     minutes: Vec<i64>,
+    chats: Option<Vec<bridge_protocol::messages::PresenceChat>>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::UsageRecordPresenceResult, BridgeError> {
     let core = state.inner().clone();
-    let params = bridge_protocol::messages::RecordPresenceParams { minutes };
+    let params = bridge_protocol::messages::RecordPresenceParams { minutes, chats };
     tauri::async_runtime::spawn_blocking(move || api::usage_record_presence(&core, &params))
         .await
         .map_err(|error| BridgeError::Invalid(error.to_string()))?
@@ -3187,9 +3197,64 @@ async fn update_extraction_settings(
     model: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::MemoryExtractionSettings, BridgeError> {
+    // Deprecated and ignored: extraction runs on the memory model. Kept so the
+    // command matches its wire contract for one release.
+    drop((harness, model));
     let core = state.inner().clone();
     blocking("Update extraction settings", move || {
-        api::update_extraction_settings(&core, &mode, harness.as_deref(), model.as_deref())
+        api::update_extraction_settings(&core, &mode)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_retention_settings(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRetentionSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get memory retention", move || api::get_retention_settings(&core)).await
+}
+
+#[tauri::command]
+async fn set_retention_settings(
+    proposal_ttl_days: i64,
+    retire_unused_after_days: Option<i64>,
+    max_proposals: Option<i64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRetentionSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Set memory retention", move || {
+        api::set_retention_settings(&core, proposal_ttl_days, retire_unused_after_days, max_proposals)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn restore_memory_record(
+    record_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Restore memory record", move || api::restore_memory_record(&core, &record_id)).await
+}
+
+#[tauri::command]
+async fn get_memory_model(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryModelSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get memory model", move || api::get_memory_model(&core)).await
+}
+
+#[tauri::command]
+async fn set_memory_model(
+    harness: Option<String>,
+    model: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryModelSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Set memory model", move || {
+        api::set_memory_model(&core, harness.as_deref(), model.as_deref())
     })
     .await
 }
@@ -3243,13 +3308,14 @@ async fn update_consolidation_settings(
     debounce_seconds: Option<i64>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::MemoryConsolidationSettings, BridgeError> {
+    // Deprecated and ignored: consolidation runs on the memory model. Kept so
+    // the command matches its wire contract for one release.
+    drop((harness, model));
     let core = state.inner().clone();
     blocking("Update consolidation settings", move || {
         api::update_consolidation_settings(
             &core,
             &mode,
-            harness.as_deref(),
-            model.as_deref(),
             max_records,
             allow_removal,
             debounce_seconds,
@@ -4260,6 +4326,11 @@ pub fn run() -> i32 {
             get_insights,
             get_consolidation_settings,
             update_consolidation_settings,
+            get_memory_model,
+            set_memory_model,
+            get_retention_settings,
+            set_retention_settings,
+            restore_memory_record,
             interrupt_turn,
             retry_worker_task,
             refresh_account_usage,

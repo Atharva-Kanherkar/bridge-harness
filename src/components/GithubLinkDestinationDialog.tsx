@@ -1,5 +1,6 @@
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { ExternalLink, PanelRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 // Where a GitHub link should open. Bridge can render a pull request, an issue
 // or the repository beside the conversation, and the browser can render all of
@@ -28,7 +29,8 @@ export function GithubLinkDestinationDialog({
   onCancel,
 }: GithubLinkDestinationDialogProps) {
   return <Dialog open onOpenChange={next => { if (!next) onCancel(); }}>
-    <DialogPopup showCloseButton={false} aria-label="Open GitHub link" className="max-w-md p-5">
+    <DialogPopup showCloseButton={false} aria-label="Open GitHub link" className="max-w-md">
+      <div className="p-5">
       <p className="text-xs text-muted-foreground">Open this in</p>
       <p className="mt-1 text-message font-medium leading-snug text-foreground">{subject}</p>
       <p className="mt-0.5 font-mono text-caption text-muted-foreground">{repository}</p>
@@ -38,23 +40,20 @@ export function GithubLinkDestinationDialog({
       <p className="mt-3 break-all font-mono text-caption leading-relaxed text-muted-foreground">{url}</p>
 
       <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-end">
-        <button
-          type="button"
+        <Button variant="outline" size="default"
           onClick={onOpenInBrowser}
-          className="inline-flex min-h-9 items-center justify-center gap-2 rounded-lg border border-border px-3 text-ui font-medium text-foreground transition-colors hover:bg-accent"
         >
           <ExternalLink size={13} aria-hidden="true" />
           Open in browser
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button variant="default" size="default"
           autoFocus
           onClick={onOpenInline}
-          className="inline-flex min-h-9 items-center justify-center gap-2 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90"
         >
           <PanelRight size={13} aria-hidden="true" />
           Open in Bridge
-        </button>
+        </Button>
+      </div>
       </div>
     </DialogPopup>
   </Dialog>;

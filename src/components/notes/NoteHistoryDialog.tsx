@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import { historyEntries, lineDiff, type HistoryEntry } from "../../notesHistory";
 import type { NotePage } from "../../types";
 import { Dialog, DialogPopup, DialogTitle } from "@/components/ui/dialog";
@@ -15,6 +16,8 @@ import { Markdown } from "../Markdown";
 // text-caption sizes, and drops them beside a text color.
 import { clsx } from "clsx";
 import { Pill, PrimaryButton } from "./NotesUi";
+import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
+import { RowButton } from "@/components/ui/row";
 
 const when = (iso: string) => new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
@@ -49,14 +52,14 @@ export function NoteHistoryDialog({ page, open, chatTitle, onClose, onRestore }:
       // The newest entry is the page as it is; the one before is what a
       // person usually came here for.
       setSelected(next[1]?.seq ?? next[0]?.seq ?? null);
-    }, error => { if (current) setFailure(error instanceof Error ? error.message : String(error)); });
+    }, error => { if (current) setFailure(friendlyError(error, "Couldn't load the page history.")); });
     return () => { current = false; };
   }, [open, id]);
 
   useEffect(() => {
     if (!open || selected === null) return;
     let current = true;
-    bridgeApi.readNoteVersion(id, selected).then(read => { if (current) setVersion({ seq: read.seq, markdown: read.markdown }); }, error => { if (current) setFailure(error instanceof Error ? error.message : String(error)); });
+    bridgeApi.readNoteVersion(id, selected).then(read => { if (current) setVersion({ seq: read.seq, markdown: read.markdown }); }, error => { if (current) setFailure(friendlyError(error, "Couldn't load this version.")); });
     return () => { current = false; };
   }, [open, id, selected]);
 
@@ -71,15 +74,15 @@ export function NoteHistoryDialog({ page, open, chatTitle, onClose, onRestore }:
   };
 
   return <Dialog open={open} onOpenChange={next => { if (!next) onClose(); }}>
-    <DialogPopup aria-label="Page history" className="h-[min(80vh,46rem)] max-w-5xl overflow-hidden p-0" showCloseButton={false}>
+    <DialogPopup aria-label="Page history" className="h-[min(80vh,46rem)] max-w-5xl overflow-hidden" showCloseButton={false}>
       <div className="flex min-h-0 flex-1">
         <section aria-label="Selected version" className="flex min-w-0 flex-1 flex-col">
           <header className="flex h-14 shrink-0 items-center gap-2 px-6">
-            <DialogTitle className="m-0 flex-1 truncate text-message font-semibold text-foreground">Page history</DialogTitle>
-            <div role="tablist" aria-label="Show" className="inline-flex rounded-full bg-muted p-0.5">
+            <DialogTitle className="flex-1">Page history</DialogTitle>
+            <SegmentedGroup tabs label="Show">
               {([["changes", "Changes"], ["version", "Version"]] as const).map(([key, label]) =>
-                <button key={key} type="button" role="tab" aria-selected={view === key} onClick={() => setView(key)} className={clsx("h-7 rounded-full px-3 text-meta transition-colors", view === key ? "bg-selection font-medium text-selection-foreground" : "text-muted-foreground hover:text-foreground")}>{label}</button>)}
-            </div>
+                <SegmentedItem key={key} tab active={view === key} onClick={() => setView(key)}>{label}</SegmentedItem>)}
+            </SegmentedGroup>
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
             {failure && <p role="alert" className="m-0 text-ui text-destructive">{failure}</p>}
@@ -104,7 +107,7 @@ export function NoteHistoryDialog({ page, open, chatTitle, onClose, onRestore }:
             {entries?.map((entry, index) => {
               const harness = /^agent:([^:]+):/.exec(entry.actor)?.[1];
               return <li key={entry.seq}>
-                <button type="button" aria-current={entry.seq === selected ? "true" : undefined} onClick={() => setSelected(entry.seq)} className={clsx("block w-full rounded-lg px-3 py-2 text-left transition-colors", entry.seq === selected ? "bg-selection" : "hover:bg-accent")}>
+                <RowButton size="bare" tone="selection" shape="card" active={entry.seq === selected} aria-current={entry.seq === selected ? "true" : undefined} onClick={() => setSelected(entry.seq)}><span className="block w-full px-3 py-2">
                   <span className="flex items-center gap-1.5 text-ui text-foreground">
                     {harness && <HarnessMark harness={harness} size={12} />}
                     <span className="min-w-0 flex-1 truncate">{entry.label}</span>
@@ -115,7 +118,7 @@ export function NoteHistoryDialog({ page, open, chatTitle, onClose, onRestore }:
                     <span className="tabular-nums text-faint">+{entry.added} −{entry.removed}</span>
                     {entry.count > 1 && <span className="text-faint">{entry.count} edits</span>}
                   </span>
-                </button>
+                </span></RowButton>
               </li>;
             })}
             {entries && !entries.length && <li className="px-3 py-6 text-center text-meta text-muted-foreground">No versions yet.</li>}

@@ -10,6 +10,10 @@ import { clsx } from "clsx";
 import type { NoteDatabaseView } from "../../../types";
 import { MenuDivider, MenuLabel } from "../NotesUi";
 import { Floating } from "./Floating";
+import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
+import { RowButton } from "@/components/ui/row";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 export const VIEW_TYPES: [string, string][] = [["table", "Table"], ["board", "Board"], ["calendar", "Calendar"], ["list", "List"]];
 const ICONS: Record<string, typeof Table2> = { table: Table2, board: Kanban, calendar: CalendarDays, list: List };
@@ -61,18 +65,19 @@ function Tab({ view, index, count, active, onSelect, actions, onDragStart, onDro
     onDragStart={event => { event.dataTransfer?.setData("text/plain", view.id); onDragStart(); }}
     onDragOver={event => event.preventDefault()}
     onDrop={event => { event.preventDefault(); onDrop(); }}
-    className={clsx("group relative inline-flex items-center rounded-md", active ? "bg-accent" : "hover:bg-accent/60")}
+    className="group relative inline-flex items-center"
   >
-    <button type="button" role="tab" aria-selected={active} onClick={onSelect} className={clsx("inline-flex h-7 items-center gap-1.5 pl-2 pr-1 text-meta transition-colors", active ? "font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}>
-      {viewIcon(view.type)}{view.name}
-    </button>
-    <button type="button" aria-label={`${view.name} view menu`} aria-expanded={!!menu} onClick={() => { setName(view.name); setMenu(menu ? null : "main"); }} className={clsx("grid size-6 place-items-center rounded text-muted-foreground transition-opacity hover:text-foreground", active || menu ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100")}>
-      <MoreHorizontal size={13} aria-hidden="true" />
-    </button>
+    <Button variant="quiet" size="xs" role="tab" aria-selected={active} onClick={onSelect}>
+      {viewIcon(view.type)}<span className={clsx(active && "font-medium")}>{view.name}</span>
+    </Button>
+    {/* The view's menu waits for hover unless the view is open. */}
+    <span className={clsx("transition-opacity", active || menu ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-within:opacity-100")}><Button variant="quiet" size="icon-2xs" aria-label={`${view.name} view menu`} aria-expanded={!!menu} onClick={() => { setName(view.name); setMenu(menu ? null : "main"); }}>
+      <MoreHorizontal aria-hidden="true" />
+    </Button></span>
     {menu && <Floating anchor={anchor} label={`${view.name} view`} onClose={close} width="w-56">
       {menu === "rename"
         ? <form onSubmit={event => { event.preventDefault(); if (name.trim() && name.trim() !== view.name) actions.rename(view, name.trim()); close(); }} className="p-1">
-          <input aria-label="View name" autoFocus value={name} onChange={event => setName(event.target.value)} className="h-8 w-full rounded-lg bg-muted px-2.5 text-ui text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+          <Input size="sm" aria-label="View name" autoFocus value={name} onChange={event => setName(event.target.value)} />
         </form>
         : menu === "type"
           ? <div role="menu" aria-label="View type">
@@ -99,21 +104,21 @@ function NewView({ onCreate }: { onCreate: (type: string, name: string) => void 
   const anchor = useRef<HTMLDivElement>(null);
   const label = VIEW_TYPES.find(([id]) => id === type)![1];
   return <div ref={anchor} className="relative">
-    <button type="button" aria-expanded={open} onClick={() => { setOpen(current => !current); setName(""); }} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />New view</button>
+    <Button variant="quiet" size="xs" aria-expanded={open} onClick={() => { setOpen(current => !current); setName(""); }}><Plus aria-hidden="true" />New view</Button>
     {open && <Floating anchor={anchor} label="New view" onClose={() => setOpen(false)} width="w-64">
       <form onSubmit={event => { event.preventDefault(); onCreate(type, name.trim() || label); setOpen(false); }} className="flex flex-col gap-1.5 p-1">
-        <div role="radiogroup" aria-label="View type" className="grid grid-cols-2 gap-1">
-          {VIEW_TYPES.map(([id, words]) => <button key={id} type="button" role="radio" aria-checked={type === id} onClick={() => setType(id)} className={clsx("inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-meta transition-colors", type === id ? "bg-selection font-medium text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")}>{viewIcon(id)}{words}</button>)}
-        </div>
-        <input aria-label="New view name" value={name} placeholder={label} onChange={event => setName(event.target.value)} className="h-8 w-full rounded-lg bg-muted px-2.5 text-ui text-foreground outline-none placeholder:text-faint focus-visible:ring-2 focus-visible:ring-ring" />
-        <button type="submit" className="inline-flex h-8 items-center justify-center rounded-full bg-primary px-3.5 text-ui font-medium text-primary-foreground hover:opacity-90">Create</button>
+        <SegmentedGroup label="View type" className="grid grid-cols-2">
+          {VIEW_TYPES.map(([id, words]) => <SegmentedItem key={id} active={type === id} onClick={() => setType(id)}><span className="inline-flex items-center gap-1.5">{viewIcon(id)}{words}</span></SegmentedItem>)}
+        </SegmentedGroup>
+        <Input size="sm" aria-label="New view name" value={name} placeholder={label} onChange={event => setName(event.target.value)} />
+        <Button type="submit" size="sm">Create</Button>
       </form>
     </Floating>}
   </div>;
 }
 
 function MenuItem({ checked, icon, destructive, disabled, onClick, children }: { checked?: boolean; icon?: ReactNode; destructive?: boolean; disabled?: boolean; onClick: () => void; children: ReactNode }) {
-  return <button type="button" role={checked === undefined ? "menuitem" : "menuitemradio"} aria-checked={checked} disabled={disabled} onClick={onClick} className={clsx("flex min-h-8 w-full items-center gap-2 rounded-lg px-2.5 text-left text-ui transition-colors enabled:hover:bg-accent disabled:opacity-40", destructive ? "text-destructive" : "text-foreground", checked && "font-medium")}>
-    {icon && <span className="text-muted-foreground">{icon}</span>}<span className="min-w-0 flex-1 truncate">{children}</span>
-  </button>;
+  return <RowButton shape="card" role={checked === undefined ? "menuitem" : "menuitemradio"} aria-checked={checked} disabled={disabled} onClick={onClick}>
+    {icon && <span className="text-muted-foreground">{icon}</span>}<span className={clsx("min-w-0 flex-1 truncate", destructive && "text-destructive", checked && "font-medium")}>{children}</span>
+  </RowButton>;
 }

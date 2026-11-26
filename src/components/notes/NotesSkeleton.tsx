@@ -20,26 +20,28 @@ const TAB_WIDTHS = ["w-8", "w-11", "w-11", "w-10"] as const;
 
 /** Rows shaped like the list's `NoteRow`: a title, its age, a first line. */
 export function NoteListSkeleton({ rows = 6, className }: { rows?: number; className?: string }) {
-  return <SkeletonRegion label="Loading notes" className={clsx("space-y-px", className)}>
+  return <SkeletonRegion label="Loading notes" className={className}>
+    <div className="space-y-px">
     {Array.from({ length: rows }, (_, row) => <div key={row} data-skeleton-row="" className="flex items-stretch">
       <span aria-hidden="true" className="w-5 shrink-0" />
       <div className="min-w-0 flex-1 px-2.5 py-2">
         <span className="flex h-5 items-center gap-3">
-          <Skeleton index={row} className={clsx("h-2.5", ROW_TITLES[row % ROW_TITLES.length])} />
+          <span className={clsx("block", ROW_TITLES[row % ROW_TITLES.length])}><Skeleton index={row} className="h-2.5 w-full" /></span>
           <Skeleton index={row} className="ml-auto h-2 w-5 shrink-0" />
         </span>
         <span className="mt-0.5 flex h-[1.1875rem] items-center">
-          <Skeleton index={row} className={clsx("h-2", ROW_LINES[row % ROW_LINES.length])} />
+          <span className={clsx("block", ROW_LINES[row % ROW_LINES.length])}><Skeleton index={row} className="h-2 w-full" /></span>
         </span>
       </div>
     </div>)}
+    </div>
   </SkeletonRegion>;
 }
 
 /** The tab chips (All, Inbox, Pages, …) before the system database is read. */
 export function NoteTabsSkeleton({ className }: { className?: string }) {
   return <span aria-hidden="true" className={clsx("flex gap-0.5", className)}>
-    {TAB_WIDTHS.map((width, tab) => <span key={tab} className="flex h-7 items-center px-2"><Skeleton index={tab} className={clsx("h-2.5", width)} /></span>)}
+    {TAB_WIDTHS.map((width, tab) => <span key={tab} className="flex h-7 items-center px-2"><span className={clsx("block", width)}><Skeleton index={tab} className="h-2.5 w-full" /></span></span>)}
   </span>;
 }
 
@@ -49,25 +51,27 @@ export function NoteTabsSkeleton({ className }: { className?: string }) {
  * view switch with its actions, then the prose.
  */
 export function NotePageSkeleton({ title }: { title?: string | null }) {
-  return <SkeletonRegion label={title ? `Opening ${title}` : "Opening the page"} className="mx-auto w-full max-w-[44rem] flex-1 px-8 pb-24 pt-10">
+  return <SkeletonRegion label={title ? `Opening ${title}` : "Opening the page"} className="mx-auto w-full max-w-[44rem] flex-1">
+    <div className="px-8 pb-24 pt-10">
     {title
-      ? <p aria-hidden="true" className="m-0 break-words text-[2.25rem] font-bold leading-[1.2] tracking-[-0.025em] text-foreground">{title}</p>
+      ? <p aria-hidden="true" className="m-0 break-words text-4xl font-bold leading-tight tracking-tight text-foreground">{title}</p>
       : <span className="flex h-[2.7rem] items-center"><Skeleton className="h-7 w-3/5 rounded-md" /></span>}
     <div className="mt-5">
       {PROPERTY_VALUES.map((width, row) => <div key={row} className="flex h-8 items-center gap-2">
         <span className="w-28 shrink-0"><Skeleton index={row} className="h-2.5 w-14" /></span>
-        <Skeleton index={row} className={clsx("h-2.5", width)} />
+        <span className={clsx("block", width)}><Skeleton index={row} className="h-2.5 w-full" /></span>
       </div>)}
     </div>
     <div className="mt-6 flex items-center gap-2 border-b border-border pb-3">
       <Skeleton index={3} className="mr-auto h-8 w-[11.5rem] rounded-full" />
-      {["w-16", "w-24", "w-20"].map((width, action) => <span key={action} className="hidden h-8 items-center px-3 sm:flex"><Skeleton index={3} className={clsx("h-2.5", width)} /></span>)}
+      {["w-16", "w-24", "w-20"].map((width, action) => <span key={action} className="hidden h-8 items-center px-3 sm:flex"><span className={clsx("block", width)}><Skeleton index={3} className="h-2.5 w-full" /></span></span>)}
     </div>
     <div className="mt-6 flex flex-col gap-3.5">
-      {["w-full", "w-11/12", "w-full", "w-2/5"].map((width, line) => <Skeleton key={line} index={4 + Math.floor(line / 2)} className={width} />)}
+      {["w-full", "w-11/12", "w-full", "w-2/5"].map((width, line) => <span key={line} className={clsx("block", width)}><Skeleton index={4 + Math.floor(line / 2)} className="w-full" /></span>)}
     </div>
     <div className="mt-7 flex flex-col gap-3.5">
-      {["w-10/12", "w-full", "w-3/5"].map((width, line) => <Skeleton key={line} index={6 + Math.floor(line / 2)} className={width} />)}
+      {["w-10/12", "w-full", "w-3/5"].map((width, line) => <span key={line} className={clsx("block", width)}><Skeleton index={6 + Math.floor(line / 2)} className="w-full" /></span>)}
+    </div>
     </div>
   </SkeletonRegion>;
 }
@@ -89,7 +93,7 @@ export function NotesScreenSkeleton() {
         <div className="h-8 rounded-lg bg-muted" />
         <NoteTabsSkeleton className="mt-2" />
       </div>
-      <NoteListSkeleton className="min-h-0 flex-1 overflow-hidden px-2 py-2" />
+      <div className="min-h-0 flex-1 overflow-hidden px-2 py-2"><NoteListSkeleton /></div>
     </aside>
     <main className="hidden min-w-0 flex-1 md:block" />
   </div>;

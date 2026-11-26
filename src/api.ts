@@ -21,7 +21,7 @@ import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
 import { activeWebDaemon } from "./webDaemon";
 import { asWireKind, readWireKind } from "./transcript/wire";
-import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, ReviewMemoryRecordsResult, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryConsolidationSettings, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, Workspace, WorkspaceSessionKind } from "./types";
+import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, ReviewMemoryRecordsResult, MemoryRetentionSettings, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryConsolidationSettings, MemoryExtractionSettings, MemoryInjectionSettings, MemoryModelChoice, MemoryModelSettings, MemoryModelSource, SkippedMemoryModel, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, Workspace, WorkspaceSessionKind } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { EarlyCompactionSettings } from "./types";
 import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath, BrowserCloneStatus } from "./types";
@@ -816,6 +816,8 @@ const mockMemoryRecords: MemoryRecord[] = [
   memRecord("mem_p2b5", "Prefers vitest -t filters over whole-file runs while triaging.", "preference", "proposed", "model_proposal", { confidenceBps: 6200, rationale: "run 8813" }),
   memRecord("mem_p3c7", "Check the upstream tracker before deep-diving a security-hunt candidate.", "constraint", "proposed", "agent_proposal", { rationale: "The person said to keep this for every future hunt." }),
   memRecord("mem_d1c9", "Sprint-scoped: land the onboarding picker before Friday.", "constraint", "deleted", "model_proposal", { confidenceBps: 3000, createdAt: "2026-08-05T09:00:00Z", validTo: "2026-08-18T09:00:00Z" }),
+  memRecord("mem_r1e4", "Keeps the staging database on Postgres 15 until the upgrade lands.", "fact", "expired", "model_proposal", { confidenceBps: 7800, rationale: "retired after 90 days unused", createdAt: "2026-05-02T09:00:00Z", validTo: "2026-08-20T09:00:00Z" }),
+  memRecord("mem_r2b8", "Reviews land on Tuesdays and Thursdays.", "decision", "expired", "model_proposal", { confidenceBps: 8100, createdAt: "2026-04-14T09:00:00Z", validTo: "2026-08-12T09:00:00Z" }),
   // A long review queue, so mock mode shows the paged Review tab the way a
   // real account with months of extraction does.
   ...Array.from({ length: 135 }, (_, index) => memRecord(
@@ -851,7 +853,35 @@ const mockActivityLog: MemoryActivityEntry[] = [
 ];
 let mockMemoryInsights: MemoryInsightsResult = { status: "empty" };
 let mockExtractionSettings: MemoryExtractionSettings = { scopeKey: "account:local", mode: "propose" };
+let mockMemoryModelPin: MemoryModelChoice | undefined;
+/** Like the host: the pin, then the new-chat default, then the standard
+ * choice, skipping any harness that cannot run a tool-free turn. */
+function mockMemoryModel(): MemoryModelSettings {
+  const skipped: SkippedMemoryModel[] = [];
+  const consider = (harness: string, model: string | null | undefined, source: MemoryModelSource) => {
+    if (harness === "claude") return { harness, ...(model ? { model } : {}), source };
+    skipped.push({ harness, ...(model ? { model } : {}), source, reason: `\`${harness}\` cannot enforce a tool-free turn` });
+    return undefined;
+  };
+  const chat = mockDefaultsView(mockState).application.defaults.model;
+  const resolved = (mockMemoryModelPin && consider(mockMemoryModelPin.harness, mockMemoryModelPin.model, "user"))
+    ?? (chat ? consider(chat.harness, chat.model, "chat_default") : undefined)
+    ?? consider("claude", "sonnet", "standard");
+  return { ...(mockMemoryModelPin ? { pinned: { ...mockMemoryModelPin } } : {}), ...(resolved ? { resolved } : {}), skipped };
+}
 const mockMemoryMaxRecords = 200;
+let mockRetention: { proposalTtlDays: number; retireUnusedAfterDays: number | null } = { proposalTtlDays: 7, retireUnusedAfterDays: 90 };
+function mockRetentionSettings(): MemoryRetentionSettings {
+  return {
+    scopeKey: "account:local",
+    proposalTtlDays: mockRetention.proposalTtlDays,
+    ...(mockRetention.retireUnusedAfterDays ? { retireUnusedAfterDays: mockRetention.retireUnusedAfterDays } : {}),
+    maxProposals: 200,
+    maxActive: mockMemoryMaxRecords,
+    heldActive: mockMemoryRecords.filter(item => item.status === "active").length,
+    heldProposals: mockMemoryRecords.filter(item => item.status === "proposed").length,
+  };
+}
 let mockMemoryInjection = true;
 const mockForests: Record<string, SessionForestSnapshot> = {
   "session-2": mockDeckForest(now),
@@ -1035,6 +1065,39 @@ function mockScreenTime(params: ScreenTimeParams): UsageScreenTimeResult {
   if (today) today.humanSeconds += mockPresenceMinutes.size * 60;
   const humanSeconds = days.reduce((sum, day) => sum + day.humanSeconds, 0);
   const agentSeconds = days.reduce((sum, day) => sum + day.agentSeconds, 0);
+  // Split the range across projects and harnesses by fixed shares, rounded
+  // to whole minutes, the remainder on the first.
+  const split = (total: number, shares: number[]) => {
+    const parts = shares.map(share => Math.floor((total / 60) * share) * 60);
+    parts[0] += total - parts.reduce((sum, part) => sum + part, 0);
+    return parts;
+  };
+  const scale = days.length / 7;
+  const projectNames: [string | null, string][] = [["demo-project", "Bridge"], ["mock-atlas", "atlas-api"], ["mock-site", "marketing-site"], ["mock-cli", "deploy-cli"], ["mock-notes", "field-notes"], ["mock-infra", "infra"], ["mock-docs", "docs"], [null, "No project"]];
+  const yours = split(Math.round(humanSeconds * 0.86), [0.52, 0.2, 0.1, 0.07, 0.05, 0.03, 0.02, 0.01]);
+  const theirs = split(agentSeconds, [0.48, 0.24, 0.1, 0.07, 0.04, 0.03, 0.02, 0.02]);
+  const pullCounts = [9, 5, 3, 2, 1, 0, 1, 0].map(count => Math.round(count * scale));
+  const projects = projectNames.map(([projectId, name], index) => ({
+    projectId, name, humanSeconds: yours[index], agentSeconds: theirs[index],
+    chats: Math.max(1, Math.round([14, 8, 5, 4, 3, 2, 2, 3][index] * scale)), pullRequests: pullCounts[index],
+  }));
+  const harnessSeconds = split(agentSeconds, [0.58, 0.3, 0.1, 0.02]);
+  const harnesses = ["claude", "codex", "opencode", "cursor"].map((harness, index) => ({ harness, agentSeconds: harnessSeconds[index], chats: Math.max(1, Math.round([22, 12, 5, 1][index] * scale)) }));
+  const hourWeights = Array.from({ length: 24 }, (_, hour) => hour < 8 ? 0.02 : Math.exp(-((hour - 14.5) ** 2) / 14));
+  const weightTotal = hourWeights.reduce((sum, weight) => sum + weight, 0);
+  const agentWeights = hourWeights.map((weight, hour) => weight + (hour < 8 ? 0.15 : 0.1));
+  const agentWeightTotal = agentWeights.reduce((sum, weight) => sum + weight, 0);
+  const hours = hourWeights.map((weight, hour) => ({
+    hour,
+    humanSeconds: Math.round((humanSeconds * weight) / weightTotal / 60) * 60,
+    agentSeconds: Math.round((agentSeconds * agentWeights[hour]) / agentWeightTotal / 60) * 60,
+  }));
+  const repos = [["you/bridge", 0], ["you/atlas-api", 1], ["you/marketing-site", 2], ["you/deploy-cli", 3], ["you/field-notes", 4], ["you/docs", 6]] as const;
+  const opened = pullCounts.reduce((sum, count) => sum + count, 0);
+  const merged = Math.round(opened * 0.75);
+  const open = Math.max(0, opened - merged - 1);
+  const titles = ["fix(usage): count chats once per range", "feat(api): page the audit log", "docs: explain local-only Screen Time", "fix(cli): keep the deploy lock on retry", "feat(site): pricing table for teams", "chore: bump the pinned toolchain"];
+  const states = ["open", "merged", "merged", "closed", "merged", "merged"] as const;
   return {
     sinceDay: params.sinceDay,
     untilDay: params.untilDay,
@@ -1042,6 +1105,18 @@ function mockScreenTime(params: ScreenTimeParams): UsageScreenTimeResult {
     days,
     allTime: { humanSeconds: humanSeconds + 212 * 3_600, agentSeconds: agentSeconds + 731 * 3_600, humanSinceDay: shift(params.untilDay, -79), agentSinceDay: shift(params.untilDay, -140) },
     agentHistory: "complete",
+    projects,
+    pullRequests: {
+      opened, merged, open, closed: opened - merged - open,
+      repos: repos.map(([repo, index]) => ({ repo, opened: pullCounts[index], merged: Math.round(pullCounts[index] * 0.75) })).filter(repo => repo.opened > 0),
+      recent: titles.map((title, index) => {
+        const repo = repos[Math.min(index, repos.length - 1)][0];
+        const number = 1_204 - index * 7;
+        return { repo, number, title, url: `https://github.com/${repo}/pull/${number}`, state: states[index], openedDay: shift(params.untilDay, -Math.floor(index / 2)) };
+      }),
+    },
+    hours,
+    harnesses,
   };
 }
 
@@ -2010,7 +2085,8 @@ export const bridgeApi = {
   getChatDefaults: async (projectId?: string | null): Promise<ChatDefaultsView> => hasBackend() ? call("config/get_chat_defaults", { projectId: projectId ?? null }) : Promise.resolve(mockDefaultsView(mockState, projectId)),
   saveChatDefaults: async (params: SaveChatDefaultsParams): Promise<ChatDefaultsView> => {
     if (hasBackend()) return call("config/save_chat_defaults", params);
-    const result = mockSaveDefaults(mockState,params); emitState(); return result;
+    // Like the host: an unpinned memory model follows the new-chat model.
+    const result = mockSaveDefaults(mockState,params); emitState(); emitMemoryChanged("account:local"); return result;
   },
   resolveChatSettings: async (params: ResolveChatSettingsParams): Promise<ResolvedChatSettings> => hasBackend() ? call("sessions/resolve_chat_settings", params) : Promise.resolve(mockResolveSettings(mockState,mockHealth.adapters,mockConfigState.agents,params)),
   createConfiguredChat: async (params: CreateConfiguredChatParams): Promise<ConfiguredChatResult> => {
@@ -2692,14 +2768,14 @@ export const bridgeApi = {
   // comes back at once when `refresh` is false.
   usageInsights: (params: InsightsParams): Promise<UsageInsightsResult> =>
     hasBackend() ? call("usage/insights", params) : new Promise(resolve => setTimeout(() => resolve(mockUsageInsights(params)), params.refresh ? 900 : 0)),
-  /** Screen Time: the minutes you were active in this window. Recording one twice stores it once. */
+  /** Screen Time: the minutes you were active in this window, and which chat was open in them. Recording one twice stores it once. */
   recordPresence: (params: RecordPresenceParams): Promise<UsageRecordPresenceResult> => {
     if (hasBackend()) return call("usage/record_presence", params);
     const before = mockPresenceMinutes.size;
     for (const minute of params.minutes) mockPresenceMinutes.add(minute);
     return Promise.resolve({ recorded: mockPresenceMinutes.size - before });
   },
-  /** Screen Time: your time and agent time per local day, and the all-time totals. */
+  /** Screen Time: your time and agent time per local day, the all-time totals, and the range by project, pull request, hour and harness. */
   screenTime: (params: ScreenTimeParams): Promise<UsageScreenTimeResult> =>
     hasBackend() ? call("usage/screen_time", params) : Promise.resolve(mockScreenTime(params)),
   listUsagePriceOverrides: (): Promise<UsagePriceOverride[]> =>
@@ -3693,7 +3769,7 @@ export const bridgeApi = {
     const trimmed = scopeKey.trim();
     if (!trimmed) throw new Error("Memory scope is required; it cannot be empty or NULL");
     const wanted = status ?? "active";
-    if (wanted !== "active" && wanted !== "proposed") throw new Error(`Memory list can show active or proposed records, not '${wanted}'.`);
+    if (wanted !== "active" && wanted !== "proposed" && wanted !== "expired") throw new Error(`Memory list can show active, proposed or expired records, not '${wanted}'.`);
     const limit = page.limit ?? MEMORY_PAGE_SIZE;
     if (limit < 1 || limit > MEMORY_PAGE_SIZE) throw new Error(`A memory page holds 1 to ${MEMORY_PAGE_SIZE} records.`);
     // Core's order and keyset: newest change first, ties by id, and a cursor
@@ -3784,27 +3860,60 @@ export const bridgeApi = {
   },
   getConsolidationSettings: async (): Promise<MemoryConsolidationSettings> => {
     if (hasBackend()) return call("memory/get_consolidation_settings");
-    const heldRecords = mockMemoryRecords.filter(item => item.status === "active" || item.status === "proposed").length;
+    const heldRecords = mockMemoryRecords.filter(item => item.status === "active").length;
     return { scopeKey: "account:local", mode: "off", maxRecords: mockMemoryMaxRecords, heldRecords, allowRemoval: false, debounceSeconds: 600 };
+  },
+  /** How memory cleans itself up: proposal expiry, retiring unused memories, the queue's own cap. */
+  getRetentionSettings: async (): Promise<MemoryRetentionSettings> => {
+    if (hasBackend()) return call("memory/get_retention_settings");
+    return mockRetentionSettings();
+  },
+  setRetentionSettings: async (proposalTtlDays: number, retireUnusedAfterDays: number | null): Promise<MemoryRetentionSettings> => {
+    if (hasBackend()) return call("memory/set_retention_settings", { proposalTtlDays, ...(retireUnusedAfterDays ? { retireUnusedAfterDays } : {}) });
+    if (![3, 7, 14, 30].includes(proposalTtlDays)) throw new Error(`Proposals can wait 3, 7, 14 or 30 days for review, not ${proposalTtlDays}.`);
+    if (retireUnusedAfterDays !== null && ![30, 90, 180].includes(retireUnusedAfterDays)) throw new Error(`Unused memories can retire after 30, 90 or 180 days, or never; not ${retireUnusedAfterDays}.`);
+    mockRetention = { proposalTtlDays, retireUnusedAfterDays };
+    emitMemoryChanged("account:local");
+    return mockRetentionSettings();
+  },
+  /** A retired or expired memory comes back as a new active record that supersedes it. */
+  restoreMemoryRecord: async (recordId: string): Promise<MemoryRecord> => {
+    if (hasBackend()) return call("memory/restore_memory_record", { recordId });
+    const old = mockMemoryRecords.find(item => item.id === recordId && item.status === "expired");
+    if (!old) throw new Error("Only a retired or expired memory can be restored.");
+    const now = new Date().toISOString();
+    const record: MemoryRecord = { ...structuredClone(old), id: crypto.randomUUID(), status: "active", supersedes: old.id, validFrom: now, validTo: undefined, createdAt: now, updatedAt: now };
+    old.status = "superseded";
+    mockMemoryRecords.unshift(record);
+    emitMemoryChanged(record.scopeKey);
+    return structuredClone(record);
   },
   getExtractionSettings: async (): Promise<MemoryExtractionSettings> => {
     if (hasBackend()) return call("memory/get_extraction_settings");
     return structuredClone(mockExtractionSettings);
   },
-  updateExtractionSettings: async (mode: string, harness?: string | null, model?: string | null): Promise<MemoryExtractionSettings> => {
-    if (hasBackend()) {
-      return call("memory/update_extraction_settings", {
-        mode,
-        ...(harness ? { harness } : {}),
-        ...(model ? { model } : {}),
-      });
-    }
+  /** What an extraction runs on is the memory model (`setMemoryModel`). */
+  updateExtractionSettings: async (mode: string): Promise<MemoryExtractionSettings> => {
+    if (hasBackend()) return call("memory/update_extraction_settings", { mode });
     if (mode !== "remember" && mode !== "propose" && mode !== "auto_apply") {
       throw new Error(`Unknown extraction mode '${mode}'. Use remember, propose, or auto_apply.`);
     }
-    if (Boolean(harness) !== Boolean(model)) throw new Error("Pin both a helper and a model, or neither to run on each chat's own model.");
-    mockExtractionSettings = { ...mockExtractionSettings, mode, harness: harness ?? undefined, model: model ?? undefined };
+    mockExtractionSettings = { ...mockExtractionSettings, mode };
     return structuredClone(mockExtractionSettings);
+  },
+  /** The one harness and model extraction, nightly cleanup and automatic approval run on. */
+  getMemoryModel: async (): Promise<MemoryModelSettings> => {
+    if (hasBackend()) return call("memory/get_memory_model");
+    return mockMemoryModel();
+  },
+  /** Both pin the memory model; neither clears the pin, so the new-chat model is used. */
+  setMemoryModel: async (harness?: string | null, model?: string | null): Promise<MemoryModelSettings> => {
+    if (hasBackend()) return call("memory/set_memory_model", { ...(harness ? { harness } : {}), ...(model ? { model } : {}) });
+    if (Boolean(harness) !== Boolean(model)) throw new Error("Pin both a harness and a model, or neither to use your new-chat model.");
+    if (harness && harness !== "claude") throw new Error(`${harness} cannot run memory jobs, which must be tool-free.`);
+    mockMemoryModelPin = harness && model ? { harness, model } : undefined;
+    emitMemoryChanged("account:local");
+    return mockMemoryModel();
   },
   getMemoryInjection: async (): Promise<MemoryInjectionSettings> => {
     if (hasBackend()) return call("memory/get_memory_injection");

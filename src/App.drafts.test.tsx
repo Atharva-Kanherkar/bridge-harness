@@ -52,8 +52,8 @@ async function settle(rounds = 6) {
 }
 
 // Sidebar chat rows, by position: the two demo chats share a title.
-const chatRows = () => [...container.querySelectorAll<HTMLButtonElement>('button[title*=" — "]')]
-  .filter(row => !row.title.startsWith("Usage"));
+const chatRows = () => [...container.querySelectorAll<HTMLButtonElement>('button[data-tip*=" — "]')]
+  .filter(row => !(row.dataset.tip ?? "").startsWith("Usage"));
 /** The chat composer, not a worker's steer box or the welcome composer. */
 const composer = () => [...container.querySelectorAll<HTMLTextAreaElement>("textarea")]
   .find(field => field.placeholder.startsWith("Message Bridge") || field.placeholder.startsWith("Send a follow-up"));
@@ -302,7 +302,7 @@ describe("a failed send never overwrites or loses the user's words", () => {
     await settle(6);
     expect(submit).toHaveBeenCalledOnce();
     expect(composer()!.value, "nothing to send twice").toBe("");
-    expect(container.textContent).toContain("refresh failed");
+    expect(container.textContent).toContain("Refresh failed.");
   });
 
   it("a sign-in failure restores ahead of newer typing and offers the retry", async () => {

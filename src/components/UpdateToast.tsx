@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { Download } from "lucide-react";
 import { isDevelopmentBuild, UpdateInstallUnavailableError, type UpdateInfo } from "../updater";
+import { friendlyError } from "../errors";
 import { ToastCard } from "./ToastCard";
-import { pendingClass } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 
 /** Last in the top-right stack. It stays until installed or dismissed. */
 export function UpdateToast({ update, onInstall, onDismiss }: {
@@ -21,9 +21,8 @@ export function UpdateToast({ update, onInstall, onDismiss }: {
       await onInstall(update);
     } catch (error) {
       setInstalling(false);
-      setInstallError(error instanceof UpdateInstallUnavailableError
-        ? error.message
-        : "Update failed. Check your connection and try again.");
+      const failed = "Update failed. Check your connection and try again.";
+      setInstallError(error instanceof UpdateInstallUnavailableError ? friendlyError(error, failed) : failed);
     }
   }
   return <ToastCard
@@ -37,15 +36,12 @@ export function UpdateToast({ update, onInstall, onDismiss }: {
     </>}
     footer={<>
       {installError && <span className="mt-1 block text-meta text-destructive">{installError}</span>}
-      {developmentBuild ? <span className="mt-2 block text-meta text-muted-foreground">Install updates from a packaged Bridge app.</span> : <button
-        type="button"
-        disabled={installing}
-        aria-busy={installing || undefined}
+      {developmentBuild ? <span className="mt-2 block text-meta text-muted-foreground">Install updates from a packaged Bridge app.</span> : <Button variant="default" size="xs" className="mt-2"
+        loading={installing}
         onClick={() => void install()}
-        className={cn("mt-2 inline-flex items-center gap-1.5 rounded-md bg-foreground px-2.5 py-1 text-meta font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-60", pendingClass(installing))}
       >
         {installError && !installing ? "Retry" : "Install and restart"}
-      </button>}
+      </Button>}
     </>}
   />;
 }

@@ -7,7 +7,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
-import type { MemoryChangedPayload, MemoryExtractionSettings, MemoryRecord } from "../types";
+import type { AdapterDescriptor, MemoryChangedPayload, MemoryExtractionSettings, MemoryModelSettings, MemoryRecord, MemoryRetentionSettings } from "../types";
 import { bodyLength, MemoryDialog } from "./MemoryDialog";
 
 const record = (id: string, body: string, kind = "preference"): MemoryRecord => ({
@@ -26,6 +26,7 @@ let container: HTMLDivElement;
 let root: Root;
 let store: MemoryRecord[];
 let extractionSettings: MemoryExtractionSettings;
+let memoryModel: MemoryModelSettings;
 let memoryHandler: ((payload: MemoryChangedPayload) => void) | undefined;
 let maxRecords: number;
 
@@ -52,6 +53,15 @@ const setBody = (value: string) => {
   act(() => {
     setter.call(textarea(), value);
     textarea().dispatchEvent(new Event("input", { bubbles: true }));
+  });
+};
+/** Opens the named list and picks the option with that label. */
+const choose = async (label: string, option: string) => {
+  await act(async () => { document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click(); });
+  const item = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent?.trim() === option)!;
+  await act(async () => {
+    item.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    item.click();
   });
 };
 const setSearch = (value: string) => {
@@ -91,14 +101,22 @@ beforeEach(() => {
     scopeKey: "account:local",
     mode: "off",
     maxRecords,
-    heldRecords: store.filter(item => item.status === "active" || item.status === "proposed").length,
+    heldRecords: store.filter(item => item.status === "active").length,
     allowRemoval: false,
     debounceSeconds: 600,
   }));
-  vi.spyOn(bridgeApi, "updateExtractionSettings").mockImplementation(async (mode, harness, model) => {
-    if (Boolean(harness) !== Boolean(model)) throw new Error("Pin both a helper and a model, or neither to run on each chat's own model.");
-    extractionSettings = { ...extractionSettings, mode, harness: harness ?? undefined, model: model ?? undefined };
+  vi.spyOn(bridgeApi, "updateExtractionSettings").mockImplementation(async mode => {
+    extractionSettings = { ...extractionSettings, mode };
     return structuredClone(extractionSettings);
+  });
+  memoryModel = { resolved: { harness: "claude", model: "opus", source: "chat_default" }, skipped: [] };
+  vi.spyOn(bridgeApi, "getMemoryModel").mockImplementation(async () => structuredClone(memoryModel));
+  vi.spyOn(bridgeApi, "setMemoryModel").mockImplementation(async (harness, model) => {
+    if (harness === "codex") throw new Error("codex cannot run memory jobs, which must be tool-free: no per-tool authority");
+    memoryModel = harness && model
+      ? { pinned: { harness, model }, resolved: { harness, model, source: "user" }, skipped: [] }
+      : { resolved: { harness: "claude", model: "opus", source: "chat_default" }, skipped: [] };
+    return structuredClone(memoryModel);
   });
   vi.spyOn(bridgeApi, "supersedeMemoryRecord").mockImplementation(async (recordId, newBody, newKind) => {
     const old = store.find(item => item.id === recordId && item.status === "active")!;
@@ -263,7 +281,7 @@ describe("MemoryDialog", () => {
     expect(container.textContent).toContain("1 of 1 used · 3 recalls");
     expect(container.textContent).toContain("Over the packet budget");
     expect(container.textContent).toContain("3 applied, 1 refused · merged two notes");
-    expect(container.textContent).toContain("failed: the harness ended before answering");
+    expect(container.textContent).toContain("failed: The harness ended before answering.");
     expect(container.textContent).toContain("does not measure whether a memory helped");
     const meter = document.querySelector('[role="meter"][aria-label="Packet budget"]')!;
     expect(meter.getAttribute("aria-valuenow")).toBe("31");
@@ -450,13 +468,13 @@ describe("MemoryDialog injection toggle", () => {
     });
     mount();
     await flush();
-    const toggle = document.querySelector<HTMLInputElement>('[aria-label="Use active memory in new chats"]')!;
-    expect(toggle.checked).toBe(true);
+    const toggle = document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Use active memory in new chats"]')!;
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
     expect(container.textContent).toContain("Use in new chats");
     act(() => { toggle.click(); });
     await flush();
     expect(bridgeApi.setMemoryInjection).toHaveBeenCalledWith(false);
-    expect(toggle.checked).toBe(false);
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
   });
 });
 
@@ -508,22 +526,27 @@ describe("MemoryDialog review queue", () => {
     expect(container.textContent).toContain("existing active memory stays active");
   });
 
-  it("review first without a pinned helper runs on the chat's own model", async () => {
-    const onError = vi.fn();
-    mount({ onError });
-    await flush();
-    click(tab("Review"));
-    expect(buttonByText("Manual only").getAttribute("aria-pressed")).toBe("true");
-    click(buttonByText("Review first"));
-    await flush();
-    expect(onError).not.toHaveBeenCalled();
-    expect(buttonByText("Review first").getAttribute("aria-pressed")).toBe("true");
-    expect(extractionSettings.harness).toBeFalsy();
-    expect(extractionSettings.model).toBeFalsy();
-    expect(container.textContent).toContain("Chat's own model");
-  });
+  const memoryAdapters: AdapterDescriptor[] = [
+    {
+      id: "claude", label: "Claude", available: true, authState: "signed_in", version: "test", unavailableReason: null, capabilities: [],
+      models: [{ id: "opus", label: "Claude Opus", tier: "strong", defaultForTier: true }, { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForTier: true }],
+      defaultModel: "opus",
+    },
+    {
+      id: "codex", label: "Codex", available: true, authState: "signed_in", version: "test", unavailableReason: null, capabilities: [],
+      models: [{ id: "gpt-5.6-luna", label: "GPT Luna", tier: "standard", defaultForTier: true }],
+      defaultModel: "gpt-5.6-luna",
+    },
+  ];
+  // Option labels for the ids these tests pick, as the Choice lists show them.
+  const optionLabel: Record<string, string> = { "": "", claude: "Claude", codex: "Codex", opus: "Claude Opus", haiku: "Claude Haiku", "gpt-5.6-luna": "GPT Luna" };
+  const pick = (label: string, value: string) =>
+    choose(label, value === "" ? (label === "Memory harness" ? "Use my new-chat model" : "Model…") : optionLabel[value]);
+  /** What a Choice trigger shows. */
+  const pickerValue = (label: string) => document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.textContent?.trim();
+  const sourceLine = () => container.querySelector('[data-testid="memory-model-source"]')?.textContent;
 
-  it("automatic is selectable and keeps the chat-own-model profile when unpinned", async () => {
+  it("changing the extraction mode sends only the mode", async () => {
     const onError = vi.fn();
     mount({ onError });
     await flush();
@@ -531,70 +554,136 @@ describe("MemoryDialog review queue", () => {
     click(buttonByText("Automatic"));
     await flush();
     expect(onError).not.toHaveBeenCalled();
-    expect(bridgeApi.updateExtractionSettings).toHaveBeenCalledWith("auto_apply", "", "");
+    expect(bridgeApi.updateExtractionSettings).toHaveBeenCalledWith("auto_apply");
     expect(buttonByText("Automatic").getAttribute("aria-pressed")).toBe("true");
   });
 
-  it("automatic forwards the selected extraction helper and model", async () => {
-    mount({
-      adapters: [{
-        id: "claude",
-        label: "Claude",
-        available: true,
-        authState: "signed_in",
-        version: "test",
-        unavailableReason: null,
-        capabilities: [],
-        models: [{ id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForTier: true }],
-        defaultModel: "sonnet",
-      }],
-    });
+  it("the memory model card says what every memory job runs on and why", async () => {
+    mount({ adapters: memoryAdapters });
     await flush();
     click(tab("Review"));
-    const harness = container.querySelector<HTMLSelectElement>('select[aria-label="Extraction harness"]')!;
-    act(() => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
-      setter.call(harness, "claude");
-      harness.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    const model = container.querySelector<HTMLSelectElement>('select[aria-label="Extraction model"]')!;
-    act(() => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
-      setter.call(model, "sonnet");
-      model.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    click(buttonByText("Automatic"));
-    await flush();
-    expect(bridgeApi.updateExtractionSettings).toHaveBeenCalledWith("auto_apply", "claude", "sonnet");
-    expect(buttonByText("Automatic").getAttribute("aria-pressed")).toBe("true");
+    expect(container.textContent).toContain("Memory model");
+    expect(container.textContent).toContain("Runs extraction after chats, nightly cleanup and automatic approval");
+    expect(container.textContent).not.toContain("Extraction model");
+    expect(sourceLine()).toBe("Using Claude Opus, your new-chat model.");
+    expect(pickerValue("Memory harness")).toBe("Use my new-chat model");
   });
 
-  it("a helper pinned without a model is refused and the mode stays put", async () => {
+  it("a skipped choice is shown with its reason", async () => {
+    memoryModel = {
+      resolved: { harness: "claude", model: "opus", source: "standard" },
+      skipped: [{ harness: "codex", model: "gpt-5.6-luna", source: "chat_default", reason: "the app-server protocol has no per-tool authority" }],
+    };
+    mount({ adapters: memoryAdapters });
+    await flush();
+    click(tab("Review"));
+    expect(sourceLine()).toBe("Using Claude Opus, Bridge's standard choice.");
+    expect(container.textContent).toContain("Skipped GPT Luna, your new-chat model: the app-server protocol has no per-tool authority.");
+  });
+
+  it("picking a model saves the pin once, and the new-chat option clears it", async () => {
     const onError = vi.fn();
-    mount({
-      onError,
-      adapters: [{ id: "claude", label: "Claude", available: true, authState: "authenticated", capabilities: [], models: [] } as never],
-    });
+    mount({ onError, adapters: memoryAdapters });
     await flush();
     click(tab("Review"));
-    const harness = container.querySelector<HTMLSelectElement>('select[aria-label="Extraction harness"]')!;
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
-      setter.call(harness, "claude");
-      harness.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    click(buttonByText("Review first"));
+    await pick("Memory harness", "claude");
     await flush();
-    expect(onError).toHaveBeenCalledWith(expect.stringContaining("both a helper and a model"));
-    expect(buttonByText("Manual only").getAttribute("aria-pressed")).toBe("true");
+    expect(bridgeApi.setMemoryModel).not.toHaveBeenCalled();
+    await pick("Memory model", "haiku");
+    await flush();
+    expect(bridgeApi.setMemoryModel).toHaveBeenCalledTimes(1);
+    expect(bridgeApi.setMemoryModel).toHaveBeenCalledWith("claude", "haiku");
+    expect(sourceLine()).toBe("Using Claude Haiku, your pick.");
+
+    await pick("Memory harness", "");
+    await flush();
+    expect(bridgeApi.setMemoryModel).toHaveBeenLastCalledWith();
+    expect(sourceLine()).toBe("Using Claude Opus, your new-chat model.");
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("a harness that cannot run tool-free is refused and the pickers reset", async () => {
+    const onError = vi.fn();
+    mount({ onError, adapters: memoryAdapters });
+    await flush();
+    click(tab("Review"));
+    await pick("Memory harness", "codex");
+    await pick("Memory model", "gpt-5.6-luna");
+    await flush();
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining("tool-free"));
+    expect(pickerValue("Memory harness")).toBe("Use my new-chat model");
+    expect(sourceLine()).toBe("Using Claude Opus, your new-chat model.");
+  });
+
+  it("the pickers follow a pin changed or cleared elsewhere", async () => {
+    memoryModel = { pinned: { harness: "claude", model: "haiku" }, resolved: { harness: "claude", model: "haiku", source: "user" }, skipped: [] };
+    mount({ adapters: memoryAdapters });
+    await flush();
+    click(tab("Review"));
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["Claude", "Claude Haiku"]);
+
+    // Changed through the settings tool in another chat.
+    memoryModel = { pinned: { harness: "claude", model: "opus" }, resolved: { harness: "claude", model: "opus", source: "user" }, skipped: [] };
+    await act(async () => { memoryHandler?.({ scopeKey: "account:local" }); });
+    await flush();
+    expect(sourceLine()).toBe("Using Claude Opus, your pick.");
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["Claude", "Claude Opus"]);
+
+    // Cleared elsewhere: back to the new-chat model.
+    memoryModel = { resolved: { harness: "claude", model: "opus", source: "chat_default" }, skipped: [] };
+    await act(async () => { memoryHandler?.({ scopeKey: "account:local" }); });
+    await flush();
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["Use my new-chat model", "Model…"]);
+  });
+
+  it("a harness picked without a model stays a local draft until a model is chosen", async () => {
+    memoryModel = { pinned: { harness: "claude", model: "haiku" }, resolved: { harness: "claude", model: "haiku", source: "user" }, skipped: [] };
+    mount({ adapters: memoryAdapters });
+    await flush();
+    click(tab("Review"));
+    await pick("Memory harness", "codex");
+    await flush();
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["Codex", "Model…"]);
+    await act(async () => { memoryHandler?.({ scopeKey: "account:local" }); });
+    await flush();
+    expect(pickerValue("Memory harness"), "an unrelated reload keeps the draft").toBe("Codex");
+    expect(sourceLine(), "the stored pin is still what runs").toBe("Using Claude Haiku, your pick.");
+    expect(bridgeApi.setMemoryModel).not.toHaveBeenCalled();
+  });
+
+  it("a read that started before a memory-model write cannot undo it", async () => {
+    let release: () => void = () => {};
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const list = vi.mocked(bridgeApi.listMemoryRecords).getMockImplementation()!;
+    let first = true;
+    vi.mocked(bridgeApi.listMemoryRecords).mockImplementation(async (...args) => {
+      if (first) { first = false; await held; }
+      return list(...args);
+    });
+    mount({ adapters: memoryAdapters });
+    await flush();
+    click(tab("Review"));
+    await pick("Memory harness", "claude");
+    await pick("Memory model", "haiku");
+    await flush();
+    expect(sourceLine()).toBe("Using Claude Haiku, your pick.");
+
+    // The first read captured the unpinned model before the write.
+    await act(async () => { release(); });
+    await flush();
+    expect(sourceLine()).toBe("Using Claude Haiku, your pick.");
+    expect([pickerValue("Memory harness"), pickerValue("Memory model")]).toEqual(["Claude", "Claude Haiku"]);
+
+    await pick("Memory harness", "");
+    await flush();
+    expect(bridgeApi.setMemoryModel).toHaveBeenLastCalledWith();
+    expect(memoryModel.pinned, "the clear reached the store").toBeUndefined();
   });
 
   it("the last run's observed spend is on screen", async () => {
     extractionSettings = {
       scopeKey: "account:local",
       mode: "propose",
-      harness: "codex",
-      model: "gpt-5.6-luna",
       lastRun: { status: "completed", proposalCount: 2, observedTokens: 420, spendMicrousd: 1700, updatedAt: "2026-08-21T00:00:00Z" },
     };
     mount();
@@ -616,16 +705,15 @@ describe("bodyLength", () => {
 });
 
 describe("memory hardening", () => {
-  it("says the scope is full, with the numbers, and points at the review queue", async () => {
-    maxRecords = 3;
+  it("says the scope is full with active memories only, and that proposals still wait", async () => {
+    maxRecords = 2;
     mount();
     await flush();
     const banner = container.querySelector('[role="status"]');
     expect(banner?.textContent).toContain("Memory is full.");
-    expect(banner?.textContent).toContain("3 of 3");
-    expect(banner?.textContent).toContain("no extraction runs");
-    click(buttonByText("Review 1"));
-    expect(container.textContent).toContain("Waiting for review");
+    expect(banner?.textContent).toContain("2 of 2 memories");
+    expect(banner?.textContent).toContain("Proposals still wait for you");
+    expect(banner?.textContent).not.toContain("counting proposals");
   });
 
   it("shows no banner while the scope has room", async () => {
@@ -688,9 +776,9 @@ describe("MemoryDialog paging and bulk review", () => {
       ...(end < matching.length ? { nextCursor: String(end) } : {}),
     };
   });
-  const cards = () => container.querySelectorAll('input[aria-label^="Select proposal"]');
+  const cards = () => container.querySelectorAll('[role="checkbox"][aria-label^="Select proposal"]');
   const toggle = (element: Element) => {
-    act(() => { (element as HTMLInputElement).click(); });
+    act(() => { (element as HTMLElement).click(); });
   };
 
   beforeEach(() => {
@@ -745,7 +833,7 @@ describe("MemoryDialog paging and bulk review", () => {
     mount();
     await flush();
     click(tab("Review"));
-    toggle(document.querySelector('input[aria-label="Select all shown proposals"]')!);
+    toggle(document.querySelector('[role="checkbox"][aria-label="Select all shown proposals"]')!);
     expect(container.textContent).toContain("50 selected");
     click(buttonByText("Reject selected"));
     await flush();
@@ -767,7 +855,7 @@ describe("MemoryDialog paging and bulk review", () => {
     mount({ onError });
     await flush();
     click(tab("Review"));
-    toggle(document.querySelector('input[aria-label="Select all shown proposals"]')!);
+    toggle(document.querySelector('[role="checkbox"][aria-label="Select all shown proposals"]')!);
     click(buttonByText("Approve selected"));
     await flush();
     expect(onError).toHaveBeenCalledWith(expect.stringContaining("1 of 2 could not be approved"));
@@ -807,8 +895,8 @@ describe("MemoryDialog paging and bulk review", () => {
     expect(labels).toContain(ticked);
     expect(cards()).toHaveLength(105);
     expect(container.textContent).toContain("1 selected");
-    const kept = [...cards()].find(input => input.getAttribute("aria-label") === ticked) as HTMLInputElement;
-    expect(kept.checked).toBe(true);
+    const kept = [...cards()].find(input => input.getAttribute("aria-label") === ticked)!;
+    expect(kept.getAttribute("aria-checked")).toBe("true");
   });
 
   it("reads the rest of the memories before a search, so nothing unloaded is missed", async () => {
@@ -823,5 +911,70 @@ describe("MemoryDialog paging and bulk review", () => {
     await flush();
     expect(pageCursorsOf).toContain("50");
     expect(container.textContent).toContain("Deploys from a laptop only");
+  });
+});
+
+// testing/feat-memory-retention.md: clean-up settings, the Retired list with
+// Restore, and retention sweeps in Activity.
+describe("MemoryDialog retention", () => {
+  let retention: MemoryRetentionSettings;
+  beforeEach(() => {
+    retention = { scopeKey: "account:local", proposalTtlDays: 7, retireUnusedAfterDays: 90, maxProposals: 100, maxActive: 200, heldActive: 2, heldProposals: 1 };
+    vi.spyOn(bridgeApi, "getRetentionSettings").mockImplementation(async () => structuredClone(retention));
+    vi.spyOn(bridgeApi, "setRetentionSettings").mockImplementation(async (proposalTtlDays, retireUnusedAfterDays) => {
+      retention = { ...retention, proposalTtlDays, retireUnusedAfterDays: retireUnusedAfterDays ?? undefined };
+      return structuredClone(retention);
+    });
+    vi.spyOn(bridgeApi, "restoreMemoryRecord").mockImplementation(async recordId => {
+      const old = store.find(item => item.id === recordId)!;
+      const restored = { ...old, id: `${recordId}-back`, status: "active", supersedes: recordId };
+      old.status = "superseded";
+      store = [restored, ...store];
+      memoryHandler?.({ scopeKey: "account:local" });
+      return restored;
+    });
+  });
+
+  it("explains the queue's own expiry and allowance", async () => {
+    mount();
+    await flush();
+    click(tab("Review"));
+    expect(container.textContent).toContain("within 7 days expire");
+    expect(container.textContent).toContain("The queue holds 1 of 100");
+  });
+
+  it("saves a shorter proposal expiry and never retiring from the Clean up card", async () => {
+    mount();
+    await flush();
+    click(tab("Review"));
+    await choose("Proposals expire after", "Expire after 3 days");
+    expect(bridgeApi.setRetentionSettings).toHaveBeenLastCalledWith(3, 90);
+    await choose("Retire unused memories after", "Never retire");
+    expect(bridgeApi.setRetentionSettings).toHaveBeenLastCalledWith(3, null);
+    expect(container.textContent).toContain("within 3 days expire");
+  });
+
+  it("lists retired memories and restores one", async () => {
+    store.push({ ...record("r-old", "Keeps staging on Postgres 15", "fact"), status: "expired", provenance: "model_proposal", validTo: "2026-08-20T00:00:00Z" });
+    mount();
+    await flush();
+    const retired = container.querySelector('[aria-label="Retired memories"]')!;
+    expect(retired.textContent).toContain("Keeps staging on Postgres 15");
+    click([...retired.querySelectorAll("button")].find(button => button.textContent === "Restore")!);
+    await flush();
+    expect(bridgeApi.restoreMemoryRecord).toHaveBeenCalledWith("r-old");
+    expect(container.querySelector('[aria-label="Retired memories"]')).toBeNull();
+  });
+
+  it("shows retention sweeps in Activity", async () => {
+    vi.mocked(bridgeApi.memoryActivityLog).mockResolvedValue([
+      { source: "retention", status: "completed", applied: 3, refused: 0, detail: "unused_retired", at: new Date().toISOString() },
+      { source: "retention", status: "completed", applied: 12, refused: 0, detail: "proposals_expired", at: new Date().toISOString() },
+    ]);
+    mount();
+    await flush();
+    click(tab("Activity"));
+    expect(container.textContent).toContain("Retired 3 unused memories");
+    expect(container.textContent).toContain("12 unreviewed proposals expired");
   });
 });

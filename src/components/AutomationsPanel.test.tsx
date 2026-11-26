@@ -71,7 +71,8 @@ describe("AutomationsPanel", () => {
         : state),
     };
     const html = renderToStaticMarkup(<AutomationsPanel initialCatalog={unreadable} />);
-    expect(html).toContain("is unreadable");
+    expect(html).toContain("scheduled_tasks.json is unreadable.");
+    expect(html).not.toContain("bad json");
     expect(html).not.toContain("New Claude automation");
     expect(html).not.toContain(">Create<");
   });

@@ -53,6 +53,7 @@ export default defineConfig(({ mode }) => ({
   test: {
     // The sidecar and release scripts have dedicated runners.
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    setupFiles: ["src/testSetup.ts"],
     // Excalidraw's package imports JSON without an import attribute, which
     // Node refuses; transforming it through Vite lets drawing tests load it.
     server: { deps: { inline: [/@excalidraw\//] } },

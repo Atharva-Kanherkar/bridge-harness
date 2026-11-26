@@ -6,6 +6,7 @@ import type { UsageSummaryResult } from "../types";
 import { HarnessMark, harnessChartFill, harnessChartStroke } from "./harnessMarks";
 import { costSourceLabel, formatCount, formatPercent, formatTokens, formatUsd, type UsageMetric, type UsageReport, type UsageWindow, type UsageWindowDays } from "../usageReport";
 import { axisFraction, evenTicks, TOKEN_KINDS, type TokenKind } from "../usageGeometry";
+import { Tip } from "@/components/ui/tooltip";
 
 // Pieces every Usage layout shares, so the honesty rules are written once:
 // the `API estimate` caption, the `~` on a partly unpriced
@@ -58,7 +59,8 @@ export function UsageLoadingState() {
 /** `~` after a cost whose window holds unpriced records: the figure is a floor, not a total. */
 export function EstimateMark({ report, large }: { report: UsageReport; large?: boolean }) {
   if (report.costSource !== "unpriced") return null;
-  return <span className={cn("font-normal text-muted-foreground", large && "ml-1 align-top text-[0.42em] tracking-normal")} title="Partly unpriced: some records have no known rate">~</span>;
+  // oxlint-disable-next-line shadcn/no-arbitrary-values -- the mark is a superscript sized to whichever hero figure it follows
+  return <Tip label="Partly unpriced: some records have no known rate"><span className={cn("font-normal text-muted-foreground", large && "ml-1 align-top text-[0.42em] tracking-normal")}>~</span></Tip>;
 }
 
 /** Request count and, in cost mode, `API estimate` plus the window's weakest provenance. */
@@ -100,7 +102,7 @@ export function TokenComposition({ report, className }: { report: UsageReport; c
     <div className="mt-3.5 flex h-2 gap-0.5" role="img" aria-label={TOKEN_KINDS.map(kind => `${kind.label} ${formatTokens(report.totals[kind.key])}`).join(", ")}>
       {total > 0 ? TOKEN_KINDS.filter(kind => report.totals[kind.key] > 0).map(kind => <span key={kind.key} className={cn("min-w-1 rounded-sm", KIND_SHADE[kind.key].bg)} style={{ flexGrow: report.totals[kind.key] }} />) : <span className="flex-1 rounded-sm bg-muted" />}
     </div>
-    <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4">
+    <dl className="mt-3 grid grid-cols-[repeat(auto-fit,minmax(10.5rem,1fr))] gap-x-6 gap-y-2">
       {TOKEN_KINDS.map(kind => <div key={kind.key} className="flex items-baseline gap-2 text-ui">
         <span className={cn("size-2 shrink-0 translate-y-[-1px] rounded-sm", KIND_SHADE[kind.key].bg)} aria-hidden="true" />
         <dt className="text-muted-foreground">{kind.label}</dt>

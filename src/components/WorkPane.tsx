@@ -5,10 +5,13 @@ import { formatElapsed, type BackgroundTaskView } from "../backgroundTasks";
 import { chatPrKey, chatPrStatus, checkTone, freshness, orderChecks } from "../chatPullRequests";
 import { orderPullRequests, shelfPhrase } from "../workSummary";
 import { cn } from "@/lib/utils";
+import { friendlyError } from "../errors";
 import { AttachPullRequest, CHECK_ICON, PullRequestGlyph } from "./ChatPullRequests";
 import { SHELF_TONE, TaskKindGlyph } from "./WorkShelf";
 import { useBackgroundTasks } from "./useBackgroundTasks";
-import { pendingClass } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
+import { Tip } from "@/components/ui/tooltip";
 
 // The detail behind the composer shelf: every pull request this chat opened
 // or had attached, and every task its agent left running. One row grammar for
@@ -18,7 +21,6 @@ import { pendingClass } from "@/components/ui/skeleton";
 export type WorkFocus = { number?: number; nonce: number };
 
 const SECTION = "flex items-center gap-2 px-2 pb-1 pt-3 text-caption font-medium text-faint";
-const ACTION = "inline-flex h-7 items-center gap-1 rounded-md border border-border-card px-2.5 text-meta text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 function useClock(intervalMs: number | null) {
   const [now, setNow] = useState(() => Date.now());
@@ -41,13 +43,15 @@ function PullRequestDetail({ pr, now, onFix, onOpenGithub, onRetry, retrying }: 
 }) {
   const ordered = orderChecks(pr.checkDetails);
   const failing = pr.state === "open" && chatPrStatus(pr).phase === "failing";
+  // The banner already says GitHub didn't answer; the detail only adds to it.
+  const staleReason = pr.error ? friendlyError(pr.error, "") : "";
   return <div data-work-pr-detail className="mb-2 ml-[1.15rem] border-l border-border pl-3">
     {pr.stale && <div role="status" className="my-1.5 flex items-center gap-2 rounded-lg border border-border px-2.5 py-1.5 text-caption text-muted-foreground">
       <CloudOff size={12} className="shrink-0" aria-hidden="true" />
-      <span className="min-w-0 flex-1">GitHub didn’t answer, so this is the last state Bridge saw{pr.error ? <span className="block truncate text-micro text-faint" title={pr.error}>{pr.error}</span> : null}</span>
-      <button aria-busy={retrying || undefined} type="button" onClick={onRetry} disabled={retrying} className={cn("inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-border-card px-2 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-60", pendingClass(retrying))}>
+      <span className="min-w-0 flex-1">GitHub didn’t answer, so this is the last state Bridge saw{staleReason ? <Tip label={staleReason}><span className="block truncate text-micro text-faint">{staleReason}</span></Tip> : null}</span>
+      <Button variant="outline" size="2xs" onClick={onRetry} disabled={retrying} loading={retrying}>
         <RotateCw size={11} aria-hidden="true" /> Retry
-      </button>
+      </Button>
     </div>}
     {ordered.length > 0
       ? <ul aria-label={`Checks on #${pr.number}`} className="grid">
@@ -69,12 +73,12 @@ function PullRequestDetail({ pr, now, onFix, onOpenGithub, onRetry, retrying }: 
       </ul>
       : <p className="py-1.5 text-meta text-faint">{pr.state === "open" ? "No checks reported yet." : "Checks no longer matter on a settled pull request."}</p>}
     <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-      {failing && onFix && <button type="button" onClick={() => onFix(pr)} className={cn(ACTION, "border-transparent bg-primary text-primary-foreground hover:bg-primary/90")}>Fix the failing check</button>}
-      {onOpenGithub && <button type="button" onClick={() => onOpenGithub(pr.number, failing ? "checks" : "conversation")} className={ACTION}>
+      {failing && onFix && <Button variant="default" size="xs" onClick={() => onFix(pr)}>Fix the failing check</Button>}
+      {onOpenGithub && <Button variant="outline" size="xs" onClick={() => onOpenGithub(pr.number, failing ? "checks" : "conversation")}>
         <PanelRight size={12} aria-hidden="true" /> Open in GitHub pane
-      </button>}
-      <a href={pr.url} target="_blank" rel="noreferrer" className={ACTION}>GitHub <ArrowUpRight size={11} aria-hidden="true" /></a>
-      <span className="ml-auto text-caption tabular-nums text-faint" title={pr.fetchedAt ?? undefined}>{pr.stale ? "last known · " : "updated "}{freshness(pr.fetchedAt, now)}</span>
+      </Button>}
+      <Button variant="outline" size="xs" render={<a href={pr.url} target="_blank" rel="noreferrer" />}>GitHub <ArrowUpRight size={11} aria-hidden="true" /></Button>
+      <Tip label={pr.fetchedAt ?? undefined}><span className="ml-auto text-caption tabular-nums text-faint">{pr.stale ? "last known · " : "updated "}{freshness(pr.fetchedAt, now)}</span></Tip>
     </div>
   </div>;
 }
@@ -93,14 +97,15 @@ function PullRequestRow({ pr, open, onToggle, rowRef, ...detail }: {
   const phrase = shelfPhrase(pr);
   const detailId = useId();
   return <li data-work-pr={pr.number} className="min-w-0">
-    <button
+    <RowButton
       ref={rowRef}
-      type="button"
+      size="bare"
+      shape="card"
+      active={open}
       aria-expanded={open}
       aria-controls={open ? detailId : undefined}
       onClick={onToggle}
-      className={cn("grid w-full min-w-0 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-0.5 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", open && "bg-accent")}
-    >
+    ><span className="grid w-full min-w-0 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-0.5 px-2 py-2">
       <PullRequestGlyph pr={pr} />
       <span className="flex min-w-0 items-baseline gap-1.5 text-ui">
         <span className="shrink-0 tabular-nums text-muted-foreground">#{pr.number}</span>
@@ -112,27 +117,27 @@ function PullRequestRow({ pr, open, onToggle, rowRef, ...detail }: {
         {pr.headSha && <span className="shrink-0">{pr.headSha.slice(0, 7)}</span>}
         {pr.stale && <CloudOff size={11} className="shrink-0" aria-label="Last known state" />}
       </span>
-    </button>
+    </span></RowButton>
     {open && <div id={detailId}><PullRequestDetail pr={pr} {...detail} /></div>}
   </li>;
 }
 
 function TaskRow({ task, harness, open, onToggle }: { task: BackgroundTaskView; harness?: string | null; open: boolean; onToggle: () => void }) {
   return <li data-work-task className="min-w-0">
-    <button
-      type="button"
+    <Tip label={task.command}><RowButton
+      size="bare"
+      shape="card"
+      active={open}
       aria-expanded={open}
       onClick={onToggle}
-      title={task.command}
-      className={cn("grid w-full min-w-0 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-0.5 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", open && "bg-accent")}
-    >
+    ><span className="grid w-full min-w-0 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-0.5 px-2 py-2">
       <span className="grid place-items-center"><TaskKindGlyph kind={task.kind} harness={harness} /></span>
       <span className="min-w-0 truncate text-ui text-foreground">{task.label}</span>
       <span className="shrink-0 text-meta tabular-nums text-faint">{task.elapsedMs !== undefined ? formatElapsed(task.elapsedMs) : ""}</span>
       <span className="col-start-2 min-w-0 truncate text-caption text-faint">
         {task.kind === "watching" ? "Watching" : "Running"}{task.detail ? <span className="font-mono"> · {task.detail}</span> : null}
       </span>
-    </button>
+    </span></RowButton></Tip>
     {/* Opens in place, like a PR's detail: the pane is for reading, not motion. */}
     {open && <div data-work-task-output className="mb-2 ml-[1.15rem] rounded-md border border-border bg-code px-3 py-2 font-mono text-caption leading-relaxed">
       {task.outputTail.length > 0
@@ -140,7 +145,7 @@ function TaskRow({ task, harness, open, onToggle }: { task: BackgroundTaskView; 
         : <p className="text-muted-foreground">{task.logFiles.length
           ? <>Output goes to {task.logFiles.map((file, index) => <span key={file} className="whitespace-nowrap text-foreground/80">{file}{index < task.logFiles.length - 1 ? ", " : ""}</span>)}</>
           : "No output yet"}</p>}
-      {task.command && <p className="mt-1.5 truncate border-t border-border pt-1.5 text-faint" title={task.command}><span aria-hidden="true">$ </span>{task.command}</p>}
+      {task.command && <Tip label={task.command}><p className="mt-1.5 truncate border-t border-border pt-1.5 text-faint"><span aria-hidden="true">$ </span>{task.command}</p></Tip>}
     </div>}
   </li>;
 }

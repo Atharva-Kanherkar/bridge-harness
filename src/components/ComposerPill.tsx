@@ -2,13 +2,16 @@ import type { ClipboardEvent, KeyboardEvent, MutableRefObject, ReactNode } from 
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Paperclip, Square, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
 import type { ComposerAttachment } from "@/pasteAttachments";
 import type { BrowserSelectionContext } from "../browserSelection";
 import { chipDetail, chipSummary, type ReferenceChipModel } from "../referenceChip";
 import { VoiceControls, VoiceStatus, voiceIsBusy } from "./VoiceControls";
+import { ComposerReplyBanner } from "./ReplyContext";
+import type { ReplyTarget } from "@/replyTo";
 import type { VoiceView, VoiceState } from "@/voiceDictation";
 import type { VoiceRecoveryAction } from "@/protocol/generated/protocol";
-import { pendingClass } from "@/components/ui/skeleton";
 
 export type ComposerPillProps = {
   value: string;
@@ -27,6 +30,11 @@ export type ComposerPillProps = {
   onRemoveBrowserSelection?: (id: string) => void;
   onAttachFiles?: (files: File[]) => void;
   onRemoveAttachment?: (id: string) => void;
+  /// The earlier agent reply the next message answers, drawn as a banner
+  /// above the input. ✕ calls `onCancelReply`; the preview calls `onRevealReply`.
+  replyTo?: ReplyTarget;
+  onCancelReply?: () => void;
+  onRevealReply?: () => void;
   placeholder?: string;
   disabled?: boolean;
   working?: boolean;
@@ -76,9 +84,8 @@ export type ComposerPillProps = {
   /// tools and chat options. The access mode lives in the model picker's
   /// footer and only joins this row for a chat drawn without the picker.
   accessControl?: ReactNode;
-  /// The context strip, rendered as an attached footer inside the composer frame:
-  /// input → controls row → footer. When present it gets a top hairline and the
-  /// recessed `bg-background` surface, so the frame visually contains it.
+  /// The context strip, a row just below the composer frame. The hero leaves
+  /// more room above it, since the new-chat row carries the boxed mode toggle.
   footer?: ReactNode;
   /// A line attached to the top of the frame, above the input, behind a
   /// hairline: the work shelf. Absent by default; it never reserves height.
@@ -116,6 +123,9 @@ export function ComposerPill({
   onRemoveBrowserSelection,
   onAttachFiles,
   onRemoveAttachment,
+  replyTo,
+  onCancelReply,
+  onRevealReply,
   placeholder = "Ask Bridge…",
   disabled,
   working,
@@ -184,7 +194,7 @@ export function ComposerPill({
   const isHero = layout === "hero";
   const isInline = layout === "inline";
   const fieldMetrics = cn(
-    "w-full whitespace-pre-wrap wrap-break-word leading-relaxed tracking-[-0.006em]",
+    "w-full whitespace-pre-wrap wrap-break-word leading-relaxed tracking-tight",
     isInline ? "text-sm" : "text-message",
     isHero ? "min-h-16 max-h-44 px-1 py-1" : "min-h-7 max-h-35 px-1 py-0.5",
   );
@@ -242,6 +252,7 @@ export function ComposerPill({
           }}
         >
           {header}
+          {replyTo && <ComposerReplyBanner target={replyTo} onCancel={onCancelReply} onReveal={onRevealReply} />}
           {/* Keep workspace metadata outside the writing surface. */}
           <div className={cn("flex flex-col gap-1", isHero ? "px-4 py-3.5 sm:px-5 sm:py-4" : isInline ? "py-1 pl-2.5 pr-1" : "px-3 py-2")}>
           {references.length > 0 && (
@@ -249,34 +260,33 @@ export function ComposerPill({
               {references.map(chip => {
                 const unknown = chip.resolved.kind === "unknown";
                 return (
-                  <span
-                    key={chip.token}
+                  <Tip key={chip.token} label={chip.token}><span
                     className={cn(
                       "inline-flex max-w-full items-center gap-1.5 rounded-full border px-2 py-1 text-caption leading-4",
                       unknown ? "border-warning/40 bg-warning/10 text-warning" : "border-border bg-accent/60 text-foreground",
                     )}
-                    title={chip.token}
                   >
                     <span className="truncate font-medium">{chipSummary(chip.resolved)}</span>
                     <span className="truncate text-muted-foreground">{chipDetail(chip.resolved)}</span>
                     {onRemoveReference && (
-                      <button
-                        type="button"
+                      <Button
+                        variant="quiet"
+                        size="icon-2xs"
+                        shape="round"
                         aria-label={`Remove ${chipSummary(chip.resolved)} from this message`}
-                        className="rounded-full px-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                         onClick={() => onRemoveReference(chip)}
-                      >×</button>
+                      ><X aria-hidden="true" /></Button>
                     )}
-                  </span>
+                  </span></Tip>
                 );
               })}
             </div>
           )}
           {browserSelections.length > 0 && <div className="flex flex-wrap gap-2 px-3 pt-3" aria-label="Attached browser selections">
-            {browserSelections.map(selection => <div key={selection.id} className="flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-border bg-muted px-2 py-1.5 text-caption" title={`${selection.url}\n${selection.selector}`}>
+            {browserSelections.map(selection => <Tip key={selection.id} label={`${selection.url}\n${selection.selector}`}><div className="flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-border bg-muted px-2 py-1.5 text-caption">
               <span className="min-w-0"><span className="block truncate font-medium">{selection.title || "Selected element"}</span><span className="block truncate text-muted-foreground">Page element · {selection.selector}</span></span>
-              {onRemoveBrowserSelection && <button type="button" aria-label="Remove browser selection" onClick={() => onRemoveBrowserSelection(selection.id)} className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><X size={12} aria-hidden="true" /></button>}
-            </div>)}
+              {onRemoveBrowserSelection && <Button variant="quiet" size="icon-2xs" aria-label="Remove browser selection" onClick={() => onRemoveBrowserSelection(selection.id)}><X aria-hidden="true" /></Button>}
+            </div></Tip>)}
           </div>}
           {hasAttachments && (
             <div className="flex flex-wrap items-center gap-2 px-1 pt-0.5">
@@ -291,15 +301,17 @@ export function ComposerPill({
                     className="h-full w-full object-cover"
                   />
                   {onRemoveAttachment && (
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="icon-2xs"
+                      shape="round"
                       onClick={() => onRemoveAttachment(attachment.id)}
-                      className="absolute right-0.5 top-0.5 grid h-6 w-6 place-items-center rounded-full bg-background/80 text-foreground opacity-90 transition-opacity hover:opacity-100"
+                      className="absolute right-0.5 top-0.5"
                       aria-label="Remove attached image"
                       disabled={locked || voiceBusy}
                     >
-                      <X className="h-3 w-3" strokeWidth={2} aria-hidden="true" />
-                    </button>
+                      <X strokeWidth={2} aria-hidden="true" />
+                    </Button>
                   )}
                 </div>
               ))}
@@ -321,6 +333,7 @@ export function ComposerPill({
                 <span className="text-muted-foreground/50">{suggestion}</span>
               </div>
             )}
+            {/* oxlint-disable-next-line bridge/no-raw-controls -- the composer's own editing surface, measured against its mirror */}
             <textarea
               ref={node => {
                 textareaRef.current = node;
@@ -376,8 +389,9 @@ export function ComposerPill({
 
           <div className={cn("flex min-h-8 items-center gap-2", isInline ? "shrink-0" : "flex-wrap justify-between")}>
             {/* Leading edge of the controls row: the model chip, then the chat's
-                controls behind a hairline divider. */}
-            {(!isInline || modelControl || accessControl) && <div className="flex min-w-0 items-center gap-1.5">
+                controls behind a hairline divider. Pulled in by the field's own
+                inset so the chip's icon starts on the text column. */}
+            {(!isInline || modelControl || accessControl) && <div className={cn("flex min-w-0 items-center gap-1.5", !isInline && "-ml-1")}>
               {modelControl}
               {modelControl && accessControl ? <span aria-hidden="true" className="h-4 w-px shrink-0 bg-border" /> : null}
               {accessControl}
@@ -391,7 +405,7 @@ export function ComposerPill({
                   event.currentTarget.value = "";
                   if (files.length && !voiceBusy) onAttachFiles(files);
                 }} />
-                <button type="button" disabled={locked || voiceBusy} aria-label="Attach images" title="Attach images" onClick={() => attachmentInput.current?.click()} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><Paperclip className="h-4 w-4" aria-hidden="true" /></button>
+                <Button variant="quiet" size="icon-sm" disabled={locked || voiceBusy} aria-label="Attach images" tooltip="Attach images" onClick={() => attachmentInput.current?.click()}><Paperclip aria-hidden="true" /></Button>
               </>}
               {leading}
               {onVoiceStart && onVoiceStop && <VoiceControls state={voiceState} available={voiceAvailable} disabled={locked}
@@ -401,35 +415,31 @@ export function ComposerPill({
                   both are present: sending guidance must never read as cancelling
                   the work. */}
               {(working || stopping || agentsWorking) && onStop && (
-                <button
-                  type="button"
+                <Button
+                  variant="outline"
+                  size="icon-sm"
                   onClick={onStop}
                   disabled={stopping}
-                  title={!working && agentsWorking ? "Stop the agents this chat started" : undefined}
-                  aria-busy={stopping || undefined}
-                  className={cn("inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border-card bg-card text-foreground transition-colors duration-150 active:scale-95 hover:bg-accent disabled:opacity-70", pendingClass(stopping))}
+                  tooltip={!working && agentsWorking ? "Stop the agents this chat started" : undefined}
+                  loading={stopping}
                   aria-label={stopping ? "Stopping" : "Stop"}
                 >
-                  <Square className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
-                </button>
+                  <Square className="size-3.5 fill-current" aria-hidden="true" />
+                </Button>
               )}
               {(!working || steerable) && (
-                <button
+                <Button
                   type="submit"
+                  variant={canSend ? "default" : "secondary"}
+                  size={steerable ? "sm" : "icon-sm"}
+                  shape="round"
                   disabled={!canSend}
-                  className={cn(
-                    "inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-full transition-opacity duration-150 active:scale-95",
-                    steerable ? "px-3 text-ui font-medium" : "w-8",
-                    canSend
-                      ? "bg-primary text-primary-foreground hover:opacity-90"
-                      : "bg-accent text-muted-foreground/70",
-                  )}
                   aria-label={submitLabel}
-                  title={working ? activeActionNote ?? (activeAction === "queue" ? "Held until the current step finishes" : "Send guidance into the live turn") : undefined}
+                  tooltip={working ? activeActionNote ?? (activeAction === "queue" ? "Held until the current step finishes" : "Send guidance into the live turn") : undefined}
                 >
                   {steerable && <span>{submitLabel}</span>}
-                  <ArrowUp className="h-4 w-4" strokeWidth={2.5} aria-hidden="true" />
-                </button>
+                  <ArrowUp strokeWidth={2.5} aria-hidden="true" />
+                </Button>
               )}
             </div>
           </div>
@@ -437,7 +447,7 @@ export function ComposerPill({
           </div>
         </form>
       </div>
-      {footer && <div className="pt-1.5">{footer}</div>}
+      {footer && <div className={isHero ? "pt-3" : "pt-1.5"}>{footer}</div>}
     </div>
   );
 }

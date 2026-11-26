@@ -17,7 +17,7 @@ function event(kind: string, fields: Partial<AgentEvent> = {}): AgentEvent {
 
 /** A Claude tool call, as the live stream carries it. */
 function claudeTool(name: string, input: Record<string, unknown>, fields: Partial<AgentEvent> = {}): AgentEvent {
-  return event("tool.completed", { title: name, ...fields, data: { type: "tool_use", name, input, ...(fields.data ?? {}) } });
+  return event("tool.completed", { title: name, ...fields, data: { type: "tool_use", name, input, ...fields.data } });
 }
 
 function changed(events: AgentEvent[], roots: (string | null | undefined)[] = [ROOT]) {

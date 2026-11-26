@@ -7,6 +7,8 @@
 
 import { Search } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { RowButton } from "@/components/ui/row";
+import { Tip } from "@/components/ui/tooltip";
 import type { ChatSearchHit, SearchChatsResult } from "../protocol/generated/protocol";
 import { HarnessMark } from "./harnessMarks";
 import { chatListTime } from "./sidebarChats";
@@ -53,7 +55,7 @@ export function ChatSearchResults({
     <section aria-label="In conversations" aria-busy={loading || deepRunning} className="mb-3 flex flex-col gap-0.5">
       <div className="flex h-7 items-center gap-1.5 px-2">
         <Search size={13} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-        <span className="text-meta font-medium tracking-[-0.004em] text-muted-foreground">In conversations</span>
+        <span className="text-meta font-medium tracking-snug text-muted-foreground">In conversations</span>
       </div>
       <ul className={cn("flex flex-col gap-0.5 transition-opacity", deepRunning && "opacity-60")}>
         {hits.map(hit => {
@@ -61,19 +63,16 @@ export function ChatSearchResults({
           const active = hit.sessionId === activeSessionId;
           return (
             <li key={hit.sessionId}>
-              <button
-                type="button"
+              <Tip label={hit.title} side="right"><RowButton
+                size="bare"
+                tone="selection"
                 onClick={() => onOpen(hit.sessionId)}
-                title={hit.title}
                 aria-current={active ? "page" : undefined}
-                className={cn(
-                  "flex w-full min-w-0 flex-col gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors active:scale-[0.99]",
-                  active ? "bg-selection text-selection-foreground" : "hover:bg-accent",
-                )}
-              >
+                active={active}
+              ><span className="flex w-full min-w-0 flex-col gap-0.5 px-2 py-1.5">
                 <span className="flex min-w-0 items-center gap-1.5">
                   <HarnessMark harness={hit.harness} size={12} className="shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 flex-1 truncate text-ui leading-4 tracking-[-0.008em] text-foreground">{hit.title}</span>
+                  <span className="min-w-0 flex-1 truncate text-ui leading-4 tracking-snug text-foreground">{hit.title}</span>
                   {time && <span className="shrink-0 text-caption tabular-nums text-faint">{time}</span>}
                 </span>
                 {hit.snippet && <span className="line-clamp-2 text-caption leading-3.5 text-muted-foreground">{hit.snippet}</span>}
@@ -81,12 +80,12 @@ export function ChatSearchResults({
                   <span className="truncate">{hit.why}</span>
                   {(hit.archived || hit.ended) && <span className="shrink-0">· {hit.archived ? "archived" : "ended"}</span>}
                 </span>
-              </button>
+              </span></RowButton></Tip>
             </li>
           );
         })}
       </ul>
-      {(deepRunning || (loading && hits.length === 0)) && <SkeletonRows label="Searching conversations" rows={hits.length ? 1 : 3} framed={false} className="divide-y-0" rowClassName="min-h-0 px-2 py-1.5" />}
+      {(deepRunning || (loading && hits.length === 0)) && <SkeletonRows label="Searching conversations" rows={hits.length ? 1 : 3} framed={false} density="menu" />}
       {note && <p role="status" className="px-2 py-1 text-caption leading-relaxed text-muted-foreground/70">{note}</p>}
     </section>
   );

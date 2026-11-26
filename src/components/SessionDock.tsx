@@ -2,7 +2,10 @@ import { useId, useRef } from "react";
 import { FolderGit2, Maximize2, Minimize2, Plus, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "./ui/button";
 import { PaneState } from "./ui/pane";
+import { RowButton } from "./ui/row";
+import { Tip } from "./ui/tooltip";
 import { MenuPanel, useMenuPanel } from "./ui/menu-panel";
 import {
   DEFAULT_DOCK_WIDTH,
@@ -83,12 +86,17 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
   const dragging = useRef(false);
   // Expanded means the dock is `flex-1` — the whole split, always wider than
   // the threshold — so the label rides along with it.
-  const showActiveLabel = state.expanded || state.width >= DOCK_TAB_LABEL_MIN_WIDTH;
+  // The stored width is a preference, not a guarantee: the window may have
+  // shrunk, or been zoomed, since it was dragged. Split mode renders the
+  // clamped width so the conversation always keeps its minimum; the sheet
+  // overlays instead, bounded by `max-w-full`.
+  const width = sheet ? state.width : clampDockWidth(state.width, availableWidth);
+  const showActiveLabel = state.expanded || width >= DOCK_TAB_LABEL_MIN_WIDTH;
 
   const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     const originX = event.clientX;
-    const originWidth = state.width;
+    const originWidth = width;
     dragging.current = true;
     event.currentTarget.setPointerCapture(event.pointerId);
     const move = (pointer: PointerEvent) =>
@@ -106,7 +114,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     event.preventDefault();
     const delta = event.key === "ArrowLeft" ? RESIZE_STEP : -RESIZE_STEP;
-    onAction({ type: "set-width", width: state.width + delta, available: availableWidth });
+    onAction({ type: "set-width", width: width + delta, available: availableWidth });
   };
 
   return (
@@ -116,13 +124,14 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
           role="separator"
           aria-orientation="vertical"
           aria-label="Resize dock"
-          aria-valuenow={state.width}
+          aria-valuenow={width}
           aria-valuemin={MIN_DOCK_WIDTH}
           aria-valuemax={clampDockWidth(MAX_DOCK_WIDTH, availableWidth)}
           tabIndex={0}
           onPointerDown={startResize}
           onKeyDown={onDividerKeyDown}
           onDoubleClick={() => onAction({ type: "set-width", width: DEFAULT_DOCK_WIDTH, available: availableWidth })}
+          // oxlint-disable-next-line bridge/no-native-title-tooltip -- resize handle: a popup over the divider would sit under the pointer while dragging
           title="Drag to resize · double-click to reset"
           className="group relative z-20 -mr-1.5 w-3 shrink-0 cursor-col-resize"
         >
@@ -131,6 +140,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
       )}
 
       {state.open && sheet && !state.expanded && !concealed && (
+        // oxlint-disable-next-line bridge/no-raw-controls -- full-bleed scrim behind the sheet, no control look
         <button
           type="button"
           aria-label="Close dock"
@@ -148,7 +158,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
           !concealed && state.open && !state.expanded && sheet && "absolute inset-y-0 right-0 z-30 shadow-2xl",
           !concealed && state.open && !state.expanded && !sheet && "shrink-0",
         )}
-        style={!concealed && state.open && !state.expanded ? { width: state.width } : undefined}
+        style={!concealed && state.open && !state.expanded ? { width } : undefined}
       >
         {state.open && !concealed && (
           <div className="flex min-h-11 shrink-0 items-center gap-1 border-b border-border bg-muted/30 px-2 py-1">
@@ -160,16 +170,16 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                 // drawn first must not borrow the first pane's digit.
                 const chord = dockPaneChord(pane.id);
                 return (
-                  <button
-                    key={pane.id}
-                    type="button"
+                  <Tip key={pane.id} label={`${pane.label}${chord ? `  ${formatShortcut({ meta: true, alt: true }, chord)}` : ""}${pane.available ? "" : ` — ${pane.unavailableReason ?? "unavailable"}`}`}>
+                  <Button
+                    variant="quiet"
+                    size={active && showActiveLabel ? "xs" : "icon-xs"}
                     role="tab"
                     id={`${dockId}-tab-${pane.id}`}
                     aria-controls={`${dockId}-pane-${pane.id}`}
                     tabIndex={active ? 0 : -1}
                     aria-selected={active}
                     aria-label={pane.label}
-                    title={`${pane.label}${chord ? `  ${formatShortcut({ meta: true, alt: true }, chord)}` : ""}${pane.available ? "" : ` — ${pane.unavailableReason ?? "unavailable"}`}`}
                     onClick={() => onAction({ type: "open-pane", pane: pane.id })}
                     onKeyDown={event => {
                       let next = index;
@@ -182,17 +192,9 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                       onAction({ type: "open-pane", pane: strip[next].id });
                       document.getElementById(`${dockId}-tab-${strip[next].id}`)?.focus();
                     }}
-                    className={cn(
-                      "relative flex h-7 min-w-7 shrink-0 items-center justify-center gap-1.5 rounded-md text-meta font-medium transition-colors",
-                      // Icon-only mode is the narrow one, and the badges still
-                      // ride along, so the tabs give up a little padding there
-                      // to keep the last one inside the strip at the minimum width.
-                      showActiveLabel ? "px-1.5" : "px-1",
-                      active ? "bg-selection text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                      !pane.available && !active && "opacity-40",
-                    )}
                   >
-                    <Icon size={13} strokeWidth={1.7} aria-hidden="true" />
+                    {/* Unavailable panes stay reachable (they explain why) but recede. */}
+                    <Icon size={13} strokeWidth={1.7} aria-hidden="true" className={!pane.available && !active ? "opacity-40" : undefined} />
                     {active && showActiveLabel && <span className="min-w-0 truncate pr-0.5">{pane.label}</span>}
                     {!!pane.badge && pane.available && (
                       <span className="rounded-full bg-accent px-1 font-mono text-caption leading-4 text-muted-foreground">{pane.badge}</span>
@@ -200,7 +202,8 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                     {pane.alert && pane.available && (
                       <span data-testid={`dock-alert-${pane.id}`} className="mission-live-accent pointer-events-none absolute right-0 top-0 h-[5px] w-[5px] rounded-full bg-warning" />
                     )}
-                  </button>
+                  </Button>
+                  </Tip>
                 );
               })}
             </div>
@@ -209,27 +212,27 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
 
             <span className="ml-auto" />
 
-            <button
-              type="button"
+            <Button
+              variant="quiet"
+              size="icon-xs"
               onClick={() => onAction({ type: "toggle-expanded" })}
               aria-pressed={state.expanded}
               aria-label={state.expanded ? "Restore dock" : "Expand dock"}
-              title={`${state.expanded ? "Restore" : "Expand"}  ${formatShortcut({ meta: true, alt: true }, "↩")}`}
-              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              tooltip={`${state.expanded ? "Restore" : "Expand"}  ${formatShortcut({ meta: true, alt: true }, "↩")}`}
             >
               {state.expanded
-                ? <Minimize2 size={14} strokeWidth={1.8} aria-hidden="true" />
-                : <Maximize2 size={14} strokeWidth={1.8} aria-hidden="true" />}
-            </button>
-            <button
-              type="button"
+                ? <Minimize2 strokeWidth={1.8} aria-hidden="true" />
+                : <Maximize2 strokeWidth={1.8} aria-hidden="true" />}
+            </Button>
+            <Button
+              variant="quiet"
+              size="icon-xs"
               onClick={() => onAction({ type: "toggle" })}
               aria-label="Close dock"
-              title={`Close dock  ${formatShortcut({ meta: true, alt: true }, "0")}`}
-              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              tooltip={`Close dock  ${formatShortcut({ meta: true, alt: true }, "0")}`}
             >
-              <X size={14} strokeWidth={1.8} aria-hidden="true" />
-            </button>
+              <X strokeWidth={1.8} aria-hidden="true" />
+            </Button>
           </div>
         )}
 
@@ -242,13 +245,9 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
               <div key={pane.id} id={`${dockId}-pane-${pane.id}`} role="tabpanel" aria-label={pane.label} className={cn("h-full", pane.id !== state.pane && "hidden")}>
                 {pane.available ? children(pane.id) : (
                   <PaneState icon={FolderGit2} title={`${pane.label} is unavailable`} action={onConnectFolder && (
-                      <button
-                        type="button"
-                        onClick={onConnectFolder}
-                        className="u-glass-soft min-h-8 rounded-lg px-3 text-ui text-foreground transition-colors hover:bg-accent"
-                      >
+                      <Button variant="outline" size="sm" onClick={onConnectFolder}>
                         Connect a folder
-                      </button>
+                      </Button>
                     )}>{pane.unavailableReason ?? "Connect a project folder to use this inspector."}</PaneState>
                 )}
               </div>
@@ -266,35 +265,30 @@ function AddPaneMenu({ panes, onAdd }: { panes: DockPaneDescriptor[]; onAdd: (pa
   const menu = useMenuPanel<HTMLButtonElement>({ width: 260, height: 44 + panes.length * 40 });
   return (
     <>
-      <button
+      <Button
         ref={menu.triggerRef}
-        type="button"
+        variant="quiet"
+        size="icon-xs"
         onClick={menu.toggle}
         aria-haspopup="menu"
         aria-expanded={menu.open}
         aria-label="Add a pane to this chat"
-        title="Add a pane to this chat"
-        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        tooltip="Add a pane to this chat"
       >
-        <Plus size={14} strokeWidth={1.8} aria-hidden="true" />
-      </button>
-      <MenuPanel controller={menu} label="Add a pane to this chat" className="w-[260px] p-1.5">
+        <Plus strokeWidth={1.8} aria-hidden="true" />
+      </Button>
+      <MenuPanel controller={menu} label="Add a pane to this chat" className="w-[260px]">
         <p className="px-2 pb-1 pt-1 text-caption font-medium text-faint">Add to this chat</p>
         {panes.map(pane => {
           const Icon = pane.icon;
           return (
-            <button
-              key={pane.id}
-              type="button"
-              role="menuitem"
-              onClick={() => { menu.close(); onAdd(pane.id); }}
-              title={pane.available ? undefined : pane.unavailableReason}
-              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-meta text-foreground transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
-            >
-              <Icon size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-              <span className="min-w-0 flex-1 truncate">{pane.label}</span>
-              {!pane.available && <span className="shrink-0 text-caption text-muted-foreground">Unavailable here</span>}
-            </button>
+            <Tip key={pane.id} label={pane.available ? undefined : pane.unavailableReason}>
+              <RowButton role="menuitem" onClick={() => { menu.close(); onAdd(pane.id); }}>
+                <Icon size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate">{pane.label}</span>
+                {!pane.available && <span className="shrink-0 text-caption text-muted-foreground">Unavailable here</span>}
+              </RowButton>
+            </Tip>
           );
         })}
       </MenuPanel>

@@ -236,9 +236,26 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.58 adds reviewer activity**: `reviews/review_activity` and the
 /// `reviews/activity` notification. A 1.57 client still pairs: it never calls
 /// the method and ignores the notification.
+///
+/// **1.59 adds one memory model**: `memory/get_memory_model` and
+/// `memory/set_memory_model`. The `harness` and `model` fields on the
+/// extraction and consolidation settings become read-only mirrors of it.
+/// Additive: a 1.59 daemon serves older clients; a 1.59 client cannot pair
+/// with a 1.58 daemon, which lacks the new methods.
+///
+/// **1.60 adds memory retention**: `memory/get_retention_settings`,
+/// `memory/set_retention_settings`, `memory/restore_memory_record`, and
+/// `expired` as a listable status. Additive: a 1.60 daemon serves older
+/// clients; a 1.60 client cannot pair with a 1.59 daemon.
+///
+/// **1.61 breaks Screen Time down**: `usage/record_presence` takes optional
+/// `chats` (which chat was open each minute) and `usage/screen_time` answers
+/// `projects`, `pullRequests`, `hours` and `harnesses`. Additive: a 1.61
+/// daemon serves older clients; a 1.61 client cannot pair with a 1.60
+/// daemon, which refuses the `chats` field.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 58,
+    minor: 61,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -648,7 +665,6 @@ mod tests {
     fn a_1_57_client_pairs_with_a_reviewer_activity_daemon() {
         let before = ProtocolVersion { major: 1, minor: 57 };
         let activity = ProtocolVersion { major: 1, minor: 58 };
-        assert_eq!(PROTOCOL_VERSION, activity);
         assert!(activity.accepts(before), "a 1.57 client never asks for activity");
         assert!(!before.accepts(activity), "a 1.58 client needs reviews/review_activity");
     }
@@ -668,6 +684,31 @@ mod tests {
         assert!(paging.accepts(before), "a 1.56 client reads the first page as before");
         assert!(!before.accepts(paging), "a 1.57 client needs memory/review_memory_records");
         assert!(paging.accepts(paging));
+    }
+
+    #[test]
+    fn one_memory_model_is_additive_for_older_clients() {
+        let before = ProtocolVersion { major: 1, minor: 58 };
+        let memory_model = ProtocolVersion { major: 1, minor: 59 };
+        assert!(memory_model.accepts(before), "a 1.58 client never asks for the memory model");
+        assert!(!before.accepts(memory_model), "a 1.59 client needs memory/get_memory_model");
+    }
+
+    #[test]
+    fn memory_retention_is_additive_for_older_clients() {
+        let before = ProtocolVersion { major: 1, minor: 59 };
+        let retention = ProtocolVersion { major: 1, minor: 60 };
+        assert!(retention.accepts(before), "a 1.59 client never asks for retention settings");
+        assert!(!before.accepts(retention), "a 1.60 client needs memory/get_retention_settings");
+    }
+
+    #[test]
+    fn a_1_60_client_pairs_with_a_screen_time_breakdown_daemon() {
+        let before = ProtocolVersion { major: 1, minor: 60 };
+        let breakdown = ProtocolVersion { major: 1, minor: 61 };
+        assert_eq!(PROTOCOL_VERSION, breakdown);
+        assert!(breakdown.accepts(before), "a 1.60 client never sends chats and ignores the new result fields");
+        assert!(!before.accepts(breakdown), "a 1.61 client sends chats, which a 1.60 daemon refuses");
     }
 
     #[test]

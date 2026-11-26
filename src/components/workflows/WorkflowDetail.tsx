@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { ScreenHeading } from "../ui/screen";
 import { RUN_STATUS_LABEL, relativeTime, runTone, triggerSummary } from "./format";
 import { CHIP, Card, Dot, Section, StatusChip } from "./parts";
+import { RowButton } from "@/components/ui/row";
 
 function duration(run: WorkflowRun): string {
   if (!run.startedAt || !run.finishedAt) return "";
@@ -36,7 +37,7 @@ export function WorkflowDetail({ workflow, runs, projects, nextRunAt, busy, onBa
   const budget = definition.budget;
 
   return <div>
-    <button type="button" onClick={onBack} className="mb-3 inline-flex items-center gap-1 text-caption text-muted-foreground hover:text-foreground"><ArrowLeft size={12}/>Workflows</button>
+    <Button variant="text" size="xs" className="mb-3" onClick={onBack}><ArrowLeft size={12}/>Workflows</Button>
     <ScreenHeading title={definition.name}
       description={<span className="inline-flex flex-wrap items-center gap-2"><StatusChip label={status.label} tone={status.tone}/><span>{[project, `${step.harness} · ${step.model}`, next ? `next run ${next}` : null].filter(Boolean).join(" · ")}</span></span>}
       action={<>
@@ -47,20 +48,24 @@ export function WorkflowDetail({ workflow, runs, projects, nextRunAt, busy, onBa
         <Button size="xs" variant="ghost" disabled={busy} onClick={onEdit}><Pencil size={11}/>Edit</Button>
         <Button size="xs" variant="ghost" disabled={busy} onClick={onDelete} aria-label="Delete workflow"><Trash2 size={11}/></Button>
       </>}/>
-    <div className="grid gap-5 lg:grid-cols-[1fr_300px]">
+    <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
       <Card>
         <Section title="Instructions"><p className="whitespace-pre-wrap text-ui leading-relaxed text-foreground">{step.instructions}</p></Section>
         {definition.expectedResult && <Section title="Expected result"><p className="text-meta text-muted-foreground">{definition.expectedResult}</p></Section>}
         <Section title="Last runs">
           {runs.length === 0 && <p className="text-caption text-muted-foreground">No runs yet.</p>}
-          <div className="divide-y divide-border">{runs.map(run => <button type="button" key={run.id} onClick={() => onOpenRun(run)} className="flex w-full items-center gap-3 py-2 text-left text-meta hover:bg-accent">
+          <div className="divide-y divide-border">{runs.map(run => <RowButton size="bare" tone="default" shape="card" key={run.id} onClick={() => onOpenRun(run)}><span className="flex w-full flex-wrap items-center gap-x-3 gap-y-0.5 py-2 text-meta">
             <Dot tone={runTone(run.status)}/>
-            <span className="w-32 text-foreground">{RUN_STATUS_LABEL[run.status]}</span>
-            <span className="w-24 text-muted-foreground">{relativeTime(run.createdAt, now)}</span>
-            <span className="flex-1 text-muted-foreground">{run.triggerKind === "catch_up" ? "catch-up" : run.triggerKind === "manual" ? (run.dryRun ? "dry run" : "Run now") : "schedule"}</span>
-            <span className="w-14 text-right text-muted-foreground">{duration(run)}</span>
-            <span className="w-20 text-right font-mono text-muted-foreground">{run.tokens ? `${run.tokens.toLocaleString()} tok` : ""}</span>
-          </button>)}</div>
+            <span className="w-32 shrink-0 text-foreground">{RUN_STATUS_LABEL[run.status]}</span>
+            <span className="w-24 shrink-0 text-muted-foreground">{relativeTime(run.createdAt, now)}</span>
+            {/* One unit, so a narrow card drops how it ran, how long and how
+                much to a second line together instead of a column at a time. */}
+            <span className="flex min-w-56 flex-1 items-center gap-3">
+              <span className="min-w-0 flex-1 truncate text-muted-foreground">{run.triggerKind === "catch_up" ? "catch-up" : run.triggerKind === "manual" ? (run.dryRun ? "dry run" : "Run now") : "schedule"}</span>
+              <span className="w-14 shrink-0 text-right text-muted-foreground">{duration(run)}</span>
+              <span className="w-20 shrink-0 text-right font-mono text-muted-foreground">{run.tokens ? `${run.tokens.toLocaleString()} tok` : ""}</span>
+            </span>
+          </span></RowButton>)}</div>
         </Section>
       </Card>
       <div className="space-y-4">

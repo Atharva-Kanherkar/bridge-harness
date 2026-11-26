@@ -7,6 +7,9 @@ import { formatElapsed, runningDetail, type RunningChat } from "../sidebarRunnin
 import { harnessLabel } from "../utils";
 import type { TrailSummary } from "../protocol/generated/protocol";
 import { SidebarTrailButton } from "./trails/SidebarTrailButton";
+import { Tip } from "@/components/ui/tooltip";
+import { RowButton } from "@/components/ui/row";
+import { Button } from "@/components/ui/button";
 
 /**
  * One clock for the whole group, ticking once a second: every row's timer
@@ -48,25 +51,22 @@ function RunningRow({ row, now, active, onOpen, trail, onOpenTrail }: {
         active ? "bg-selection text-selection-foreground" : "hover:bg-accent",
       )}
     >
-      <button
-        type="button"
+      <RowButton size="bare" tone="default" shape="card"
         onClick={onOpen}
         data-running-row={row.chat.id}
-        data-active={active || undefined}
-        className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-md pl-2 text-left font-sans transition-transform active:scale-[0.99]"
-      >
+        data-active={active || undefined}><span className="flex h-11 min-w-0 flex-1 items-center gap-2 pl-2 font-sans">
         <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
           {/* The hover names the chat in full on the name itself: the row's own
               title stays with the chat's row in its project folder. */}
-          <span title={`${row.chat.titleLadder?.at(-1) ?? name} · ${harnessLabel(row.chat.harness)}`} className={clsx("min-w-0 truncate text-ui leading-4 tracking-[-0.008em] text-foreground", active && "font-medium")}>{name}</span>
-          <span className="flex min-w-0 items-center gap-1.5 text-caption leading-3.5 tracking-[-0.004em] text-muted-foreground">
+          <Tip label={`${row.chat.titleLadder?.at(-1) ?? name} · ${harnessLabel(row.chat.harness)}`}><span className={clsx("min-w-0 truncate text-ui leading-4 tracking-snug text-foreground", active && "font-medium")}>{name}</span></Tip>
+          <span className="flex min-w-0 items-center gap-1.5 text-caption leading-3.5 tracking-snug text-muted-foreground">
             <span data-active-dot aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-info motion-safe:animate-pulse" />
             <span data-running-elapsed className="shrink-0 tabular-nums text-info">{formatElapsed(now - row.since)}</span>
             <span aria-hidden="true">·</span>
             <span data-running-detail={detail.tone} className={clsx("min-w-0 truncate", detail.tone === "needsYou" && "text-warning")}>{detail.text}</span>
           </span>
         </span>
-      </button>
+      </span></RowButton>
       {trail && onOpenTrail && <SidebarTrailButton trail={trail} onOpenTrail={onOpenTrail} />}
       <HarnessMark harness={row.chat.harness} size={13} className={clsx("mx-2 shrink-0", !active && "text-muted-foreground")} />
     </div>
@@ -105,39 +105,32 @@ export function SidebarRunning({ rows, activeSessionId, onOpenSession, onOpenMis
   return (
     <section aria-label="Active" data-sidebar-running data-collapsed={collapsed || undefined} className="mb-3 shrink-0">
       <div className="flex h-7 items-center gap-1 pr-1">
-        <button
-          type="button"
+        <Tip label={collapsed ? "Show active chats" : "Hide active chats"}><RowButton size="bare" tone="default" shape="card"
           onClick={toggle}
           aria-expanded={!collapsed}
           aria-controls={listId}
-          title={collapsed ? "Show active chats" : "Hide active chats"}
-          data-active-toggle
-          className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 text-left transition-colors hover:bg-accent"
-        >
+          data-active-toggle><span className="flex h-7 min-w-0 flex-1 items-center gap-1.5 px-2">
           {/* A live dot, not a spinner: the group should read as calm presence. */}
           <span aria-hidden="true" className="relative grid size-3.25 shrink-0 place-items-center">
             <span className="absolute size-1.5 rounded-full bg-info/40 motion-safe:animate-ping" />
             <span className="relative size-1.5 rounded-full bg-info" />
           </span>
-          <span className="text-meta font-medium tracking-[-0.004em] text-muted-foreground">Active</span>
+          <span className="text-meta font-medium tracking-snug text-muted-foreground">Active</span>
           <span data-active-count className="text-caption tabular-nums text-muted-foreground/60">{rows.length}</span>
           <ChevronRight size={12} strokeWidth={1.7} aria-hidden="true" className={clsx("ml-auto shrink-0 text-muted-foreground/70 transition-transform", !collapsed && "rotate-90")} />
-        </button>
+        </span></RowButton></Tip>
         {onOpenMissionControl && (
-          <button
-            type="button"
+          <Button
+            variant="quiet"
+            size="icon-2xs"
             onClick={onOpenMissionControl}
-            title="Open Mission Control"
+            tooltip="Open Mission Control"
             aria-label="Open Mission Control"
             aria-current={missionControlActive ? "page" : undefined}
             data-open-mission-control
-            className={clsx(
-              "grid size-6 shrink-0 place-items-center rounded-md transition-colors",
-              missionControlActive ? "bg-selection text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-            )}
           >
             <LayoutGrid size={13} strokeWidth={1.6} aria-hidden="true" />
-          </button>
+          </Button>
         )}
       </div>
       {/* Capped, so a busy afternoon cannot push the project tree off the rail. */}

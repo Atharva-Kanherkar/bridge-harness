@@ -548,11 +548,11 @@ pub fn dispatch(
         MethodName::GetConsolidationSettings => reply(api::get_consolidation_settings(core)),
         MethodName::UpdateConsolidationSettings => {
             let p: wire::UpdateConsolidationSettingsParams = decode(method, params)?;
+            // `harness` and `model` are deprecated mirrors; the memory model
+            // is set with memory/set_memory_model.
             reply(api::update_consolidation_settings(
                 core,
                 &p.mode,
-                p.harness.as_deref(),
-                p.model.as_deref(),
                 p.max_records,
                 p.allow_removal,
                 p.debounce_seconds,
@@ -560,12 +560,26 @@ pub fn dispatch(
         }
         MethodName::UpdateExtractionSettings => {
             let p: wire::UpdateExtractionSettingsParams = decode(method, params)?;
-            reply(api::update_extraction_settings(
+            reply(api::update_extraction_settings(core, &p.mode))
+        }
+        MethodName::GetRetentionSettings => reply(api::get_retention_settings(core)),
+        MethodName::SetRetentionSettings => {
+            let p: wire::SetRetentionSettingsParams = decode(method, params)?;
+            reply(api::set_retention_settings(
                 core,
-                &p.mode,
-                p.harness.as_deref(),
-                p.model.as_deref(),
+                p.proposal_ttl_days,
+                p.retire_unused_after_days,
+                p.max_proposals,
             ))
+        }
+        MethodName::RestoreMemoryRecord => {
+            let p: wire::RestoreMemoryRecordParams = decode(method, params)?;
+            reply(api::restore_memory_record(core, &p.record_id))
+        }
+        MethodName::GetMemoryModel => reply(api::get_memory_model(core)),
+        MethodName::SetMemoryModel => {
+            let p: wire::SetMemoryModelParams = decode(method, params)?;
+            reply(api::set_memory_model(core, p.harness.as_deref(), p.model.as_deref()))
         }
         MethodName::RetryWorkerTask => {
             let p: wire::RetryWorkerTaskParams = decode(method, params)?;

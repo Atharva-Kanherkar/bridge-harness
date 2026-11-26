@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Globe, Package, Waypoints } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { startSerialPoll } from "../polling";
 import type { CloneRequest } from "../protocol/generated/protocol";
 import type { CloneSettings, CloneSignInPath } from "../types";
@@ -15,7 +16,7 @@ const lifetimeLabel = (minutes: number) => minutes < 60 ? `${minutes} min` : min
 export function SignInToggle({ value, onChange, disabled }: { value: CloneSignInPath; onChange: (next: CloneSignInPath) => void; disabled?: boolean }) {
   return <div className="u-segmented w-fit" role="radiogroup" aria-label="Sign-in">
     {([["import", "Signed in as you"], ["sign_in_inside", "Blank"]] as const).map(([path, label]) =>
-      <button key={path} type="button" role="radio" aria-checked={value === path} data-active={value === path} disabled={disabled} onClick={() => onChange(path)} className="u-segmented-item">{label}</button>)}
+      <Button variant="quiet" size="xs" key={path} role="radio" aria-checked={value === path} data-active={value === path} disabled={disabled} onClick={() => onChange(path)}>{label}</Button>)}
   </div>;
 }
 
@@ -41,7 +42,7 @@ export function CloneConsentCard({ request, label, onOpen, onResolved, onError }
   useEffect(() => {
     let active = true;
     bridgeApi.readCloneSettings().then(next => { if (active) setSettings({ ...next.settings, agentVision: next.settings.agentVision ?? true, defaultSignInPath: next.settings.defaultBrowser === "safari" ? "sign_in_inside" : next.settings.defaultSignInPath }); })
-      .catch(error => onError(String(error)));
+      .catch(error => onError(friendlyError(error, "Couldn't load the browser settings.")));
     return () => { active = false; };
   }, [request.requestId]);
   const resolve = async (allow: boolean) => {
@@ -51,7 +52,7 @@ export function CloneConsentCard({ request, label, onOpen, onResolved, onError }
       await bridgeApi.resolveCloneRequest(request.sessionId, allow, request.requestId, settings);
       onResolved?.();
       if (allow && settings.defaultSignInPath === "sign_in_inside") onOpen?.();
-    } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { onError(friendlyError(error, allow ? `Couldn't allow the browser request for ${request.domain}.` : `Couldn't deny the browser request for ${request.domain}.`)); }
     finally { setBusy(false); }
   };
   const blank = settings?.defaultSignInPath === "sign_in_inside";
@@ -85,7 +86,7 @@ export function CloneConsentCard({ request, label, onOpen, onResolved, onError }
       </OptionRow>
     </div>}
     <div className="mt-4 flex items-center gap-2">
-      {onOpen && <Button variant="ghost" size="sm" onClick={onOpen} className="text-muted-foreground">Open chat</Button>}
+      {onOpen && <Button variant="quiet" size="sm" onClick={onOpen}>Open chat</Button>}
       <div className="ml-auto flex gap-2">
         <Button variant="outline" size="sm" disabled={busy || !settings} onClick={() => void resolve(false)}>Deny</Button>
         <Button size="sm" loading={busy} disabled={!settings} onClick={() => void resolve(true)}>Allow</Button>
@@ -113,6 +114,6 @@ export function CloneRequestInbox({ sessionLabels, onOpen, onError }: {
   }, []);
   if (!requests.length) return null;
   return <aside aria-label="Browser approvals" aria-live="polite" className="fixed right-4 top-16 z-50 flex max-h-[75dvh] w-96 max-w-[calc(100vw-2rem)] flex-col gap-3 overflow-y-auto">
-    {requests.map(request => <CloneConsentCard key={request.requestId} request={request} label={`${sessionLabels[request.sessionId] ?? "Chat"} · browser request`} onOpen={() => onOpen(request.sessionId)} onResolved={() => void refresh().catch(error => onError(String(error)))} onError={onError} />)}
+    {requests.map(request => <CloneConsentCard key={request.requestId} request={request} label={`${sessionLabels[request.sessionId] ?? "Chat"} · browser request`} onOpen={() => onOpen(request.sessionId)} onResolved={() => void refresh().catch(error => onError(friendlyError(error, "Couldn't refresh the browser requests.")))} onError={onError} />)}
   </aside>;
 }

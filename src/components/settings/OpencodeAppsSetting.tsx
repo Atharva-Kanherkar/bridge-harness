@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { TriangleAlert } from "lucide-react";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import { PrimaryButton, SettingsGroup, SettingsRow, Switch, TextButton } from "./kit";
 
 export const OPENCODE_APPS_WARNING = "OpenCode reaches MCP servers only through its code mode, which can also make network requests Bridge cannot see or approve. Bridge still lets OpenCode make only the exact MCP call you approved, but it cannot stop other network traffic from that hidden session. Turn this on only for servers you trust, at your own discretion.";
@@ -26,7 +27,7 @@ export function OpencodeAppsSetting() {
       setAllowed(saved.values.allowOpencodeAppCourier === true);
       setConfirming(false);
     } catch (reason) {
-      setError(String(reason));
+      setError(friendlyError(reason, "Couldn't save the personal apps setting."));
     } finally {
       setBusy(false);
     }

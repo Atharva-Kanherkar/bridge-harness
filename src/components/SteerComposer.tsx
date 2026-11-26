@@ -1,7 +1,9 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Navigation } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { friendlyError } from "../errors";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 /// Guidance into a running worker, from the surface where you can see it going
@@ -72,14 +74,14 @@ function SteerBox({ sessionId, steerable, starting = false, onSteer, label = "St
     void onSteer(sessionId, text)
       .catch((cause: unknown) => {
         setDraft(current => current ? `${sent}\n${current}` : sent);
-        setFailure(cause instanceof Error ? cause.message : String(cause));
+        setFailure(friendlyError(cause, "Couldn't send that to the agent. Try again."));
       })
       .finally(() => setBusy(false));
   };
   return <form className={className} onSubmit={requested => { requested.preventDefault(); send(); }}>
     <div className="flex items-end gap-2">
-      <div className="flex min-w-0 flex-1 items-end gap-1.5 rounded-xl border border-border bg-card py-1 pl-3 pr-1 transition-colors focus-within:border-ring">
-        <textarea
+      <div className="flex min-w-0 flex-1 items-end gap-1.5 rounded-xl border border-border bg-card py-1 pl-3 pr-1 text-meta leading-5 transition-colors focus-within:border-ring">
+        <Textarea unstyled size="bare"
           ref={field}
           value={draft}
           onChange={changed => setDraft(changed.target.value)}
@@ -90,7 +92,7 @@ function SteerBox({ sessionId, steerable, starting = false, onSteer, label = "St
           rows={1}
           placeholder={label}
           aria-label={label}
-          className="my-1 min-w-0 flex-1 resize-none overflow-hidden bg-transparent text-meta leading-5 text-foreground outline-none placeholder:text-muted-foreground"
+          className="my-1 min-w-0 flex-1 overflow-hidden"
         />
         {/* Quiet until there is something to send: a disabled primary button
             is a bright block in the dark theme. */}

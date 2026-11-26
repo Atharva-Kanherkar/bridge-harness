@@ -56,6 +56,19 @@ function mount(overrides: Partial<Parameters<typeof ComposerContextStrip>[0]> = 
 }
 
 describe("ComposerContextStrip", () => {
+  it("lets the named chips shrink so a narrow column cannot push them over the dock", () => {
+    mount({ onSelectAgent: vi.fn() });
+    const strip = container.querySelector('[aria-label="Chat context"]')!;
+    expect(strip.className).toContain("min-w-0");
+    const named = [...strip.querySelectorAll("button")].filter(button => /max-w-\[(?:16|12)rem\]/.test(button.className));
+    // Project, branch and agent.
+    expect(named).toHaveLength(3);
+    for (const chip of named) {
+      expect(chip.className.split(" ")).toContain("shrink");
+      expect(chip.className.split(" ")).not.toContain("shrink-0");
+    }
+  });
+
   it("shows repo, branch, worktree, and the agent chooser", () => {
     mount({ onSelectAgent: vi.fn() });
     const text = container.textContent ?? "";
@@ -73,7 +86,7 @@ describe("ComposerContextStrip", () => {
     mount({ onSelectAgent: vi.fn() });
     const buttons = [...container.querySelector('[aria-label="Chat context"]')!.querySelectorAll("button")];
     expect(buttons).toHaveLength(4);
-    expect(buttons.every(button => button.className.includes("text-meta"))).toBe(true);
+    expect(buttons.every(button => button.dataset.slot === "button" && button.className.includes("sm:text-xs"))).toBe(true);
   });
 
   it("lists agents and reports the pick, or None to go back to the orchestrator", () => {

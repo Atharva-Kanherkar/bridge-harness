@@ -58,7 +58,7 @@ describe("ChatOverviewView", () => {
     expect(changes.textContent).toContain("−12");
     expect(changes.textContent).toContain("uncommitted");
     expect(host.querySelector("[data-overview-row=branch]")!.textContent).toContain("2 ahead of origin/main");
-    expect(host.querySelector("[data-overview-row=where]")!.querySelector("[title]")!.getAttribute("title")).toBe("/Users/you/bridge/.worktrees/retry-budget");
+    expect(host.querySelector("[data-overview-row=where]")!.querySelector("[data-tip]")!.getAttribute("data-tip")).toBe("/Users/you/bridge/.worktrees/retry-budget");
   });
 
   it("draws nothing for absent facts and offers no Commit or Open PR", () => {

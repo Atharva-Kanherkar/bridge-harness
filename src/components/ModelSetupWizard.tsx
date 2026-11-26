@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SkeletonRegion, SkeletonRows, SkeletonText, pendingClass } from "@/components/ui/skeleton";
+import { SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
 import { ArrowLeft, ArrowRight, Bot, CheckCircle2, RefreshCw } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type { AdapterDescriptor, ModelSetupState } from "../types";
 import type { UsageProvider } from "../usage";
 import { canInstallManagedAgent, onboardingAgentReady, onboardingChoices, type OnboardingAgent } from "../onboarding";
@@ -9,7 +10,8 @@ import { recommendedProfileDrafts } from "../modelProfiles";
 import { sourceLine, useManagedAgents } from "./ManagedAgentsPanel";
 import { HarnessMark } from "./harnessMarks";
 import { ProviderLoginPane } from "./ProviderLoginPane";
-import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 
 const NOOP = () => undefined;
 const LOGIN_AGENTS = new Set(["claude", "codex", "opencode", "cursor", "grok"]);
@@ -49,18 +51,18 @@ function AgentConnection({ agent, adapter, busy, error, loginOpen, onInstall, on
     </div>
     <div className="mt-4 space-y-2 border-t border-border pt-3">
       {busy ? <SkeletonRegion label={busy}><SkeletonText lines={2} /></SkeletonRegion>
-      : missing ? supportedInstall ? <><p className="text-xs text-muted-foreground">Bridge will download and manage a separate copy for you.</p><button type="button" onClick={onInstall} className="min-h-9 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground">Install with Bridge</button></>
+      : missing ? supportedInstall ? <><p className="text-xs text-muted-foreground">Bridge will download and manage a separate copy for you.</p><Button variant="default" size="sm" onClick={onInstall}>Install with Bridge</Button></>
         : <><p className="text-xs text-warning">Bridge cannot install this agent on this computer. Install it using the vendor's instructions, then check again, or go back and choose another agent.</p>{adapter?.unavailableReason && <p className="text-xs text-muted-foreground">{adapter.unavailableReason}</p>}</>
-      : broken ? supportedInstall ? <button type="button" onClick={onRepair} className="min-h-9 rounded-lg border border-border px-3 text-xs">Repair installation</button>
+      : broken ? supportedInstall ? <Button variant="outline" size="sm" onClick={onRepair}>Repair installation</Button>
         : <p className="text-xs text-warning">This installation needs attention. Repair it using the vendor's instructions, then check again.</p>
       : ready ? <p className="text-xs font-medium text-success">Sign-in found</p>
       : <>
         <p className="text-xs text-warning">{adapter?.authState === "signed_out" ? "Sign in to use this agent." : "Bridge cannot confirm sign-in yet. Sign in, then check again."}</p>
         {adapter?.unavailableReason && <p className="text-xs text-muted-foreground">{adapter.unavailableReason}</p>}
-        {supportsLogin ? <button type="button" onClick={onLogin} disabled={loginOpen} className="min-h-9 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground disabled:opacity-40">Sign in to {agent.label}</button>
+        {supportsLogin ? <Button variant="default" size="sm" onClick={onLogin} disabled={loginOpen}>Sign in to {agent.label}</Button>
           : <p className="text-xs text-muted-foreground">Bridge cannot open this agent's sign-in flow. Use its own app or CLI, then check again.</p>}
       </>}
-      {!busy && !missing && <button type="button" onClick={onRefresh} className="min-h-8 rounded-lg px-2 text-xs text-muted-foreground hover:bg-accent">Check again</button>}
+      {!busy && !missing && <Button variant="quiet" size="xs" onClick={onRefresh}>Check again</Button>}
       {agent.vendorMessage && <p className="text-xs text-warning">{agent.vendorMessage}</p>}
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
     </div>
@@ -97,7 +99,7 @@ export function ModelSetupWizard({ adapters, onComplete, onHealthChange = NOOP, 
       const health = await bridgeApi.health().catch(() => undefined);
       if (generation === refreshGeneration.current) {
         if (health) setCurrentAdapters(health.adapters);
-        setError(cause instanceof Error ? cause.message : String(cause));
+        setError(friendlyError(cause, "Couldn't check your agents. Try again."));
       }
     })
       .finally(() => { if (generation === refreshGeneration.current) setRefreshing(false); });
@@ -138,7 +140,7 @@ export function ModelSetupWizard({ adapters, onComplete, onHealthChange = NOOP, 
       onHealthChange();
       onComplete(setup);
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
+      const message = friendlyError(cause, "Couldn't finish setting up Bridge. Try again.");
       managed.reload();
       const health = await bridgeApi.health().catch(() => undefined);
       if (health) setCurrentAdapters(health.adapters);
@@ -152,19 +154,19 @@ export function ModelSetupWizard({ adapters, onComplete, onHealthChange = NOOP, 
         <h1 className="font-display text-2xl font-semibold tracking-tight">{stage === "choose" ? "Which coding agents do you want to use?" : "Connect your coding agents"}</h1>
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{stage === "choose" ? "Choose one or more. We'll help you install what's missing and sign in." : "Each selected agent needs an installation and sign-in before you enter Bridge."}</p>
         {stage === "choose" && <div className="mt-5 rounded-xl border border-border bg-muted/30 p-4 text-xs leading-relaxed text-muted-foreground"><p><strong className="text-foreground">Already on your computer:</strong> Bridge uses the copy you installed. You manage its updates.</p><p className="mt-2"><strong className="text-foreground">Installed by Bridge:</strong> a separate copy Bridge can update and remove. You still sign in with your agent account.</p></div>}
-        {managed.listError && <div className="mt-4 space-y-2"><p role="alert" className="text-sm text-destructive">Could not check installation sources: {managed.listError}</p><p className="text-xs text-muted-foreground">You can retry, or use agents found by the sign-in and availability check. Bridge cannot manage those installations until detection recovers.</p>{!useDetectedAgents && <button type="button" onClick={() => setUseDetectedAgents(true)} className="min-h-9 rounded-lg border border-border px-3 text-xs">Use detected agents</button>}</div>}
-        {!managed.agents && !managed.listError ? <SkeletonRows label="Checking this computer" rows={3} lead="icon" className="mt-5" rowClassName="p-4" />
+        {managed.listError && <div className="mt-4 space-y-2"><p role="alert" className="text-sm text-destructive">{managed.listError}</p><p className="text-xs text-muted-foreground">You can retry, or use agents found by the sign-in and availability check. Bridge cannot manage those installations until detection recovers.</p>{!useDetectedAgents && <Button variant="outline" size="sm" onClick={() => setUseDetectedAgents(true)}>Use detected agents</Button>}</div>}
+        {!managed.agents && !managed.listError ? <SkeletonRows label="Checking this computer" rows={3} lead="icon" className="mt-5" density="card" />
           : stage === "choose" ? <fieldset className="mt-5 space-y-2"><legend className="sr-only">Coding agents to use</legend>{choices.map(agent => <label key={agent.agentId} className="u-glass-soft flex cursor-pointer items-center gap-3 rounded-xl border border-border-card p-4">
-            <input type="checkbox" checked={selected.includes(agent.agentId)} onChange={event => { setError(undefined); setSelected(ids => event.target.checked ? [...ids, agent.agentId] : ids.filter(id => id !== agent.agentId)); }} className="size-4 accent-primary" />
+            <Checkbox checked={selected.includes(agent.agentId)} onCheckedChange={checked => { setError(undefined); setSelected(ids => checked ? [...ids, agent.agentId] : ids.filter(id => id !== agent.agentId)); }} />
             <HarnessMark harness={agent.agentId} size={18} /><span className="min-w-0 flex-1"><span className="block text-sm font-medium">{agent.label}</span><span className="mt-1 block text-xs text-muted-foreground">{installationLabel(agent)}</span></span>
           </label>)}</fieldset>
           : <div className="mt-5 space-y-3">{selectedAgents.map(agent => <AgentConnection key={agent.agentId} agent={agent} adapter={currentAdapters.find(adapter => adapter.id === agent.agentId)} busy={managed.busy[agent.agentId] ?? (refreshing && SESSION_SETUP_AGENTS.has(agent.agentId) ? "Checking sign-in and models" : undefined)} error={managed.errors[agent.agentId]} loginOpen={login === agent.agentId} onInstall={() => managed.install(agent)} onRepair={() => managed.repair(agent)} onLogin={() => setLogin(agent.agentId)} onCloseLogin={closeLogin} onRefresh={checkAgain} />)}</div>}
         {error && <p role="alert" className="mt-4 text-sm text-destructive">{error}</p>}
         <footer className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
-          <div className="flex gap-2">{stage === "connect" && <button type="button" disabled={saving || operating} onClick={() => { if (login) void bridgeApi.cancelProviderLogin(login); setLogin(null); setStage("choose"); }} className="inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-xs text-muted-foreground disabled:opacity-40"><ArrowLeft size={13} />Change agents</button>}
-            <button type="button" disabled={refreshing || saving || operating} onClick={checkAgain} aria-busy={refreshing || undefined} className={cn("inline-flex min-h-9 items-center gap-2 rounded-lg px-2 text-xs text-muted-foreground disabled:opacity-40", pendingClass(refreshing))}><RefreshCw size={13} />Check again</button></div>
-          {stage === "choose" ? <button type="button" disabled={((!managed.agents || !!managed.listError) && !useDetectedAgents) || selected.length === 0 || refreshing} onClick={() => { setStage("connect"); refresh(selected); }} className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-40">Continue<ArrowRight size={14} /></button>
-            : <button type="button" disabled={!ready || saving || refreshing || operating || !!login || (!!managed.listError && !useDetectedAgents)} onClick={() => void finish()} aria-busy={saving || undefined} className={cn("inline-flex min-h-9 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-40", pendingClass(saving))}>Start using Bridge</button>}
+          <div className="flex gap-2">{stage === "connect" && <Button variant="quiet" size="sm" disabled={saving || operating} onClick={() => { if (login) void bridgeApi.cancelProviderLogin(login); setLogin(null); setStage("choose"); }}><ArrowLeft size={13} />Change agents</Button>}
+            <Button variant="quiet" size="sm" disabled={refreshing || saving || operating} loading={refreshing} onClick={checkAgain}><RefreshCw size={13} />Check again</Button></div>
+          {stage === "choose" ? <Button variant="default" size="default" disabled={((!managed.agents || !!managed.listError) && !useDetectedAgents) || selected.length === 0 || refreshing} onClick={() => { setStage("connect"); refresh(selected); }}>Continue<ArrowRight size={14} /></Button>
+            : <Button variant="default" size="default" disabled={!ready || saving || refreshing || operating || !!login || (!!managed.listError && !useDetectedAgents)} loading={saving} onClick={() => void finish()}>Start using Bridge</Button>}
         </footer>
         {stage === "connect" && <p className="mt-3 text-xs leading-relaxed text-muted-foreground">Bridge checks local sign-in information, not your subscription or remaining credits. Model defaults are chosen automatically; you can change them later in Settings.</p>}
         {selected.some(id => SESSION_SETUP_AGENTS.has(id)) && <p className="mt-3 text-xs leading-relaxed text-muted-foreground">For Cursor and Grok, checking opens a temporary agent session to confirm sign-in and models, then closes it without sending a chat message. It may start tools already configured in that agent.</p>}

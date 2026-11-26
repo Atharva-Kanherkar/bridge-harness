@@ -11,10 +11,21 @@ Bridge is a desktop app: **Tauri 2** (Rust) shell hosting a **React 18 + TypeScr
 - **Tailwind v4, not v3.** We use the v4 engine via `@tailwindcss/vite` and the CSS-first config in `src/index.css` (`@import "tailwindcss"`, `@theme`, `@custom-variant`, `@layer`, `@utility`, `--alpha()`). Do **not** introduce a `tailwind.config.js`, PostCSS plugin chain, or any v3-era pattern. Configure through the `@theme` block in `src/index.css`.
 - **Utilities first.** Style components with Tailwind utility classes directly in the JSX (`className="..."`). This is the default and strongly preferred way to style anything.
 - **One stylesheet.** `src/index.css` is the single global stylesheet and the only place for design tokens, `@layer base` resets, keyframes, and the handful of custom classes that utilities genuinely cannot express (e.g. the markdown renderer's descendant selectors, complex keyframe animations). Do **not** add new standalone `.css` files and import them ad hoc — fold anything shared into `src/index.css`.
-- **Tokens over hardcoded values.** Reach for theme tokens (`bg-background`, `text-foreground`, `border-border`, `font-display`, …) before arbitrary values. Use arbitrary values (`h-[2px]`, `bg-[#020204]`) only when no token fits.
+- **Tokens over hardcoded values.** Use theme tokens (`bg-background`, `text-foreground`, `border-border`, `text-ui`, `rounded-lg`, …). Arbitrary values are allowed for layout only (`w-[320px]`, `grid-cols-[1fr_auto]`); an arbitrary colour, type size, radius, padding or shadow fails lint.
 - **Banned:** other CSS frameworks (Bootstrap, MUI, Chakra, …), CSS-in-JS runtimes (styled-components, Emotion, stitches), CSS Modules, Sass/Less, and inline `style={{…}}` for anything a utility or token can do. Inline `style` is acceptable only for values that must be computed at runtime (e.g. per-element positions in `SpaceBackground`).
 
 If a design need seems to require stepping outside Tailwind, that is a signal to add a token or a `@utility`/`@layer` rule in `src/index.css` — not to reach for another tool.
+
+## UI: compose primitives, do not draw controls
+
+**Feature code decides what is on screen and where. `src/components/ui/` decides what a control looks like.** The full rules, and what to reach for, are in [`docs/design/ui-rules.md`](docs/design/ui-rules.md). `bun run lint` enforces them.
+
+- **Pick a `variant` and `size`; never restyle a primitive with `className`.** Layout classes (width, flex, margin, position) are fine. Padding, colour, type, radius and shadow belong to the primitive.
+- **No raw `<button>`, `<input>`, `<select>` or `<textarea>` in feature code.** Use `Button`, `RowButton`, `Input`, `Textarea`, `Select`, `Switch`, `Checkbox`, `Segmented`.
+- **No native `title` tooltips.** Use `<Tip label="…">` or `tooltip=` on `Button`.
+- **Missing a primitive or a variant? Add it to `src/components/ui/` first**, in its own commit, then use it. Never work around the gap with a hand-styled element.
+- **After any UI change run `bun run lint` and fix every error it prints.** Each error names the fix. The baseline in `lint-baseline.json` only goes down: never raise a count, and run `bun run lint:update` when you lower one.
+- **UI changes need before and after screenshots** in the PR, dark and light.
 
 ## Development
 
@@ -24,6 +35,7 @@ bun run dev          # vite dev server on http://127.0.0.1:1420
 bun run tauri dev    # full desktop app (Rust + webview)
 bun run build        # tsc -b && vite build
 bun run check        # tsc -b + cargo check
+bun run lint         # oxlint design and correctness rules, against the ratchet
 bun run test         # vitest run + cargo test
 ```
 
@@ -33,14 +45,14 @@ installs its workspace dependencies; keep `node` (18+) on PATH.
 The Rust adapter finds the sidecar via `BRIDGE_CLAUDE_SIDECAR`, then a copy next
 to the executable, then the in-repo path.
 
-Always run `bun run build` and `bun run test` before opening or merging a PR; both must be green.
+Always run `bun run build`, `bun run lint` and `bun run test` before opening or merging a PR; all three must be green.
 
 ## Conventions
 
 - **Layout:** `App.tsx` owns app state and composes `BridgeSidebar`, the `ComposerPill`, `AgentConversation`, and dialogs. Prefer small, prop-driven presentational components in `src/components/`.
 - **Icons:** `lucide-react`. Keep unused icon imports out (the build is strict).
 - **Fonts:** Geist Variable (`font-sans`) for body, Bricolage Grotesque Variable (`font-display`) for headings, Geist Mono Variable (`font-mono`) for code — loaded via `@fontsource-variable/*` in `main.tsx` and wired through `@theme` tokens.
-- **Glass:** macOS-style frosted glass comes from the `.u-glass` (panels), `.u-glass-popover` (menus/toasts/dialogs), `.u-glass-soft` (cards/rows/inputs), and `.u-segmented` / `.u-segmented-item` (segmented controls) classes in `src/index.css`. Prefer them over hand-rolled `bg-white/[0.0x] backdrop-blur-*` combinations.
+- **Surfaces:** resting surfaces are opaque and come from `.u-surface` (cards, rows, inputs), `.u-overlay` (panels) and `.u-overlay-strong` (menus, toasts, dialogs) in `src/index.css`. The `.u-glass*` names are legacy aliases for the same classes; nothing blurs. Segmented controls use the `Segmented` primitive.
 - **Loading states:** one look everywhere, from [`src/components/ui/skeleton.tsx`](src/components/ui/skeleton.tsx). Content whose shape you know gets a skeleton on its first load (`SkeletonRows` for lists and settings groups, `SkeletonCards` for card grids, `SkeletonText` for prose, `Skeleton` + `SkeletonRegion` for anything bespoke). An action in flight spins inside the control that started it (Install, Refresh, Save), never alone in an empty pane. A named multi-step wait (setup, an analysis, a harness starting) may narrate one line, above a skeleton rather than instead of one. A reload keeps the last data on screen. Don't hand-roll `animate-pulse` bars or reuse `.skeleton-shimmer` directly; `src/designSystem.test.ts` fails the build on both.
 - **Transcript:** the conversation surface behaves the same for every agent, and [`docs/transcript-behavior-contract.md`](docs/transcript-behavior-contract.md) says exactly how: one thinking component, grouping invariants, stream-state meanings, and a harness id that is display and never behavior.
 - **Observability:** what Bridge records, what it deliberately does not, and how to read or export it is in [`docs/observability.md`](docs/observability.md). The transcript pane's facet, turn and problem rules live there too.

@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { SkeletonCards, pendingClass } from "@/components/ui/skeleton";
+import { SkeletonCards } from "@/components/ui/skeleton";
 import { Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
+import { errorMessage, friendlyError } from "../errors";
 import { harnessLabel } from "../utils";
 import type { UsageInsightsReport, UsageInsightsResult, UsageInsightTone } from "../types";
 import { HarnessMark, harnessChartDot } from "./harnessMarks";
 import { formatCount, formatTokens, formatUsd } from "../usageReport";
+import { Button } from "@/components/ui/button";
 
 // The Insights tab: one harness turn over Bridge's own records, rendered as
 // charts whose numbers Bridge computed and prose the model wrote. The two are
@@ -25,7 +27,7 @@ export const TONE: Record<UsageInsightTone, { dot: string; label: string }> = {
 const LOADING_STEPS = ["Reading your usage ledger", "Sampling recent prompts", "Checking pull requests", "Asking your harness to write it up"];
 
 export function rise(index: number): { className: string; style: React.CSSProperties } {
-  return { className: "motion-safe:animate-[insight-rise_420ms_ease-out_both]", style: { animationDelay: `${Math.min(index, 8) * 60}ms` } };
+  return { className: "motion-safe:animate-insight-rise", style: { animationDelay: `${Math.min(index, 8) * 60}ms` } };
 }
 
 export function relative(iso: string): string {
@@ -50,7 +52,7 @@ function HarnessBars({ report }: { report: UsageInsightsReport }) {
           <span className="shrink-0 tabular-nums text-muted-foreground">{formatTokens(entry.processedTokens)}</span>
         </div>
         <div className="h-3 w-full overflow-hidden rounded-sm bg-muted/60">
-          <div className={cn("h-full origin-left rounded-r-[4px] motion-safe:animate-[meter-fill_600ms_ease-out_both]", harnessChartDot(entry.harness))} style={{ width: `${Math.max(width, entry.processedTokens > 0 ? 1.5 : 0)}%` }} />
+          <div className={cn("h-full origin-left rounded-r-sm motion-safe:animate-meter-fill", harnessChartDot(entry.harness))} style={{ width: `${Math.max(width, entry.processedTokens > 0 ? 1.5 : 0)}%` }} />
         </div>
         {hover === entry.harness && <div role="tooltip" className="u-glass-popover absolute right-0 top-full z-10 mt-1 rounded-lg px-2.5 py-1.5 text-caption leading-4 tabular-nums">
           <div className="text-foreground">{formatUsd(entry.costMicrousd)} at API rates</div>
@@ -69,9 +71,9 @@ function HourColumns({ report }: { report: UsageInsightsReport }) {
   const peakHour = report.hours.reduce((best, entry) => (entry.prompts > best.prompts ? entry : best), report.hours[0] ?? { hour: 0, prompts: 0 });
   const total = report.hours.reduce((sum, entry) => sum + entry.prompts, 0);
   return <figure aria-label="Prompts by hour of day">
-    <div className="relative flex h-28 items-end gap-[2px]" onMouseLeave={() => setHover(null)}>
+    <div className="relative flex h-28 items-end gap-0.5" onMouseLeave={() => setHover(null)}>
       {report.hours.map((entry, index) => <div key={entry.hour} className="group relative flex h-full flex-1 items-end" onMouseEnter={() => setHover(entry.hour)}>
-        <div className={cn("w-full origin-bottom rounded-t-[3px] motion-safe:animate-[chart-rise_500ms_ease-out_both]", entry.hour === peakHour.hour && entry.prompts > 0 ? "bg-foreground" : "bg-foreground/35 group-hover:bg-foreground/60")} style={{ height: `${Math.max((entry.prompts / peak) * 100, entry.prompts > 0 ? 3 : 1)}%`, animationDelay: `${index * 15}ms` }} />
+        <div className={cn("w-full origin-bottom rounded-t-sm motion-safe:animate-chart-rise", entry.hour === peakHour.hour && entry.prompts > 0 ? "bg-foreground" : "bg-foreground/35 group-hover:bg-foreground/60")} style={{ height: `${Math.max((entry.prompts / peak) * 100, entry.prompts > 0 ? 3 : 1)}%`, animationDelay: `${index * 15}ms` }} />
         {hover === entry.hour && <div role="tooltip" className={cn("u-glass-popover pointer-events-none absolute bottom-full z-10 mb-1 whitespace-nowrap rounded-lg px-2 py-1 text-caption tabular-nums", index > 15 ? "right-0" : "left-0")}>
           <span className="text-foreground">{formatCount(entry.prompts)} prompts</span> <span className="text-muted-foreground">at {String(entry.hour).padStart(2, "0")}:00</span>
         </div>}
@@ -106,7 +108,7 @@ function DayArea({ report }: { report: UsageInsightsReport }) {
     <div ref={plotRef} className="relative h-32 w-full" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
       <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="block h-full w-full overflow-visible text-foreground" role="img" aria-label={`${days.length} days of processed tokens`}>
         <line x1={0} x2={width} y1={height} y2={height} className="stroke-border" strokeWidth={1} vectorEffect="non-scaling-stroke" />
-        {area && <path d={area} fill="currentColor" className="origin-bottom opacity-10 motion-safe:animate-[chart-rise_600ms_ease-out_both]" />}
+        {area && <path d={area} fill="currentColor" className="origin-bottom opacity-10 motion-safe:animate-chart-rise" />}
         {line && <path d={line} fill="none" stroke="currentColor" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
         {hovered != null && <>
           <line x1={points[hovered].x} x2={points[hovered].x} y1={0} y2={height} className="stroke-foreground/40" strokeWidth={1} vectorEffect="non-scaling-stroke" />
@@ -131,8 +133,8 @@ export function Themes({ report }: { report: Pick<UsageInsightsReport, "themes">
   const shades = ["bg-foreground", "bg-foreground/75", "bg-foreground/55", "bg-foreground/40", "bg-foreground/28", "bg-foreground/18"];
   if (themes.length === 0) return <p className="text-caption text-muted-foreground">No themes were found in the sampled prompts.</p>;
   return <div>
-    <div className="flex h-3 w-full gap-[2px] overflow-hidden rounded-sm" aria-hidden="true">
-      {themes.map((theme, index) => <div key={theme.label} className={cn("h-full origin-left motion-safe:animate-[meter-fill_600ms_ease-out_both]", shades[Math.min(index, shades.length - 1)])} style={{ width: `${Math.max(theme.share * 100, 1)}%`, animationDelay: `${index * 60}ms` }} />)}
+    <div className="flex h-3 w-full gap-0.5 overflow-hidden rounded-sm" aria-hidden="true">
+      {themes.map((theme, index) => <div key={theme.label} className={cn("h-full origin-left motion-safe:animate-meter-fill", shades[Math.min(index, shades.length - 1)])} style={{ width: `${Math.max(theme.share * 100, 1)}%`, animationDelay: `${index * 60}ms` }} />)}
     </div>
     <ul className="mt-3 space-y-2" aria-label="Prompt themes">
       {themes.map((theme, index) => <li key={theme.label} className={cn("flex items-start justify-between gap-3", rise(index + 1).className)} style={rise(index + 1).style}>
@@ -169,9 +171,8 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
     bridgeApi.usageInsights({ windowDays, refresh })
       .then(setResult)
       .catch(error => {
-        const message = error instanceof Error ? error.message : String(error);
-        setResult({ status: "failed", windowDays, detail: message });
-        onError(message);
+        setResult({ status: "failed", windowDays, detail: errorMessage(error) });
+        onError(friendlyError(error, "Couldn't analyse your usage."));
       })
       .finally(() => { window.clearInterval(ticker); setLoading(false); });
   };
@@ -180,9 +181,9 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
   useEffect(() => { load(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const report = result?.report ?? null;
-  const analyseButton = <button type="button" onClick={() => load(true)} disabled={loading} aria-busy={loading || undefined} className={cn("inline-flex h-8 items-center gap-2 rounded-lg border border-border px-3 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-40", pendingClass(loading))}>
+  const analyseButton = <Button variant="outline" size="sm" onClick={() => load(true)} disabled={loading} loading={loading}>
     <Sparkles size={13} aria-hidden="true" />{report ? "Analyse again" : "Analyse my usage"}
-  </button>;
+  </Button>;
 
   if (loading && !report) return <InsightsSkeleton step={step} />;
 
@@ -190,7 +191,7 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
     const status = result?.status ?? "empty";
     return <div className={cn(CARD, "flex flex-col items-start gap-3 py-8")}>
       <h2 className="font-display text-lg font-semibold text-foreground">{status === "unavailable" ? "Insights need a harness" : status === "failed" ? "The analysis did not finish" : "Nothing analysed yet"}</h2>
-      <p className="max-w-xl text-caption text-muted-foreground">{result?.detail ?? `Bridge reads your last ${windowDays} days of usage, a sample of recent prompts, and your open pull requests, then asks your harness to write up what it sees. Nothing is stored except the report.`}</p>
+      <p className="max-w-xl text-caption text-muted-foreground">{result?.detail ? friendlyError(result.detail, status === "failed" ? "The analysis stopped because of an error. Try again." : "Insights can't run right now.") : `Bridge reads your last ${windowDays} days of usage, a sample of recent prompts, and your open pull requests, then asks your harness to write up what it sees. Nothing is stored except the report.`}</p>
       {status !== "unavailable" && analyseButton}
     </div>;
   }
@@ -210,7 +211,7 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
       </p>
     </section>
 
-    {report.highlights.length > 0 && <section className="grid gap-3 md:grid-cols-3" aria-label="Highlights">
+    {report.highlights.length > 0 && <section className="grid gap-3 @2xl/usage:grid-cols-3" aria-label="Highlights">
       {report.highlights.map((item, index) => <article key={item.title} className={cn(CARD, "py-3", rise(index + 1).className)} style={rise(index + 1).style}>
         <div className="mb-1 flex items-center gap-1.5 text-caption text-muted-foreground"><span className={cn("size-1.5 rounded-full", TONE[item.tone].dot)} aria-hidden="true" />{TONE[item.tone].label}</div>
         <h3 className="text-ui font-medium text-foreground">{item.title}</h3>
@@ -218,7 +219,7 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
       </article>)}
     </section>}
 
-    <section className="grid gap-4 lg:grid-cols-2" aria-label="Charts">
+    <section className="grid gap-4 @3xl/usage:grid-cols-2" aria-label="Charts">
       <div className={cn(CARD, rise(3).className)} style={rise(3).style}>
         <h3 className="mb-3 text-ui font-medium text-foreground">Where the tokens went</h3>
         <HarnessBars report={report} />
@@ -237,7 +238,7 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
       </div>
     </section>
 
-    <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]" aria-label="GitHub and recommendations">
+    <section className="grid gap-4 @3xl/usage:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]" aria-label="GitHub and recommendations">
       <div className={cn(CARD, rise(7).className)} style={rise(7).style}>
         <h3 className="mb-3 text-ui font-medium text-foreground">Pull requests</h3>
         {report.github ? <dl className="grid grid-cols-2 gap-3">

@@ -2,9 +2,12 @@ import { useState, type FormEvent } from "react";
 import { Plus, Route } from "lucide-react";
 import type { TrailMemberRef, TrailSummary } from "@/protocol/generated/protocol";
 import { bridgeApi } from "@/api";
+import { friendlyError } from "@/errors";
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { StageBar } from "./TrailParts";
+import { RowButton } from "@/components/ui/row";
+import { Input } from "@/components/ui/input";
 
 /** Put a chat or a note on an open trail, or start a new trail from it. */
 export function AddToTrailDialog({ member, title: subjectTitle, workspaceId, trails, onDone, onClose }: {
@@ -27,7 +30,7 @@ export function AddToTrailDialog({ member, title: subjectTitle, workspaceId, tra
     if (busy) return;
     setBusy(true); setError(undefined);
     try { await action(); onDone(); onClose(); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); setBusy(false); }
+    catch (cause) { setError(friendlyError(cause, `Couldn't add this ${noun} to the trail.`)); setBusy(false); }
   }
 
   function create(event: FormEvent) {
@@ -51,15 +54,12 @@ export function AddToTrailDialog({ member, title: subjectTitle, workspaceId, tra
             <ul className="max-h-64 overflow-y-auto" aria-label="Open trails">
               {open.map(trail => (
                 <li key={trail.id}>
-                  <button
-                    type="button"
+                  <RowButton size="bare" tone="default" shape="card"
                     disabled={busy}
-                    onClick={() => void run(async () => { await bridgeApi.addTrailMember(trail.id, member); })}
-                    className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-card focus-visible:bg-card focus-visible:outline-none"
-                  >
+                    onClick={() => void run(async () => { await bridgeApi.addTrailMember(trail.id, member); })}><span className="flex w-full items-center gap-3 px-3 py-2">
                     <span className="min-w-0 flex-1 truncate text-ui text-foreground">{trail.title}</span>
                     <StageBar stage={trail.stage} state={trail.state} />
-                  </button>
+                  </span></RowButton>
                 </li>
               ))}
             </ul>
@@ -67,12 +67,12 @@ export function AddToTrailDialog({ member, title: subjectTitle, workspaceId, tra
           <form onSubmit={create} className="flex flex-col gap-2 rounded-xl bg-card p-3" aria-label={`New trail from this ${noun}`}>
             <span className="text-caption font-medium text-faint">New trail from this {noun}</span>
             <div className="flex gap-2">
-              <input
+              <Input
+                className="min-w-0 flex-1"
                 value={title}
                 maxLength={120}
                 onChange={event => setTitle(event.target.value)}
                 aria-label="Trail title"
-                className="h-8 min-w-0 flex-1 rounded-lg border border-input bg-background px-3 text-ui text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
               />
               <Button type="submit" size="sm" disabled={busy || !title.trim()}><Plus aria-hidden="true" />Create</Button>
             </div>

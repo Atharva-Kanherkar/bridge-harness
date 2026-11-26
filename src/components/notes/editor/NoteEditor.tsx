@@ -12,6 +12,7 @@ import { EditorContent, useEditor } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
 import { keepUntouched, splitTitleHeading, type BlockCodec } from "../../../notesBlocks";
 import { rebaseDraft } from "../../../notesDraft";
+import { friendlyError } from "../../../errors";
 import { assetRefusal, uploadAsset, ASSET_TYPES } from "./assets";
 import { editorCodec } from "./codec";
 import { noteExtensions } from "./extensions";
@@ -117,7 +118,7 @@ export const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function
         editor.chain().focus().insertContentAt(Math.min(pos, editor.state.doc.content.size), node).run();
         pos = editor.state.selection.to;
       } catch (error) {
-        latest.current.onError(`Couldn't add ${file.name || "the image"}: ${error instanceof Error ? error.message : String(error)}`);
+        latest.current.onError(`Couldn't add ${file.name || "the image"}. ${friendlyError(error, "")}`.trim());
       } finally {
         setUploading(null);
       }

@@ -1,16 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TrailDetail, TrailEvent, TrailSummary } from "@/protocol/generated/protocol";
 import { bridgeApi } from "@/api";
+import { friendlyError } from "@/errors";
 import { TrailsList, type TrailWorkspace } from "./trails/TrailsList";
 import { TrailPage } from "./trails/TrailPage";
 import { TrailStartDialog, type TrailHarnessOption, type TrailStartRequest } from "./trails/TrailStartDialog";
 import { TrailAddDialog } from "./trails/TrailAddDialog";
 
 export type { TrailStartRequest } from "./trails/TrailStartDialog";
-
-function message(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
 
 /** The Trails destination: the list, or one trail's page when `trailId` is set. */
 export function TrailsScreen({ trailId, knownTrails, onSelectTrail, workspaces, defaultWorkspaceId, harnesses, defaultHarness, onOpenSession, onOpenNote, onOpenUrl, onStart }: {
@@ -41,7 +38,7 @@ export function TrailsScreen({ trailId, knownTrails, onSelectTrail, workspaces, 
   const loadList = useCallback(() => {
     bridgeApi.listTrails(true)
       .then(result => { setTrails(result.trails); setListError(undefined); })
-      .catch(cause => setListError(message(cause)));
+      .catch(cause => setListError(friendlyError(cause, "Couldn't load your trails.")));
   }, []);
 
   // A read answers for the trail it asked about. Only the newest request for
@@ -64,7 +61,7 @@ export function TrailsScreen({ trailId, knownTrails, onSelectTrail, workspaces, 
         // reaches the screen. A newer refresh carries it anyway.
         else if (refresh && refreshRef.current === request && selectedRef.current === id) void loadDetail(id);
       })
-      .catch(cause => { if (current()) setDetailError(message(cause)); })
+      .catch(cause => { if (current()) setDetailError(friendlyError(cause, "Couldn't load this trail.")); })
       .finally(() => { if (refresh && refreshRef.current === request) setRefreshing(false); });
   }, []);
 
@@ -107,7 +104,7 @@ export function TrailsScreen({ trailId, knownTrails, onSelectTrail, workspaces, 
       await bridgeApi.removeTrailMember(detail.summary.id, event.member);
       loadDetail(detail.summary.id);
     } catch (cause) {
-      setDetailError(message(cause));
+      setDetailError(friendlyError(cause, "Couldn't remove that from the trail."));
     }
   }
 
@@ -130,12 +127,12 @@ export function TrailsScreen({ trailId, knownTrails, onSelectTrail, workspaces, 
         onRemove={event => void remove(event)}
         onRename={async title => {
           try { await bridgeApi.updateTrail(trailId, { title }); loadDetail(trailId); }
-          catch (cause) { setDetailError(message(cause)); }
+          catch (cause) { setDetailError(friendlyError(cause, "Couldn't rename the trail.")); }
         }}
         onArchive={archived => {
           void bridgeApi.updateTrail(trailId, { archived })
             .then(() => { if (archived) onSelectTrail(null); else loadDetail(trailId); })
-            .catch(cause => setDetailError(message(cause)));
+            .catch(cause => setDetailError(friendlyError(cause, archived ? "Couldn't archive the trail." : "Couldn't restore the trail.")));
         }}
         onRefresh={() => loadDetail(trailId, true)}
         onAdd={() => setAdding(true)}

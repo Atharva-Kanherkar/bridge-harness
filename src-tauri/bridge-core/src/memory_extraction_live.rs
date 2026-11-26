@@ -1,5 +1,5 @@
-//! The production extraction run: a hidden bounded session on the resolved
-//! profile — the pinned helper, else the conversation's own harness and model.
+//! The production extraction run: a hidden bounded session on the memory model
+//! ([`crate::memory_model`]), whatever harness the conversation itself used.
 //!
 //! Same shape as the live briefing run, smaller in every dimension: the
 //! session is `kind = 'extraction'` so no surface lists it; the briefing
@@ -37,7 +37,8 @@ pub fn start_extraction_maintenance(core: Arc<BridgeCore>) {
         std::thread::sleep(StdDuration::from_secs(POLL_SECONDS));
         let claimed = {
             let db = core.db.lock().unwrap();
-            memory_extraction::claim_due(&db, Utc::now())
+            crate::memory_model::resolve(&db, &core.adapter_registry)
+                .and_then(|memory| memory_extraction::claim_due(&db, Utc::now(), &memory))
         };
         if let Ok(Some(run)) = claimed {
             execute(&core, run);

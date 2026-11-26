@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { clsx } from "clsx";
 import { PaneState } from "@/components/ui/pane";
 import { Kbd } from "@/components/ui/kbd";
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
 import { formatShortcut } from "@/lib/platform";
 import { ArrowUpRight, Check, ChevronLeft, ChevronRight, Clock3, Hand, ListTree, Circle, Pin, Square, TerminalSquare, X, type LucideIcon } from "lucide-react";
 import type { AgentEvent, BridgeEvent, Session, WorkerRuntimeRecord } from "../types";
@@ -16,6 +18,7 @@ import { formatElapsed, harnessLabel, modelLabel } from "../utils";
 import { HarnessMark } from "./harnessMarks";
 import { dockPaneChord } from "../dockLayout";
 import { WORKER_STATE_TEXT, formatWorkerClock, sentenceCase, stateOfTone, useTickingNow, type WorkerState } from "./workerFanOut";
+import { RowButton } from "@/components/ui/row";
 import { SkeletonDot } from "@/components/ui/skeleton";
 
 // The Agents pane: the agents this chat has running right now, and nothing
@@ -217,19 +220,19 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
     // and the facts beside it, in the sans face the rest of the pane uses.
     return <div className="flex h-full flex-col">
       <div data-agent-header className="flex shrink-0 items-start gap-1.5 border-b border-border py-2 pl-1.5 pr-2">
-        <button
-          type="button"
+        <Button
+          variant="quiet"
+          size="icon-xs"
           onClick={() => setSelected(undefined)}
           aria-label="All agents"
-          title="All agents"
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-        ><ChevronLeft size={14} aria-hidden="true" /></button>
+          tooltip="All agents"
+        ><ChevronLeft aria-hidden="true" /></Button>
         <span className="min-w-0 flex-1 py-0.5">
           <span className="flex min-w-0 items-baseline gap-1.5">
             <b className="shrink-0 text-ui font-medium text-foreground">{name}</b>
             <span className="min-w-0 truncate text-meta text-muted-foreground">{role}</span>
           </span>
-          {topic && <span className="mt-0.5 block truncate text-meta text-foreground/80" title={topic}>{topic}</span>}
+          {topic && <Tip label={topic}><span className="mt-0.5 block truncate text-meta text-foreground/80">{topic}</span></Tip>}
           <span className="mt-1 flex min-w-0 items-center gap-1 text-caption">
             <span data-agent-state={state} className={clsx("inline-flex shrink-0 items-center gap-1", WORKER_STATE_TEXT[state])}>
               {state === "working" ? <SkeletonDot className="size-[11px]" /> : <StateIcon size={11} className="shrink-0" aria-hidden="true"/>}{sentenceCase(status.label)}
@@ -241,13 +244,13 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
         </span>
         <PinButton name={name} pinned={isPinned} onToggle={() => onTogglePin(open.id)} />
         {onStopWorker && (open.kind === "harness_subagent" ? isActiveTone(status.tone) : runtime && !TERMINAL_LIFECYCLES.includes(runtime.lifecycleState)) && <StopButton name={name} subagent={open.kind === "harness_subagent"} onStop={() => void onStopWorker(open.id)} />}
-        <button
-          type="button"
+        <Button
+          variant="quiet"
+          size="icon-xs"
           onClick={() => onOpenSession(open.id)}
           aria-label="Open session"
-          title="Open this agent as the conversation"
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-        ><ArrowUpRight size={13} aria-hidden="true" /></button>
+          tooltip="Open this agent as the conversation"
+        ><ArrowUpRight aria-hidden="true" /></Button>
       </div>
       {open.kind === "harness_subagent" && <p className="shrink-0 border-b border-border px-3 py-2 text-caption leading-relaxed text-muted-foreground">Started by {harnessLabel(open.harness)} in this chat. Runs with this chat’s permissions. Not a Bridge worker.</p>}
       <div className="min-h-0 flex-1">
@@ -319,12 +322,9 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
             const stoppable = onStopWorker && (subagent ? isActiveTone(status.tone) : runtime && !TERMINAL_LIFECYCLES.includes(runtime.lifecycleState));
             return <section key={session.id} data-agent-row={session.id} data-depth={depth} className="group/agent">
               <div className={clsx("flex min-h-12 items-center gap-1 py-1.5 pr-3 transition-colors hover:bg-accent/50 group-focus-within/agent:bg-accent/50", DEPTH_INDENT[Math.min(depth, DEPTH_INDENT.length - 1)])}>
-                <button
-                  type="button"
+                <RowButton size="bare" tone="default" shape="card"
                   onClick={() => setSelected(session.id)}
-                  aria-label={`View ${name}`}
-                  className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md text-left"
-                >
+                  aria-label={`View ${name}`}><span className="flex min-w-0 flex-1 items-center gap-2.5">
                   <span className="-ml-4 h-6 w-3 shrink-0 rounded-bl-md border-b border-l border-border" aria-hidden="true"/>
                   <HarnessMark harness={session.harness} size={14}/>
                   <span className="min-w-0 flex-1">
@@ -333,7 +333,7 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
                       {isPinned && <Pin size={10} className="shrink-0 self-center fill-current text-muted-foreground" aria-hidden="true"/>}
                       <span className="min-w-0 truncate text-meta text-foreground/80">{topic ?? role}</span>
                     </span>
-                    {meta && <span className="block truncate text-caption text-faint" title={runtime?.worktreePath ?? undefined}>{meta}</span>}
+                    {meta && <Tip label={runtime?.worktreePath ?? undefined}><span className="block truncate text-caption text-faint">{meta}</span></Tip>}
                     {detail && <span className="block truncate font-mono text-caption text-muted-foreground">{detail}</span>}
                   </span>
                   <span className="shrink-0 text-right">
@@ -342,7 +342,7 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
                     </span>
                     {Number.isFinite(started) && <span className="block text-caption tabular-nums text-faint">{formatWorkerClock(workerClock(session, runtime, now) - started)}</span>}
                   </span>
-                </button>
+                </span></RowButton>
                 {/* Actions take no room until the row is pointed at or
                     focused, so states line up on the right edge. */}
                 <span className="hidden shrink-0 items-center gap-0.5 group-hover/agent:flex group-focus-within/agent:flex">
@@ -370,38 +370,35 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
       </div>}
 
       {shellCount > 0 && <div className="px-4 pt-3">
-        <button
-          type="button"
+        <RowButton size="bare" tone="default" shape="card"
           onClick={() => onOpenTerminal?.()}
-          aria-label="Reveal shells in the terminal pane"
-          className="flex w-full items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2.5 text-left transition-colors hover:bg-accent"
-        >
+          aria-label="Reveal shells in the terminal pane"><span className="flex w-full items-center gap-2.5 px-3 py-2.5">
           <TerminalSquare size={12} className="shrink-0 text-muted-foreground" aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate text-meta text-foreground">{shellCount} shell{shellCount === 1 ? "" : "s"} running</span>
           <ChevronRight size={12} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-        </button>
+        </span></RowButton>
       </div>}
     </div>
   </div>;
 }
 
 function PinButton({ name, pinned, onToggle }: { name: string; pinned: boolean; onToggle: () => void }) {
-  return <button
-    type="button"
+  return <Button
+    variant="quiet"
+    size="icon-xs"
     onClick={onToggle}
     aria-pressed={pinned}
     aria-label={`${pinned ? "Unpin" : "Pin"} ${name}`}
-    title={pinned ? "Unpin: it leaves this list when it finishes" : "Pin: keep it listed here, even after it finishes"}
-    className={cn("grid h-7 w-7 shrink-0 place-items-center rounded-md hover:bg-accent", pinned ? "text-foreground" : "text-muted-foreground hover:text-foreground")}
-  ><Pin size={12} className={cn(pinned && "fill-current")} aria-hidden="true" /></button>;
+    tooltip={pinned ? "Unpin: it leaves this list when it finishes" : "Pin: keep it listed here, even after it finishes"}
+  ><Pin className={cn("size-3", pinned && "fill-current")} aria-hidden="true" /></Button>;
 }
 
 function StopButton({ name, onStop, subagent = false }: { name: string; onStop: () => void; subagent?: boolean }) {
-  return <button
-    type="button"
+  return <Button
+    variant="quiet"
+    size="icon-xs"
     onClick={onStop}
     aria-label={`Stop ${subagent ? "subagent" : "worker"} ${name}`}
-    title={`Stop this ${subagent ? "subagent" : "worker"}`}
-    className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-  ><Square size={10} strokeWidth={1.8} aria-hidden="true" /></button>;
+    tooltip={`Stop this ${subagent ? "subagent" : "worker"}`}
+  ><Square className="size-2.5" strokeWidth={1.8} aria-hidden="true" /></Button>;
 }

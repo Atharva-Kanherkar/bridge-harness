@@ -56,6 +56,10 @@ const props = (overrides: Partial<BridgeSidebarProps> = {}): BridgeSidebarProps 
 const render = (overrides: Partial<BridgeSidebarProps> = {}) =>
   renderToStaticMarkup(<BridgeSidebar {...props(overrides)} />);
 
+/** A project group's header: the frame around the toggle that folds it. */
+const groupHeader = (html: string, label: string) =>
+  html.split("<div").find(chunk => chunk.includes('aria-expanded="true"') && chunk.includes(`>${label}</span>`)) ?? "";
+
 /** The aside's own opening tag — its classes and style, without the markup of
  *  everything it contains. */
 const asideTag = (html: string) => {
@@ -259,7 +263,7 @@ describe("BridgeSidebar theming", () => {
       activeSessionId: "chat-1",
       chats: [session("chat-1", { workspaceId: "workspace-1" })],
     });
-    const repository = html.split("<div").find(chunk => chunk.includes('title="Hide harness"')) ?? "";
+    const repository = groupHeader(html, "harness");
     expect(repository).toContain("bg-accent");
     expect(repository).not.toContain("bg-sidebar ");
   });
@@ -275,9 +279,8 @@ describe("BridgeSidebar theming", () => {
         session("chat-2", { title: "Deck polish", workspaceId: "workspace-2" }),
       ],
     });
-    const groups = html.split("<div");
-    const active = groups.find(chunk => chunk.includes('title="Hide harness"')) ?? "";
-    const idle = groups.find(chunk => chunk.includes('title="Hide deck-shell"')) ?? "";
+    const active = groupHeader(html, "harness");
+    const idle = groupHeader(html, "deck-shell");
     expect(active).toContain("bg-accent font-medium");
     expect(idle).not.toContain("bg-accent font-medium");
     expect(idle).toContain("hover:bg-accent/70");
@@ -290,7 +293,7 @@ describe("BridgeSidebar theming", () => {
       activeSessionId: "chat-1",
       chats: [session("chat-1", { workspaceId: "workspace-1" })],
     });
-    const repository = html.split("<div").find(chunk => chunk.includes('title="Hide harness"')) ?? "";
+    const repository = groupHeader(html, "harness");
     expect(repository).not.toContain("sticky");
     expect(repository).not.toContain("top-0");
   });
@@ -372,7 +375,7 @@ describe("BridgeSidebar history", () => {
     const html = render({
       chats: [session("a", { title: "Policy engine budget", harness: "opencode", model: "qwen3.7-plus" })],
     });
-    expect(html).toContain('title="Policy engine budget — OpenCode · qwen3.7-plus"');
+    expect(html).toContain('data-tip="Policy engine budget — OpenCode · qwen3.7-plus"');
     expect(html).not.toMatch(/>OpenCode · qwen3\.7-plus</);
   });
 
@@ -535,13 +538,26 @@ describe("BridgeSidebar search", () => {
   });
 
   it("advertises ⌘K on the Apps row only: that chord opens the launcher, not this field", () => {
-    const html = render();
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    act(() => root.render(<BridgeSidebar {...props()} />));
     const chord = chordLabel("open-launcher");
-    const apps = html.split("<button").find(chunk => chunk.includes('aria-label="Apps"')) ?? "";
-    const search = html.split("<button").find(chunk => chunk.includes('aria-label="Search"')) ?? "";
-    expect(apps).toContain(chord);
-    expect(search).not.toContain(chord);
-    expect(html.split(chord)).toHaveLength(2);
+    // The hint a control shows on keyboard focus.
+    const hint = (label: string) => {
+      const control = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+      act(() => control.focus());
+      const shown = document.querySelector('[data-slot="tooltip-popup"]')?.textContent ?? "";
+      act(() => control.blur());
+      return shown;
+    };
+    expect(hint("Apps")).toContain(chord);
+    expect(hint("Search")).toBe("Search");
+    expect(hint("New Chat")).not.toContain(chord);
+    expect(container.textContent).not.toContain(chord);
+    act(() => root.unmount());
+    container.remove();
   });
 });
 
@@ -576,7 +592,7 @@ describe("BridgeSidebar action rows", () => {
     const html = render();
     const compose = html.split("<button").find(chunk => chunk.includes('aria-label="New Chat"')) ?? "";
     const search = html.split("<button").find(chunk => chunk.includes('aria-label="Search"')) ?? "";
-    expect(compose).toContain("bg-card text-foreground");
+    expect(compose).toContain("bg-popover");
     expect(compose).toContain(">New Chat</span>");
     expect(search).not.toContain(">Search</span>");
     expect(html.indexOf('aria-label="New Chat"')).toBeLessThan(html.indexOf('aria-label="Search"'));
@@ -589,7 +605,7 @@ describe("BridgeSidebar action rows", () => {
       expect(html).toContain(`aria-label="${label}"`);
     }
     // The nav row still carries its visible text.
-    expect(html).toContain(">Apps</button>");
+    expect(html).toContain(">Apps</span></button>");
     // The icon-rail squares are gone with the rail itself.
     expect(html).not.toContain("mx-auto size-9");
     expect(html).not.toContain("mx-auto size-10");
@@ -741,7 +757,7 @@ describe("BridgeSidebar chat menu early compaction", () => {
     const save = vi.spyOn(bridgeApi, "saveEarlyCompactionSettings").mockRejectedValueOnce(new Error("the store is read-only"));
     act(() => optOut()!.click()); await settle();
     expect(save).toHaveBeenCalledWith(direct.id, false);
-    expect(alert()?.textContent).toBe("the store is read-only");
+    expect(alert()?.textContent).toBe("The store is read-only.");
     expect(alert()?.className).toContain("text-destructive");
     expect(optOut()?.getAttribute("aria-checked"), "a refused save keeps the confirmed value").toBe("true");
 

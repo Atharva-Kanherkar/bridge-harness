@@ -268,6 +268,20 @@ describe("SessionToolbar trail chip", () => {
     expect(menu()!.textContent).not.toContain("Add to trail");
   });
 
+  it("lets the trail chip give way before the title does", () => {
+    mount({ trail: { ...trail, harnesses: [], sessionIds: ["s1"] }, onOpenTrail: vi.fn() });
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="trail-chip"]')!;
+    const classes = chip.className.split(/\s+/);
+    // Sized by the toolbar's own width, not the window's, and shrinkable: a
+    // rigid chip left the title one letter wide beside the sidebar.
+    expect(classes).toContain("shrink");
+    expect(classes).not.toContain("shrink-0");
+    expect(classes.some(name => name.endsWith("/toolbar:inline-flex"))).toBe(true);
+    expect(classes).not.toContain("sm:inline-flex");
+    expect(chip.closest('[class*="@container/toolbar"]')).not.toBeNull();
+    expect(container.querySelector("h1")!.parentElement!.className).toContain("min-w-12");
+  });
+
   it("offers Add to trail when the chat is on none", () => {
     mount({ onOpenTrail: vi.fn(), onAddToTrail: vi.fn() });
     expect(container.querySelector('[data-testid="trail-chip"]')).toBeNull();

@@ -1,14 +1,18 @@
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "@/components/ui/input-group";
+import { SelectField } from "@/components/ui/select";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "@tanstack/react-form";
 import { BrainCircuit, CalendarClock, CircleCheck, Copy, ExternalLink, Play, RotateCcw, ShieldCheck, Undo2, X } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { openExternalUrl } from "../externalLinks";
 import type { AdapterDescriptor, ExternalLearningTriggerKind, LearningReport, LearningSchedule, LearningState, ModelProfileDraft, ModelSetupState, RouterMode, RouterPreferences } from "../types";
 import { ModelProfileEditor } from "./ModelProfileEditor";
 import { modelProfilesChanged, profileDraftsFromSetup } from "../modelProfiles";
-import { pendingClass } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
 
 const defaults: RouterPreferences = {
   mode: "shadow",
@@ -120,7 +124,7 @@ export function LearningRunSummary({ learning, running = false, onApprove, onCan
   const rollbackTarget = learning.rollbackTargetVersion;
   return <div className="mt-4 rounded-xl border border-border bg-muted/50 p-4 text-xs text-muted-foreground">
     <div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-accent px-2 py-1 block text-meta font-medium text-foreground">{run.duplicate ? "duplicate · no-op" : run.status}</span><span>{report?.reason ?? "Learning run queued"}</span></div>
-    {report && <><dl className="mt-3 grid gap-2 text-caption sm:grid-cols-3 lg:grid-cols-6"><div><dt className="text-muted-foreground">Evidence</dt><dd>{report.evidenceCount} runs · #{report.evidenceBoundary}</dd></div><div><dt className="text-muted-foreground">Quality</dt><dd>{report.qualityBps == null ? "Unknown" : `${(report.qualityBps / 100).toFixed(0)}%`}</dd></div><div><dt className="text-muted-foreground">Cost / success</dt><dd>{report.averageCostMicrousd == null ? "Unknown" : `$${(report.averageCostMicrousd / 1_000_000).toFixed(4)}`}</dd></div><div><dt className="text-muted-foreground">Confidence</dt><dd>{report.averageConfidenceBps == null ? "Unknown" : `${(report.averageConfidenceBps / 100).toFixed(0)}%`}</dd></div><div><dt className="text-muted-foreground">Replay</dt><dd>{report.replayPassed == null ? "Not run" : report.replayPassed ? "Passed" : "Blocked"}</dd></div><div><dt className="text-muted-foreground">Policy</dt><dd>v{report.basePolicyVersion} → {report.candidatePolicyVersion ? `v${report.candidatePolicyVersion} · ${run.promotionStatus.replaceAll("_", " ")}` : "unchanged"}</dd></div></dl><p className="mt-3 rounded-xl border border-border bg-card px-3 py-2 text-meta leading-relaxed text-foreground">Evaluator: <span className="font-medium">{evaluatorExecutionLabel(report.evaluationExecution)}</span>. Observed evaluator spend {`$${(report.evaluatedSpendMicrousd / 1_000_000).toFixed(4)}`} over {report.evaluatedTokens} tokens. A verdict scores confidence; it never restates what happened.</p>{!report.costComplete && <p className="mt-2 text-caption text-warning">Cost comparison is unknown because at least one provider did not report cost.</p>}<div className="mt-3 flex flex-wrap gap-2">{run.promotionStatus === "awaiting_approval" && <button type="button" disabled={running} onClick={onApprove} className="inline-flex items-center gap-1.5 rounded-lg bg-success px-2.5 py-1.5 text-caption font-medium text-success-foreground transition-colors hover:bg-success/90 disabled:opacity-40"><CircleCheck size={12} aria-hidden="true" />Approve replayed policy</button>}{["recommended", "awaiting_approval"].includes(run.promotionStatus) && <button type="button" disabled={running} onClick={onCancel} className="rounded-lg border border-border px-2.5 py-1.5 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">Cancel candidate</button>}{rollbackTarget != null && rollbackTarget > 0 && <button type="button" disabled={running} onClick={onRollback} className="inline-flex items-center gap-1.5 rounded-lg border border-warning/30 px-2.5 py-1.5 text-caption text-warning transition-colors hover:bg-warning/10 disabled:opacity-40"><Undo2 size={12} aria-hidden="true" />Roll back to v{rollbackTarget}</button>}</div></>}
+    {report && <><dl className="mt-3 grid gap-2 text-caption sm:grid-cols-3 lg:grid-cols-6"><div><dt className="text-muted-foreground">Evidence</dt><dd>{report.evidenceCount} runs · #{report.evidenceBoundary}</dd></div><div><dt className="text-muted-foreground">Quality</dt><dd>{report.qualityBps == null ? "Unknown" : `${(report.qualityBps / 100).toFixed(0)}%`}</dd></div><div><dt className="text-muted-foreground">Cost / success</dt><dd>{report.averageCostMicrousd == null ? "Unknown" : `$${(report.averageCostMicrousd / 1_000_000).toFixed(4)}`}</dd></div><div><dt className="text-muted-foreground">Confidence</dt><dd>{report.averageConfidenceBps == null ? "Unknown" : `${(report.averageConfidenceBps / 100).toFixed(0)}%`}</dd></div><div><dt className="text-muted-foreground">Replay</dt><dd>{report.replayPassed == null ? "Not run" : report.replayPassed ? "Passed" : "Blocked"}</dd></div><div><dt className="text-muted-foreground">Policy</dt><dd>v{report.basePolicyVersion} → {report.candidatePolicyVersion ? `v${report.candidatePolicyVersion} · ${run.promotionStatus.replaceAll("_", " ")}` : "unchanged"}</dd></div></dl><p className="mt-3 rounded-xl border border-border bg-card px-3 py-2 text-meta leading-relaxed text-foreground">Evaluator: <span className="font-medium">{evaluatorExecutionLabel(report.evaluationExecution)}</span>. Observed evaluator spend {`$${(report.evaluatedSpendMicrousd / 1_000_000).toFixed(4)}`} over {report.evaluatedTokens} tokens. A verdict scores confidence; it never restates what happened.</p>{!report.costComplete && <p className="mt-2 text-caption text-warning">Cost comparison is unknown because at least one provider did not report cost.</p>}<div className="mt-3 flex flex-wrap gap-2">{run.promotionStatus === "awaiting_approval" && <Button size="xs" disabled={running} onClick={onApprove}><CircleCheck size={12} aria-hidden="true" />Approve replayed policy</Button>}{["recommended", "awaiting_approval"].includes(run.promotionStatus) && <Button variant="outline" size="xs" disabled={running} onClick={onCancel}>Cancel candidate</Button>}{rollbackTarget != null && rollbackTarget > 0 && <Button variant="destructive-outline" size="xs" disabled={running} onClick={onRollback}><Undo2 size={12} aria-hidden="true" />Roll back to v{rollbackTarget}</Button>}</div></>}
   </div>;
 }
 
@@ -193,24 +197,23 @@ export function RouterSettingsDialog({
         setLearning(learningState);
         form.setFieldValue("schedule", learningState.schedule);
       }
-    }).catch(error => { if (active) onError(String(error)); }).finally(() => { if (active) setBusy(false); });
+    }).catch(error => { if (active) onError(friendlyError(error, "Couldn't load the router settings.")); }).finally(() => { if (active) setBusy(false); });
     void bridgeApi.onLearningJobChanged(() => {
       const generation = ++learningReadGeneration.current;
       void bridgeApi.learningState(workspaceId).then(fresh => {
         if (!active || generation !== learningReadGeneration.current) return;
         applyLearning(generation, fresh);
-      }).catch(error => { if (active) onError(String(error)); });
+      }).catch(error => { if (active) onError(friendlyError(error, "Couldn't refresh the learning status.")); });
     }).then(fn => {
       if (!active) { fn(); return; }
       off = fn;
-    }).catch(error => { if (active) onError(String(error)); });
+    }).catch(error => { if (active) onError(friendlyError(error, "Couldn't follow learning updates.")); });
     return () => { active = false; off?.(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onError, open, workspaceId]);
 
   if (!open || !workspaceId) return null;
-  const fieldClass = "h-9 w-full min-w-0 rounded-lg border border-input bg-card px-3 text-sm text-foreground transition-colors disabled:opacity-45";
-  const errorClass = "text-caption font-normal normal-case tracking-normal text-danger";
+  const errorClass = "text-caption font-normal normal-case tracking-normal text-destructive";
   const applyLearning = (generation: number, fresh: LearningState) => {
     if (generation !== learningReadGeneration.current) return;
     const draftSchedule = form.getFieldValue("schedule");
@@ -253,7 +256,7 @@ export function RouterSettingsDialog({
       }
       onClose();
     } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
+      onError(friendlyError(error, "Couldn't save the router settings."));
     } finally {
       setBusy(false);
     }
@@ -266,7 +269,7 @@ export function RouterSettingsDialog({
       const generation = ++learningReadGeneration.current;
       applyLearning(generation, await bridgeApi.learningState(workspaceId));
     } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
+      onError(friendlyError(error, "Couldn't run learning."));
     } finally {
       setRunning(false);
     }
@@ -279,7 +282,7 @@ export function RouterSettingsDialog({
       setModelSetup(setup);
       onModelSetupChange?.(setup);
       setProfiles(profileDraftsFromSetup(setup));
-    } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { onError(friendlyError(error, "Couldn't reset the model profiles.")); }
     finally { setBusy(false); }
   };
 
@@ -291,7 +294,7 @@ export function RouterSettingsDialog({
       await bridgeApi.approveLearningRun(learning.latestRun.id);
       const generation = ++learningReadGeneration.current;
       applyLearning(generation, await bridgeApi.learningState(workspaceId));
-    } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { onError(friendlyError(error, "Couldn't approve the policy.")); }
     finally { setRunning(false); }
   };
   const cancelCandidate = async () => {
@@ -301,7 +304,7 @@ export function RouterSettingsDialog({
       await bridgeApi.cancelLearningRun(learning.latestRun.id);
       const generation = ++learningReadGeneration.current;
       applyLearning(generation, await bridgeApi.learningState(workspaceId));
-    } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { onError(friendlyError(error, "Couldn't cancel the candidate policy.")); }
     finally { setRunning(false); }
   };
   const rollbackPolicy = async () => {
@@ -311,7 +314,7 @@ export function RouterSettingsDialog({
     try {
       const generation = ++learningReadGeneration.current;
       applyLearning(generation, await bridgeApi.rollbackRoutingPolicy(workspaceId, targetVersion, "User requested rollback from adaptive-learning settings"));
-    } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { onError(friendlyError(error, "Couldn't roll back the routing policy.")); }
     finally { setRunning(false); }
   };
   const registerAndCopy = async (kind: ExternalLearningTriggerKind) => {
@@ -321,7 +324,7 @@ export function RouterSettingsDialog({
       await bridgeApi.registerLearningTrigger(kind, registrationId, null, null);
       await bridgeApi.enableLearningTrigger(kind, registrationId);
       copyInstruction(await bridgeApi.learningTriggerInstructions(kind, databasePath ?? "$BRIDGE_DB", registrationId));
-    } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { onError(friendlyError(error, "Couldn't set up the learning trigger.")); }
     finally { setRunning(false); }
   };
 
@@ -330,15 +333,13 @@ export function RouterSettingsDialog({
       <header className="flex shrink-0 items-start gap-3 border-b border-border px-5 py-4">
         <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-muted text-foreground"><BrainCircuit size={18} aria-hidden="true" /></span>
         <div className="min-w-0 flex-1"><h2 id="router-settings-title" className="font-display text-base font-semibold text-foreground">Learning router</h2><p className="mt-1 text-ui leading-relaxed text-muted-foreground">Choose the least expensive route that preserves your measured quality floor.</p><p className="mt-2 text-meta leading-relaxed text-muted-foreground">This panel is the helper picker. It is not Bridge's memory engine. Provider <span className="font-mono text-caption">/memory</span> and <span className="font-mono text-caption">/memories</span> stay on that provider.</p></div>
-        <button type="button" className="shrink-0 rounded-xl p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" disabled={busy} onClick={onClose} aria-label="Close"><X size={16} aria-hidden="true" /></button>
+        <Button variant="quiet" size="icon-sm" className="shrink-0" disabled={busy} onClick={onClose} aria-label="Close"><X size={16} aria-hidden="true" /></Button>
       </header>
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
         <div className="grid gap-4 sm:grid-cols-2">
           <form.Field name="mode">{field => (
             <label className="space-y-2 block text-meta font-medium text-muted-foreground">Mode
-              <select className={fieldClass} value={field.state.value} disabled={busy} onChange={event => field.handleChange(event.target.value as RouterMode)}>
-                <option value="disabled">Disabled</option><option value="shadow">Shadow</option><option value="autonomous">Autonomous</option>
-              </select>
+              <SelectField label="Mode" value={field.state.value} disabled={busy} onChange={value => field.handleChange(value as RouterMode)} options={[{ value: "disabled", label: "Disabled" }, { value: "shadow", label: "Shadow" }, { value: "autonomous", label: "Autonomous" }]} />
             </label>
           )}</form.Field>
           <form.Field name="passFloorPercent" validators={{ onChange: ({ value }) => validatePercent(value) }} listeners={{
@@ -357,7 +358,7 @@ export function RouterSettingsDialog({
             },
           }}>{field => (
             <label className="space-y-2 block text-meta font-medium text-muted-foreground">Minimum pass probability
-              <div className="relative"><input className={fieldClass} type="number" min={0} max={100} step={1} value={field.state.value} disabled={busy} onChange={event => field.handleChange(event.target.value)} onBlur={field.handleBlur} /><span className="pointer-events-none absolute right-3 top-2.5 text-sm text-muted-foreground">%</span></div>
+              <InputGroup><InputGroupInput type="number" min={0} max={100} step={1} value={field.state.value} disabled={busy} onChange={event => field.handleChange(event.target.value)} onBlur={field.handleBlur} /><InputGroupAddon align="inline-end"><InputGroupText>%</InputGroupText></InputGroupAddon></InputGroup>
               {field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}
             </label>
           )}</form.Field>
@@ -365,36 +366,32 @@ export function RouterSettingsDialog({
             onChange: ({ fieldApi }) => fieldApi.form.setFieldValue("pinnedModel", ""),
           }}>{field => (
             <label className="space-y-2 block text-meta font-medium text-muted-foreground">Pin harness
-              <select className={fieldClass} value={field.state.value} disabled={busy} onChange={event => field.handleChange(event.target.value)}>
-                <option value="">Automatic</option>{adapters.map(adapter => <option key={adapter.id} value={adapter.id}>{adapter.label}{adapter.available ? "" : " (unavailable)"}</option>)}
-              </select>
+              <SelectField label="Pin harness" value={field.state.value} disabled={busy} onChange={field.handleChange} options={[{ value: "", label: "Automatic" }, ...adapters.map(adapter => ({ value: adapter.id, label: `${adapter.label}${adapter.available ? "" : " (unavailable)"}` }))]} />
             </label>
           )}</form.Field>
           <form.Subscribe selector={state => state.values.pinnedHarness}>{pinnedHarness => (
             <form.Field name="pinnedModel">{field => (
               <label className="space-y-2 block text-meta font-medium text-muted-foreground">Pin model
-                <select className={fieldClass} value={field.state.value} disabled={busy} onChange={event => field.handleChange(event.target.value)}>
-                  <option value="">Automatic</option>{models.filter(model => !pinnedHarness || model.harness === pinnedHarness).map(model => <option key={`${model.harness}:${model.id}`} value={model.id}>{model.harnessLabel} · {model.label}</option>)}
-                </select>
+                <SelectField label="Pin model" value={field.state.value} disabled={busy} onChange={field.handleChange} options={[{ value: "", label: "Automatic" }, ...models.filter(model => !pinnedHarness || model.harness === pinnedHarness).map(model => ({ value: model.id, label: `${model.harnessLabel} · ${model.label}` }))]} />
               </label>
             )}</form.Field>
           )}</form.Subscribe>
         </div>
         <form.Field name="excludedHarnesses">{field => (
-          <label className="block space-y-2 block text-meta font-medium text-muted-foreground">Exclude harnesses <span className="normal-case tracking-normal text-muted-foreground">comma-separated IDs</span><input className={fieldClass} value={field.state.value} disabled={busy} placeholder="e.g. claude" onChange={event => field.handleChange(event.target.value)} /></label>
+          <label className="block space-y-2 block text-meta font-medium text-muted-foreground">Exclude harnesses <span className="normal-case tracking-normal text-muted-foreground">comma-separated IDs</span><Input value={field.state.value} disabled={busy} placeholder="e.g. claude" onChange={event => field.handleChange(event.target.value)} /></label>
         )}</form.Field>
         <form.Field name="excludedModels">{field => (
-          <label className="block space-y-2 block text-meta font-medium text-muted-foreground">Exclude models <span className="normal-case tracking-normal text-muted-foreground">comma-separated IDs</span><input className={fieldClass} value={field.state.value} disabled={busy} placeholder="e.g. opus, gpt-5.3-codex" onChange={event => field.handleChange(event.target.value)} /></label>
+          <label className="block space-y-2 block text-meta font-medium text-muted-foreground">Exclude models <span className="normal-case tracking-normal text-muted-foreground">comma-separated IDs</span><Input value={field.state.value} disabled={busy} placeholder="e.g. opus, gpt-5.3-codex" onChange={event => field.handleChange(event.target.value)} /></label>
         )}</form.Field>
         <div className="flex gap-3 rounded-xl border border-success/20 bg-success/10 p-4"><ShieldCheck className="mt-0.5 shrink-0 text-success" size={17} aria-hidden="true" /><p className="text-meta leading-relaxed text-muted-foreground">Shadow mode measures recommendations without changing execution. Autonomous mode unlocks only after 20 completed shadow outcomes with fewer than 5% manual or no-route decisions. Pins never bypass permissions or budgets.</p></div>
 
         <section className="border-t border-border pt-5">
-          <div className="mb-4 flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-display text-base font-semibold text-foreground">Role model profiles</h3><p className="mt-1 text-xs text-muted-foreground">Version {modelSetup?.activeVersion ?? "—"}. Edits create a new immutable version.</p></div><button type="button" disabled={busy} onClick={() => void resetProfiles()} className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><RotateCcw size={13} aria-hidden="true" />Reset defaults</button></div>
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-display text-base font-semibold text-foreground">Role model profiles</h3><p className="mt-1 text-xs text-muted-foreground">Version {modelSetup?.activeVersion ?? "—"}. Edits create a new immutable version.</p></div><Button variant="quiet" size="sm" disabled={busy} onClick={() => void resetProfiles()}><RotateCcw size={13} aria-hidden="true" />Reset defaults</Button></div>
           <ModelProfileEditor profiles={profiles} adapters={adapters} disabled={busy} onChange={setProfiles} />
         </section>
 
         <section className="border-t border-border pt-5">
-          <div className="flex flex-wrap items-start justify-between gap-4"><div><h3 className="font-display text-base font-semibold text-foreground">Adaptive learning</h3><p className="mt-1 text-xs leading-relaxed text-muted-foreground">One local runner freezes typed evidence, replays held-out outcomes, and manages immutable policy versions. Active policy v{learning?.activePolicyVersion ?? "—"}{learning?.canaryPolicyVersion ? ` · canary v${learning.canaryPolicyVersion}` : ""}.</p></div><button type="button" disabled={running || busy} aria-busy={running || undefined} onClick={() => void runNow()} className={cn("inline-flex shrink-0 items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-40", pendingClass(running))}><Play size={14} aria-hidden="true" />Run learning now</button></div>
+          <div className="flex flex-wrap items-start justify-between gap-4"><div><h3 className="font-display text-base font-semibold text-foreground">Adaptive learning</h3><p className="mt-1 text-xs leading-relaxed text-muted-foreground">One local runner freezes typed evidence, replays held-out outcomes, and manages immutable policy versions. Active policy v{learning?.activePolicyVersion ?? "—"}{learning?.canaryPolicyVersion ? ` · canary v${learning.canaryPolicyVersion}` : ""}.</p></div><Button size="sm" disabled={running || busy} loading={running} onClick={() => void runNow()}><Play size={14} aria-hidden="true" />Run learning now</Button></div>
           {learning && <LearningRunSummary learning={learning} running={running} onApprove={() => void approveCandidate()} onCancel={() => void cancelCandidate()} onRollback={() => void rollbackPolicy()} />}
 
           {learning && <div className="mt-4 grid gap-3 rounded-xl border border-border p-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -405,33 +402,33 @@ export function RouterSettingsDialog({
                 }
               },
             }}>{field => (
-              <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={field.state.value} onChange={event => field.handleChange(event.target.checked)} /><CalendarClock size={14} aria-hidden="true" />In-app schedule</label>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground"><Checkbox checked={field.state.value} onCheckedChange={checked => field.handleChange(checked === true)} /><CalendarClock size={14} aria-hidden="true" />In-app schedule</label>
             )}</form.Field>
             <form.Field name="schedule.mode">{field => (
-              <label className="space-y-1 block text-meta font-medium text-muted-foreground">Learning mode<select aria-label="Learning mode" className={fieldClass} value={field.state.value} onChange={event => field.handleChange(event.target.value)}><option value="manual">Manual · recommend</option><option value="ask">Ask · approval required</option><option value="automatic">Automatic · guarded canary</option></select></label>
+              <label className="space-y-1 block text-meta font-medium text-muted-foreground">Learning mode<SelectField label="Learning mode" value={field.state.value} onChange={field.handleChange} options={[{ value: "manual", label: "Manual · recommend" }, { value: "ask", label: "Ask · approval required" }, { value: "automatic", label: "Automatic · guarded canary" }]} /></label>
             )}</form.Field>
             <form.Field name="schedule.cadenceMinutes" validators={{ onChange: ({ value }) => validateCadence(value) }}>{field => (
-              <label className="space-y-1 block text-meta font-medium text-muted-foreground">Cadence<input className={fieldClass} type="number" min={15} value={field.state.value} onChange={event => field.handleChange(Number(event.target.value))} onBlur={field.handleBlur} />{field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}</label>
+              <label className="space-y-1 block text-meta font-medium text-muted-foreground">Cadence<Input type="number" min={15} value={field.state.value} onChange={event => field.handleChange(Number(event.target.value))} onBlur={field.handleBlur} />{field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}</label>
             )}</form.Field>
             <form.Field name="schedule.runBudgetMicrousd" validators={{ onChange: ({ value }) => validateNonNegativeInteger(value) }}>{field => (
-              <label className="space-y-1 block text-meta font-medium text-muted-foreground">Spend ceiling (µUSD)<input className={fieldClass} type="number" min={0} value={field.state.value} onChange={event => field.handleChange(Number(event.target.value))} onBlur={field.handleBlur} />{field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}</label>
+              <label className="space-y-1 block text-meta font-medium text-muted-foreground">Spend ceiling (µUSD)<Input type="number" min={0} value={field.state.value} onChange={event => field.handleChange(Number(event.target.value))} onBlur={field.handleBlur} />{field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}</label>
             )}</form.Field>
             <form.Field name="schedule.runBudgetTokens" validators={{ onChange: ({ value }) => validateNonNegativeInteger(value) }}>{field => (
-              <label className="space-y-1 block text-meta font-medium text-muted-foreground">Token ceiling<input className={fieldClass} type="number" min={0} value={field.state.value} onChange={event => field.handleChange(Number(event.target.value))} onBlur={field.handleBlur} />{field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}</label>
+              <label className="space-y-1 block text-meta font-medium text-muted-foreground">Token ceiling<Input type="number" min={0} value={field.state.value} onChange={event => field.handleChange(Number(event.target.value))} onBlur={field.handleBlur} />{field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}</label>
             )}</form.Field>
             <form.Subscribe selector={state => state.values.schedule.mode}>{mode => mode === "automatic" && <p className="text-caption leading-relaxed text-warning sm:col-span-2 lg:col-span-3">Automatic mode is opt-in. It promotes only replay-approved candidates to a canary and creates an immutable rollback version on regression.</p>}</form.Subscribe>
             <p className="text-caption leading-relaxed text-muted-foreground sm:col-span-2 lg:col-span-3">Spend and token ceilings cap what one learning run's bounded evaluations may observe; once a run reaches either, its remaining evaluations are skipped. A zero ceiling makes the whole learning run an auditable no-op.</p>
           </div>}
 
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <article className="rounded-xl border border-border p-4"><h4 className="text-xs font-medium text-foreground">Codex Scheduled <span className="font-normal text-muted-foreground">· optional</span></h4><p className="mt-2 text-caption leading-relaxed text-muted-foreground">Managed in Codex/ChatGPT. Bridge cannot create or enumerate schedules. Registration copies a tested narrow local wake-up task; it never grants promotion authority.</p><div className="mt-3 flex flex-wrap gap-3"><button type="button" disabled={running} onClick={() => void registerAndCopy("codex")} className="inline-flex items-center gap-1.5 text-caption text-info transition-colors hover:text-info/80"><Copy size={12} aria-hidden="true" />Register + copy task</button><button type="button" onClick={() => void openExternalUrl("https://chatgpt.com/codex")} className="inline-flex items-center gap-1.5 text-caption text-muted-foreground transition-colors hover:text-foreground"><ExternalLink size={12} aria-hidden="true" />Open Codex Scheduled setup</button></div></article>
-            <article className="rounded-xl border border-border p-4"><h4 className="text-xs font-medium text-foreground">Claude Desktop schedule <span className="font-normal text-muted-foreground">· optional</span></h4><p className="mt-2 text-caption leading-relaxed text-muted-foreground">Prefer a local Desktop task for local evidence. Cloud Routines remain experimental and require a future Bridge-owned authenticated endpoint; local SQLite is never uploaded.</p><button type="button" disabled={running} onClick={() => void registerAndCopy("claude")} className="mt-3 inline-flex items-center gap-1.5 text-caption text-info transition-colors hover:text-info/80"><Copy size={12} aria-hidden="true" />Register + copy local task</button></article>
-            <article className="rounded-xl border border-border p-4"><h4 className="text-xs font-medium text-foreground">OpenCode schedule <span className="font-normal text-muted-foreground">· optional</span></h4><p className="mt-2 text-caption leading-relaxed text-muted-foreground">Register a narrow local OpenCode wake-up command. Bridge retains replay, approval, promotion, and rollback authority.</p><button type="button" disabled={running} onClick={() => void registerAndCopy("open_code")} className="mt-3 inline-flex items-center gap-1.5 text-caption text-info transition-colors hover:text-info/80"><Copy size={12} aria-hidden="true" />Register + copy local task</button></article>
+            <article className="rounded-xl border border-border p-4"><h4 className="text-xs font-medium text-foreground">Codex Scheduled <span className="font-normal text-muted-foreground">· optional</span></h4><p className="mt-2 text-caption leading-relaxed text-muted-foreground">Managed in Codex/ChatGPT. Bridge cannot create or enumerate schedules. Registration copies a tested narrow local wake-up task; it never grants promotion authority.</p><div className="mt-3 flex flex-wrap gap-3 text-caption"><Button variant="link" size="inline" disabled={running} onClick={() => void registerAndCopy("codex")}><Copy size={12} aria-hidden="true" />Register + copy task</Button><Button variant="text" size="inline" onClick={() => void openExternalUrl("https://chatgpt.com/codex")}><ExternalLink size={12} aria-hidden="true" />Open Codex Scheduled setup</Button></div></article>
+            <article className="rounded-xl border border-border p-4"><h4 className="text-xs font-medium text-foreground">Claude Desktop schedule <span className="font-normal text-muted-foreground">· optional</span></h4><p className="mt-2 text-caption leading-relaxed text-muted-foreground">Prefer a local Desktop task for local evidence. Cloud Routines remain experimental and require a future Bridge-owned authenticated endpoint; local SQLite is never uploaded.</p><Button variant="link" size="inline" disabled={running} onClick={() => void registerAndCopy("claude")} className="mt-3"><Copy size={12} aria-hidden="true" />Register + copy local task</Button></article>
+            <article className="rounded-xl border border-border p-4"><h4 className="text-xs font-medium text-foreground">OpenCode schedule <span className="font-normal text-muted-foreground">· optional</span></h4><p className="mt-2 text-caption leading-relaxed text-muted-foreground">Register a narrow local OpenCode wake-up command. Bridge retains replay, approval, promotion, and rollback authority.</p><Button variant="link" size="inline" disabled={running} onClick={() => void registerAndCopy("open_code")} className="mt-3"><Copy size={12} aria-hidden="true" />Register + copy local task</Button></article>
           </div>
         </section>
       </div>
-      <footer className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-border px-5 py-4"><button type="button" className="rounded-xl px-4 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" disabled={busy} onClick={onClose}>Cancel</button><form.Subscribe selector={state => state.canSubmit}>{canSubmit => (
-        <button type="button" className={cn("inline-flex min-w-24 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-40", pendingClass(busy))} aria-busy={busy || undefined} disabled={busy || !canSubmit} onClick={() => void form.handleSubmit()}>Save</button>
+      <footer className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-border px-5 py-4"><Button variant="quiet" disabled={busy} onClick={onClose}>Cancel</Button><form.Subscribe selector={state => state.canSubmit}>{canSubmit => (
+        <Button className="min-w-24" loading={busy} disabled={!canSubmit} onClick={() => void form.handleSubmit()}>Save</Button>
       )}</form.Subscribe></footer>
     </DialogPopup>
   </Dialog>;

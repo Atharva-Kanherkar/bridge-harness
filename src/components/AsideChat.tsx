@@ -12,6 +12,7 @@ import type { AccountChoice } from "../providerAccounts";
 import { HarnessMark, harnessTintClass } from "./harnessMarks";
 import { harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "../utils";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { usePolledSessionForest } from "../forest";
 import { applyFileMention as insertFileMention, fileMentionQuery } from "../fileMentions";
 import { useChatChangedFiles } from "../chatChangedFiles";
@@ -24,6 +25,8 @@ import { type ComposerAttachment, imageFilesFromClipboard, prepareImage } from "
 import { cn } from "@/lib/utils";
 import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session, SlashCommand } from "../types";
 import type { ChatSessionSettings, InteractionResolutionResult, QuestionAction, SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 // An aside: a standalone chat the user delegated to another agent from inside
@@ -212,7 +215,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
     } catch (error) {
       setDraft(text);
       setAttachments(sentAttachments);
-      setComposerError(error instanceof Error ? error.message : String(error));
+      setComposerError(friendlyError(error, "Couldn't send the message. It's back in the box to retry."));
     } finally {
       setSending(false);
       inputRef.current?.focus();
@@ -237,7 +240,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
       ...(await prepareImage(file)),
     })))
       .then(pasted => setAttachments(current => [...current, ...pasted]))
-      .catch(error => setComposerError(error instanceof Error ? error.message : String(error)));
+      .catch(error => setComposerError(friendlyError(error, "Couldn't attach that image.")));
     inputRef.current?.focus();
   };
 
@@ -294,14 +297,14 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
                 onChange={(harness, model, account) => {
                   setComposerError(undefined);
                   void Promise.resolve(onChangeModel(harness, model, account))
-                    .catch(error => setComposerError(error instanceof Error ? error.message : String(error)));
+                    .catch(error => setComposerError(friendlyError(error, "Couldn't switch the model.")));
                 }}
                 effort={session.effort}
                 onEffortChange={onChangeEffort ? effort => {
                   setComposerError(undefined);
                   setChangingEffort(true);
                   void Promise.resolve().then(() => onChangeEffort(effort))
-                    .catch(error => setComposerError(error instanceof Error ? error.message : String(error)))
+                    .catch(error => setComposerError(friendlyError(error, "Couldn't change the thinking effort.")))
                     .finally(() => setChangingEffort(false));
                 } : undefined}
                 compact
@@ -313,24 +316,19 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
             </div>
           </div>
           {headerActions}
-          <button
-            type="button"
+          <Button variant="quiet" size="xs" className="shrink-0" tooltip="Continue this aside as a full chat"
             onClick={onPromote}
-            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            title="Continue this aside as a full chat"
             aria-label="Open as chat"
           >
             {!docked && "Open as chat"}
             <ArrowUpRight size={12} aria-hidden="true"/>
-          </button>
-          {onClose && <button
-            type="button"
+          </Button>
+          {onClose && <Button variant="quiet" size="icon-xs" className="shrink-0"
             onClick={onClose}
             aria-label="Close aside"
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
             <X size={14} aria-hidden="true"/>
-          </button>}
+          </Button>}
         </header>
 
         <div className="relative min-h-0 flex-1">
@@ -362,7 +360,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
           {(lifecycle?.phase === "switching" || sending) && <SkeletonRegion label={sending ? "Sending" : "Switching models"} className="mb-2 px-1"><Skeleton className="h-2.5 w-40" /></SkeletonRegion>}
           {queuedFollowUpCount > 0 && <p className="mb-2 px-1 text-caption text-muted-foreground" role="status">{queuedFollowUpCount} follow-up{queuedFollowUpCount === 1 ? "" : "s"} queued; sent when this step finishes</p>}
           {queuedFollowUps.length > 0 && <p className="mb-2 px-1 text-caption text-muted-foreground" role="status">{queuedFollowUps.length} follow-up{queuedFollowUps.length === 1 ? "" : "s"} queued — sent when this send finishes</p>}
-          {lifecycle?.error && !composerError && <p className="mb-2 px-1 text-caption text-destructive">{lifecycle.error} You can retry below.</p>}
+          {lifecycle?.error && !composerError && <p className="mb-2 px-1 text-caption text-destructive">{friendlyError(lifecycle.error, "The side chat couldn't start.")} You can retry below.</p>}
           <ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} />
           {composerError && <p className="mb-2 px-1 text-caption text-destructive">{composerError}</p>}
           <div className="relative">
@@ -373,11 +371,11 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
                 <span className="normal-case tracking-normal text-muted-foreground">{slashMatches.length}</span>
               </div>
               <div ref={slashListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-                {slashMatches.map((command, index) => <button id={`aside-slash-option-${index}`} key={`${command.harness}:${command.kind}:${command.name}`} type="button" role="option" aria-selected={index === slashIndex} data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); applySlash(command); }} className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-accent" : "hover:bg-accent"}`}>
+                {slashMatches.map((command, index) => <RowButton size="bare" shape="flush" id={`aside-slash-option-${index}`} key={`${command.harness}:${command.kind}:${command.name}`} role="option" aria-selected={index === slashIndex} data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); applySlash(command); }}><span className="flex w-full min-w-0 items-center gap-2 px-3 py-2">
                   <span className="whitespace-nowrap font-mono text-meta text-foreground">/{command.name}</span>
                   <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-caption text-muted-foreground">{command.description}</span>
-                  <span className="shrink-0 rounded border border-border px-1 py-[1px] text-caption text-muted-foreground font-medium">{slashOwnershipBadge(command.harness)}</span>
-                </button>)}
+                  <span className="shrink-0 rounded border border-border px-1 py-px text-caption text-muted-foreground font-medium">{slashOwnershipBadge(command.harness)}</span>
+                </span></RowButton>)}
               </div>
             </div>}
             <ComposerPill

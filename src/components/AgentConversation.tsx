@@ -1,22 +1,22 @@
 import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
 import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { AlertTriangle, ArrowDown, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FileText, Gauge, GitFork, MessageSquarePlus, Navigation, PanelRight, PenLine, RotateCcw, SquareTerminal, X } from "lucide-react";
-import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, deliveryNotes, delegationFacet, foldWorkerDelegations, foldHarnessSubagents, groupItems, isToolItem, mergeConversationProjections, projectActiveProcesses, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type DeliveryNote, type PendingMessage, type Rendered, type ToolGlyph, type ToolVerb } from "../conversation";
+import { AlertTriangle, ArrowDown, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FileText, Gauge, GitFork, MessageSquarePlus, Navigation, PanelRight, PenLine, Reply, RotateCcw, SquareTerminal, X } from "lucide-react";
+import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, deliveryNotes, delegationFacet, foldWorkerDelegations, foldHarnessSubagents, groupItems, isToolItem, mergeConversationProjections, projectActiveProcesses, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type DeliveryNote, type PendingMessage, type Rendered, type ToolVerb } from "../conversation";
 import { isToolLive } from "../transcript/toolCall";
-import { reduceTranscript } from "../transcript/reducer";
-import type { TranscriptEvent } from "../transcript/events";
 import { LAUNCH_STEPS, humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeLaunchFailure, humanizeResolution, launchFailureStep } from "../humanize";
 import { projectGreetingLines, welcomeHeadline, type GreetingPart } from "../greetings";
 import { StreamingGreeting } from "./StreamingGreeting";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
-import { describeError, isThrottleKind } from "../errors";
+import { describeError, friendlyError, isThrottleKind } from "../errors";
 import { failedTurn } from "../failedTurn";
 import { looksLikeDiff } from "./highlight";
 import { useTranscriptWindow } from "./transcriptWindow";
 import { PatchView } from "./DiffView";
 import { CopyButton, FileLinkContext, Markdown, MentionText, parseFileRef, useCopy, type FileLinks } from "./Markdown";
+import { ReplyQuoteCard } from "./ReplyContext";
+import { parseReplyPrompt, replyCopyText } from "../replyTo";
 import { VisualActionsContext, VisualCall } from "./VisualCall";
 import { RunInTerminalContext, type RunInTerminal } from "./RunInTerminal";
 import { PersonalAppDraftCall } from "./PersonalAppDraftCall";
@@ -27,7 +27,11 @@ import { isOutgoingItem } from "../transcript/outgoing";
 import { openExternalUrl } from "../externalLinks";
 import { harnessLabel, modelLabel } from "../utils";
 import { cn } from "@/lib/utils";
-import { Skeleton, SkeletonDot, SkeletonRegion, pendingClass } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
+import { Skeleton, SkeletonRegion, SkeletonDot } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
+import { Tip } from "@/components/ui/tooltip";
 import { MOTION_DURATION, useMotionStagger, useMotionTransition } from "../motion";
 import { bridgeApi } from "../api";
 import { quoteSelection } from "../sideChat";
@@ -48,7 +52,7 @@ import { useProviderUsageOverviews } from "./UsageDot";
 import { UsageResetRow } from "./UsageResetRow";
 import { TurnChangesCard, TurnEndBlock, TurnLine } from "./TurnChangesCard";
 import { describeTurnEnds, keepStable, type TurnEnd } from "../turnChanges";
-import type { InteractionResolutionResult, QuestionAction, SessionEntryWindowSummary } from "../protocol/generated/protocol";
+import type { InteractionResolutionResult, SessionEntryWindowSummary } from "../protocol/generated/protocol";
 
 type ResolvePermission = (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
 
@@ -89,7 +93,7 @@ interface ErrorContext {
 /// `TranscriptRow` wrapper: a CSS animation replays on every remount and cannot
 /// be told "only the row that just arrived", which is exactly what a transcript
 /// needs.
-const BUBBLE = "ml-auto w-fit max-w-[85%] whitespace-pre-wrap break-words rounded-2xl border border-border bg-accent/70 px-4 py-2.5 text-message tracking-[-0.006em] text-foreground";
+const BUBBLE = "ml-auto w-fit max-w-[85%] whitespace-pre-wrap break-words rounded-2xl border border-border bg-accent/70 px-4 py-2.5 text-message text-foreground";
 /// Transcript-level notice: a quiet card that reads as a margin note.
 const NOTICE = "mb-4 rounded-xl border border-border bg-card px-3 py-2 text-xs text-muted-foreground";
 /// A decision the user has to make — approvals, adoptions, stale bases.
@@ -100,8 +104,6 @@ const PANEL = "min-w-0 overflow-hidden rounded-xl border border-border bg-card";
 const PANEL_FAILED = "min-w-0 overflow-hidden rounded-xl border border-destructive/30 bg-destructive/5";
 /// Verbatim text — paths, commands, diffstats — sits in an inset code well.
 const WELL = "block rounded-md border border-border bg-code px-2.5 py-2 font-mono text-meta leading-relaxed whitespace-pre-wrap break-words overflow-x-auto text-foreground";
-const BTN_PRIMARY = "inline-flex min-h-8 items-center gap-1.5 rounded-lg bg-primary px-3 py-1 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50";
-const BTN_SECONDARY = "inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-input px-3 py-1 text-ui font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50";
 
 /* ── Transcript motion ───────────────────────────────────────────────────
    Three moves, and only three: a row arriving rises 6px into place, a
@@ -288,7 +290,7 @@ function SubagentSection({ label, text, markdown }: { label: string; text: strin
     <section className="overflow-hidden rounded-lg border border-border bg-code">
       <div className="flex items-center justify-between border-b border-border bg-code-highlight px-3 py-1.5">
         <span className="text-caption font-semibold text-faint">{label}</span>
-        <CopyButton text={text} className="code-block-copy" />
+        <CopyButton text={text} />
       </div>
       <div className={cn("px-3.5 py-2.5", markdown && "max-h-[320px] overflow-auto")}>
         {markdown ? (
@@ -316,11 +318,10 @@ function SubagentChip({ item }: { item: ConversationItem }) {
   const source = subagentSource(item);
   const label = subagentLabel(item);
   if (!source || !label) return null;
-  return <span
+  return <Tip label={source.title ? `Subagent: ${source.title}` : "Subagent work"}><span
     data-subagent={source.sessionId}
-    title={source.title ? `Subagent: ${source.title}` : "Subagent work"}
     className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-1.5 py-px text-micro leading-4 text-muted-foreground"
-  ><CornerDownRight size={10} aria-hidden="true" /><span className="sr-only">Subagent </span>{label}</span>;
+  ><CornerDownRight size={10} aria-hidden="true" /><span className="sr-only">Subagent </span>{label}</span></Tip>;
 }
 
 type CheckState = "running" | "passed" | "failed" | "pending";
@@ -367,7 +368,6 @@ const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: C
   // row stops claiming to run, without rewriting what the wire said.
   const live = isToolLive(call, turnActive, runtimeActive);
   const failed = call.status === "failed";
-  const succeeded = call.status === "completed";
   const body = call.patch ? "patch" : call.subagent ? "subagent" : call.command ? "command" : call.verb === "run" && call.output ? "terminal" : call.output ? "output" : null;
   // `null` is "nobody has decided yet", which is not the same as closed: a patch
   // arriving mid-stream should still open the row, while a reader who collapsed
@@ -400,14 +400,16 @@ const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: C
             body && "hover:bg-accent/50",
           )}
         >
-          <button
-            type="button"
-            className={cn("flex min-h-8 min-w-0 items-center gap-2 rounded-md text-left disabled:cursor-default", suffix && "flex-1")}
-            disabled={!body}
+          {/* A row with nothing to unfold stays a button, out of the tab
+              order, rather than a faded disabled one. */}
+          <Tip label={suffix ? `${label}\n${suffix}` : label}><RowButton
+            size="bare"
+            tone="plain"
+            className={suffix ? "min-h-8 flex-1" : "min-h-8 w-auto"}
+            tabIndex={body ? undefined : -1}
             aria-expanded={body ? open : undefined}
-            title={suffix ? `${label}\n${suffix}` : label}
             onClick={() => body && setToggled(!open)}
-          >
+          ><span className="flex min-w-0 flex-1 items-center gap-2 text-meta">
             {check ? <>
               {/* A check reads like a Verifying row: state, the command as typed,
                   what kind of check it is, and what the output said. */}
@@ -423,20 +425,18 @@ const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: C
               {suffix && <span data-tool-command className="hidden min-w-0 flex-1 truncate font-mono text-caption text-faint sm:block">{suffix}</span>}
             </>}
             <SubagentChip item={item}/>
-          </button>
+          </span></RowButton></Tip>
           {/* flex-1 from a zero basis, so the path gives up room before the label does. */}
           {path && (fileRef
-            ? <button
-                type="button"
+            ? <Button
+                variant="text" size="inline"
                 onClick={() => links!.open(fileRef.path, fileRef.line)}
                 aria-label={`Open ${fileRef.path} in the Code pane`}
-                title={`Open ${fileRef.path} in the Code pane`}
-                className="hidden min-h-8 min-w-0 flex-1 truncate rounded-md text-left text-muted-foreground decoration-dotted underline-offset-2 hover:text-foreground hover:underline sm:block"
-              >{directory}</button>
-            : <span title={path} className="hidden min-w-0 flex-1 truncate text-muted-foreground sm:block">{directory}</span>)}
-          <button
-            type="button"
-            className="ml-auto flex min-h-8 shrink-0 items-center gap-2 rounded-md text-caption tabular-nums disabled:cursor-default"
+                tooltip={`Open ${fileRef.path} in the Code pane`}
+                className="hidden min-h-8 min-w-0 flex-1 justify-start sm:flex"
+              ><span className="min-w-0 truncate">{directory}</span></Button>
+            : <Tip label={path}><span data-tool-path className="hidden min-w-0 flex-1 truncate text-muted-foreground sm:block">{directory}</span></Tip>)}
+          <Button variant="quiet" size="sm" className="ml-auto shrink-0"
             disabled={!body}
             aria-label={open ? "Collapse tool output" : "Expand tool output"}
             onClick={() => body && setToggled(!open)}
@@ -450,13 +450,13 @@ const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: C
                 on every settled row was noise the eye had to skip. */}
             {!check && (live || failed) && <StatusGlyph live={live} failed={failed} succeeded={false}/>}
             {body && <ChevronRight size={12} className={cn("text-muted-foreground transition-transform", open && "rotate-90")} aria-hidden="true"/>}
-          </button>
+          </Button>
         </div>
         <Disclosure open={open} className="my-1 ml-6 rounded-lg border border-border/60">
           {body === "patch" && <PatchView patch={call.patch ?? ""} path={call.path ?? ""} className="max-h-[360px]" foldAfterHunks={1}/>}
           {body === "subagent" && <SubagentBlock agentType={call.subagent?.agentType} prompt={call.subagent?.prompt} output={call.output} status={call.subagent?.status} live={live}/>}
           {body === "command" && <CommandPanel call={call} live={live}/>}
-          {body === "terminal" && <CappedOutput text={call.output ?? ""} className="max-h-[260px] overflow-auto whitespace-pre-wrap break-words bg-code px-3.5 py-2.5 font-mono text-meta leading-[1.7] text-muted-foreground"/>}
+          {body === "terminal" && <CappedOutput text={call.output ?? ""} className="max-h-[260px] overflow-auto whitespace-pre-wrap break-words bg-code px-3.5 py-2.5 font-mono text-meta leading-relaxed text-muted-foreground"/>}
           {body === "output" && (looksLikeDiff(call.output ?? "")
             ? <PatchView patch={call.output ?? ""} path={call.path ?? ""} className="max-h-[320px] px-1" foldAfterHunks={2}/>
             : <CappedOutput text={call.output ?? ""} className="max-h-[320px] overflow-auto whitespace-pre-wrap break-words bg-code p-3 font-mono text-meta leading-relaxed text-muted-foreground"/>)}
@@ -571,11 +571,11 @@ const ActivityGroup = memo(function ActivityGroup({ items, turnActive, autoExpan
   const headline = live ? watching ? "Watching" : "Working" : workedMs > 0 ? `Worked for ${formatThoughtDuration(workedMs)}` : summary;
   return (
     <div data-activity-group className="min-w-0">
-      <button
-        type="button"
-        className="group flex min-h-8 w-full min-w-0 items-center gap-2 text-left text-ui text-muted-foreground transition-colors hover:text-foreground"
+      <Tip label={summary}><RowButton
+        size="bare"
+        tone="plain"
+        className="group min-h-8"
         aria-expanded={expanded}
-        title={summary}
         onClick={onToggle}
       >
         {live && (watching ? <Circle size={7} className="shrink-0"/> : <PulseDot size={7}/>)}
@@ -585,7 +585,7 @@ const ActivityGroup = memo(function ActivityGroup({ items, turnActive, autoExpan
         {headline !== summary && <span className="min-w-0 truncate text-meta text-faint">{summary}</span>}
         <span className="sr-only">{stepCount} step{stepCount === 1 ? "" : "s"}</span>
         <ChevronDown size={13} className={cn("shrink-0 text-faint transition-transform", expanded && "rotate-180")} aria-hidden="true"/>
-      </button>
+      </RowButton></Tip>
       {/* Collapsed and still working: the step running right now, and nothing
           else. A reader watching a run wants the head of it, not its history. */}
       {checks.length > 0 && !expanded && <div data-check-list className="grid min-w-0 gap-px">
@@ -607,12 +607,12 @@ const ActivityGroup = memo(function ActivityGroup({ items, turnActive, autoExpan
                 {item.type === "plan" ? <PlanCard item={item}/> : <Reasoning item={item}/>}
               </div>)}
           {focusFailures && failedItems.length < items.length && (
-            <button
-              type="button"
+            <RowButton
+              size="sm"
+              tone="muted"
               data-show-all-steps
-              className="min-h-8 rounded-md px-1.5 text-left text-meta text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
               onClick={() => setFailuresOnly(false)}
-            >Show all {stepCount} step{stepCount === 1 ? "" : "s"}</button>
+            >Show all {stepCount} step{stepCount === 1 ? "" : "s"}</RowButton>
           )}
         </motion.div>
       </Disclosure>
@@ -695,11 +695,11 @@ function NowCard({ item, items }: { item: ConversationItem; items: ConversationI
         {call.effect && <EffectChip effect={call.effect} className="hidden sm:inline-flex"/>}
         {Number.isFinite(started) && <Elapsed since={started} className="ml-auto shrink-0 text-caption tabular-nums text-muted-foreground"/>}
       </div>
-      {command && <p className="mt-0.5 truncate pl-[21px] font-mono text-caption text-faint">{command}</p>}
-      {tail.length > 0 && <div data-now-tail className="ml-[21px] mt-2 rounded-lg bg-code px-2.5 py-1.5 font-mono text-caption leading-[1.65] text-muted-foreground">
+      {command && <p className="mt-0.5 truncate pl-5.25 font-mono text-caption text-faint">{command}</p>}
+      {tail.length > 0 && <div data-now-tail className="ml-[21px] mt-2 rounded-lg bg-code px-2.5 py-1.5 font-mono text-caption leading-relaxed text-muted-foreground">
         {tail.map((line, index) => <span key={index} className={cn("block truncate", index === tail.length - 1 && "text-foreground")}>{line}</span>)}
       </div>}
-      {shown.length > 0 && <ol data-now-plan className="mt-2.5 flex flex-wrap gap-1.5 pl-[21px]">
+      {shown.length > 0 && <ol data-now-plan className="mt-2.5 flex flex-wrap gap-1.5 pl-5.25">
         {shown.map((step, index) => <li
           key={`${step.step}-${index}`}
           data-state={step.state}
@@ -853,8 +853,8 @@ function StallNotice({ onStop }: { onStop?: () => void }) {
     <div role="status" className={NOTICE}>
       <p>This turn has gone quiet. Stop it, or keep waiting.</p>
       <div className="mt-2 flex flex-wrap gap-2">
-        <button type="button" className={BTN_SECONDARY} onClick={() => onStop?.()}>Stop</button>
-        <button type="button" className={BTN_SECONDARY} onClick={() => setKeepWaiting(true)}>Keep waiting</button>
+        <Button variant="outline" size="sm" onClick={() => onStop?.()}>Stop</Button>
+        <Button variant="outline" size="sm" onClick={() => setKeepWaiting(true)}>Keep waiting</Button>
       </div>
     </div>
   );
@@ -878,7 +878,7 @@ const NO_ANSWER: ResolveQuestion = async () => undefined;
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeProcessEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, workerSessions, workerRuntimes, onStopWorker, onOpenAgents, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, onRunInTerminal, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, onBackgroundWork, entryWindow, onForkSession, onRewindEntry, onRetryTurn, onEditTurn, onReviewChanges, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeProcessEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; /** Where a fan-out card reads each worker's live state; without them it reads the transcript alone. */ workerSessions?: readonly Session[]; workerRuntimes?: readonly WorkerRuntimeRecord[]; /** Stop one worker, the way every other surface stops one. */ onStopWorker?: (childSessionId: string) => Promise<void>; /** Open the dock's Agents pane on the lineage. */ onOpenAgents?: () => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; /** Send a failed turn's message again, as it was. */ onRetryTurn?: RetryTurn; /** Put a failed turn's message back in the composer. */ onEditTurn?: (prompt: ConversationItem) => void; /** Open the Changes pane from a turn's changes card; without it the card has no Review button. */ onReviewChanges?: () => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; /** Run a shell block in the chat's own terminal; without it, shell blocks offer Copy alone. */ onRunInTerminal?: RunInTerminal; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; /** Where the chat reports work its agent left running; the composer shelf and the Work pane read it. The main chat passes the global store, a Mission Control tile its own. */ onBackgroundWork?: (work: BackgroundWork) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeProcessEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, workerSessions, workerRuntimes, onStopWorker, onOpenAgents, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, onRunInTerminal, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, onReply, onRevealEntry, onBackgroundWork, entryWindow, onForkSession, onRewindEntry, onRetryTurn, onEditTurn, onReviewChanges, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeProcessEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; /** Where a fan-out card reads each worker's live state; without them it reads the transcript alone. */ workerSessions?: readonly Session[]; workerRuntimes?: readonly WorkerRuntimeRecord[]; /** Stop one worker, the way every other surface stops one. */ onStopWorker?: (childSessionId: string) => Promise<void>; /** Open the dock's Agents pane on the lineage. */ onOpenAgents?: () => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; /** Send a failed turn's message again, as it was. */ onRetryTurn?: RetryTurn; /** Put a failed turn's message back in the composer. */ onEditTurn?: (prompt: ConversationItem) => void; /** Open the Changes pane from a turn's changes card; without it the card has no Review button. */ onReviewChanges?: () => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; /** Run a shell block in the chat's own terminal; without it, shell blocks offer Copy alone. */ onRunInTerminal?: RunInTerminal; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; /** Reply on a settled agent message: the composer answers it next. Never sends. */ onReply?: (item: ConversationItem) => void; /** Scroll to an entry and highlight it: a sent reply's card jumps back to what it answered. */ onRevealEntry?: (entryId: string) => void; /** Where the chat reports work its agent left running; the composer shelf and the Work pane read it. The main chat passes the global store, a Mission Control tile its own. */ onBackgroundWork?: (work: BackgroundWork) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
   const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
   useIsomorphicLayoutEffect(() => {
     const pending = paintFrames.current;
@@ -1157,6 +1157,8 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     onOpenAgent={onOpenAgent}
     onRetryCompaction={readOnly ? undefined : onRetryCompaction}
     onRemember={readOnly ? undefined : onRemember}
+    onReply={readOnly || preview ? undefined : onReply}
+    onRevealEntry={onRevealEntry}
     onForkSession={readOnly ? undefined : onForkSession}
     onRewind={readOnly ? undefined : onRewindEntry}
     rewindable={entry.kind === "item" && !!leafEntryIds?.includes(entry.item.entryId ?? "")}
@@ -1198,7 +1200,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
         {optimisticBubbles.map(bubble => <TranscriptRow key={bubble.key}>
         {bubble.delivery && <DeliveryLabel note={bubble.delivery}/>}
         <div className={BUBBLE}>
-          {bubble.text ? <MentionText text={bubble.text}/> : null}
+          {bubble.text ? <UserText text={bubble.text} onRevealEntry={onRevealEntry}/> : null}
           {bubble.attachments.length > 0 && <div className="flex flex-wrap justify-end gap-1.5 pt-1.5">
             {bubble.attachments.map((dataUri, index) => <img key={index} src={dataUri} alt={`Image you attached, still sending ${index + 1}`} className="max-h-40 rounded-xl"/>)}
           </div>}
@@ -1281,11 +1283,9 @@ function AskAsideChip({ onAsk }: { onAsk: (quoted: string) => void }) {
   // scroll container it belongs to (`parentElement`) even before any selection
   // has raised the button itself; display:contents keeps it layout-invisible.
   return <span ref={rootRef} className="contents">
-    {placement && <button
-      type="button"
+    {placement && <Button variant="quiet" size="xs" className="z-50"
       data-ask-aside-chip
       aria-label="Ask aside about the selected text"
-      className="u-glass-popover fixed z-50 inline-flex -translate-y-full items-center gap-1.5 rounded-full px-2.5 py-1.5 text-caption text-foreground shadow-sm transition-colors hover:bg-accent"
       style={{ left: Math.max(8, Math.min(placement.left, (typeof window !== "undefined" ? window.innerWidth : 0) - 120)) , top: placement.top }}
       onMouseDown={event => event.preventDefault()}
       onClick={() => {
@@ -1296,7 +1296,7 @@ function AskAsideChip({ onAsk }: { onAsk: (quoted: string) => void }) {
     >
       <MessageSquarePlus size={12} aria-hidden="true"/>
       Ask aside
-    </button>}
+    </Button>}
   </span>;
 }
 
@@ -1310,7 +1310,7 @@ function AdoptionCard({ binding, onResolve }: { binding: WorkerRepositoryBinding
     if (!onResolve) return;
     setBusy(decision); setError(null);
     try { await onResolve(binding.sessionId, decision); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { setError(friendlyError(cause, decision === "adopt" ? "Couldn't adopt the worker's changes." : "Couldn't discard the worker's changes.")); }
     finally { setBusy(null); }
   };
   return <div role="alert" className={PANEL}>
@@ -1332,12 +1332,12 @@ function AdoptionCard({ binding, onResolve }: { binding: WorkerRepositoryBinding
     </details>
 
     <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-      <button aria-busy={(busy === "discard") || undefined} disabled={!!busy || settling || !onResolve} className={cn(BTN_SECONDARY, pendingClass(busy === "discard"))} onClick={() => act("discard")}>
-        <X size={12} aria-hidden="true" /> Discard
-      </button>
-      <button aria-busy={(busy === "adopt") || undefined} disabled={!!busy || settling || !onResolve} className={cn(BTN_PRIMARY, pendingClass(busy === "adopt"))} onClick={() => act("adopt")}>
-        <Check size={12} aria-hidden="true" /> Adopt changes
-      </button>
+      <Button disabled={!!busy || settling || !onResolve} loading={busy === "discard"} variant="outline" size="sm" onClick={() => act("discard")}>
+        <X className="size-3" aria-hidden="true" /> Discard
+      </Button>
+      <Button disabled={!!busy || settling || !onResolve} loading={busy === "adopt"} size="sm" onClick={() => act("adopt")}>
+        <Check className="size-3" aria-hidden="true" /> Adopt changes
+      </Button>
     </div>
     </div>
     {error && <p className="mt-1.5 px-3.5 text-meta leading-relaxed text-destructive sm:px-4">{error}</p>}
@@ -1370,11 +1370,11 @@ function VerificationCard({ summary, onWaive }: { summary: CompletionSummary; on
         {summary.checks.map(check => <div key={check.checkId} className="flex items-start gap-2 text-xs text-muted-foreground">{statusIcon(check.status)}<div className="min-w-0 flex-1"><div className="flex flex-wrap gap-x-2"><span className="text-foreground">{check.command || check.checkId}</span><span>{humanizeCheckKind(check.kind)}</span>{check.verifierFamily && <span>· {check.verifierFamily}</span>}</div>{check.detail && <p className="mt-0.5 truncate font-mono text-caption">{check.detail}</p>}</div><span className="shrink-0 text-caption">{humanizeCheckStatus(check.status)}</span></div>)}
         {summary.waiverReason && <p className="mt-2 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-warning">Waiver: {summary.waiverReason}</p>}
         {onWaive && unresolved.length > 0 && !["verified", "waived", "superseded"].includes(summary.verdict) && <div className="pt-2">
-          {!waiverOpen ? <button type="button" onClick={() => setWaiverOpen(true)} className="min-h-8 rounded-lg border border-input px-2.5 py-1.5 text-ui font-medium text-warning transition-colors hover:bg-accent">Waive unresolved checks</button> : <form onSubmit={event => { event.preventDefault(); const reason = waiverReason.trim(); if (!reason) { setWaiverError("Explain why these checks can be waived."); return; } setWaiving(true); setWaiverError(undefined); void onWaive(summary.attemptId, unresolved.map(check => check.checkId), reason).then(() => { setWaiverOpen(false); setWaiverReason(""); }).catch(error => setWaiverError(error instanceof Error ? error.message : String(error))).finally(() => setWaiving(false)); }} className="space-y-2 rounded-lg border border-border bg-background p-2.5">
+          {!waiverOpen ? <Button variant="outline" size="sm" onClick={() => setWaiverOpen(true)}>Waive unresolved checks</Button> : <form onSubmit={event => { event.preventDefault(); const reason = waiverReason.trim(); if (!reason) { setWaiverError("Explain why these checks can be waived."); return; } setWaiving(true); setWaiverError(undefined); void onWaive(summary.attemptId, unresolved.map(check => check.checkId), reason).then(() => { setWaiverOpen(false); setWaiverReason(""); }).catch(error => setWaiverError(friendlyError(error, "Couldn't record the waiver."))).finally(() => setWaiving(false)); }} className="space-y-2 rounded-lg border border-border bg-background p-2.5">
             <p className="text-xs text-warning">This records human-approved risk for: {unresolved.map(check => check.command || check.checkId).join(", ")}. It remains distinct from Verified.</p>
-            <textarea autoFocus value={waiverReason} onChange={event => setWaiverReason(event.target.value)} rows={2} placeholder="Reason for waiver" aria-label="Waiver reason" className="w-full resize-none rounded-md border border-input bg-card px-2.5 py-2 text-xs text-foreground placeholder:text-muted-foreground"/>
+            <Textarea autoFocus size="sm" value={waiverReason} onChange={event => setWaiverReason(event.target.value)} rows={2} placeholder="Reason for waiver" aria-label="Waiver reason"/>
             {waiverError && <p role="alert" className="text-xs text-destructive">{waiverError}</p>}
-            <div className="flex flex-wrap gap-2"><button aria-busy={waiving || undefined} type="submit" disabled={waiving} className={cn("min-h-8 rounded-lg bg-warning px-2.5 py-1.5 text-ui font-semibold text-warning-foreground disabled:opacity-50", pendingClass(waiving))}>{`Waive ${unresolved.length} check${unresolved.length === 1 ? "" : "s"}`}</button><button type="button" disabled={waiving} onClick={() => { setWaiverOpen(false); setWaiverError(undefined); }} className="min-h-8 rounded-lg border border-input px-2.5 py-1.5 text-ui text-muted-foreground disabled:opacity-50">Cancel</button></div>
+            <div className="flex flex-wrap gap-2"><Button variant="quiet" size="sm" type="submit" disabled={waiving} loading={waiving}>{`Waive ${unresolved.length} check${unresolved.length === 1 ? "" : "s"}`}</Button><Button variant="outline" size="sm" disabled={waiving} onClick={() => { setWaiverOpen(false); setWaiverError(undefined); }}>Cancel</Button></div>
           </form>}
         </div>}
       </div>
@@ -1582,7 +1582,7 @@ function ScrollFollow({ sessionKey, populated, signature, windowStart, total, co
 /// text still arriving, this is about an operation still running, and
 /// `docs/transcript-behavior-contract.md` keeps the two apart.
 function PulseDot({ size = 8 }: { size?: number }) {
-  return <span className="inline-block flex-none rounded-full bg-muted-foreground/60 animate-[thinking-pulse_1.6s_ease-in-out_infinite]" style={{ width: size, height: size }} aria-hidden="true" />;
+  return <span className="inline-block flex-none rounded-full bg-muted-foreground/60 animate-thinking-pulse" style={{ width: size, height: size }} aria-hidden="true" />;
 }
 
 /// Whether an item's text is still arriving. Both spellings are recognized for
@@ -1615,27 +1615,27 @@ const SKELETON_ROWS: readonly { kind: "user" | "prose" | "tool"; bars: readonly 
 ];
 
 function ChatHistorySkeleton({ density }: { density: "comfortable" | "compact" }) {
-  return <SkeletonRegion label="Loading conversation" className={cn("absolute inset-0 overflow-hidden",
-    density === "compact" ? "px-3 pb-6 pt-3" : "px-4 py-5 pb-16 sm:px-8 sm:py-6")}>
+  return <SkeletonRegion label="Loading conversation" className="absolute inset-0 overflow-hidden">
+    <div className={cn("size-full", density === "compact" ? "px-3 pb-6 pt-3" : "px-4 py-5 pb-16 sm:px-8 sm:py-6")}>
     <div className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5" aria-hidden="true">
       {SKELETON_ROWS.map((row, index) => row.kind === "user"
-        ? <span key={index} data-skeleton-row="user" className="flex justify-end"><Skeleton index={index} className={cn("h-10 max-w-[85%] rounded-2xl", row.bars[0])} /></span>
+        ? <span key={index} data-skeleton-row="user" className="flex justify-end"><span className={cn("max-w-[85%]", row.bars[0])}><Skeleton index={index} className="h-10 w-full rounded-2xl" /></span></span>
         : row.kind === "tool"
           ? <span key={index} data-skeleton-row="tool" className="flex h-10 items-center gap-2.5 rounded-xl border border-border/70 px-3">
             <Skeleton index={index} className="size-3.5 shrink-0" />
-            <Skeleton index={index} className={cn("h-2.5", row.bars[0])} />
+            <span className={row.bars[0]}><Skeleton index={index} className="h-2.5 w-full" /></span>
           </span>
           : <span key={index} data-skeleton-row="prose" className="flex flex-col gap-3 py-1">
-            {row.bars.map(width => <Skeleton key={width} index={index} className={width} />)}
+            {row.bars.map(width => <span key={width} className={width}><Skeleton index={index} /></span>)}
           </span>)}
-    </div>
+    </div></div>
   </SkeletonRegion>;
 }
 
 function Empty({ title, copy, parts, lines }: { title: string; copy?: string; parts?: GreetingPart[]; lines?: GreetingPart[][] }) {
   return <div className="absolute inset-0 flex flex-col items-center justify-center px-4 text-center animate-page-enter sm:px-6">
     <div className="flex w-full max-w-[440px] flex-col items-center">
-      <h2 className="text-balance font-display text-[22px] font-medium leading-[1.2] tracking-[-0.02em] text-foreground">
+      <h2 className="text-balance font-display text-xl font-medium leading-tight tracking-tight text-foreground">
         {lines?.length
           ? <StreamingGreeting key={lines[0].map(part => part.text).join("")} lines={lines} projectClassName="font-semibold" />
           : parts && parts.length > 1
@@ -1644,7 +1644,7 @@ function Empty({ title, copy, parts, lines }: { title: string; copy?: string; pa
             : <span key={index}>{part.text}</span>)
           : title}
       </h2>
-      {copy && <p className="mt-2.5 max-w-[380px] text-ui leading-relaxed tracking-[-0.004em] text-muted-foreground">{copy}</p>}
+      {copy && <p className="mt-2.5 max-w-[380px] text-ui leading-relaxed text-muted-foreground">{copy}</p>}
     </div>
   </div>;
 }
@@ -1687,11 +1687,12 @@ function DeliveryLabel({ note }: { note: DeliveryNote }) {
   </p>;
 }
 
-const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest, onRemember, onForkSession, onRewind, rewindable, turnEnd, onReviewChanges }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; turnEnd?: TurnEnd; onReviewChanges?: () => void }) {
+const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest, onRemember, onReply, onRevealEntry, onForkSession, onRewind, rewindable, turnEnd, onReviewChanges }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; onRemember?: (text: string) => void; onReply?: (item: ConversationItem) => void; onRevealEntry?: (entryId: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; turnEnd?: TurnEnd; onReviewChanges?: () => void }) {
   const settled = item.status !== "streaming" && item.text.trim() !== "";
   const entryId = settled ? item.entryId : undefined;
   const actions = settled ? <>
-    <CopyReplyButton text={item.text}/>
+    <CopyReplyButton text={item.role === "user" ? replyCopyText(item.text) : item.text}/>
+    {item.role === "assistant" && onReply && <ReplyAction label="Reply" title="Reply to this response" onClick={() => onReply(item)}><Reply size={14} aria-hidden="true"/></ReplyAction>}
     {item.role === "assistant" && onRemember && <ReplyAction label="Remember this" onClick={() => onRemember(item.text)}><BookmarkPlus size={14} aria-hidden="true"/></ReplyAction>}
     {onForkSession && entryId && <ReplyAction label="Fork from here" title="Fork this conversation at this message" onClick={() => onForkSession(sessionId ?? "", entryId)}><GitFork size={14} aria-hidden="true"/></ReplyAction>}
     {onRewind && entryId && rewindable && <ReplyAction label="Rewind to here" title="Make this message the conversation head (files are not changed)" onClick={() => onRewind(sessionId ?? "", entryId)}><RotateCcw size={14} aria-hidden="true"/></ReplyAction>}
@@ -1703,7 +1704,7 @@ const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest,
     return <>
       {delivery && <DeliveryLabel note={delivery}/>}
       <div className={cn(BUBBLE, "group relative")}>
-        <MentionText text={item.text}/>
+        <UserText text={item.text} onRevealEntry={onRevealEntry}/>
         {actions && <div data-reply-actions className="absolute bottom-0 right-full mr-1 flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">{actions}</div>}
         {attachments.length > 0 && <div className="flex flex-wrap justify-end gap-1.5 pt-1.5">
           {attachments.map((dataUri, index) => <img key={index} src={dataUri} alt={`Attached image ${index + 1}`} className="max-h-40 rounded-xl"/>)}
@@ -1738,21 +1739,29 @@ const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest,
         : "absolute left-0 top-full z-10 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100")}
     >{actions}</div>}
   </div>;
-}, (previous, next) => previous.latest === next.latest && previous.delivery === next.delivery && previous.onRemember === next.onRemember && previous.onForkSession === next.onForkSession && previous.onRewind === next.onRewind && previous.rewindable === next.rewindable && previous.turnEnd === next.turnEnd && previous.onReviewChanges === next.onReviewChanges && sameItem(previous.item, next.item));
+}, (previous, next) => previous.latest === next.latest && previous.delivery === next.delivery && previous.onRemember === next.onRemember && previous.onReply === next.onReply && previous.onRevealEntry === next.onRevealEntry && previous.onForkSession === next.onForkSession && previous.onRewind === next.onRewind && previous.rewindable === next.rewindable && previous.turnEnd === next.turnEnd && previous.onReviewChanges === next.onReviewChanges && sameItem(previous.item, next.item));
+
+/// What the user wrote. A reply draws the message it answers as a card on
+/// top, not the raw quote the agent received; anything else is the text as is.
+function UserText({ text, onRevealEntry }: { text: string; onRevealEntry?: (entryId: string) => void }) {
+  const reply = parseReplyPrompt(text);
+  if (!reply) return <MentionText text={text}/>;
+  return <>
+    <ReplyQuoteCard target={reply.target} onReveal={onRevealEntry}/>
+    {reply.text ? <MentionText text={reply.text}/> : null}
+  </>;
+}
 
 /// One icon in a message's action bar: 28px, with the name in a tooltip.
 function ReplyAction({ label, title, onClick, children }: { label: string; title?: string; onClick: () => void; children: ReactNode }) {
-  return <button
-    type="button"
+  return <Button
+    variant="quiet"
+    size="icon-xs"
     aria-label={label}
-    title={title ?? label}
+    tooltip={title ?? label}
     onClick={onClick}
-    className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-  >{children}</button>;
+  >{children}</Button>;
 }
-
-/// A failed turn's way back: text-sized, muted until pointed at.
-const ERROR_ACTION = "inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-caption font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-50";
 
 /// Resends a failed turn's message; settles when the send has.
 type RetryTurn = (prompt: ConversationItem) => Promise<void> | void;
@@ -1765,9 +1774,9 @@ function CopyReplyButton({ text }: { text: string }) {
   </ReplyAction>;
 }
 
-const ItemView = memo(function ItemView({ item, sessionId, delivery, latest, readOnly, turnActive, autoExpandEditActivity, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext, retryPrompt, onRetryTurn, onEditTurn, turnEnd, onReviewChanges }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; readOnly?: boolean; turnActive: boolean; autoExpandEditActivity: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext; retryPrompt?: ConversationItem; onRetryTurn?: RetryTurn; onEditTurn?: (prompt: ConversationItem) => void; /** What closes the turn when this row is its last; a reply draws it, `TranscriptEntry` draws it after anything else. */ turnEnd?: TurnEnd; onReviewChanges?: () => void }) {
+const ItemView = memo(function ItemView({ item, sessionId, delivery, latest, readOnly, turnActive, autoExpandEditActivity, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, onRemember, onReply, onRevealEntry, onForkSession, onRewind, rewindable, errorContext, retryPrompt, onRetryTurn, onEditTurn, turnEnd, onReviewChanges }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; readOnly?: boolean; turnActive: boolean; autoExpandEditActivity: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onReply?: (item: ConversationItem) => void; onRevealEntry?: (entryId: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext; retryPrompt?: ConversationItem; onRetryTurn?: RetryTurn; onEditTurn?: (prompt: ConversationItem) => void; /** What closes the turn when this row is its last; a reply draws it, `TranscriptEntry` draws it after anything else. */ turnEnd?: TurnEnd; onReviewChanges?: () => void }) {
   if (readOnly) { onResolve = () => undefined; onAnswerQuestion = () => undefined; }
-  if (item.type === "message") return <MessageRow item={item} sessionId={sessionId} delivery={delivery} latest={latest} onRemember={onRemember} onForkSession={onForkSession} onRewind={onRewind} rewindable={rewindable} turnEnd={turnEnd} onReviewChanges={onReviewChanges}/>;
+  if (item.type === "message") return <MessageRow item={item} sessionId={sessionId} delivery={delivery} latest={latest} onRemember={onRemember} onReply={onReply} onRevealEntry={onRevealEntry} onForkSession={onForkSession} onRewind={onRewind} rewindable={rewindable} turnEnd={turnEnd} onReviewChanges={onReviewChanges}/>;
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
   if (item.type === "reasoning") return <Reasoning item={item}/>;
   if (item.type === "plan") return <PlanCard item={item}/>;
@@ -1877,16 +1886,16 @@ function ErrorCard({ item, errorContext, retryPrompt, onRetryTurn, onEditTurn }:
       <div className="flex min-w-0 items-start gap-2">
         <b className="min-w-0 flex-1 text-meta">{degraded ? item.title ?? "Unavailable history entry" : described.title}</b>
         {retryPrompt && (onRetryTurn || onEditTurn) && <div className="-my-1 -mr-1 flex shrink-0 items-center gap-0.5">
-          {onRetryTurn && <button type="button" disabled={retrying} aria-busy={retrying || undefined} className={cn(ERROR_ACTION, pendingClass(retrying))} aria-label="Retry the same message" title="Send the same message again" onClick={retry}>
-            <RotateCcw size={11} aria-hidden="true"/>
+          {onRetryTurn && <Button disabled={retrying} loading={retrying} variant="quiet" size="2xs" aria-label="Retry the same message" tooltip="Send the same message again" onClick={retry}>
+            <RotateCcw className="size-2.75" aria-hidden="true"/>
             Retry
-          </button>}
-          {onEditTurn && <button type="button" disabled={retrying} className={ERROR_ACTION} aria-label="Edit in composer" title="Put the message back in the composer to add to it" onClick={() => onEditTurn(retryPrompt)}>
-            <PenLine size={11} aria-hidden="true"/>Edit
-          </button>}
+          </Button>}
+          {onEditTurn && <Button disabled={retrying} variant="quiet" size="2xs" aria-label="Edit in composer" tooltip="Put the message back in the composer to add to it" onClick={() => onEditTurn(retryPrompt)}>
+            <PenLine className="size-2.75" aria-hidden="true"/>Edit
+          </Button>}
         </div>}
       </div>
-      <p className="mt-1 text-meta leading-relaxed break-words text-muted-foreground">{degraded ? item.text : described.message}</p>
+      <p className="mt-1 text-meta leading-relaxed break-words text-muted-foreground">{degraded ? friendlyError(item.text, "This history entry could not be read.") : described.message}</p>
       {described.kind === "usage-limit" && errorContext?.allowReset && (item.harness ?? errorContext.harness) === "codex" && <LimitResetOffer />}
     </div>
   </div>;
@@ -2005,7 +2014,7 @@ function ForestCard({ item, onRetryCompaction }: { item: ConversationItem; onRet
     setRetrying(true);
     setRetryError(undefined);
     try { await onRetryCompaction(); setRetryAccepted(true); }
-    catch (cause) { setRetryError(cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { setRetryError(friendlyError(cause, "Couldn't retry the compaction.")); }
     finally { retryingRef.current = false; setRetrying(false); }
   };
   return <div role={item.status === "failed" ? "alert" : undefined} className={`min-w-0 overflow-hidden rounded-xl border px-3 py-2.5 ${item.status === "failed" ? "border-destructive/30 bg-destructive/5" : "border-border"} ${item.type}`}>
@@ -2013,28 +2022,28 @@ function ForestCard({ item, onRetryCompaction }: { item: ConversationItem; onRet
     {/* The former raw reason block only repeated the primary copy and exposed
         protocol diagnostics. Failure details now remain in the inspector data
         while the card renders the backend's classified message. */}
-    {item.text && <p className="mt-1 text-ui text-muted-foreground">{item.text}</p>}
+    {item.text && <p className="mt-1 text-ui text-muted-foreground">{item.status === "failed" ? friendlyError(item.text, "Compaction failed. The original conversation history is intact.") : item.text}</p>}
     {recoveryAction && <p className="mt-1.5 text-muted-foreground text-caption leading-relaxed">{recoveryAction}</p>}
     {retryError && <p className="mt-1.5 text-destructive text-caption leading-relaxed">{retryError}</p>}
     {retryable && <div className="mt-2.5 flex justify-end">
-      <button type="button" disabled={retrying || retryAccepted} aria-busy={retrying || undefined} className={cn(BTN_SECONDARY, pendingClass(retrying))} onClick={() => void retry()}>
-        {retryAccepted ? <Check size={12} aria-hidden="true"/> : <RotateCcw size={12} aria-hidden="true"/>}
+      <Button disabled={retrying || retryAccepted} loading={retrying} variant="outline" size="sm" onClick={() => void retry()}>
+        {retryAccepted ? <Check className="size-3" aria-hidden="true"/> : <RotateCcw className="size-3" aria-hidden="true"/>}
         {retryAccepted ? "Retry requested" : "Retry compaction"}
-      </button>
+      </Button>
     </div>}
   </div>;
 }
 
 function RawEvent({ item }: { item: ConversationItem }) {
   return <details className="my-2 min-w-0 p-2 border border-border rounded-lg bg-card group [&_summary::-webkit-details-marker]:hidden">
-    <summary className="flex items-center gap-[7px] cursor-pointer text-caption text-muted-foreground hover:text-foreground transition-colors"><SquareTerminal size={12} className="shrink-0" aria-hidden="true" /><span className="min-w-0 flex-1 truncate">{item.title || "Raw provider event"}</span><small className="shrink-0 text-muted-foreground group-open:hidden">inspect</small></summary>
+    <summary className="flex items-center gap-1.75 cursor-pointer text-caption text-muted-foreground hover:text-foreground transition-colors"><SquareTerminal size={12} className="shrink-0" aria-hidden="true" /><span className="min-w-0 flex-1 truncate">{item.title || "Raw provider event"}</span><small className="shrink-0 text-muted-foreground group-open:hidden">inspect</small></summary>
     <pre className="max-h-[220px] overflow-auto mt-1.5 p-2 rounded-md border border-border bg-code font-mono text-caption whitespace-pre-wrap break-words text-muted-foreground">{JSON.stringify(item.data, null, 2)}</pre>
   </details>;
 }
 
 function RawEventGroup({ items }: { items: ConversationItem[] }) {
   return <details className="my-2 min-w-0 p-2 border border-border rounded-lg bg-card group [&_summary::-webkit-details-marker]:hidden">
-    <summary className="flex items-center gap-[7px] cursor-pointer text-caption text-muted-foreground hover:text-foreground transition-colors"><SquareTerminal size={12} className="shrink-0" aria-hidden="true" /><span className="min-w-0 flex-1 truncate">{items.length} raw provider event{items.length === 1 ? "" : "s"}</span><small className="shrink-0 text-muted-foreground group-open:hidden">inspect</small></summary>
+    <summary className="flex items-center gap-1.75 cursor-pointer text-caption text-muted-foreground hover:text-foreground transition-colors"><SquareTerminal size={12} className="shrink-0" aria-hidden="true" /><span className="min-w-0 flex-1 truncate">{items.length} raw provider event{items.length === 1 ? "" : "s"}</span><small className="shrink-0 text-muted-foreground group-open:hidden">inspect</small></summary>
     <div>{items.map(item => <RawEvent key={item.key} item={item}/>)}</div>
   </details>;
 }
@@ -2098,7 +2107,7 @@ const Reasoning = memo(function Reasoning({ item }: { item: ConversationItem }) 
 function PlanCard({ item }: { item: ConversationItem }) {
   return <div className="my-[14px] min-w-0 border border-border rounded-lg bg-card overflow-hidden">
     <header className="flex items-center gap-2 px-3.5 py-2.5 border-b border-border text-muted-foreground sm:px-4"><FileText size={13} className="shrink-0" aria-hidden="true" /><b className="text-meta font-medium text-foreground">{item.title || "Plan"}</b></header>
-    {planSteps(item.data).map((step, index) => <div className={`min-h-[30px] flex items-center gap-[9px] py-[2px] px-3.5 text-ui sm:px-4 ${step.status === "completed" ? "text-muted-foreground line-through decoration-border" : step.status === "inProgress" ? "text-foreground" : "text-muted-foreground"}`} key={`${step.step}-${index}`}>
+    {planSteps(item.data).map((step, index) => <div className={`min-h-[30px] flex items-center gap-2.25 py-0.5 px-3.5 text-ui sm:px-4 ${step.status === "completed" ? "text-muted-foreground line-through decoration-border" : step.status === "inProgress" ? "text-foreground" : "text-muted-foreground"}`} key={`${step.step}-${index}`}>
       {step.status === "completed" ? <Check size={12} className="flex-none text-muted-foreground" aria-hidden="true" /> : step.status === "inProgress" ? <PulseDot size={8}/> : <Circle size={8} className="flex-none text-muted-foreground" aria-hidden="true" />}
       <span className="min-w-0">{step.step}</span>
     </div>)}
@@ -2137,7 +2146,9 @@ function resolutionCopy(item: ConversationItem): string {
   };
   const outcome = labels[item.status ?? ""] ?? item.status ?? "Resolved";
   const verdict = [outcome, actor ? `by ${actor}` : ""].filter(Boolean).join(" ");
-  return reason ? `${verdict} · ${reason}` : verdict;
+  // A delivery that failed carries the error as its reason: shown plain, or not at all.
+  const shown = item.status === "failed" ? friendlyError(reason, "") : reason;
+  return shown ? `${verdict} · ${shown}` : verdict;
 }
 
 function PermissionCard({ item, onResolve }: { item: ConversationItem; onResolve: ResolvePermission }) {
@@ -2150,7 +2161,7 @@ function PermissionCard({ item, onResolve }: { item: ConversationItem; onResolve
     setBusy(action.optionId ?? action.decision);
     setError(null);
     try { await onResolve(item.eventId, action.decision, action.optionId); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { setError(friendlyError(cause, "Couldn't send your answer to the agent.")); }
     finally { setBusy(null); }
   };
   const command = typeof item.data.command === "string" && item.data.command ? item.data.command : undefined;
@@ -2164,18 +2175,18 @@ function PermissionCard({ item, onResolve }: { item: ConversationItem; onResolve
     </header>
     {detail && <p className="mt-1.5 px-3.5 text-ui leading-relaxed text-muted-foreground sm:px-4">{detail}</p>}
     {command ? <code className={`mx-3.5 mt-2.5 sm:mx-4 ${WELL}`}>{command}</code> : null}
-    {pending && actions.length > 0 && <div className="flex flex-wrap justify-end gap-[7px] px-3.5 py-3 sm:px-4">
-      {actions.map(action => <button
+    {pending && actions.length > 0 && <div className="flex flex-wrap justify-end gap-1.75 px-3.5 py-3 sm:px-4">
+      {actions.map(action => <Button
         key={`${action.optionId ?? "bridge"}:${action.decision}`}
         disabled={!!busy}
-        aria-busy={busy === (action.optionId ?? action.decision) || undefined}
-        className={cn(action.decision === "accept" ? BTN_PRIMARY : BTN_SECONDARY, pendingClass(busy === (action.optionId ?? action.decision)))}
+        variant={action.decision === "accept" ? "default" : "outline"} size="sm"
+        loading={busy === (action.optionId ?? action.decision)}
         onClick={() => void act(action)}
-      >{action.decision === "decline" ? <X size={12} aria-hidden="true" /> : action.decision === "accept" ? <Check size={12} aria-hidden="true" /> : null}{action.label}</button>)}
+      >{action.decision === "decline" ? <X className="size-3" aria-hidden="true" /> : action.decision === "accept" ? <Check className="size-3" aria-hidden="true" /> : null}{action.label}</Button>)}
     </div>}
     {pending && actions.length === 0 && <p className="px-3.5 py-3 text-meta text-muted-foreground sm:px-4">The provider offered no supported action.</p>}
     {!pending && <p className={`px-3.5 py-3 text-meta sm:px-4 ${item.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{resolutionCopy(item)}</p>}
-    {typeof item.data.failure === "string" && <p role="alert" className="px-3.5 pb-3 text-meta text-destructive sm:px-4">{item.data.failure}</p>}
+    {typeof item.data.failure === "string" && <p role="alert" className="px-3.5 pb-3 text-meta text-destructive sm:px-4">{friendlyError(item.data.failure, "Your answer didn't reach the agent.")}</p>}
     {error && <p role="alert" className="px-3.5 pb-3 text-meta text-destructive sm:px-4">{error}</p>}
   </div>;
 }
@@ -2195,6 +2206,7 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
   const reason = typeof item.data.reason === "string" ? item.data.reason : "";
   const remediation = typeof item.data.remediation === "string" ? item.data.remediation : "";
   const human = reason ? humanizeApprovalReason(reason) : { title: item.title || "Approval needed", detail: undefined };
+  const decisionFailed = (cause: unknown) => setError(friendlyError(cause, "Couldn't send your decision to the agent."));
   return <div className={PANEL}>
     <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 pt-3 px-3.5 sm:px-4"><b className="text-ui font-semibold text-foreground">{human.title}</b>{pending && <small className="text-warning text-caption">waiting for you</small>}</header>
     {human.detail ? <p className="mt-1.5 px-3.5 text-muted-foreground text-ui leading-relaxed sm:px-4">{human.detail}</p> : null}
@@ -2213,15 +2225,15 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
       {pending
         ? <motion.div
             key="actions"
-            className="flex flex-wrap justify-end gap-[7px] px-3.5 py-3 sm:px-4"
+            className="flex flex-wrap justify-end gap-1.75 px-3.5 py-3 sm:px-4"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={transition}
           >
-            <button disabled={!!busy} className={BTN_SECONDARY} onClick={() => { setBusy("decline"); setError(null); void Promise.resolve(onResolve(item.eventId, "decline")).catch(cause => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(null)); }}><X size={12} aria-hidden="true" /> Decline</button>
-            {item.data.approvalType !== "delegation_path_scope" && <button disabled={!!busy} className={BTN_SECONDARY} onClick={() => { setBusy("acceptForSession"); setError(null); void Promise.resolve(onResolve(item.eventId, "acceptForSession")).catch(cause => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(null)); }}>Allow for session</button>}
-            <button aria-busy={(busy === "accept") || undefined} disabled={!!busy} className={cn(BTN_PRIMARY, pendingClass(busy === "accept"))} onClick={() => { setBusy("accept"); setError(null); void Promise.resolve(onResolve(item.eventId, "accept")).catch(cause => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(null)); }}><Check size={12} aria-hidden="true" /> Allow once</button>
+            <Button disabled={!!busy} variant="outline" size="sm" onClick={() => { setBusy("decline"); setError(null); void Promise.resolve(onResolve(item.eventId, "decline")).catch(decisionFailed).finally(() => setBusy(null)); }}><X className="size-3" aria-hidden="true" /> Decline</Button>
+            {item.data.approvalType !== "delegation_path_scope" && <Button disabled={!!busy} variant="outline" size="sm" onClick={() => { setBusy("acceptForSession"); setError(null); void Promise.resolve(onResolve(item.eventId, "acceptForSession")).catch(decisionFailed).finally(() => setBusy(null)); }}>Allow for session</Button>}
+            <Button disabled={!!busy} loading={busy === "accept"} size="sm" onClick={() => { setBusy("accept"); setError(null); void Promise.resolve(onResolve(item.eventId, "accept")).catch(decisionFailed).finally(() => setBusy(null)); }}><Check className="size-3" aria-hidden="true" /> Allow once</Button>
           </motion.div>
         : <motion.div
             key="resolved"
@@ -2265,11 +2277,11 @@ function StaleBaseCard({ item, onRefresh }: { item: ConversationItem; onRefresh?
     if (!onRefresh) return;
     setBusy(true); setError(null);
     try { await onRefresh(); setRefreshed(true); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { setError(friendlyError(cause, `Couldn't refresh the workspace onto ${baseRef}.`)); }
     finally { setBusy(false); }
   };
   return <div role="alert" className={PANEL}>
-    <header className="flex items-baseline gap-[9px] px-3.5 pt-3 sm:px-4">
+    <header className="flex items-baseline gap-2.25 px-3.5 pt-3 sm:px-4">
       <b className="text-ui font-semibold text-foreground">{item.title || `Workspace is ${behind} commits behind ${baseRef}`}</b>
     </header>
     {/* The title already says how far behind; the counts are not repeated. */}
@@ -2286,9 +2298,9 @@ function StaleBaseCard({ item, onRefresh }: { item: ConversationItem; onRefresh?
         // anyway meant the common case — a worktree with one commit on it —
         // presented an action whose only outcome was an error dialog.
         ? <div className="px-3.5 pb-3 pt-2.5 text-meta leading-relaxed text-muted-foreground sm:px-4">{blocker}</div>
-        : <div className="flex flex-wrap items-center justify-end gap-[7px] px-3.5 py-3 sm:px-4">
+        : <div className="flex flex-wrap items-center justify-end gap-1.75 px-3.5 py-3 sm:px-4">
             <span className="mr-auto text-meta text-muted-foreground">Or continue on the current revision.</span>
-            <button disabled={busy || !onRefresh} aria-busy={busy || undefined} className={cn(BTN_PRIMARY, pendingClass(busy))} onClick={refresh}>Refresh workspace</button>
+            <Button disabled={busy || !onRefresh} loading={busy} size="sm" onClick={refresh}>Refresh workspace</Button>
           </div>}
   </div>;
 }
@@ -2341,7 +2353,7 @@ function DelegationRow({ item, nested = false, onOpenSession, onOpenAgent, onRet
     // straight to the worker's conversation where the real approval lives —
     // otherwise the block is a dead end and the card is effectively lost.
     if (!blocked) {
-      return <div className="my-3 flex min-w-0 items-center gap-[9px] px-2 -ml-2 text-muted-foreground text-ui">
+      return <div className="my-3 flex min-w-0 items-center gap-2.25 px-2 -ml-2 text-muted-foreground text-ui">
         <Check size={13} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 truncate">{item.title || "Worker approval resolved"}</span>
       </div>;
@@ -2355,7 +2367,7 @@ function DelegationRow({ item, nested = false, onOpenSession, onOpenAgent, onRet
       {paths.length > 0 && <small className="mt-1 block font-mono text-caption break-all text-muted-foreground">write scope: {paths.join(", ")}</small>}
       {childSessionId && onOpenSession
         ? <div className="mt-2 flex flex-wrap items-center gap-2">
-            <button type="button" onClick={() => onOpenSession(childSessionId)} className="inline-flex min-h-8 items-center gap-1.5 rounded-lg bg-primary px-3 py-1 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90"><CornerDownRight size={12} aria-hidden="true" /> Open worker to approve</button>
+            <Button onClick={() => onOpenSession(childSessionId)} size="sm"><CornerDownRight className="size-3" aria-hidden="true" /> Open worker to approve</Button>
             <span className="text-muted-foreground">The worker is idle until you do.</span>
           </div>
         : <p className="mt-1 text-muted-foreground">Open the worker&apos;s conversation to allow or decline. The worker is idle until you do.</p>}
@@ -2389,20 +2401,20 @@ function DelegationRow({ item, nested = false, onOpenSession, onOpenAgent, onRet
   // back to that agent; its delegation's fan-out card is what counts them.
   return <div className={nested ? "min-w-0" : "my-3 min-w-0"}>
     <div className="flex min-w-0 items-center gap-1 -ml-2">
-      <button className="min-w-0 flex-1 flex items-center gap-[9px] min-h-[30px] px-2 py-1 rounded-md text-left text-muted-foreground text-ui hover:bg-accent transition-colors" onClick={() => item.text && setOpen(value => !value)}>
+      <RowButton tone="muted" className="flex-1" onClick={() => item.text && setOpen(value => !value)}>
         {isResult ? <CornerDownRight size={13} className="shrink-0" aria-hidden="true" /> : <GitFork size={13} className="shrink-0" aria-hidden="true" />}
         <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-ellipsis">{item.data.harnessSubagent === true ? "Subagent" : isResult ? "Worker finished" : "Delegated"}{titleAddsInfo(item, isResult) && <b className="text-muted-foreground font-medium"> · {rowTitle(item, isResult)}</b>}</span>
         {model && <em className="hidden flex-none font-mono text-caption text-muted-foreground not-italic border border-border rounded px-1.5 py-0.5 sm:inline">{model}{effort ? ` · ${effort}` : ""}</em>}
         {item.text && <ChevronRight size={12} className={`shrink-0 transition-transform ${open ? "rotate-90" : ""}`} aria-hidden="true" />}
-      </button>
-      {childSessionId && onOpenAgent && <button
-        type="button"
+      </RowButton>
+      {childSessionId && onOpenAgent && <Button
+        variant="outline"
+        size="xs"
         onClick={() => onOpenAgent(childSessionId)}
-        title="Show this agent's chat in the Agents pane"
-        className="inline-flex min-h-7 shrink-0 items-center gap-1 rounded-full border border-border px-2.5 py-0.5 text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-      ><PanelRight size={11} aria-hidden="true" /> Show in Agents</button>}
+        tooltip="Show this agent's chat in the Agents pane"
+      ><PanelRight className="size-2.75" aria-hidden="true" /> Show in Agents</Button>}
     </div>
-    {open && item.text && <div className="my-1 ml-[5px] min-w-0 pl-[15px] border-l border-border text-muted-foreground text-ui leading-relaxed"><Markdown text={item.text}/></div>}
+    {open && item.text && <div className="my-1 ml-[5px] min-w-0 pl-3.75 border-l border-border text-muted-foreground text-ui leading-relaxed"><Markdown text={item.text}/></div>}
   </div>;
 }
 
@@ -2418,14 +2430,14 @@ function SteerChip({ item, onOpenSession }: { item: ConversationItem; onOpenSess
   const undelivered = item.data.steerDelivered === false;
   const queued = item.data.landed === "next_turn_boundary";
   const unnotified = item.data.orchestratorNotified === false;
-  return <div className="my-3 flex min-w-0 items-center gap-[9px] px-2 -ml-2 text-ui text-muted-foreground">
+  return <div className="my-3 flex min-w-0 items-center gap-2.25 px-2 -ml-2 text-ui text-muted-foreground">
     <Navigation size={12} className={cn("shrink-0", undelivered && "text-warning")} aria-hidden="true"/>
     <span className="min-w-0 flex-1 truncate">{item.title || "Worker steered"}{item.text && <span className="text-muted-foreground"> — {item.text}</span>}</span>
     {undelivered
       ? <span className="shrink-0 text-caption font-medium text-warning">NOT DELIVERED</span>
       : queued && <span className="shrink-0 text-caption font-medium text-muted-foreground">AT NEXT STEP</span>}
     {!undelivered && unnotified && <span className="shrink-0 text-caption text-muted-foreground">ORCHESTRATOR NOT TOLD</span>}
-    {childSessionId && onOpenSession && <button type="button" onClick={() => onOpenSession(childSessionId)} className="shrink-0 rounded-full border border-border px-2 py-0.5 text-caption transition-colors hover:bg-accent">Open</button>}
+    {childSessionId && onOpenSession && <Button onClick={() => onOpenSession(childSessionId)} variant="outline" size="2xs">Open</Button>}
   </div>;
 }
 
@@ -2469,23 +2481,22 @@ function DelegationFailureCard({ item }: { item: ConversationItem }) {
     </div>
     <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-3.5 py-1.5 sm:px-4">
       <span className="inline-flex min-w-0 items-center gap-1.5 py-1 text-meta text-muted-foreground">{status.icon}<span className="min-w-0">{status.text}</span></span>
-      {reason && <button
-        type="button"
+      {reason && <Button
+        variant="quiet" size="xs"
         aria-expanded={showDetails}
         aria-controls={detailsId}
         onClick={() => setShowDetails(open => !open)}
-        className="ml-auto inline-flex min-h-7 items-center gap-1 rounded-md px-2 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-      ><ChevronRight size={12} className={`transition-transform ${showDetails ? "rotate-90" : ""}`} aria-hidden="true"/> Details</button>}
+        className="ml-auto"
+      ><ChevronRight className={cn("size-3 transition-transform", showDetails && "rotate-90")} aria-hidden="true"/> Details</Button>}
     </div>
     {reason && showDetails && <div id={detailsId} className="px-3.5 pb-3 sm:px-4">
       <div className="relative">
         <code className={`${WELL} pr-20`}>{reason}</code>
-        <button
-          type="button"
+        <Button
           onClick={copy}
           aria-label={copied ? "Copied" : "Copy error"}
-          className="absolute right-1.5 top-1.5 inline-flex min-h-6 items-center gap-1 rounded-md border border-border bg-card px-1.5 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >{copied ? <Check size={11} aria-hidden="true"/> : <Copy size={11} aria-hidden="true"/>}{copied ? "Copied" : "Copy"}</button>
+          variant="outline" size="2xs" className="absolute right-1.5 top-1.5"
+        >{copied ? <Check className="size-2.75" aria-hidden="true"/> : <Copy className="size-2.75" aria-hidden="true"/>}{copied ? "Copied" : "Copy"}</Button>
       </div>
     </div>}
   </div>;
@@ -2494,7 +2505,7 @@ function DelegationFailureCard({ item }: { item: ConversationItem }) {
 /// Prose with its backticked wire values set in mono, as the agent must write them.
 function WithInlineCode({ text }: { text: string }) {
   return <>{text.split(/(`[^`]+`)/).map((part, index) => part.length > 2 && part.startsWith("`") && part.endsWith("`")
-    ? <code key={index} className="rounded border border-border bg-code px-1 py-px font-mono text-[0.92em]">{part.slice(1, -1)}</code>
+    ? <code key={index} className="rounded border border-border bg-code px-1 py-px font-mono text-caption">{part.slice(1, -1)}</code>
     : part)}</>;
 }
 
@@ -2540,13 +2551,13 @@ function WorkerFailureRow({ title, summary, cause, failureClass, childSessionId,
     {transport && <p className="mt-1 text-muted-foreground">Bridge could not read this worker&apos;s result, so nothing below has been verified. Retrying would not change that on its own.</p>}
     {summary && <p className="mt-1.5 whitespace-pre-wrap break-words">{summary}</p>}
     <div className="mt-2 flex flex-wrap items-center gap-2">
-      {childSessionId && onRetryWorker && <button aria-busy={busy || undefined}
-        type="button"
+      {childSessionId && onRetryWorker && <Button
         disabled={busy}
-        onClick={() => { setBusy(true); setError(undefined); void onRetryWorker(childSessionId).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(false)); }}
-        className={cn("inline-flex min-h-8 items-center gap-1.5 rounded-lg bg-primary px-3 py-1 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50", pendingClass(busy))}
-      ><RotateCcw size={12} aria-hidden="true" /> Retry this task</button>}
-      {childSessionId && onOpenSession && <button type="button" onClick={() => onOpenSession(childSessionId)} className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-caption transition-colors hover:bg-accent"><CornerDownRight size={12} aria-hidden="true" /> Open the worker</button>}
+        loading={busy}
+        onClick={() => { setBusy(true); setError(undefined); void onRetryWorker(childSessionId).catch((cause: unknown) => setError(friendlyError(cause, "Couldn't retry the task."))).finally(() => setBusy(false)); }}
+        size="sm"
+      ><RotateCcw className="size-3" aria-hidden="true" /> Retry this task</Button>}
+      {childSessionId && onOpenSession && <Button onClick={() => onOpenSession(childSessionId)} variant="outline" size="xs"><CornerDownRight className="size-3" aria-hidden="true" /> Open the worker</Button>}
     </div>
     {error && <p className="mt-1.5 text-destructive">{error}</p>}
   </div>;

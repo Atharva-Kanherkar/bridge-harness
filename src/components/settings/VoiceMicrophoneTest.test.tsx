@@ -171,10 +171,12 @@ it("ignores composing shortcut keys", async () => {
   mic.focus();
   await act(async () => mic.click());
   event("started");
+  // A browser starts a composition before it sends the keys that belong to it.
+  act(() => mic.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })));
   for (const key of ["Enter", "Escape"]) {
     const composing = new KeyboardEvent("keydown", { key, isComposing: true, bubbles: true, cancelable: true });
     act(() => mic.dispatchEvent(composing));
-    expect(composing.defaultPrevented).toBe(false);
+    expect(composing.defaultPrevented, key).toBe(false);
   }
   expect(mocks.voiceStop).not.toHaveBeenCalled();
   expect(mocks.voiceCancel).not.toHaveBeenCalled();

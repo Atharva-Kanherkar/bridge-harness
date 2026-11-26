@@ -492,6 +492,13 @@ pub fn for_session(
             Utc::now().to_rfc3339(),
         ],
     )?;
+    if let Some(packet) = packet.as_ref() {
+        crate::memory_retention::stamp_used(
+            db,
+            packet.selected.iter().map(|item| item.record_id.as_str()),
+            Utc::now(),
+        )?;
+    }
     Ok(packet)
 }
 

@@ -28,6 +28,10 @@ export const badgeVariants = cva(
         error:
           "bg-destructive/8 text-destructive dark:bg-destructive/16",
         info: "bg-info/8 text-info dark:bg-info/16",
+        // Secondary facts: a quiet outline in the muted ink.
+        muted: "border-border font-normal text-muted-foreground",
+        // A value Bridge worked out rather than read: dashed, like every estimate.
+        dashed: "border-border border-dashed font-normal text-muted-foreground",
         outline:
           "border-input bg-background text-foreground dark:bg-input/32 [button&,a&]:hover:bg-accent/50 dark:[button&,a&]:hover:bg-input/48",
         secondary:

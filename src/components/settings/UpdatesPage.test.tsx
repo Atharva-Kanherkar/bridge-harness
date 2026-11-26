@@ -33,14 +33,14 @@ it("replaces an old feed error when a later check finds an update", async () => 
   vi.mocked(checkForUpdate).mockRejectedValueOnce("feed unavailable");
   await act(async () => root.render(<UpdatesPage onUpdate={() => undefined} />));
   await act(async () => container.querySelector<HTMLButtonElement>("button:not([role])")?.click());
-  expect(container.textContent).toContain("Could not check for updates: feed unavailable");
+  expect(container.textContent).toContain("Could not check for updates. Feed unavailable.");
 
   const availableUpdate: UpdateInfo = {
     version: "0.5.11-nightly.20260928", currentVersion: "0.5.10", body: null, channel: "beta",
   };
   await act(async () => root.render(<UpdatesPage availableUpdate={availableUpdate} onUpdate={() => undefined} />));
   expect(container.textContent).toContain("Bridge 0.5.11-nightly.20260928 is available on this channel.");
-  expect(container.textContent).not.toContain("feed unavailable");
+  expect(container.textContent).not.toContain("Feed unavailable");
 });
 
 

@@ -168,7 +168,9 @@ pub fn recall_stats(db: &Connection, scope_key: &str) -> Result<wire::MemoryReca
     })
 }
 
-/// Settled extraction and consolidation runs, newest first.
+/// Settled extraction and consolidation runs and retention sweeps, newest
+/// first. A sweep's `detail` is its kind: `proposals_expired` or
+/// `unused_retired`.
 pub fn activity_log(db: &Connection, scope_key: &str) -> Result<wire::MemoryActivityLog, BridgeError> {
     let scope_key = memory_ledger::parse_scope_key(scope_key)?;
     let mut statement = db.prepare(
@@ -181,6 +183,10 @@ pub fn activity_log(db: &Connection, scope_key: &str) -> Result<wire::MemoryActi
              SELECT 'consolidation', status, applied_count, refused_count, detail, updated_at
              FROM memory_consolidation_runs
              WHERE scope_key=?1 AND status IN ('completed','failed','cancelled')
+             UNION ALL
+             SELECT 'retention', 'completed', record_count, 0, kind, at
+             FROM memory_retention_sweeps
+             WHERE scope_key=?1
          ) ORDER BY at DESC LIMIT ?2",
     )?;
     let entries = statement
@@ -213,7 +219,9 @@ mod tests {
                  proposal_count INTEGER NOT NULL DEFAULT 0, detail TEXT, updated_at TEXT NOT NULL);
              CREATE TABLE memory_consolidation_runs(id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, status TEXT NOT NULL,
                  applied_count INTEGER NOT NULL DEFAULT 0, refused_count INTEGER NOT NULL DEFAULT 0,
-                 detail TEXT, updated_at TEXT NOT NULL);",
+                 detail TEXT, updated_at TEXT NOT NULL);
+             CREATE TABLE memory_retention_sweeps(id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, kind TEXT NOT NULL,
+                 record_count INTEGER NOT NULL, record_ids TEXT NOT NULL, at TEXT NOT NULL);",
         )
         .unwrap();
         db

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, 
 import { Skeleton, SkeletonRegion, SkeletonRows } from "@/components/ui/skeleton";
 import { AlertTriangle, ArrowRight, Bot, ChevronRight, Eye, EyeOff, Globe, Hand, Lock, MousePointer2, Timer, Trash2 } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { startSerialPoll } from "../polling";
 import type { BrowserCloneSnapshot, BrowserCloneStatus, CloneSignInPath } from "../types";
 import type { CloneInputEvent, CloneBrowserKind } from "../protocol/generated/protocol";
@@ -11,12 +12,13 @@ import { CLONE_BROWSERS, SAFARI_SIGN_IN_HINT } from "../cloneSettings";
 import { PaneState } from "./ui/pane";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
+import { Tip } from "@/components/ui/tooltip";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 
 // The dock tenant for a throwaway browser clone: the agent drives a private
 // copy of the browser, and this is where the person watches it, takes it over
-// for a login or 2FA, or destroys it. It mirrors BrowserSurface (a root that
-// fills its host, a poll that runs hot while visible, and a supervision report
-// upward) but reads clone state, not a lease on one of your own tabs.
+// for a login or 2FA, or destroys it: a root that fills its host, a poll that
+// runs hot while visible, and a supervision report upward.
 
 const statusLabel: Record<BrowserCloneStatus, string> = {
   none: "No clone", requested: "Awaiting your approval", starting: "Starting", acting: "Acting", waiting_for_you: "Waiting for you", taken_over: "You’re in control", destroyed: "Destroyed",
@@ -34,7 +36,6 @@ export type CloneSupervision = { status: BrowserCloneStatus; attention: boolean 
 
 const isLive = (status: BrowserCloneStatus) => status === "starting" || status === "acting" || status === "waiting_for_you" || status === "taken_over";
 const minutesLeft = (expiresAt: string | null) => expiresAt ? Math.max(0, Math.ceil((Date.parse(expiresAt) - Date.now()) / 60_000)) : undefined;
-const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 function StatusDot({ status }: { status: BrowserCloneStatus }) {
   return <span aria-hidden="true" className={cn("size-1.5 shrink-0 rounded-full",
@@ -85,6 +86,7 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
     setBusy(false);
     setConfirmingDestroy(false);
     setDomainDraft("");
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- a request generation counter, not a DOM ref: cleanup must bump its latest value
     return () => { ++latestRequest.current; };
   }, [sessionId]);
   useEffect(() => {
@@ -99,10 +101,10 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
   const run = async (task: () => Promise<unknown>) => {
     setBusy(true);
     try { await task(); await refresh(); }
-    catch (error) { onError(message(error)); }
+    catch (error) { onError(friendlyError(error, "Couldn't do that in the browser copy. Try again.")); }
     finally { if (currentSession.current === sessionId) { setBusy(false); setConfirmingDestroy(false); } }
   };
-  const send = (input: CloneInputEvent) => { void bridgeApi.cloneInput(sessionId ?? "", input).catch(error => onError(message(error))); };
+  const send = (input: CloneInputEvent) => { void bridgeApi.cloneInput(sessionId ?? "", input).catch(error => onError(friendlyError(error, "Couldn't send that to the browser copy."))); };
 
   const attention = status === "requested" || status === "waiting_for_you" || (status === "acting" && !!snapshot?.waitingReason) || !!snapshot?.pendingApproval;
   const supervisionRef = useRef<string>();
@@ -127,7 +129,7 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
         <span className={cn("min-w-0 truncate text-meta text-foreground", snapshot?.domain && "font-mono")}>{snapshot?.domain ?? "Browser clone"}</span>
         <span className="ml-auto shrink-0 truncate text-caption text-muted-foreground">{statusLabel[status]}</span>
       </div>
-      {live && remaining !== undefined && <span title="Time until the clone is wiped" className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-border px-2 text-caption tabular-nums text-muted-foreground"><Timer size={12} aria-hidden="true" />{remaining}m</span>}
+      {live && remaining !== undefined && <Tip label="Time until the clone is wiped"><span className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-border px-2 text-caption tabular-nums text-muted-foreground"><Timer size={12} aria-hidden="true" />{remaining}m</span></Tip>}
       {onClose && <Button variant="ghost" size="icon-xs" onClick={onClose} aria-label="Close Clone Surface"><ChevronRight size={14} /></Button>}
     </header>
 
@@ -137,13 +139,14 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
             <div className="grid size-10 place-items-center rounded-xl border border-border bg-muted/50"><Globe size={18} className="text-foreground" aria-hidden="true" /></div>
             <h2 className="mt-4 font-display text-message font-medium text-foreground">Open a browser for this chat</h2>
             <p className="mt-1.5 text-meta leading-5 text-muted-foreground">A throwaway copy of your browser for one site. The agent can see it and use it, and you can step in any time. It is wiped when the work is done.</p>
-            <form className="mt-4 flex h-9 items-center gap-2 rounded-lg border border-input bg-background pl-3 pr-1 transition-shadow focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/24" onSubmit={event => { event.preventDefault(); start(); }}>
-              <Globe size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-              <input aria-label="Site to clone" value={domainDraft} onChange={event => setDomainDraft(event.target.value)} placeholder="app.example.com" autoCapitalize="off" autoCorrect="off" spellCheck={false}
-                className="h-full min-w-0 flex-1 bg-transparent font-mono text-meta text-foreground outline-none placeholder:font-sans placeholder:text-muted-foreground" />
-              <Button type="submit" size="xs" disabled={busy || !domainDraft.trim()}>Start clone<ArrowRight size={12} /></Button>
+            <form className="mt-4" onSubmit={event => { event.preventDefault(); start(); }}>
+              <InputGroup>
+                <InputGroupAddon><Globe size={14} aria-hidden="true" /></InputGroupAddon>
+                <InputGroupInput mono aria-label="Site to clone" value={domainDraft} onChange={event => setDomainDraft(event.target.value)} placeholder="app.example.com" autoCapitalize="off" autoCorrect="off" spellCheck={false} />
+                <InputGroupAddon align="inline-end"><Button type="submit" size="xs" disabled={busy || !domainDraft.trim()}>Start clone<ArrowRight size={12} /></Button></InputGroupAddon>
+              </InputGroup>
             </form>
-            {onCancelStart && <Button type="button" variant="ghost" size="xs" className="mt-2 text-muted-foreground" onClick={onCancelStart}>Back to browser</Button>}
+            {onCancelStart && <Button variant="quiet" size="xs" className="mt-2" onClick={onCancelStart}>Back to browser</Button>}
             <div className="mt-3"><Select label="Source browser" value={startBrowser} options={CLONE_BROWSERS} disabled={busy} onChange={browser => setStartBrowser(browser as typeof startBrowser)} /></div>
             {startBrowser === "safari" && <p className="mt-2 text-caption text-muted-foreground">{SAFARI_SIGN_IN_HINT}</p>}
             <div className="mt-3 flex items-center justify-between gap-3">
@@ -154,7 +157,7 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
         </div>
       : status === "requested" ? <div className="flex flex-1 items-center justify-center overflow-y-auto p-5">
           <div className="w-full max-w-sm">
-            {snapshot.pendingRequestId && <CloneConsentCard key={snapshot.pendingRequestId} request={{ sessionId: sessionId ?? "", requestId: snapshot.pendingRequestId, domain: snapshot.pendingRequest ?? snapshot.domain ?? "", extensionPath: snapshot.extensionPath, additionalDomains: snapshot.additionalDomains }} onError={onError} onResolved={() => void refresh().catch(error => onError(String(error)))} />}
+            {snapshot.pendingRequestId && <CloneConsentCard key={snapshot.pendingRequestId} request={{ sessionId: sessionId ?? "", requestId: snapshot.pendingRequestId, domain: snapshot.pendingRequest ?? snapshot.domain ?? "", extensionPath: snapshot.extensionPath, additionalDomains: snapshot.additionalDomains }} onError={onError} onResolved={() => void refresh().catch(error => onError(friendlyError(error, "Couldn't refresh the browser copy.")))} />}
           </div>
         </div>
       : status === "destroyed" ? <PaneState icon={Trash2} title="Clone destroyed">Its profile, cookies, and session are gone. Nothing from it stays on disk.</PaneState>
@@ -188,7 +191,7 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
               <Button variant="destructive" size="xs" disabled={busy} onClick={() => void run(() => bridgeApi.destroyBrowserClone(sessionId))}><Trash2 size={12} />Destroy clone</Button>
             </div>
             : <div className="ml-auto flex items-center gap-1.5">
-              <Button variant="ghost" size="xs" disabled={busy} onClick={() => setConfirmingDestroy(true)} className="text-muted-foreground"><Trash2 size={12} />Destroy</Button>
+              <Button variant="destructive-quiet" size="xs" disabled={busy} onClick={() => setConfirmingDestroy(true)}><Trash2 size={12} />Destroy</Button>
               {status === "taken_over"
                 ? <Button size="xs" disabled={busy} onClick={() => void run(() => bridgeApi.handBackBrowserClone(sessionId))}><Bot size={12} />Hand back</Button>
                 : <Button variant={status === "waiting_for_you" ? "default" : "outline"} size="xs" disabled={busy || status === "starting"} onClick={() => void run(() => bridgeApi.takeoverBrowserClone(sessionId))}><Hand size={12} />Take over</Button>}

@@ -3601,7 +3601,7 @@ mod tests {
         assert!(report.proof_human_interventions < report.baseline_human_interventions);
     }
 
-    fn git(cwd: &Path, args: &[&str]) -> String {
+    pub(super) fn git(cwd: &Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
             .args(args)
             .current_dir(cwd)
@@ -3617,7 +3617,7 @@ mod tests {
 
     /// A real one-commit repository, so the Git-derived revision paths have
     /// honest state to read instead of a fixture pretending to be a checkout.
-    fn repository() -> (tempfile::TempDir, String) {
+    pub(super) fn repository() -> (tempfile::TempDir, String) {
         let fixture = tempfile::tempdir().unwrap();
         let repo = fixture.path().join("task");
         std::fs::create_dir(&repo).unwrap();

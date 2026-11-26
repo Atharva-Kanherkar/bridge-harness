@@ -4,9 +4,13 @@ import { Suspense, lazy, useCallback, useEffect, useRef, useState, useMemo, type
 import { Check, ChevronDown, Code2, Quote, FileDiff, FolderGit2, CircleAlert } from "lucide-react";
 import type { RiskTier, SessionChangesResult, SessionChangesUnavailable, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "../types";
 import { bridgeApi } from "../api";
-import { errorMessage } from "../errors";
+import { friendlyError } from "../errors";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { RowButton } from "@/components/ui/row";
+import { Segmented } from "@/components/ui/segmented";
+import { Tip } from "@/components/ui/tooltip";
 import { PatchView, type HunkRange } from "./DiffView";
 
 const InlineFileEditor = lazy(() => import("./editor/InlineFileEditor").then(module => ({ default: module.InlineFileEditor })));
@@ -125,66 +129,54 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
   const kindLabel = file.changeKind === "mode_only" ? "mode" : file.changeKind;
   return <div className={cn("transition-opacity", viewed && !expanded && "opacity-55")}>
     <div className="group flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-2">
-      <button type="button" onClick={onToggleExpanded} aria-expanded={expanded} aria-label={file.path} title={file.previousPath ? `${file.previousPath} → ${file.path}` : file.path} className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left hover:bg-accent @max-[560px]/changes:basis-full">
+      <Tip label={file.previousPath ? `${file.previousPath} → ${file.path}` : file.path}><RowButton size="sm" onClick={onToggleExpanded} aria-expanded={expanded} aria-label={file.path} className="flex-1 @max-[560px]/changes:basis-full">
         <ChevronDown size={13} className={cn("shrink-0 text-muted-foreground transition-transform", !expanded && "-rotate-90")} aria-hidden="true" />
         <span className="flex min-w-0 font-mono text-meta">
           {(file.previousPath || cut > 0) && <span className="truncate text-muted-foreground">{file.previousPath && `${file.previousPath} → `}{file.path.slice(0, cut)}</span>}
           <span className="max-w-full shrink-0 truncate text-foreground">{file.path.slice(cut)}</span>
         </span>
-      </button>
-      {dirty && <span className="shrink-0 text-caption text-warning" title="This file has unsaved edits in the inline editor">unsaved</span>}
-      {onQuote && <button
-        type="button"
+      </RowButton></Tip>
+      {dirty && <Tip label="This file has unsaved edits in the inline editor"><span className="shrink-0 text-caption text-warning">unsaved</span></Tip>}
+      {onQuote && <Button
+        variant="quiet"
+        size="icon-xs"
         onClick={() => onQuote(file.path)}
         aria-label={`Reference ${file.path} in the composer`}
-        title="Reference in the composer"
-        className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        tooltip="Reference in the composer"
       >
-        <Quote size={11} strokeWidth={1.8} aria-hidden="true" />
-      </button>}
-      {onOpenFile && file.changeKind !== "deleted" && <button
-        type="button"
+        <Quote aria-hidden="true" />
+      </Button>}
+      {onOpenFile && file.changeKind !== "deleted" && <Button
+        variant="quiet"
+        size="icon-xs"
         onClick={() => onOpenFile(file.path)}
         aria-label={`Open ${file.path} in the Code pane`}
-        title="Open in the Code pane"
-        className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        tooltip="Open in the Code pane"
       >
-        <Code2 size={11} strokeWidth={1.8} aria-hidden="true" />
-      </button>}
+        <Code2 aria-hidden="true" />
+      </Button>}
       {file.changeKind !== "modified" && <Badge variant="outline" size="sm" className="shrink-0">{kindLabel}</Badge>}
-      {file.labels.map(label => <Badge key={`${file.path}:${label}`} variant="outline" size="sm" className="shrink-0" title={`Path label: ${label}`}>{label}</Badge>)}
+      {file.labels.map(label => <Tip key={`${file.path}:${label}`} label={`Path label: ${label}`}><Badge variant="outline" size="sm" className="shrink-0">{label}</Badge></Tip>)}
       {badge && <Badge variant={badge.variant} size="sm" className="hidden shrink-0 sm:inline-flex">{badge.label}</Badge>}
       <span className="hidden shrink-0 items-center gap-1.5 font-mono text-caption tabular-nums sm:flex">
         <span className="text-success">+{file.additions}</span>
         <span className="text-destructive">−{file.deletions}</span>
         <DiffStatBar additions={file.additions} deletions={file.deletions} />
       </span>
-      <button
-        type="button"
+      <Button
+        variant="outline"
+        size="icon-xs"
         onClick={onToggleViewed}
         aria-pressed={viewed}
-        title={viewed ? "Mark as not viewed" : "Mark as viewed"}
+        tooltip={viewed ? "Mark as not viewed" : "Mark as viewed"}
         aria-label={viewed ? `Mark ${file.path} as not viewed` : `Mark ${file.path} as viewed`}
-        className={cn(
-          "grid h-7 w-7 shrink-0 place-items-center rounded-md border transition-colors",
-          viewed ? "border-success/40 bg-success/10 text-success" : "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
-        )}
       >
-        <Check size={12} aria-hidden="true" />
-      </button>
+        <Check className={viewed ? "text-success" : "text-muted-foreground"} aria-hidden="true" />
+      </Button>
     </div>
     {(expanded || dirty) && <div className={cn("border-t border-border bg-code", !expanded && "hidden")}>
       {editable && <div className="flex items-center gap-1 border-b border-border px-2 py-1">
-        {(["diff", "edit"] as const).map(option => <button
-          key={option}
-          type="button"
-          onClick={() => { setMode(option); if (option === "edit") setEverEdited(true); }}
-          aria-pressed={mode === option}
-          className={cn(
-            "h-7 rounded-md px-2 text-meta capitalize transition-colors",
-            mode === option ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
-          )}
-        >{option}</button>)}
+        <Segmented label="View" value={mode} options={[{ value: "diff" as const, label: "Diff" }, { value: "edit" as const, label: "Edit" }]} onChange={option => { setMode(option); if (option === "edit") setEverEdited(true); }} />
       </div>}
       <div className={cn(mode === "edit" && editable && "hidden")}>
         <FileDiffView patch={file.patch} patchTruncated={file.patchTruncated} binary={file.binary} path={file.path} onQuoteHunk={onQuote ? range => onQuote(file.path, range) : undefined} />
@@ -243,7 +235,7 @@ export function ChangesPanel({ workspace, sessionId, chatSignal, visible = false
       setLoadError(undefined);
     } catch (error) {
       if (generation !== requestGeneration.current) return;
-      setLoadError(errorMessage(error));
+      setLoadError(friendlyError(error, "Bridge couldn't read the changes. Try again."));
     }
   }, [scope, sessionId, workspace.id]);
 
@@ -308,26 +300,18 @@ export function ChangesPanel({ workspace, sessionId, chatSignal, visible = false
 
   // The switch is part of every state, so a chat with nothing to show can
   // still reach the folder, and the folder can always come back to the chat.
-  const scopeSwitch = sessionId ? <div role="group" aria-label="Which changes" className="mb-3 inline-flex rounded-lg border border-border bg-muted/30 p-0.5">
-    {([["chat", "This chat"], ["folder", "All uncommitted"]] as const).map(([value, label]) => <button
-      key={value}
-      type="button"
-      aria-pressed={scope === value}
-      onClick={() => setScope(value)}
-      className={cn("h-7 rounded-md px-2.5 text-meta transition-colors", scope === value ? "bg-card text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground")}
-    >{label}</button>)}
-  </div> : null;
+  const scopeSwitch = sessionId ? <Segmented label="Which changes" className="mb-3 w-fit" value={scope} options={[{ value: "chat" as const, label: "This chat" }, { value: "folder" as const, label: "All uncommitted" }]} onChange={setScope} /> : null;
   const frame = (body: ReactNode) => <div className="@container/changes flex h-full w-full flex-col overflow-y-auto px-3 py-4 sm:px-4">
     <div className="text-meta font-medium text-muted-foreground">CHANGES</div>
     <div className="mt-2">{scopeSwitch}</div>
     {body}
   </div>;
 
-  if (loadError) return frame(<PaneState icon={CircleAlert} title="Could not load changes" role="alert" action={<button type="button" onClick={() => void reloadChanges()} className="min-h-8 rounded-lg border border-border bg-card px-3 text-ui hover:bg-accent">Try again</button>}>{loadError}</PaneState>);
+  if (loadError) return frame(<PaneState icon={CircleAlert} title="Could not load changes" role="alert" action={<Button variant="outline" size="sm" onClick={() => void reloadChanges()}>Try again</Button>}>{loadError}</PaneState>);
   if (!current) return frame(<SkeletonRows label="Loading changes" rows={5} lead="dot" meta={false} framed={false} className="min-h-0 flex-1 overflow-hidden" />);
   if (current.chat && !current.chat.available) {
     const reason = UNAVAILABLE[current.chat.unavailableReason ?? "no_turns"];
-    return frame(<PaneState icon={FileDiff} title={reason.title} role="status" action={<button type="button" onClick={() => setScope("folder")} className="min-h-8 rounded-lg border border-border bg-card px-3 text-ui hover:bg-accent">Show all uncommitted</button>}>{reason.body}</PaneState>);
+    return frame(<PaneState icon={FileDiff} title={reason.title} role="status" action={<Button variant="outline" size="sm" onClick={() => setScope("folder")}>Show all uncommitted</Button>}>{reason.body}</PaneState>);
   }
   if (!changes) return frame(<SkeletonRows label="Loading changes" rows={5} lead="dot" meta={false} framed={false} className="min-h-0 flex-1 overflow-hidden" />);
   if (changes.repositoryState === "not_git") return frame(<PaneState icon={FolderGit2} title="No Git repository">This folder is available in Code, but Changes needs a Git repository.</PaneState>);
@@ -351,7 +335,7 @@ export function ChangesPanel({ workspace, sessionId, chatSignal, visible = false
   return <div className="@container/changes h-full w-full overflow-y-auto px-3 py-4 sm:px-4">
     <div className="text-meta font-medium text-muted-foreground">CHANGES</div>
     <div className="mt-2">{scopeSwitch}</div>
-    <h2 className="my-1.5 font-heading text-[20px] tracking-[-0.015em] text-foreground">{changes.files.length ? `${fileCountLabel} file${reportedFileCount === 1 ? "" : "s"} changed` : emptyHeading}</h2>
+    <h2 className="my-1.5 font-heading text-xl tracking-tight text-foreground">{changes.files.length ? `${fileCountLabel} file${reportedFileCount === 1 ? "" : "s"} changed` : emptyHeading}</h2>
     {/* What this diff is measured against — with worktree isolation, "which
         checkout am I looking at" should never be a question. */}
     <p className="mb-2 font-mono text-caption text-muted-foreground">
@@ -396,9 +380,9 @@ export function ChangesPanel({ workspace, sessionId, chatSignal, visible = false
             onOpenFile={onOpenFile}
           />)}
         </div>
-        {lowSignalCount > 0 && <button type="button" onClick={() => setShowLowSignal(value => !value)} className="mt-2.5 px-1.5 py-1 text-left text-meta text-muted-foreground transition-colors hover:text-foreground">
+        {lowSignalCount > 0 && <Button variant="text" size="xs" onClick={() => setShowLowSignal(value => !value)} className="mt-2.5 w-fit">
           {showLowSignal ? "Hide low-signal files" : `${lowSignalCount} low-signal file${lowSignalCount === 1 ? "" : "s"} hidden — show`}
-        </button>}
+        </Button>}
       </>}
   </div>;
 }

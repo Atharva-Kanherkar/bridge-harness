@@ -20,14 +20,42 @@ use bridge_core::events::{CoreEvent, EventReceiver, ReceiveError};
 use bridge_core::BridgeCore;
 use bridge_protocol::{NotificationName, Params, RpcNotification};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Bounded per-connection queue. Generous — a queue this deep only fills when
 /// a client stops reading its socket for a while.
 const SINK_CAPACITY: usize = 1024;
 
+/// One notification, shared by every connection it is delivered to. The hub
+/// used to deep-clone the payload into each connection's queue and each
+/// forwarder serialized its own copy; now the payload is shared and encoded
+/// once, by whichever connection writes it first.
+pub(crate) struct Delivery {
+    notification: RpcNotification,
+    wire: OnceLock<Option<Vec<u8>>>,
+}
+
+impl Delivery {
+    fn new(notification: RpcNotification) -> Arc<Self> {
+        Arc::new(Self { notification, wire: OnceLock::new() })
+    }
+
+    /// The frame as written to the socket, without the line terminator.
+    pub(crate) fn wire(&self) -> Option<&[u8]> {
+        self.wire.get_or_init(|| serde_json::to_vec(&self.notification).ok()).as_deref()
+    }
+}
+
+impl std::ops::Deref for Delivery {
+    type Target = RpcNotification;
+
+    fn deref(&self) -> &RpcNotification {
+        &self.notification
+    }
+}
+
 struct Sink {
-    sender: SyncSender<RpcNotification>,
+    sender: SyncSender<Arc<Delivery>>,
     /// Events were dropped for this connection; owe it a lag marker and the
     /// refetch hints as soon as the queue has room.
     lagged: bool,
@@ -55,7 +83,7 @@ impl EventHub {
 
     /// Register a connection. The connection owns the receiving end; dropping
     /// it unregisters the sink on the hub's next delivery attempt.
-    pub fn register(&self) -> Receiver<RpcNotification> {
+    pub fn register(&self) -> Receiver<Arc<Delivery>> {
         let (sender, receiver) = std::sync::mpsc::sync_channel(SINK_CAPACITY);
         self.sinks.lock().unwrap().push(Sink { sender, lagged: false, missed: 0 });
         receiver
@@ -66,7 +94,7 @@ fn distribute(mut receiver: EventReceiver, sinks: Arc<Mutex<Vec<Sink>>>) {
     loop {
         match receiver.blocking_recv() {
             Ok(event) => {
-                let notification = notification_for(&event);
+                let notification = Delivery::new(notification_for(&event));
                 fan_out(&sinks, &receiver, Some(&notification));
             }
             Err(ReceiveError::Lagged(missed)) => {
@@ -91,10 +119,10 @@ fn distribute(mut receiver: EventReceiver, sinks: Arc<Mutex<Vec<Sink>>>) {
 fn fan_out(
     sinks: &Arc<Mutex<Vec<Sink>>>,
     receiver: &EventReceiver,
-    event: Option<&RpcNotification>,
+    event: Option<&Arc<Delivery>>,
 ) {
     // Recovery frames are built lazily, once, outside any sink's send path.
-    let mut recovery: Option<Vec<RpcNotification>> = None;
+    let mut recovery: Option<Vec<Arc<Delivery>>> = None;
     let mut registered = sinks.lock().unwrap();
     registered.retain_mut(|sink| {
         if sink.lagged {
@@ -102,7 +130,7 @@ fn fan_out(
                 receiver
                     .reconciliation_events()
                     .iter()
-                    .map(notification_for)
+                    .map(|event| Delivery::new(notification_for(event)))
                     .collect()
             });
             match sink.sender.try_send(lag_marker(sink.missed)) {
@@ -143,11 +171,11 @@ pub(crate) fn notification_for(event: &CoreEvent) -> RpcNotification {
     RpcNotification::new(event.kind().as_str(), Params::new(event.payload()).ok())
 }
 
-fn lag_marker(missed: u64) -> RpcNotification {
-    RpcNotification::new(
+fn lag_marker(missed: u64) -> Arc<Delivery> {
+    Delivery::new(RpcNotification::new(
         NotificationName::StreamLagged.as_str(),
         Params::new(serde_json::json!({ "missed": missed })).ok(),
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -184,6 +212,23 @@ mod tests {
     }
 
     #[test]
+    fn connections_share_one_payload_encoded_once() {
+        let bus = EventBus::new();
+        let hub = hub_over(&bus);
+        let first = hub.register();
+        let second = hub.register();
+        bus.publish(CoreEvent::SessionOutput { session_id: "s".into(), terminal_id: "t1".into(), data: "hello".into() });
+        let one = first.recv_timeout(Duration::from_secs(10)).unwrap();
+        let two = second.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(Arc::ptr_eq(&one, &two), "every connection reads the same delivery, not a copy");
+        let wire = one.wire().expect("the notification encodes");
+        assert!(std::ptr::eq(wire, two.wire().unwrap()), "the second writer reuses the first encoding");
+        let decoded: RpcNotification = serde_json::from_slice(wire).unwrap();
+        assert_eq!(decoded.method, one.method);
+        assert_eq!(serde_json::to_vec(&**one).unwrap(), wire, "the bytes are what serializing the notification gives");
+    }
+
+    #[test]
     fn a_lagged_connection_gets_the_marker_and_hints_when_it_drains() {
         let bus = EventBus::new();
         let hub = hub_over(&bus);
@@ -215,7 +260,7 @@ mod tests {
             // recovery frames are delivered on the next fan-out with room.
             while let Ok(frame) = receiver.recv_timeout(Duration::from_millis(200)) {
                 if frame.method == "stream-lagged" {
-                    let missed = frame.params.unwrap().into_value()["missed"].as_u64().unwrap();
+                    let missed = frame.params.clone().unwrap().into_value()["missed"].as_u64().unwrap();
                     assert!(missed > 0, "the marker reports how much was dropped");
                     saw_marker = true;
                     continue;

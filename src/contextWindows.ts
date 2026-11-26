@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { bridgeApi } from "./api";
+import { errorMessage } from "./errors";
 import { startSerialPoll } from "./polling";
 import { contextPressure, type ContextPressure } from "./usage";
 import type { ContextWindowReading, ContextWindowSegment, ContextWindowsResult } from "./protocol/generated/protocol";
@@ -99,7 +100,7 @@ export function useContextWindows(
         setState({ result, unavailable: false });
       } catch (error) {
         if (dead) return;
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         if (MISSING_METHOD.test(message) || ++failures.current >= MAX_FAILURES) {
           dead = true;
           stop?.();

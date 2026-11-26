@@ -2,6 +2,7 @@ import { useContext, useEffect, useState } from "react";
 import { AppWindow, Check, LockKeyhole, Pencil } from "lucide-react";
 import type { CallToolResult } from "@modelcontextprotocol/client";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type { ConversationItem } from "../conversation";
 import type { LockPersonalAppResult, PersonalAppDraft } from "../protocol/generated/protocol";
 import { personalAppReference, personalAppTool } from "../transcript/personalApp";
@@ -33,7 +34,7 @@ function DraftCard({ sessionId, draftId, contentHash, readOnly }: { sessionId: s
   }, []);
   useEffect(() => {
     let current = true;
-    void bridgeApi.getPersonalAppDraft({ sessionId, draftId, contentHash }).then(value => { if (current) setDraft(value); }, reason => { if (current) setError(String(reason)); });
+    void bridgeApi.getPersonalAppDraft({ sessionId, draftId, contentHash }).then(value => { if (current) setDraft(value); }, reason => { if (current) setError(friendlyError(reason, "Couldn't load the app preview.")); });
     return () => { current = false; };
   }, [sessionId, draftId, contentHash]);
 
@@ -44,7 +45,7 @@ function DraftCard({ sessionId, draftId, contentHash, readOnly }: { sessionId: s
       const result = await bridgeApi.lockPersonalApp({ draftId, contentHash, allowWider });
       if (result.kind === "widens") setWider(result);
       else { setDraft({ ...draft, locked: true }); setWider(undefined); }
-    } catch (reason) { setError(String(reason)); }
+    } catch (reason) { setError(friendlyError(reason, "Couldn't lock this version.")); }
     finally { setBusy(false); }
   };
   if (!draft) return error

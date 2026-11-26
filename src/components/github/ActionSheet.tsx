@@ -4,7 +4,9 @@ import { createPortal } from "react-dom";
 import { ChevronRight, type LucideIcon } from "lucide-react";
 import { modKey } from "@/lib/platform";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
+import { Textarea } from "@/components/ui/textarea";
 
 // The pane's one confirm surface for every write that is not a merge: approve,
 // request changes, close, comment, labels, checkout — a sheet that rises from
@@ -165,7 +167,7 @@ function SheetSurface({ icon: Icon, tone = "neutral", title, consequence, comman
       role="dialog"
       aria-modal="true"
       aria-label={title}
-      className="absolute bottom-2 left-2 right-2 rounded-2xl border border-border-card bg-popover p-4 shadow-[0_16px_40px_-18px_rgb(0_0_0/0.5),0_2px_8px_-4px_rgb(0_0_0/0.22)]"
+      className="absolute bottom-2 left-2 right-2 rounded-2xl border border-border-card bg-popover p-4 shadow-xl"
       initial={reduced ? { opacity: 0 } : { y: "calc(100% + 16px)" }}
       animate={
         reduced
@@ -183,8 +185,8 @@ function SheetSurface({ icon: Icon, tone = "neutral", title, consequence, comman
         </span>
         <span className="min-w-0">
           <b className="block text-body font-semibold leading-snug text-foreground">{title}</b>
-          <p className="mt-0.5 text-meta leading-[1.5] text-muted-foreground">{consequence}</p>
-          {note && <p className="mt-0.5 text-meta leading-[1.5] text-muted-foreground">{note}</p>}
+          <p className="mt-0.5 text-meta leading-normal text-muted-foreground">{consequence}</p>
+          {note && <p className="mt-0.5 text-meta leading-normal text-muted-foreground">{note}</p>}
         </span>
       </>)}
       {requiresBody && (readOnlyBody
@@ -192,45 +194,42 @@ function SheetSurface({ icon: Icon, tone = "neutral", title, consequence, comman
             aria-label="Comment body"
             className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-xl border border-border bg-card p-3 text-meta leading-relaxed text-foreground"
           >{body}</p>)
-        : rise(1, "mt-3", <textarea
+        : rise(1, "mt-3", <Textarea
             value={body}
             onChange={event => onBody?.(event.target.value)}
             disabled={busy}
             aria-label="Comment body"
             placeholder="Write a comment…"
-            className="block min-h-24 w-full resize-none rounded-xl border border-input bg-background p-2.5 text-meta leading-[1.55] text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring disabled:opacity-45"
+            className="min-h-24"
           />))}
       {command && rise(2, "group mt-3 rounded-lg bg-muted text-caption text-muted-foreground", <details className="group">
         <summary className="flex cursor-pointer list-none select-none items-center gap-1.5 px-2.5 py-1.5 transition-colors hover:text-foreground">
           <ChevronRight size={11} aria-hidden="true" className="shrink-0 transition-transform duration-200 group-open:rotate-90" />
           Exact command
         </summary>
-        <code className="block break-all pb-2 pl-[26px] pr-2.5 font-mono text-caption text-foreground/85">{command}</code>
+        <code className="block break-all pb-2 pl-6.5 pr-2.5 font-mono text-caption text-foreground/85">{command}</code>
       </details>)}
       {rise(3, "mt-3.5 flex items-center gap-2", <>
-        <button
-          type="button"
+        <Button
+          variant="quiet"
+          size="xs"
           onClick={() => { if (!busy) onCancel(); }}
           disabled={busy}
-          className="inline-flex min-h-7 items-center rounded-md px-2.5 text-meta font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
         >
           Cancel
-        </button>
-        <Kbd className="border border-border bg-transparent text-micro">esc</Kbd>
+        </Button>
+        <Kbd>esc</Kbd>
         <span className="ml-auto" />
-        <Kbd className="border border-border bg-transparent text-micro">{modKey("↵")}</Kbd>
-        <button
-          type="button"
+        <Kbd>{modKey("↵")}</Kbd>
+        <Button
+          variant={destructive ? "destructive" : "default"}
+          size="xs"
           data-confirm=""
           onClick={onConfirm}
           disabled={busy || (requiresBody && !readOnlyBody && !(body ?? "").trim())}
-          className={cn(
-            "inline-flex min-h-7 items-center rounded-md px-3 text-meta font-medium transition-colors active:scale-[0.98] disabled:opacity-50",
-            destructive ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : "bg-primary text-primary-foreground hover:bg-primary/90",
-          )}
         >
           {confirmLabel}
-        </button>
+        </Button>
       </>)}
     </motion.div>
   </motion.div>;

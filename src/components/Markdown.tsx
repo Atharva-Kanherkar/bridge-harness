@@ -1,7 +1,9 @@
 import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
-import { Check, Copy, KeyRound, Maximize2, Minimize2 } from "lucide-react";
-import katex from "katex";
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
+import { Check, Copy, Info, KeyRound, Lightbulb, Maximize2, MessageSquareWarning, Minimize2, OctagonAlert, TriangleAlert } from "lucide-react";
+import type Katex from "katex";
 import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from "./highlight";
 import { isExternalUrl } from "../externalLinks";
 import { parseNoteLink } from "../noteLinks";
@@ -13,6 +15,7 @@ import { SNAPSHOT_FENCE, splitSnapshot } from "../diskSpace";
 import { NOTES_CONTEXT_FENCE, splitNotesContext } from "../notesBrief";
 import { placeholderReference, SECRET_PLACEHOLDER } from "../apiKeys";
 import { RunButton } from "./RunInTerminal";
+import { BlockAction } from "@/components/ui/block-action";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
 type Block =
@@ -24,11 +27,77 @@ type Block =
   | { kind: "math"; tex: string }
   | { kind: "html"; html: string }
   | { kind: "heading"; level: number; text: string }
-  | { kind: "list"; ordered: boolean; items: string[] }
-  | { kind: "quote"; text: string }
+  | { kind: "list"; ordered: boolean; start: number; items: ListItem[] }
+  | { kind: "quote"; blocks: Block[]; alert?: AlertKind }
   | { kind: "rule" }
   | { kind: "table"; header: string[]; rows: string[][] }
   | { kind: "para"; text: string };
+
+/** One list item: its own line of text and any list nested under it. */
+type ListItem = { text: string; children: Block[] };
+
+/** GitHub's alert callouts: a quote whose first line is `[!NOTE]` and so on. */
+export type AlertKind = "note" | "tip" | "important" | "warning" | "caution";
+const ALERT_LINE = /^\[!(note|tip|important|warning|caution)\]\s*$/i;
+
+const LIST_LINE = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
+const indentOf = (line: string) => (/^[ \t]*/.exec(line)?.[0] ?? "").replace(/\t/g, "    ").length;
+const opensBlock = (trimmed: string) => trimmed.startsWith("```") || trimmed.startsWith("$$");
+
+/**
+ * A list starting at `start`, with deeper-indented markers nested under the
+ * item above them. An ordered list keeps its first number: a list split by a
+ * nested bullet or a blank line used to restart at 1, so "1. 2. 3." read
+ * "1. 1. 1.". A blank line only ends the list when what follows is not more of
+ * it.
+ */
+function parseList(lines: string[], start: number): { block: Block; next: number } {
+  const first = LIST_LINE.exec(lines[start])!;
+  const base = indentOf(first[1]);
+  const ordered = /\d/.test(first[2]);
+  const items: ListItem[] = [];
+  let index = start;
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim()) {
+      let ahead = index + 1;
+      while (ahead < lines.length && !lines[ahead].trim()) ahead += 1;
+      const next = lines[ahead];
+      const marker = next === undefined ? null : LIST_LINE.exec(next);
+      const continues = next !== undefined && !opensBlock(next.trim()) && (marker
+        ? indentOf(next) > base + 1 || (indentOf(next) >= base && /\d/.test(marker[2]) === ordered)
+        : indentOf(next) > base + 1 && items.length > 0);
+      if (!continues) break;
+      index = ahead;
+      continue;
+    }
+    const marker = LIST_LINE.exec(line);
+    const indent = indentOf(line);
+    if (marker && indent < base) break;
+    if (marker && indent <= base + 1) {
+      if (/\d/.test(marker[2]) !== ordered) break;
+      items.push({ text: marker[3], children: [] });
+      index += 1;
+      continue;
+    }
+    if (marker && items.length) {
+      const nested = parseList(lines, index);
+      items[items.length - 1].children.push(nested.block);
+      index = nested.next;
+      continue;
+    }
+    // A wrapped line of the item above.
+    if (items.length && indent > base && !opensBlock(line.trim())) {
+      const last = items[items.length - 1];
+      if (last.children.length) break;
+      last.text += ` ${line.trim()}`;
+      index += 1;
+      continue;
+    }
+    break;
+  }
+  return { block: { kind: "list", ordered, start: ordered ? Number.parseInt(first[2], 10) : 1, items }, next: index };
+}
 
 /** Split a `| a | b |` row into trimmed cells, dropping the leading/trailing pipe. */
 function splitTableRow(line: string): string[] {
@@ -108,7 +177,10 @@ export function splitBlocks(source: string, { richFences = true }: { richFences?
     if (/^>\s?/.test(trimmed)) {
       const quote: string[] = [];
       while (index < lines.length && /^>\s?/.test(lines[index].trim())) { quote.push(lines[index].trim().replace(/^>\s?/, "")); index += 1; }
-      blocks.push({ kind: "quote", text: quote.join("\n") });
+      // A quote holds blocks of its own: release notes quote whole headings
+      // and lists, and a GitHub alert is a quote that names its kind first.
+      const alert = ALERT_LINE.exec(quote[0] ?? "")?.[1]?.toLowerCase() as AlertKind | undefined;
+      blocks.push({ kind: "quote", blocks: splitBlocks((alert ? quote.slice(1) : quote).join("\n"), { richFences }), ...(alert ? { alert } : {}) });
       continue;
     }
     if (isTableRow(trimmed) && index + 1 < lines.length && TABLE_SEPARATOR.test(lines[index + 1].trim()) && isTableRow(lines[index + 1].trim())) {
@@ -121,18 +193,9 @@ export function splitBlocks(source: string, { richFences = true }: { richFences?
     }
     const bullet = /^[-*+]\s+/; const numbered = /^\d+[.)]\s+/;
     if (bullet.test(trimmed) || numbered.test(trimmed)) {
-      const ordered = numbered.test(trimmed);
-      const marker = ordered ? numbered : bullet;
-      const items: string[] = [];
-      while (index < lines.length) {
-        const current = lines[index].trim();
-        if (marker.test(current)) { items.push(current.replace(marker, "")); index += 1; continue; }
-        if (current && !bullet.test(current) && !numbered.test(current) && items.length && lines[index].startsWith("  ")) {
-          items[items.length - 1] += ` ${current}`; index += 1; continue;
-        }
-        break;
-      }
-      blocks.push({ kind: "list", ordered, items });
+      const list = parseList(lines, index);
+      blocks.push(list.block);
+      index = list.next;
       continue;
     }
     const para: string[] = [trimmed];
@@ -177,13 +240,13 @@ function InlineCode({ text }: { text: string }) {
   const links = useContext(FileLinkContext);
   const ref = parseFileRef(text, links);
   if (!ref) return <code>{text}</code>;
-  return <button
-    type="button"
+  return <Button
+    variant="ghost"
+    size="inline"
     onClick={() => links!.open(ref.path, ref.line)}
     aria-label={`Open ${ref.path} in the Code pane`}
-    title={`Open ${ref.path} in the Code pane`}
-    className="rounded transition-colors hover:bg-accent"
-  ><code>{text}</code></button>;
+    tooltip={`Open ${ref.path} in the Code pane`}
+  ><code className="whitespace-normal">{text}</code></Button>;
 }
 
 const MENTION = /(@[\w~@./-]+)/g;
@@ -224,12 +287,11 @@ function TextRun({ text }: { text: string }) {
  *  Bridge. A saved key shows its name, a pasted one just "API key". */
 function KeyChip({ reference }: { reference: string }) {
   const name = reference.startsWith("sec_") ? "API key" : reference;
-  return <span
+  return <Tip label={`Bridge kept this key out of the chat. The agent sees only [secret:${reference}] and can use it on the sites allowed in Settings, Permissions, API keys.`}><span
     role="img"
     aria-label={`${name}, kept by Bridge`}
-    title={`Bridge kept this key out of the chat. The agent sees only [secret:${reference}] and can use it on the sites allowed in Settings, Permissions, API keys.`}
     className="mx-0.5 inline-flex items-baseline gap-1 rounded-md border border-border bg-foreground/[0.04] px-1.5 font-mono text-caption text-muted-foreground"
-  ><KeyRound size={10} aria-hidden="true" className="self-center" />{name}</span>;
+  ><KeyRound size={10} aria-hidden="true" className="self-center" />{name}</span></Tip>;
 }
 
 function MentionRun({ text }: { text: string }) {
@@ -239,14 +301,12 @@ function MentionRun({ text }: { text: string }) {
   return <>{parts.map((part, index) => {
     if (part.startsWith("@") && links.has(part.slice(1))) {
       const path = part.slice(1);
-      return <button
-        key={index}
-        type="button"
+      return <Tip key={index} label={`Open ${path} in the Code pane`}><Button
+        variant="link"
+        size="inline"
         onClick={() => links.open(path)}
         aria-label={`Open ${path} in the Code pane`}
-        title={`Open ${path} in the Code pane`}
-        className="rounded text-[var(--color-ring)] underline decoration-dotted underline-offset-2 transition-colors hover:bg-accent"
-      >{part}</button>;
+      >{part}</Button></Tip>;
     }
     return <span key={index}>{part}</span>;
   })}</>;
@@ -264,8 +324,22 @@ const INLINE = /(`[^`]+`|\\\([^\n]*?\\\)|\$(?![\s$])(?:[^\n$]*?[^\s$])?\$(?!\d)|
 /** One whole bare URL and nothing else — what a token has to be to become a link. */
 const BARE_URL_ONLY = /^https?:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]}]$/;
 
-/** Render a LaTeX string to KaTeX HTML, or null if it cannot be parsed. */
+// KaTeX is fetched the first time a chat shows math, not at startup: it was
+// ~260 kB of the startup bundle, parsed and kept in memory by every window,
+// and most chats never render an equation.
+let katex: typeof Katex | null = null;
+let katexLoading: Promise<void> | null = null;
+
+/** Load the math renderer. Resolves at once when it is already loaded. */
+export function loadMath(): Promise<void> {
+  katexLoading ??= import("katex").then(module => { katex = module.default; });
+  return katexLoading;
+}
+
+/** Render a LaTeX string to KaTeX HTML, or null if it cannot be parsed or the
+ *  renderer has not loaded yet (see `loadMath`). */
 export function renderMathToHtml(tex: string, displayMode: boolean): string | null {
+  if (!katex) return null;
   try {
     return katex.renderToString(tex, { displayMode, throwOnError: true, trust: false, output: "htmlAndMathml" });
   } catch {
@@ -273,8 +347,21 @@ export function renderMathToHtml(tex: string, displayMode: boolean): string | nu
   }
 }
 
+/** Whether the math renderer is loaded, loading it on first use. */
+function useMathReady(): boolean {
+  const [ready, setReady] = useState(() => katex !== null);
+  useEffect(() => {
+    if (ready) return;
+    let live = true;
+    void loadMath().then(() => { if (live) setReady(true); }, () => undefined);
+    return () => { live = false; };
+  }, [ready]);
+  return ready;
+}
+
 function InlineMath({ tex }: { tex: string }) {
-  const html = useMemo(() => renderMathToHtml(tex, false), [tex]);
+  const ready = useMathReady();
+  const html = useMemo(() => ready ? renderMathToHtml(tex, false) : null, [ready, tex]);
   if (html == null) return <code>{tex}</code>;
   return <span dangerouslySetInnerHTML={{ __html: html }} />;
 }
@@ -305,25 +392,29 @@ export function useCopy(text: string, resetMs = 1400) {
   return { copied, copy };
 }
 
-export function CopyButton({ text, className }: { text: string; className: string }) {
+export function CopyButton({ text, floating = false, className }: { text: string; floating?: boolean; className?: string }) {
   const { copied, copy } = useCopy(text);
   return (
-    <button type="button" className={className} onClick={copy} aria-label={copied ? "Copied" : "Copy"}>
+    <BlockAction floating={floating} className={className} onClick={copy} aria-label={copied ? "Copied" : "Copy"}>
       {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
       {copied ? "Copied" : "Copy"}
-    </button>
+    </BlockAction>
   );
 }
 
 function MathBlock({ tex }: { tex: string }) {
-  const html = useMemo(() => renderMathToHtml(tex, true), [tex]);
+  const ready = useMathReady();
+  const html = useMemo(() => ready ? renderMathToHtml(tex, true) : null, [ready, tex]);
+  // Not loaded yet is not a parse error: show the source plainly meanwhile.
+  // oxlint-disable-next-line shadcn/no-arbitrary-values -- prose spacing in em, like the rendered block it stands in for
+  if (!ready) return <pre className="my-[0.6em] overflow-x-auto px-[0.85em] py-[0.6em] text-muted-foreground"><code>{tex}</code></pre>;
   if (html == null) {
-    return <pre className="my-[0.6em] overflow-x-auto rounded-[0.7rem] border border-destructive/30 bg-destructive/10 px-[0.85em] py-[0.6em] text-destructive"><code>{tex}</code></pre>;
+    return <pre className="my-[0.6em] overflow-x-auto rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive"><code>{tex}</code></pre>;
   }
   return (
     <div className="rich-block my-[0.9em]">
-      <CopyButton text={tex} className="rich-block-copy" />
-      <div className="overflow-x-auto py-[0.2em] text-foreground" dangerouslySetInnerHTML={{ __html: html }} />
+      <CopyButton text={tex} floating />
+      <div className="overflow-x-auto py-0.5 text-foreground" dangerouslySetInnerHTML={{ __html: html }} />
     </div>
   );
 }
@@ -392,7 +483,7 @@ function CodeBlock({ lang, body, closed = true }: { lang: string; body: string; 
         <span className="code-block-lang">{label}</span>
         <div className="flex items-center gap-0.5">
           <RunButton lang={lang} body={body} closed={closed} />
-          <CopyButton text={body} className="code-block-copy" />
+          <CopyButton text={body} />
         </div>
       </div>
       <pre><code className="stx" dangerouslySetInnerHTML={{ __html: html }} /></pre>
@@ -422,7 +513,7 @@ function DiagramBlock({ spec }: { spec: string }) {
   return (
     <div className="rich-block my-[0.9em]">
       <div className="rich-block-actions">
-        <CopyButton text={spec} className="rich-block-copy" />
+        <CopyButton text={spec} floating />
         <ExpandButton onClick={() => setFullscreen(true)} />
       </div>
       <DiagramFigure spec={parsed} />
@@ -496,13 +587,13 @@ function MermaidBlock({ code }: { code: string }) {
     </div>;
   }
   if (rendered?.code !== code || rendered.dark !== dark) {
-    return <SkeletonRegion label="Rendering diagram" className="my-[0.9em]"><Skeleton className="h-40 rounded-[0.9rem]" /></SkeletonRegion>;
+    return <SkeletonRegion label="Rendering diagram" className="my-[0.9em]"><Skeleton className="h-40 rounded-2xl" /></SkeletonRegion>;
   }
   const viewBoxWidth = Number(/viewBox="0 0 ([\d.]+) /.exec(rendered.svg)?.[1]);
   const { width: clampedWidth, clamped } = mermaidClamp(containerWidth, viewBoxWidth);
   return <div className="rich-block my-[0.9em]">
     <div className="rich-block-actions">
-      <CopyButton text={code} className="rich-block-copy" />
+      <CopyButton text={code} floating />
       <ExpandButton onClick={() => setFullscreen(true)} />
     </div>
     <div ref={holder}>
@@ -555,9 +646,9 @@ function HtmlBlock({ html }: { html: string }) {
       <DialogPopup showCloseButton={false} aria-label="HTML preview" className="h-[84dvh] max-w-[calc(100vw-4rem)] overflow-hidden">
         <div className="code-block-header">
           <span className="code-block-lang">html</span>
-          <button type="button" className="code-block-copy" onClick={() => setFullscreen(false)} aria-label="Exit fullscreen" title="Exit fullscreen (Esc)">
+          <Tip label="Exit fullscreen" shortcut="Esc"><BlockAction onClick={() => setFullscreen(false)} aria-label="Exit fullscreen">
             <Minimize2 size={12} aria-hidden="true" />Close
-          </button>
+          </BlockAction></Tip>
         </div>
         {frame}
       </DialogPopup>
@@ -568,10 +659,10 @@ function HtmlBlock({ html }: { html: string }) {
     <div className="html-block my-[0.9em]">
       <div className="code-block-header">
         <span className="code-block-lang">html</span>
-        <button type="button" className="code-block-copy" onClick={() => setFullscreen(true)} aria-label="Fullscreen" title="Fullscreen">
+        <Tip label="Fullscreen"><BlockAction onClick={() => setFullscreen(true)} aria-label="Fullscreen">
           <Maximize2 size={12} aria-hidden="true" />
           Expand
-        </button>
+        </BlockAction></Tip>
       </div>
       {frame}
     </div>
@@ -588,40 +679,63 @@ export function RichFence({ lang, body }: { lang: string; body: string }) {
   return null;
 }
 
+const ALERTS: Record<AlertKind, { label: string; icon: typeof Info; tone: string }> = {
+  note: { label: "Note", icon: Info, tone: "text-muted-foreground" },
+  tip: { label: "Tip", icon: Lightbulb, tone: "text-muted-foreground" },
+  important: { label: "Important", icon: MessageSquareWarning, tone: "text-foreground" },
+  warning: { label: "Warning", icon: TriangleAlert, tone: "text-warning" },
+  caution: { label: "Caution", icon: OctagonAlert, tone: "text-destructive" },
+};
+
+/** A GitHub alert: a quote that says what kind of aside it is. */
+function Alert({ kind, children }: { kind: AlertKind; children: React.ReactNode }) {
+  const { label, icon: Icon, tone } = ALERTS[kind];
+  return <div role="note" aria-label={label} data-alert={kind} className="my-[0.8em] rounded-lg border border-border bg-muted/40 px-3 py-2">
+    <div className={`mb-1 flex items-center gap-1.5 font-medium ${tone}`}><Icon size={13} aria-hidden="true" className="shrink-0" />{label}</div>
+    <div data-alert-body="">{children}</div>
+  </div>;
+}
+
+function renderBlocks(blocks: Block[]): React.ReactNode[] {
+  return blocks.map((block, index) => {
+    if (block.kind === "code") return <CodeBlock key={index} lang={block.lang} body={block.body} closed={block.closed} />;
+    if (block.kind === "diagram") return <DiagramBlock key={index} spec={block.spec} />;
+    if (block.kind === "mermaid") return <MermaidBlock key={index} code={block.code} />;
+    if (block.kind === "storage-plan") return <StoragePlanCard key={index} body={block.body} />;
+    if (block.kind === "math") return <MathBlock key={index} tex={block.tex} />;
+    if (block.kind === "html") return <HtmlBlock key={index} html={block.html} />;
+    if (block.kind === "heading") {
+      const H = (`h${Math.min(block.level, 4)}`) as keyof JSX.IntrinsicElements;
+      return <H key={index}>{renderInline(block.text)}</H>;
+    }
+    if (block.kind === "rule") return <hr key={index} />;
+    if (block.kind === "quote") {
+      return block.alert
+        ? <Alert key={index} kind={block.alert}>{renderBlocks(block.blocks)}</Alert>
+        : <blockquote key={index}>{renderBlocks(block.blocks)}</blockquote>;
+    }
+    if (block.kind === "table") {
+      return (
+        <table key={index}>
+          <thead><tr>{block.header.map((cell, cellIndex) => <th key={cellIndex}>{renderInline(cell)}</th>)}</tr></thead>
+          <tbody>
+            {block.rows.map((row, rowIndex) => (
+              <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{renderInline(cell)}</td>)}</tr>
+            ))}
+          </tbody>
+        </table>
+      );
+    }
+    if (block.kind === "list") {
+      const items = block.items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item.text)}{renderBlocks(item.children)}</li>);
+      return block.ordered
+        ? <ol key={index} start={block.start === 1 ? undefined : block.start}>{items}</ol>
+        : <ul key={index}>{items}</ul>;
+    }
+    return <p key={index}>{renderInline(block.text)}</p>;
+  });
+}
+
 export const Markdown = memo(function Markdown({ text, richFences = true }: { text: string; richFences?: boolean }) {
-  return (
-    <div className="md">
-      {splitBlocks(text, { richFences }).map((block, index) => {
-        if (block.kind === "code") return <CodeBlock key={index} lang={block.lang} body={block.body} closed={block.closed} />;
-        if (block.kind === "diagram") return <DiagramBlock key={index} spec={block.spec} />;
-        if (block.kind === "mermaid") return <MermaidBlock key={index} code={block.code} />;
-        if (block.kind === "storage-plan") return <StoragePlanCard key={index} body={block.body} />;
-        if (block.kind === "math") return <MathBlock key={index} tex={block.tex} />;
-        if (block.kind === "html") return <HtmlBlock key={index} html={block.html} />;
-        if (block.kind === "heading") {
-          const H = (`h${Math.min(block.level, 4)}`) as keyof JSX.IntrinsicElements;
-          return <H key={index}>{renderInline(block.text)}</H>;
-        }
-        if (block.kind === "rule") return <hr key={index} />;
-        if (block.kind === "quote") return <blockquote key={index}>{renderInline(block.text)}</blockquote>;
-        if (block.kind === "table") {
-          return (
-            <table key={index}>
-              <thead><tr>{block.header.map((cell, cellIndex) => <th key={cellIndex}>{renderInline(cell)}</th>)}</tr></thead>
-              <tbody>
-                {block.rows.map((row, rowIndex) => (
-                  <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{renderInline(cell)}</td>)}</tr>
-                ))}
-              </tbody>
-            </table>
-          );
-        }
-        if (block.kind === "list") {
-          const List = block.ordered ? "ol" : "ul";
-          return <List key={index}>{block.items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item)}</li>)}</List>;
-        }
-        return <p key={index}>{renderInline(block.text)}</p>;
-      })}
-    </div>
-  );
+  return <div className="md">{renderBlocks(splitBlocks(text, { richFences }))}</div>;
 });

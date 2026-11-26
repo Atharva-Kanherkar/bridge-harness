@@ -3,6 +3,7 @@ import { SkeletonRows } from "@/components/ui/skeleton";
 import type { UsageProvider } from "../usage";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type {
   ManagedAgentOperationResult,
   ManagedAgentStatus,
@@ -13,6 +14,8 @@ import { HarnessMark } from "./harnessMarks";
 import {
   GhostButton, SettingsGroup, SettingsRow, StatusPill, TextButton, type PillTone,
 } from "./settings/kit";
+import { Tip } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
 
 /**
  * Install and remove the built-in agent runtimes.
@@ -112,7 +115,7 @@ export function useManagedAgents(initialAgents?: ManagedAgentStatus[], onChanged
     setListError(null);
     return bridgeApi.listManagedAgents()
       .then(list => { if (read === latestRead.current && before === writes.current) setAgents(list.agents); })
-      .catch(error => { if (read === latestRead.current && before === writes.current) setListError(error instanceof Error ? error.message : String(error)); });
+      .catch(error => { if (read === latestRead.current && before === writes.current) setListError(friendlyError(error, "Couldn't check how your agents are installed.")); });
   }, []);
 
   useEffect(() => {
@@ -141,7 +144,7 @@ export function useManagedAgents(initialAgents?: ManagedAgentStatus[], onChanged
     } catch (error) {
       setErrors(current => ({
         ...current,
-        [agentId]: error instanceof Error ? error.message : String(error),
+        [agentId]: friendlyError(error, `Couldn't finish ${verb.toLowerCase()} ${agent.label}.`),
       }));
     } finally {
       // Only this agent's slot, so a sibling operation still in flight keeps its
@@ -348,7 +351,7 @@ export function ManagedAgentsPanel({ initialAgents, adapters, onOpen, onChanged 
   onChanged?: () => void;
 }) {
   const state = useManagedAgents(initialAgents, onChanged);
-  return <div className="space-y-[26px]">
+  return <div className="space-y-6.5">
     <ManagedAgentRows state={state} adapters={adapters} onOpen={onOpen} onAuthenticationChanged={onChanged} />
     {state.confirmation}
   </div>;
@@ -401,7 +404,7 @@ function RemoveConfirmation({ agent, onCancel, onConfirm }: {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-[8vh] sm:pt-[10vh]"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-viewport sm:pt-viewport-lg"
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
@@ -413,23 +416,21 @@ function RemoveConfirmation({ agent, onCancel, onConfirm }: {
           {agent.version ? ` ${agent.version}` : ""}?
         </h4>
         {agent.executable && (
-          <p className="truncate font-mono text-caption text-muted-foreground" title={agent.executable}>
+          <Tip label={agent.executable}><p className="truncate font-mono text-caption text-muted-foreground">
             {agent.executable}
-          </p>
+          </p></Tip>
         )}
         <p className="text-meta text-muted-foreground">
           Your conversation history, vendor configuration, sign-in, and any copy you
           installed yourself are left untouched. You can reinstall at any time.
         </p>
         <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
+          <Button variant="outline" size="xs"
             data-autofocus
-            className="inline-flex h-7 items-center rounded-lg border border-border-card bg-popover px-2.5 text-xs text-foreground transition-colors hover:bg-accent"
             onClick={onCancel}
           >
             Keep it
-          </button>
+          </Button>
           <TextButton tone="destructive" onClick={onConfirm}>Remove</TextButton>
         </div>
       </div>

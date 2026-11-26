@@ -6,6 +6,7 @@ import { bridgeApi } from "../../../api";
 import { mockCreateDatabase, mockCreatePage, mockReadPage, mockSaveView, mockUpdateNote, mockUpdateSchema, resetMockNotes } from "../../../notesMock";
 import type { DatabaseQueryResult } from "../../../types";
 import { DatabaseView, FIRST_PAGE, LATER_PAGE, type DatabaseViewProps } from "./DatabaseView";
+import { chooseOption } from "@/testing/select";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -76,7 +77,7 @@ describe("DatabaseView", () => {
     await act(async () => { refuse(new Error("Rating is a finite number")); });
     await settle();
     expect(ratingCell(0).textContent).toBe("3");
-    expect(onError).toHaveBeenCalledWith("Rating is a finite number");
+    expect(onError).toHaveBeenCalledWith("Rating is a finite number.");
 
     // An accepted write stays through the re-query.
     // The cell is still selected, so one click opens its editor.
@@ -155,28 +156,28 @@ describe("DatabaseView", () => {
     // The override, built in the toolbar's own controls.
     const click = (element: Element) => act(() => (element as HTMLElement).click());
     const button = (name: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find(candidate => candidate.textContent?.trim() === name || candidate.getAttribute("aria-label") === name)!;
-    const choose = (label: string, value: string) => act(() => { const select = document.querySelector(`select[aria-label="${label}"]`) as HTMLSelectElement; select.value = value; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    const choose = (label: string, value: string) => chooseOption(document.querySelector<HTMLElement>(`[role="combobox"][aria-label="${label}"]`)!, value);
     const type = (label: string, text: string) => act(() => { const input = document.querySelector(`input[aria-label="${label}"]`) as HTMLInputElement; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, text); input.dispatchEvent(new Event("input", { bubbles: true })); });
     click(button("Filter"));
     click(button("Add a filter"));
-    choose("Filter 1 op", "gte");
+    await choose("Filter 1 op", "gte");
     type("Filter 1 value", "2");
     click(button("Add a filter group"));
-    choose("Filter 2.1 property", genre.id);
-    choose("Filter 2.1 value", tech.id);
+    await choose("Filter 2.1 property", genre.id);
+    await choose("Filter 2.1 value", tech.id);
     click(button("Add to group"));
-    choose("Filter 2.2 op", "gte");
+    await choose("Filter 2.2 op", "gte");
     type("Filter 2.2 value", "5");
     click(button("Filter, 3"));
     click(button("Sort"));
     click(button("Add a sort"));
-    choose("Sort 1 property", genre.id);
+    await choose("Sort 1 property", genre.id);
     click(button("Add a sort"));
-    choose("Sort 2 property", rating.id);
-    choose("Sort 2 direction", "desc");
+    await choose("Sort 2 property", rating.id);
+    await choose("Sort 2 direction", "desc");
     click(button("Sort, 2"));
     click(button("Group"));
-    choose("Group by", genre.id);
+    await choose("Group by", genre.id);
     await settle();
     const last = query.mock.calls.at(-1)![0];
     expect(last).toMatchObject({ filter, sorts: [{ property: genre.id, direction: "asc" }, { property: rating.id, direction: "desc" }], groupBy: { property: genre.id } });
@@ -319,7 +320,7 @@ describe("DatabaseView", () => {
     vi.spyOn(bridgeApi, "saveDatabaseView").mockRejectedValueOnce(new Error("disk full"));
     await act(async () => { button("Save for everyone")!.click(); });
     await settle();
-    expect(onError).toHaveBeenCalledWith("disk full");
+    expect(onError).toHaveBeenCalledWith("The disk is full. Free up some space and try again.");
     expect(button("Save for everyone")).toBeDefined();
     expect(button("Sort, 1")).toBeDefined();
     expect(mockReadPage(id).database!.views[0].sorts ?? []).toEqual([]);

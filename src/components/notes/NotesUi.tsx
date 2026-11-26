@@ -8,7 +8,8 @@ import { Check } from "lucide-react";
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
 import { clsx } from "clsx";
-import { pendingClass } from "@/components/ui/skeleton";
+import { RowButton } from "@/components/ui/row";
+import { Button } from "@/components/ui/button";
 
 export function Popover({ open, onClose, label, align = "start", side = "bottom", width = "w-72", children }: {
   open: boolean;
@@ -62,42 +63,25 @@ export function Option({ selected, onSelect, leading, hint, children }: {
   hint?: string;
   children: ReactNode;
 }) {
-  return <button
-    type="button"
+  return <RowButton size="bare" tone="default" shape="card"
     role="option"
     aria-selected={selected}
-    onClick={onSelect}
-    className="flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-ui text-foreground outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
-  >
+    onClick={onSelect}><span className="flex min-h-8 w-full items-center gap-2.5 px-2.5 text-ui">
     {leading && <span className="grid w-4 shrink-0 place-items-center">{leading}</span>}
     <span data-option-label className="min-w-0 flex-1 truncate">{children}</span>
     {hint && <span className="shrink-0 text-caption text-muted-foreground">{hint}</span>}
     <Check size={14} strokeWidth={2} aria-hidden="true" className={clsx("shrink-0", selected ? "text-foreground" : "invisible")} />
-  </button>;
+  </span></RowButton>;
 }
 
 /** A quiet text action. `active` keeps it lit while its popover is open. */
-export function Pill({ children, active = false, className, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { active?: boolean }) {
-  return <button
-    type="button"
-    {...props}
-    className={clsx(
-      "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-ui transition-colors disabled:pointer-events-none disabled:opacity-50",
-      active ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-      className,
-    )}
-  >{children}</button>;
+export function Pill({ children, active = false, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { active?: boolean; loading?: boolean }) {
+  return <Button variant="quiet" size="sm" shape="round" data-pressed={active ? "" : undefined} {...props}>{children}</Button>;
 }
 
 /** The one filled action in a popover: ink on paper, paper on ink. */
-export function PrimaryButton({ children, className, busy, disabled, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { busy?: boolean }) {
-  return <button
-    type="button"
-    {...props}
-    disabled={disabled || busy}
-    aria-busy={busy || undefined}
-    className={clsx("inline-flex h-8 shrink-0 items-center rounded-full bg-primary px-3.5 text-ui font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40", pendingClass(busy), className)}
-  >{children}</button>;
+export function PrimaryButton({ children, busy, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { busy?: boolean }) {
+  return <Button variant="default" size="sm" shape="round" loading={busy} {...props}>{children}</Button>;
 }
 
 /** Open is a ring, doing is half full, done is a check; inbox and archived are dashed. */

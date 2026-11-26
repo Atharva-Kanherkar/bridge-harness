@@ -19,8 +19,8 @@ export function ShortcutsSheet({ open, onClose }: { open: boolean; onClose: () =
         <div className="flex items-start gap-3">
           <span className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-muted text-foreground"><Keyboard size={16} aria-hidden="true" /></span>
           <div>
-            <DialogTitle className="font-display text-base font-medium text-foreground">Keyboard shortcuts</DialogTitle>
-            <DialogDescription className="mt-1 text-caption leading-5">Every command Bridge answers to. The same bindings sit in the menu bar.</DialogDescription>
+            <DialogTitle>Keyboard shortcuts</DialogTitle>
+            <DialogDescription className="mt-1">Every command Bridge answers to. The same bindings sit in the menu bar.</DialogDescription>
           </div>
         </div>
       </DialogHeader>
