@@ -356,8 +356,9 @@ pub fn dream_instructions(automatic: bool) -> String {
          The operations are:\n\
          - {OPERATION_KEEP}: targets is exactly one ref to leave as it is. Prefer it over any change \
          you are unsure of. A locked record accepts nothing else.\n\
-         - {OPERATION_MERGE}: targets is two or more refs that say the same thing, all active or all \
-         waiting, plus body: the one record that replaces them, using only words they already use.\n\
+         - {OPERATION_MERGE}: targets is every ref that says the same thing, two or more, all active or \
+         all waiting, plus body: the one record that replaces them all, keeping any detail one of them \
+         adds and using only words they already use. Never split one claim across two merges.\n\
          - {OPERATION_CORRECT}: targets is exactly one active ref whose claim has changed, basis is the \
          ref of the newer record that shows the change, and body is the corrected claim, using only \
          words from the two.\n\
