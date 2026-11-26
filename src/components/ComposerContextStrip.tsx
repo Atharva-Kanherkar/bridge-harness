@@ -73,7 +73,10 @@ export function ComposerContextStrip({
   const displayedBranch = currentBranch || workspace?.branch || "No branch";
 
   return (
-    <div className="@container/composer-context flex min-h-7 items-center gap-0.5 text-muted-foreground" aria-label="Chat context">
+    // Buttons do not shrink by default, so in a narrow column (the dock open
+    // beside the chat) the chips ran past the composer and drew over the
+    // pane next to it. The named chips shrink and truncate instead.
+    <div className="@container/composer-context flex min-h-7 min-w-0 items-center gap-0.5 text-muted-foreground" aria-label="Chat context">
       <Button
         variant="quiet"
         size="xs"
@@ -82,7 +85,7 @@ export function ComposerContextStrip({
         aria-expanded={repoMenu.open}
         tooltip={repoMenu.open ? undefined : workspace?.title ?? "No project"}
         onClick={repoMenu.toggle}
-        className="min-w-0 max-w-[16rem]"
+        className="min-w-0 max-w-[16rem] shrink"
       >
         <FolderGit2 size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 truncate">{workspace?.title ?? "No project"}</span>
@@ -116,7 +119,7 @@ export function ComposerContextStrip({
           if (!locked && branchAvailable && !branchBusy) onRequestBranches();
           branchMenu.toggle();
         }}
-        className="min-w-0 max-w-[16rem]"
+        className="min-w-0 max-w-[16rem] shrink"
       >
         <GitBranch size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 truncate">{displayedBranch}</span>
@@ -194,7 +197,7 @@ export function ComposerContextStrip({
           aria-expanded={agentMenu.open}
           tooltip={agentMenu.open ? undefined : agent?.name ?? "No agent"}
           onClick={agentMenu.toggle}
-          className="ml-auto min-w-0 max-w-[12rem]"
+          className="ml-auto min-w-0 max-w-[12rem] shrink"
         >
           <Bot size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
           {/* "No agent" is the default; spelling it out only crowded the row. */}
