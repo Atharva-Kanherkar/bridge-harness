@@ -677,18 +677,7 @@ pub fn build_digest(
         through_entry_id = id;
     }
     let similar = similar_memories(db, scope_key, &evidence, MAX_KNOWN_MEMORIES)?;
-    let mut known = Vec::new();
-    let mut text = String::new();
-    if !similar.is_empty() {
-        text.push_str("Known memories that may overlap (refer to them by id):\n");
-        for (index, record) in similar.iter().enumerate() {
-            let alias = format!("m{}", index + 1);
-            let body = crate::memory_packet::render_body(&record.body);
-            text.push_str(&format!("[{alias}] {} · {}: {}\n", known_label(record), record.kind, clip(&body, MAX_KNOWN_BODY_CHARS)));
-            known.push((alias, record.id.clone()));
-        }
-        text.push('\n');
-    }
+    let (mut text, known) = render_known(&similar);
     if !lines.is_empty() {
         text.push_str("Conversation:\n");
         text.push_str(&lines.join("\n"));
@@ -697,26 +686,49 @@ pub fn build_digest(
         if !lines.is_empty() {
             text.push_str("\n\n");
         }
-        text.push_str("App activity (recorded by Bridge apps; the person did not write these lines):\n");
-        let mut order: Vec<&str> = Vec::new();
-        for (_, app, _) in &activity {
-            if !order.contains(&app.manifest.id.as_str()) {
-                order.push(&app.manifest.id);
-            }
-        }
-        for app_id in order {
-            let mut group = activity.iter().filter(|(_, app, _)| app.manifest.id == app_id).peekable();
-            let Some((_, app, _)) = group.peek() else { continue };
-            text.push_str(&format!("{} (memory may keep only: {})\n", app.manifest.name, app.manifest.memory.join("; ")));
-            for (id, _, summary) in group {
-                text.push_str(&format!("[{id}] {summary}\n"));
-            }
-        }
-        let trimmed = text.trim_end().len();
-        text.truncate(trimmed);
+        text.push_str(render_activity(&activity).trim_end());
     }
     let sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
     Ok(Some(ExtractionDigest { text, sha256, through_entry_id, more, has_evidence, known }))
+}
+
+/// The similar memories as `[mN]` lines, and the alias map the gate checks.
+fn render_known(similar: &[MemoryRecord]) -> (String, Vec<(String, String)>) {
+    let mut text = String::new();
+    let mut known = Vec::new();
+    if similar.is_empty() {
+        return (text, known);
+    }
+    text.push_str("Known memories that may overlap (refer to them by id):\n");
+    for (index, record) in similar.iter().enumerate() {
+        let alias = format!("m{}", index + 1);
+        let body = crate::memory_packet::render_body(&record.body);
+        text.push_str(&format!("[{alias}] {} · {}: {}\n", known_label(record), record.kind, clip(&body, MAX_KNOWN_BODY_CHARS)));
+        known.push((alias, record.id.clone()));
+    }
+    text.push('\n');
+    (text, known)
+}
+
+/// In-scope app activity, grouped per app under the scope its manifest
+/// declares, in the order the apps first appear.
+fn render_activity(activity: &[(String, &'static crate::apps::BuiltinApp, String)]) -> String {
+    let mut text = String::from("App activity (recorded by Bridge apps; the person did not write these lines):\n");
+    let mut order: Vec<&str> = Vec::new();
+    for (_, app, _) in activity {
+        if !order.contains(&app.manifest.id.as_str()) {
+            order.push(&app.manifest.id);
+        }
+    }
+    for app_id in order {
+        let mut group = activity.iter().filter(|(_, app, _)| app.manifest.id == app_id).peekable();
+        let Some((_, app, _)) = group.peek() else { continue };
+        text.push_str(&format!("{} (memory may keep only: {})\n", app.manifest.name, app.manifest.memory.join("; ")));
+        for (id, _, summary) in group {
+            text.push_str(&format!("[{id}] {summary}\n"));
+        }
+    }
+    text
 }
 
 /// The digest a claimed run reads, or `None` once the run has been settled

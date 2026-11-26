@@ -124,7 +124,7 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedExtraction) {
             {
                 // The watermark lands with the completion, under one lock, so
                 // a failed run is read again and a completed one never is.
-                let db = core.db.lock().unwrap();
+                let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Err(error) = memory_extraction::record_coverage(&db, &run_id, &lease_owner, &digest.through_entry_id, report.known as i64) {
                     eprintln!("[memory] extraction run {run_id} could not record its watermark: {error}");
                 }
@@ -141,7 +141,7 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedExtraction) {
                 Some((&output, report.written as i64)),
             );
             if digest.more {
-                let db = core.db.lock().unwrap();
+                let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Err(error) = memory_extraction::enqueue_follow_up(&db, &session_id, Utc::now()) {
                     eprintln!("[memory] extraction for {session_id} could not queue the rest of its backlog: {error}");
                 }
