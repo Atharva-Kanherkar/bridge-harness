@@ -174,17 +174,17 @@ pub fn recall_stats(db: &Connection, scope_key: &str) -> Result<wire::MemoryReca
 pub fn activity_log(db: &Connection, scope_key: &str) -> Result<wire::MemoryActivityLog, BridgeError> {
     let scope_key = memory_ledger::parse_scope_key(scope_key)?;
     let mut statement = db.prepare(
-        "SELECT source, status, applied, refused, detail, at FROM (
+        "SELECT source, status, applied, refused, detail, at, known FROM (
              SELECT 'extraction' AS source, status, proposal_count AS applied, 0 AS refused,
-                    detail, updated_at AS at
+                    detail, updated_at AS at, known_count AS known
              FROM memory_extraction_runs
              WHERE scope_key=?1 AND status IN ('completed','failed','cancelled')
              UNION ALL
-             SELECT 'consolidation', status, applied_count, refused_count, detail, updated_at
+             SELECT 'consolidation', status, applied_count, refused_count, detail, updated_at, 0
              FROM memory_consolidation_runs
              WHERE scope_key=?1 AND status IN ('completed','failed','cancelled')
              UNION ALL
-             SELECT 'retention', 'completed', record_count, 0, kind, at
+             SELECT 'retention', 'completed', record_count, 0, kind, at, 0
              FROM memory_retention_sweeps
              WHERE scope_key=?1
          ) ORDER BY at DESC LIMIT ?2",
@@ -198,6 +198,7 @@ pub fn activity_log(db: &Connection, scope_key: &str) -> Result<wire::MemoryActi
                 refused: row.get(3)?,
                 detail: row.get(4)?,
                 at: row.get(5)?,
+                known: row.get(6)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -216,7 +217,8 @@ mod tests {
              CREATE TABLE memory_retrieval_audits(id TEXT PRIMARY KEY, scope_key TEXT NOT NULL,
                  selected_ids TEXT NOT NULL, exclusions TEXT NOT NULL, created_at TEXT NOT NULL);
              CREATE TABLE memory_extraction_runs(id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, status TEXT NOT NULL,
-                 proposal_count INTEGER NOT NULL DEFAULT 0, detail TEXT, updated_at TEXT NOT NULL);
+                 proposal_count INTEGER NOT NULL DEFAULT 0, detail TEXT, updated_at TEXT NOT NULL,
+                 known_count INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE memory_consolidation_runs(id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, status TEXT NOT NULL,
                  applied_count INTEGER NOT NULL DEFAULT 0, refused_count INTEGER NOT NULL DEFAULT 0,
                  detail TEXT, updated_at TEXT NOT NULL);
@@ -290,8 +292,8 @@ mod tests {
     fn the_log_merges_settled_runs_newest_first() {
         let db = db();
         db.execute_batch(
-            "INSERT INTO memory_extraction_runs VALUES('e1','account:local','completed',3,NULL,'2026-01-02T00:00:00+00:00');
-             INSERT INTO memory_extraction_runs VALUES('e2','account:local','queued',0,NULL,'2026-01-09T00:00:00+00:00');
+            "INSERT INTO memory_extraction_runs VALUES('e1','account:local','completed',3,NULL,'2026-01-02T00:00:00+00:00',2);
+             INSERT INTO memory_extraction_runs VALUES('e2','account:local','queued',0,NULL,'2026-01-09T00:00:00+00:00',0);
              INSERT INTO memory_consolidation_runs VALUES('c1','account:local','failed',0,2,'budget','2026-01-03T00:00:00+00:00');",
         )
         .unwrap();
@@ -299,8 +301,8 @@ mod tests {
         let rows: Vec<_> = log
             .entries
             .iter()
-            .map(|entry| (entry.source.as_str(), entry.status.as_str(), entry.applied, entry.refused))
+            .map(|entry| (entry.source.as_str(), entry.status.as_str(), entry.applied, entry.refused, entry.known))
             .collect();
-        assert_eq!(rows, vec![("consolidation", "failed", 0, 2), ("extraction", "completed", 3, 0)]);
+        assert_eq!(rows, vec![("consolidation", "failed", 0, 2, 0), ("extraction", "completed", 3, 0, 2)]);
     }
 }

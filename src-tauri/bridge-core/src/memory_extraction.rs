@@ -441,6 +441,7 @@ pub fn settle(
 pub struct ExtractionRunSummary {
     pub status: String,
     pub proposal_count: i64,
+    pub known_count: i64,
     pub observed_tokens: i64,
     pub spend_microusd: i64,
     pub detail: Option<String>,
@@ -457,7 +458,7 @@ pub fn last_run(
 ) -> Result<Option<ExtractionRunSummary>, BridgeError> {
     let scope_key = memory_ledger::parse_scope_key(scope_key)?;
     db.query_row(
-        "SELECT status, proposal_count, observed_tokens, spend_microusd, detail, updated_at
+        "SELECT status, proposal_count, observed_tokens, spend_microusd, detail, updated_at, known_count
          FROM memory_extraction_runs
          WHERE scope_key=?1 AND status IN ('completed','failed','cancelled')
          ORDER BY created_at DESC LIMIT 1",
@@ -466,6 +467,7 @@ pub fn last_run(
             Ok(ExtractionRunSummary {
                 status: row.get(0)?,
                 proposal_count: row.get(1)?,
+                known_count: row.get(6)?,
                 observed_tokens: row.get(2)?,
                 spend_microusd: row.get(3)?,
                 detail: row.get(4)?,

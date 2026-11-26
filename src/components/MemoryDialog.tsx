@@ -50,7 +50,7 @@ function memoryModelLabel(adapters: AdapterDescriptor[], harness: string, model?
   return adapter?.models.find(item => item.id === model)?.label ?? model;
 }
 
-/** What each extraction mode does after a chat turn, said once beside its choice. */
+/** What each extraction mode does once a chat goes quiet, said once beside its choice. */
 const MODES = [
   { id: "remember", label: "Manual only", description: "No extraction runs; existing active memory stays active, and new memory is saved only when you ask." },
   { id: "propose", label: "Review first", description: "Each validated extraction that fits the memory budget waits below for your decision." },
@@ -171,6 +171,8 @@ export function MemoryDialog({
   // A page that failed to load is not retried by the automatic read below.
   const failedCursor = useRef<string | undefined>(undefined);
   const records = activeList?.records;
+  /** The body of the memory a waiting update would replace, when it is loaded. */
+  const replacedBody = (id: string) => activeList?.records.find(record => record.id === id)?.body;
   const proposed = proposedList?.records;
 
   useEffect(() => {
@@ -576,7 +578,7 @@ export function MemoryDialog({
       </div>}
       {tab === "queue" && <div className="space-y-8">
         <section>
-          <h2 className="mb-2 px-0.5 text-ui font-medium text-foreground">After a chat turn</h2>
+          <h2 className="mb-2 px-0.5 text-ui font-medium text-foreground">When a chat goes quiet</h2>
           <div role="group" aria-label="Extraction mode" className="divide-y divide-border overflow-hidden rounded-xl border border-border-card bg-card">
             {MODES.map(mode => {
               const selected = settings?.mode === mode.id;
@@ -641,7 +643,7 @@ export function MemoryDialog({
           </div>
           {settings?.lastRun && (
             <p className="mt-2 px-0.5 text-caption tabular-nums text-faint">
-              Last run {settings.lastRun.status} · {settings.lastRun.proposalCount} extracted · {settings.lastRun.observedTokens} tokens · ${(settings.lastRun.spendMicrousd / 1_000_000).toFixed(4)}
+              Last run {settings.lastRun.status} · {settings.lastRun.proposalCount} extracted{(settings.lastRun.knownCount ?? 0) > 0 && <> · {settings.lastRun.knownCount} already known</>} · {settings.lastRun.observedTokens} tokens · ${(settings.lastRun.spendMicrousd / 1_000_000).toFixed(4)}
             </p>
           )}
         </section>
@@ -713,6 +715,9 @@ export function MemoryDialog({
                     />
                     <div className="min-w-0 flex-1 basis-64">
                       <p className="whitespace-pre-wrap break-words text-ui leading-relaxed text-foreground">{record.body}</p>
+                      {record.supersedes && <p className="mt-1 break-words text-caption text-muted-foreground">
+                        {replacedBody(record.supersedes) ? <>Replaces: {replacedBody(record.supersedes)}</> : "Replaces an earlier version"}
+                      </p>}
                       <p className="mt-1 text-caption text-faint">
                         {KIND_LABEL[record.kind as Kind] ?? record.kind}
                         {record.provenance === "agent_proposal" && <> · proposed by an agent</>}
@@ -844,8 +849,12 @@ function runDetail(entry: MemoryActivityEntry): string {
       ? `Retired ${entry.applied} unused memor${entry.applied === 1 ? "y" : "ies"}`
       : `${entry.applied} unreviewed proposal${plural} expired`;
   }
+  if (entry.source === "extraction" && entry.detail === "nothing_new") return "Nothing new to read";
   if (entry.status !== "completed") return entry.detail ? `${entry.status}: ${friendlyError(entry.detail, "The memory job hit an error.")}` : entry.status;
-  if (entry.source === "extraction") return `${entry.applied} ${entry.applied === 1 ? "proposal" : "proposals"} written`;
+  if (entry.source === "extraction") {
+    const written = `${entry.applied} ${entry.applied === 1 ? "proposal" : "proposals"} written`;
+    return (entry.known ?? 0) > 0 ? `${written}, ${entry.known} already known` : written;
+  }
   return `${entry.applied} applied, ${entry.refused} refused${entry.detail ? ` · ${entry.detail}` : ""}`;
 }
 

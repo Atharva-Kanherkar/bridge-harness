@@ -2697,6 +2697,7 @@ fn extraction_settings_wire(
         wire::MemoryExtractionRun {
             status: run.status,
             proposal_count: run.proposal_count,
+            known_count: run.known_count,
             observed_tokens: run.observed_tokens,
             spend_microusd: run.spend_microusd,
             detail: run.detail,

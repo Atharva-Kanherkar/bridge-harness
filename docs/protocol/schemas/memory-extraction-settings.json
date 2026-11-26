@@ -10,6 +10,12 @@
             "null"
           ]
         },
+        "knownCount": {
+          "default": 0,
+          "description": "Candidates the run found already remembered, so it wrote nothing for them. Absent from a pre-1.61 daemon, which reads as 0.",
+          "format": "int64",
+          "type": "integer"
+        },
         "observedTokens": {
           "format": "int64",
           "type": "integer"
