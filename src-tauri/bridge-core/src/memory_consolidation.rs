@@ -66,15 +66,21 @@ pub const OPERATION_GROUP: &str = "group";
 pub const OPERATION_RETIRE: &str = "retire";
 /// Decline the candidate. The answer that means the scope is already right.
 pub const OPERATION_KEEP: &str = "keep";
+/// Approve a waiting proposal. A dream's, in Automatic mode only.
+pub const OPERATION_APPROVE: &str = "approve";
+/// Reject a waiting proposal. In Review-first mode only as a duplicate.
+pub const OPERATION_REJECT: &str = "reject";
 
 /// The closed vocabulary, in the order the instructions present it.
-pub const OPERATIONS: [&str; 6] = [
+pub const OPERATIONS: [&str; 8] = [
     OPERATION_MERGE,
     OPERATION_CORRECT,
     OPERATION_EXPIRE,
     OPERATION_GROUP,
     OPERATION_RETIRE,
     OPERATION_KEEP,
+    OPERATION_APPROVE,
+    OPERATION_REJECT,
 ];
 
 /// What queued a dream: the nightly cadence, "Dream now", or a full scope.
@@ -1107,7 +1113,7 @@ fn apply_operation(
 /// A conflict group is derived from the subject, never taken from the model as
 /// an opaque key: two runs naming the same subject must land in the same group,
 /// and a key the model chose could collide with one the gate already uses.
-fn conflict_group_key(subject: &str) -> String {
+pub(crate) fn conflict_group_key(subject: &str) -> String {
     let normalized = subject.to_lowercase();
     let digest = Sha256::digest(normalized.as_bytes());
     format!("subject:{:x}", digest)[..24].to_string()
