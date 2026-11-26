@@ -29,7 +29,7 @@ pub const PROVENANCE_AGENT_PROPOSAL: &str = "agent_proposal";
 pub const PROPOSAL_TTL_DAYS: i64 = crate::memory_retention::DEFAULT_PROPOSAL_TTL_DAYS;
 const STATUS_ACTIVE: &str = "active";
 const STATUS_PROPOSED: &str = "proposed";
-const STATUS_REJECTED: &str = "rejected";
+pub(crate) const STATUS_REJECTED: &str = "rejected";
 const STATUS_SUPERSEDED: &str = "superseded";
 const STATUS_DELETED: &str = "deleted";
 /// Reached only by the sweep. Distinct from superseded, which names a

@@ -1183,6 +1183,283 @@ pub fn run_dream(
     Ok((outcome.report, outcome.output))
 }
 
+/// A dream's run row and its report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredDream {
+    pub run_id: String,
+    pub trigger: Option<String>,
+    pub status: String,
+    /// When the run last changed: its settle time once settled.
+    pub at: String,
+    pub spend_microusd: i64,
+    pub report: DreamReport,
+}
+
+pub fn read_dream(db: &Connection, run_id: &str) -> Result<StoredDream, BridgeError> {
+    let row: Option<(Option<String>, String, String, i64, Option<String>)> = db
+        .query_row(
+            "SELECT trigger, status, updated_at, spend_microusd, report
+             FROM memory_consolidation_runs WHERE id=?1",
+            params![run_id.trim()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .optional()?;
+    let (trigger, status, at, spend_microusd, report) =
+        row.ok_or_else(|| BridgeError::Invalid(format!("No dream has the id '{}'.", run_id.trim())))?;
+    let report = match report {
+        Some(json) => serde_json::from_str(&json)
+            .map_err(|error| BridgeError::Invalid(format!("The dream's report does not read: {error}")))?,
+        None => DreamReport::default(),
+    };
+    Ok(StoredDream { run_id: run_id.trim().to_string(), trigger, status, at, spend_microusd, report })
+}
+
+fn store_report(db: &Connection, run_id: &str, report: &DreamReport) -> Result<(), BridgeError> {
+    let json = serde_json::to_string(report).map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    db.execute("UPDATE memory_consolidation_runs SET report=?2 WHERE id=?1", params![run_id, json])?;
+    Ok(())
+}
+
+/// Whether a row is still as the dream left it. The one change allowed is
+/// the expiry sweep closing an expiry the dream itself set.
+fn unchanged(current: &Snapshot, after: &Snapshot) -> bool {
+    (current.status == after.status && current.updated_at == after.updated_at)
+        || (after.status == "active"
+            && current.status == memory_ledger::STATUS_EXPIRED
+            && after.expires_at.is_some()
+            && current.valid_to == after.expires_at)
+}
+
+/// Why an operation cannot be undone now, if it cannot.
+fn undo_blocker(db: &Connection, operation: &DreamOperation) -> Result<Option<String>, BridgeError> {
+    if operation.undone_at.is_some() {
+        return Ok(Some("This change is already undone.".into()));
+    }
+    for after in &operation.after {
+        let current = snapshot(db, &after.id)?;
+        if !current.as_ref().is_some_and(|current| unchanged(current, after)) {
+            return Ok(Some(format!(
+                "\"{}\" changed after the dream, so this change is left as it is.",
+                after.body.chars().take(60).collect::<String>()
+            )));
+        }
+    }
+    Ok(None)
+}
+
+fn before_of<'a>(operation: &'a DreamOperation, id: &str) -> Option<&'a Snapshot> {
+    operation.before.iter().find(|row| row.id == id)
+}
+
+/// How many active memories undoing an operation adds, net.
+fn undo_growth(db: &Connection, operation: &DreamOperation) -> Result<i64, BridgeError> {
+    let mut growth = 0i64;
+    for after in &operation.after {
+        let swept = snapshot(db, &after.id)?.is_some_and(|current| current.status == memory_ledger::STATUS_EXPIRED);
+        match before_of(operation, &after.id) {
+            None if after.status == "active" => growth -= 1,
+            Some(before) if before.status == "active" && (after.status != "active" || swept) => growth += 1,
+            Some(before) if before.status == "proposed" && after.status == "active" => growth -= 1,
+            _ => {}
+        }
+    }
+    Ok(growth)
+}
+
+fn enforce_undo_budget(db: &Connection, growth: i64) -> Result<(), BridgeError> {
+    if growth <= 0 {
+        return Ok(());
+    }
+    let budget = crate::memory_consolidation::settings(db, ACCOUNT_SCOPE)?.max_records;
+    let held = crate::memory_consolidation::held_records(db, ACCOUNT_SCOPE)?;
+    if held + growth > budget {
+        return Err(BridgeError::Invalid(format!(
+            "Undoing this would bring back {growth} memories, and the scope holds {held} of {budget}. \
+             Nothing was changed. Forget a memory you no longer need first."
+        )));
+    }
+    Ok(())
+}
+
+const ACCOUNT_SCOPE: &str = bridge_protocol::messages::ACCOUNT_MEMORY_SCOPE;
+
+/// A new row carrying `from` as it was, under a fresh id. Active copies open
+/// now and point back at the row they restore; a waiting copy keeps what its
+/// original would have replaced.
+fn insert_copy(db: &Connection, from: &Snapshot, restores: &str, now: &str) -> Result<String, BridgeError> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let waiting = from.status == "proposed";
+    let supersedes = if waiting { from.supersedes.clone() } else { Some(restores.to_string()) };
+    db.execute(
+        "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status, source_session_id,
+             confidence_bps, rationale, supersedes, valid_from, valid_to, expires_at, conflict_group,
+             created_at, updated_at, last_used_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?11,?16)",
+        params![
+            id,
+            from.scope_key,
+            from.kind,
+            from.body,
+            from.provenance,
+            from.status,
+            from.source_session_id,
+            from.confidence_bps,
+            from.rationale,
+            supersedes,
+            now,
+            waiting.then_some(now),
+            from.expires_at,
+            from.conflict_group,
+            from.created_at,
+            from.last_used_at,
+        ],
+    )?;
+    Ok(id)
+}
+
+fn hold(db: &Connection, record_id: &str, run_id: &str, now: &str) -> Result<(), BridgeError> {
+    db.execute(
+        "INSERT OR REPLACE INTO memory_dream_holds(record_id, run_id, created_at) VALUES(?1,?2,?3)",
+        params![record_id, run_id, now],
+    )?;
+    Ok(())
+}
+
+/// Put back what one operation changed. Read from its snapshots alone: rows
+/// it closed come back as copies, rows it created are closed, and rows it
+/// edited in place get their old fields back. Everything restored is held.
+fn undo_one(db: &Connection, operation: &DreamOperation, run_id: &str, now: &str) -> Result<(), BridgeError> {
+    let mut restored: Vec<String> = Vec::new();
+    let mut created: Vec<&Snapshot> = Vec::new();
+    for after in &operation.after {
+        let current = snapshot(db, &after.id)?
+            .ok_or_else(|| BridgeError::Invalid("A record the dream touched is gone.".into()))?;
+        let Some(before) = before_of(operation, &after.id) else {
+            created.push(after);
+            continue;
+        };
+        let swept = current.status == memory_ledger::STATUS_EXPIRED && after.status == "active";
+        if before.status == after.status && !swept {
+            // Edited in place: an expiry or a conflict group.
+            db.execute(
+                "UPDATE memory_records SET expires_at=?2, conflict_group=?3, updated_at=?4 WHERE id=?1",
+                params![after.id, before.expires_at, before.conflict_group, now],
+            )?;
+            hold(db, &after.id, run_id, now)?;
+        } else if before.status == "proposed" && after.status == memory_ledger::STATUS_REJECTED {
+            db.execute(
+                "UPDATE memory_records SET status='proposed', updated_at=?2 WHERE id=?1",
+                params![after.id, now],
+            )?;
+            hold(db, &after.id, run_id, now)?;
+        } else {
+            if current.status == "active" {
+                // An approval: the approved row stops holding now.
+                db.execute(
+                    "UPDATE memory_records SET status='superseded', valid_to=?2, updated_at=?2 WHERE id=?1",
+                    params![after.id, now],
+                )?;
+            }
+            let copy = insert_copy(db, before, &after.id, now)?;
+            if current.status == memory_ledger::STATUS_EXPIRED {
+                // As a restore from Retired does: the retired row points at
+                // its return and leaves the Retired list.
+                db.execute(
+                    "UPDATE memory_records SET status='superseded', superseded_by=?2 WHERE id=?1",
+                    params![after.id, copy],
+                )?;
+            } else if current.status == "active" {
+                db.execute("UPDATE memory_records SET superseded_by=?2 WHERE id=?1", params![after.id, copy])?;
+            }
+            hold(db, &copy, run_id, now)?;
+            restored.push(copy);
+        }
+    }
+    for row in created {
+        let closes = if row.status == "active" { Some(now) } else { None };
+        db.execute(
+            "UPDATE memory_records
+             SET status='superseded', superseded_by=?2, valid_to=COALESCE(?3, valid_to), updated_at=?4
+             WHERE id=?1",
+            params![row.id, restored.first(), closes, now],
+        )?;
+    }
+    Ok(())
+}
+
+fn require_settled(stored: &StoredDream) -> Result<(), BridgeError> {
+    if matches!(stored.status.as_str(), "queued" | "running") {
+        return Err(BridgeError::Invalid("This dream is still running. Undo its changes once it has finished.".into()));
+    }
+    Ok(())
+}
+
+/// Undo one change of one dream, or refuse and change nothing.
+pub fn undo_operation(
+    db: &Connection,
+    run_id: &str,
+    index: usize,
+    now: DateTime<Utc>,
+) -> Result<StoredDream, BridgeError> {
+    let mut stored = read_dream(db, run_id)?;
+    require_settled(&stored)?;
+    let operation = stored
+        .report
+        .operations
+        .get(index)
+        .cloned()
+        .ok_or_else(|| BridgeError::Invalid(format!("This dream has no change {index}.")))?;
+    if let Some(reason) = undo_blocker(db, &operation)? {
+        return Err(BridgeError::Invalid(reason));
+    }
+    enforce_undo_budget(db, undo_growth(db, &operation)?)?;
+    let at = now.to_rfc3339();
+    stored.report.operations[index].undone_at = Some(at.clone());
+    memory_ledger::with_savepoint(db, || {
+        undo_one(db, &operation, &stored.run_id, &at)?;
+        store_report(db, &stored.run_id, &stored.report)
+    })?;
+    Ok(stored)
+}
+
+/// Undo every change of one dream that can still be undone, newest first, in
+/// one transaction. Changes edited since are skipped and returned with why.
+pub fn undo_dream(
+    db: &Connection,
+    run_id: &str,
+    now: DateTime<Utc>,
+) -> Result<(StoredDream, Vec<(usize, String)>), BridgeError> {
+    let mut stored = read_dream(db, run_id)?;
+    require_settled(&stored)?;
+    let mut chosen = Vec::new();
+    let mut skipped = Vec::new();
+    let mut growth = 0i64;
+    for operation in stored.report.operations.iter().rev() {
+        if operation.undone_at.is_some() {
+            continue;
+        }
+        match undo_blocker(db, operation)? {
+            Some(reason) => skipped.push((operation.index, reason)),
+            None => {
+                growth += undo_growth(db, operation)?;
+                chosen.push(operation.clone());
+            }
+        }
+    }
+    enforce_undo_budget(db, growth)?;
+    let at = now.to_rfc3339();
+    for operation in &chosen {
+        stored.report.operations[operation.index].undone_at = Some(at.clone());
+    }
+    memory_ledger::with_savepoint(db, || {
+        for operation in &chosen {
+            undo_one(db, operation, &stored.run_id, &at)?;
+        }
+        store_report(db, &stored.run_id, &stored.report)
+    })?;
+    Ok((stored, skipped))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1641,5 +1918,271 @@ mod tests {
         let dated = memory_ledger::load_record(&db, &seasonal.id).unwrap().unwrap();
         assert_eq!(dated.expires_at.as_deref(), Some((now + Duration::days(30)).to_rfc3339().as_str()));
         assert_eq!(dated.status, "active");
+    }
+
+    /// One settled manual dream whose report is stored, as the live loop
+    /// leaves it.
+    fn dreamed(db: &Connection, answer: impl FnMut(&str) -> String, now: DateTime<Utc>) -> String {
+        crate::memory_model::set(db, Some("claude"), Some("haiku")).unwrap();
+        let memory = crate::memory_model::resolve_with(db, |_| None, || Err("no standard choice".into())).unwrap();
+        let (run_id, _) = crate::memory_consolidation::start_dream(db, now, &memory).unwrap();
+        let claimed = crate::memory_consolidation::claim_due(db, now, &memory).unwrap().unwrap();
+        let mut model = Scripted { answer, spend: 1_000, calls: 0 };
+        let lease = claimed.lease_owner.clone();
+        let outcome = drive(db, &mut model, ACCOUNT_MEMORY_SCOPE, now, |db, report| {
+            crate::memory_consolidation::record_report(db, &run_id, &lease, &serde_json::to_string(report).unwrap(), now).unwrap()
+        }, || {})
+        .unwrap();
+        assert!(crate::memory_consolidation::settle(
+            db, &run_id, &lease, crate::memory_consolidation::STATUS_COMPLETED, Some(&outcome.report.detail()),
+            Some("claude"), Some("haiku"), outcome.sha256.as_deref(), 100, outcome.output.spend_microusd,
+            outcome.report.applied() as i64, outcome.report.refused_total() as i64, now,
+        )
+        .unwrap());
+        run_id
+    }
+
+    fn content(db: &Connection, status: &str) -> Vec<(String, String, String)> {
+        let mut rows: Vec<(String, String, String)> = db
+            .prepare("SELECT body, kind, provenance FROM memory_records WHERE scope_key=?1 AND status=?2")
+            .unwrap()
+            .query_map(params![ACCOUNT_MEMORY_SCOPE, status], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    fn as_of(db: &Connection, at: DateTime<Utc>) -> Vec<String> {
+        let mut bodies: Vec<String> = memory_ledger::list_as_of(db, ACCOUNT_MEMORY_SCOPE, at)
+            .unwrap()
+            .records
+            .into_iter()
+            .map(|record| record.body)
+            .collect();
+        bodies.sort();
+        bodies
+    }
+
+    #[test]
+    fn a_dream_writes_one_run_with_a_report_of_every_change() {
+        let (_dir, db) = open();
+        let one = active(&db, "Deploys with bun run build");
+        let two = active(&db, "Uses bun run build to deploy");
+        let junk = waiting(&db, "Ships on Fridays");
+        let (a, b, j) = (alias(&db, &one.id), alias(&db, &two.id), alias(&db, &junk.id));
+        let run_id = dreamed(&db, answer(fenced(&format!(
+            r#"[{{"operation":"merge","targets":["{a}","{b}"],"body":"Deploys with bun run build"}},{{"operation":"keep","targets":["{j}"]}}]"#
+        ))), Utc::now());
+        let runs: i64 = db.query_row("SELECT COUNT(*) FROM memory_consolidation_runs", [], |row| row.get(0)).unwrap();
+        assert_eq!(runs, 1);
+        let stored = read_dream(&db, &run_id).unwrap();
+        assert_eq!(stored.trigger.as_deref(), Some("manual"));
+        assert_eq!(stored.status, "completed");
+        assert_eq!(stored.spend_microusd, 1_000);
+        assert_eq!(stored.report.applied(), 1);
+        assert_eq!(stored.report.kept, 1);
+        assert_eq!(stored.report.tally().merged, 1);
+        assert_eq!(stored.report.operations[0].before.iter().map(|row| row.body.clone()).collect::<Vec<_>>(), vec![one.body, two.body]);
+    }
+
+    #[test]
+    fn undo_of_a_merge_restores_the_originals_exactly() {
+        let (_dir, db) = open();
+        let one = active(&db, "Deploys with bun run build");
+        let two = active(&db, "Uses bun run build to deploy");
+        db.execute("UPDATE memory_records SET last_used_at='2026-11-20T00:00:00+00:00' WHERE id=?1", params![one.id]).unwrap();
+        let (a, b) = (alias(&db, &one.id), alias(&db, &two.id));
+        let before: Vec<Snapshot> = [&one.id, &two.id].iter().map(|id| snapshot(&db, id).unwrap().unwrap()).collect();
+        let run_id = dreamed(&db, answer(fenced(&format!(
+            r#"[{{"operation":"merge","targets":["{a}","{b}"],"body":"Deploys with bun run build"}}]"#
+        ))), Utc::now());
+        let merged = read_dream(&db, &run_id).unwrap().report.operations[0].after.iter().find(|row| row.status == "active").unwrap().id.clone();
+
+        let stored = undo_operation(&db, &run_id, 0, Utc::now()).unwrap();
+        assert!(stored.report.operations[0].undone_at.is_some());
+        assert_eq!(read_dream(&db, &run_id).unwrap().report.tally().undone, 1, "the undo is stored");
+        assert_eq!(status(&db, &merged), "superseded");
+        let restored: Vec<Snapshot> = db
+            .prepare("SELECT id FROM memory_records WHERE status='active' ORDER BY created_at, body")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|id| snapshot(&db, &id.unwrap()).unwrap().unwrap())
+            .collect();
+        assert_eq!(restored.len(), 2);
+        for original in &before {
+            let copy = restored.iter().find(|row| row.body == original.body).expect("each source is back");
+            assert_ne!(copy.id, original.id, "a new row, so history still shows the merge");
+            assert_eq!(
+                (&copy.kind, &copy.provenance, copy.confidence_bps, &copy.rationale, &copy.source_session_id, &copy.created_at, &copy.last_used_at, &copy.expires_at, &copy.conflict_group),
+                (&original.kind, &original.provenance, original.confidence_bps, &original.rationale, &original.source_session_id, &original.created_at, &original.last_used_at, &original.expires_at, &original.conflict_group),
+            );
+        }
+        let again = undo_operation(&db, &run_id, 0, Utc::now()).unwrap_err().to_string();
+        assert!(again.contains("already undone"), "{again}");
+    }
+
+    #[test]
+    fn undo_of_each_operation_kind_restores_its_before_state() {
+        let (_dir, db) = open();
+        automatic(&db);
+        let wrong = active(&db, "Prefers tabs over spaces in Go code");
+        let newer = waiting(&db, "Now prefers spaces over tabs in Go code");
+        let dated = active(&db, "Demo for the Acme team on the 20th");
+        let swept = active(&db, "Sprint freeze holds this month");
+        let main = active(&db, "Ships from the main branch");
+        let release = active(&db, "Ships from a release branch");
+        let stale = active(&db, "Uses the old staging cluster");
+        let good = waiting(&db, "Writes commit messages in English");
+        let target = active(&db, "Lives in Pune");
+        let update = memory_ledger::insert_update_proposal(&db, ACCOUNT_MEMORY_SCOPE, &target, "Lives in Berlin", "fact", Some(9_000), Some("said so"), "s1").unwrap();
+        let junk = waiting(&db, "Is rebasing branches all afternoon");
+        let r = |record: &MemoryRecord| alias(&db, &record.id);
+        let ops = format!(
+            r#"[{{"operation":"correct","targets":["{}"],"basis":"{}","body":"Prefers spaces over tabs in Go code"}},
+                {{"operation":"expire","targets":["{}"],"afterDays":30}},
+                {{"operation":"expire","targets":["{}"],"afterDays":1}},
+                {{"operation":"group","targets":["{}","{}"],"subject":"release branch"}},
+                {{"operation":"retire","targets":["{}"]}},
+                {{"operation":"approve","targets":["{}"]}},
+                {{"operation":"approve","targets":["{}"]}},
+                {{"operation":"reject","targets":["{}"],"reason":"a status update"}}]"#,
+            r(&wrong), r(&newer), r(&dated), r(&swept), r(&main), r(&release), r(&stale), r(&good), r(&update), r(&junk)
+        );
+        let now = Utc::now();
+        let run_id = dreamed(&db, answer(fenced(&ops)), now);
+        assert_eq!(read_dream(&db, &run_id).unwrap().report.applied(), 8, "{:?}", read_dream(&db, &run_id).unwrap().report);
+        // The one-day expiry has run out by the time of the undo.
+        memory_ledger::sweep_expired(&db, now + Duration::days(2)).unwrap();
+        assert_eq!(status(&db, &swept.id), "expired");
+
+        let (stored, skipped) = undo_dream(&db, &run_id, now + Duration::days(2)).unwrap();
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert!(stored.report.operations.iter().all(|operation| operation.undone_at.is_some()));
+        assert_eq!(memory_ledger::load_record(&db, &dated.id).unwrap().unwrap().expires_at, None, "the expiry is put back in place");
+        assert_eq!(status(&db, &junk.id), "proposed", "a rejection is put back in place");
+        assert_eq!(status(&db, &good.id), "superseded", "the approved row stops holding");
+        assert_eq!(status(&db, &update.id), "superseded");
+        let mut actives = content(&db, "active").into_iter().map(|row| row.0).collect::<Vec<_>>();
+        actives.sort();
+        let mut expected: Vec<String> = [&wrong, &dated, &swept, &main, &release, &stale, &target].iter().map(|record| record.body.clone()).collect();
+        expected.sort();
+        assert_eq!(actives, expected);
+        let mut waiting_now = content(&db, "proposed").into_iter().map(|row| row.0).collect::<Vec<_>>();
+        waiting_now.sort();
+        let mut waiting_before: Vec<String> = [&newer, &good, &update, &junk].iter().map(|record| record.body.clone()).collect();
+        waiting_before.sort();
+        assert_eq!(waiting_now, waiting_before);
+        let restored_update: String = db
+            .query_row("SELECT supersedes FROM memory_records WHERE body='Lives in Berlin' AND status='proposed'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(restored_update, target.id, "a restored update still replaces its target");
+        let grouped: i64 = db
+            .query_row("SELECT COUNT(*) FROM memory_records WHERE status='active' AND conflict_group IS NOT NULL", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(grouped, 0, "the survivor's old group is put back and the closed member returns without it");
+    }
+
+    #[test]
+    fn undo_all_restores_the_pre_dream_state_and_as_of_reads_hold() {
+        let (_dir, db) = open();
+        automatic(&db);
+        let one = active(&db, "Works as an independent researcher");
+        let two = active(&db, "Is an independent researcher");
+        let stale = active(&db, "Uses the old staging cluster");
+        let good = waiting(&db, "Writes commit messages in English");
+        let pinned = pin(&db, "Never push directly to main");
+        let ops = format!(
+            r#"[{{"operation":"merge","targets":["{}","{}"],"body":"Works as an independent researcher"}},
+                {{"operation":"retire","targets":["{}"]}},{{"operation":"approve","targets":["{}"]}},{{"operation":"keep","targets":["{}"]}}]"#,
+            alias(&db, &one.id), alias(&db, &two.id), alias(&db, &stale.id), alias(&db, &good.id), alias(&db, &pinned.id)
+        );
+        let (active_before, waiting_before) = (content(&db, "active"), content(&db, "proposed"));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let before_dream = Utc::now();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let dream_at = Utc::now();
+        let run_id = dreamed(&db, answer(fenced(&ops)), dream_at);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let during = Utc::now();
+        let dreamed_active = as_of(&db, during);
+        assert_ne!(dreamed_active, as_of(&db, before_dream));
+
+        undo_dream(&db, &run_id, during + Duration::seconds(1)).unwrap();
+        assert_eq!(content(&db, "active"), active_before, "the same memories, word for word");
+        assert_eq!(content(&db, "proposed"), waiting_before);
+        let mut pre: Vec<String> = active_before.into_iter().map(|row| row.0).collect();
+        pre.sort();
+        assert_eq!(as_of(&db, before_dream), pre, "history before the dream is untouched");
+        assert_eq!(as_of(&db, during), dreamed_active, "history during the dream still says what it held");
+        assert_eq!(status(&db, &pinned.id), "active");
+    }
+
+    #[test]
+    fn undo_refuses_a_changed_record_and_changes_nothing() {
+        let (_dir, db) = open();
+        let one = active(&db, "Deploys with bun run build");
+        let two = active(&db, "Uses bun run build to deploy");
+        let stale = active(&db, "Uses the old staging cluster");
+        let ops = format!(
+            r#"[{{"operation":"merge","targets":["{}","{}"],"body":"Deploys with bun run build"}},{{"operation":"retire","targets":["{}"]}}]"#,
+            alias(&db, &one.id), alias(&db, &two.id), alias(&db, &stale.id)
+        );
+        let run_id = dreamed(&db, answer(fenced(&ops)), Utc::now());
+        let merged = read_dream(&db, &run_id).unwrap().report.operations[0].after.iter().find(|row| row.status == "active").unwrap().id.clone();
+        memory_ledger::supersede(&db, &merged, "Deploys with bun run build --prod", None).unwrap();
+        let held = content(&db, "active");
+        let refusal = undo_operation(&db, &run_id, 0, Utc::now()).unwrap_err().to_string();
+        assert!(refusal.contains("changed after the dream"), "{refusal}");
+        assert_eq!(content(&db, "active"), held, "nothing changed");
+        let (stored, skipped) = undo_dream(&db, &run_id, Utc::now()).unwrap();
+        assert_eq!(skipped.iter().map(|(index, _)| *index).collect::<Vec<_>>(), vec![0]);
+        assert!(stored.report.operations[1].undone_at.is_some(), "the rest still undoes");
+        assert_eq!(status(&db, &stale.id), "superseded", "the retired row points at its return");
+    }
+
+    #[test]
+    fn undo_respects_the_budget() {
+        let (_dir, db) = open();
+        let one = active(&db, "Deploys with bun run build");
+        let two = active(&db, "Uses bun run build to deploy");
+        active(&db, "Reviews diffs before merging");
+        crate::memory_consolidation::update_settings(&db, ACCOUNT_MEMORY_SCOPE, "propose", Some(3), None, None).unwrap();
+        let ops = format!(
+            r#"[{{"operation":"merge","targets":["{}","{}"],"body":"Deploys with bun run build"}}]"#,
+            alias(&db, &one.id), alias(&db, &two.id)
+        );
+        let run_id = dreamed(&db, answer(fenced(&ops)), Utc::now());
+        memory_ledger::save(&db, "A new pin fills the room", None, None).unwrap();
+        let held = content(&db, "active");
+        let refusal = undo_dream(&db, &run_id, Utc::now()).unwrap_err().to_string();
+        assert!(refusal.contains("holds 3 of 3"), "{refusal}");
+        assert_eq!(content(&db, "active"), held);
+        assert!(read_dream(&db, &run_id).unwrap().report.operations[0].undone_at.is_none());
+    }
+
+    #[test]
+    fn a_restored_record_is_kept_by_the_next_dream() {
+        let (_dir, db) = open();
+        let stale = active(&db, "Uses the old staging cluster");
+        let run_id = dreamed(&db, answer(fenced(&format!(r#"[{{"operation":"retire","targets":["{}"]}}]"#, alias(&db, &stale.id)))), Utc::now());
+        undo_operation(&db, &run_id, 0, Utc::now()).unwrap();
+        let back: String = db.query_row("SELECT id FROM memory_records WHERE status='active'", [], |row| row.get(0)).unwrap();
+        let report = dream(&db, answer(fenced(&format!(r#"[{{"operation":"retire","targets":["{}"]}}]"#, alias(&db, &back)))));
+        assert_eq!(report.refused.get("locked"), Some(&1), "a change the person took back is not made again");
+        assert_eq!(status(&db, &back), "active");
+        assert!(plan(&db, ACCOUNT_MEMORY_SCOPE).unwrap().batches[0].payload.contains("\"locked\":true"));
+    }
+
+    #[test]
+    fn a_running_dream_cannot_be_undone() {
+        let (_dir, db) = open();
+        crate::memory_model::set(&db, Some("claude"), Some("haiku")).unwrap();
+        let memory = crate::memory_model::resolve_with(&db, |_| None, || Err("none".into())).unwrap();
+        let (run_id, _) = crate::memory_consolidation::start_dream(&db, Utc::now(), &memory).unwrap();
+        assert!(undo_dream(&db, &run_id, Utc::now()).unwrap_err().to_string().contains("still running"));
+        assert!(read_dream(&db, "missing").is_err());
     }
 }
