@@ -258,8 +258,10 @@ export function t3Migrations(listing) {
   for (const entry of listing) {
     const name = String(entry?.name ?? '');
     if (entry?.type !== 'file' || /\.(?:test|spec|d)\.ts$/.test(name)) continue;
-    const match = /^(\d+)_[^/]+\.ts$/.exec(name);
-    if (!match) continue;
+    if (!/^\d+_/.test(name)) continue;
+    // The name goes into an issue agents act on: only the shape T3 Code uses.
+    const match = /^(\d+)_[A-Za-z0-9_]+\.ts$/.exec(name);
+    if (!match) throw new Error(`T3 Code: migration file ${JSON.stringify(name)} is not named NNN_Name.ts`);
     migrations.push({ version: Number(match[1]), label: name.slice(0, -'.ts'.length), path: entry.path });
   }
   if (!migrations.length) throw new Error('T3 Code: no NNN_Name.ts migrations in the directory listing');
@@ -277,6 +279,10 @@ export function drizzleMigrations(journal, where = '_journal.json') {
     .map((entry) => {
       if (!Number.isSafeInteger(entry?.when) || typeof entry?.tag !== 'string') {
         throw new Error(`${where}: an entry has no numeric \`when\` or string \`tag\``);
+      }
+      // The tag goes into a fetch path and an issue agents act on: only the shape drizzle writes.
+      if (!/^\d{4}_[a-z0-9_]+$/.test(entry.tag)) {
+        throw new Error(`${where}: migration tag ${JSON.stringify(entry.tag)} is not NNNN_name`);
       }
       return { version: entry.when, label: entry.tag, idx: entry.idx };
     })

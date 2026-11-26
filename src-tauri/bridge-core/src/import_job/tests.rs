@@ -1331,7 +1331,7 @@ mod t3code {
 
     #[test]
     fn every_t3_version_bridge_reads_imports_the_same_threads_and_a_newer_one_too() {
-        // #1175: T3 Code 119 stopped every import while Bridge knew 102.
+        // T3 Code 119 stopped every import while Bridge knew 102.
         // The versions people run: an old v1 file (43), the last v1 head
         // (54), the v2 cutover (55), the old head (102), the newest checked,
         // and releases Bridge has not seen.

@@ -330,12 +330,27 @@ pub fn int(row: &Row, column: &str) -> Option<i64> {
     row.get(column).and_then(Cell::int)
 }
 
-/// The columns each statement in `statements` selected, by table: what a
-/// reader really read, for checking a `NEWEST_READS` list against it.
+/// The words of a statement: runs of letters, digits and `_`.
 #[cfg(test)]
-pub(crate) fn columns_read(statements: &[String]) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+fn words(statement: &str) -> HashSet<&str> {
+    statement.split(|c: char| !(c.is_alphanumeric() || c == '_')).collect()
+}
+
+/// A statement that reads rows, not one that asks for a table's columns or
+/// the database's version.
+#[cfg(test)]
+fn reads_rows(statement: &str) -> bool {
+    !statement.contains("pragma_table_info") && !statement.starts_with("PRAGMA")
+}
+
+/// The columns each statement in `statements` used, by table: what a reader
+/// really read, for checking a `NEWEST_READS` list against it. A selected
+/// column is quoted. A filter (`WHERE`, `ORDER BY`) is not, so every word of
+/// the statement that is a column of its table in `conn` counts too.
+#[cfg(test)]
+pub(crate) fn columns_read(conn: &Connection, statements: &[String]) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
     let mut out: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> = std::collections::BTreeMap::new();
-    for statement in statements.iter().filter(|statement| !statement.contains("pragma_table_info") && !statement.starts_with("PRAGMA")) {
+    for statement in statements.iter().filter(|statement| reads_rows(statement)) {
         let table = statement
             .split(" FROM ")
             .skip(1)
@@ -349,18 +364,23 @@ pub(crate) fn columns_read(statements: &[String]) -> std::collections::BTreeMap<
                 columns.insert(part.to_owned());
             }
         }
+        let mut real = conn.prepare("SELECT name FROM pragma_table_info(?1)").unwrap();
+        let real: Vec<String> = real.query_map([table], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
+        let used = words(statement);
+        columns.extend(real.into_iter().filter(|column| used.contains(column.as_str())));
     }
     out
 }
 
 /// `reads` is exactly what a reader reads at the newest checked version:
-/// every column it selected (`statements`) is listed, every listed column is
-/// in the database, and every listed one was used by some statement.
+/// every column it selected or filtered by (`statements`) is listed, every
+/// listed column is in the database, and every listed one was used by some
+/// statement that reads rows.
 #[cfg(test)]
 pub(crate) fn assert_reads_match(allowed: &Allowed, conn: &Connection, reads: Reads, statements: &[String]) {
     let listed: HashMap<&str, &[&str]> = reads.iter().copied().collect();
     assert_eq!(listed.len(), reads.len(), "a table is listed twice");
-    for (table, columns) in columns_read(statements) {
+    for (table, columns) in columns_read(conn, statements) {
         let listed = listed.get(table.as_str()).unwrap_or_else(|| panic!("{table} is read but not listed"));
         for column in columns {
             assert!(listed.contains(&column.as_str()), "{table}.{column} is read but not listed");
@@ -369,8 +389,8 @@ pub(crate) fn assert_reads_match(allowed: &Allowed, conn: &Connection, reads: Re
     assert_eq!(allowed.missing(conn, reads).unwrap(), Vec::<String>::new(), "the newest checked schema has every listed column");
     for (table, columns) in reads {
         for column in *columns {
-            let used = statements.iter().any(|statement| {
-                let words: HashSet<&str> = statement.split(|c: char| !(c.is_alphanumeric() || c == '_')).collect();
+            let used = statements.iter().filter(|statement| reads_rows(statement)).any(|statement| {
+                let words = words(statement);
                 words.contains(table) && words.contains(column)
             });
             assert!(used, "{table}.{column} is listed but no statement uses it");
@@ -417,10 +437,32 @@ mod tests {
             r#"SELECT "id", CASE WHEN json_valid("doc") THEN json_extract("doc", '$.a') END FROM gone"#.to_owned(),
             r#"SELECT "id", (SELECT json_group_array(key) FROM json_each(CASE WHEN json_valid("env") THEN "env" ELSE '{}' END)) FROM gone"#.to_owned(),
         ];
-        let read = columns_read(&statements);
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE things(id TEXT, name TEXT, kind TEXT, rank INT, unused TEXT); CREATE TABLE gone(id TEXT, doc TEXT, env TEXT);").unwrap();
+        let read = columns_read(&conn, &statements);
         assert_eq!(read.keys().collect::<Vec<_>>(), ["gone", "things"]);
         assert_eq!(read["things"].iter().collect::<Vec<_>>(), ["id", "name"]);
         assert_eq!(read["gone"].iter().collect::<Vec<_>>(), ["doc", "env", "id"]);
+        // A column only a filter names is read too.
+        let filtered = [r#"SELECT "id" FROM things WHERE kind = ?1 AND hidden = 0 ORDER BY rank"#.to_owned()];
+        assert_eq!(columns_read(&conn, &filtered)["things"].iter().collect::<Vec<_>>(), ["id", "kind", "rank"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "things.kind is read but not listed")]
+    fn a_column_only_a_filter_names_must_be_listed() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE things(id TEXT, kind TEXT);").unwrap();
+        assert_reads_match(&ALLOWED, &conn, &[("things", &["id"])], &[r#"SELECT "id" FROM things WHERE kind = ?1"#.to_owned()]);
+    }
+
+    #[test]
+    #[should_panic(expected = "things.name is listed but no statement uses it")]
+    fn asking_for_a_tables_columns_does_not_count_as_using_one_called_name() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE things(id TEXT, name TEXT);").unwrap();
+        let statements = ["SELECT name FROM pragma_table_info('things')".to_owned(), r#"SELECT "id" FROM things"#.to_owned()];
+        assert_reads_match(&ALLOWED, &conn, &[("things", &["id", "name"])], &statements);
     }
 
     #[test]
