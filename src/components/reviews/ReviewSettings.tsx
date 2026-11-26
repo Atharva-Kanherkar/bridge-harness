@@ -101,7 +101,7 @@ function ReviewJobSettingsGroup() {
       description={`${HANDOFF_TEXT[stored.handoff]}${stored.handoff === "off" ? "" : " At most three reviews of a pull request go to its chat in a day."}`}
       control={<Segmented label="Send reviews to the chat that wrote the pull request" disabled={busy} value={stored.handoff} onChange={handoff => void save({ handoff }, "handoff")} options={[{ value: "off", label: "Off" }, { value: "drafted", label: "When drafted" }, { value: "posted", label: "When posted" }]} />} />
     <SettingsRow label="Second opinion" saved={isFlashed("secondOpinion")}
-      description="Lets one review run on two harnesses at once. Findings both of them report are marked Both reviewers."
+      description="Default and automatic reviews run on two harnesses. Findings both of them report are marked Both reviewers. Any single review can still ask for a second opinion from the Review menu."
       control={<Switch label="Second opinion" disabled={busy} checked={stored.secondOpinion} onChange={secondOpinion => void save(secondOpinion ? { secondOpinion } : { secondOpinion, defaultHarnesses: defaults([first]) }, "secondOpinion")} />} />
     <SettingsRow label="Default reviewer" saved={isFlashed("default")}
       description="Used when a review is started without picking a harness. Automatic takes the first available of Claude, Codex and OpenCode."

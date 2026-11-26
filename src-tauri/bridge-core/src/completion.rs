@@ -8,7 +8,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
+use std::sync::{Mutex, PoisonError};
 use uuid::Uuid;
+
+mod repository_stamp;
+pub(crate) use repository_stamp::{measure_repository, repository_stamp};
 
 pub const COMPLETION_SCHEMA_VERSION: u32 = 1;
 
@@ -21,6 +25,7 @@ pub const WORKER_EXECUTOR: &str = "bridge.worker";
 pub const WORKER_RESULT_EXECUTOR: &str = "bridge.worker_result";
 /// Verdicts Bridge records about its own machinery (gate errors, deadlines).
 pub const SYSTEM_EXECUTOR: &str = "bridge.system";
+const UNAVAILABLE_REPOSITORY: &str = "unavailable";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1058,6 +1063,7 @@ pub fn reconcile_parent_readiness(db: &Connection, session_id: &str) -> Result<b
     Ok(ready)
 }
 
+#[derive(PartialEq, Eq)]
 struct WorkerCompletionContext {
     parent_session_id: String,
     workspace_id: String,
@@ -1066,6 +1072,7 @@ struct WorkerCompletionContext {
     serialized_request: Option<String>,
     worktree_path: Option<String>,
     parent_path: Option<String>,
+    verification_attempt_id: Option<String>,
 }
 
 fn worker_completion_context(
@@ -1073,7 +1080,7 @@ fn worker_completion_context(
     child_session_id: &str,
 ) -> Result<Option<WorkerCompletionContext>, BridgeError> {
     db.query_row(
-        "SELECT r.parent_session_id,l.workspace_id,l.role,s.harness,i.request,r.worktree_path,COALESCE(parent.cwd,w.path)
+        "SELECT r.parent_session_id,l.workspace_id,l.role,s.harness,i.request,r.worktree_path,COALESCE(parent.cwd,w.path),i.verification_attempt_id
          FROM worker_runtime r
          JOIN worker_leases l ON l.session_id=r.session_id
          JOIN sessions s ON s.id=r.session_id
@@ -1085,30 +1092,9 @@ fn worker_completion_context(
         |row| Ok(WorkerCompletionContext {
             parent_session_id: row.get(0)?, workspace_id: row.get(1)?, role: row.get(2)?,
             harness: row.get(3)?, serialized_request: row.get(4)?, worktree_path: row.get(5)?, parent_path: row.get(6)?,
+            verification_attempt_id: row.get(7)?,
         }),
     ).optional().map_err(BridgeError::from)
-}
-
-fn repository_stamp(path: &str) -> Result<RepositoryStamp, BridgeError> {
-    let state = store::repository_state_for_path(Path::new(path));
-    let head = state
-        .get("head")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| {
-            BridgeError::Invalid("completion requires a Git HEAD before verification".into())
-        })?;
-    let dirty_digest = state
-        .get("dirtyHash")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| {
-            BridgeError::Invalid(
-                "completion requires a dirty-tree digest before verification".into(),
-            )
-        })?;
-    Ok(RepositoryStamp {
-        head: head.into(),
-        dirty_digest: dirty_digest.into(),
-    })
 }
 
 pub fn labels_for_paths(paths: &[String]) -> Vec<String> {
@@ -1189,23 +1175,78 @@ pub const VERIFICATION_TARGET_UNAVAILABLE: &str = "implementation_revision_unava
 /// `Ok(None)` is the routing fact "this task has no live gate to verify" —
 /// unroutable, but not a database failure, and the two must not reach the
 /// orchestrator as the same sentence.
-pub fn verification_target_path(
+#[derive(PartialEq, Eq)]
+pub(crate) struct VerificationTarget {
+    pub attempt_id: String,
+    pub path: String,
+}
+
+pub(crate) fn verification_target(
     db: &Connection,
     parent_session_id: &str,
-) -> Result<Option<String>, BridgeError> {
-    let newest: Option<(String, String)> = db
+) -> Result<Option<VerificationTarget>, BridgeError> {
+    let newest: Option<(String, VerificationTarget)> = db
         .query_row(
-            "SELECT status,repository_path FROM eval_attempts WHERE session_id=?1 ORDER BY started_at DESC,rowid DESC LIMIT 1",
+            "SELECT status,id,repository_path FROM eval_attempts WHERE session_id=?1 ORDER BY started_at DESC,rowid DESC LIMIT 1",
             params![parent_session_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, VerificationTarget { attempt_id: row.get(1)?, path: row.get(2)? })),
         )
         .optional()?;
     // Matched on the stored status rather than through `parse_verdict`, whose
     // catch-all reads anything unrecognized as `verifying`. A status Bridge does
     // not know is not a gate it should send a verifier into.
-    Ok(newest.and_then(|(status, path)| {
-        matches!(status.as_str(), "verifying" | "changes_requested").then_some(path)
+    Ok(newest.and_then(|(status, target)| {
+        matches!(status.as_str(), "verifying" | "changes_requested").then_some(target)
     }))
+}
+
+pub fn verification_target_path(
+    db: &Connection,
+    parent_session_id: &str,
+) -> Result<Option<String>, BridgeError> {
+    Ok(verification_target(db, parent_session_id)?.map(|target| target.path))
+}
+
+pub(crate) fn bind_verification_worker(
+    db: &Mutex<Connection>,
+    parent_session_id: &str,
+    worker_session_id: &str,
+) -> Result<Option<String>, BridgeError> {
+    let target = verification_target(&db.lock().unwrap_or_else(PoisonError::into_inner), parent_session_id)?;
+    let Some(target) = target else {
+        return Ok(None);
+    };
+    let stamp = repository_stamp(Path::new(&target.path))?;
+    let db = db.lock().unwrap_or_else(PoisonError::into_inner);
+    if verification_target(&db, parent_session_id)?.as_ref() != Some(&target) {
+        return Ok(None);
+    }
+    if !confirm_attempt_stamp(&db, &target.attempt_id, &target.path, &stamp)? {
+        return Err(stale_repository());
+    }
+    bind_verifier_reservation(&db, worker_session_id, &target)?;
+    Ok(Some(target.path))
+}
+
+fn bind_verifier_reservation(
+    db: &Connection,
+    worker_session_id: &str,
+    target: &VerificationTarget,
+) -> Result<(), BridgeError> {
+    let transaction = db.unchecked_transaction()?;
+    let updated_input = transaction.execute(
+        "UPDATE worker_completion_inputs SET verification_attempt_id=?2 WHERE child_session_id=?1",
+        params![worker_session_id, target.attempt_id],
+    )?;
+    let updated_runtime = transaction.execute(
+        "UPDATE worker_runtime SET worktree_path=?2,updated_at=?3 WHERE session_id=?1",
+        params![worker_session_id, target.path, Utc::now().to_rfc3339()],
+    )?;
+    if updated_input != 1 || updated_runtime != 1 {
+        return Err(BridgeError::Invalid("the verifier reservation disappeared before it could be bound".into()));
+    }
+    transaction.commit()?;
+    Ok(())
 }
 
 /// What the orchestrator can actually do about a missing implementation
@@ -1229,54 +1270,102 @@ pub fn verification_target_unavailable_reason() -> String {
 }
 
 pub fn create_from_worker_result(
+    db: &Mutex<Connection>,
+    child_session_id: &str,
+    result: &WorkerResult,
+    reported_attempt_id: Option<&str>,
+    available_capabilities: &HashSet<String>,
+) -> Result<Option<CompletionSummary>, BridgeError> {
+    let checkout = worker_result_checkout(
+        &db.lock().unwrap_or_else(PoisonError::into_inner),
+        child_session_id,
+        result,
+        reported_attempt_id,
+    )?;
+    let Some((context, path)) = checkout else {
+        return Ok(None);
+    };
+    let stamp = repository_stamp(Path::new(&path));
+    let db = db.lock().unwrap_or_else(PoisonError::into_inner);
+    let current = worker_result_checkout(&db, child_session_id, result, reported_attempt_id)?;
+    if current.as_ref().is_none_or(|(latest, current_path)| latest != &context || current_path != &path) {
+        return Ok(None);
+    }
+    let repository = match stamp {
+        Err(error) if context.role == "verification" => {
+            store::event(&db, "completion", "completion.verifier_stamp_unavailable",
+                child_session_id, &error.to_string())?;
+            return latest_summary(&db, &context.parent_session_id);
+        }
+        result => result?,
+    };
+    apply_worker_result(
+        &db, child_session_id, context, &path, &repository, result, available_capabilities,
+    )
+}
+
+fn worker_result_checkout(
     db: &Connection,
     child_session_id: &str,
     result: &WorkerResult,
-    available_capabilities: &HashSet<String>,
-) -> Result<Option<CompletionSummary>, BridgeError> {
+    reported_attempt_id: Option<&str>,
+) -> Result<Option<(WorkerCompletionContext, String)>, BridgeError> {
     let Some(context) = worker_completion_context(db, child_session_id)? else {
         return Ok(None);
     };
-    if context.role == "verification" {
-        let request = context.serialized_request.as_deref().ok_or_else(|| {
-            BridgeError::Invalid(
-                "verification worker is missing its durable completion input".into(),
-            )
-        })?;
-        let request: DelegationRequest = serde_json::from_str(request).map_err(|error| {
-            BridgeError::Invalid(format!("stored verification request is malformed: {error}"))
-        })?;
-        return settle_verification_result(db, &context, &request, result);
-    }
-    if context.role != "implementation" || !opens_completion_gate(result) {
-        return Ok(None);
-    }
-    let serialized_request = context.serialized_request.as_deref().ok_or_else(|| {
-        BridgeError::Invalid(
-            "completed implementation is missing its durable completion input".into(),
-        )
+    let path = match context.role.as_str() {
+        "verification" => {
+            let target = verification_target(db, &context.parent_session_id)?;
+            let Some(target) = target.filter(|target| {
+                reported_attempt_id == Some(target.attempt_id.as_str())
+                    && context.verification_attempt_id.as_deref() == reported_attempt_id
+                    && context.worktree_path.as_deref() == Some(target.path.as_str())
+            }) else {
+                return Ok(None);
+            };
+            target.path
+        }
+        "implementation" if opens_completion_gate(result) => {
+            if context.serialized_request.is_none() {
+                return Err(BridgeError::Invalid(
+                    "completed implementation is missing its durable completion input".into(),
+                ));
+            }
+            context.worktree_path.clone().or_else(|| context.parent_path.clone())
+                .ok_or_else(|| BridgeError::Invalid(
+                    "implementation completion requires a repository path before verification".into(),
+                ))?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some((context, path)))
+}
+
+fn apply_worker_result(
+    db: &Connection,
+    child_session_id: &str,
+    context: WorkerCompletionContext,
+    repository_path: &str,
+    repository: &RepositoryStamp,
+    result: &WorkerResult,
+    available_capabilities: &HashSet<String>,
+) -> Result<Option<CompletionSummary>, BridgeError> {
+    let request = context.serialized_request.as_deref().ok_or_else(|| {
+        BridgeError::Invalid("worker is missing its durable completion input".into())
     })?;
-    let request: DelegationRequest = serde_json::from_str(serialized_request).map_err(|error| {
+    let request: DelegationRequest = serde_json::from_str(request).map_err(|error| {
         BridgeError::Invalid(format!("stored delegation request is malformed: {error}"))
     })?;
+    if context.role == "verification" {
+        return settle_verification_result(db, &context, &request, result, repository_path, repository);
+    }
     request.validate().map_err(BridgeError::Invalid)?;
-    let repository_path = context
-        .worktree_path
-        .clone()
-        .or(context.parent_path.clone())
-        .ok_or_else(|| {
-            BridgeError::Invalid(
-                "implementation completion requires a repository path before verification".into(),
-            )
-        })?;
-    let repository = repository_stamp(&repository_path)?;
-    if let Some(existing) = latest_summary(db, &context.parent_session_id)? {
-        if matches!(
-            existing.verdict,
-            CompletionVerdict::Verifying | CompletionVerdict::ChangesRequested
-        ) && existing.repository == repository
-        {
-            return Ok(Some(existing));
+    if let Some(target) = verification_target(db, &context.parent_session_id)? {
+        if target.path == repository_path {
+            let existing = latest_summary(db, &context.parent_session_id)?;
+            if existing.as_ref().is_some_and(|summary| &summary.repository == repository) {
+                return Ok(existing);
+            }
         }
     }
     let contract = CompletionContract {
@@ -1305,8 +1394,8 @@ pub fn create_from_worker_result(
         &contract,
         &plan,
         &context.parent_session_id,
-        &repository_path,
-        &repository,
+        repository_path,
+        repository,
         Some(&context.harness),
     )?;
     // A bare HEAD cannot say what the change is relative to or who produced it.
@@ -1349,18 +1438,63 @@ pub enum VerificationTargetResolution {
 /// rejected as a delegation, not discovered as a launch failure after a worker
 /// was already created.
 pub fn ensure_verification_target(
-    db: &Connection,
+    db: &Mutex<Connection>,
     parent_session_id: &str,
     directive: &DelegationRequest,
     available_capabilities: &HashSet<String>,
 ) -> Result<VerificationTargetResolution, BridgeError> {
-    if verification_target_path(db, parent_session_id)?.is_some() {
-        return Ok(VerificationTargetResolution::Existing);
-    }
-    let Some(repository_path) = store::repository_path_for_session(db, parent_session_id)? else {
+    let checkout = {
+        let db = db.lock().unwrap_or_else(PoisonError::into_inner);
+        if verification_target(&db, parent_session_id)?.is_some() {
+            return Ok(VerificationTargetResolution::Existing);
+        }
+        orchestrator_checkout(&db, parent_session_id)?
+    };
+    let Some((workspace_id, repository_path)) = checkout else {
         return Ok(VerificationTargetResolution::Missing);
     };
-    let repository_path = repository_path.to_string_lossy().into_owned();
+    if directive.acceptance_criteria.is_empty() {
+        return Err(BridgeError::Invalid(
+            "recording an orchestrator revision requires the verification directive's acceptance criteria".into(),
+        ));
+    }
+    if crate::git::head_commit(&repository_path).is_none() {
+        return Ok(VerificationTargetResolution::Missing);
+    }
+    let evidence = crate::git::derive_repository_evidence(&repository_path, None)?;
+    if evidence.is_empty() {
+        return Ok(VerificationTargetResolution::Missing);
+    }
+    let stamp = repository_stamp(&repository_path)?;
+    if stamp.head != evidence.head {
+        return Err(stale_repository());
+    }
+    let db = db.lock().unwrap_or_else(PoisonError::into_inner);
+    if verification_target(&db, parent_session_id)?.is_some() {
+        return Ok(VerificationTargetResolution::Existing);
+    }
+    if orchestrator_checkout(&db, parent_session_id)?.as_ref()
+        != Some(&(workspace_id.clone(), repository_path.clone()))
+    {
+        return Err(BridgeError::Invalid("the orchestrator checkout changed while measuring it".into()));
+    }
+    create_from_orchestrator_edits(
+        &db,
+        parent_session_id,
+        &workspace_id,
+        &repository_path.to_string_lossy(),
+        directive,
+        available_capabilities,
+        (&stamp, evidence.changed_paths()),
+    )?;
+    Ok(VerificationTargetResolution::SelfRecorded)
+}
+
+fn orchestrator_checkout(
+    db: &Connection,
+    parent_session_id: &str,
+) -> Result<Option<(String, std::path::PathBuf)>, BridgeError> {
+    let path = store::repository_path_for_session(db, parent_session_id)?;
     // The contract pins the workspace the gate belongs to. Without one there is
     // no durable checkout identity to bind verification to — the same reason a
     // worker lease cannot exist without it.
@@ -1372,20 +1506,7 @@ pub fn ensure_verification_target(
         )
         .optional()?
         .flatten();
-    let Some(workspace_id) = workspace_id else {
-        return Ok(VerificationTargetResolution::Missing);
-    };
-    match create_from_orchestrator_edits(
-        db,
-        parent_session_id,
-        &workspace_id,
-        &repository_path,
-        directive,
-        available_capabilities,
-    )? {
-        Some(_) => Ok(VerificationTargetResolution::SelfRecorded),
-        None => Ok(VerificationTargetResolution::Missing),
-    }
+    Ok(workspace_id.zip(path))
 }
 
 /// Open a completion gate over edits the orchestrator made itself — the
@@ -1401,48 +1522,16 @@ pub fn ensure_verification_target(
 /// Committed-only orchestrator work is deliberately out of scope: without a
 /// recorded base commit there is no honest way to say which commits belong to
 /// this task, so detection covers the uncommitted tree state direct edits
-/// actually produce. `Ok(None)` means "no evidence of direct implementation
-/// work" — the caller's signal to reject rather than fabricate a revision over
-/// a pristine tree.
-pub fn create_from_orchestrator_edits(
+/// actually produce.
+fn create_from_orchestrator_edits(
     db: &Connection,
     parent_session_id: &str,
     workspace_id: &str,
     repository_path: &str,
     directive: &DelegationRequest,
     available_capabilities: &HashSet<String>,
-) -> Result<Option<CompletionSummary>, BridgeError> {
-    if directive.acceptance_criteria.is_empty() {
-        return Err(BridgeError::Invalid(
-            "recording an orchestrator revision requires the verification directive's \
-             acceptance criteria"
-                .into(),
-        ));
-    }
-    // A directory that is not a repository has no worktree state to record;
-    // report that as "nothing to verify" instead of failing the delegation
-    // with raw git stderr.
-    if store::repository_state_for_path(Path::new(repository_path))["status"]
-        .as_str()
-        == Some("unavailable")
-    {
-        return Ok(None);
-    }
-    let evidence = crate::git::derive_repository_evidence(Path::new(repository_path), None)?;
-    if evidence.is_empty() {
-        return Ok(None);
-    }
-    let changed_paths = evidence.changed_paths();
-    let repository = repository_stamp(repository_path)?;
-    if let Some(existing) = latest_summary(db, parent_session_id)? {
-        if matches!(
-            existing.verdict,
-            CompletionVerdict::Verifying | CompletionVerdict::ChangesRequested
-        ) && existing.repository == repository
-        {
-            return Ok(Some(existing));
-        }
-    }
+    (repository, changed_paths): (&RepositoryStamp, Vec<String>),
+) -> Result<(), BridgeError> {
     let harness: Option<String> = db
         .query_row(
             "SELECT harness FROM sessions WHERE id=?1",
@@ -1478,10 +1567,10 @@ pub fn create_from_orchestrator_edits(
         &plan,
         parent_session_id,
         repository_path,
-        &repository,
+        repository,
         harness.as_deref(),
     )?;
-    latest_summary(db, parent_session_id)
+    Ok(())
 }
 
 fn settle_verification_result(
@@ -1489,32 +1578,17 @@ fn settle_verification_result(
     context: &WorkerCompletionContext,
     request: &DelegationRequest,
     result: &WorkerResult,
+    repository_path: &str,
+    current_repository: &RepositoryStamp,
 ) -> Result<Option<CompletionSummary>, BridgeError> {
     let Some(summary) = latest_summary(db, &context.parent_session_id)? else {
         return Err(BridgeError::Invalid(
             "verification worker completed without an active completion gate".into(),
         ));
     };
-    // Terminal verdicts are final. A late verification result must not re-open a
-    // gate that already failed, superseded, or passed: `finalize` would recompute
-    // the verdict as `verifying` (its blockers are `blocked`, not `failed`), the
-    // parent would be pinned again, and nothing could re-escalate it because the
-    // deadline pass only looks for `pending`/`running` checks.
-    if matches!(
-        summary.verdict,
-        CompletionVerdict::Verified
-            | CompletionVerdict::Waived
-            | CompletionVerdict::Failed
-            | CompletionVerdict::Superseded
-    ) {
-        return Ok(Some(summary));
+    if !confirm_attempt_stamp(db, &summary.attempt_id, repository_path, current_repository)? {
+        return latest_summary(db, &context.parent_session_id);
     }
-    let repository_path: String = db.query_row(
-        "SELECT repository_path FROM eval_attempts WHERE id=?1",
-        params![summary.attempt_id],
-        |row| row.get(0),
-    )?;
-    let current_repository = repository_stamp(&repository_path)?;
     let digest = format!(
         "{:x}",
         Sha256::digest(
@@ -1690,7 +1764,7 @@ fn settle_verification_result(
             params![Uuid::new_v4().to_string(), summary.attempt_id, if index < result.risks.len() { "warning" } else { "info" }, finding, serde_json::to_string(&result.files_changed).unwrap_or_else(|_| "[]".into()), Utc::now().to_rfc3339()],
         )?;
     }
-    finalize(db, &summary.attempt_id, &current_repository)?;
+    finalize(db, &summary.attempt_id, current_repository)?;
     latest_summary(db, &context.parent_session_id)
 }
 
@@ -1702,14 +1776,17 @@ pub fn record_gate_error(
     let Some(context) = worker_completion_context(db, child_session_id)? else {
         return Ok(None);
     };
+    if context.role != "implementation" {
+        return Ok(None);
+    }
     let repository_path = context
         .worktree_path
         .or(context.parent_path)
         .unwrap_or_else(|| ".".into());
-    let repository = repository_stamp(&repository_path).unwrap_or_else(|_| RepositoryStamp {
-        head: "unavailable".into(),
+    let repository = RepositoryStamp {
+        head: UNAVAILABLE_REPOSITORY.into(),
         dirty_digest: format!("{:x}", Sha256::digest(message.as_bytes())),
-    });
+    };
     let contract = CompletionContract {
         id: Uuid::new_v4().to_string(),
         workspace_id: context.workspace_id,
@@ -1852,8 +1929,8 @@ pub fn create_flow(
         params![plan.id, plan.contract_id, plan.schema_version, plan.risk.as_str(), serde_json::to_string(plan).map_err(|error| BridgeError::Invalid(error.to_string()))?, now],
     )?;
     transaction.execute(
-        "UPDATE eval_attempts SET status='superseded',completed_at=?2 WHERE session_id=?1 AND status IN ('verifying','changes_requested') AND (repository_head<>?3 OR dirty_digest<>?4)",
-        params![session_id, now, repository.head, repository.dirty_digest],
+        "UPDATE eval_attempts SET status='superseded',completed_at=?2 WHERE session_id=?1 AND status IN ('verifying','changes_requested') AND (repository_head<>?3 OR dirty_digest<>?4 OR repository_path<>?5)",
+        params![session_id, now, repository.head, repository.dirty_digest, repository_path],
     )?;
     transaction.execute(
         "INSERT INTO eval_attempts(id,plan_id,session_id,repository_head,dirty_digest,repository_path,status,implementer_family,started_at) VALUES(?1,?2,?3,?4,?5,?6,'verifying',?7,?8)",
@@ -1890,8 +1967,8 @@ pub fn begin_attempt(
     let id = Uuid::new_v4().to_string();
     let transaction = db.unchecked_transaction()?;
     transaction.execute(
-        "UPDATE eval_attempts SET status='superseded',completed_at=?2 WHERE session_id=?1 AND status IN ('verifying','changes_requested') AND (repository_head<>?3 OR dirty_digest<>?4)",
-        params![session_id, Utc::now().to_rfc3339(), repository.head, repository.dirty_digest],
+        "UPDATE eval_attempts SET status='superseded',completed_at=?2 WHERE session_id=?1 AND status IN ('verifying','changes_requested') AND (repository_head<>?3 OR dirty_digest<>?4 OR repository_path<>?5)",
+        params![session_id, Utc::now().to_rfc3339(), repository.head, repository.dirty_digest, repository_path],
     )?;
     transaction.execute(
         "INSERT INTO eval_attempts(id,plan_id,session_id,repository_head,dirty_digest,repository_path,status,implementer_family,started_at) VALUES(?1,?2,?3,?4,?5,?6,'verifying',?7,?8)",
@@ -2008,14 +2085,8 @@ pub fn finalize(
         params![attempt_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
     )?;
-    if head != current_repository.head || dirty != current_repository.dirty_digest {
-        db.execute(
-            "UPDATE eval_attempts SET status='superseded',completed_at=?2 WHERE id=?1",
-            params![attempt_id, Utc::now().to_rfc3339()],
-        )?;
-        return Err(BridgeError::Invalid(
-            "repository changed after evaluation; prior proof is stale".into(),
-        ));
+    if !compare_repository_stamp(db, attempt_id, &head, &dirty, current_repository)? {
+        return Err(stale_repository());
     }
     let mut statement = db.prepare(
         "SELECT check_id,kind,required,status,executor,command,verifier_family,detail,output_digest,artifact_refs FROM eval_check_runs WHERE attempt_id=?1 ORDER BY rowid",
@@ -2096,6 +2167,95 @@ pub fn finalize(
     Ok(bundle)
 }
 
+pub(crate) fn stale_repository() -> BridgeError {
+    BridgeError::Invalid("repository changed after evaluation; prior proof is stale".into())
+}
+
+fn compare_repository_stamp(
+    db: &Connection,
+    attempt_id: &str,
+    head: &str,
+    digest: &str,
+    current: &RepositoryStamp,
+) -> Result<bool, BridgeError> {
+    if head == UNAVAILABLE_REPOSITORY {
+        return Err(BridgeError::Invalid("this attempt has no repository revision to prove".into()));
+    }
+    if head == current.head && digest == current.dirty_digest {
+        return Ok(true);
+    }
+    db.execute(
+        "UPDATE eval_attempts SET status='superseded',completed_at=?2 WHERE id=?1 AND status<>'superseded'",
+        params![attempt_id, Utc::now().to_rfc3339()],
+    )?;
+    Ok(false)
+}
+
+/// Check the observation still belongs to the checkout recorded for this
+/// attempt before applying evidence gathered while the database was unlocked.
+pub(crate) fn confirm_attempt_stamp(
+    db: &Connection,
+    attempt_id: &str,
+    path: &str,
+    current: &RepositoryStamp,
+) -> Result<bool, BridgeError> {
+    let (session, stored_path, head, digest, can_compare): (String, String, String, String, bool) = db.query_row(
+        "SELECT a.session_id,a.repository_path,a.repository_head,a.dirty_digest,
+                a.status IN ('verifying','changes_requested','failed') AND NOT EXISTS(
+                    SELECT 1 FROM eval_check_runs r WHERE r.attempt_id=a.id
+                      AND r.check_id='gate-error' AND r.executor='bridge.system')
+         FROM eval_attempts a WHERE a.id=?1",
+        params![attempt_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    )?;
+    if !can_compare {
+        return Err(BridgeError::Invalid("this attempt cannot receive repository evidence".into()));
+    }
+    if path != stored_path {
+        return Err(BridgeError::Invalid("the checkout for this verification attempt changed".into()));
+    }
+    let matches = compare_repository_stamp(db, attempt_id, &head, &digest, current)?;
+    if !matches {
+        reconcile_parent_readiness(db, &session)?;
+    }
+    Ok(matches)
+}
+
+/// A human may dismiss the system's gate error so the parent can continue.
+/// The dismissal has no measured checkout and creates no proof bundle.
+pub(crate) fn waive_gate_error(
+    db: &Connection,
+    attempt_id: &str,
+    check_ids: &[String],
+    reason: &str,
+    granted_by: &str,
+) -> Result<bool, BridgeError> {
+    if check_ids != ["gate-error"] {
+        return Ok(false);
+    }
+    let repository: Option<RepositoryStamp> = db.query_row(
+        "SELECT a.repository_head,a.dirty_digest FROM eval_attempts a JOIN eval_check_runs r ON r.attempt_id=a.id
+         WHERE a.id=?1 AND a.status='failed' AND a.escalation IS NULL
+           AND r.check_id='gate-error' AND r.executor='bridge.system' AND r.status='blocked'
+           AND (SELECT COUNT(*) FROM eval_check_runs WHERE attempt_id=a.id)=1",
+        params![attempt_id],
+        |row| Ok(RepositoryStamp { head: row.get(0)?, dirty_digest: row.get(1)? }),
+    ).optional()?;
+    let Some(repository) = repository else {
+        return Ok(false);
+    };
+    // Earlier Bridge versions sometimes stored a porcelain stamp for the
+    // synthetic gate error. Use the stored identity only for this dismissal.
+    let transaction = db.unchecked_transaction()?;
+    waive(&transaction, attempt_id, check_ids, reason, granted_by, &repository)?;
+    transaction.execute(
+        "UPDATE eval_attempts SET status='waived',completed_at=?2 WHERE id=?1",
+        params![attempt_id, Utc::now().to_rfc3339()],
+    )?;
+    transaction.commit()?;
+    Ok(true)
+}
+
 pub fn waive(
     db: &Connection,
     attempt_id: &str,
@@ -2148,6 +2308,21 @@ pub fn waive(
 mod tests {
     use super::*;
     use crate::store;
+
+    fn create_from_worker_result(
+        db: &Connection,
+        child_session_id: &str,
+        result: &WorkerResult,
+        available_capabilities: &HashSet<String>,
+    ) -> Result<Option<CompletionSummary>, BridgeError> {
+        let context = worker_completion_context(db, child_session_id)?;
+        let attempt_id = context.as_ref().and_then(|context| context.verification_attempt_id.as_deref());
+        let Some((context, path)) = worker_result_checkout(db, child_session_id, result, attempt_id)? else {
+            return Ok(None);
+        };
+        let stamp = repository_stamp(Path::new(&path))?;
+        apply_worker_result(db, child_session_id, context, &path, &stamp, result, available_capabilities)
+    }
 
     fn fixture() -> Connection {
         let db = store::open(std::path::Path::new(":memory:")).unwrap();
@@ -2780,10 +2955,7 @@ mod tests {
     fn verifiers_close_semantic_checks_but_never_shell_checks() {
         use crate::delegation::{SuggestedNextAction, WorkerTestResult};
         let db = fixture();
-        let cwd = std::env::current_dir()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
+        let (_repository, cwd) = repository();
         db.execute("UPDATE sessions SET cwd=?2 WHERE id=?1", params!["s", cwd])
             .unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind,continuation_fidelity) VALUES('impl','w','claude','impl','completed','estimated','s','worker','native')", []).unwrap();
@@ -2832,6 +3004,8 @@ mod tests {
             db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,worktree_path,updated_at) VALUES(?1,'s','completed','verification','key','reported',0,?2,'now')", params![id, cwd]).unwrap();
             let request = serde_json::json!({"schemaVersion":1,"role":"verification","objective":objective,"acceptanceCriteria":["Report typed evidence"],"knownFacts":[],"decisions":[],"evidenceIds":[],"relevantFiles":["src/App.tsx"],"ownedPaths":[],"writeMode":"readOnly","capabilityTier":"standard","effort":"medium","verification":[],"outputContract":"verification-result","harness":"codex"});
             db.execute("INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES(?1,?2,'now')", params![id, request.to_string()]).unwrap();
+            let target = verification_target(&db, "s").unwrap().unwrap();
+            bind_verifier_reservation(&db, id, &target).unwrap();
             let verification = WorkerResult {
                 schema_version: 1,
                 status: WorkerResultStatus::Completed,
@@ -2891,6 +3065,33 @@ mod tests {
         assert!(
             refused.to_string().contains("cannot satisfy it"),
             "{refused}"
+        );
+
+        std::fs::write(Path::new(&cwd).join("README.md"), b"replacement\n").unwrap();
+        let replacement = create_from_worker_result(&db, "impl", &implementation, &HashSet::new())
+            .unwrap()
+            .unwrap();
+        assert_ne!(replacement.attempt_id, first.attempt_id);
+        // Reusing the same verifier session must not rebind a result that was
+        // stored before the reuse, including an outbox row from older Bridge.
+        let db = Mutex::new(db);
+        assert_eq!(
+            bind_verification_worker(&db, "s", "verify-code").unwrap(),
+            Some(cwd.clone())
+        );
+        for reported_attempt in [Some(first.attempt_id.as_str()), None] {
+            assert!(super::create_from_worker_result(
+                &db, "verify-code", &implementation, reported_attempt, &HashSet::new(),
+            ).unwrap().is_none());
+        }
+        let after_late_result = latest_summary(&db.lock().unwrap(), "s").unwrap().unwrap();
+        assert_eq!(after_late_result.attempt_id, replacement.attempt_id);
+        assert_eq!(after_late_result.checks, replacement.checks);
+        std::fs::write(Path::new(&cwd).join("README.md"), b"edited before launch\n").unwrap();
+        assert!(bind_verification_worker(&db, "s", "verify-code").is_err());
+        assert_eq!(
+            latest_summary(&db.lock().unwrap(), "s").unwrap().unwrap().verdict,
+            CompletionVerdict::Superseded
         );
     }
 
@@ -3206,21 +3407,38 @@ mod tests {
         assert_eq!(summary.verdict, CompletionVerdict::Failed);
         assert_eq!(summary.checks[0].status, CheckStatus::Blocked);
         assert!(!completion_allows_ready(&db, "s").unwrap());
-        waive(
+        // Older versions could put a real Git HEAD and porcelain hash on
+        // this synthetic failure. It still requires a human override.
+        db.execute(
+            "UPDATE eval_attempts SET repository_head='abc',dirty_digest='legacy' WHERE id=?1",
+            params![summary.attempt_id],
+        ).unwrap();
+        assert!(confirm_attempt_stamp(
+            &db,
+            &summary.attempt_id,
+            "/tmp/w",
+            &RepositoryStamp { head: "abc".into(), dirty_digest: "new-format".into() },
+        ).is_err());
+        assert!(!completion_allows_ready(&db, "s").unwrap());
+        assert!(waive_gate_error(
             &db,
             &summary.attempt_id,
             &["gate-error".into()],
             "continue without automated proof",
             "user",
-            &summary.repository,
         )
-        .unwrap();
+        .unwrap());
         assert_eq!(
-            finalize(&db, &summary.attempt_id, &summary.repository)
-                .unwrap()
-                .verdict,
+            latest_summary(&db, "s").unwrap().unwrap().verdict,
             CompletionVerdict::Waived
         );
+        assert!(completion_allows_ready(&db, "s").unwrap());
+        let proof_count: i64 = db.query_row(
+            "SELECT COUNT(*) FROM proof_bundles WHERE attempt_id=?1",
+            params![summary.attempt_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(proof_count, 0);
     }
 
     #[test]
@@ -3383,7 +3601,7 @@ mod tests {
         assert!(report.proof_human_interventions < report.baseline_human_interventions);
     }
 
-    fn git(cwd: &Path, args: &[&str]) -> String {
+    pub(super) fn git(cwd: &Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
             .args(args)
             .current_dir(cwd)
@@ -3399,7 +3617,7 @@ mod tests {
 
     /// A real one-commit repository, so the Git-derived revision paths have
     /// honest state to read instead of a fixture pretending to be a checkout.
-    fn repository() -> (tempfile::TempDir, String) {
+    pub(super) fn repository() -> (tempfile::TempDir, String) {
         let fixture = tempfile::tempdir().unwrap();
         let repo = fixture.path().join("task");
         std::fs::create_dir(&repo).unwrap();
@@ -3410,6 +3628,222 @@ mod tests {
         git(&repo, &["add", "."]);
         git(&repo, &["commit", "-m", "fixture", "-q"]);
         (fixture, repo.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn completion_stamp_tracks_unstaged_bytes() {
+        let (_fixture, repo) = repository();
+        let root = Path::new(&repo);
+        let file = root.join("README.md");
+        let clean = repository_stamp(Path::new(&repo)).unwrap();
+        assert_eq!(clean, repository_stamp(Path::new(&repo)).unwrap());
+
+        std::fs::write(&file, b"edit A\n").unwrap();
+        let first = repository_stamp(Path::new(&repo)).unwrap();
+        assert_ne!(clean, first);
+        let status = git(root, &["status", "--porcelain"]);
+        std::fs::write(&file, b"edit B\n").unwrap();
+        assert_eq!(status, git(root, &["status", "--porcelain"]));
+        let second = repository_stamp(Path::new(&repo)).unwrap();
+        assert_eq!(first.head, second.head);
+        assert_ne!(first.dirty_digest, second.dirty_digest);
+        assert_eq!(second, repository_stamp(Path::new(&repo)).unwrap());
+    }
+
+    #[test]
+    fn completion_stamp_tracks_index_and_worktree_independently() {
+        let (_fixture, repo) = repository();
+        let root = Path::new(&repo);
+        let file = root.join("README.md");
+        let stage = |contents: &[u8]| {
+            std::fs::write(&file, contents).unwrap();
+            git(root, &["add", "README.md"]);
+            std::fs::write(&file, b"work A\n").unwrap();
+        };
+        stage(b"edit A\n");
+        let first = repository_stamp(Path::new(&repo)).unwrap();
+        let status = git(root, &["status", "--porcelain"]);
+        stage(b"edit B\n");
+        let second = repository_stamp(Path::new(&repo)).unwrap();
+        assert_eq!(status, git(root, &["status", "--porcelain"]));
+        assert_eq!(first.head, second.head);
+        assert_ne!(first.dirty_digest, second.dirty_digest);
+
+        let index_oid = git(root, &["rev-parse", ":README.md"]);
+        std::fs::write(&file, b"work B\n").unwrap();
+        assert_eq!(index_oid, git(root, &["rev-parse", ":README.md"]));
+        assert_eq!(status, git(root, &["status", "--porcelain"]));
+        assert_ne!(second, repository_stamp(Path::new(&repo)).unwrap());
+    }
+
+    #[test]
+    fn completion_stamp_tracks_nonignored_untracked_binary_bytes() {
+        let (_fixture, repo) = repository();
+        let root = Path::new(&repo);
+        std::fs::write(root.join(".git/info/exclude"), b"ignored\n").unwrap();
+        let file = root.join("new\nfile");
+        std::fs::write(&file, [0, 1, 255]).unwrap();
+        let first = repository_stamp(Path::new(&repo)).unwrap();
+        let status = git(root, &["status", "--porcelain"]);
+        std::fs::write(root.join("ignored"), b"generated output").unwrap();
+        assert_eq!(first, repository_stamp(Path::new(&repo)).unwrap());
+        std::fs::write(&file, [0, 2, 255]).unwrap();
+        assert_eq!(status, git(root, &["status", "--porcelain"]));
+        let second = repository_stamp(Path::new(&repo)).unwrap();
+        assert_eq!(first.head, second.head);
+        assert_ne!(first.dirty_digest, second.dirty_digest);
+    }
+
+    #[test]
+    fn completion_stamp_rejects_an_unreadable_untracked_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // A privileged test runner can read the directory even in mode 000.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let (_fixture, repo) = repository();
+        let root = Path::new(&repo);
+        let directory = root.join("private");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("file"), b"untracked").unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let stamp = repository_stamp(root);
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(stamp.is_err(), "{stamp:?}");
+    }
+
+    #[test]
+    fn completion_stamp_uses_the_linked_worktree_index_from_a_subdirectory() {
+        let (fixture, repo) = repository();
+        let root = Path::new(&repo);
+        let linked = fixture.path().join("linked");
+        git(root, &["worktree", "add", "--detach", linked.to_str().unwrap(), "HEAD"]);
+        let subdir = linked.join("subdir");
+        std::fs::create_dir(&subdir).unwrap();
+        let file = linked.join("README.md");
+        let clean = repository_stamp(Path::new(&repo)).unwrap();
+        let linked_clean = repository_stamp(&linked).unwrap();
+        assert_eq!(clean.head, linked_clean.head);
+        assert_eq!(linked_clean, repository_stamp(&subdir).unwrap());
+
+        std::fs::write(&file, b"linked\n").unwrap();
+        git(&linked, &["add", "README.md"]);
+        std::fs::write(&file, b"base\n").unwrap();
+        let index = git(&linked, &["rev-parse", ":README.md"]);
+        let dirty = repository_stamp(&subdir).unwrap();
+        assert_ne!(dirty, linked_clean);
+        assert_eq!(dirty, repository_stamp(&linked).unwrap());
+        assert_eq!(clean, repository_stamp(Path::new(&repo)).unwrap());
+        assert_eq!(index, git(&linked, &["rev-parse", ":README.md"]));
+        assert_eq!(std::fs::read(&file).unwrap(), b"base\n");
+    }
+
+    #[test]
+    fn completion_stamp_distinguishes_intent_to_add_from_a_staged_empty_file() {
+        let (_fixture, repo) = repository();
+        let root = Path::new(&repo);
+        std::fs::write(root.join("empty"), []).unwrap();
+        git(root, &["add", "-N", "empty"]);
+        let first = repository_stamp(Path::new(&repo)).unwrap();
+        git(root, &["add", "empty"]);
+        assert_ne!(first, repository_stamp(Path::new(&repo)).unwrap());
+    }
+
+    #[test]
+    fn completion_stamp_tracks_hidden_edits_executable_modes_and_deletions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_fixture, repo) = repository();
+        let root = Path::new(&repo);
+        let file = root.join("README.md");
+        git(root, &["update-index", "--assume-unchanged", "README.md"]);
+        let clean = repository_stamp(Path::new(&repo)).unwrap();
+        std::fs::write(&file, b"new!\n").unwrap();
+        assert!(git(root, &["status", "--porcelain"]).is_empty());
+        let edited = repository_stamp(Path::new(&repo)).unwrap();
+        assert_ne!(clean, edited);
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let executable = repository_stamp(Path::new(&repo)).unwrap();
+        assert_ne!(edited, executable);
+        std::fs::remove_file(&file).unwrap();
+        assert_ne!(executable, repository_stamp(Path::new(&repo)).unwrap());
+    }
+
+    #[test]
+    fn completion_stamp_hashes_raw_names_and_symlink_targets() {
+        use std::os::unix::{ffi::OsStrExt, fs::symlink};
+
+        let (fixture, repo) = repository();
+        let root = Path::new(&repo);
+        let first_target = fixture.path().join("outside");
+        let second_target = fixture.path().join("other");
+        let link = root.join(std::ffi::OsStr::from_bytes(b"link-\xff"));
+        std::fs::write(&first_target, b"outside").unwrap();
+        symlink(&first_target, &link).unwrap();
+        let first = repository_stamp(Path::new(&repo)).unwrap();
+        std::fs::write(&first_target, b"edited outside").unwrap();
+        assert_eq!(first, repository_stamp(Path::new(&repo)).unwrap());
+        std::fs::remove_file(&link).unwrap();
+        symlink(&second_target, &link).unwrap();
+        assert_ne!(first, repository_stamp(Path::new(&repo)).unwrap());
+    }
+
+    #[test]
+    fn completion_stamp_tracks_dirty_submodule_contents() {
+        let (_fixture, repo) = repository();
+        let (_origin_fixture, origin) = repository();
+        let root = Path::new(&repo);
+        git(root, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", &origin, "nested"]);
+        let file = root.join("nested/README.md");
+        std::fs::write(&file, b"edit A\n").unwrap();
+        let first = repository_stamp(Path::new(&repo)).unwrap();
+        let status = git(root, &["status", "--porcelain"]);
+        std::fs::write(&file, b"edit B\n").unwrap();
+        assert_eq!(status, git(root, &["status", "--porcelain"]));
+        assert_ne!(first, repository_stamp(Path::new(&repo)).unwrap());
+    }
+
+    #[test]
+    fn same_path_edit_supersedes_proof_and_its_waiver() {
+        let (_fixture, repo) = repository();
+        let file = Path::new(&repo).join("README.md");
+        let db = fixture();
+        let contract = contract();
+        let plan = EvalPlan {
+            id: "plan".into(),
+            contract_id: contract.id.clone(),
+            schema_version: COMPLETION_SCHEMA_VERSION,
+            risk: RiskTier::High,
+            checks: ["review", "journey"]
+                .into_iter()
+                .map(|id| EvalCheck {
+                    id: id.into(),
+                    label: id.into(),
+                    kind: EvalKind::UserTesting,
+                    required: true,
+                    executor: WORKER_EXECUTOR.into(),
+                    command: None,
+                    required_capabilities: vec![],
+                    different_model_family: false,
+                    reason: "required".into(),
+                })
+                .collect(),
+        };
+        save_contract(&db, &contract).unwrap();
+        save_plan(&db, &plan).unwrap();
+        std::fs::write(&file, b"edit A\n").unwrap();
+        let first = repository_stamp(Path::new(&repo)).unwrap();
+        let attempt = begin_attempt(&db, &plan, "s", &repo, &first, None).unwrap();
+        waive(&db, &attempt, &["journey".into()], "manual check", "user", &first).unwrap();
+
+        std::fs::write(&file, b"edit B\n").unwrap();
+        let second = repository_stamp(Path::new(&repo)).unwrap();
+        assert!(finalize(&db, &attempt, &second).unwrap_err().to_string().contains("stale"));
+        assert!(waive(&db, &attempt, &["review".into()], "manual check", "user", &second).is_err());
+        assert_eq!(latest_summary(&db, "s").unwrap().unwrap().verdict, CompletionVerdict::Superseded);
+        let replacement = begin_attempt(&db, &plan, "s", &repo, &second, None).unwrap();
+        assert!(finalize(&db, &replacement, &second).unwrap().waiver_reason.is_none());
     }
 
     fn verification_directive() -> DelegationRequest {
@@ -3452,14 +3886,16 @@ mod tests {
     fn orchestrator_edits_open_a_verification_gate_without_a_worker() {
         let (_fixture, repo) = repository();
         std::fs::write(std::path::Path::new(&repo).join("README.md"), "edited\n").unwrap();
-        let db = fixture();
-        wire_workspace_to(&db, &repo);
+        let db = Mutex::new(fixture());
+        wire_workspace_to(&db.lock().unwrap(), &repo);
         let directive = verification_directive();
 
-        let summary =
-            create_from_orchestrator_edits(&db, "s", "w", &repo, &directive, &HashSet::new())
-                .unwrap()
-                .expect("direct edits deserve an implementation revision");
+        assert_eq!(
+            ensure_verification_target(&db, "s", &directive, &HashSet::new()).unwrap(),
+            VerificationTargetResolution::SelfRecorded
+        );
+        let db = db.lock().unwrap();
+        let summary = latest_summary(&db, "s").unwrap().unwrap();
         assert_eq!(summary.verdict, CompletionVerdict::Verifying);
         assert_eq!(summary.repository.head, git(Path::new(&repo), &["rev-parse", "HEAD"]));
         assert!(
@@ -3487,19 +3923,19 @@ mod tests {
     #[test]
     fn a_clean_checkout_records_no_orchestrator_revision() {
         let (_fixture, repo) = repository();
-        let db = fixture();
-        wire_workspace_to(&db, &repo);
+        let db = Mutex::new(fixture());
+        wire_workspace_to(&db.lock().unwrap(), &repo);
         let resolution = ensure_verification_target(&db, "s", &verification_directive(), &HashSet::new())
             .unwrap();
         assert_eq!(resolution, VerificationTargetResolution::Missing);
-        let attempts: i64 = db
+        let attempts: i64 = db.lock().unwrap()
             .query_row("SELECT COUNT(*) FROM eval_attempts", [], |row| row.get(0))
             .unwrap();
         assert_eq!(attempts, 0);
 
         // A directory that is not even a repository is also Missing, not an error.
         let scratch = tempfile::tempdir().unwrap();
-        wire_workspace_to(&db, scratch.path().to_string_lossy().as_ref());
+        wire_workspace_to(&db.lock().unwrap(), scratch.path().to_string_lossy().as_ref());
         let resolution = ensure_verification_target(&db, "s", &verification_directive(), &HashSet::new())
             .unwrap();
         assert_eq!(resolution, VerificationTargetResolution::Missing);
@@ -3511,8 +3947,8 @@ mod tests {
     fn self_recording_dedupes_while_the_stamp_is_unchanged() {
         let (_fixture, repo) = repository();
         std::fs::write(std::path::Path::new(&repo).join("README.md"), "edited\n").unwrap();
-        let db = fixture();
-        wire_workspace_to(&db, &repo);
+        let db = Mutex::new(fixture());
+        wire_workspace_to(&db.lock().unwrap(), &repo);
         let directive = verification_directive();
 
         let first = ensure_verification_target(&db, "s", &directive, &HashSet::new()).unwrap();
@@ -3520,7 +3956,7 @@ mod tests {
         let second = ensure_verification_target(&db, "s", &directive, &HashSet::new()).unwrap();
         assert_eq!(second, VerificationTargetResolution::Existing);
 
-        let attempts: i64 = db
+        let attempts: i64 = db.lock().unwrap()
             .query_row("SELECT COUNT(*) FROM eval_attempts", [], |row| row.get(0))
             .unwrap();
         assert_eq!(attempts, 1, "one revision per unchanged tree state");
@@ -3532,17 +3968,18 @@ mod tests {
     fn an_open_gate_is_left_alone_by_self_recording() {
         let (_fixture, repo) = repository();
         std::fs::write(std::path::Path::new(&repo).join("README.md"), "edited\n").unwrap();
-        let db = fixture();
-        wire_workspace_to(&db, &repo);
+        let db = Mutex::new(fixture());
+        wire_workspace_to(&db.lock().unwrap(), &repo);
         let mut directive = verification_directive();
-        create_from_orchestrator_edits(&db, "s", "w", &repo, &directive, &HashSet::new())
-            .unwrap()
-            .expect("first recording opens the gate");
+        assert_eq!(
+            ensure_verification_target(&db, "s", &directive, &HashSet::new()).unwrap(),
+            VerificationTargetResolution::SelfRecorded
+        );
 
         directive.objective = "a different delegation over the same tree".into();
         let resolution = ensure_verification_target(&db, "s", &directive, &HashSet::new()).unwrap();
         assert_eq!(resolution, VerificationTargetResolution::Existing);
-        let contracts: i64 = db
+        let contracts: i64 = db.lock().unwrap()
             .query_row("SELECT COUNT(*) FROM completion_contracts", [], |row| row.get(0))
             .unwrap();
         assert_eq!(contracts, 1, "no second contract behind the live gate");

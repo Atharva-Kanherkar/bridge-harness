@@ -63,6 +63,11 @@ pub fn publish(core: &Arc<BridgeCore>, job_id: &str) {
 
 /// The harnesses a job runs on: the ones asked for, else the settings'
 /// default, else the first available of Claude, Codex and OpenCode.
+///
+/// An asked-for pair is a second opinion and needs no setting: the Review
+/// menu's Second opinion button sends one. The Second opinion setting only
+/// decides whether the stored default (and so auto-review) is a pair, and
+/// `settings::save` enforces that.
 pub fn resolve_harnesses(core: &Arc<BridgeCore>, requested: Option<&[String]>) -> Result<Vec<String>, BridgeError> {
     let settings = {
         let db = lock_db(core);
@@ -78,13 +83,6 @@ pub fn resolve_harnesses(core: &Arc<BridgeCore>, requested: Option<&[String]>) -
             "A review runs on at most {} harnesses",
             settings::MAX_REVIEW_HARNESSES
         )));
-    }
-    // Stored defaults never trip this: `settings::load` turns Second opinion
-    // on for a stored pair.
-    if asked.len() > 1 && !settings.second_opinion {
-        return Err(BridgeError::Invalid(
-            "Turn on Second opinion in Settings to review with two harnesses".into(),
-        ));
     }
     if !asked.is_empty() {
         return Ok(asked);
@@ -352,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn two_harnesses_need_second_opinion() {
+    fn an_asked_pair_is_a_second_opinion_without_the_setting() {
         let (_scratch, core) = core();
         let head = || PrHead { repo_host: "github.com".into(), repo_owner: "o".into(), repo_name: "r".into(), head_sha: "abc".into(), base_sha: None };
         let params = |harnesses: &[&str]| wire::StartReviewParams {
@@ -361,18 +359,16 @@ mod tests {
             harnesses: Some(harnesses.iter().map(|harness| harness.to_string()).collect()),
             trigger: None,
         };
-        let refused = start_with(&core, &params(&["claude", "codex"]), head()).unwrap_err().to_string();
-        assert!(refused.contains("Turn on Second opinion"), "{refused}");
-        assert!(list(&core, &wire::ListReviewsParams { workspace_id: "w".into(), number: None }).unwrap().jobs.is_empty());
-
-        change(&core, |settings| {
-            settings.second_opinion = true;
-            settings.default_harnesses = vec!["claude".into(), "codex".into()];
-        });
+        // The Review menu's Second opinion button: Second opinion is off in
+        // Settings, and the pair still runs as one job.
+        assert!(!settings::load(&lock_db(&core)).unwrap().second_opinion);
         let both = start_with(&core, &params(&["claude", "codex"]), head()).unwrap();
         assert_eq!(both.harnesses, ["claude", "codex"]);
+        let three = start_with(&core, &params(&["claude", "codex", "opencode"]), head()).unwrap_err().to_string();
+        assert!(three.contains("at most 2"), "{three}");
 
         // A pair stored before the setting existed runs as it did: both review.
+        change(&core, |_| {});
         lock_db(&core)
             .execute(
                 "UPDATE configuration_entries SET payload=?1 WHERE kind='review_job_settings'",

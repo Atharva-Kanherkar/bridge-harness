@@ -1677,6 +1677,20 @@ fn start_session_starts_a_new_session_when_none_is_reusable() {
 }
 
 mod off_trace;
+mod send_latency;
+
+#[test]
+fn prepare_and_submit_do_not_build_app_state() -> Result<(), Box<dyn std::error::Error>> {
+    let mut before = store::state_builds_on_this_thread();
+    send_latency::check_small_workload(|step| {
+        let after = store::state_builds_on_this_thread();
+        // Configured create and explicit start currently return a snapshot.
+        // Lower both limits to zero when the composer uses narrow results.
+        let allowed = u64::from(matches!(step, "create" | "start"));
+        assert!(after - before <= allowed, "{step} built app state {} times", after - before);
+        before = after;
+    })
+}
 
 /// The off guarantee of `testing/feat-early-compaction.md`. Each later commit
 /// of early compaction keeps this trace equal while the switch is off.

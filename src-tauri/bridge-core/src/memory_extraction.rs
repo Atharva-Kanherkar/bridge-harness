@@ -104,7 +104,7 @@ pub(crate) fn install(transaction: &Transaction<'_>) -> Result<(), BridgeError> 
     Ok(())
 }
 
-/// Migration 101: one queued run per chat, due once the chat goes quiet, and
+/// Migration 102: one queued run per chat, due once the chat goes quiet, and
 /// a watermark so a run reads only what the last one did not.
 ///
 /// A queued run from before the upgrade is due at once, as it would have been.

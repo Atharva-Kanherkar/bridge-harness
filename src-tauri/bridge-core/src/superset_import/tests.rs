@@ -57,7 +57,7 @@ fn the_newest_schemas_read_projects_workspaces_chats_bindings_and_configs() {
     assert_eq!(store.orgs.len(), 1);
     let org = &store.orgs[0];
     assert_eq!(org.id, ORG);
-    assert_eq!((org.host.version, org.chat_version), (store::HOST_NEWEST, Some(store::CHAT_NEWEST)));
+    assert_eq!((org.host.version, org.chat_version), (store::HOST_MIGRATIONS.newest_checked, Some(store::CHAT_MIGRATIONS.newest_checked)));
     assert_eq!(org.host.projects["p1"].root, sandbox.repo);
     assert_eq!(org.host.workspaces["w-login"].name.as_deref(), Some("Login page"));
     assert_eq!(org.host.workspaces["w-local"].kind, Kind::Local);
@@ -204,27 +204,86 @@ fn tool_calls_read_their_terminal_output_raw_output_and_failure() {
 fn the_version_gate_fails_closed_with_the_version_it_saw() {
     let sandbox = sandbox();
     let bump = |conn: &Connection, when: i64| conn.execute("INSERT INTO __drizzle_migrations(hash, created_at) VALUES('h', ?1)", [when]).unwrap();
-    bump(&sandbox.fixture.host, store::HOST_NEWEST + 1);
-    let error = read(&Paths::at(&sandbox.home)).unwrap_err();
-    assert!(error.contains("newer") && error.contains(&(store::HOST_NEWEST + 1).to_string()), "{error}");
     sandbox.fixture.host.execute("DELETE FROM __drizzle_migrations", []).unwrap();
     let error = read(&Paths::at(&sandbox.home)).unwrap_err();
     assert!(error.contains("no version"), "{error}");
-    bump(&sandbox.fixture.host, store::HOST_OLDEST - 1);
+    let older = store::HOST_MIGRATIONS.oldest - 1;
+    bump(&sandbox.fixture.host, older);
     let error = read(&Paths::at(&sandbox.home)).unwrap_err();
-    assert!(error.contains("older"), "{error}");
-
-    let other = self::sandbox();
-    bump(other.fixture.chat_conn(), store::CHAT_NEWEST + 1);
-    let error = read(&Paths::at(&other.home)).unwrap_err();
-    assert!(error.contains("chats") && error.contains("newer"), "{error}");
+    assert_eq!(error, format!("Superset's workspace database is older than Bridge knows (version {older})"));
 
     let renamed = self::sandbox();
     renamed.fixture.host.execute_batch("ALTER TABLE workspaces RENAME COLUMN worktree_path TO path").unwrap();
-    assert!(read(&Paths::at(&renamed.home)).unwrap_err().contains("missing what Bridge reads"));
+    assert_eq!(
+        read(&Paths::at(&renamed.home)).unwrap_err(),
+        format!("Superset's workspace database is missing what Bridge reads (version {})", store::HOST_MIGRATIONS.newest_checked)
+    );
     let renamed = self::sandbox();
     renamed.fixture.chat_conn().execute_batch("ALTER TABLE chat_sessions_local RENAME COLUMN scope_id TO scope").unwrap();
-    assert!(read(&Paths::at(&renamed.home)).unwrap_err().contains("missing what Bridge reads"));
+    assert!(read(&Paths::at(&renamed.home)).unwrap_err().starts_with("Superset's chat database is missing what Bridge reads"));
+}
+
+#[test]
+fn a_newer_database_with_everything_bridge_reads_is_read() {
+    let bump = |conn: &Connection, when: i64| conn.execute("INSERT INTO __drizzle_migrations(hash, created_at) VALUES('h', ?1)", [when]).unwrap();
+    let sandbox = sandbox();
+    let (host, chat) = (store::HOST_MIGRATIONS.newest_checked + 1, store::CHAT_MIGRATIONS.newest_checked + 86_400_000);
+    bump(&sandbox.fixture.host, host);
+    bump(sandbox.fixture.chat_conn(), chat);
+    sandbox.fixture.host.execute_batch("CREATE TABLE future_tokens(token TEXT); ALTER TABLE workspaces ADD COLUMN future TEXT;").unwrap();
+    let before = read(&Paths::at(&self::sandbox().home)).unwrap();
+    let store = read(&Paths::at(&sandbox.home)).unwrap();
+    let org = &store.orgs[0];
+    assert_eq!((org.host.version, org.chat_version), (host, Some(chat)));
+    assert_eq!((org.host.workspaces.len(), org.chats.len()), (before.orgs[0].host.workspaces.len(), before.orgs[0].chats.len()));
+    assert!(!org.chats.is_empty() && !org.host.workspaces.is_empty());
+}
+
+#[test]
+fn a_newer_database_that_changed_any_column_bridge_reads_is_refused_and_names_it() {
+    let bump = |conn: &Connection, when: i64| conn.execute("INSERT INTO __drizzle_migrations(hash, created_at) VALUES('h', ?1)", [when]).unwrap();
+    for (host, reads) in [(true, store::HOST_NEWEST_READS), (false, store::CHAT_NEWEST_READS)] {
+        for (table, columns) in reads {
+            for column in *columns {
+                let sandbox = sandbox();
+                let conn = if host { &sandbox.fixture.host } else { sandbox.fixture.chat_conn() };
+                let when = if host { store::HOST_MIGRATIONS.newest_checked } else { store::CHAT_MIGRATIONS.newest_checked } + 1;
+                bump(conn, when);
+                conn.execute_batch(&format!("ALTER TABLE {table} RENAME COLUMN \"{column}\" TO \"{column}_v2\"")).unwrap();
+                let error = read(&Paths::at(&sandbox.home)).unwrap_err();
+                if (*table, *column) == ("__drizzle_migrations", "created_at") {
+                    assert!(error.contains("no version"), "{error}");
+                    continue;
+                }
+                let database = if host { "workspace" } else { "chat" };
+                assert!(
+                    error.starts_with(&format!("Superset's {database} database is newer than Bridge knows (version {when}) and changed what Bridge reads (")),
+                    "{table}.{column}: {error}"
+                );
+                assert!(error.contains(&format!("{table}.{column}")), "{error}");
+            }
+        }
+    }
+}
+
+#[test]
+fn newest_reads_is_exactly_what_the_readers_read_at_the_newest_checked_versions() {
+    let sandbox = sandbox();
+    STATEMENTS.with(|statements| statements.borrow_mut().clear());
+    let host = store::read_host(&sandbox.fixture.host).unwrap();
+    let host_statements = STATEMENTS.with(|statements| std::mem::take(&mut *statements.borrow_mut()));
+    let allowed = crate::import_sqlite::Allowed { tool: "Superset", tables: store::HOST_TABLES };
+    crate::import_sqlite::assert_reads_match(&allowed, &sandbox.fixture.host, store::HOST_NEWEST_READS, &host_statements);
+    assert!(!host.workspaces.is_empty());
+
+    let (_, chats) = store::read_chats(sandbox.fixture.chat_conn()).unwrap();
+    for chat in &chats {
+        store::items(sandbox.fixture.chat_conn(), &chat.id, chat.epoch.as_deref().unwrap_or("e1")).unwrap();
+    }
+    let chat_statements = STATEMENTS.with(|statements| std::mem::take(&mut *statements.borrow_mut()));
+    let allowed = crate::import_sqlite::Allowed { tool: "Superset", tables: store::CHAT_TABLES };
+    crate::import_sqlite::assert_reads_match(&allowed, sandbox.fixture.chat_conn(), store::CHAT_NEWEST_READS, &chat_statements);
+    assert!(!chats.is_empty());
 }
 
 #[test]

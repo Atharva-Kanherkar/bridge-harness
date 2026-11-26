@@ -24,6 +24,9 @@ use rusqlite::{params, Connection};
 
 use crate::store;
 
+const CONCURRENT_CHATS: usize = 12;
+const ENTRIES_PER_CHAT: usize = 40;
+
 fn perf_db() -> Option<PathBuf> {
     std::env::var_os("BRIDGE_PERF_DB").map(PathBuf::from)
 }
@@ -56,10 +59,11 @@ fn summary(label: &str, mut samples: Vec<f64>) {
     samples.sort_by(f64::total_cmp);
     let total: f64 = samples.iter().sum();
     println!(
-        "{label:<44} n={:<5} p50={:>9.2} p95={:>9.2} max={:>9.2} sum={:>10.1} (ms)",
+        "{label:<44} n={:<5} p50={:>9.2} p95={:>9.2} p99={:>9.2} max={:>9.2} sum={:>10.1} (ms)",
         samples.len(),
         percentile(&samples, 0.5),
         percentile(&samples, 0.95),
+        percentile(&samples, 0.99),
         samples.last().copied().unwrap_or(f64::NAN),
         total,
     );
@@ -174,12 +178,10 @@ fn perf_bench_concurrent_chat_streams() {
     if repos.is_empty() {
         return;
     }
-    const CHATS: usize = 12;
-    const ENTRIES_PER_CHAT: usize = 40;
     let home = tempfile::tempdir().unwrap();
     let db = store::open(&home.path().join("bridge.db")).unwrap();
     let mut sessions = Vec::new();
-    for index in 0..CHATS {
+    for index in 0..CONCURRENT_CHATS {
         let id = format!("perf-chat-{index}");
         let cwd = repos[index % repos.len()].display().to_string();
         db.execute(
@@ -190,7 +192,7 @@ fn perf_bench_concurrent_chat_streams() {
         sessions.push(id);
     }
     let db = Arc::new(Mutex::new(db));
-    let barrier = Arc::new(Barrier::new(CHATS));
+    let barrier = Arc::new(Barrier::new(CONCURRENT_CHATS));
     let started = Instant::now();
     let handles: Vec<_> = sessions
         .into_iter()
@@ -199,12 +201,17 @@ fn perf_bench_concurrent_chat_streams() {
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 barrier.wait();
-                let mut waits = Vec::new();
-                let mut holds = Vec::new();
+                let mut timings = Vec::new();
+                let mut locked_git = 0;
                 let git_before = crate::git::git_processes_started_on_this_thread();
                 for index in 0..ENTRIES_PER_CHAT {
+                    let kind = match index % 8 {
+                        0 => "turn.completed",
+                        1..=3 => "file_change.completed",
+                        _ => "command.completed",
+                    };
                     let event = crate::agent::NormalizedEvent {
-                        kind: "command.completed".into(),
+                        kind: kind.into(),
                         item_id: Some(format!("item-{index}")),
                         role: Some("tool".into()),
                         status: Some("completed".into()),
@@ -212,46 +219,78 @@ fn perf_bench_concurrent_chat_streams() {
                         text: Some("ok".into()),
                         data: serde_json::json!({"command": "true", "exitCode": 0}),
                     };
-                    before_entry_lock(&session_id);
+                    let preparation_started = Instant::now();
+                    let prepared = crate::repo_stamp::exact_kind(kind)
+                        .then(|| crate::repo_stamp::Prepared::for_session(&db, &session_id).unwrap());
                     let requested = Instant::now();
-                    let guard = db.lock().unwrap();
+                    let (guard, prepared) = match prepared {
+                        Some(prepared) => {
+                            let (guard, prepared) = prepared.lock_current(&db, &session_id).unwrap();
+                            (guard, Some(prepared))
+                        }
+                        None => (db.lock().unwrap(), None),
+                    };
                     let acquired = Instant::now();
-                    store::session_event(&guard, &session_id, &event, &serde_json::json!({}))
-                        .unwrap();
+                    let before_locked_git = crate::git::git_processes_started_on_this_thread();
+                    store::session_event_with_repository_state(
+                        &guard, &session_id, &event, &serde_json::json!({}),
+                        prepared.as_ref().map(crate::repo_stamp::Prepared::value),
+                    ).unwrap();
                     drop(guard);
-                    waits.push(ms(acquired - requested));
-                    holds.push(ms(acquired.elapsed()));
+                    let finished = Instant::now();
+                    locked_git += crate::git::git_processes_started_on_this_thread() - before_locked_git;
+                    timings.push((index == 0, kind == "turn.completed", [
+                        ms(requested - preparation_started),
+                        ms(acquired - requested),
+                        ms(finished - acquired),
+                        ms(finished - preparation_started),
+                    ]));
                     // A provider frame arrives every few milliseconds while a
                     // chat streams; do not let one thread monopolize the lock.
                     std::thread::sleep(Duration::from_millis(5));
                 }
                 let git = crate::git::git_processes_started_on_this_thread() - git_before;
-                (waits, holds, git)
+                (timings, git, locked_git)
             })
         })
         .collect();
-    let mut waits = Vec::new();
-    let mut holds = Vec::new();
+    let mut samples = Vec::new();
     let mut git = 0;
+    let mut locked_git = 0;
     for handle in handles {
-        let (thread_waits, thread_holds, thread_git) = handle.join().unwrap();
-        waits.extend(thread_waits);
-        holds.extend(thread_holds);
+        let (thread_timings, thread_git, thread_locked_git) = handle.join().unwrap();
+        samples.extend(thread_timings);
         git += thread_git;
+        locked_git += thread_locked_git;
     }
     let wall = ms(started.elapsed());
-    println!(
-        "B3 {CHATS} chats x {ENTRIES_PER_CHAT} entries over {} repos: wall={wall:.0} ms, git processes on the entry path={git}",
-        repos.len()
-    );
-    summary("B3 lock held per stored entry", holds);
-    summary("B3 wait for the lock per stored entry", waits);
+    report_concurrent_chat_streams(&samples, git, locked_git, wall, repos.len());
 }
 
-/// What the frame reader does before it takes the database lock: any `git`
-/// the entry's repository stamp needs runs here, while the lock is free.
-fn before_entry_lock(session_id: &str) {
-    crate::repo_stamp::refresh_before_lock(session_id);
+fn report_concurrent_chat_streams(
+    samples: &[(bool, bool, [f64; 4])],
+    git: u64,
+    locked_git: u64,
+    wall: f64,
+    repos: usize,
+) {
+    println!(
+        "B3 {CONCURRENT_CHATS} chats x {ENTRIES_PER_CHAT} entries over {repos} repos: wall={wall:.0} ms, git processes on the entry path={git}, while locked={locked_git}",
+    );
+    for (index, label) in [
+        "B3 prepare before the lock",
+        "B3 wait for the lock",
+        "B3 lock held",
+        "B3 total per stored entry",
+    ].into_iter().enumerate() {
+        summary(label, samples.iter().map(|(_, _, timings)| timings[index]).collect());
+    }
+    summary("B3 first entry in each chat", samples.iter().filter(|(first, _, _)| *first)
+        .map(|(_, _, timings)| timings[3]).collect());
+    summary("B3 subsequent turn boundaries", samples.iter().filter(|(first, boundary, _)| !first && *boundary)
+        .map(|(_, _, timings)| timings[3]).collect());
+    summary("B3 mid-turn entries", samples.iter().filter(|(_, boundary, _)| !boundary)
+        .map(|(_, _, timings)| timings[3]).collect());
 }
 
 /// B5: SHA-256 throughput as a history snapshot pays it, over a 512 MiB file.

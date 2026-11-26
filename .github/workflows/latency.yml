@@ -1,0 +1,128 @@
+name: Send latency
+
+on:
+  pull_request:
+    paths:
+      - 'src-tauri/**'
+      - 'src/**'
+      - '.github/workflows/latency.yml'
+      - 'scripts/latency-compare.mjs'
+      - 'scripts/test/latency-compare.test.mjs'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: send-latency-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  latency:
+    name: Compare send latency
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BENCH_TEST: live_turn::tests::send_latency::measure
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Prepare the merge base and shared workload
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          BASE_DIR="$RUNNER_TEMP/bridge-latency-base"
+          REPORT_DIR="$RUNNER_TEMP/bridge-latency-reports"
+          printf 'BASE_DIR=%s\nREPORT_DIR=%s\n' "$BASE_DIR" "$REPORT_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$REPORT_DIR"
+          merge_base=$(git merge-base "$BASE_SHA" HEAD)
+          git worktree add --detach "$BASE_DIR" "$merge_base"
+          printf 'Base %s\nHead %s\n' "$merge_base" "$(git rev-parse HEAD)" | tee "$REPORT_DIR/revisions.txt"
+
+          tests=src-tauri/bridge-core/src/live_turn/tests
+          cp "$tests/send_latency.rs" "$BASE_DIR/$tests/send_latency.rs"
+          # A revision uses its own composer's create and start entry points.
+          # The initial merge base predates this compatibility file.
+          composer="$tests/send_latency/composer.rs"
+          if [[ ! -f "$BASE_DIR/$composer" ]]; then
+            mkdir -p "$BASE_DIR/$tests/send_latency"
+            cp "$composer" "$BASE_DIR/$composer"
+          fi
+          # During rollout the merge base predates registration of the benchmark.
+          if ! grep -qxF 'mod send_latency;' "$BASE_DIR/$tests.rs"; then
+            printf '\nmod send_latency;\n' >> "$BASE_DIR/$tests.rs"
+          fi
+
+      - name: Build both benchmarks before measuring
+        shell: bash
+        run: |
+          build() {
+            local side=$1 checkout=$2
+            (
+              cd "$checkout"
+              CARGO_TARGET_DIR="$RUNNER_TEMP/bridge-latency-target-$side" \
+                cargo test --release --locked --manifest-path src-tauri/Cargo.toml \
+                -p bridge-core --lib --no-run --message-format=json
+            ) > "$REPORT_DIR/$side.build.jsonl"
+            local executable
+            executable=$(jq -rs '
+              [.[] | select(.reason == "compiler-artifact" and .target.name == "bridge_core"
+                and .profile.test and .executable != null) | .executable]
+              | if length == 1 then .[0] else error("expected one benchmark executable") end
+            ' "$REPORT_DIR/$side.build.jsonl")
+            printf '%s\n' "$executable" > "$REPORT_DIR/$side.executable"
+          }
+          build base "$BASE_DIR"
+          build head "$GITHUB_WORKSPACE"
+
+      - name: Collect three paired rounds
+        shell: bash
+        run: |
+          measure() {
+            local side=$1 checkout=$2 round=$3
+            local log="$REPORT_DIR/$side-$round.log"
+            local executable
+            executable=$(cat "$REPORT_DIR/$side.executable")
+            (
+              cd "$checkout/src-tauri/bridge-core"
+              "$executable" "$BENCH_TEST" --exact --ignored --nocapture --test-threads=1
+            ) 2>&1 | tee "$log"
+            local -a reports
+            mapfile -t reports < <(sed -n 's/^BRIDGE_LATENCY //p' "$log")
+            if [[ ${#reports[@]} != 1 ]]; then
+              echo "$side round $round emitted ${#reports[@]} benchmark reports, expected one" >&2
+              return 1
+            fi
+            printf '%s\n' "${reports[0]}" >> "$REPORT_DIR/$side.jsonl"
+          }
+          for round in 1 2 3; do
+            if (( round % 2 == 1 )); then
+              measure base "$BASE_DIR" "$round"
+              measure head "$GITHUB_WORKSPACE" "$round"
+            else
+              measure head "$GITHUB_WORKSPACE" "$round"
+              measure base "$BASE_DIR" "$round"
+            fi
+          done
+
+      - name: Check for regressions
+        shell: bash
+        run: |
+          node scripts/latency-compare.mjs "$REPORT_DIR/base.jsonl" "$REPORT_DIR/head.jsonl" \
+            2>&1 | tee "$REPORT_DIR/comparison.md" "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: send-latency
+          path: ${{ runner.temp }}/bridge-latency-reports

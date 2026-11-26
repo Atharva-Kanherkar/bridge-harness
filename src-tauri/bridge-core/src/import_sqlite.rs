@@ -53,6 +53,63 @@ pub fn user_version(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row(sql, [], |row| row.get(0))
 }
 
+/// The schema versions of one tool's database Bridge reads, by the number
+/// the tool records for its newest migration.
+///
+/// A version number alone is not the safety condition: most releases add
+/// tables Bridge never reads. So a database newer than the newest Bridge was
+/// checked against is still read, as long as everything Bridge reads at the
+/// newest checked version is still there ([`Allowed::missing`]). The table
+/// allowlist keeps any new table, secret or not, out of reach either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Versions {
+    /// The oldest version Bridge reads. Anything older is refused.
+    pub oldest: i64,
+    /// The newest version Bridge was checked against, with a real schema
+    /// fixture.
+    pub newest_checked: i64,
+}
+
+/// Where a database's version falls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gate {
+    /// From the oldest version to the newest checked one.
+    Checked,
+    /// Newer than any version Bridge was checked against.
+    Newer,
+}
+
+impl Versions {
+    /// Where `version` falls, or why it is not read (`what` names the
+    /// database for the person: "T3 Code's database").
+    pub fn gate(&self, what: &str, version: i64) -> Result<Gate, String> {
+        if version < self.oldest {
+            return Err(format!("{what} is older than Bridge knows (version {version})"));
+        }
+        Ok(if version > self.newest_checked { Gate::Newer } else { Gate::Checked })
+    }
+}
+
+/// Tables and the columns of each Bridge reads.
+pub type Reads = &'static [(&'static str, &'static [&'static str])];
+
+/// Why a database without everything Bridge reads is not read. A newer one
+/// says that the tool changed what Bridge reads, and names what is gone.
+pub fn missing_reason(what: &str, version: i64, gate: Gate, missing: &[String]) -> String {
+    match gate {
+        Gate::Checked => format!("{what} is missing what Bridge reads (version {version})"),
+        Gate::Newer => {
+            const SHOWN: usize = 3;
+            let mut named = missing.iter().take(SHOWN).cloned().collect::<Vec<_>>().join(", ");
+            if missing.len() > SHOWN {
+                named.push_str(&format!(" and {} more", missing.len() - SHOWN));
+            }
+            let named = if named.is_empty() { String::new() } else { format!(" ({named})") };
+            format!("{what} is newer than Bridge knows (version {version}) and changed what Bridge reads{named}; update Bridge and try again")
+        }
+    }
+}
+
 /// A path as a `file:` URI path: everything but unreserved characters and
 /// `/` percent-encoded (`Application Support` has a space).
 pub fn uri_path(path: &Path) -> String {
@@ -85,6 +142,17 @@ impl Allowed {
         let mut statement = conn.prepare(&sql)?;
         let names = statement.query_map([], |row| row.get::<_, String>(0))?;
         names.collect()
+    }
+
+    /// `table.column` for each one of `reads` the database lacks, in order;
+    /// a missing table is every one of its columns.
+    pub fn missing(&self, conn: &Connection, reads: Reads) -> rusqlite::Result<Vec<String>> {
+        let mut out = Vec::new();
+        for (table, columns) in reads {
+            let present = self.columns(conn, table)?;
+            out.extend(columns.iter().filter(|column| !present.contains(**column)).map(|column| format!("{table}.{column}")));
+        }
+        Ok(out)
     }
 
     /// Rows of a table, as the wanted columns that exist; a missing column
@@ -260,4 +328,169 @@ pub fn text(row: &Row, column: &str) -> Option<String> {
 
 pub fn int(row: &Row, column: &str) -> Option<i64> {
     row.get(column).and_then(Cell::int)
+}
+
+/// The words of a statement: runs of letters, digits and `_`.
+#[cfg(test)]
+fn words(statement: &str) -> HashSet<&str> {
+    statement.split(|c: char| !(c.is_alphanumeric() || c == '_')).collect()
+}
+
+/// A statement that reads rows, not one that asks for a table's columns or
+/// the database's version.
+#[cfg(test)]
+fn reads_rows(statement: &str) -> bool {
+    !statement.contains("pragma_table_info") && !statement.starts_with("PRAGMA")
+}
+
+/// The columns each statement in `statements` used, by table: what a reader
+/// really read, for checking a `NEWEST_READS` list against it. A selected
+/// column is quoted. A filter (`WHERE`, `ORDER BY`) is not, so every word of
+/// the statement that is a column of its table in `conn` counts too.
+#[cfg(test)]
+pub(crate) fn columns_read(conn: &Connection, statements: &[String]) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+    let mut out: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> = std::collections::BTreeMap::new();
+    for statement in statements.iter().filter(|statement| reads_rows(statement)) {
+        let table = statement
+            .split(" FROM ")
+            .skip(1)
+            .filter_map(|rest| rest.split(|c: char| !(c.is_alphanumeric() || c == '_')).next())
+            .filter(|name| !name.is_empty() && *name != "json_each")
+            .last()
+            .unwrap_or_else(|| panic!("no table in {statement}"));
+        let columns = out.entry(table.to_owned()).or_default();
+        for (index, part) in statement.split('"').enumerate() {
+            if index % 2 == 1 {
+                columns.insert(part.to_owned());
+            }
+        }
+        let mut real = conn.prepare("SELECT name FROM pragma_table_info(?1)").unwrap();
+        let real: Vec<String> = real.query_map([table], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
+        let used = words(statement);
+        columns.extend(real.into_iter().filter(|column| used.contains(column.as_str())));
+    }
+    out
+}
+
+/// `reads` is exactly what a reader reads at the newest checked version:
+/// every column it selected or filtered by (`statements`) is listed, every
+/// listed column is in the database, and every listed one was used by some
+/// statement that reads rows.
+#[cfg(test)]
+pub(crate) fn assert_reads_match(allowed: &Allowed, conn: &Connection, reads: Reads, statements: &[String]) {
+    let listed: HashMap<&str, &[&str]> = reads.iter().copied().collect();
+    assert_eq!(listed.len(), reads.len(), "a table is listed twice");
+    for (table, columns) in columns_read(conn, statements) {
+        let listed = listed.get(table.as_str()).unwrap_or_else(|| panic!("{table} is read but not listed"));
+        for column in columns {
+            assert!(listed.contains(&column.as_str()), "{table}.{column} is read but not listed");
+        }
+    }
+    assert_eq!(allowed.missing(conn, reads).unwrap(), Vec::<String>::new(), "the newest checked schema has every listed column");
+    for (table, columns) in reads {
+        for column in *columns {
+            let used = statements.iter().filter(|statement| reads_rows(statement)).any(|statement| {
+                let words = words(statement);
+                words.contains(table) && words.contains(column)
+            });
+            assert!(used, "{table}.{column} is listed but no statement uses it");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VERSIONS: Versions = Versions { oldest: 5, newest_checked: 102 };
+    const ALLOWED: Allowed = Allowed { tool: "Test", tables: &["things", "gone"] };
+
+    #[test]
+    fn the_gate_refuses_older_reads_checked_and_marks_newer_at_each_edge() {
+        let older = VERSIONS.gate("Test's database", 4).unwrap_err();
+        assert_eq!(older, "Test's database is older than Bridge knows (version 4)");
+        assert_eq!(VERSIONS.gate("x", i64::MIN).unwrap_err(), format!("x is older than Bridge knows (version {})", i64::MIN));
+        assert_eq!(VERSIONS.gate("x", 5), Ok(Gate::Checked));
+        assert_eq!(VERSIONS.gate("x", 50), Ok(Gate::Checked));
+        assert_eq!(VERSIONS.gate("x", 102), Ok(Gate::Checked));
+        assert_eq!(VERSIONS.gate("x", 103), Ok(Gate::Newer));
+        assert_eq!(VERSIONS.gate("x", i64::MAX), Ok(Gate::Newer));
+        let one = Versions { oldest: 7, newest_checked: 7 };
+        assert_eq!((one.gate("x", 6).is_err(), one.gate("x", 7), one.gate("x", 8)), (true, Ok(Gate::Checked), Ok(Gate::Newer)));
+    }
+
+    #[test]
+    fn missing_lists_absent_columns_and_every_column_of_an_absent_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE things(id TEXT, name TEXT);").unwrap();
+        let reads: Reads = &[("things", &["id", "name", "kind"]), ("gone", &["a", "b"])];
+        assert_eq!(ALLOWED.missing(&conn, reads).unwrap(), ["things.kind", "gone.a", "gone.b"]);
+        assert!(ALLOWED.missing(&conn, &[("things", &["name", "id"])]).unwrap().is_empty());
+        assert!(ALLOWED.missing(&conn, &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn columns_read_names_the_table_and_quoted_columns_of_each_kind_of_select() {
+        let statements = [
+            "SELECT name FROM pragma_table_info('things')".to_owned(),
+            r#"SELECT "id", "name" FROM things WHERE id = ?1 ORDER BY name"#.to_owned(),
+            r#"SELECT "id", CASE WHEN json_valid("doc") THEN json_extract("doc", '$.a') END FROM gone"#.to_owned(),
+            r#"SELECT "id", (SELECT json_group_array(key) FROM json_each(CASE WHEN json_valid("env") THEN "env" ELSE '{}' END)) FROM gone"#.to_owned(),
+        ];
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE things(id TEXT, name TEXT, kind TEXT, rank INT, unused TEXT); CREATE TABLE gone(id TEXT, doc TEXT, env TEXT);").unwrap();
+        let read = columns_read(&conn, &statements);
+        assert_eq!(read.keys().collect::<Vec<_>>(), ["gone", "things"]);
+        assert_eq!(read["things"].iter().collect::<Vec<_>>(), ["id", "name"]);
+        assert_eq!(read["gone"].iter().collect::<Vec<_>>(), ["doc", "env", "id"]);
+        // A column only a filter names is read too.
+        let filtered = [r#"SELECT "id" FROM things WHERE kind = ?1 AND hidden = 0 ORDER BY rank"#.to_owned()];
+        assert_eq!(columns_read(&conn, &filtered)["things"].iter().collect::<Vec<_>>(), ["id", "kind", "rank"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "things.kind is read but not listed")]
+    fn a_column_only_a_filter_names_must_be_listed() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE things(id TEXT, kind TEXT);").unwrap();
+        assert_reads_match(&ALLOWED, &conn, &[("things", &["id"])], &[r#"SELECT "id" FROM things WHERE kind = ?1"#.to_owned()]);
+    }
+
+    #[test]
+    #[should_panic(expected = "things.name is listed but no statement uses it")]
+    fn asking_for_a_tables_columns_does_not_count_as_using_one_called_name() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE things(id TEXT, name TEXT);").unwrap();
+        let statements = ["SELECT name FROM pragma_table_info('things')".to_owned(), r#"SELECT "id" FROM things"#.to_owned()];
+        assert_reads_match(&ALLOWED, &conn, &[("things", &["id", "name"])], &statements);
+    }
+
+    #[test]
+    #[should_panic(expected = "not on the allowed list")]
+    fn missing_never_looks_at_a_table_off_the_allowed_list() {
+        let conn = Connection::open_in_memory().unwrap();
+        drop(ALLOWED.missing(&conn, &[("secrets", &["token"])]));
+    }
+
+    #[test]
+    fn the_reason_says_a_newer_tool_changed_what_bridge_reads_and_names_at_most_three() {
+        let names = |count: usize| (0..count).map(|index| format!("t.c{index}")).collect::<Vec<_>>();
+        assert_eq!(missing_reason("X", 9, Gate::Checked, &names(2)), "X is missing what Bridge reads (version 9)");
+        assert_eq!(
+            missing_reason("X", 120, Gate::Newer, &names(1)),
+            "X is newer than Bridge knows (version 120) and changed what Bridge reads (t.c0); update Bridge and try again"
+        );
+        assert_eq!(
+            missing_reason("X", 120, Gate::Newer, &names(3)),
+            "X is newer than Bridge knows (version 120) and changed what Bridge reads (t.c0, t.c1, t.c2); update Bridge and try again"
+        );
+        assert_eq!(
+            missing_reason("X", 120, Gate::Newer, &names(5)),
+            "X is newer than Bridge knows (version 120) and changed what Bridge reads (t.c0, t.c1, t.c2 and 2 more); update Bridge and try again"
+        );
+        assert_eq!(
+            missing_reason("X", 120, Gate::Newer, &[]),
+            "X is newer than Bridge knows (version 120) and changed what Bridge reads; update Bridge and try again"
+        );
+    }
 }

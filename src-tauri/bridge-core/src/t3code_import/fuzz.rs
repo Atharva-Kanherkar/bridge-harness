@@ -12,7 +12,7 @@
 //!   parent), deleted ones never, and each worktree is a candidate once.
 
 use super::fixture::{Fixture, ThreadRow, CANARY, VERSIONS};
-use super::store::{self, Era, NativeSession, Project, Thread, DENIED_TABLES, NEWEST_MIGRATION, OLDEST_MIGRATION};
+use super::store::{self, Era, NativeSession, Project, Thread, DENIED_TABLES, MIGRATIONS, NEWEST_READS};
 use super::*;
 use crate::import_sqlite::STATEMENTS;
 use proptest::prelude::*;
@@ -211,11 +211,17 @@ fn mutation() -> impl Strategy<Value = Mutation> {
             ("projection_threads", "archived_at"), ("projection_projects", "workspace_root"), ("projection_projects", "scripts_json"),
             ("orchestration_v2_projection_threads", "payload_json"), ("orchestration_v2_projection_threads", "title"),
             ("orchestration_v2_projection_threads", "active_provider_thread_id"), ("provider_session_runtime", "resume_cursor_json"),
-            ("orchestration_v2_projection_provider_threads", "payload_json"),
+            ("orchestration_v2_projection_provider_threads", "payload_json"), ("orchestration_v2_projection_messages", "payload_json"),
+            ("orchestration_v2_legacy_imports", "transcript_imported_at"), ("projection_projects", "archived_at"),
+            ("projection_thread_messages", "text"), ("orchestration_v2_projection_threads", "default_provider"),
         ])
         .prop_map(|(table, column)| Mutation::RenameColumn(table, column)),
         proptest::sample::select(vec!["projection_threads", "orchestration_v2_projection_threads", "projection_projects"]).prop_map(Mutation::AddColumn),
-        prop_oneof![Just(i64::MIN), Just(-1i64), Just(0i64), 1i64..200, Just(i64::MAX)].prop_map(Mutation::Version),
+        prop_oneof![
+            Just(i64::MIN), Just(-1i64), Just(0i64), 1i64..200, Just(MIGRATIONS.newest_checked), Just(MIGRATIONS.newest_checked + 1),
+            Just(i64::MAX),
+        ]
+        .prop_map(Mutation::Version),
         Just(Mutation::ClearMigrations),
         Just(Mutation::WrongTypes),
     ]
@@ -235,19 +241,21 @@ fn mutate(conn: &Connection, mutation: &Mutation) -> bool {
     conn.execute_batch(&sql).is_ok()
 }
 
-/// An independent look at whether the reader must read: a known version and
-/// every column it needs for that version's era.
+/// An independent look at whether the reader must read: a version no older
+/// than the oldest, and every column it needs for that version's era; for a
+/// version newer than the newest checked, every column it reads there.
 fn readable(conn: &Connection) -> bool {
     let version: Option<i64> = conn
         .query_row("SELECT max(migration_id) FROM effect_sql_migrations", [], |row| row.get(0))
         .ok()
         .flatten();
-    let Some(version) = version.filter(|version| (OLDEST_MIGRATION..=NEWEST_MIGRATION).contains(version)) else { return false };
+    let Some(version) = version.filter(|version| *version >= MIGRATIONS.oldest) else { return false };
     let has = |(table, column): &(&str, &str)| -> bool {
         conn.query_row(&format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name=?1"), [column], |row| row.get::<_, i64>(0)).unwrap_or(0) == 1
     };
     let era = if version >= 55 { REQUIRED_V2 } else { REQUIRED_V1 };
-    era.iter().chain(REQUIRED_BOTH).all(has)
+    let newest = NEWEST_READS.iter().flat_map(|(table, columns)| columns.iter().map(move |column| (*table, *column)));
+    era.iter().chain(REQUIRED_BOTH).all(has) && (version <= MIGRATIONS.newest_checked || newest.collect::<Vec<_>>().iter().all(has))
 }
 
 proptest! {
@@ -269,7 +277,7 @@ proptest! {
         prop_assert_eq!(read.is_ok(), expect_read, "{:?} gave {:?}", applied, read);
         match &read {
             Ok(store) => {
-                prop_assert!((OLDEST_MIGRATION..=NEWEST_MIGRATION).contains(&store.version));
+                prop_assert!(store.version >= MIGRATIONS.oldest);
                 for thread in &store.threads {
                     // A table the messages live in may be gone: an error, never a panic.
                     store::messages(&fixture.conn, store.era, thread).unwrap_or_default();

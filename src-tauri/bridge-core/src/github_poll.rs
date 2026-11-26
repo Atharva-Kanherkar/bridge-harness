@@ -1,10 +1,16 @@
 //! Live check polling for pull requests the GitHub surface has already exposed.
 
-use crate::{events::CoreEvent, github_surface::{CheckStatus, PullRequestCheck, PullRequestState, PullRequestSummary}, BridgeCore};
-use std::{collections::{HashMap, HashSet}, path::PathBuf, sync::{Arc, Mutex}, time::{Duration, Instant}};
+use crate::{events::CoreEvent, github_surface::{CheckStatus, GithubSurfaceError, PullRequestCheck, PullRequestState, PullRequestSummary}, BridgeCore};
+use std::{collections::{HashMap, HashSet}, path::PathBuf, sync::{Arc, Mutex, PoisonError}, time::{Duration, Instant}};
 
 pub const FOCUSED_CADENCE: Duration = Duration::from_secs(15);
 pub const UNFOCUSED_CADENCE: Duration = Duration::from_secs(120);
+/// The longest a failing pull request waits between reads.
+pub const MAX_FAILURE_BACKOFF: Duration = Duration::from_secs(600);
+/// How long every read stops after GitHub rate-limits one. `gh pr view` and
+/// `gh pr checks` report a GraphQL limit only in stderr, without the reset
+/// time, so one read per pause probes whether the budget is back.
+pub const RATE_LIMIT_PAUSE: Duration = Duration::from_secs(300);
 
 #[derive(Default)]
 pub struct GithubPoller {
@@ -17,6 +23,8 @@ pub struct GithubPoller {
     /// announce it twice. Keyed forever (bounded by PRs seen): a PR only
     /// re-announces when a *different* terminal check set shows up — a new run.
     announced: Mutex<HashMap<(String, u64), Vec<PullRequestCheck>>>,
+    /// Set by a rate-limited read: no pull request is read before then.
+    paused_until: Mutex<Option<Instant>>,
 }
 
 #[derive(Clone)]
@@ -33,8 +41,11 @@ struct WatchedPullRequest {
     head_sha: Option<String>,
     /// Attached entries poll at the focused cadence while checks run and the
     /// unfocused one once settled; list-watched entries (`None`) poll every
-    /// cycle like they always have.
+    /// cycle like they always have. A failed read pushes either kind back by
+    /// [`failure_backoff`].
     next_poll: Option<Instant>,
+    /// Reads that failed in a row; one success resets it.
+    failures: u32,
 }
 
 impl WatchedPullRequest {
@@ -48,6 +59,7 @@ impl WatchedPullRequest {
             state: None,
             head_sha: None,
             next_poll: None,
+            failures: 0,
         }
     }
 }
@@ -69,10 +81,12 @@ impl GithubPoller {
         // transition per refetch would go unannounced. Chat-attached entries
         // are not the list's business: a merged PR leaves the open list while
         // its card still wants the state flip, so they survive untouched.
+        // A failing PR keeps its backoff too, or every re-list would make it
+        // due again at once.
         let mut previous = HashMap::new();
         watched.retain(|(workspace, number), entry| {
             if workspace == workspace_id && !entry.attached {
-                previous.insert(*number, entry.checks.take());
+                previous.insert(*number, (entry.checks.take(), entry.next_poll, entry.failures));
                 false
             } else {
                 true
@@ -80,9 +94,12 @@ impl GithubPoller {
         });
         for pull_request in pull_requests {
             if pull_request.checks.queued > 0 || pull_request.checks.in_progress > 0 {
-                let checks = previous.remove(&pull_request.number).flatten();
-                watched.entry((workspace_id.into(), pull_request.number))
-                    .or_insert_with(|| WatchedPullRequest::listed(path.clone(), pull_request, checks));
+                let (checks, next_poll, failures) = previous.remove(&pull_request.number).unwrap_or_default();
+                watched.entry((workspace_id.into(), pull_request.number)).or_insert_with(|| WatchedPullRequest {
+                    next_poll,
+                    failures,
+                    ..WatchedPullRequest::listed(path.clone(), pull_request, checks)
+                });
             }
         }
     }
@@ -101,6 +118,7 @@ impl GithubPoller {
         for entry in self.watched.lock().unwrap().values_mut() {
             entry.next_poll = None;
         }
+        *self.paused_until.lock().unwrap() = None;
     }
 
     pub fn watch_attached(
@@ -129,42 +147,76 @@ impl GithubPoller {
                 state: None,
                 head_sha: None,
                 next_poll: None,
+                failures: 0,
             });
     }
 
     pub(crate) fn poll_once(&self, core: &BridgeCore) {
+        if self.paused_until.lock().unwrap_or_else(PoisonError::into_inner).is_some_and(|until| Instant::now() < until) {
+            return;
+        }
         let pending: Vec<_> = self.watched.lock().unwrap().iter()
             .filter(|(_, value)| value.next_poll.is_none_or(|due| due <= Instant::now()))
             .map(|(key, value)| (key.clone(), value.clone())).collect();
         for ((workspace_id, number), watched) in pending {
-            if watched.attached {
-                self.poll_attached(core, &workspace_id, number, &watched);
-                continue;
-            }
-            core.github_surface.invalidate_checks(&watched.path, number);
-            let Ok(checks) = core.github_surface.pr_checks(&watched.path, number) else { continue };
-            let complete = all_checks_complete(&checks);
-            let mut watched_map = self.watched.lock().unwrap();
-            // The entry may have been dropped by a concurrent `watch()` call
-            // (e.g. the workspace's PR list was refetched); nothing to update.
-            let Some(entry) = watched_map.get_mut(&(workspace_id.clone(), number)) else { continue };
-            let changed = rollup_changed(entry.checks.as_deref(), &checks, complete);
-            let terminal = complete.then(|| (entry.head_branch.clone(), entry.title.clone()));
-            entry.checks = Some(checks.clone());
-            if complete {
-                watched_map.remove(&(workspace_id.clone(), number));
-            }
-            drop(watched_map);
-            if changed {
-                core.events.publish(CoreEvent::GithubChecksChanged {
-                    workspace_id: workspace_id.clone(),
-                    number,
-                });
-            }
-            if let Some((head_branch, title)) = terminal {
-                self.announce_terminal(core, workspace_id, number, head_branch, title, checks);
+            let polled = if watched.attached {
+                self.poll_attached(core, &workspace_id, number, &watched)
+            } else {
+                self.poll_listed(core, &workspace_id, number, &watched)
+            };
+            if let Err(error) = polled {
+                // Every other read this cycle would spend the same exhausted
+                // budget, so a rate limit ends the cycle here.
+                if self.record_failure(&workspace_id, number, &error) {
+                    break;
+                }
             }
         }
+    }
+
+    /// Push a failed pull request back by its backoff and, when GitHub
+    /// rate-limited the read, pause every read. Returns whether it did.
+    fn record_failure(&self, workspace_id: &str, number: u64, error: &GithubSurfaceError) -> bool {
+        let now = Instant::now();
+        if let Some(entry) = self.watched.lock().unwrap_or_else(PoisonError::into_inner).get_mut(&(workspace_id.to_owned(), number)) {
+            entry.failures = entry.failures.saturating_add(1);
+            entry.next_poll = Some(now + failure_backoff(entry.failures));
+        }
+        let Some(pause) = rate_limit_pause(error) else { return false };
+        eprintln!("github poll: GitHub is rate limiting reads, pausing for {}s: {error}", pause.as_secs());
+        *self.paused_until.lock().unwrap_or_else(PoisonError::into_inner) = Some(now + pause);
+        true
+    }
+
+    /// One poll of a PR the pane's list put on watch: its check rollup only.
+    fn poll_listed(&self, core: &BridgeCore, workspace_id: &str, number: u64, watched: &WatchedPullRequest) -> Result<(), GithubSurfaceError> {
+        let workspace_id = workspace_id.to_owned();
+        core.github_surface.invalidate_checks(&watched.path, number);
+        let checks = core.github_surface.pr_checks(&watched.path, number)?;
+        let complete = all_checks_complete(&checks);
+        let mut watched_map = self.watched.lock().unwrap();
+        // The entry may have been dropped by a concurrent `watch()` call
+        // (e.g. the workspace's PR list was refetched); nothing to update.
+        let Some(entry) = watched_map.get_mut(&(workspace_id.clone(), number)) else { return Ok(()) };
+        let changed = rollup_changed(entry.checks.as_deref(), &checks, complete);
+        let terminal = complete.then(|| (entry.head_branch.clone(), entry.title.clone()));
+        entry.checks = Some(checks.clone());
+        entry.failures = 0;
+        entry.next_poll = None;
+        if complete {
+            watched_map.remove(&(workspace_id.clone(), number));
+        }
+        drop(watched_map);
+        if changed {
+            core.events.publish(CoreEvent::GithubChecksChanged {
+                workspace_id: workspace_id.clone(),
+                number,
+            });
+        }
+        if let Some((head_branch, title)) = terminal {
+            self.announce_terminal(core, workspace_id, number, head_branch, title, checks);
+        }
+        Ok(())
     }
 
     /// One poll of a chat-attached PR. On top of the check rollup this tracks
@@ -173,13 +225,13 @@ impl GithubPoller {
     /// settled (state merged/closed with nothing running) unwatches the PR, so
     /// background polling stays bounded; a slow cadence applies before that so
     /// a later push still surfaces.
-    fn poll_attached(&self, core: &BridgeCore, workspace_id: &str, number: u64, watched: &WatchedPullRequest) {
+    fn poll_attached(&self, core: &BridgeCore, workspace_id: &str, number: u64, watched: &WatchedPullRequest) -> Result<(), GithubSurfaceError> {
         core.github_surface.invalidate_brief(&watched.path, number);
         core.github_surface.invalidate_checks(&watched.path, number);
         // A transient `gh` failure keeps every last-known value; the card
-        // shows its stored snapshot labelled stale and the next cycle retries.
-        let Ok(brief) = core.github_surface.pr_brief(&watched.path, number) else { return };
-        let Ok(checks) = core.github_surface.pr_checks(&watched.path, number) else { return };
+        // shows its stored snapshot labelled stale and the caller backs off.
+        let brief = core.github_surface.pr_brief(&watched.path, number)?;
+        let checks = core.github_surface.pr_checks(&watched.path, number)?;
         // Store what was read before telling anyone: a screen that refetches
         // on the event reads the stored snapshot, and a failed read above
         // leaves the last good one in place.
@@ -194,7 +246,7 @@ impl GithubPoller {
         let state_terminal = matches!(brief.state, PullRequestState::Closed | PullRequestState::Merged);
         let complete = all_checks_complete(&checks);
         let mut watched_map = self.watched.lock().unwrap();
-        let Some(entry) = watched_map.get_mut(&(workspace_id.to_owned(), number)) else { return };
+        let Some(entry) = watched_map.get_mut(&(workspace_id.to_owned(), number)) else { return Ok(()) };
         // Baselines start empty, so the first observation reports only a
         // genuinely completed check set — same rule as the list-watched path.
         // A first poll has no baselines; what the store held decides then, so
@@ -209,6 +261,7 @@ impl GithubPoller {
         entry.head_sha = Some(brief.head_sha.clone());
         entry.head_branch = brief.head_branch.clone();
         entry.title = brief.title.clone();
+        entry.failures = 0;
         entry.next_poll = Some(Instant::now() + if checks_active { FOCUSED_CADENCE } else { UNFOCUSED_CADENCE });
         if state_terminal && !checks_active {
             watched_map.remove(&(workspace_id.to_owned(), number));
@@ -223,6 +276,7 @@ impl GithubPoller {
         if let Some((head_branch, title)) = terminal {
             self.announce_terminal(core, workspace_id.to_owned(), number, head_branch, title, checks);
         }
+        Ok(())
     }
 
     /// Publish `GithubCiFinished` for a terminal check set, at most once per
@@ -272,6 +326,28 @@ fn summarize(checks: &[PullRequestCheck]) -> (u32, u32) {
         })
         .count() as u32;
     (failed, checks.len() as u32)
+}
+
+/// How long a pull request waits after `failures` failed reads in a row:
+/// twice the focused cadence, doubling, capped at [`MAX_FAILURE_BACKOFF`].
+fn failure_backoff(failures: u32) -> Duration {
+    FOCUSED_CADENCE
+        .saturating_mul(2u32.saturating_pow(failures.min(16)))
+        .min(MAX_FAILURE_BACKOFF)
+}
+
+/// How long to stop reading when this failure is a rate limit. The REST path
+/// knows GitHub's wait; `gh pr view` and `gh pr checks` only print
+/// `GraphQL: API rate limit already exceeded` (or a secondary-limit message)
+/// to stderr, so those get [`RATE_LIMIT_PAUSE`].
+fn rate_limit_pause(error: &GithubSurfaceError) -> Option<Duration> {
+    match error {
+        GithubSurfaceError::RateLimited { retry_after, .. } => Some((*retry_after).max(RATE_LIMIT_PAUSE)),
+        GithubSurfaceError::CommandFailed { stderr, .. } if stderr.to_ascii_lowercase().contains("rate limit") => {
+            Some(RATE_LIMIT_PAUSE)
+        }
+        _ => None,
+    }
 }
 
 /// An empty result can mean the checks API has not yet caught up with the
@@ -510,20 +586,147 @@ mod tests {
     }
 
     #[test]
-    fn an_attached_pr_is_retried_after_a_transient_gh_failure() {
+    fn a_failed_read_backs_off_instead_of_retrying_every_cycle() {
         let scratch = tempfile::tempdir().unwrap();
         // `for_tests` has no `gh`: every read fails, which is exactly the
         // transient-outage shape the card must ride through.
         let core = crate::runtime::BridgeCore::for_tests(scratch.path());
         let poller = GithubPoller::default();
         poller.watch_attached("ws", scratch.path().to_path_buf(), 9, "feat/card", "Card PR");
+        let due_in = |poller: &GithubPoller| {
+            let watched = poller.watched.lock().unwrap();
+            let entry = watched.get(&("ws".into(), 9)).expect("a failed poll keeps the watch");
+            (entry.failures, entry.next_poll.expect("a failed read is pushed back").saturating_duration_since(Instant::now()))
+        };
+        poller.poll_once(&core);
+        let (failures, wait) = due_in(&poller);
+        assert_eq!(failures, 1);
+        assert!(wait > Duration::from_secs(25) && wait <= Duration::from_secs(30), "first retry waits 30 s, got {wait:?}");
+        // The very next cycle leaves it alone.
+        poller.poll_once(&core);
+        assert_eq!(due_in(&poller).0, 1, "a backed-off PR is not read before it is due");
+        poller.due_now();
+        poller.poll_once(&core);
+        let (failures, wait) = due_in(&poller);
+        assert_eq!(failures, 2);
+        assert!(wait > Duration::from_secs(55) && wait <= Duration::from_secs(60), "second retry waits 60 s, got {wait:?}");
+        assert!(poller.paused_until.lock().unwrap().is_none(), "a missing gh is not a rate limit");
+    }
+
+    #[test]
+    fn failure_backoff_doubles_up_to_the_cap() {
+        let seconds: Vec<u64> = [1, 2, 3, 4, 5, 6, 40, u32::MAX].into_iter().map(|n| failure_backoff(n).as_secs()).collect();
+        assert_eq!(seconds, [30, 60, 120, 240, 480, 600, 600, 600]);
+    }
+
+    #[test]
+    fn rate_limit_pause_reads_both_rest_and_gh_stderr_shapes() {
+        let failed = |stderr: &str| GithubSurfaceError::CommandFailed { operation: "pr view", stderr: stderr.into() };
+        let limited = |seconds| GithubSurfaceError::RateLimited { operation: "post review", message: String::new(), retry_after: Duration::from_secs(seconds) };
+        assert_eq!(rate_limit_pause(&failed("GraphQL: API rate limit already exceeded for user ID 1.")), Some(RATE_LIMIT_PAUSE));
+        assert_eq!(rate_limit_pause(&failed("You have exceeded a secondary rate limit.")), Some(RATE_LIMIT_PAUSE));
+        assert_eq!(rate_limit_pause(&limited(900)), Some(Duration::from_secs(900)), "GitHub's longer wait wins");
+        assert_eq!(rate_limit_pause(&limited(10)), Some(RATE_LIMIT_PAUSE), "never shorter than the floor");
+        assert_eq!(rate_limit_pause(&failed("HTTP 404: Not Found")), None);
+    }
+
+    /// A checkout with a GitHub origin and a `gh` that answers every pull
+    /// request read the way GitHub does once the GraphQL budget is spent.
+    fn rate_limited_gh() -> (tempfile::TempDir, crate::runtime::BridgeCore, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = tempfile::tempdir().unwrap();
+        let repo = scratch.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        for args in [&["init", "-b", "main"][..], &["remote", "add", "origin", "https://github.com/o/r.git"]] {
+            let output = std::process::Command::new("git").current_dir(&repo).args(args).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        }
+        let bin = scratch.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::write(bin.join("gh"), r#"#!/bin/sh
+root=$(dirname "$0")
+echo "$1 $2" >> "$root/invocations.log"
+case "$1 $2" in
+  "auth status") exit 0 ;;
+  "pr view"|"pr checks") echo "GraphQL: API rate limit already exceeded for user ID 1." >&2; exit 1 ;;
+  *) exit 1 ;;
+esac
+"#).unwrap();
+        std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut core = crate::runtime::BridgeCore::for_tests(scratch.path());
+        core.github_surface = crate::github_surface::GithubSurface::discover_on_path(&bin);
+        (scratch, core, repo)
+    }
+
+    fn pull_request_reads(scratch: &tempfile::TempDir) -> usize {
+        std::fs::read_to_string(scratch.path().join("bin/invocations.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.starts_with("pr "))
+            .count()
+    }
+
+    #[test]
+    fn a_rate_limit_ends_the_cycle_and_pauses_every_read() {
+        let (scratch, core, repo) = rate_limited_gh();
+        let poller = GithubPoller::default();
+        for number in [1, 2, 3] {
+            poller.watch_attached("ws", repo.clone(), number, "feat/pr", "PR");
+        }
+        poller.poll_once(&core);
+        assert_eq!(pull_request_reads(&scratch), 1, "the first rate-limited read stops the other two");
+        let paused = poller.paused_until.lock().unwrap().expect("a rate limit pauses the poller");
+        let pause = paused.saturating_duration_since(Instant::now());
+        assert!(pause > RATE_LIMIT_PAUSE - Duration::from_secs(5) && pause <= RATE_LIMIT_PAUSE, "paused for {pause:?}");
+        // Two PRs are still due, but nothing is read until the pause ends.
+        poller.poll_once(&core);
+        poller.poll_once(&core);
+        assert_eq!(pull_request_reads(&scratch), 1, "no read while paused");
+        // Once the pause is over, one probe finds the budget still spent.
+        *poller.paused_until.lock().unwrap() = None;
+        poller.poll_once(&core);
+        assert_eq!(pull_request_reads(&scratch), 2, "one probe per pause");
+    }
+
+    #[test]
+    fn a_relist_keeps_a_failing_pr_backed_off() {
+        use crate::github_surface::{CheckRollup, Mergeability, ReviewDecision};
+        let scratch = tempfile::tempdir().unwrap();
+        let core = crate::runtime::BridgeCore::for_tests(scratch.path());
+        let summary = PullRequestSummary {
+            number: 7, title: "t".into(), state: PullRequestState::Open, is_draft: false, author: None,
+            head_branch: "b".into(), review_decision: ReviewDecision::None, mergeability: Mergeability::Mergeable,
+            merge_state_status: String::new(), checks: CheckRollup { queued: 1, total: 1, ..Default::default() }, url: String::new(),
+        };
+        let poller = GithubPoller::default();
+        poller.watch("ws", scratch.path().to_path_buf(), std::slice::from_ref(&summary));
+        poller.poll_once(&core);
+        let before = {
+            let watched = poller.watched.lock().unwrap();
+            let entry = &watched[&("ws".into(), 7)];
+            (entry.failures, entry.next_poll)
+        };
+        assert_eq!(before.0, 1);
+        assert!(before.1.is_some(), "a failing list-watched PR is pushed back too");
+        // The pane re-lists on every checks event and on refocus.
+        poller.watch("ws", scratch.path().to_path_buf(), std::slice::from_ref(&summary));
+        let watched = poller.watched.lock().unwrap();
+        let entry = &watched[&("ws".into(), 7)];
+        assert_eq!((entry.failures, entry.next_poll), before, "a re-list must not make it due again");
+    }
+
+    #[test]
+    fn a_successful_read_clears_the_failure_count() {
+        let (_scratch, core, repo) = crate::session_prs::tests::fixture();
+        let poller = GithubPoller::default();
+        poller.watch_attached("w", repo, 12, "feat/pr", "PR");
+        poller.watched.lock().unwrap().get_mut(&("w".into(), 12)).unwrap().failures = 4;
         poller.poll_once(&core);
         let watched = poller.watched.lock().unwrap();
-        let entry = watched.get(&("ws".into(), 9)).expect("a failed poll keeps the watch");
-        assert!(
-            entry.next_poll.is_none(),
-            "a failed cycle leaves the entry due immediately so the next cycle retries",
-        );
+        let entry = &watched[&("w".into(), 12)];
+        assert_eq!(entry.failures, 0);
+        let wait = entry.next_poll.unwrap().saturating_duration_since(Instant::now());
+        assert!(wait > UNFOCUSED_CADENCE - Duration::from_secs(5), "settled checks go back to the normal cadence, got {wait:?}");
     }
 
     #[test]
@@ -573,10 +776,12 @@ mod tests {
             let entry = watched.get(&("w".into(), 12)).unwrap();
             assert_eq!(entry.checks, Some(baseline));
             assert_eq!(entry.head_sha.as_deref(), Some("old"));
-            assert!(entry.next_poll.is_none());
+            assert_eq!(entry.failures, 1);
+            assert!(entry.next_poll.is_some(), "the failed read is retried after a backoff");
         }
         assert!(events.try_recv().is_err(), "no invented transition on an outage");
         std::fs::remove_file(scratch.path().join("offline")).unwrap();
+        poller.due_now();
         poller.poll_once(&core);
         assert!(matches!(events.try_recv(), Ok(CoreEvent::GithubChecksChanged { number: 12, .. })));
         assert_eq!(poller.watched.lock().unwrap().get(&("w".into(), 12)).unwrap().checks.as_ref().unwrap()[0].status, CheckStatus::Completed);

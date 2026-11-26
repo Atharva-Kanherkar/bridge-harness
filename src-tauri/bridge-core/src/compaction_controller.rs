@@ -1,7 +1,7 @@
 use crate::{
     context::{Checkpoint, CheckpointDraft, CHECKPOINT_SCHEMA_VERSION},
     model::{SessionEntry, SEMANTIC_EVENT_SCHEMA_VERSION},
-    session_forest::{append_in_transaction, EntryKind, SessionForest},
+    session_forest::{append_in_transaction_with_repository_state, EntryKind, SessionForest},
     store, BridgeError,
 };
 use chrono::{DateTime, Utc};
@@ -645,6 +645,15 @@ impl CompactionController {
         session_id: &str,
         output: &str,
     ) -> Result<CheckpointOutcome, BridgeError> {
+        Self::handle_output_with_repository_state(db, session_id, output, None)
+    }
+
+    pub(crate) fn handle_output_with_repository_state(
+        db: &Connection,
+        session_id: &str,
+        output: &str,
+        repository_state: Option<&Value>,
+    ) -> Result<CheckpointOutcome, BridgeError> {
         let Some(pending) = Self::pending(db, session_id)? else {
             return Ok(CheckpointOutcome::NotPending);
         };
@@ -691,7 +700,7 @@ impl CompactionController {
             // cold start. Kept as a plain checkpoint, it heads the projection
             // while the stored history still fills the tail.
             let late = conversation_appended_since_request(db, session_id)?;
-            return Self::record_switch_checkpoint(db, session_id, checkpoint, pending, provenance, late);
+            return Self::record_switch_checkpoint(db, session_id, checkpoint, pending, provenance, late, repository_state);
         }
         Self::record_checkpoint(
             db,
@@ -700,6 +709,7 @@ impl CompactionController {
             pending,
             provenance,
             Some(&evidence),
+            repository_state,
         )
     }
 
@@ -772,10 +782,15 @@ impl CompactionController {
         pending: PendingCompaction,
         provenance: &str,
         late: bool,
+        repository_state: Option<&Value>,
     ) -> Result<CheckpointOutcome, BridgeError> {
         let mut payload = checkpoint_payload(&checkpoint, &pending, provenance);
         payload["landing"] = json!(if late { "late" } else { "switch" });
-        let entry = SessionForest::new(db)
+        let forest = repository_state.map_or_else(
+            || SessionForest::new(db),
+            |state| SessionForest::with_repository_state(db, state),
+        );
+        let entry = forest
             .append(session_id, EntryKind::Checkpoint, payload)
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
         let (kind, body) = if late {
@@ -803,6 +818,20 @@ impl CompactionController {
         files_touched: Vec<String>,
         reason: CompactionReason,
     ) -> Result<CheckpointOutcome, BridgeError> {
+        Self::record_reconstructed_with_repository_state(
+            db, session_id, summary, decisions, files_touched, reason, None,
+        )
+    }
+
+    fn record_reconstructed_with_repository_state(
+        db: &Connection,
+        session_id: &str,
+        summary: String,
+        decisions: Vec<String>,
+        files_touched: Vec<String>,
+        reason: CompactionReason,
+        repository_state: Option<&Value>,
+    ) -> Result<CheckpointOutcome, BridgeError> {
         let checkpoint = Checkpoint {
             schema_version: 1,
             summary,
@@ -828,7 +857,7 @@ impl CompactionController {
             first_retained_entry_id: checkpoint.first_retained_entry_id.clone(),
             background: false,
         };
-        Self::record_checkpoint(db, session_id, checkpoint, pending, "reconstructed", None)
+        Self::record_checkpoint(db, session_id, checkpoint, pending, "reconstructed", None, repository_state)
     }
 
     pub fn reconstruct_from_normalized_events_and_git(
@@ -853,6 +882,16 @@ impl CompactionController {
         session_id: &str,
         git_status: &str,
         reason: CompactionReason,
+    ) -> Result<CheckpointOutcome, BridgeError> {
+        Self::reconstruct_with_repository_state(db, session_id, git_status, reason, None)
+    }
+
+    pub(crate) fn reconstruct_with_repository_state(
+        db: &Connection,
+        session_id: &str,
+        git_status: &str,
+        reason: CompactionReason,
+        repository_state: Option<&Value>,
     ) -> Result<CheckpointOutcome, BridgeError> {
         let branch = SessionForest::new(db)
             .active_branch(session_id)
@@ -902,13 +941,14 @@ impl CompactionController {
         } else {
             format!("Recovered from normalized events: {}", facts.join(" | "))
         };
-        let outcome = Self::record_reconstructed(
+        let outcome = Self::record_reconstructed_with_repository_state(
             db,
             session_id,
             summary,
             decisions,
             files_touched,
             reason,
+            repository_state,
         )?;
         store::event(
             db,
@@ -956,6 +996,7 @@ impl CompactionController {
         pending: PendingCompaction,
         provenance: &str,
         evidence: Option<&CheckpointEvidence>,
+        repository_state: Option<&Value>,
     ) -> Result<CheckpointOutcome, BridgeError> {
         if checkpoint.first_retained_entry_id != pending.first_retained_entry_id
             || checkpoint.tokens_before != pending.tokens_before
@@ -967,14 +1008,15 @@ impl CompactionController {
         }
         let transaction = db.unchecked_transaction()?;
         let checkpoint_payload = checkpoint_payload(&checkpoint, &pending, provenance);
-        let checkpoint_entry = append_in_transaction(
+        let checkpoint_entry = append_in_transaction_with_repository_state(
             &transaction,
             session_id,
             EntryKind::Checkpoint,
             checkpoint_payload,
+            repository_state,
         )
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-        let compaction_entry = append_in_transaction(
+        let compaction_entry = append_in_transaction_with_repository_state(
             &transaction,
             session_id,
             EntryKind::Compaction,
@@ -990,10 +1032,11 @@ impl CompactionController {
                 "sourceAgent": checkpoint.source_agent,
                 "provenance": checkpoint.provenance.as_deref().unwrap_or(provenance),
             }),
+            repository_state,
         )
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
         let retained_at = Utc::now().to_rfc3339();
-        let repository_state = store::repository_state_for_session(&transaction, session_id)?;
+        let repository_state = repository_state.cloned().unwrap_or_else(crate::repo_stamp::unavailable);
         let retained_sequence = transaction.query_row(
             "SELECT COALESCE(MAX(sequence),0)+1 FROM session_entries WHERE session_id=?1",
             params![session_id],

@@ -7,13 +7,12 @@
 //! only the documents named in [`PROFILE_DOCUMENTS`] are ever selected; the
 //! rest (settings, SSH targets, window state) hold keys and tokens.
 
-use crate::import_sqlite::{int, text, user_version, Allowed};
+use crate::import_sqlite::{int, missing_reason, text, user_version, Allowed, Gate, Reads, Versions};
 use crate::import_worktrees::Scripts;
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
 /// The chats, at the data folder's root.
@@ -25,10 +24,26 @@ pub const PROFILE_INDEX: &str = "orca-profile-index.json";
 /// `profiles/<id>/profile-state.db`.
 pub const PROFILE_DB: &str = "profile-state.db";
 
-/// `user_version`s Bridge reads. The newest are Orca 1.4.271's
-/// (`stablyai/orca@1f4e0b30`).
-pub const CHAT_VERSIONS: RangeInclusive<i64> = 1..=2;
-pub const PROFILE_VERSIONS: RangeInclusive<i64> = 1..=3;
+/// `user_version`s Bridge reads. The newest checked are Orca 1.4.271's
+/// (`stablyai/orca@1f4e0b30`). A newer database is read while it has all of
+/// [`CHAT_NEWEST_READS`] or [`PROFILE_NEWEST_READS`].
+pub const CHAT_VERSIONS: Versions = Versions { oldest: 1, newest_checked: 2 };
+pub const PROFILE_VERSIONS: Versions = Versions { oldest: 1, newest_checked: 3 };
+
+/// Every column Bridge reads from each database at its newest checked
+/// version. A newer database without one of them changed what Bridge reads,
+/// and is refused.
+pub const CHAT_NEWEST_READS: Reads = &[
+    ("agent_session_records", &["session_id", "record_json"]),
+    ("agent_session_store_meta", &["key", "value"]),
+    ("journal_chat_state", &["session_id", "epoch"]),
+    ("journal_items", &["item_id", "payload_json", "session_id", "epoch", "hidden", "sequence", "sequence_index", "ordinal"]),
+];
+pub const PROFILE_NEWEST_READS: Reads = &[
+    ("profile_state_documents", &["domain", "payload", "revision"]),
+    ("profile_state_document_parts_meta", &["domain", "legacy_revision"]),
+    ("profile_state_document_parts", &["part_key", "payload", "domain", "ordinal"]),
+];
 /// The `schemaVersion` document of profile state.
 pub const STATE_SCHEMA: i64 = 1;
 
@@ -251,19 +266,26 @@ fn has_all(allowed: &Allowed, conn: &Connection, table: &str, needed: &[&str], w
     Ok(needed.iter().all(|column| present.contains(*column)))
 }
 
-/// Read the chats, or say why not. Fails closed on a version outside
-/// [`CHAT_VERSIONS`], a missing column Bridge reads, or any read error.
+/// Refuse a database without what Bridge needs; for a newer one, without
+/// any column of `newest_reads`.
+fn require(allowed: &Allowed, conn: &Connection, what: &str, label: &str, (version, gate): (i64, Gate), needed: Reads, newest_reads: Reads) -> Result<(), String> {
+    let missing = allowed.missing(conn, if gate == Gate::Newer { newest_reads } else { needed }).map_err(fail(what))?;
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(missing_reason(label, version, gate, &missing))
+    }
+}
+
+/// Read the chats, or say why not. Fails closed on a version older than
+/// [`CHAT_VERSIONS`], a missing column Bridge reads (for a version newer
+/// than the newest checked: any of [`CHAT_NEWEST_READS`]), or any read
+/// error.
 pub fn read_chats(conn: &Connection) -> Result<(i64, Vec<Chat>), String> {
     let version = user_version(conn).map_err(fail("chats"))?;
-    if version > *CHAT_VERSIONS.end() {
-        return Err(format!("Orca's chats are in a newer format than Bridge knows (version {version}); update Bridge and try again"));
-    }
-    if version < *CHAT_VERSIONS.start() {
-        return Err(format!("Orca's chats are in an older format than Bridge knows (version {version})"));
-    }
-    if !has_all(&CHATS, conn, "agent_session_records", &["session_id", "record_json"], "chats")? {
-        return Err(format!("Orca's chat database is missing what Bridge reads (version {version})"));
-    }
+    let label = "Orca's chat database";
+    let gate = CHAT_VERSIONS.gate(label, version)?;
+    require(&CHATS, conn, "chats", label, (version, gate), &[("agent_session_records", &["session_id", "record_json"])], CHAT_NEWEST_READS)?;
     let deleted = deleted_chats(conn)?;
     let fields = [
         ("id", "$.sessionId"),
@@ -346,12 +368,9 @@ fn deleted_chats(conn: &Connection) -> Result<HashSet<String>, String> {
 pub fn read_profile(conn: &Connection, id: &str) -> Result<Profile, String> {
     let what = "profile state";
     let version = user_version(conn).map_err(fail(what))?;
-    if !PROFILE_VERSIONS.contains(&version) {
-        return Err(format!("Orca's profile '{id}' is in a format Bridge does not know (version {version}); update Bridge and Orca and try again"));
-    }
-    if !has_all(&PROFILE, conn, "profile_state_documents", &["domain", "payload", "revision"], what)? {
-        return Err(format!("Orca's profile '{id}' is missing what Bridge reads (version {version})"));
-    }
+    let label = format!("Orca's profile '{id}'");
+    let gate = PROFILE_VERSIONS.gate(&label, version)?;
+    require(&PROFILE, conn, what, &label, (version, gate), &[("profile_state_documents", &["domain", "payload", "revision"])], PROFILE_NEWEST_READS)?;
     let placeholders = PROFILE_DOCUMENTS.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
     let params: Vec<&dyn rusqlite::ToSql> = PROFILE_DOCUMENTS.iter().map(|domain| domain as &dyn rusqlite::ToSql).collect();
     let filter = format!("domain IN ({placeholders})");
