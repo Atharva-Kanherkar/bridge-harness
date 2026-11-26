@@ -2,7 +2,7 @@ import { createContext, memo, useContext, useEffect, useMemo, useRef, useState }
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
-import { Check, Copy, KeyRound, Maximize2, Minimize2 } from "lucide-react";
+import { Check, Copy, Info, KeyRound, Lightbulb, Maximize2, MessageSquareWarning, Minimize2, OctagonAlert, TriangleAlert } from "lucide-react";
 import type Katex from "katex";
 import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from "./highlight";
 import { isExternalUrl } from "../externalLinks";
@@ -27,11 +27,77 @@ type Block =
   | { kind: "math"; tex: string }
   | { kind: "html"; html: string }
   | { kind: "heading"; level: number; text: string }
-  | { kind: "list"; ordered: boolean; items: string[] }
-  | { kind: "quote"; text: string }
+  | { kind: "list"; ordered: boolean; start: number; items: ListItem[] }
+  | { kind: "quote"; blocks: Block[]; alert?: AlertKind }
   | { kind: "rule" }
   | { kind: "table"; header: string[]; rows: string[][] }
   | { kind: "para"; text: string };
+
+/** One list item: its own line of text and any list nested under it. */
+type ListItem = { text: string; children: Block[] };
+
+/** GitHub's alert callouts: a quote whose first line is `[!NOTE]` and so on. */
+export type AlertKind = "note" | "tip" | "important" | "warning" | "caution";
+const ALERT_LINE = /^\[!(note|tip|important|warning|caution)\]\s*$/i;
+
+const LIST_LINE = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
+const indentOf = (line: string) => (/^[ \t]*/.exec(line)?.[0] ?? "").replace(/\t/g, "    ").length;
+const opensBlock = (trimmed: string) => trimmed.startsWith("```") || trimmed.startsWith("$$");
+
+/**
+ * A list starting at `start`, with deeper-indented markers nested under the
+ * item above them. An ordered list keeps its first number: a list split by a
+ * nested bullet or a blank line used to restart at 1, so "1. 2. 3." read
+ * "1. 1. 1.". A blank line only ends the list when what follows is not more of
+ * it.
+ */
+function parseList(lines: string[], start: number): { block: Block; next: number } {
+  const first = LIST_LINE.exec(lines[start])!;
+  const base = indentOf(first[1]);
+  const ordered = /\d/.test(first[2]);
+  const items: ListItem[] = [];
+  let index = start;
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim()) {
+      let ahead = index + 1;
+      while (ahead < lines.length && !lines[ahead].trim()) ahead += 1;
+      const next = lines[ahead];
+      const marker = next === undefined ? null : LIST_LINE.exec(next);
+      const continues = next !== undefined && !opensBlock(next.trim()) && (marker
+        ? indentOf(next) > base + 1 || (indentOf(next) >= base && /\d/.test(marker[2]) === ordered)
+        : indentOf(next) > base + 1 && items.length > 0);
+      if (!continues) break;
+      index = ahead;
+      continue;
+    }
+    const marker = LIST_LINE.exec(line);
+    const indent = indentOf(line);
+    if (marker && indent < base) break;
+    if (marker && indent <= base + 1) {
+      if (/\d/.test(marker[2]) !== ordered) break;
+      items.push({ text: marker[3], children: [] });
+      index += 1;
+      continue;
+    }
+    if (marker && items.length) {
+      const nested = parseList(lines, index);
+      items[items.length - 1].children.push(nested.block);
+      index = nested.next;
+      continue;
+    }
+    // A wrapped line of the item above.
+    if (items.length && indent > base && !opensBlock(line.trim())) {
+      const last = items[items.length - 1];
+      if (last.children.length) break;
+      last.text += ` ${line.trim()}`;
+      index += 1;
+      continue;
+    }
+    break;
+  }
+  return { block: { kind: "list", ordered, start: ordered ? Number.parseInt(first[2], 10) : 1, items }, next: index };
+}
 
 /** Split a `| a | b |` row into trimmed cells, dropping the leading/trailing pipe. */
 function splitTableRow(line: string): string[] {
@@ -111,7 +177,10 @@ export function splitBlocks(source: string, { richFences = true }: { richFences?
     if (/^>\s?/.test(trimmed)) {
       const quote: string[] = [];
       while (index < lines.length && /^>\s?/.test(lines[index].trim())) { quote.push(lines[index].trim().replace(/^>\s?/, "")); index += 1; }
-      blocks.push({ kind: "quote", text: quote.join("\n") });
+      // A quote holds blocks of its own: release notes quote whole headings
+      // and lists, and a GitHub alert is a quote that names its kind first.
+      const alert = ALERT_LINE.exec(quote[0] ?? "")?.[1]?.toLowerCase() as AlertKind | undefined;
+      blocks.push({ kind: "quote", blocks: splitBlocks((alert ? quote.slice(1) : quote).join("\n"), { richFences }), ...(alert ? { alert } : {}) });
       continue;
     }
     if (isTableRow(trimmed) && index + 1 < lines.length && TABLE_SEPARATOR.test(lines[index + 1].trim()) && isTableRow(lines[index + 1].trim())) {
@@ -124,18 +193,9 @@ export function splitBlocks(source: string, { richFences = true }: { richFences?
     }
     const bullet = /^[-*+]\s+/; const numbered = /^\d+[.)]\s+/;
     if (bullet.test(trimmed) || numbered.test(trimmed)) {
-      const ordered = numbered.test(trimmed);
-      const marker = ordered ? numbered : bullet;
-      const items: string[] = [];
-      while (index < lines.length) {
-        const current = lines[index].trim();
-        if (marker.test(current)) { items.push(current.replace(marker, "")); index += 1; continue; }
-        if (current && !bullet.test(current) && !numbered.test(current) && items.length && lines[index].startsWith("  ")) {
-          items[items.length - 1] += ` ${current}`; index += 1; continue;
-        }
-        break;
-      }
-      blocks.push({ kind: "list", ordered, items });
+      const list = parseList(lines, index);
+      blocks.push(list.block);
+      index = list.next;
       continue;
     }
     const para: string[] = [trimmed];
@@ -619,40 +679,63 @@ export function RichFence({ lang, body }: { lang: string; body: string }) {
   return null;
 }
 
+const ALERTS: Record<AlertKind, { label: string; icon: typeof Info; tone: string }> = {
+  note: { label: "Note", icon: Info, tone: "text-muted-foreground" },
+  tip: { label: "Tip", icon: Lightbulb, tone: "text-muted-foreground" },
+  important: { label: "Important", icon: MessageSquareWarning, tone: "text-foreground" },
+  warning: { label: "Warning", icon: TriangleAlert, tone: "text-warning" },
+  caution: { label: "Caution", icon: OctagonAlert, tone: "text-destructive" },
+};
+
+/** A GitHub alert: a quote that says what kind of aside it is. */
+function Alert({ kind, children }: { kind: AlertKind; children: React.ReactNode }) {
+  const { label, icon: Icon, tone } = ALERTS[kind];
+  return <div role="note" aria-label={label} data-alert={kind} className="my-[0.8em] rounded-lg border border-border bg-muted/40 px-3 py-2">
+    <div className={`mb-1 flex items-center gap-1.5 font-medium ${tone}`}><Icon size={13} aria-hidden="true" className="shrink-0" />{label}</div>
+    <div data-alert-body="">{children}</div>
+  </div>;
+}
+
+function renderBlocks(blocks: Block[]): React.ReactNode[] {
+  return blocks.map((block, index) => {
+    if (block.kind === "code") return <CodeBlock key={index} lang={block.lang} body={block.body} closed={block.closed} />;
+    if (block.kind === "diagram") return <DiagramBlock key={index} spec={block.spec} />;
+    if (block.kind === "mermaid") return <MermaidBlock key={index} code={block.code} />;
+    if (block.kind === "storage-plan") return <StoragePlanCard key={index} body={block.body} />;
+    if (block.kind === "math") return <MathBlock key={index} tex={block.tex} />;
+    if (block.kind === "html") return <HtmlBlock key={index} html={block.html} />;
+    if (block.kind === "heading") {
+      const H = (`h${Math.min(block.level, 4)}`) as keyof JSX.IntrinsicElements;
+      return <H key={index}>{renderInline(block.text)}</H>;
+    }
+    if (block.kind === "rule") return <hr key={index} />;
+    if (block.kind === "quote") {
+      return block.alert
+        ? <Alert key={index} kind={block.alert}>{renderBlocks(block.blocks)}</Alert>
+        : <blockquote key={index}>{renderBlocks(block.blocks)}</blockquote>;
+    }
+    if (block.kind === "table") {
+      return (
+        <table key={index}>
+          <thead><tr>{block.header.map((cell, cellIndex) => <th key={cellIndex}>{renderInline(cell)}</th>)}</tr></thead>
+          <tbody>
+            {block.rows.map((row, rowIndex) => (
+              <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{renderInline(cell)}</td>)}</tr>
+            ))}
+          </tbody>
+        </table>
+      );
+    }
+    if (block.kind === "list") {
+      const items = block.items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item.text)}{renderBlocks(item.children)}</li>);
+      return block.ordered
+        ? <ol key={index} start={block.start === 1 ? undefined : block.start}>{items}</ol>
+        : <ul key={index}>{items}</ul>;
+    }
+    return <p key={index}>{renderInline(block.text)}</p>;
+  });
+}
+
 export const Markdown = memo(function Markdown({ text, richFences = true }: { text: string; richFences?: boolean }) {
-  return (
-    <div className="md">
-      {splitBlocks(text, { richFences }).map((block, index) => {
-        if (block.kind === "code") return <CodeBlock key={index} lang={block.lang} body={block.body} closed={block.closed} />;
-        if (block.kind === "diagram") return <DiagramBlock key={index} spec={block.spec} />;
-        if (block.kind === "mermaid") return <MermaidBlock key={index} code={block.code} />;
-        if (block.kind === "storage-plan") return <StoragePlanCard key={index} body={block.body} />;
-        if (block.kind === "math") return <MathBlock key={index} tex={block.tex} />;
-        if (block.kind === "html") return <HtmlBlock key={index} html={block.html} />;
-        if (block.kind === "heading") {
-          const H = (`h${Math.min(block.level, 4)}`) as keyof JSX.IntrinsicElements;
-          return <H key={index}>{renderInline(block.text)}</H>;
-        }
-        if (block.kind === "rule") return <hr key={index} />;
-        if (block.kind === "quote") return <blockquote key={index}>{renderInline(block.text)}</blockquote>;
-        if (block.kind === "table") {
-          return (
-            <table key={index}>
-              <thead><tr>{block.header.map((cell, cellIndex) => <th key={cellIndex}>{renderInline(cell)}</th>)}</tr></thead>
-              <tbody>
-                {block.rows.map((row, rowIndex) => (
-                  <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{renderInline(cell)}</td>)}</tr>
-                ))}
-              </tbody>
-            </table>
-          );
-        }
-        if (block.kind === "list") {
-          const List = block.ordered ? "ol" : "ul";
-          return <List key={index}>{block.items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item)}</li>)}</List>;
-        }
-        return <p key={index}>{renderInline(block.text)}</p>;
-      })}
-    </div>
-  );
+  return <div className="md">{renderBlocks(splitBlocks(text, { richFences }))}</div>;
 });
