@@ -255,83 +255,108 @@ struct AgentChat {
     project_name: Option<String>,
 }
 
+/// Everything the range is split into, filled by one pass over each source.
+struct Tally {
+    /// Per local day: your seconds, agent seconds. Dense over the range.
+    days: BTreeMap<NaiveDate, (i64, i64)>,
+    /// Per local hour: your seconds, agent seconds.
+    hours: [(i64, i64); 24],
+    projects: Projects,
+    /// Per harness: agent seconds, top-level chats.
+    harnesses: BTreeMap<String, (i64, i64)>,
+}
+
+impl Tally {
+    fn new(range: &Range) -> Self {
+        let mut days = BTreeMap::new();
+        let mut day = range.since;
+        while day <= range.until {
+            days.insert(day, (0, 0));
+            day = match day.succ_opt() {
+                Some(next) => next,
+                None => break,
+            };
+        }
+        Self { days, hours: [(0, 0); 24], projects: Projects::default(), harnesses: BTreeMap::new() }
+    }
+
+    /// Your minutes: per day and hour, and per project where a chat was open.
+    /// Returns the all-time count and the first minute.
+    fn count_yours(&mut self, db: &Connection, range: &Range) -> Result<(i64, Option<i64>), BridgeError> {
+        let totals = db.query_row("SELECT COUNT(*), MIN(minute) FROM human_activity_minutes", [], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let (low, high) = range.coarse_minutes();
+        let mut statement = db.prepare("SELECT minute FROM human_activity_minutes WHERE minute >= ?1 AND minute < ?2")?;
+        for minute in statement.query_map(params![low, high], |row| row.get::<_, i64>(0))? {
+            if let Some((day, hour)) = range.place(minute?) {
+                if let Some(cell) = self.days.get_mut(&day) {
+                    cell.0 += 60;
+                }
+                self.hours[hour].0 += 60;
+            }
+        }
+        // Any chat counts here, whatever its kind: it is where you were looking.
+        let mut statement = db.prepare(
+            "SELECT c.minute, p.id, p.name FROM human_activity_chats c
+             JOIN human_activity_minutes m ON m.minute = c.minute
+             LEFT JOIN sessions s ON s.id = c.session_id
+             LEFT JOIN workspaces w ON w.id = s.workspace_id
+             LEFT JOIN projects p ON p.id = w.project_id
+             WHERE c.minute >= ?1 AND c.minute < ?2",
+        )?;
+        let mut rows = statement.query(params![low, high])?;
+        while let Some(row) = rows.next()? {
+            if range.place(row.get(0)?).is_some() {
+                self.projects.entry(row.get(1)?, row.get(2)?).human_seconds += 60;
+            }
+        }
+        Ok(totals)
+    }
+
+    /// Agent minutes: per day, hour, project and harness, and top-level chats
+    /// that worked in the range. Returns the all-time count and the first minute.
+    fn count_agents(&mut self, db: &Connection, range: &Range) -> Result<(i64, Option<i64>), BridgeError> {
+        let (low, high) = range.coarse_minutes();
+        let mut agent_minutes = 0_i64;
+        let mut first_agent: Option<i64> = None;
+        let mut counted_chat: Option<String> = None;
+        for_each_agent_minute(db, |chat, minute| {
+            agent_minutes += 1;
+            first_agent = Some(first_agent.map_or(minute, |first| first.min(minute)));
+            if !(low..high).contains(&minute) {
+                return;
+            }
+            let Some((day, hour)) = range.place(minute) else { return };
+            if let Some(cell) = self.days.get_mut(&day) {
+                cell.1 += 60;
+            }
+            self.hours[hour].1 += 60;
+            let first_in_range = counted_chat.as_deref() != Some(chat.id.as_str());
+            if first_in_range {
+                counted_chat = Some(chat.id.clone());
+            }
+            let new_chat = i64::from(first_in_range && chat.top_level);
+            let project = self.projects.entry(chat.project_id.clone(), chat.project_name.clone());
+            project.agent_seconds += 60;
+            project.chats += new_chat;
+            let harness = self.harnesses.entry(chat.harness.clone()).or_default();
+            harness.0 += 60;
+            harness.1 += new_chat;
+        })?;
+        Ok((agent_minutes, first_agent))
+    }
+}
+
 /// The Time tab's figures: one entry per day in the range, the all-time
 /// totals, and the range split by project, pull request, hour and harness.
 pub fn screen_time(db: &Connection, params: &wire::ScreenTimeParams) -> Result<wire::UsageScreenTimeResult, BridgeError> {
     let range = Range::parse(params)?;
-    let mut days: BTreeMap<NaiveDate, (i64, i64)> = BTreeMap::new();
-    let mut day = range.since;
-    while day <= range.until {
-        days.insert(day, (0, 0));
-        day = match day.succ_opt() {
-            Some(next) => next,
-            None => break,
-        };
-    }
-    let mut hours = [(0_i64, 0_i64); 24];
-    let mut projects = Projects::default();
-    let mut harnesses: BTreeMap<String, (i64, i64)> = BTreeMap::new();
+    let mut tally = Tally::new(&range);
+    let (human_minutes, first_human) = tally.count_yours(db, &range)?;
+    let (agent_minutes, first_agent) = tally.count_agents(db, &range)?;
+    let pull_requests = pull_requests(db, &range, &mut tally.projects)?;
 
-    let (human_minutes, first_human): (i64, Option<i64>) =
-        db.query_row("SELECT COUNT(*), MIN(minute) FROM human_activity_minutes", [], |row| Ok((row.get(0)?, row.get(1)?)))?;
-    let (low, high) = range.coarse_minutes();
-    let mut statement = db.prepare("SELECT minute FROM human_activity_minutes WHERE minute >= ?1 AND minute < ?2")?;
-    for minute in statement.query_map(params![low, high], |row| row.get::<_, i64>(0))? {
-        if let Some((day, hour)) = range.place(minute?) {
-            if let Some(cell) = days.get_mut(&day) {
-                cell.0 += 60;
-            }
-            hours[hour].0 += 60;
-        }
-    }
-
-    // Your time per project: minutes recorded with a chat open. Any chat
-    // counts here, whatever its kind: it is where you were looking.
-    let mut statement = db.prepare(
-        "SELECT c.minute, p.id, p.name FROM human_activity_chats c
-         JOIN human_activity_minutes m ON m.minute = c.minute
-         LEFT JOIN sessions s ON s.id = c.session_id
-         LEFT JOIN workspaces w ON w.id = s.workspace_id
-         LEFT JOIN projects p ON p.id = w.project_id
-         WHERE c.minute >= ?1 AND c.minute < ?2",
-    )?;
-    let mut rows = statement.query(params![low, high])?;
-    while let Some(row) = rows.next()? {
-        if range.place(row.get(0)?).is_some() {
-            projects.entry(row.get(1)?, row.get(2)?).human_seconds += 60;
-        }
-    }
-
-    let mut agent_minutes = 0_i64;
-    let mut first_agent: Option<i64> = None;
-    let mut counted_chat: Option<String> = None;
-    for_each_agent_minute(db, |chat, minute| {
-        agent_minutes += 1;
-        first_agent = Some(first_agent.map_or(minute, |first| first.min(minute)));
-        if !(low..high).contains(&minute) {
-            return;
-        }
-        let Some((day, hour)) = range.place(minute) else { return };
-        if let Some(cell) = days.get_mut(&day) {
-            cell.1 += 60;
-        }
-        hours[hour].1 += 60;
-        let first_in_range = counted_chat.as_deref() != Some(chat.id.as_str());
-        if first_in_range {
-            counted_chat = Some(chat.id.clone());
-        }
-        let new_chat = i64::from(first_in_range && chat.top_level);
-        let project = projects.entry(chat.project_id.clone(), chat.project_name.clone());
-        project.agent_seconds += 60;
-        project.chats += new_chat;
-        let harness = harnesses.entry(chat.harness.clone()).or_default();
-        harness.0 += 60;
-        harness.1 += new_chat;
-    })?;
-
-    let pull_requests = pull_requests(db, &range, &mut projects)?;
-
-    let mut harnesses: Vec<wire::ScreenTimeHarness> = harnesses
+    let mut harnesses: Vec<wire::ScreenTimeHarness> = tally
+        .harnesses
         .into_iter()
         .filter(|(_, (seconds, _))| *seconds > 0)
         .map(|(harness, (agent_seconds, chats))| wire::ScreenTimeHarness { harness, agent_seconds, chats })
@@ -343,7 +368,8 @@ pub fn screen_time(db: &Connection, params: &wire::ScreenTimeParams) -> Result<w
         since_day: range.since.to_string(),
         until_day: range.until.to_string(),
         time_zone: range.zone.name().to_owned(),
-        days: days
+        days: tally
+            .days
             .into_iter()
             .map(|(day, (human_seconds, agent_seconds))| wire::ScreenTimeDay { day: day.to_string(), human_seconds, agent_seconds })
             .collect(),
@@ -358,9 +384,10 @@ pub fn screen_time(db: &Connection, params: &wire::ScreenTimeParams) -> Result<w
         } else {
             wire::ScreenTimeAgentHistory::Counting
         },
-        projects: projects.into_wire(),
+        projects: tally.projects.into_wire(),
         pull_requests,
-        hours: hours
+        hours: tally
+            .hours
             .iter()
             .enumerate()
             .map(|(hour, (human_seconds, agent_seconds))| wire::ScreenTimeHour {
