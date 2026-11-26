@@ -285,7 +285,7 @@ pub fn restore(db: &Connection, record_id: &str) -> Result<MemoryRecord, BridgeE
         ],
     )?;
     transaction.execute(
-        "UPDATE memory_records SET superseded_by=?1 WHERE id=?2",
+        "UPDATE memory_records SET status='superseded', superseded_by=?1 WHERE id=?2",
         params![id, old.id],
     )?;
     transaction.commit()?;
@@ -428,6 +428,7 @@ mod tests {
         sweep_unused(&db, at("2026-11-26T00:00:00+00:00")).unwrap();
         let restored = restore(&db, "gone").unwrap();
         assert_eq!((restored.status.as_str(), restored.supersedes.as_deref()), ("active", Some("gone")));
+        assert_eq!(status(&db, "gone"), "superseded", "it leaves the retired list");
         let packet = crate::memory_packet::for_session(
             &db,
             ACCOUNT_MEMORY_SCOPE,
