@@ -26,7 +26,7 @@ pub const PROVENANCE_AGENT_PROPOSAL: &str = "agent_proposal";
 /// How long a proposal waits for review before it is swept to `expired`.
 /// Long enough to survive a holiday, short enough that a review queue nobody
 /// opens drains instead of holding the scope at its budget forever.
-pub const PROPOSAL_TTL_DAYS: i64 = 30;
+pub const PROPOSAL_TTL_DAYS: i64 = crate::memory_retention::DEFAULT_PROPOSAL_TTL_DAYS;
 const STATUS_ACTIVE: &str = "active";
 const STATUS_PROPOSED: &str = "proposed";
 const STATUS_REJECTED: &str = "rejected";
@@ -384,9 +384,10 @@ pub fn list_page(
         None => STATUS_ACTIVE,
         Some(STATUS_ACTIVE) => STATUS_ACTIVE,
         Some(STATUS_PROPOSED) => STATUS_PROPOSED,
+        Some(STATUS_EXPIRED) => STATUS_EXPIRED,
         Some(other) => {
             return Err(BridgeError::Invalid(format!(
-                "Memory list can show active or proposed records, not '{other}'."
+                "Memory list can show active, proposed or expired records, not '{other}'."
             )))
         }
     };
@@ -527,6 +528,16 @@ pub fn review_batch(
             continue;
         }
         if approving {
+            // A full active budget is this record's refusal, not the batch's:
+            // the approvals before it stand and the rest are reported.
+            if crate::memory_consolidation::scope_full(&transaction, &scope_key)? {
+                let held = crate::memory_consolidation::held_records(&transaction, &scope_key)?;
+                result.refused.push(MemoryReviewRefusal {
+                    id: id.clone(),
+                    reason: format!("Memory is full ({held} memories). Forget one or let unused ones retire first."),
+                });
+                continue;
+            }
             approve(&transaction, id)?;
             result.approved.push(id.clone());
         } else {
@@ -632,7 +643,7 @@ fn insert_proposal_as(
     source_session_id: &str,
 ) -> Result<MemoryRecord, BridgeError> {
     debug_assert!(provenance == PROVENANCE_MODEL_PROPOSAL || provenance == PROVENANCE_AGENT_PROPOSAL);
-    crate::memory_consolidation::enforce_scope_budget(db, scope_key)?;
+    crate::memory_retention::enforce_proposal_cap(db, scope_key)?;
     let now = Utc::now().to_rfc3339();
     let id = Uuid::new_v4().to_string();
     // A proposal has never held, so its interval is empty rather than open:
@@ -743,6 +754,12 @@ pub fn approve(db: &Connection, record_id: &str) -> Result<MemoryRecord, BridgeE
     let record_id = record_id.trim();
     if record_id.is_empty() {
         return Err(BridgeError::Invalid("Memory approve needs a record id.".into()));
+    }
+    // Proposals live outside the active budget, so approval is what grows it.
+    if let Some(record) = load(db, record_id)? {
+        if record.status == STATUS_PROPOSED {
+            crate::memory_consolidation::enforce_scope_budget(db, &record.scope_key)?;
+        }
     }
     let updated_at = Utc::now().to_rfc3339();
     let changed = db.execute(
@@ -972,7 +989,8 @@ pub fn sweep_expired(db: &Connection, now: DateTime<Utc>) -> Result<Vec<String>,
     Ok(expiring)
 }
 
-/// Expire proposals that waited longer than [`PROPOSAL_TTL_DAYS`] for review.
+/// Expire proposals that waited longer than the retention setting's wait
+/// (default [`PROPOSAL_TTL_DAYS`]) for review, and log the sweep.
 ///
 /// A proposal never held, so its interval stays empty: `valid_to` is left at
 /// `valid_from`, and no as-of read of any instant returns it. Only the status
@@ -983,7 +1001,17 @@ pub fn sweep_stale_proposals(
     db: &Connection,
     now: DateTime<Utc>,
 ) -> Result<Vec<String>, BridgeError> {
-    let cutoff = (now - chrono::Duration::days(PROPOSAL_TTL_DAYS)).to_rfc3339();
+    crate::memory_retention::sweep_stale_proposals(db, now)
+}
+
+/// Expire proposals created at least `wait` before `now`. The retention
+/// setting decides `wait`; this is only the transition.
+pub(crate) fn sweep_proposals_older_than(
+    db: &Connection,
+    now: DateTime<Utc>,
+    wait: chrono::Duration,
+) -> Result<Vec<String>, BridgeError> {
+    let cutoff = (now - wait).to_rfc3339();
     let mut statement = db.prepare(
         "SELECT id FROM memory_records
          WHERE status=?1 AND created_at <= ?2
@@ -1530,7 +1558,7 @@ mod tests {
             params![ACCOUNT_MEMORY_SCOPE, (now - ttl * 3).to_rfc3339()],
         )
         .unwrap();
-        let held_before = crate::memory_consolidation::held_records(&db, ACCOUNT_MEMORY_SCOPE).unwrap();
+        let held_before = crate::memory_retention::held_proposals(&db, ACCOUNT_MEMORY_SCOPE).unwrap();
 
         let swept = sweep_stale_proposals(&db, now).unwrap();
         assert_eq!(swept, vec!["older".to_string(), "exactly-stale".to_string()]);
@@ -1542,9 +1570,9 @@ mod tests {
         assert_eq!(load(&db, "fresh").unwrap().unwrap().status, "proposed");
         assert_eq!(load(&db, "old-active").unwrap().unwrap().status, "active", "the TTL is for proposals only");
         assert_eq!(
-            crate::memory_consolidation::held_records(&db, ACCOUNT_MEMORY_SCOPE).unwrap(),
+            crate::memory_retention::held_proposals(&db, ACCOUNT_MEMORY_SCOPE).unwrap(),
             held_before - 2,
-            "expired proposals leave the budget"
+            "expired proposals leave the review queue's allowance"
         );
         assert!(list_as_of(&db, ACCOUNT_MEMORY_SCOPE, now - ttl).unwrap().records.iter().all(|record| record.id == "old-active"));
         assert!(sweep_stale_proposals(&db, now).unwrap().is_empty(), "a second sweep finds nothing");

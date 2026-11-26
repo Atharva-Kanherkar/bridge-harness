@@ -2736,6 +2736,42 @@ pub fn update_extraction_settings(
     extraction_settings_wire(core, &db, settings)
 }
 
+pub fn get_retention_settings(core: &Arc<BridgeCore>) -> Result<wire::MemoryRetentionSettings, BridgeError> {
+    let db = lock_db(core);
+    crate::memory_retention::wire(&db)
+}
+
+pub fn set_retention_settings(
+    core: &Arc<BridgeCore>,
+    proposal_ttl_days: i64,
+    retire_unused_after_days: Option<i64>,
+    max_proposals: Option<i64>,
+) -> Result<wire::MemoryRetentionSettings, BridgeError> {
+    let settings = {
+        let db = lock_db(core);
+        crate::memory_retention::update_settings(&db, proposal_ttl_days, retire_unused_after_days, max_proposals)?;
+        crate::memory_retention::wire(&db)?
+    };
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: memory_ledger::account_memory_scope().to_string(),
+    });
+    Ok(settings)
+}
+
+pub fn restore_memory_record(
+    core: &Arc<BridgeCore>,
+    record_id: &str,
+) -> Result<wire::MemoryRecord, BridgeError> {
+    let record = {
+        let db = lock_db(core);
+        crate::memory_retention::restore(&db, record_id)?
+    };
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: record.scope_key.clone(),
+    });
+    Ok(record)
+}
+
 pub fn get_memory_model(core: &Arc<BridgeCore>) -> Result<wire::MemoryModelSettings, BridgeError> {
     let db = lock_db(core);
     crate::memory_model::resolve(&db, &core.adapter_registry)

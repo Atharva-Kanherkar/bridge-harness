@@ -25,7 +25,8 @@ pub struct SaveMemoryRecordParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListMemoryRecordsParams {
     pub scope_key: String,
-    /// `active` (default) or `proposed`. Nothing else lists.
+    /// `active` (default), `proposed`, or `expired` (retired or expired
+    /// records a person can restore). Nothing else lists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// The `nextCursor` of the previous page. Absent reads the first page. A
@@ -435,7 +436,8 @@ pub struct MemoryRecallStats {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryActivityEntry {
-    /// `extraction` or `consolidation`.
+    /// `extraction`, `consolidation`, or `retention` (a sweep that expired
+    /// proposals or retired unused memories).
     pub source: String,
     pub status: String,
     /// Proposals written (extraction) or changes applied (consolidation).
@@ -622,4 +624,42 @@ mod tests {
         }))
         .is_ok());
     }
+}
+
+/// How the account scope cleans itself up, and what it holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryRetentionSettings {
+    pub scope_key: String,
+    /// Days a proposal waits for review before it expires: 3, 7, 14 or 30.
+    pub proposal_ttl_days: i64,
+    /// Days without use before an active memory that is not a pin retires:
+    /// 30, 90 or 180. Absent means never.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retire_unused_after_days: Option<i64>,
+    /// Proposals the scope may hold at once, apart from the active budget.
+    pub max_proposals: i64,
+    /// The active budget (`max_records` on the consolidation settings).
+    pub max_active: i64,
+    pub held_active: i64,
+    pub held_proposals: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetRetentionSettingsParams {
+    pub proposal_ttl_days: i64,
+    /// Absent or null: never retire unused memories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retire_unused_after_days: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_proposals: Option<i64>,
+}
+
+/// Bring back a retired or expired memory as a new active record that
+/// supersedes it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RestoreMemoryRecordParams {
+    pub record_id: String,
 }

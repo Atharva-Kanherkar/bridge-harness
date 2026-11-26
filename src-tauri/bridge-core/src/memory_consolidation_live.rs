@@ -50,6 +50,7 @@ pub fn start_consolidation_maintenance(core: Arc<BridgeCore>) {
             let db = core.db.lock().unwrap();
             memory_ledger::sweep_expired(&db, now).and_then(|mut expired| {
                 expired.extend(memory_ledger::sweep_stale_proposals(&db, now)?);
+                expired.extend(crate::memory_retention::sweep_unused(&db, now)?);
                 Ok(expired)
             })
         };

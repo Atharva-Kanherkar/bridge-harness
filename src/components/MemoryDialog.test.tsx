@@ -7,7 +7,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
-import type { AdapterDescriptor, MemoryChangedPayload, MemoryExtractionSettings, MemoryModelSettings, MemoryRecord } from "../types";
+import type { AdapterDescriptor, MemoryChangedPayload, MemoryExtractionSettings, MemoryModelSettings, MemoryRecord, MemoryRetentionSettings } from "../types";
 import { bodyLength, MemoryDialog } from "./MemoryDialog";
 
 const record = (id: string, body: string, kind = "preference"): MemoryRecord => ({
@@ -101,7 +101,7 @@ beforeEach(() => {
     scopeKey: "account:local",
     mode: "off",
     maxRecords,
-    heldRecords: store.filter(item => item.status === "active" || item.status === "proposed").length,
+    heldRecords: store.filter(item => item.status === "active").length,
     allowRemoval: false,
     debounceSeconds: 600,
   }));
@@ -705,16 +705,15 @@ describe("bodyLength", () => {
 });
 
 describe("memory hardening", () => {
-  it("says the scope is full, with the numbers, and points at the review queue", async () => {
-    maxRecords = 3;
+  it("says the scope is full with active memories only, and that proposals still wait", async () => {
+    maxRecords = 2;
     mount();
     await flush();
     const banner = container.querySelector('[role="status"]');
     expect(banner?.textContent).toContain("Memory is full.");
-    expect(banner?.textContent).toContain("3 of 3");
-    expect(banner?.textContent).toContain("no extraction runs");
-    click(buttonByText("Review 1"));
-    expect(container.textContent).toContain("Waiting for review");
+    expect(banner?.textContent).toContain("2 of 2 memories");
+    expect(banner?.textContent).toContain("Proposals still wait for you");
+    expect(banner?.textContent).not.toContain("counting proposals");
   });
 
   it("shows no banner while the scope has room", async () => {
@@ -912,5 +911,70 @@ describe("MemoryDialog paging and bulk review", () => {
     await flush();
     expect(pageCursorsOf).toContain("50");
     expect(container.textContent).toContain("Deploys from a laptop only");
+  });
+});
+
+// testing/feat-memory-retention.md: clean-up settings, the Retired list with
+// Restore, and retention sweeps in Activity.
+describe("MemoryDialog retention", () => {
+  let retention: MemoryRetentionSettings;
+  beforeEach(() => {
+    retention = { scopeKey: "account:local", proposalTtlDays: 7, retireUnusedAfterDays: 90, maxProposals: 100, maxActive: 200, heldActive: 2, heldProposals: 1 };
+    vi.spyOn(bridgeApi, "getRetentionSettings").mockImplementation(async () => structuredClone(retention));
+    vi.spyOn(bridgeApi, "setRetentionSettings").mockImplementation(async (proposalTtlDays, retireUnusedAfterDays) => {
+      retention = { ...retention, proposalTtlDays, retireUnusedAfterDays: retireUnusedAfterDays ?? undefined };
+      return structuredClone(retention);
+    });
+    vi.spyOn(bridgeApi, "restoreMemoryRecord").mockImplementation(async recordId => {
+      const old = store.find(item => item.id === recordId)!;
+      const restored = { ...old, id: `${recordId}-back`, status: "active", supersedes: recordId };
+      old.status = "superseded";
+      store = [restored, ...store];
+      memoryHandler?.({ scopeKey: "account:local" });
+      return restored;
+    });
+  });
+
+  it("explains the queue's own expiry and allowance", async () => {
+    mount();
+    await flush();
+    click(tab("Review"));
+    expect(container.textContent).toContain("within 7 days expire");
+    expect(container.textContent).toContain("The queue holds 1 of 100");
+  });
+
+  it("saves a shorter proposal expiry and never retiring from the Clean up card", async () => {
+    mount();
+    await flush();
+    click(tab("Review"));
+    await choose("Proposals expire after", "Expire after 3 days");
+    expect(bridgeApi.setRetentionSettings).toHaveBeenLastCalledWith(3, 90);
+    await choose("Retire unused memories after", "Never retire");
+    expect(bridgeApi.setRetentionSettings).toHaveBeenLastCalledWith(3, null);
+    expect(container.textContent).toContain("within 3 days expire");
+  });
+
+  it("lists retired memories and restores one", async () => {
+    store.push({ ...record("r-old", "Keeps staging on Postgres 15", "fact"), status: "expired", provenance: "model_proposal", validTo: "2026-08-20T00:00:00Z" });
+    mount();
+    await flush();
+    const retired = container.querySelector('[aria-label="Retired memories"]')!;
+    expect(retired.textContent).toContain("Keeps staging on Postgres 15");
+    click([...retired.querySelectorAll("button")].find(button => button.textContent === "Restore")!);
+    await flush();
+    expect(bridgeApi.restoreMemoryRecord).toHaveBeenCalledWith("r-old");
+    expect(container.querySelector('[aria-label="Retired memories"]')).toBeNull();
+  });
+
+  it("shows retention sweeps in Activity", async () => {
+    vi.mocked(bridgeApi.memoryActivityLog).mockResolvedValue([
+      { source: "retention", status: "completed", applied: 3, refused: 0, detail: "unused_retired", at: new Date().toISOString() },
+      { source: "retention", status: "completed", applied: 12, refused: 0, detail: "proposals_expired", at: new Date().toISOString() },
+    ]);
+    mount();
+    await flush();
+    click(tab("Activity"));
+    expect(container.textContent).toContain("Retired 3 unused memories");
+    expect(container.textContent).toContain("12 unreviewed proposals expired");
   });
 });
