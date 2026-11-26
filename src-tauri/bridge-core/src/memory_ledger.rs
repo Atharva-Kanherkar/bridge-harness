@@ -1137,6 +1137,25 @@ pub(crate) fn active_records(
     Ok(records)
 }
 
+/// Everything extraction may reconcile a candidate against: the scope's active
+/// memories and the proposals waiting for review, newest first.
+pub(crate) fn reconcilable_records(
+    db: &Connection,
+    scope_key: &str,
+    limit: i64,
+) -> Result<Vec<MemoryRecord>, BridgeError> {
+    let mut statement = db.prepare(&format!(
+        "SELECT {RECORD_COLUMNS} FROM memory_records
+         WHERE scope_key=?1 AND status IN (?2, ?3)
+         ORDER BY updated_at DESC, id
+         LIMIT ?4",
+    ))?;
+    let records = statement
+        .query_map(params![scope_key, STATUS_ACTIVE, STATUS_PROPOSED, limit], map_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(records)
+}
+
 pub(crate) fn load_record(
     db: &Connection,
     record_id: &str,

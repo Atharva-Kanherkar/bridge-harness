@@ -43,7 +43,12 @@ const FIRST_RUN_ENTRIES: i64 = 60;
 const MAX_ASSISTANT_CHARS: usize = 600;
 /// One pasted user message cannot take the whole digest.
 const MAX_USER_CHARS: usize = 4_000;
-const MAX_PIN_CONTEXT: usize = 20;
+/// Existing memories shown to the model as possible duplicates or targets.
+pub const MAX_KNOWN_MEMORIES: usize = 8;
+/// How many records the similarity ranking reads; the scope's budgets keep the
+/// real number far below it.
+const MAX_RECONCILE_CANDIDATES: i64 = 2_000;
+const MAX_KNOWN_BODY_CHARS: usize = 300;
 /// App activity lines per digest, newest kept. Each summary is already capped
 /// at `apps::events::MAX_SUMMARY_CHARS`, so the block is bounded on its own.
 const MAX_APP_ACTIVITY: usize = 20;
@@ -484,6 +489,58 @@ pub struct ExtractionDigest {
     /// The chunk holds something a proposal may cite: a user message or app
     /// activity in scope. Without it the run makes no model call.
     pub has_evidence: bool,
+    /// The existing memories shown as `[m1]`..`[m8]`, by alias. An operation
+    /// may target only these; the ids never leave the server.
+    pub known: Vec<(String, String)>,
+}
+
+/// The records most like what the person just said or did, for the model to
+/// answer "already known" or "update that one" instead of proposing a copy.
+///
+/// Deterministic and lexical, like every other duplicate decision in memory: a
+/// record is offered when it shares at least two content terms with the user's
+/// words and in-scope app activity, or one term that covers at least half of
+/// the record. Assistant text is never the query, since it is never evidence.
+/// Ranked by how much of the record the person's words cover, then by shared
+/// terms, then pins, then active before waiting, then newest.
+pub(crate) fn similar_memories(
+    db: &Connection,
+    scope_key: &str,
+    evidence: &str,
+    limit: usize,
+) -> Result<Vec<MemoryRecord>, BridgeError> {
+    let query = crate::memory_similarity::terms(evidence);
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut scored: Vec<(u32, usize, bool, bool, MemoryRecord)> = Vec::new();
+    for record in memory_ledger::reconcilable_records(db, scope_key, MAX_RECONCILE_CANDIDATES)? {
+        let terms = crate::memory_similarity::terms(&record.body);
+        if terms.is_empty() {
+            continue;
+        }
+        let shared = terms.intersection(&query).count();
+        let coverage = (shared * 10_000 / terms.len()) as u32;
+        if shared >= 2 || (shared == 1 && coverage >= 5_000) {
+            let pin = record.provenance == "user_explicit";
+            let active = record.status == "active";
+            scored.push((coverage, shared, pin, active, record));
+        }
+    }
+    // The candidates arrive newest first and the sort is stable, so recency
+    // breaks the remaining ties.
+    scored.sort_by(|left, right| {
+        right.0.cmp(&left.0).then(right.1.cmp(&left.1)).then(right.2.cmp(&left.2)).then(right.3.cmp(&left.3))
+    });
+    Ok(scored.into_iter().take(limit).map(|(_, _, _, _, record)| record).collect())
+}
+
+fn known_label(record: &MemoryRecord) -> &'static str {
+    match (record.status.as_str(), record.provenance.as_str()) {
+        ("active", "user_explicit") => "pin",
+        ("active", _) => "memory",
+        _ => "waiting for review",
+    }
 }
 
 /// Where this chat's next digest starts: after the newest watermark a
@@ -564,6 +621,7 @@ pub fn build_digest(
     let mut lines: Vec<String> = Vec::new();
     let mut activity: Vec<(String, &'static crate::apps::BuiltinApp, String)> = Vec::new();
     let mut has_evidence = false;
+    let mut evidence = String::new();
     let mut through_entry_id = String::new();
     let mut more = rows.len() > MAX_DIGEST_ENTRIES;
     for (id, kind, text, app_id, summary) in rows.into_iter().take(MAX_DIGEST_ENTRIES) {
@@ -583,6 +641,8 @@ pub fn build_digest(
                 break;
             }
             used += summary.len();
+            evidence.push_str(&summary);
+            evidence.push('\n');
             activity.push((id.clone(), app, summary));
             has_evidence = true;
             through_entry_id = id;
@@ -603,17 +663,24 @@ pub fn build_digest(
             break;
         }
         used += line.len();
-        has_evidence |= kind == "user.message";
+        if kind == "user.message" {
+            has_evidence = true;
+            evidence.push_str(&clip(text, MAX_USER_CHARS));
+            evidence.push('\n');
+        }
         lines.push(line);
         through_entry_id = id;
     }
-    let pins = memory_ledger::list(db, scope_key, None)?;
+    let similar = similar_memories(db, scope_key, &evidence, MAX_KNOWN_MEMORIES)?;
+    let mut known = Vec::new();
     let mut text = String::new();
-    if !pins.records.is_empty() {
-        text.push_str("Already pinned (do not re-propose):\n");
-        for record in pins.records.iter().take(MAX_PIN_CONTEXT) {
-            let body: String = record.body.chars().take(200).collect();
-            text.push_str(&format!("- {body}\n"));
+    if !similar.is_empty() {
+        text.push_str("Known memories that may overlap (refer to them by id):\n");
+        for (index, record) in similar.iter().enumerate() {
+            let alias = format!("m{}", index + 1);
+            let body = crate::memory_packet::render_body(&record.body);
+            text.push_str(&format!("[{alias}] {} · {}: {}\n", known_label(record), record.kind, clip(&body, MAX_KNOWN_BODY_CHARS)));
+            known.push((alias, record.id.clone()));
         }
         text.push('\n');
     }
@@ -644,7 +711,7 @@ pub fn build_digest(
         text.truncate(trimmed);
     }
     let sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
-    Ok(Some(ExtractionDigest { text, sha256, through_entry_id, more, has_evidence }))
+    Ok(Some(ExtractionDigest { text, sha256, through_entry_id, more, has_evidence, known }))
 }
 
 /// The digest a claimed run reads, or `None` once the run has been settled
@@ -2209,6 +2276,7 @@ mod tests {
             .text
             .lines()
             .filter_map(|line| line.strip_prefix('[').and_then(|rest| rest.split_once(']')).map(|(id, _)| id.to_string()))
+            .filter(|id| !digest.known.iter().any(|(alias, _)| alias == id))
             .collect()
     }
 
@@ -3229,7 +3297,7 @@ mod tests {
         assert!(digest
             .text
             .contains("[e1] user: I always deploy on Fridays"));
-        assert!(digest.text.contains("Already pinned"));
+        assert!(!digest.text.contains("Existing pin"), "an unrelated pin is not offered");
         assert!(digest.text.len() <= MAX_DIGEST_CHARS + 1_000);
         assert!(build_digest(&db, ACCOUNT_MEMORY_SCOPE, "empty-session")
             .unwrap()
@@ -3484,6 +3552,52 @@ mod tests {
             .unwrap();
         assert_eq!(watermark.as_deref(), Some("e2"), "the newest entry when the past run was queued");
         assert_eq!(waiting_due.as_deref(), Some("2026-11-01T11:01:00+00:00"), "due at once, as before");
+    }
+
+    fn proposal(db: &Connection, body: &str) -> String {
+        memory_ledger::insert_proposal(db, ACCOUNT_MEMORY_SCOPE, body, "fact", Some(6_000), None, "s1").unwrap().id
+    }
+
+    #[test]
+    fn similar_memories_come_from_user_words_not_assistant_words() {
+        let (_dir, db) = extraction_db();
+        insert_chat(&db, "s1", "direct");
+        let researcher = memory_ledger::save(&db, "Works as an independent researcher", Some("fact"), None).unwrap();
+        memory_ledger::save(&db, "Deploys the website from a Raspberry Pi cluster", Some("fact"), None).unwrap();
+        insert_message(&db, "s1", "e1", 1, "user.message", "As an independent researcher I keep my own hours.");
+        insert_message(&db, "s1", "e2", 2, "assistant.message", "Your website deploys from a Raspberry Pi cluster, right?");
+        let digest = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        assert_eq!(digest.known, vec![("m1".to_string(), researcher.id.clone())], "{}", digest.text);
+        assert!(digest.text.contains("[m1] pin · fact: Works as an independent researcher"), "{}", digest.text);
+        assert!(!digest.text.contains("[m2]"), "assistant words do not retrieve the Raspberry Pi memory: {}", digest.text);
+    }
+
+    #[test]
+    fn similar_memories_include_waiting_proposals_and_cap_at_eight() {
+        let (_dir, db) = extraction_db();
+        insert_chat(&db, "s1", "direct");
+        let waiting = proposal(&db, "Prefers rebase over merge commits");
+        for index in 0..10 {
+            memory_ledger::save(&db, &format!("Prefers rebase workflow variant {index} for merge commits"), None, None).unwrap();
+        }
+        insert_message(&db, "s1", "e1", 1, "user.message", "I prefer rebase over merge commits, always.");
+        let digest = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        assert_eq!(digest.known.len(), MAX_KNOWN_MEMORIES);
+        assert_eq!(digest.known[0].1, waiting, "the closest match leads, waiting or not: {}", digest.text);
+        assert!(digest.text.contains("[m1] waiting for review · fact: Prefers rebase over merge commits"), "{}", digest.text);
+        assert!(!digest.text.contains("[m9]"));
+    }
+
+    #[test]
+    fn unrelated_memories_are_not_offered() {
+        let (_dir, db) = extraction_db();
+        insert_chat(&db, "s1", "direct");
+        memory_ledger::save(&db, "Uses Postgres for every new service", None, None).unwrap();
+        proposal(&db, "Lives in Pune");
+        insert_message(&db, "s1", "e1", 1, "user.message", "I prefer tabs over spaces in Go code.");
+        let digest = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        assert!(digest.known.is_empty(), "{}", digest.text);
+        assert!(!digest.text.contains("Known memories"), "{}", digest.text);
     }
 
     #[test]
