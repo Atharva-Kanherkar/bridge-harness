@@ -34,7 +34,15 @@ const AUTO_APPLY_MIN_CONFIDENCE_BPS: u32 = 9_000;
 const MAX_PROPOSALS_PER_RUN: usize = 10;
 const MAX_RATIONALE_CHARS: usize = 500;
 const MAX_DIGEST_CHARS: usize = 24_000;
-const MAX_DIGEST_ENTRIES: usize = 30;
+/// Entries one run reads at most. A longer backlog is read in further runs.
+const MAX_DIGEST_ENTRIES: usize = 60;
+/// A chat with no completed run reads at most its newest this many entries,
+/// so the first run after the upgrade, or on a long old chat, stays bounded.
+const FIRST_RUN_ENTRIES: i64 = 60;
+/// Assistant text is context, never evidence, so it is clipped hard.
+const MAX_ASSISTANT_CHARS: usize = 600;
+/// One pasted user message cannot take the whole digest.
+const MAX_USER_CHARS: usize = 4_000;
 const MAX_PIN_CONTEXT: usize = 20;
 /// App activity lines per digest, newest kept. Each summary is already capped
 /// at `apps::events::MAX_SUMMARY_CHARS`, so the block is bounded on its own.
@@ -44,6 +52,9 @@ const LEASE_MINUTES: i64 = 10;
 /// turn pushes the run out again, so one conversation costs one run rather
 /// than one per turn, and the run reads a conversation that has stopped.
 pub const IDLE_SECONDS: i64 = 600;
+/// The detail of a run settled without a model call because the chat said
+/// nothing new since the last run.
+pub const NOTHING_NEW: &str = "nothing_new";
 /// The kinds real conversations are stored under: `direct` single-agent chats
 /// and `orchestrator` workspace sessions. No production path writes `chat`.
 const ENQUEUEABLE_SESSION_KINDS: [&str; 2] = ["direct", "orchestrator"];
@@ -465,102 +476,137 @@ pub fn last_run(
 pub struct ExtractionDigest {
     pub text: String,
     pub sha256: String,
+    /// The newest entry this digest read. A completed run records it, and the
+    /// next run reads only what came after.
+    pub through_entry_id: String,
+    /// Entries remain after this chunk; a follow-up run reads them.
+    pub more: bool,
+    /// The chunk holds something a proposal may cite: a user message or app
+    /// activity in scope. Without it the run makes no model call.
+    pub has_evidence: bool,
 }
 
-/// The session's app activity memory may read, grouped per app under the
-/// scope its manifest declares. Apps that are off, unknown, or declare no
-/// memory scope are left out before the newest [`MAX_APP_ACTIVITY`] are kept.
-fn app_activity(db: &Connection, session_id: &str) -> Result<Option<String>, BridgeError> {
-    let off = crate::apps::registry::disabled_ids(db)?;
-    let mut statement = db.prepare(
-        "SELECT id, coalesce(json_extract(payload,'$.appId'), ''), coalesce(json_extract(payload,'$.summary'), '')
-         FROM session_entries
-         WHERE session_id=?1 AND kind=?2
-         ORDER BY sequence DESC",
-    )?;
-    let rows = statement.query_map(params![session_id, crate::apps::events::APP_EVENT_KIND], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
-    })?;
-    let mut newest_first: Vec<(String, &'static crate::apps::BuiltinApp, String)> = Vec::new();
-    for row in rows {
-        let (id, app_id, summary) = row?;
-        let Some(app) = crate::apps::builtin(&app_id) else { continue };
-        if app.manifest.memory.is_empty() || off.contains(&app_id) {
-            continue;
-        }
-        // One line per event: a summary cannot open a line of its own.
-        let summary = summary.split_whitespace().collect::<Vec<_>>().join(" ");
-        if summary.is_empty() {
-            continue;
-        }
-        newest_first.push((id, app, summary));
-        if newest_first.len() == MAX_APP_ACTIVITY {
-            break;
-        }
+/// Where this chat's next digest starts: after the newest watermark a
+/// completed run recorded, or, for a chat never extracted, before its newest
+/// [`FIRST_RUN_ENTRIES`] readable entries.
+fn read_after_sequence(db: &Connection, session_id: &str) -> Result<i64, BridgeError> {
+    let watermark: Option<i64> = db
+        .query_row(
+            "SELECT MAX(entry.sequence) FROM memory_extraction_runs AS run
+             JOIN session_entries AS entry ON entry.id = run.through_entry_id
+             WHERE run.session_id=?1 AND run.status='completed'",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    if let Some(sequence) = watermark {
+        return Ok(sequence);
     }
-    if newest_first.is_empty() {
-        return Ok(None);
-    }
-    newest_first.reverse();
-    let mut order: Vec<&str> = Vec::new();
-    for (_, app, _) in &newest_first {
-        if !order.contains(&app.manifest.id.as_str()) {
-            order.push(&app.manifest.id);
-        }
-    }
-    let mut text = String::from("App activity (recorded by Bridge apps; the person did not write these lines):\n");
-    for app_id in order {
-        let mut lines = newest_first.iter().filter(|(_, app, _)| app.manifest.id == app_id).peekable();
-        let Some((_, app, _)) = lines.peek() else { continue };
-        text.push_str(&format!("{} (memory may keep only: {})\n", app.manifest.name, app.manifest.memory.join("; ")));
-        for (id, _, summary) in lines {
-            text.push_str(&format!("[{id}] {summary}\n"));
-        }
-    }
-    Ok(Some(text))
+    let oldest_in_window: Option<i64> = db
+        .query_row(
+            "SELECT MIN(sequence) FROM (
+                 SELECT sequence FROM session_entries
+                 WHERE session_id=?1 AND (
+                     (kind IN ('user.message','assistant.message')
+                      AND context_visibility IN ('eligible','visible'))
+                     OR kind=?2)
+                 ORDER BY sequence DESC LIMIT ?3)",
+            params![session_id, crate::apps::events::APP_EVENT_KIND, FIRST_RUN_ENTRIES],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(oldest_in_window.map_or(i64::MIN, |sequence| sequence - 1))
 }
 
-/// Bounded and typed: recent conversational entries by id, the scope's active
-/// pin bodies, and the app activity memory may read. Never a raw transcript,
-/// never another session.
+fn clip(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(max_chars).collect();
+    format!("{} …", head.trim_end())
+}
+
+/// Bounded and typed: the conversational entries and in-scope app activity
+/// after this chat's watermark, oldest first, plus the scope's active pin
+/// bodies. Never a raw transcript, never another session.
+///
+/// `None` means nothing was written after the watermark at all.
 pub fn build_digest(
     db: &Connection,
     scope_key: &str,
     session_id: &str,
 ) -> Result<Option<ExtractionDigest>, BridgeError> {
+    let after = read_after_sequence(db, session_id)?;
     let mut statement = db.prepare(
-        "SELECT id, kind, coalesce(json_extract(payload,'$.text'), '')
+        "SELECT id, kind, coalesce(json_extract(payload,'$.text'), ''),
+                coalesce(json_extract(payload,'$.appId'), ''),
+                coalesce(json_extract(payload,'$.summary'), '')
          FROM session_entries
-         WHERE session_id=?1 AND kind IN ('user.message','assistant.message')
-           AND context_visibility IN ('eligible','visible')
-         ORDER BY sequence DESC LIMIT ?2",
+         WHERE session_id=?1 AND sequence > ?2 AND (
+             (kind IN ('user.message','assistant.message')
+              AND context_visibility IN ('eligible','visible'))
+             OR kind=?3)
+         ORDER BY sequence ASC LIMIT ?4",
     )?;
-    let mut newest_first: Vec<(String, String, String)> = statement
-        .query_map(params![session_id, MAX_DIGEST_ENTRIES as i64], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?
+    let rows: Vec<(String, String, String, String, String)> = statement
+        .query_map(
+            params![session_id, after, crate::apps::events::APP_EVENT_KIND, (MAX_DIGEST_ENTRIES + 1) as i64],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )?
         .collect::<Result<Vec<_>, _>>()?;
-    newest_first.retain(|(_, _, text)| !text.trim().is_empty());
-    let activity = app_activity(db, session_id)?;
-    if newest_first.is_empty() && activity.is_none() {
+    if rows.is_empty() {
         return Ok(None);
     }
+    let off = crate::apps::registry::disabled_ids(db)?;
     let mut used = 0usize;
     let mut lines: Vec<String> = Vec::new();
-    for (id, kind, text) in &newest_first {
-        let role = if kind == "user.message" {
-            "user"
+    let mut activity: Vec<(String, &'static crate::apps::BuiltinApp, String)> = Vec::new();
+    let mut has_evidence = false;
+    let mut through_entry_id = String::new();
+    let mut more = rows.len() > MAX_DIGEST_ENTRIES;
+    for (id, kind, text, app_id, summary) in rows.into_iter().take(MAX_DIGEST_ENTRIES) {
+        if kind == crate::apps::events::APP_EVENT_KIND {
+            let Some(app) = crate::apps::builtin(&app_id) else {
+                through_entry_id = id;
+                continue;
+            };
+            // One line per event: a summary cannot open a line of its own.
+            let summary = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+            if app.manifest.memory.is_empty() || off.contains(&app_id) || summary.is_empty() {
+                through_entry_id = id;
+                continue;
+            }
+            if activity.len() == MAX_APP_ACTIVITY || used + summary.len() > MAX_DIGEST_CHARS {
+                more = true;
+                break;
+            }
+            used += summary.len();
+            activity.push((id.clone(), app, summary));
+            has_evidence = true;
+            through_entry_id = id;
+            continue;
+        }
+        let text = text.trim();
+        if text.is_empty() {
+            through_entry_id = id;
+            continue;
+        }
+        let line = if kind == "user.message" {
+            format!("[{id}] user: {}", clip(text, MAX_USER_CHARS))
         } else {
-            "assistant"
+            format!("[{id}] assistant: {}", clip(text, MAX_ASSISTANT_CHARS))
         };
-        let line = format!("[{id}] {role}: {}", text.trim());
-        if used + line.len() > MAX_DIGEST_CHARS {
+        if used + line.len() > MAX_DIGEST_CHARS && !through_entry_id.is_empty() {
+            more = true;
             break;
         }
         used += line.len();
+        has_evidence |= kind == "user.message";
         lines.push(line);
+        through_entry_id = id;
     }
-    lines.reverse();
     let pins = memory_ledger::list(db, scope_key, None)?;
     let mut text = String::new();
     if !pins.records.is_empty() {
@@ -575,14 +621,94 @@ pub fn build_digest(
         text.push_str("Conversation:\n");
         text.push_str(&lines.join("\n"));
     }
-    if let Some(activity) = activity {
+    if !activity.is_empty() {
         if !lines.is_empty() {
             text.push_str("\n\n");
         }
-        text.push_str(activity.trim_end());
+        text.push_str("App activity (recorded by Bridge apps; the person did not write these lines):\n");
+        let mut order: Vec<&str> = Vec::new();
+        for (_, app, _) in &activity {
+            if !order.contains(&app.manifest.id.as_str()) {
+                order.push(&app.manifest.id);
+            }
+        }
+        for app_id in order {
+            let mut group = activity.iter().filter(|(_, app, _)| app.manifest.id == app_id).peekable();
+            let Some((_, app, _)) = group.peek() else { continue };
+            text.push_str(&format!("{} (memory may keep only: {})\n", app.manifest.name, app.manifest.memory.join("; ")));
+            for (id, _, summary) in group {
+                text.push_str(&format!("[{id}] {summary}\n"));
+            }
+        }
+        let trimmed = text.trim_end().len();
+        text.truncate(trimmed);
     }
     let sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
-    Ok(Some(ExtractionDigest { text, sha256 }))
+    Ok(Some(ExtractionDigest { text, sha256, through_entry_id, more, has_evidence }))
+}
+
+/// The digest a claimed run reads, or `None` once the run has been settled
+/// `cancelled` / `nothing_new` without a model call: nothing was written after
+/// the watermark, or nothing written was a user message or app activity in
+/// scope, so there is nothing a proposal could cite.
+pub fn digest_for_run(
+    db: &Connection,
+    scope_key: &str,
+    session_id: &str,
+    run_id: &str,
+    lease_owner: &str,
+) -> Result<Option<ExtractionDigest>, BridgeError> {
+    match build_digest(db, scope_key, session_id)? {
+        Some(digest) if digest.has_evidence => Ok(Some(digest)),
+        _ => {
+            settle(db, run_id, lease_owner, "cancelled", Some(NOTHING_NEW), None, None, None, 0, 0, 0)?;
+            Ok(None)
+        }
+    }
+}
+
+/// After a completed run that left entries behind, the next chunk is due at
+/// once. A run already queued for this chat (a newer turn) covers it.
+pub fn enqueue_follow_up(db: &Connection, session_id: &str, now: DateTime<Utc>) -> Result<bool, BridgeError> {
+    let queued: Option<i64> = db
+        .query_row(
+            "SELECT 1 FROM memory_extraction_runs WHERE session_id=?1 AND status='queued' LIMIT 1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if queued.is_some() {
+        return Ok(false);
+    }
+    let mode = settings(db, ACCOUNT_MEMORY_SCOPE)?.mode;
+    if !extraction_enabled(&mode) {
+        return Ok(false);
+    }
+    let at = now.to_rfc3339();
+    db.execute(
+        "INSERT INTO memory_extraction_runs(
+            id, scope_key, session_id, mode, status, due_at, created_at, updated_at
+         ) VALUES(?1,?2,?3,?4,'queued',?5,?5,?5)",
+        params![Uuid::new_v4().to_string(), ACCOUNT_MEMORY_SCOPE, session_id, mode, at],
+    )?;
+    Ok(true)
+}
+
+/// Record what a completed run covered: its watermark and how many candidates
+/// it found already known. Call under the same lock as `settle`, before it.
+pub fn record_coverage(
+    db: &Connection,
+    run_id: &str,
+    lease_owner: &str,
+    through_entry_id: &str,
+    known_count: i64,
+) -> Result<bool, BridgeError> {
+    let changed = db.execute(
+        "UPDATE memory_extraction_runs SET through_entry_id=?3, known_count=?4
+         WHERE id=?1 AND lease_owner=?2 AND status='running'",
+        params![run_id, lease_owner, through_entry_id, known_count],
+    )?;
+    Ok(changed > 0)
 }
 
 pub fn extraction_instructions() -> String {
@@ -1571,7 +1697,7 @@ pub fn run_extraction(
     scope_key: &str,
     session_id: &str,
 ) -> Result<(ExtractionReport, ExtractionOutput, Option<String>), BridgeError> {
-    let Some(digest) = build_digest(db, scope_key, session_id)? else {
+    let Some(digest) = build_digest(db, scope_key, session_id)?.filter(|digest| digest.has_evidence) else {
         return Ok((
             ExtractionReport::default(),
             ExtractionOutput {
@@ -2045,18 +2171,140 @@ mod tests {
     #[test]
     fn digest_caps_app_activity_at_twenty() {
         let (_dir, db) = extraction_db();
+        propose_mode(&db);
         insert_chat(&db, "s1", "direct");
         for index in 0..25 {
             app_event(&db, "s1", "outgoing", "outgoing.sent", &format!("Sent a Slack message to #c{index}"));
         }
-        // Newer unscoped rows must not push scoped ones out.
+        // Unscoped rows are read past, never shown.
         for index in 0..5 {
             raw_app_event(&db, "s1", &format!("p{index}"), 100 + index, "pulls", "Opened a pull request");
         }
-        let digest = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap().text;
-        let lines: Vec<&str> = digest.lines().filter(|line| line.contains("Sent a Slack message")).collect();
-        assert_eq!(lines.len(), 20, "{digest}");
-        assert!(lines[0].ends_with("#c5") && lines[19].ends_with("#c24"), "{digest}");
+        let first = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        let lines: Vec<&str> = first.text.lines().filter(|line| line.contains("Sent a Slack message")).collect();
+        assert_eq!(lines.len(), 20, "{}", first.text);
+        assert!(lines[0].ends_with("#c0") && lines[19].ends_with("#c19"), "oldest first: {}", first.text);
+        assert!(first.more, "five more wait for the next run");
+        complete_through(&db, "s1", &first.through_entry_id);
+        let second = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        let lines: Vec<&str> = second.text.lines().filter(|line| line.contains("Sent a Slack message")).collect();
+        assert_eq!(lines.len(), 5, "{}", second.text);
+        assert!(lines[0].ends_with("#c20") && !second.text.contains("pull request"), "{}", second.text);
+        assert!(!second.more);
+    }
+
+    /// A completed run that read through `entry_id`, as the live runner leaves it.
+    fn complete_through(db: &Connection, session_id: &str, entry_id: &str) {
+        let id = Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO memory_extraction_runs(id,scope_key,session_id,status,through_entry_id,created_at,updated_at,mode)
+             VALUES(?1,'account:local',?2,'completed',?3,'2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00','propose')",
+            params![id, session_id, entry_id],
+        )
+        .unwrap();
+    }
+
+    fn conversation_ids(digest: &ExtractionDigest) -> Vec<String> {
+        digest
+            .text
+            .lines()
+            .filter_map(|line| line.strip_prefix('[').and_then(|rest| rest.split_once(']')).map(|(id, _)| id.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn the_digest_reads_only_entries_after_the_watermark() {
+        let (_dir, db) = extraction_db();
+        insert_chat(&db, "s1", "direct");
+        insert_message(&db, "s1", "e1", 1, "user.message", "I always deploy on Fridays");
+        insert_message(&db, "s1", "e2", 2, "assistant.message", "Noted.");
+        insert_message(&db, "s1", "e3", 3, "user.message", "I prefer tabs");
+        let first = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        assert_eq!(conversation_ids(&first), ["e1", "e2", "e3"]);
+        assert_eq!(first.through_entry_id, "e3");
+        complete_through(&db, "s1", "e2");
+        let after = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        assert_eq!(conversation_ids(&after), ["e3"], "only what the last run did not read");
+        complete_through(&db, "s1", "e3");
+        assert!(build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().is_none(), "nothing new at all");
+        // A failed run's watermark does not count: only completed runs read.
+        db.execute("UPDATE memory_extraction_runs SET status='failed' WHERE through_entry_id='e3'", []).unwrap();
+        assert_eq!(conversation_ids(&build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap()), ["e3"]);
+    }
+
+    #[test]
+    fn a_first_run_reads_at_most_the_last_sixty_entries() {
+        let (_dir, db) = extraction_db();
+        insert_chat(&db, "s1", "direct");
+        for index in 1..=100 {
+            let kind = if index % 2 == 1 { "user.message" } else { "assistant.message" };
+            insert_message(&db, "s1", &format!("e{index}"), index, kind, &format!("line {index}"));
+        }
+        let digest = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        let ids = conversation_ids(&digest);
+        assert_eq!(ids.first().map(String::as_str), Some("e41"), "the newest 60 of 100");
+        assert_eq!(ids.len(), 60);
+        assert!(!digest.more);
+    }
+
+    #[test]
+    fn assistant_text_is_clipped_and_user_text_is_not() {
+        let (_dir, db) = extraction_db();
+        insert_chat(&db, "s1", "direct");
+        let user = format!("I prefer {}", "tabs ".repeat(200));
+        let assistant = "a".repeat(5_000);
+        insert_message(&db, "s1", "e1", 1, "user.message", &user);
+        insert_message(&db, "s1", "e2", 2, "assistant.message", &assistant);
+        let digest = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        assert!(digest.text.contains(user.trim()), "a user message under the cap is whole");
+        let line = digest.text.lines().find(|line| line.starts_with("[e2]")).unwrap();
+        assert!(line.chars().count() <= "[e2] assistant: ".len() + MAX_ASSISTANT_CHARS + 2, "{}", line.len());
+        assert!(line.ends_with('…'));
+    }
+
+    #[test]
+    fn a_long_backlog_is_read_in_chunks_with_a_follow_up_run() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        // 50 messages of 1,000 characters: about twice what one digest holds.
+        for index in 1..=50 {
+            insert_message(&db, "s1", &format!("e{index}"), index, "user.message", &format!("I note {index} {}", "x".repeat(1_000)));
+        }
+        complete_through(&db, "s1", "e1");
+        let first = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        assert!(first.more && first.text.len() <= MAX_DIGEST_CHARS + 2_000, "{}", first.text.len());
+        assert_eq!(conversation_ids(&first).first().map(String::as_str), Some("e2"));
+        let now = Utc::now();
+        assert!(enqueue_follow_up(&db, "s1", now).unwrap(), "the rest is due at once");
+        assert!(!enqueue_follow_up(&db, "s1", now).unwrap(), "one queued run per chat");
+        assert_eq!(claim_due(&db, now, &memory(&db)).unwrap().unwrap().session_id, "s1");
+        complete_through(&db, "s1", &first.through_entry_id);
+        let second = build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().unwrap();
+        let next_id = format!("e{}", first.through_entry_id.trim_start_matches('e').parse::<i64>().unwrap() + 1);
+        assert_eq!(conversation_ids(&second).first(), Some(&next_id), "no gap, no repeat");
+    }
+
+    #[test]
+    fn no_new_user_message_cancels_without_a_model_call() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        insert_message(&db, "s1", "e1", 1, "user.message", "I prefer tabs");
+        complete_through(&db, "s1", "e1");
+        insert_message(&db, "s1", "e2", 2, "assistant.message", "Here is the follow-up you asked for.");
+        enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap();
+        let claimed = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
+        let digest = digest_for_run(&db, ACCOUNT_MEMORY_SCOPE, "s1", &claimed.run_id, &claimed.lease_owner).unwrap();
+        assert!(digest.is_none(), "no model call");
+        let (status, detail, spend): (String, String, i64) = db
+            .query_row("SELECT status, detail, spend_microusd FROM memory_extraction_runs WHERE id=?1", params![claimed.run_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap();
+        assert_eq!((status.as_str(), detail.as_str(), spend), ("cancelled", NOTHING_NEW, 0));
+        // The eval seam makes no call either.
+        let mut model = RefusingModel;
+        let (report, output, digest) = run_extraction(&db, &mut model, ACCOUNT_MEMORY_SCOPE, "s1").unwrap();
+        assert_eq!((report.written, output.spend_microusd, digest), (0, 0, None));
     }
 
     #[test]

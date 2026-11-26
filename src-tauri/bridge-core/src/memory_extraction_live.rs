@@ -59,24 +59,12 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedExtraction) {
 
     let digest = {
         let db = core.db.lock().unwrap();
-        memory_extraction::build_digest(&db, &scope_key, &session_id)
+        memory_extraction::digest_for_run(&db, &scope_key, &session_id, &run_id, &lease_owner)
     };
     let digest = match digest {
         Ok(Some(digest)) => digest,
-        Ok(None) => {
-            settle(
-                core,
-                &run_id,
-                &lease_owner,
-                "completed",
-                Some("empty_digest"),
-                &harness,
-                &model,
-                None,
-                None,
-            );
-            return;
-        }
+        // Settled `nothing_new` without a model call.
+        Ok(None) => return,
         Err(error) => {
             settle(
                 core,
@@ -131,6 +119,14 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedExtraction) {
                 report.duplicates,
                 report.refused
             );
+            {
+                // The watermark lands with the completion, under one lock, so
+                // a failed run is read again and a completed one never is.
+                let db = core.db.lock().unwrap();
+                if let Err(error) = memory_extraction::record_coverage(&db, &run_id, &lease_owner, &digest.through_entry_id, 0) {
+                    eprintln!("[memory] extraction run {run_id} could not record its watermark: {error}");
+                }
+            }
             settle(
                 core,
                 &run_id,
@@ -142,6 +138,12 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedExtraction) {
                 Some(&digest.sha256),
                 Some((&output, report.written as i64)),
             );
+            if digest.more {
+                let db = core.db.lock().unwrap();
+                if let Err(error) = memory_extraction::enqueue_follow_up(&db, &session_id, Utc::now()) {
+                    eprintln!("[memory] extraction for {session_id} could not queue the rest of its backlog: {error}");
+                }
+            }
         }
         Err(error) => {
             settle(
