@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronRight, FileQuestion, MoreHorizontal, PanelLeft, Plus, RotateCw, Search, Settings2, Table2 } from "lucide-react";
 import { bridgeApi } from "../api";
+import { errorMessage, friendlyError } from "../errors";
 import { taskBrief } from "../notesBrief";
 import { noteDisplayTitle, pageTitled, plainPreview } from "../notesDraft";
 import type { AdapterDescriptor, Note, NoteDatabase, NoteDatabaseView, NotePage, NotesList, NotesSettings, Session, Workspace } from "../types";
@@ -84,7 +85,6 @@ export interface NotesScreenProps {
   pollMs?: number;
 }
 
-const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 /** The core's answer for a page that is deleted or was never there. */
 const isGone = (detail: string) => /\bnot found\b/i.test(detail);
 /** The "All" tab's rows, for a list read that came without the tabs' database. */
@@ -146,7 +146,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   selected.current = selectedId;
   const queryRef = useRef("");
   queryRef.current = query;
-  const fail = useCallback((error: unknown) => onError(message(error)), [onError]);
+  const fail = useCallback((error: unknown, fallback: string) => onError(friendlyError(error, fallback)), [onError]);
 
   // The ref moves with the click, not the next render: a read that resolves
   // first must still know which page it is for.
@@ -174,7 +174,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
     try {
       const read = await bridgeApi.readNotePage(sys.id);
       if (read.database) { systemRef.current = { id: sys.id, database: read.database }; setSystem(systemRef.current); }
-    } catch (error) { fail(error); }
+    } catch (error) { fail(error, "Couldn't load the Notes tabs."); }
   }, [fail]);
   const refreshTab = useCallback(async () => {
     const sys = systemRef.current;
@@ -199,8 +199,8 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
       setListFailure(null);
     } catch (error) {
       if (ticket !== tabRequest.current) return;
-      fail(error);
-      setListFailure(message(error));
+      fail(error, "Couldn't load this tab.");
+      setListFailure(friendlyError(error, "Couldn't load this tab."));
     }
   }, [fail]);
   const refreshList = useCallback(async (searchOnly = false) => {
@@ -235,8 +235,8 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
       await refreshTab();
     } catch (error) {
       if (ticket !== listRequest.current) return;
-      fail(error);
-      setListFailure(message(error));
+      fail(error, "Couldn't load your notes.");
+      setListFailure(friendlyError(error, "Couldn't load your notes."));
     }
   }, [fail, refreshTab]);
   // Reads of the same page can overlap (several live updates in a row). Only
@@ -299,7 +299,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
       showPage(await bridgeApi.readNotePage(id), ticket);
     } catch (error) {
       // The pane says why, with a way on; a newer read or another page wins.
-      if (ticket === pageRequest.current && selected.current === id) setOpenFailure({ id, detail: message(error) });
+      if (ticket === pageRequest.current && selected.current === id) setOpenFailure({ id, detail: errorMessage(error) });
     }
   }, [select, showPage]);
   useEffect(() => {
@@ -314,8 +314,8 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
       setPending(current => current.filter(item => item.key !== key));
       await refreshList();
     } catch (error) {
-      setPending(current => current.map(item => item.key === key ? { ...item, failed: message(error) } : item));
-      fail(error);
+      setPending(current => current.map(item => item.key === key ? { ...item, failed: friendlyError(error, "Couldn't save the note.") } : item));
+      fail(error, "Couldn't save the note.");
     }
   };
   const capture = (body: string) => {
@@ -333,14 +333,14 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
       const made = await bridgeApi.createDatabase({ title: "Untitled database" });
       await refreshList();
       await open(made.note.id);
-    } catch (error) { fail(error); }
+    } catch (error) { fail(error, "Couldn't make the database."); }
   };
   const createPage = async () => {
     try {
       const note = await bridgeApi.createNotePage({ title: null, content: "" });
       await refreshList();
       await open(note.id);
-    } catch (error) { fail(error); }
+    } catch (error) { fail(error, "Couldn't make the page."); }
   };
   // The `/` menu's Page: made under its parent, left closed. A [[ menu makes
   // a page named so at the top level instead.
@@ -360,7 +360,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
         return { id: note.id, title: noteDisplayTitle(note) };
       } catch (error) {
         if (key !== null) making.current.delete(key);
-        fail(error);
+        fail(error, "Couldn't make the page.");
         return null;
       }
     })();
@@ -403,7 +403,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
       await refreshAll();
       return true;
     } catch (error) {
-      fail(error);
+      fail(error, "Couldn't start a chat from this note.");
       return false;
     } finally {
       starts.current.delete(target.id);
@@ -463,7 +463,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
     if (!system) return false;
     try {
       await bridgeApi.saveDatabaseView({ databaseId: system.id, view: { ...viewInputOf(view), ...patch } });
-    } catch (error) { fail(error); return false; }
+    } catch (error) { fail(error, "Couldn't save the tab."); return false; }
     await rereadSystem();
     await refreshTab();
     return true;
@@ -476,7 +476,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
       setEditingView(false);
       await rereadSystem();
       await refreshTab();
-    } catch (error) { fail(error); }
+    } catch (error) { fail(error, "Couldn't hide the tab."); }
   };
   // The seven seeded tabs come back exactly: saved anew, then every other
   // view deleted (the database always keeps at least one).
@@ -491,7 +491,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
       setEditingView(false);
       await rereadSystem();
       await refreshTab();
-    } catch (error) { fail(error); }
+    } catch (error) { fail(error, "Couldn't reset the tabs."); }
   };
 
   return <div className="flex h-full min-h-0 bg-background">
@@ -725,16 +725,16 @@ function PageTree({ roots, visibleIds, childrenOf, expanded, activeId, workspace
   })}</>;
 }
 
-function NotesFooter({ root, onNewPage, onNewDatabase, onResetTabs, onError }: { root?: string; onNewPage: () => void; onNewDatabase: () => void; onResetTabs?: () => void; onError: (error: unknown) => void }) {
+function NotesFooter({ root, onNewPage, onNewDatabase, onResetTabs, onError }: { root?: string; onNewPage: () => void; onNewDatabase: () => void; onResetTabs?: () => void; onError: (error: unknown, fallback: string) => void }) {
   const [open, setOpen] = useState(false);
   const [settings, setSettings] = useState<NotesSettings | null>(null);
   useEffect(() => {
     if (!open || settings) return;
-    void bridgeApi.notesSettings().then(setSettings, onError);
+    void bridgeApi.notesSettings().then(setSettings, error => onError(error, "Couldn't load the Notes settings."));
   }, [open, settings, onError]);
   const toggle = async () => {
     if (!settings) return;
-    try { setSettings(await bridgeApi.saveNotesSettings({ autoStructure: !settings.autoStructure })); } catch (error) { onError(error); }
+    try { setSettings(await bridgeApi.saveNotesSettings({ autoStructure: !settings.autoStructure })); } catch (error) { onError(error, "Couldn't save the Notes settings."); }
   };
   return <div className="flex shrink-0 items-center gap-1 px-2 py-2">
     <Button variant="quiet" size="sm" onClick={onNewPage} className="flex-1 justify-start"><Plus aria-hidden="true" />New page</Button>
@@ -797,7 +797,7 @@ function PageUnavailable({ detail, onRetry, onBack }: { detail: string; onRetry:
     <div className="max-w-sm text-center">
       <span aria-hidden="true" className="mx-auto grid size-10 place-items-center rounded-xl bg-muted text-muted-foreground"><FileQuestion size={18} strokeWidth={1.75} /></span>
       <h2 className="m-0 mt-4 text-heading font-semibold text-foreground">{gone ? "This page is gone" : "This page didn't open"}</h2>
-      <p className="m-0 mt-1.5 break-words text-ui leading-relaxed text-muted-foreground">{gone ? "It was deleted, in Bridge or by an agent." : detail}</p>
+      <p className="m-0 mt-1.5 break-words text-ui leading-relaxed text-muted-foreground">{gone ? "It was deleted, in Bridge or by an agent." : friendlyError(detail, "Bridge couldn't read it.")}</p>
       <div className="mt-5 flex items-center justify-center gap-1">
         {gone
           ? <PrimaryButton onClick={onBack}>Back to Notes</PrimaryButton>

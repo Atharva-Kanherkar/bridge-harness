@@ -597,7 +597,7 @@ fn fetch_failures_are_transient_and_a_missing_repository_is_fatal() {
     fixture.core.db.lock().unwrap().execute("UPDATE workspaces SET path=?1", params![fixture.root.join("data").to_string_lossy()]).unwrap();
     let no_repo = claimed(&fixture, 7, "def");
     match prepare_job(&fixture, &no_repo) {
-        Err(StepError::Fatal(message)) => assert!(message.contains("not a git repository"), "{message}"),
+        Err(StepError::Fatal(message)) => assert!(message.contains("not a Git repository"), "{message}"),
         other => panic!("{other:?}"),
     }
     fixture.assert_clean();

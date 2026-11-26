@@ -281,7 +281,7 @@ describe("MemoryDialog", () => {
     expect(container.textContent).toContain("1 of 1 used · 3 recalls");
     expect(container.textContent).toContain("Over the packet budget");
     expect(container.textContent).toContain("3 applied, 1 refused · merged two notes");
-    expect(container.textContent).toContain("failed: the harness ended before answering");
+    expect(container.textContent).toContain("failed: The harness ended before answering.");
     expect(container.textContent).toContain("does not measure whether a memory helped");
     const meter = document.querySelector('[role="meter"][aria-label="Packet budget"]')!;
     expect(meter.getAttribute("aria-valuenow")).toBe("31");

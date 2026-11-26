@@ -353,7 +353,7 @@ describe("AgentConversation", () => {
     expect(retry.disabled).toBe(true);
 
     await act(async () => rejectRetry(new Error("The provider is still offline")));
-    expect(container.textContent).toContain("The provider is still offline");
+    expect(container.textContent).toContain("The provider is still offline.");
     expect(retry.disabled).toBe(false);
     await act(async () => root.unmount());
     container.remove();

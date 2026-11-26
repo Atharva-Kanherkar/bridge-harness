@@ -1,4 +1,5 @@
 import type { MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MarketplaceVariant } from "./types";
+import { errorMessage } from "./errors";
 
 export interface MarketplaceService {
   id: string;
@@ -315,7 +316,8 @@ export async function installVariants(
         action: "install" as const,
         success: false,
         message: "install failed",
-        error: error instanceof Error ? error.message : String(error),
+        // Raw, like the error field of a result core returns: the screen makes it plain where it shows it.
+        error: errorMessage(error),
       };
     }
   }));

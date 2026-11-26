@@ -42,6 +42,6 @@ it("shows a refused save and keeps the last value", async () => {
   vi.spyOn(bridgeApi, "saveEarlyCompactionSettings").mockRejectedValue(new Error("the store is read-only"));
   await mount();
   act(() => toggle().click()); await settle();
-  expect(container.querySelector('[role="alert"]')?.textContent).toBe("the store is read-only");
+  expect(container.querySelector('[role="alert"]')?.textContent).toBe("The store is read-only.");
   expect(toggle().getAttribute("aria-checked")).toBe("false");
 });

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
 import { ArrowLeft, ArrowRight, Bot, CheckCircle2, RefreshCw } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type { AdapterDescriptor, ModelSetupState } from "../types";
 import type { UsageProvider } from "../usage";
 import { canInstallManagedAgent, onboardingAgentReady, onboardingChoices, type OnboardingAgent } from "../onboarding";
@@ -98,7 +99,7 @@ export function ModelSetupWizard({ adapters, onComplete, onHealthChange = NOOP, 
       const health = await bridgeApi.health().catch(() => undefined);
       if (generation === refreshGeneration.current) {
         if (health) setCurrentAdapters(health.adapters);
-        setError(cause instanceof Error ? cause.message : String(cause));
+        setError(friendlyError(cause, "Couldn't check your agents. Try again."));
       }
     })
       .finally(() => { if (generation === refreshGeneration.current) setRefreshing(false); });
@@ -139,7 +140,7 @@ export function ModelSetupWizard({ adapters, onComplete, onHealthChange = NOOP, 
       onHealthChange();
       onComplete(setup);
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
+      const message = friendlyError(cause, "Couldn't finish setting up Bridge. Try again.");
       managed.reload();
       const health = await bridgeApi.health().catch(() => undefined);
       if (health) setCurrentAdapters(health.adapters);
@@ -153,7 +154,7 @@ export function ModelSetupWizard({ adapters, onComplete, onHealthChange = NOOP, 
         <h1 className="font-display text-2xl font-semibold tracking-tight">{stage === "choose" ? "Which coding agents do you want to use?" : "Connect your coding agents"}</h1>
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{stage === "choose" ? "Choose one or more. We'll help you install what's missing and sign in." : "Each selected agent needs an installation and sign-in before you enter Bridge."}</p>
         {stage === "choose" && <div className="mt-5 rounded-xl border border-border bg-muted/30 p-4 text-xs leading-relaxed text-muted-foreground"><p><strong className="text-foreground">Already on your computer:</strong> Bridge uses the copy you installed. You manage its updates.</p><p className="mt-2"><strong className="text-foreground">Installed by Bridge:</strong> a separate copy Bridge can update and remove. You still sign in with your agent account.</p></div>}
-        {managed.listError && <div className="mt-4 space-y-2"><p role="alert" className="text-sm text-destructive">Could not check installation sources: {managed.listError}</p><p className="text-xs text-muted-foreground">You can retry, or use agents found by the sign-in and availability check. Bridge cannot manage those installations until detection recovers.</p>{!useDetectedAgents && <Button variant="outline" size="sm" onClick={() => setUseDetectedAgents(true)}>Use detected agents</Button>}</div>}
+        {managed.listError && <div className="mt-4 space-y-2"><p role="alert" className="text-sm text-destructive">{managed.listError}</p><p className="text-xs text-muted-foreground">You can retry, or use agents found by the sign-in and availability check. Bridge cannot manage those installations until detection recovers.</p>{!useDetectedAgents && <Button variant="outline" size="sm" onClick={() => setUseDetectedAgents(true)}>Use detected agents</Button>}</div>}
         {!managed.agents && !managed.listError ? <SkeletonRows label="Checking this computer" rows={3} lead="icon" className="mt-5" density="card" />
           : stage === "choose" ? <fieldset className="mt-5 space-y-2"><legend className="sr-only">Coding agents to use</legend>{choices.map(agent => <label key={agent.agentId} className="u-glass-soft flex cursor-pointer items-center gap-3 rounded-xl border border-border-card p-4">
             <Checkbox checked={selected.includes(agent.agentId)} onCheckedChange={checked => { setError(undefined); setSelected(ids => checked ? [...ids, agent.agentId] : ids.filter(id => id !== agent.agentId)); }} />

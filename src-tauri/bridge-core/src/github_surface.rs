@@ -664,6 +664,42 @@ pub enum GithubSurfaceError {
     Io(#[from] std::io::Error),
 }
 
+impl GithubSurfaceError {
+    /// What a person reads about this failure. The Display form names the
+    /// `gh` operation and quotes its stderr, which is what a log wants and
+    /// not what a dashboard should show.
+    pub fn user_message(&self) -> String {
+        const SIGN_IN: &str = "GitHub needs you to sign in again. Run gh auth login in a terminal, then try again.";
+        match self {
+            GithubSurfaceError::Unavailable { status: GithubAvailability::NotAuthenticated { .. } } => SIGN_IN.into(),
+            GithubSurfaceError::Unavailable { .. } => {
+                "The GitHub CLI (gh) isn't installed. Install it, sign in with gh auth login, then try again.".into()
+            }
+            GithubSurfaceError::CommandFailed { stderr, .. } => {
+                let lower = stderr.to_lowercase();
+                let says = |needles: &[&str]| needles.iter().any(|needle| lower.contains(needle));
+                if says(&["http 401", "bad credentials", "gh auth login", "not logged", "authentication"]) {
+                    SIGN_IN.into()
+                } else if says(&["http 403", "resource not accessible", "must have", "permission"]) {
+                    "GitHub says your account can't do that on this repository.".into()
+                } else if says(&["http 404", "could not resolve to", "not found"]) {
+                    "GitHub couldn't find that pull request or repository.".into()
+                } else if says(&["http 422"]) {
+                    "GitHub refused the request.".into()
+                } else {
+                    "GitHub couldn't complete the request. Try again in a few minutes.".into()
+                }
+            }
+            GithubSurfaceError::MalformedResponse { .. } => "GitHub sent a response Bridge couldn't read. Try again.".into(),
+            GithubSurfaceError::RepositoryResolution { .. } => {
+                "Bridge couldn't tell which GitHub repository this folder belongs to.".into()
+            }
+            GithubSurfaceError::RateLimited { .. } => "GitHub is rate limiting requests. Try again in a few minutes.".into(),
+            GithubSurfaceError::Io(_) => "Bridge couldn't run the GitHub CLI (gh).".into(),
+        }
+    }
+}
+
 /// A discovered `gh` installation and its current authentication state.
 ///
 /// The status is retained so normal reads do not rerun `gh auth status` on

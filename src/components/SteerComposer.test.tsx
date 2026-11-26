@@ -99,7 +99,7 @@ describe("SteerComposer", () => {
     expect(box(container).value).toBe("for worker two");
 
     await act(async () => container.querySelector<HTMLButtonElement>('button[type="submit"]')!.click());
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe("refused");
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Couldn't send that to the agent. Try again.");
     await rerender(<SteerComposer sessionId="w3" steerable onSteer={onSteer}/>);
     expect(container.querySelector('[role="alert"]')).toBeNull();
     await unmount();
@@ -128,7 +128,7 @@ describe("SteerComposer", () => {
     await type(box(container), "second thought");
     await act(async () => held.reject(new Error("not accepted")));
     expect(box(container).value).toBe("first thought\nsecond thought");
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe("not accepted");
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Not accepted.");
     await unmount();
   });
 

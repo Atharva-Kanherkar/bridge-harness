@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRight, CornerDownLeft, FileSearch, Folder, FolderOpen, PanelLeft, RefreshCw, X } from "lucide-react";
 import { bridgeApi } from "../api";
-import { errorMessage } from "../errors";
+import { friendlyError } from "../errors";
 import { ancestorPaths, buildFileTree, collapseChains, rankPaths, type TreeNode } from "../fileTree";
 import { glyphFor } from "./fileGlyph";
 import { cn } from "@/lib/utils";
@@ -227,7 +227,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
       setTreeError(undefined);
     } catch (error) {
       // A failed background refresh keeps the tree you were using.
-      if (!quiet && mounted.current) setTreeError(errorMessage(error));
+      if (!quiet && mounted.current) setTreeError(friendlyError(error, "Couldn't list the files in this workspace."));
     } finally {
       if (!quiet && mounted.current) setLoadingTree(false);
     }

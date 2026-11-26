@@ -14,6 +14,7 @@ import { useMemo } from "react";
 import { Plus } from "lucide-react";
 import type { AdapterDescriptor, AgentDefinition, AgentRole, ReasoningEffort } from "../../types";
 import { HarnessMark } from "../harnessMarks";
+import { friendlyError } from "../../errors";
 import {
   Field, GhostButton, SaveBar, Select, SettingsBlockRow, SettingsGroup, SettingsPage, SettingsRow,
   StatusPill, Switch, TextArea, TextButton, useSavedFlash,
@@ -149,7 +150,7 @@ function PresetDetail({
     onDraft({ ...draft, ...patch });
     if (isNew || !stored) return;
     void onSave({ ...stored, ...patch }).then(() => flash(key)).catch(error =>
-      onError(error instanceof Error ? error.message : String(error)));
+      onError(friendlyError(error, "Couldn't save the agent.")));
   };
 
   return <SettingsPage
@@ -262,7 +263,7 @@ function PresetDetail({
       canSave={draft.name.trim().length > 0}
       label={isNew ? "New agent" : "Unsaved changes"}
       saveLabel={isNew ? "Create agent" : "Save"}
-      onSave={() => void onSave(draft).catch(error => onError(error instanceof Error ? error.message : String(error)))}
+      onSave={() => void onSave(draft).catch(error => onError(friendlyError(error, isNew ? "Couldn't create the agent." : "Couldn't save the agent.")))}
       onDiscard={() => (isNew || !stored) ? onBack() : onDraft(structuredClone(stored))}
     />
   </SettingsPage>;

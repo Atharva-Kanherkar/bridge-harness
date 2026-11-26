@@ -246,7 +246,7 @@ describe("dictation ownership", () => {
     const s = setup();
     await s.ready();
     s.captureError(new Error("device disconnected"));
-    expect(s.view().error).toBe("device disconnected");
+    expect(s.view().error).toBe("Device disconnected.");
     expect(s.capture.stop).toHaveBeenCalledTimes(1);
   });
 });

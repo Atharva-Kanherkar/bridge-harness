@@ -16,10 +16,10 @@ pre{font:12px ui-monospace;white-space:pre-wrap;word-break:break-word;margin:14p
 <script>
 let next=0;const waiting=new Map();const call=(method,params)=>new Promise((resolve,reject)=>{const id=++next;waiting.set(id,{resolve,reject});parent.postMessage({jsonrpc:'2.0',id,method,params},'*')});
 const apply=context=>{if(context?.styles?.variables)for(const [key,value]of Object.entries(context.styles.variables))document.documentElement.style.setProperty(key,value)};
-addEventListener('message',event=>{if(event.source!==parent)return;const msg=event.data;if(waiting.has(msg.id)){const task=waiting.get(msg.id);waiting.delete(msg.id);msg.error?task.reject(new Error(msg.error.message)):task.resolve(msg.result)}
+addEventListener('message',event=>{if(event.source!==parent)return;const msg=event.data;if(waiting.has(msg.id)){const task=waiting.get(msg.id);waiting.delete(msg.id);msg.error?task.reject(new Error(msg.error.message)):task.resolve(msg.result)} // raw-error: the mock app's own iframe script, a stand-in for a model-written app
 if(msg.method==='ui/notifications/tool-input')document.querySelector('#query').value=msg.params.arguments.query??'';
 if(msg.method==='ui/notifications/host-context-changed')apply(msg.params)});
-const show=async(name,args)=>{try{const result=await call('tools/call',{name,arguments:args});document.querySelector('#result').textContent=result.content.map(part=>part.text??'').join('\\n')}catch(error){document.querySelector('#result').textContent=error.message}};
+const show=async(name,args)=>{try{const result=await call('tools/call',{name,arguments:args});document.querySelector('#result').textContent=result.content.map(part=>part.text??'').join('\\n')}catch(error){document.querySelector('#result').textContent=error.message}}; // raw-error: the mock app's own iframe script; it shows the host's refusal text
 document.querySelector('#search').onclick=()=>show('slack_search_users',{query:document.querySelector('#query').value});
 document.querySelector('#send').onclick=()=>show('slack_send_message',{recipient:document.querySelector('#query').value,text:document.querySelector('#message').value});
 call('ui/initialize',{appInfo:{name:'slack-dm',version:'1'},appCapabilities:{},protocolVersion:'2026-01-26'}).then(result=>{apply(result.hostContext);parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/initialized',params:{}},'*');new ResizeObserver(()=>parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/size-changed',params:{height:document.body.scrollHeight}},'*')).observe(document.body)});

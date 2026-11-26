@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { ArrowLeft, ArrowRight, ArrowUpRight, Hand, LayoutGrid, Maximize2, Minimize2, MessageSquarePlus, Pin, PinOff, Square, X } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type { WorkflowRun } from "../protocol/generated/protocol";
 import { activeWorkflowRuns, WorkflowRunsStrip } from "./workflows/WorkflowInbox";
 import { useShowWorkerChatsInMissionControl } from "../missionControlSettings";
@@ -179,7 +180,7 @@ function Tile({ id, actions }: { id: string; actions: TileActions }) {
     setSending(true); setError(null);
     const shown = askText(text);
     setSent(shown ? { text: shown, over: recordedAsk } : null);
-    try { await bridgeApi.submitInput(session!.id, text); setDraft(""); } catch (cause) { setSent(null); setError(cause instanceof Error ? cause.message : String(cause)); } finally { setSending(false); }
+    try { await bridgeApi.submitInput(session!.id, text); setDraft(""); } catch (cause) { setSent(null); setError(friendlyError(cause, "Couldn't send the message.")); } finally { setSending(false); }
   }
   async function interrupt() {
     setStopping(true);

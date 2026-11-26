@@ -7,6 +7,7 @@
 
 import { useState } from "react";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import { ProviderLoginPane } from "../ProviderLoginPane";
 import { loginOutputFailed } from "../ProviderSignInDialog";
 import {
@@ -25,10 +26,6 @@ async function saveAccountKey(harness: AccountHarness, account: string, key: str
   } else if (provider.key && "opencodeProvider" in provider.key) {
     await bridgeApi.setOpenCodeProviderApiKey(provider.key.opencodeProvider, key, undefined, account);
   }
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 export function ProviderAccountsSettings({ harness, label, accounts, disabled, onChange }: {
@@ -66,7 +63,7 @@ export function ProviderAccountsSettings({ harness, label, accounts, disabled, o
       setSavedKey(account.id);
       return true;
     } catch (caught) {
-      setError(`${account.label}: ${message(caught)}`);
+      setError(`${account.label}: ${friendlyError(caught, "Couldn't save the key. Try again.")}`);
       return false;
     } finally {
       setSaving(false);

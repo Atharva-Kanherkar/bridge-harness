@@ -139,7 +139,7 @@ describe("API keys settings", () => {
     await type("Key value", "sk-proj-abcdefghijklmnopqrstuvwxyz");
     expect(host.textContent).toContain("Replaces the saved OPENAI_API_KEY");
     await click("Replace key");
-    expect(onError).toHaveBeenCalledWith("Keychain refused");
+    expect(onError).toHaveBeenCalledWith("Keychain refused.");
     expect(input("Key value").value).toBe("sk-proj-abcdefghijklmnopqrstuvwxyz");
   });
 });

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { Bot, ChevronDown, Columns2, ExternalLink, GripVertical, Keyboard, Maximize2, Minimize2, Plus, RotateCcw, Rows2, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "../api";
-import { errorMessage } from "../errors";
+import { friendlyError } from "../errors";
 import { cn } from "../lib/utils";
 import { addTab, appendToLastLeaf, autoSplitDirection, closeLeaf, emptyLayout, insertSplit, leafIds, resizeNode, restoreLayout, type PaneNode, type SplitDirection, type TerminalLayout } from "../terminal/layout";
 import type { TerminalRecord } from "../terminal/types";
@@ -148,7 +148,7 @@ export function TerminalWorkspace({ workspaceId, branch, onError }: { workspaceI
   const [backgroundDrop, setBackgroundDrop] = useState(false);
   const alive = useRef(true);
   const dirty = useRef(false);
-  const errorHandler = useCallback((value: unknown) => { if (alive.current) { setError(errorMessage(value)); setRetrySave(false); } }, []);
+  const errorHandler = useCallback((value: unknown, fallback: string) => { if (alive.current) { setError(friendlyError(value, fallback)); setRetrySave(false); } }, []);
   const load = useCallback(async () => {
     try {
       await writes.get(workspaceId)?.catch(() => {});
@@ -156,13 +156,13 @@ export function TerminalWorkspace({ workspaceId, branch, onError }: { workspaceI
       if (!alive.current) return;
       setState({ records: Object.fromEntries(data.terminals.map(t => [t.terminalId, t])), layout: restoreLayout(data.layout, data.terminals) });
       setError(undefined);
-    } catch (value) { errorHandler(value); }
+    } catch (value) { errorHandler(value, "Couldn't open the terminal workspace."); }
   }, [workspaceId, errorHandler]);
   useEffect(() => { alive.current = true; void load(); return () => { alive.current = false; }; }, [load]);
   useEffect(() => {
     if (!state || !dirty.current) return;
     const layout = state.layout;
-    const timer = setTimeout(() => { dirty.current = false; void saveLayout(workspaceId, layout).catch(value => { errorHandler(value); if (alive.current) setRetrySave(true); }); }, 200);
+    const timer = setTimeout(() => { dirty.current = false; void saveLayout(workspaceId, layout).catch(value => { errorHandler(value, "Couldn't save the terminal layout."); if (alive.current) setRetrySave(true); }); }, 200);
     return () => clearTimeout(timer);
   }, [state?.layout, workspaceId, errorHandler]);
   useEffect(() => () => {
@@ -195,7 +195,7 @@ export function TerminalWorkspace({ workspaceId, branch, onError }: { workspaceI
         const direction = placement.direction ?? measuredDirection(elements.current.get(target)) ?? autoSplitDirection(tab.root, target);
         return { records, layout: insertSplit(previous.layout, target, record.terminalId, direction) };
       });
-    } catch (value) { if (alive.current) onError(errorMessage(value)); }
+    } catch (value) { if (alive.current) onError(friendlyError(value, agentId ? "Couldn't start the agent." : "Couldn't open a terminal.")); }
     finally { if (alive.current) setBusy(false); }
   }
   async function close(id: string) {
@@ -205,7 +205,7 @@ export function TerminalWorkspace({ workspaceId, branch, onError }: { workspaceI
       releaseTerminalFocus();
       dirty.current = true;
       setState(s => { if (!s) return s; const records = { ...s.records }; delete records[id]; return { records, layout: closeLeaf(s.layout, id) }; });
-    } catch (value) { errorHandler(value); }
+    } catch (value) { errorHandler(value, "Couldn't close the terminal."); }
   }
   const onRecord = useCallback((record: TerminalRecord) => {
     if (!alive.current) return;
@@ -215,14 +215,14 @@ export function TerminalWorkspace({ workspaceId, branch, onError }: { workspaceI
     if (busy) return;
     setBusy(true);
     try { onRecord(await bridgeApi.createTerminal({ workspaceId, terminalId: id, restart: true })); }
-    catch (value) { errorHandler(value); }
+    catch (value) { errorHandler(value, "Couldn't restart the terminal."); }
     finally { if (alive.current) setBusy(false); }
   }
   async function rename(id: string, title: string) {
     try {
       onRecord(await bridgeApi.renameTerminal(workspaceId, id, title));
       change(layout => ({ ...layout, tabs: layout.tabs.map(t => leafIds(t.root)[0] === id ? { ...t, title } : t) }));
-    } catch (value) { errorHandler(value); }
+    } catch (value) { errorHandler(value, "Couldn't rename the terminal."); }
   }
   function selectTab(id: string) {
     change(layout => { const tab = layout.tabs.find(t => t.id === id); return tab ? { ...layout, activeTabId: id, activeLeafId: leafIds(tab.root)[0], expandedLeafId: null } : layout; }, true);
@@ -292,7 +292,7 @@ export function TerminalWorkspace({ workspaceId, branch, onError }: { workspaceI
         <IconButton title="Terminal shortcuts" onClick={() => setShortcuts(v => !v)}><Keyboard size={15} /></IconButton>
       </div>
     </div>
-    {error && <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2 text-xs text-destructive"><span className="flex-1">{error}</span>{(!state || retrySave) && <Button variant="link" size="inline" onClick={() => { if (state) void saveLayout(workspaceId, state.layout).then(() => setError(undefined)).catch(value => { errorHandler(value); if (alive.current) setRetrySave(true); }); else void load(); }}>Retry</Button>}<Button variant="destructive-ghost" size="icon-2xs" aria-label="Dismiss terminal error" onClick={() => setError(undefined)}><X /></Button></div>}
+    {error && <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2 text-xs text-destructive"><span className="flex-1">{error}</span>{(!state || retrySave) && <Button variant="link" size="inline" onClick={() => { if (state) void saveLayout(workspaceId, state.layout).then(() => setError(undefined)).catch(value => { errorHandler(value, "Couldn't save the terminal layout."); if (alive.current) setRetrySave(true); }); else void load(); }}>Retry</Button>}<Button variant="destructive-ghost" size="icon-2xs" aria-label="Dismiss terminal error" onClick={() => setError(undefined)}><X /></Button></div>}
     {shortcuts && <div className="grid shrink-0 grid-cols-2 gap-x-5 gap-y-1 border-b border-border bg-muted/30 px-4 py-3 text-caption sm:grid-cols-3">{TERMINAL_SHORTCUTS.map(s => <div key={s.id} className="flex justify-between gap-3"><span className="text-muted-foreground">{s.label}</span><kbd className="font-mono">{terminalChord(s.id)}</kbd></div>)}</div>}
     {layout.tabs.length > 0 && <div role="tablist" aria-label="Terminal tabs" className="flex shrink-0 gap-1 overflow-x-auto border-b border-border px-3 py-1.5">
       {layout.tabs.map(t => <Button variant="quiet" size="xs" role="tab" aria-selected={t.id === layout.activeTabId} key={t.id} draggable onDragStart={event => { event.dataTransfer.setData(TAB_DRAG, t.id); event.dataTransfer.effectAllowed = "move"; }}

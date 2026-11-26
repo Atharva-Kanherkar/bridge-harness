@@ -36,7 +36,7 @@ it("says when a waiting chat continues and why, with actions", () => {
 
 it("explains failures without offering actions, and hides finished rows", () => {
   expect(limitRecoveryNotice(view({ state: "acting" }), adapters, now)).toMatchObject({ actionable: false, tone: "waiting" });
-  expect(limitRecoveryNotice(view({ state: "failed", outcome: "provider is not running" }), adapters, now)).toMatchObject({ tone: "problem", actionable: false, text: expect.stringContaining("provider is not running") });
+  expect(limitRecoveryNotice(view({ state: "failed", outcome: "provider is not running" }), adapters, now)).toMatchObject({ tone: "problem", actionable: false, text: expect.stringContaining("after the usage limit. Provider is not running.") });
   expect(limitRecoveryNotice(view({ state: "gave_up", attempts: 6 }), adapters, now)!.text).toContain("6 times");
   for (const state of ["done", "cancelled", "expired"] as const) expect(limitRecoveryNotice(view({ state }), adapters, now)).toBeNull();
   expect(limitRecoveryNotice(null, adapters, now)).toBeNull();

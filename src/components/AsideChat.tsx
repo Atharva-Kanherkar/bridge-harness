@@ -12,6 +12,7 @@ import type { AccountChoice } from "../providerAccounts";
 import { HarnessMark, harnessTintClass } from "./harnessMarks";
 import { harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "../utils";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { usePolledSessionForest } from "../forest";
 import { applyFileMention as insertFileMention, fileMentionQuery } from "../fileMentions";
 import { useChatChangedFiles } from "../chatChangedFiles";
@@ -214,7 +215,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
     } catch (error) {
       setDraft(text);
       setAttachments(sentAttachments);
-      setComposerError(error instanceof Error ? error.message : String(error));
+      setComposerError(friendlyError(error, "Couldn't send the message. It's back in the box to retry."));
     } finally {
       setSending(false);
       inputRef.current?.focus();
@@ -239,7 +240,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
       ...(await prepareImage(file)),
     })))
       .then(pasted => setAttachments(current => [...current, ...pasted]))
-      .catch(error => setComposerError(error instanceof Error ? error.message : String(error)));
+      .catch(error => setComposerError(friendlyError(error, "Couldn't attach that image.")));
     inputRef.current?.focus();
   };
 
@@ -296,14 +297,14 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
                 onChange={(harness, model, account) => {
                   setComposerError(undefined);
                   void Promise.resolve(onChangeModel(harness, model, account))
-                    .catch(error => setComposerError(error instanceof Error ? error.message : String(error)));
+                    .catch(error => setComposerError(friendlyError(error, "Couldn't switch the model.")));
                 }}
                 effort={session.effort}
                 onEffortChange={onChangeEffort ? effort => {
                   setComposerError(undefined);
                   setChangingEffort(true);
                   void Promise.resolve().then(() => onChangeEffort(effort))
-                    .catch(error => setComposerError(error instanceof Error ? error.message : String(error)))
+                    .catch(error => setComposerError(friendlyError(error, "Couldn't change the thinking effort.")))
                     .finally(() => setChangingEffort(false));
                 } : undefined}
                 compact
@@ -359,7 +360,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
           {(lifecycle?.phase === "switching" || sending) && <SkeletonRegion label={sending ? "Sending" : "Switching models"} className="mb-2 px-1"><Skeleton className="h-2.5 w-40" /></SkeletonRegion>}
           {queuedFollowUpCount > 0 && <p className="mb-2 px-1 text-caption text-muted-foreground" role="status">{queuedFollowUpCount} follow-up{queuedFollowUpCount === 1 ? "" : "s"} queued; sent when this step finishes</p>}
           {queuedFollowUps.length > 0 && <p className="mb-2 px-1 text-caption text-muted-foreground" role="status">{queuedFollowUps.length} follow-up{queuedFollowUps.length === 1 ? "" : "s"} queued — sent when this send finishes</p>}
-          {lifecycle?.error && !composerError && <p className="mb-2 px-1 text-caption text-destructive">{lifecycle.error} You can retry below.</p>}
+          {lifecycle?.error && !composerError && <p className="mb-2 px-1 text-caption text-destructive">{friendlyError(lifecycle.error, "The side chat couldn't start.")} You can retry below.</p>}
           <ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} />
           {composerError && <p className="mb-2 px-1 text-caption text-destructive">{composerError}</p>}
           <div className="relative">

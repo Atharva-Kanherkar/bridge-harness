@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import type { ReviewFinding, ReviewFindingDecisionInput, ReviewJob, ReviewPass, ReviewSeverity } from "../../protocol/generated/protocol";
 import { GithubMarkdown } from "./GithubMarkdown";
 import { harnessLabel, SEVERITY_TEXT } from "./reviewLabels";
@@ -148,7 +149,7 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
     setFindings(undefined); setError(undefined); setDrafts(new Map());
     void bridgeApi.getReview(job.id)
       .then(detail => { if (active) { setFindings(detail.findings); setPasses(detail.passes); } })
-      .catch(cause => { if (active) setError(cause instanceof Error ? cause.message : String(cause)); });
+      .catch(cause => { if (active) setError(friendlyError(cause, "Couldn't load the draft review.")); });
     return () => { active = false; };
   }, [job.id]);
 
@@ -168,14 +169,14 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
         for (const decision of decisions) next.delete(decision.findingId);
         return next;
       });
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    } catch (cause) { setError(friendlyError(cause, "Couldn't save that decision.")); }
     finally { setBusy(false); }
   };
   const [posting, setPosting] = useState(false);
   const post = async () => {
     setBusy(true); setPosting(true); setError(undefined);
     try { onPosting((await bridgeApi.postReview(job.id)).job); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); setBusy(false); setPosting(false); }
+    catch (cause) { setError(friendlyError(cause, "Couldn't post the review.")); setBusy(false); setPosting(false); }
   };
   const move = (id: string, step: number) => {
     const index = flat.findIndex(finding => finding.id === id);

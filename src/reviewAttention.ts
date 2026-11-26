@@ -1,5 +1,6 @@
 import type { ReviewJob, ReviewJobStatus } from "./protocol/generated/protocol";
 import { harnessLabel } from "./components/github/reviewLabels";
+import { friendlyError } from "./errors";
 
 // When a review job needs the person, or is done: a draft is ready, the review
 // is posted, it failed, or a post went back to the draft with a reason. Reviews
@@ -23,7 +24,7 @@ export function reviewNotice(previous: ReviewJobStatus | undefined, job: ReviewJ
   switch (job.status) {
     case "drafted":
       if (previous === "posting") {
-        return { key: `${job.id}:post-failed`, headline: `Posting the review on ${pr} failed`, detail: job.error ?? "Open the draft to try again.", tone: "failure" };
+        return { key: `${job.id}:post-failed`, headline: `Posting the review on ${pr} failed`, detail: job.error ? friendlyError(job.error, "Open the draft to try again.") : "Open the draft to try again.", tone: "failure" };
       }
       // Auto mode passes through the draft on its way to posting.
       if (job.postMode === "auto") return null;
@@ -38,7 +39,7 @@ export function reviewNotice(previous: ReviewJobStatus | undefined, job: ReviewJ
     case "posted":
       return { key: `${job.id}:posted`, headline: `Review posted on ${pr}`, detail: "Posted as one comment review", tone: "done" };
     case "failed":
-      return { key: `${job.id}:failed`, headline: `Review failed on ${pr}`, detail: job.error ?? "Open the pull request to retry.", tone: "failure" };
+      return { key: `${job.id}:failed`, headline: `Review failed on ${pr}`, detail: job.error ? friendlyError(job.error, "Open the pull request to retry.") : "Open the pull request to retry.", tone: "failure" };
     default:
       return null;
   }

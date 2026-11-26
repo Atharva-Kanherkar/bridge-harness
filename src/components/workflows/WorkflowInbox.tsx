@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { Check, Clock, ShieldCheck, X } from "lucide-react";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import type { WorkflowRun } from "../../protocol/generated/protocol";
 import { Button } from "@/components/ui/button";
 import { RUN_STATUS_LABEL, relativeTime, runTone } from "./format";
 import { runSteps, toolLabel } from "./WorkflowRunView";
-import { Dot, ErrorNote, errorText } from "./parts";
+import { Dot, ErrorNote } from "./parts";
 import { RowButton } from "@/components/ui/row";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 
@@ -24,7 +25,7 @@ function PendingCard({ run, workflowName, onAnswered }: { run: WorkflowRun; work
     bridgeApi.replaySessionEvents(run.sessionId, 0, 200, true).then(events => {
       const step = runSteps(events).reverse().find(candidate => candidate.pending);
       setPending(step?.pending ? { sequence: step.pending.sequence, identity: step.identity ?? step.title } : null);
-    }).catch(reason => setError(errorText(reason)));
+    }).catch(reason => setError(friendlyError(reason, "Couldn't load the pending change.")));
   }, [run.sessionId, run.status]);
   const answer = async (work: () => Promise<unknown>) => {
     setBusy(true);
@@ -33,7 +34,7 @@ function PendingCard({ run, workflowName, onAnswered }: { run: WorkflowRun; work
       await work();
       onAnswered();
     } catch (reason) {
-      setError(errorText(reason));
+      setError(friendlyError(reason, "Couldn't answer the request. Try again."));
     } finally {
       setBusy(false);
     }

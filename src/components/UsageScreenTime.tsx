@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type { UsageScreenTimeResult } from "../types";
 import { axisLabelIndices, formatDayShort, niceScale, seriesPaths, type ChartGeometry } from "../usageReport";
 import {
@@ -167,7 +168,7 @@ export function UsageScreenTime({ onError, refreshKey = 0 }: { onError: (message
         cache.set(range, result);
         setShown({ range, result });
       })
-      .catch(error => { if (!cancelled) onError(error instanceof Error ? error.message : String(error)); })
+      .catch(error => { if (!cancelled) onError(friendlyError(error, "Couldn't load your screen time.")); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [range, refreshKey, poll, onError]);

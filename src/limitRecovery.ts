@@ -1,5 +1,6 @@
 import type { LimitRecoveryView } from "./protocol/generated/protocol";
 import type { AdapterDescriptor } from "./types";
+import { friendlyError } from "./errors";
 
 /** What the chat banner says about a usage-limit recovery, or nothing. */
 export type LimitRecoveryNotice = {
@@ -40,7 +41,7 @@ export function limitRecoveryNotice(view: LimitRecoveryView | null | undefined, 
     case "acting":
       return { tone: "waiting", text: view.switchesModel ? `Switching to ${targetLabel(view.target, adapters)} and continuing` : "Continuing after the usage limit", actionable: false };
     case "failed":
-      return { tone: "problem", text: `Bridge could not continue this chat after the usage limit: ${view.outcome ?? "unknown error"}`, actionable: false };
+      return { tone: "problem", text: `Bridge could not continue this chat after the usage limit. ${friendlyError(view.outcome, "Send a message to try again.")}`, actionable: false };
     case "gave_up":
       return { tone: "problem", text: `The usage limit kept coming back (${view.attempts} times), so Bridge stopped retrying. Send a message to continue.`, actionable: false };
     default:

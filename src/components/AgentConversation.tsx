@@ -1,7 +1,7 @@
 import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
 import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { AlertTriangle, ArrowDown, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FileText, Gauge, GitFork, MessageSquarePlus, Navigation, PanelRight, PenLine, RotateCcw, SquareTerminal, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FileText, Gauge, GitFork, MessageSquarePlus, Navigation, PanelRight, PenLine, Reply, RotateCcw, SquareTerminal, X } from "lucide-react";
 import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, deliveryNotes, delegationFacet, foldWorkerDelegations, foldHarnessSubagents, groupItems, isToolItem, mergeConversationProjections, projectActiveProcesses, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type DeliveryNote, type PendingMessage, type Rendered, type ToolVerb } from "../conversation";
 import { isToolLive } from "../transcript/toolCall";
 import { LAUNCH_STEPS, humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeLaunchFailure, humanizeResolution, launchFailureStep } from "../humanize";
@@ -9,12 +9,14 @@ import { projectGreetingLines, welcomeHeadline, type GreetingPart } from "../gre
 import { StreamingGreeting } from "./StreamingGreeting";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
-import { describeError, isThrottleKind } from "../errors";
+import { describeError, friendlyError, isThrottleKind } from "../errors";
 import { failedTurn } from "../failedTurn";
 import { looksLikeDiff } from "./highlight";
 import { useTranscriptWindow } from "./transcriptWindow";
 import { PatchView } from "./DiffView";
 import { CopyButton, FileLinkContext, Markdown, MentionText, parseFileRef, useCopy, type FileLinks } from "./Markdown";
+import { ReplyQuoteCard } from "./ReplyContext";
+import { parseReplyPrompt, replyCopyText } from "../replyTo";
 import { VisualActionsContext, VisualCall } from "./VisualCall";
 import { RunInTerminalContext, type RunInTerminal } from "./RunInTerminal";
 import { PersonalAppDraftCall } from "./PersonalAppDraftCall";
@@ -876,7 +878,7 @@ const NO_ANSWER: ResolveQuestion = async () => undefined;
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeProcessEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, workerSessions, workerRuntimes, onStopWorker, onOpenAgents, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, onRunInTerminal, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, onBackgroundWork, entryWindow, onForkSession, onRewindEntry, onRetryTurn, onEditTurn, onReviewChanges, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeProcessEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; /** Where a fan-out card reads each worker's live state; without them it reads the transcript alone. */ workerSessions?: readonly Session[]; workerRuntimes?: readonly WorkerRuntimeRecord[]; /** Stop one worker, the way every other surface stops one. */ onStopWorker?: (childSessionId: string) => Promise<void>; /** Open the dock's Agents pane on the lineage. */ onOpenAgents?: () => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; /** Send a failed turn's message again, as it was. */ onRetryTurn?: RetryTurn; /** Put a failed turn's message back in the composer. */ onEditTurn?: (prompt: ConversationItem) => void; /** Open the Changes pane from a turn's changes card; without it the card has no Review button. */ onReviewChanges?: () => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; /** Run a shell block in the chat's own terminal; without it, shell blocks offer Copy alone. */ onRunInTerminal?: RunInTerminal; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; /** Where the chat reports work its agent left running; the composer shelf and the Work pane read it. The main chat passes the global store, a Mission Control tile its own. */ onBackgroundWork?: (work: BackgroundWork) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeProcessEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, workerSessions, workerRuntimes, onStopWorker, onOpenAgents, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, onRunInTerminal, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, onReply, onRevealEntry, onBackgroundWork, entryWindow, onForkSession, onRewindEntry, onRetryTurn, onEditTurn, onReviewChanges, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeProcessEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; /** Where a fan-out card reads each worker's live state; without them it reads the transcript alone. */ workerSessions?: readonly Session[]; workerRuntimes?: readonly WorkerRuntimeRecord[]; /** Stop one worker, the way every other surface stops one. */ onStopWorker?: (childSessionId: string) => Promise<void>; /** Open the dock's Agents pane on the lineage. */ onOpenAgents?: () => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; /** Send a failed turn's message again, as it was. */ onRetryTurn?: RetryTurn; /** Put a failed turn's message back in the composer. */ onEditTurn?: (prompt: ConversationItem) => void; /** Open the Changes pane from a turn's changes card; without it the card has no Review button. */ onReviewChanges?: () => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; /** Run a shell block in the chat's own terminal; without it, shell blocks offer Copy alone. */ onRunInTerminal?: RunInTerminal; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; /** Reply on a settled agent message: the composer answers it next. Never sends. */ onReply?: (item: ConversationItem) => void; /** Scroll to an entry and highlight it: a sent reply's card jumps back to what it answered. */ onRevealEntry?: (entryId: string) => void; /** Where the chat reports work its agent left running; the composer shelf and the Work pane read it. The main chat passes the global store, a Mission Control tile its own. */ onBackgroundWork?: (work: BackgroundWork) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
   const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
   useIsomorphicLayoutEffect(() => {
     const pending = paintFrames.current;
@@ -1155,6 +1157,8 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     onOpenAgent={onOpenAgent}
     onRetryCompaction={readOnly ? undefined : onRetryCompaction}
     onRemember={readOnly ? undefined : onRemember}
+    onReply={readOnly || preview ? undefined : onReply}
+    onRevealEntry={onRevealEntry}
     onForkSession={readOnly ? undefined : onForkSession}
     onRewind={readOnly ? undefined : onRewindEntry}
     rewindable={entry.kind === "item" && !!leafEntryIds?.includes(entry.item.entryId ?? "")}
@@ -1196,7 +1200,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
         {optimisticBubbles.map(bubble => <TranscriptRow key={bubble.key}>
         {bubble.delivery && <DeliveryLabel note={bubble.delivery}/>}
         <div className={BUBBLE}>
-          {bubble.text ? <MentionText text={bubble.text}/> : null}
+          {bubble.text ? <UserText text={bubble.text} onRevealEntry={onRevealEntry}/> : null}
           {bubble.attachments.length > 0 && <div className="flex flex-wrap justify-end gap-1.5 pt-1.5">
             {bubble.attachments.map((dataUri, index) => <img key={index} src={dataUri} alt={`Image you attached, still sending ${index + 1}`} className="max-h-40 rounded-xl"/>)}
           </div>}
@@ -1306,7 +1310,7 @@ function AdoptionCard({ binding, onResolve }: { binding: WorkerRepositoryBinding
     if (!onResolve) return;
     setBusy(decision); setError(null);
     try { await onResolve(binding.sessionId, decision); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { setError(friendlyError(cause, decision === "adopt" ? "Couldn't adopt the worker's changes." : "Couldn't discard the worker's changes.")); }
     finally { setBusy(null); }
   };
   return <div role="alert" className={PANEL}>
@@ -1366,7 +1370,7 @@ function VerificationCard({ summary, onWaive }: { summary: CompletionSummary; on
         {summary.checks.map(check => <div key={check.checkId} className="flex items-start gap-2 text-xs text-muted-foreground">{statusIcon(check.status)}<div className="min-w-0 flex-1"><div className="flex flex-wrap gap-x-2"><span className="text-foreground">{check.command || check.checkId}</span><span>{humanizeCheckKind(check.kind)}</span>{check.verifierFamily && <span>· {check.verifierFamily}</span>}</div>{check.detail && <p className="mt-0.5 truncate font-mono text-caption">{check.detail}</p>}</div><span className="shrink-0 text-caption">{humanizeCheckStatus(check.status)}</span></div>)}
         {summary.waiverReason && <p className="mt-2 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-warning">Waiver: {summary.waiverReason}</p>}
         {onWaive && unresolved.length > 0 && !["verified", "waived", "superseded"].includes(summary.verdict) && <div className="pt-2">
-          {!waiverOpen ? <Button variant="outline" size="sm" onClick={() => setWaiverOpen(true)}>Waive unresolved checks</Button> : <form onSubmit={event => { event.preventDefault(); const reason = waiverReason.trim(); if (!reason) { setWaiverError("Explain why these checks can be waived."); return; } setWaiving(true); setWaiverError(undefined); void onWaive(summary.attemptId, unresolved.map(check => check.checkId), reason).then(() => { setWaiverOpen(false); setWaiverReason(""); }).catch(error => setWaiverError(error instanceof Error ? error.message : String(error))).finally(() => setWaiving(false)); }} className="space-y-2 rounded-lg border border-border bg-background p-2.5">
+          {!waiverOpen ? <Button variant="outline" size="sm" onClick={() => setWaiverOpen(true)}>Waive unresolved checks</Button> : <form onSubmit={event => { event.preventDefault(); const reason = waiverReason.trim(); if (!reason) { setWaiverError("Explain why these checks can be waived."); return; } setWaiving(true); setWaiverError(undefined); void onWaive(summary.attemptId, unresolved.map(check => check.checkId), reason).then(() => { setWaiverOpen(false); setWaiverReason(""); }).catch(error => setWaiverError(friendlyError(error, "Couldn't record the waiver."))).finally(() => setWaiving(false)); }} className="space-y-2 rounded-lg border border-border bg-background p-2.5">
             <p className="text-xs text-warning">This records human-approved risk for: {unresolved.map(check => check.command || check.checkId).join(", ")}. It remains distinct from Verified.</p>
             <Textarea autoFocus size="sm" value={waiverReason} onChange={event => setWaiverReason(event.target.value)} rows={2} placeholder="Reason for waiver" aria-label="Waiver reason"/>
             {waiverError && <p role="alert" className="text-xs text-destructive">{waiverError}</p>}
@@ -1683,11 +1687,12 @@ function DeliveryLabel({ note }: { note: DeliveryNote }) {
   </p>;
 }
 
-const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest, onRemember, onForkSession, onRewind, rewindable, turnEnd, onReviewChanges }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; turnEnd?: TurnEnd; onReviewChanges?: () => void }) {
+const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest, onRemember, onReply, onRevealEntry, onForkSession, onRewind, rewindable, turnEnd, onReviewChanges }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; onRemember?: (text: string) => void; onReply?: (item: ConversationItem) => void; onRevealEntry?: (entryId: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; turnEnd?: TurnEnd; onReviewChanges?: () => void }) {
   const settled = item.status !== "streaming" && item.text.trim() !== "";
   const entryId = settled ? item.entryId : undefined;
   const actions = settled ? <>
-    <CopyReplyButton text={item.text}/>
+    <CopyReplyButton text={item.role === "user" ? replyCopyText(item.text) : item.text}/>
+    {item.role === "assistant" && onReply && <ReplyAction label="Reply" title="Reply to this response" onClick={() => onReply(item)}><Reply size={14} aria-hidden="true"/></ReplyAction>}
     {item.role === "assistant" && onRemember && <ReplyAction label="Remember this" onClick={() => onRemember(item.text)}><BookmarkPlus size={14} aria-hidden="true"/></ReplyAction>}
     {onForkSession && entryId && <ReplyAction label="Fork from here" title="Fork this conversation at this message" onClick={() => onForkSession(sessionId ?? "", entryId)}><GitFork size={14} aria-hidden="true"/></ReplyAction>}
     {onRewind && entryId && rewindable && <ReplyAction label="Rewind to here" title="Make this message the conversation head (files are not changed)" onClick={() => onRewind(sessionId ?? "", entryId)}><RotateCcw size={14} aria-hidden="true"/></ReplyAction>}
@@ -1699,7 +1704,7 @@ const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest,
     return <>
       {delivery && <DeliveryLabel note={delivery}/>}
       <div className={cn(BUBBLE, "group relative")}>
-        <MentionText text={item.text}/>
+        <UserText text={item.text} onRevealEntry={onRevealEntry}/>
         {actions && <div data-reply-actions className="absolute bottom-0 right-full mr-1 flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">{actions}</div>}
         {attachments.length > 0 && <div className="flex flex-wrap justify-end gap-1.5 pt-1.5">
           {attachments.map((dataUri, index) => <img key={index} src={dataUri} alt={`Attached image ${index + 1}`} className="max-h-40 rounded-xl"/>)}
@@ -1734,7 +1739,18 @@ const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest,
         : "absolute left-0 top-full z-10 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100")}
     >{actions}</div>}
   </div>;
-}, (previous, next) => previous.latest === next.latest && previous.delivery === next.delivery && previous.onRemember === next.onRemember && previous.onForkSession === next.onForkSession && previous.onRewind === next.onRewind && previous.rewindable === next.rewindable && previous.turnEnd === next.turnEnd && previous.onReviewChanges === next.onReviewChanges && sameItem(previous.item, next.item));
+}, (previous, next) => previous.latest === next.latest && previous.delivery === next.delivery && previous.onRemember === next.onRemember && previous.onReply === next.onReply && previous.onRevealEntry === next.onRevealEntry && previous.onForkSession === next.onForkSession && previous.onRewind === next.onRewind && previous.rewindable === next.rewindable && previous.turnEnd === next.turnEnd && previous.onReviewChanges === next.onReviewChanges && sameItem(previous.item, next.item));
+
+/// What the user wrote. A reply draws the message it answers as a card on
+/// top, not the raw quote the agent received; anything else is the text as is.
+function UserText({ text, onRevealEntry }: { text: string; onRevealEntry?: (entryId: string) => void }) {
+  const reply = parseReplyPrompt(text);
+  if (!reply) return <MentionText text={text}/>;
+  return <>
+    <ReplyQuoteCard target={reply.target} onReveal={onRevealEntry}/>
+    {reply.text ? <MentionText text={reply.text}/> : null}
+  </>;
+}
 
 /// One icon in a message's action bar: 28px, with the name in a tooltip.
 function ReplyAction({ label, title, onClick, children }: { label: string; title?: string; onClick: () => void; children: ReactNode }) {
@@ -1758,9 +1774,9 @@ function CopyReplyButton({ text }: { text: string }) {
   </ReplyAction>;
 }
 
-const ItemView = memo(function ItemView({ item, sessionId, delivery, latest, readOnly, turnActive, autoExpandEditActivity, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext, retryPrompt, onRetryTurn, onEditTurn, turnEnd, onReviewChanges }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; readOnly?: boolean; turnActive: boolean; autoExpandEditActivity: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext; retryPrompt?: ConversationItem; onRetryTurn?: RetryTurn; onEditTurn?: (prompt: ConversationItem) => void; /** What closes the turn when this row is its last; a reply draws it, `TranscriptEntry` draws it after anything else. */ turnEnd?: TurnEnd; onReviewChanges?: () => void }) {
+const ItemView = memo(function ItemView({ item, sessionId, delivery, latest, readOnly, turnActive, autoExpandEditActivity, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, onRemember, onReply, onRevealEntry, onForkSession, onRewind, rewindable, errorContext, retryPrompt, onRetryTurn, onEditTurn, turnEnd, onReviewChanges }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; readOnly?: boolean; turnActive: boolean; autoExpandEditActivity: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onReply?: (item: ConversationItem) => void; onRevealEntry?: (entryId: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext; retryPrompt?: ConversationItem; onRetryTurn?: RetryTurn; onEditTurn?: (prompt: ConversationItem) => void; /** What closes the turn when this row is its last; a reply draws it, `TranscriptEntry` draws it after anything else. */ turnEnd?: TurnEnd; onReviewChanges?: () => void }) {
   if (readOnly) { onResolve = () => undefined; onAnswerQuestion = () => undefined; }
-  if (item.type === "message") return <MessageRow item={item} sessionId={sessionId} delivery={delivery} latest={latest} onRemember={onRemember} onForkSession={onForkSession} onRewind={onRewind} rewindable={rewindable} turnEnd={turnEnd} onReviewChanges={onReviewChanges}/>;
+  if (item.type === "message") return <MessageRow item={item} sessionId={sessionId} delivery={delivery} latest={latest} onRemember={onRemember} onReply={onReply} onRevealEntry={onRevealEntry} onForkSession={onForkSession} onRewind={onRewind} rewindable={rewindable} turnEnd={turnEnd} onReviewChanges={onReviewChanges}/>;
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
   if (item.type === "reasoning") return <Reasoning item={item}/>;
   if (item.type === "plan") return <PlanCard item={item}/>;
@@ -1879,7 +1895,7 @@ function ErrorCard({ item, errorContext, retryPrompt, onRetryTurn, onEditTurn }:
           </Button>}
         </div>}
       </div>
-      <p className="mt-1 text-meta leading-relaxed break-words text-muted-foreground">{degraded ? item.text : described.message}</p>
+      <p className="mt-1 text-meta leading-relaxed break-words text-muted-foreground">{degraded ? friendlyError(item.text, "This history entry could not be read.") : described.message}</p>
       {described.kind === "usage-limit" && errorContext?.allowReset && (item.harness ?? errorContext.harness) === "codex" && <LimitResetOffer />}
     </div>
   </div>;
@@ -1998,7 +2014,7 @@ function ForestCard({ item, onRetryCompaction }: { item: ConversationItem; onRet
     setRetrying(true);
     setRetryError(undefined);
     try { await onRetryCompaction(); setRetryAccepted(true); }
-    catch (cause) { setRetryError(cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { setRetryError(friendlyError(cause, "Couldn't retry the compaction.")); }
     finally { retryingRef.current = false; setRetrying(false); }
   };
   return <div role={item.status === "failed" ? "alert" : undefined} className={`min-w-0 overflow-hidden rounded-xl border px-3 py-2.5 ${item.status === "failed" ? "border-destructive/30 bg-destructive/5" : "border-border"} ${item.type}`}>
@@ -2006,7 +2022,7 @@ function ForestCard({ item, onRetryCompaction }: { item: ConversationItem; onRet
     {/* The former raw reason block only repeated the primary copy and exposed
         protocol diagnostics. Failure details now remain in the inspector data
         while the card renders the backend's classified message. */}
-    {item.text && <p className="mt-1 text-ui text-muted-foreground">{item.text}</p>}
+    {item.text && <p className="mt-1 text-ui text-muted-foreground">{item.status === "failed" ? friendlyError(item.text, "Compaction failed. The original conversation history is intact.") : item.text}</p>}
     {recoveryAction && <p className="mt-1.5 text-muted-foreground text-caption leading-relaxed">{recoveryAction}</p>}
     {retryError && <p className="mt-1.5 text-destructive text-caption leading-relaxed">{retryError}</p>}
     {retryable && <div className="mt-2.5 flex justify-end">
@@ -2130,7 +2146,9 @@ function resolutionCopy(item: ConversationItem): string {
   };
   const outcome = labels[item.status ?? ""] ?? item.status ?? "Resolved";
   const verdict = [outcome, actor ? `by ${actor}` : ""].filter(Boolean).join(" ");
-  return reason ? `${verdict} · ${reason}` : verdict;
+  // A delivery that failed carries the error as its reason: shown plain, or not at all.
+  const shown = item.status === "failed" ? friendlyError(reason, "") : reason;
+  return shown ? `${verdict} · ${shown}` : verdict;
 }
 
 function PermissionCard({ item, onResolve }: { item: ConversationItem; onResolve: ResolvePermission }) {
@@ -2143,7 +2161,7 @@ function PermissionCard({ item, onResolve }: { item: ConversationItem; onResolve
     setBusy(action.optionId ?? action.decision);
     setError(null);
     try { await onResolve(item.eventId, action.decision, action.optionId); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { setError(friendlyError(cause, "Couldn't send your answer to the agent.")); }
     finally { setBusy(null); }
   };
   const command = typeof item.data.command === "string" && item.data.command ? item.data.command : undefined;
@@ -2168,7 +2186,7 @@ function PermissionCard({ item, onResolve }: { item: ConversationItem; onResolve
     </div>}
     {pending && actions.length === 0 && <p className="px-3.5 py-3 text-meta text-muted-foreground sm:px-4">The provider offered no supported action.</p>}
     {!pending && <p className={`px-3.5 py-3 text-meta sm:px-4 ${item.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{resolutionCopy(item)}</p>}
-    {typeof item.data.failure === "string" && <p role="alert" className="px-3.5 pb-3 text-meta text-destructive sm:px-4">{item.data.failure}</p>}
+    {typeof item.data.failure === "string" && <p role="alert" className="px-3.5 pb-3 text-meta text-destructive sm:px-4">{friendlyError(item.data.failure, "Your answer didn't reach the agent.")}</p>}
     {error && <p role="alert" className="px-3.5 pb-3 text-meta text-destructive sm:px-4">{error}</p>}
   </div>;
 }
@@ -2188,6 +2206,7 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
   const reason = typeof item.data.reason === "string" ? item.data.reason : "";
   const remediation = typeof item.data.remediation === "string" ? item.data.remediation : "";
   const human = reason ? humanizeApprovalReason(reason) : { title: item.title || "Approval needed", detail: undefined };
+  const decisionFailed = (cause: unknown) => setError(friendlyError(cause, "Couldn't send your decision to the agent."));
   return <div className={PANEL}>
     <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 pt-3 px-3.5 sm:px-4"><b className="text-ui font-semibold text-foreground">{human.title}</b>{pending && <small className="text-warning text-caption">waiting for you</small>}</header>
     {human.detail ? <p className="mt-1.5 px-3.5 text-muted-foreground text-ui leading-relaxed sm:px-4">{human.detail}</p> : null}
@@ -2212,9 +2231,9 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
             exit={{ opacity: 0 }}
             transition={transition}
           >
-            <Button disabled={!!busy} variant="outline" size="sm" onClick={() => { setBusy("decline"); setError(null); void Promise.resolve(onResolve(item.eventId, "decline")).catch(cause => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(null)); }}><X className="size-3" aria-hidden="true" /> Decline</Button>
-            {item.data.approvalType !== "delegation_path_scope" && <Button disabled={!!busy} variant="outline" size="sm" onClick={() => { setBusy("acceptForSession"); setError(null); void Promise.resolve(onResolve(item.eventId, "acceptForSession")).catch(cause => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(null)); }}>Allow for session</Button>}
-            <Button disabled={!!busy} loading={busy === "accept"} size="sm" onClick={() => { setBusy("accept"); setError(null); void Promise.resolve(onResolve(item.eventId, "accept")).catch(cause => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(null)); }}><Check className="size-3" aria-hidden="true" /> Allow once</Button>
+            <Button disabled={!!busy} variant="outline" size="sm" onClick={() => { setBusy("decline"); setError(null); void Promise.resolve(onResolve(item.eventId, "decline")).catch(decisionFailed).finally(() => setBusy(null)); }}><X className="size-3" aria-hidden="true" /> Decline</Button>
+            {item.data.approvalType !== "delegation_path_scope" && <Button disabled={!!busy} variant="outline" size="sm" onClick={() => { setBusy("acceptForSession"); setError(null); void Promise.resolve(onResolve(item.eventId, "acceptForSession")).catch(decisionFailed).finally(() => setBusy(null)); }}>Allow for session</Button>}
+            <Button disabled={!!busy} loading={busy === "accept"} size="sm" onClick={() => { setBusy("accept"); setError(null); void Promise.resolve(onResolve(item.eventId, "accept")).catch(decisionFailed).finally(() => setBusy(null)); }}><Check className="size-3" aria-hidden="true" /> Allow once</Button>
           </motion.div>
         : <motion.div
             key="resolved"
@@ -2258,7 +2277,7 @@ function StaleBaseCard({ item, onRefresh }: { item: ConversationItem; onRefresh?
     if (!onRefresh) return;
     setBusy(true); setError(null);
     try { await onRefresh(); setRefreshed(true); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { setError(friendlyError(cause, `Couldn't refresh the workspace onto ${baseRef}.`)); }
     finally { setBusy(false); }
   };
   return <div role="alert" className={PANEL}>
@@ -2535,7 +2554,7 @@ function WorkerFailureRow({ title, summary, cause, failureClass, childSessionId,
       {childSessionId && onRetryWorker && <Button
         disabled={busy}
         loading={busy}
-        onClick={() => { setBusy(true); setError(undefined); void onRetryWorker(childSessionId).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(false)); }}
+        onClick={() => { setBusy(true); setError(undefined); void onRetryWorker(childSessionId).catch((cause: unknown) => setError(friendlyError(cause, "Couldn't retry the task."))).finally(() => setBusy(false)); }}
         size="sm"
       ><RotateCcw className="size-3" aria-hidden="true" /> Retry this task</Button>}
       {childSessionId && onOpenSession && <Button onClick={() => onOpenSession(childSessionId)} variant="outline" size="xs"><CornerDownRight className="size-3" aria-hidden="true" /> Open the worker</Button>}

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import type { AdapterDescriptor } from "../../types";
 import type { Effort, LimitRecoveryMode, LimitRecoverySettings, LimitRecoveryTarget } from "../../protocol/generated/protocol";
 import { Segmented, Select, SettingsGroup, SettingsRow } from "./kit";
@@ -32,7 +33,7 @@ export function LimitRecoverySection({ adapters }: { adapters: AdapterDescriptor
     let active = true;
     void bridgeApi.limitRecoverySettings()
       .then(settings => { if (active) setDraft(normalize(settings)); })
-      .catch(cause => { if (active) setError(String(cause)); });
+      .catch(cause => { if (active) setError(friendlyError(cause, "Couldn't load the usage limit settings.")); });
     return () => { active = false; };
   }, []);
   const commit = async (next: Draft) => {
@@ -42,7 +43,7 @@ export function LimitRecoverySection({ adapters }: { adapters: AdapterDescriptor
     try {
       setDraft(normalize(await bridgeApi.saveLimitRecoverySettings({ mode: next.mode, backup: next.backup })));
       setSaved(true);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    } catch (cause) { setError(friendlyError(cause, "Couldn't save the usage limit setting.")); }
     finally { setBusy(false); }
   };
   if (error && !draft) return <p role="alert" className="text-ui text-destructive">{error}</p>;

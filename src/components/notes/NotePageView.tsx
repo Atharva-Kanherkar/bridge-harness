@@ -7,6 +7,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronRight, MoreHorizontal, PanelLeft } from "lucide-react";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import { relativeTime } from "../../connectorSurface";
 import { linkChoices, noteDisplayTitle, quoteText } from "../../notesDraft";
 import { noteTaskStatus } from "../../notesTask";
@@ -133,9 +134,9 @@ export function NotePageView(props: NotePageViewProps) {
   const flush = () => { editor.current?.commit(); return draft.flush(); };
 
   const startersParent = ancestors[ancestors.length - 1];
-  const fail = (error: unknown) => onError(error instanceof Error ? error.message : String(error));
+  const fail = (error: unknown, fallback: string) => onError(friendlyError(error, fallback));
   const update = async (patch: Parameters<typeof bridgeApi.updateNote>[0]) => {
-    try { await bridgeApi.updateNote(patch); onChanged(); } catch (error) { fail(error); }
+    try { await bridgeApi.updateNote(patch); onChanged(); } catch (error) { fail(error, "Couldn't save the note."); }
   };
   // Passes and chats read the stored page, so everything typed goes first.
   const run = async (kind: "structure" | "tasks", harness: string) => {
@@ -144,20 +145,20 @@ export function NotePageView(props: NotePageViewProps) {
       if (kind === "structure") { await bridgeApi.structureNote(note.id, harness); setView("structured"); }
       else await bridgeApi.extractNoteTasks(note.id, harness);
       onChanged();
-    } catch (error) { fail(error); }
+    } catch (error) { fail(error, kind === "structure" ? "Couldn't structure the note." : "Couldn't turn the note into tasks."); }
   };
   const split = async (index: number) => {
     try {
       const created = await bridgeApi.splitNoteItem(note.id, index);
       setNotice(`Saved "${noteDisplayTitle(created)}" as its own note.`);
       onChanged();
-    } catch (error) { fail(error); }
+    } catch (error) { fail(error, "Couldn't save that as its own note."); }
   };
   // A restore writes over the words, so anything typed is stored first and
   // the restore merges on top of it like any other change.
   const restore = async (seq: number) => {
     if (!(await flush())) return false;
-    try { await bridgeApi.restoreNoteVersion(note.id, seq); onChanged(); return true; } catch (error) { fail(error); return false; }
+    try { await bridgeApi.restoreNoteVersion(note.id, seq); onChanged(); return true; } catch (error) { fail(error, "Couldn't restore that version."); return false; }
   };
   // The `/` menu's Database: made under this page once what was typed is
   // stored, and shown inline rather than opened.
@@ -167,11 +168,11 @@ export function NotePageView(props: NotePageViewProps) {
       const made = await bridgeApi.createDatabase({ title: "Untitled database", parentId: note.id });
       onChanged();
       return { id: made.note.id, title: made.note.title ?? "" };
-    } catch (error) { fail(error); return null; }
+    } catch (error) { fail(error, "Couldn't make the database."); return null; }
   };
   const startSaved = async (target: Note, choice: StartChoice) => (await flush()) && onStart(target, choice);
   const remove = async () => {
-    try { await bridgeApi.deleteNote(note.id); onDeleted(); } catch (error) { fail(error); }
+    try { await bridgeApi.deleteNote(note.id); onDeleted(); } catch (error) { fail(error, "Couldn't delete the note."); }
   };
 
   const structureJob = latest(jobs, "structure");
@@ -273,7 +274,7 @@ export function NotePageView(props: NotePageViewProps) {
 
       {(["structure", "tasks"] as const).map(kind => {
         const job = kind === "structure" ? structureJob : tasksJob;
-        return job?.status === "failed" && <p key={kind} role="alert" className="m-0 mt-3 text-ui text-destructive">{PASS_COPY[kind].failed}: {job.detail ?? "it failed without a reason."}</p>;
+        return job?.status === "failed" && <p key={kind} role="alert" className="m-0 mt-3 text-ui text-destructive">{PASS_COPY[kind].failed}. {friendlyError(job.detail, "Try again.")}</p>;
       })}
       {notice && <p role="status" className="m-0 mt-3 text-ui text-muted-foreground">{notice}</p>}
 

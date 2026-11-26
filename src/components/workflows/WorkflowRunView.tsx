@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, Bell, Check, Circle, ExternalLink, MessageSquare, ShieldCheck, Square, X } from "lucide-react";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import { openExternalUrl } from "../../externalLinks";
 import type { AgentEvent } from "../../types";
 import { readWireKind } from "../../transcript/wire";
@@ -97,7 +98,7 @@ export function runSteps(events: AgentEvent[], active = true): Step[] {
     if (step.icon === "say") return step;
     if (step.pending) return { ...step, icon: "ask", detail: "write: asking you" };
     if (outcome === "ran") return { ...step, icon: "ok", detail: decided ? `${decided}, then ran` : "ran" };
-    if (outcome === "failed" || decided) return { ...step, icon: "denied", detail: decided ?? failure ?? "failed" };
+    if (outcome === "failed" || decided) return { ...step, icon: "denied", detail: decided ?? (failure ? friendlyError(failure, "failed") : "failed") };
     return { ...step, detail: active ? "running" : "did not finish" };
   });
 }
@@ -144,7 +145,7 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
     try {
       setEvents(await allSessionEvents(run.sessionId));
     } catch (reason) {
-      setError(errorText(reason));
+      setError(errorText(reason, "Couldn't load this run's steps."));
     }
   }, [run.sessionId]);
 
@@ -155,14 +156,14 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
     return () => window.clearInterval(timer);
   }, [active, load]);
 
-  const act = async (work: () => Promise<unknown>) => {
+  const act = async (work: () => Promise<unknown>, fallback?: string) => {
     setBusy(true);
     setError(null);
     try {
       await work();
       await load();
     } catch (reason) {
-      setError(errorText(reason));
+      setError(errorText(reason, fallback));
     } finally {
       setBusy(false);
     }
@@ -174,7 +175,7 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
     const last = [...forest.entries].sort((a, b) => b.sequence - a.sequence)[0];
     if (!last) throw new Error("This run has no conversation to continue.");
     onContinue(await bridgeApi.forkSession(run.sessionId, last.id, `${workflow.definition.name} (continued)`, null, null, "shared"));
-  });
+  }, "Couldn't continue this run in a chat.");
 
   const steps = runSteps(events, active);
   const when = run.startedAt ?? run.createdAt;
@@ -190,7 +191,7 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
     <ScreenHeading title={`Run · ${new Date(when).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`}
       description={<span className="inline-flex flex-wrap items-center gap-2"><StatusChip label={RUN_STATUS_LABEL[run.status]} tone={runTone(run.status)}/><span>{meta}</span></span>}
       action={<>
-        {active && <Button size="xs" variant="ghost" disabled={busy} onClick={() => void act(() => bridgeApi.cancelWorkflowRun(run.id))}><Square size={11}/>Stop</Button>}
+        {active && <Button size="xs" variant="ghost" disabled={busy} onClick={() => void act(() => bridgeApi.cancelWorkflowRun(run.id), "Couldn't stop the run.")}><Square size={11}/>Stop</Button>}
         <Button size="xs" variant="secondary" disabled={busy || !run.sessionId} onClick={() => void continueInChat()}><MessageSquare size={11}/>Continue in chat</Button>
       </>}/>
     {run.event && <Card className="mb-3"><p className="text-caption font-medium text-muted-foreground">{eventCount > 1 ? `Started by ${eventCount} events, first:` : "Started by"}</p>
@@ -217,9 +218,9 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
             ? <div className="mt-0.5 break-words text-caption text-muted-foreground [&_.md]:text-caption!"><Markdown text={step.detail} richFences={false}/></div>
             : <p className="mt-0.5 whitespace-pre-wrap break-words text-caption text-muted-foreground">{step.detail}</p>}
           {step.pending && <div className="mt-2.5 flex flex-wrap gap-1.5">
-            <Button size="xs" disabled={busy} onClick={() => void act(() => bridgeApi.resolveApproval(run.sessionId!, step.pending!.sequence, "accept"))}><Check size={10}/>Allow once</Button>
-            <Button size="xs" variant="secondary" disabled={busy} onClick={() => void act(() => bridgeApi.alwaysAllowWorkflowTool(workflow.id, run.sessionId!, step.pending!.sequence, step.identity ?? step.title))}><ShieldCheck size={10}/>Always allow for this workflow</Button>
-            <Button size="xs" variant="ghost" disabled={busy} onClick={() => void act(() => bridgeApi.resolveApproval(run.sessionId!, step.pending!.sequence, "decline"))}><X size={10}/>Decline</Button>
+            <Button size="xs" disabled={busy} onClick={() => void act(() => bridgeApi.resolveApproval(run.sessionId!, step.pending!.sequence, "accept"), "Couldn't allow that step.")}><Check size={10}/>Allow once</Button>
+            <Button size="xs" variant="secondary" disabled={busy} onClick={() => void act(() => bridgeApi.alwaysAllowWorkflowTool(workflow.id, run.sessionId!, step.pending!.sequence, step.identity ?? step.title), "Couldn't allow that tool for this workflow.")}><ShieldCheck size={10}/>Always allow for this workflow</Button>
+            <Button size="xs" variant="ghost" disabled={busy} onClick={() => void act(() => bridgeApi.resolveApproval(run.sessionId!, step.pending!.sequence, "decline"), "Couldn't decline that step.")}><X size={10}/>Decline</Button>
           </div>}
         </div>
       </div>)}</div>

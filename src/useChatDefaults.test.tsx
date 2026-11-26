@@ -26,7 +26,7 @@ it("revalidates explicit edits without accepting an old response for the same pr
 });
 it("reports host validation failures without inventing a fallback",async()=>{
   vi.spyOn(bridgeApi,"resolveChatSettings").mockRejectedValue(new Error("Model is unavailable"));
-  await act(async()=>root.render(<Harness workspace="a"/>));expect(host.textContent).toBe("Model is unavailable");
+  await act(async()=>root.render(<Harness workspace="a"/>));expect(host.textContent).toBe("Model is unavailable.");
 });
 it("does not resolve or launch anything when the draft surface is disabled",async()=>{
   const resolve=vi.spyOn(bridgeApi,"resolveChatSettings");const create=vi.spyOn(bridgeApi,"createConfiguredChat");

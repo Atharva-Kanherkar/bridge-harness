@@ -82,8 +82,8 @@ describe("Run in terminal on chat code blocks", () => {
     render("```sh\nmake\n```", run);
     await act(async () => { runButton()!.click(); });
     expect(runButton()?.textContent).toBe("Couldn't run");
-    expect(runButton()?.dataset.tip).toBe("Workspace terminal is not open");
-    expect(runButton()?.getAttribute("aria-label")).toBe("Couldn't run: Workspace terminal is not open");
+    expect(runButton()?.dataset.tip).toBe("Workspace terminal is not open.");
+    expect(runButton()?.getAttribute("aria-label")).toBe("Couldn't run. Workspace terminal is not open.");
     act(() => { vi.advanceTimersByTime(3_000); });
     expect(runButton()?.textContent).toBe("Run");
   });

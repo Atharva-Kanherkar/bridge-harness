@@ -4,6 +4,7 @@
 // lane rules and refetch hints after a reconnect, so `api.ts` can route to it
 // without any component knowing which transport it is on.
 
+import { errorMessage } from "./errors";
 import { ERROR_CODES, HANDSHAKE_METHOD, PROTOCOL_VERSION } from "./protocol/generated/protocol";
 
 /** Where the daemon is and the token its handshake wants. */
@@ -75,7 +76,7 @@ type RpcError = { code: number; message: string };
 /** The same string `daemon_host::host_error_envelope` rejects with, so
  *  `errorMessage()` renders a web error exactly like a desktop one. */
 export function hostErrorEnvelope(error: RpcError): string {
-  return JSON.stringify({ code: error.code, kind: ERROR_KIND_BY_CODE.get(error.code) ?? null, message: error.message });
+  return JSON.stringify({ code: error.code, kind: ERROR_KIND_BY_CODE.get(error.code) ?? null, message: error.message }); // raw-error: builds the wire envelope that errorMessage() unwraps
 }
 
 /** A handshake the daemon refused on purpose. Reconnecting will not fix it. */
@@ -143,7 +144,7 @@ export class DaemonSocket {
             resolve();
           },
           (error: unknown) => {
-            const envelope = String(error);
+            const envelope = String(error); // raw-error: the daemon's raw envelope, classified and unwrapped below
             fail(isRefusal(envelope) ? new HandshakeRefused(envelope) : new Error(messageOf(envelope)));
           },
         );
@@ -347,7 +348,7 @@ export class WebDaemonClient {
           this.rejectWaiters(error.envelope);
           return;
         }
-        this.setStatus({ state: "reconnecting", reason: error instanceof Error ? error.message : String(error) });
+        this.setStatus({ state: "reconnecting", reason: errorMessage(error) });
         await sleep(backoff);
         backoff = Math.min(backoff * 2, this.options.backoffMaxMs);
         continue;

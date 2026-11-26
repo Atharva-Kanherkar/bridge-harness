@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { GitHubPane } from "./GitHubPane";
 import { Switch } from "./settings/kit";
 import { useAttributionSettings } from "../attributionSettings";
+import { friendlyError } from "../errors";
 import type { Project, Workspace } from "../types";
 import { Tip } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
@@ -102,7 +103,7 @@ export function PullsScreen({ workspaces, projects, onJumpToFile, onAddProject }
           disabled={!attribution.loaded || attribution.saving}
         />
       </label></Tip>
-      {attribution.error && <Tip label={attribution.error}><span role="alert" className="max-w-44 truncate text-meta text-destructive">Not saved</span></Tip>}
+      {attribution.error && <Tip label={friendlyError(attribution.error, "Couldn't save the AI attribution setting.")}><span role="alert" className="max-w-44 truncate text-meta text-destructive">Not saved</span></Tip>}
     </div>
     <MenuPanel controller={menu} label="Repositories">
       {repos.map(repo => <MenuItem

@@ -321,7 +321,7 @@ describe("GitHubPane", () => {
     list.mockRejectedValueOnce(new Error("temporary GitHub outage"));
     await click(host!.querySelector('button[aria-label="Refresh GitHub"]') as HTMLButtonElement);
     expect(host!.textContent).toContain("Safe GitHub surface");
-    expect(host!.textContent).toContain("Refresh failed: temporary GitHub outage");
+    expect(host!.textContent).toContain("Refresh failed. Temporary GitHub outage.");
     expect(statusRead).toHaveBeenLastCalledWith("w", true);
     expect(surfaceSnapshot("w")?.prs).toEqual([summary]);
   });
@@ -468,7 +468,7 @@ describe("GitHubPane", () => {
     statusSpy.mockRejectedValue(new Error("gh exploded"));
     await mount();
     expect(host!.textContent).toContain("GitHub is unreachable");
-    expect(host!.textContent).toContain("gh exploded");
+    expect(host!.textContent).toContain("gh exploded.");
   });
 
   it("jumps to the commented file and line through the callback", async () => {
@@ -1328,7 +1328,7 @@ describe("GitHubPane", () => {
     await act(async () => { vi.advanceTimersByTime(300); await flush(); });
 
     expect(search).toHaveBeenCalledWith("harness");
-    expect(document.body.textContent).toContain("GitHub CLI unavailable: gh is not installed");
+    expect(document.body.textContent).toContain("Couldn't search your repositories. GitHub CLI unavailable.");
     // "No repository matches that" would send the user hunting for a repo that exists.
     expect(document.body.textContent).not.toContain("No repository matches that");
   });

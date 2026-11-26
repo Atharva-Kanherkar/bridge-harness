@@ -277,7 +277,7 @@ describe("AsideChat", () => {
     await act(async () => { rejectSend?.(new Error("provider refused the send")); });
     expect(box.value).toBe("keep this retry");
     expect(document.body.querySelectorAll("img")).toHaveLength(1);
-    expect(dialog().textContent).toContain("provider refused the send");
+    expect(dialog().textContent).toContain("Provider refused the send.");
   });
 
   it("delivers attachments pasted onto a queued follow-up", async () => {

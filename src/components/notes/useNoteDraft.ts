@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import { rebaseDraft } from "../../notesDraft";
 import type { NotePage } from "../../types";
 
@@ -57,7 +58,7 @@ export function useNoteDraft(initial: NotePage, onSaved: (page: NotePage) => voi
       callbacks.current.onSaved(page);
       return true;
     } catch (error) {
-      callbacks.current.onError(error instanceof Error ? error.message : String(error));
+      callbacks.current.onError(friendlyError(error, "Couldn't save the note."));
       return false;
     } finally {
       saving.current = false;
@@ -112,7 +113,7 @@ export function useNoteDraft(initial: NotePage, onSaved: (page: NotePage) => voi
   useEffect(() => () => {
     clearTimeout(timer.current);
     if (!saving.current && draft.current !== base.current.text) {
-      void bridgeApi.editNotePage({ id, text: draft.current, baseSeq: base.current.seq, allowDeletingChildren: true }).catch(error => callbacks.current.onError(error instanceof Error ? error.message : String(error)));
+      void bridgeApi.editNotePage({ id, text: draft.current, baseSeq: base.current.seq, allowDeletingChildren: true }).catch(error => callbacks.current.onError(friendlyError(error, "Couldn't save the note.")));
     }
   }, [id]);
 

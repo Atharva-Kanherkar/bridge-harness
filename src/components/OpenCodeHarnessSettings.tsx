@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { RefreshCw as ArrowsClockwise, Key, Plug as Plugs } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import type { OpenCodeCatalog } from "../types";
 import {
   GhostButton, PrimaryButton, SettingsGroup, SettingsRow, StatusPill, Switch, TextButton,
@@ -45,7 +46,7 @@ export function OpenCodeHarnessSettings({
   const refresh = async () => {
     setRefreshing(true);
     try { onCatalog(await bridgeApi.refreshOpenCodeCatalog()); }
-    catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    catch (error) { onError(friendlyError(error, "Couldn't refresh OpenCode's providers.")); }
     finally { setRefreshing(false); }
   };
 
@@ -56,14 +57,14 @@ export function OpenCodeHarnessSettings({
     try {
       onCatalog(await bridgeApi.setOpenCodeProviderApiKey(providerId, apiKey));
       setProviderKeys(current => ({ ...current, [providerId]: "" }));
-    } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { onError(friendlyError(error, "Couldn't connect that provider.")); }
     finally { setWorkingProvider(undefined); }
   };
 
   const disconnect = async (providerId: string) => {
     setWorkingProvider(providerId);
     try { onCatalog(await bridgeApi.removeOpenCodeProviderAuth(providerId)); }
-    catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    catch (error) { onError(friendlyError(error, "Couldn't disconnect that provider.")); }
     finally { setWorkingProvider(undefined); }
   };
 
@@ -89,7 +90,7 @@ export function OpenCodeHarnessSettings({
           <ArrowsClockwise size={12} strokeWidth={1.7} aria-hidden="true" />Refresh
         </GhostButton>}
       />
-      {discoveryError && <SettingsRow label={<span role="alert" className="text-destructive">{discoveryError}</span>} />}
+      {discoveryError && <SettingsRow label={<span role="alert" className="text-destructive">{friendlyError(discoveryError, "Couldn't load OpenCode's providers.")}</span>} />}
       {catalog?.providers.map(provider => <SettingsRow
         key={provider.id}
         label={provider.name}

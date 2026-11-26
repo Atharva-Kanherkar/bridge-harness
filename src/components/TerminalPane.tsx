@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Plus, RotateCcw, X } from "lucide-react";
 import type { Terminal } from "@xterm/xterm";
 import { backendMode, bridgeApi } from "../api";
-import { errorMessage } from "../errors";
+import { friendlyError } from "../errors";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -115,7 +115,7 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
         onRecord(record);
         setFailures(previous => without(previous, terminalId));
       },
-      error => { if (alive.current) setFailures(previous => new Map(previous).set(terminalId, errorMessage(error))); },
+      error => { if (alive.current) setFailures(previous => new Map(previous).set(terminalId, friendlyError(error, "The shell couldn't start."))); },
     );
     return opening;
   }, [onRecord]);

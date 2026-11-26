@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import type { AdapterDescriptor, Workspace } from "../../types";
 import type { WorkerSettings } from "../../protocol/generated/protocol";
 import { RouterSettingsDialog } from "../RouterSettingsDialog";
@@ -31,14 +32,14 @@ export function WorkersPage({ adapters }: { adapters: AdapterDescriptor[] }) {
   const latest = useRef(0);
   useEffect(() => {
     let active = true;
-    void bridgeApi.state().then(state => { if (active) { setWorkspaces(state.workspaces); setWorkspace(state.workspaces[0]?.id ?? ""); } }).catch(cause => { if (active) setError(String(cause)); });
+    void bridgeApi.state().then(state => { if (active) { setWorkspaces(state.workspaces); setWorkspace(state.workspaces[0]?.id ?? ""); } }).catch(cause => { if (active) setError(friendlyError(cause, "Couldn't load your workspaces.")); });
     return () => { active = false; };
   }, []);
   useEffect(() => {
     if (!workspace) return;
     let active = true;
     setSettings(undefined); setError(undefined);
-    void bridgeApi.workerSettings(workspace).then(value => { if (active) setSettings(value); }).catch(cause => { if (active) setError(String(cause)); });
+    void bridgeApi.workerSettings(workspace).then(value => { if (active) setSettings(value); }).catch(cause => { if (active) setError(friendlyError(cause, "Couldn't load the task settings.")); });
     return () => { active = false; };
   }, [workspace]);
 
@@ -54,7 +55,7 @@ export function WorkersPage({ adapters }: { adapters: AdapterDescriptor[] }) {
         if (request === latest.current) { setSettings(stored); flash(key); }
       } catch (cause) {
         if (request !== latest.current) return;
-        setError(String(cause));
+        setError(friendlyError(cause, "Couldn't save the task settings."));
         // Show what the host actually kept, not the refused value.
         setSettings(await bridgeApi.workerSettings(target).catch(() => next));
       }

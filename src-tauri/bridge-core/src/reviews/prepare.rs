@@ -179,25 +179,31 @@ impl ReviewSteps for LiveSteps {
 fn surface_error(error: GithubSurfaceError) -> StepError {
     match error {
         // The network or GitHub hiccuped: worth another try.
-        GithubSurfaceError::CommandFailed { .. } | GithubSurfaceError::Io(_) => StepError::Transient(error.to_string()),
-        GithubSurfaceError::RateLimited { ref message, retry_after, .. } => StepError::RateLimited(message.clone(), retry_after),
+        GithubSurfaceError::CommandFailed { .. } | GithubSurfaceError::Io(_) => StepError::transient_logged(error.user_message(), &error),
+        GithubSurfaceError::RateLimited { ref message, retry_after, .. } => {
+            eprintln!("[reviews] GitHub is rate limiting Bridge: {message}");
+            StepError::RateLimited(error.user_message(), retry_after)
+        }
         // Signed out, no repository, a response Bridge cannot read: trying
         // again changes nothing.
-        other => StepError::Fatal(other.to_string()),
+        other => StepError::fatal_logged(other.user_message(), &other),
     }
 }
 
 fn fetch_error(what: &str, error: BridgeError) -> StepError {
     let message = error.to_string();
     if message.contains("couldn't find remote ref") {
-        StepError::Fatal(format!("{what} is not on GitHub any more: {message}"))
+        StepError::fatal_logged(format!("{what} is not on GitHub any more."), message)
     } else {
-        StepError::Transient(format!("Could not fetch {what}: {message}"))
+        StepError::transient_logged(format!("Couldn't fetch {what} from GitHub. Try again in a few minutes."), message)
     }
 }
 
+/// What a person reads when Bridge could not write the review's own files.
+const PREPARE_FAILED: &str = "Bridge couldn't prepare the pull request for review. Try again.";
+
 fn fatal(error: BridgeError) -> StepError {
-    StepError::Fatal(error.to_string())
+    StepError::fatal_logged(PREPARE_FAILED, error)
 }
 
 /// The remote whose URL is the pull request's repository, so a fork setup
@@ -239,13 +245,13 @@ fn find_merge_base(workspace: &Path, remote: &str, refspecs: &[String], base: &s
             break;
         }
         git::fetch_deepening(workspace, remote, refspecs, deepen)
-            .map_err(|error| StepError::Transient(format!("Could not fetch more history: {error}")))?;
+            .map_err(|error| StepError::transient_logged("Couldn't fetch the pull request's history from GitHub. Try again in a few minutes.", error))?;
         match git::merge_base(workspace, base, head) {
             Ok(found) => return Ok(found),
             Err(error) => last = error,
         }
     }
-    Err(StepError::Fatal(format!("The pull request shares no history with its base branch: {last}")))
+    Err(StepError::fatal_logged("The pull request shares no history with its base branch.", last))
 }
 
 /// What one attempt left: its checkout, its folder (and the job's, once
@@ -277,9 +283,11 @@ pub fn prepare(
     cancel: &CancelToken,
 ) -> Result<Prepared, StepError> {
     let claim = job.lease_owner.clone().ok_or(StepError::Cancelled)?;
-    let workspace = PathBuf::from(core.workspace_path(&job.workspace_id).map_err(|error| StepError::Fatal(error.to_string()))?);
+    let workspace = PathBuf::from(
+        core.workspace_path(&job.workspace_id).map_err(|error| StepError::fatal_logged("The review's project is no longer in Bridge.", error))?,
+    );
     if !git::is_repository(&workspace) {
-        return Err(StepError::Fatal(format!("{} is not a git repository", workspace.display())));
+        return Err(StepError::fatal_logged("The review's project folder is not a Git repository.", workspace.display()));
     }
     let layout = Layout::for_core(core);
     let checkout = layout.checkout(job);
@@ -465,7 +473,7 @@ fn cut_checkout(core: &BridgeCore, workspace: &Path, job: &JobRow, claim: &str, 
         if let Err(clear) = store::clear_worktree(&super::lock_db(core), &job.id, claim) {
             eprintln!("[reviews] could not give back the reservation of {}: {clear}", job.id);
         }
-        return Err(StepError::Transient(format!("Could not check out the pull request: {error}")));
+        return Err(StepError::transient_logged("Couldn't check out the pull request. Try again.", error));
     }
     Ok(())
 }
@@ -482,13 +490,13 @@ struct ContextFacts<'a> {
 }
 
 fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), StepError> {
-    let text = serde_json::to_vec_pretty(value).map_err(|error| StepError::Fatal(error.to_string()))?;
-    std::fs::write(path, text).map_err(|error| StepError::Fatal(format!("Could not write {}: {error}", path.display())))
+    let text = serde_json::to_vec_pretty(value).map_err(|error| StepError::fatal_logged(PREPARE_FAILED, error))?;
+    std::fs::write(path, text).map_err(|error| StepError::fatal_logged(PREPARE_FAILED, format!("{}: {error}", path.display())))
 }
 
 fn write_context(workspace: &Path, context: &Path, config: &PrepareConfig, facts: &ContextFacts<'_>) -> Result<(), StepError> {
     let ContextFacts { job, detail, threads, head, base_tip, merge_base, incremental, prior } = facts;
-    std::fs::create_dir_all(context).map_err(|error| StepError::Fatal(error.to_string()))?;
+    std::fs::create_dir_all(context).map_err(|error| StepError::fatal_logged(PREPARE_FAILED, error))?;
     let files = git::diff_files(workspace, merge_base, head).map_err(fatal)?;
     let (patch, omitted) = capped_patch(workspace, merge_base, head, &files, config.max_diff_bytes)?;
     // The new commits of a re-review, under the same cap. What does not fit
@@ -500,7 +508,7 @@ fn write_context(workspace: &Path, context: &Path, config: &PrepareConfig, facts
         }
         _ => None,
     };
-    std::fs::write(context.join("diff.patch"), &patch).map_err(|error| StepError::Fatal(error.to_string()))?;
+    std::fs::write(context.join("diff.patch"), &patch).map_err(|error| StepError::fatal_logged(PREPARE_FAILED, error))?;
     write_json(
         &context.join("files.json"),
         &json!(files
@@ -538,9 +546,9 @@ fn write_context(workspace: &Path, context: &Path, config: &PrepareConfig, facts
             "incremental": incremental_json(incremental, head, new_commits.as_ref().map(|(_, omitted)| omitted.as_slice())),
         }),
     )?;
-    write_json(&context.join("threads.json"), &serde_json::to_value(threads).map_err(|error| StepError::Fatal(error.to_string()))?)?;
+    write_json(&context.join("threads.json"), &serde_json::to_value(threads).map_err(|error| StepError::fatal_logged(PREPARE_FAILED, error))?)?;
     if let Some((new_patch, _)) = &new_commits {
-        std::fs::write(context.join(INCREMENTAL_PATCH), new_patch).map_err(|error| StepError::Fatal(error.to_string()))?;
+        std::fs::write(context.join(INCREMENTAL_PATCH), new_patch).map_err(|error| StepError::fatal_logged(PREPARE_FAILED, error))?;
     }
     if job.incremental_from_sha.is_some() {
         write_json(&context.join(PRIOR_FINDINGS), &prior_findings_json(prior, threads))?;
@@ -625,9 +633,9 @@ fn write_conventions(workspace: &Path, folder: &Path, base_tip: &str) -> Result<
         if !output.status.success() || output.stdout.is_empty() || output.stdout.len() > MAX_CONVENTION_BYTES {
             continue;
         }
-        std::fs::create_dir_all(folder).map_err(|error| StepError::Fatal(error.to_string()))?;
+        std::fs::create_dir_all(folder).map_err(|error| StepError::fatal_logged(PREPARE_FAILED, error))?;
         std::fs::write(folder.join(super::session::convention_name(file)), &output.stdout)
-            .map_err(|error| StepError::Fatal(format!("Could not write the conventions for the reviewer: {error}")))?;
+            .map_err(|error| StepError::fatal_logged(PREPARE_FAILED, error))?;
     }
     Ok(())
 }

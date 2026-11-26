@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
+import { friendlyError } from "../../errors";
 import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath } from "../../types";
 import { CLONE_BROWSERS, SAFARI_SIGN_IN_HINT, selectCloneBrowser } from "../../cloneSettings";
 import { Select, SettingsGroup, SettingsPage, SettingsRow, Switch, useSavedFlash, type SelectOption } from "./kit";
@@ -28,7 +29,7 @@ export function ClonesPage({ onError }: { onError: (message: string) => void }) 
     let active = true;
     bridgeApi.readCloneSettings()
       .then(stored => { if (active) setSnapshot(stored); })
-      .catch(error => onError(error instanceof Error ? error.message : String(error)));
+      .catch(error => onError(friendlyError(error, "Couldn't load the browser copy settings.")));
     return () => { active = false; };
   }, [onError]);
 
@@ -45,7 +46,7 @@ export function ClonesPage({ onError }: { onError: (message: string) => void }) 
       setSnapshot(await bridgeApi.writeCloneSettings(next));
       flash(key);
     } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
+      onError(friendlyError(error, "Couldn't save the browser copy setting."));
     } finally {
       setBusy(false);
     }

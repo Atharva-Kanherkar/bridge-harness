@@ -60,7 +60,7 @@ it("releases terminal focus before moving its input out of the DOM", async () =>
 it("retains a pane when close fails and closes only the addressed terminal on success", async () => {
   await mount(); api.closeTerminal.mockRejectedValueOnce(new Error("host disconnected"));
   await click("Close a"); expect(host.querySelector("[data-terminal=a]")).not.toBeNull();
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain("host disconnected");
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Host disconnected.");
   await click("Close a"); expect(host.querySelector("[data-terminal=a]")).toBeNull();
   expect(api.closeTerminal).toHaveBeenLastCalledWith("w", "a");
 });
@@ -77,7 +77,7 @@ it("shows a readable toast when an agent CLI is missing without adding an error 
   await mount();
   api.createTerminal.mockRejectedValueOnce('{"code":1000,"kind":"invalid","message":"grok CLI is not installed on PATH. Install its interactive CLI, then try New Agent again."}');
   await click("New Agent"); await click("Grok");
-  expect(onError).toHaveBeenCalledWith("grok CLI is not installed on PATH. Install its interactive CLI, then try New Agent again.");
+  expect(onError).toHaveBeenCalledWith("Grok CLI is not installed on PATH. Install its interactive CLI, then try New Agent again.");
   expect(host.querySelector('[role="alert"]')).toBeNull();
   expect(host.querySelectorAll("[data-terminal]")).toHaveLength(1);
   await click("New Agent"); await click("Grok");

@@ -13,6 +13,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { ContextBridgeContribution, ContextReadingState, ContextWindow, ContextWindowReading, EarlierContextWindow } from "../protocol/generated/protocol";
 import { contextPressure } from "../usage";
+import { friendlyError } from "../errors";
 import { compactTokens, contextTone, TONE_TEXT, useContextWindows, windowComposition, type ContextTone } from "../contextWindows";
 import { harnessLabel, modelLabel } from "../utils";
 import { ContextGauge } from "./ContextRing";
@@ -243,7 +244,7 @@ function CompactAction({ window, owner, urgent, onCompact }: {
       await onCompact(window.sessionId);
       setState({ phase: "sent" });
     } catch (error) {
-      setState({ phase: "failed", message: error instanceof Error ? error.message : String(error) });
+      setState({ phase: "failed", message: friendlyError(error, native ? `Couldn't compact this ${harness} window.` : "Couldn't save a checkpoint.") });
     }
   };
   const note = state.phase === "sent"

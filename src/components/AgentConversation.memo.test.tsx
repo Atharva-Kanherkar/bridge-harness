@@ -114,3 +114,17 @@ describe("a flush that changes one row", () => {
     expect(renders.mention).toBe(before.mention);
   });
 });
+
+describe("a row's Reply callback", () => {
+  it("is not frozen by the row's memo: a new onReply reaches the button", () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const settled = [...TURN.slice(0, 2), event(4, "message.completed", { itemId: "a-1", role: "assistant", text: "Working on it." })];
+    act(() => { root.render(<AgentConversation session={{ ...session, status: "idle" }} events={settled} onResolve={() => {}} onReply={first} />); });
+    act(() => { root.render(<AgentConversation session={{ ...session, status: "idle" }} events={settled} onResolve={() => {}} onReply={second} />); });
+    const reply = host.querySelector<HTMLButtonElement>('button[aria-label="Reply"]')!;
+    act(() => reply.click());
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+});

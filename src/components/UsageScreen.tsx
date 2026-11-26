@@ -7,6 +7,7 @@ import { RowButton } from "@/components/ui/row";
 import { Segmented } from "@/components/ui/segmented";
 import { SelectField } from "@/components/ui/select";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { harnessLabel } from "../utils";
 import type { UsageHistorySource, UsagePriceOverride, UsageSummaryResult } from "../types";
 import { HarnessMark } from "./harnessMarks";
@@ -159,7 +160,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         if (!cancelled) {
           summaryCache.delete(key);
           setShown(null);
-          onError(error instanceof Error ? error.message : String(error));
+          onError(friendlyError(error, "Couldn't load your usage."));
         }
       })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -217,7 +218,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
                 sourceIds.push(source.sourceId);
               }
             } else if (source.coverage === "unreadable" || source.coverage === "stale") {
-              warnings.add(source.warning ?? `${harnessLabel(source.agent)} history is ${source.coverage}.`);
+              warnings.add(friendlyError(source.warning, `${harnessLabel(source.agent)} history is ${source.coverage}.`));
             }
           }
           setScanFailed(warnings.size > 0);
@@ -233,10 +234,9 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
           : `Imported ${formatCount(imported)} records in ${(durationMs / 1000).toFixed(1)} s.`);
       } catch (error) {
         if (!cancelled) {
-          const message = error instanceof Error ? error.message : String(error);
           setScanFailed(true);
-          setScanNote(`History could not finish: ${message}.`);
-          onError(message);
+          setScanNote(`History could not finish. ${friendlyError(error, "")}`.trim());
+          onError(friendlyError(error, "Couldn't scan your usage history."));
         }
       } finally {
         if (!cancelled) {
@@ -268,7 +268,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
       await bridgeApi.refreshUsageRates();
       loadSummary();
     } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
+      onError(friendlyError(error, "Couldn't refresh the prices."));
     } finally {
       setRefreshingRates(false);
     }
@@ -279,7 +279,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
       setOverrides(await next);
       loadSummary();
     } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
+      onError(friendlyError(error, "Couldn't save the price change."));
     }
   };
 

@@ -57,24 +57,68 @@ fn the_json_block_is_found_inside_prose() {
 }
 
 #[test]
-fn a_missing_or_doubled_block_is_an_error_a_repair_turn_can_quote() {
+fn a_message_with_no_review_is_an_error_a_repair_turn_can_quote() {
     assert!(parse("No JSON at all.").unwrap_err().contains("no fenced ```json block"));
-    let two = format!("{}{}", fenced(json!({"summary": "a", "findings": []})), fenced(json!({"summary": "b", "findings": []})));
-    assert!(parse(&two).unwrap_err().contains("2 fenced"));
-    assert!(parse("```json\n{\"summary\": \"unclosed\"").unwrap_err().contains("no fenced"));
+    // An object that is not a review is not one.
+    assert!(parse("Ran `{\"path\": \"src/a.rs\"}` first.").unwrap_err().contains("no fenced ```json block"));
+    assert!(parse("```rust\nfn main() {}\n```").unwrap_err().contains("no fenced ```json block"));
 }
 
 #[test]
-fn fields_are_strict() {
+fn the_review_is_found_however_the_model_wrapped_it() {
+    let review = json!({"summary": "Fine.", "findings": [finding("src/a.rs", 3, "major", "Bug")]});
+    let messages = [
+        // A bare object, no fence at all.
+        format!("Here is the review:\n{review}\nThanks."),
+        // A fence labelled otherwise, or not at all.
+        format!("```JSON\n{review}\n```"),
+        format!("```\n{review}\n```"),
+        format!("~~~json\n{review}\n~~~"),
+        // The fence opened at the end of a line of prose.
+        format!("Final answer: ```json\n{review}\n```"),
+        // The fence never closed.
+        format!("```json\n{review}\n"),
+        // A code block before it, whose closing fence must not open one.
+        format!("Look at this:\n```rust\nlet x = 1;\n```\n\n```json\n{review}\n```"),
+    ];
+    for message in messages {
+        let parsed = parse(&message).unwrap_or_else(|error| panic!("{message}: {error}"));
+        assert_eq!(parsed.summary, "Fine.", "{message}");
+        assert_eq!(parsed.findings.len(), 1, "{message}");
+    }
+}
+
+#[test]
+fn of_several_blocks_the_last_review_wins() {
+    let example = fenced(json!({"summary": "<example>", "findings": "not a list"}));
+    let real = fenced(json!({"summary": "real", "findings": []}));
+    assert_eq!(parse(&format!("{example}{real}")).unwrap().summary, "real");
+    let first = fenced(json!({"summary": "a", "findings": []}));
+    assert_eq!(parse(&format!("{first}{real}")).unwrap().summary, "real");
+}
+
+#[test]
+fn fields_are_read_as_meant() {
+    let one = |finding: serde_json::Value| parse(&fenced(json!({"summary": "s", "findings": [finding]}))).map(|review| review.findings[0].clone());
+    let read = one(json!({"path": "a", "line": "3", "startLine": "2", "side": "left", "severity": "High", "title": "t"})).unwrap();
+    assert_eq!((read.line, read.start_line, read.side, read.severity), (3, Some(2), ReviewSide::Left, ReviewSeverity::Major));
+    assert_eq!((read.body.as_str(), read.confidence), ("", 0.5));
+    assert_eq!(one(json!({"path": "a", "line": 3, "severity": "blocker", "title": "t", "body": "b"})).unwrap().severity, ReviewSeverity::Critical);
+    // A field the contract does not name is ignored, not fatal.
+    assert_eq!(parse(&fenced(json!({"summary": "s", "findings": [], "verdict": "approve"}))).unwrap().summary, "s");
+    // Either half alone is still a review.
+    assert!(parse(&fenced(json!({"summary": "Nothing to raise."}))).unwrap().findings.is_empty());
+    assert_eq!(parse(&fenced(json!({"findings": []}))).unwrap().summary, "");
+}
+
+#[test]
+fn what_cannot_be_read_as_meant_is_still_an_error() {
     let cases = [
-        (json!({"findings": []}), "summary"),
-        (json!({"summary": "s"}), "findings"),
-        (json!({"summary": "s", "findings": [{"path": "a", "line": "3", "severity": "major", "title": "t", "body": "b", "confidence": 1}]}), "invalid type"),
-        (json!({"summary": "s", "findings": [{"path": "a", "line": 3, "severity": "blocker", "title": "t", "body": "b", "confidence": 1}]}), "unknown variant"),
+        (json!({"summary": "s", "findings": [{"path": "a", "line": 3, "severity": "spicy", "title": "t", "body": "b", "confidence": 1}]}), "unknown variant"),
         (json!({"summary": "s", "findings": [{"path": "a", "line": 3, "side": "MIDDLE", "severity": "nit", "title": "t", "body": "b", "confidence": 1}]}), "unknown variant"),
         (json!({"summary": "s", "findings": [{"path": "a", "line": -1, "severity": "nit", "title": "t", "body": "b", "confidence": 1}]}), "invalid value"),
         (json!({"summary": "s", "findings": [{"path": "a", "severity": "nit", "title": "t", "body": "b", "confidence": 1}]}), "line"),
-        (json!({"summary": "s", "findings": [], "verdict": "approve"}), "unknown field"),
+        (json!({"summary": "s", "findings": "none"}), "invalid type"),
     ];
     for (value, expected) in cases {
         let error = parse(&fenced(value.clone())).unwrap_err();

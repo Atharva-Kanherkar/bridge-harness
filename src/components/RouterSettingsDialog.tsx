@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "@tanstack/react-form";
 import { BrainCircuit, CalendarClock, CircleCheck, Copy, ExternalLink, Play, RotateCcw, ShieldCheck, Undo2, X } from "lucide-react";
 import { bridgeApi } from "../api";
+import { friendlyError } from "../errors";
 import { openExternalUrl } from "../externalLinks";
 import type { AdapterDescriptor, ExternalLearningTriggerKind, LearningReport, LearningSchedule, LearningState, ModelProfileDraft, ModelSetupState, RouterMode, RouterPreferences } from "../types";
 import { ModelProfileEditor } from "./ModelProfileEditor";
@@ -196,17 +197,17 @@ export function RouterSettingsDialog({
         setLearning(learningState);
         form.setFieldValue("schedule", learningState.schedule);
       }
-    }).catch(error => { if (active) onError(String(error)); }).finally(() => { if (active) setBusy(false); });
+    }).catch(error => { if (active) onError(friendlyError(error, "Couldn't load the router settings.")); }).finally(() => { if (active) setBusy(false); });
     void bridgeApi.onLearningJobChanged(() => {
       const generation = ++learningReadGeneration.current;
       void bridgeApi.learningState(workspaceId).then(fresh => {
         if (!active || generation !== learningReadGeneration.current) return;
         applyLearning(generation, fresh);
-      }).catch(error => { if (active) onError(String(error)); });
+      }).catch(error => { if (active) onError(friendlyError(error, "Couldn't refresh the learning status.")); });
     }).then(fn => {
       if (!active) { fn(); return; }
       off = fn;
-    }).catch(error => { if (active) onError(String(error)); });
+    }).catch(error => { if (active) onError(friendlyError(error, "Couldn't follow learning updates.")); });
     return () => { active = false; off?.(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onError, open, workspaceId]);
@@ -255,7 +256,7 @@ export function RouterSettingsDialog({
       }
       onClose();
     } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
+      onError(friendlyError(error, "Couldn't save the router settings."));
     } finally {
       setBusy(false);
     }
@@ -268,7 +269,7 @@ export function RouterSettingsDialog({
       const generation = ++learningReadGeneration.current;
       applyLearning(generation, await bridgeApi.learningState(workspaceId));
     } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
+      onError(friendlyError(error, "Couldn't run learning."));
     } finally {
       setRunning(false);
     }
@@ -281,7 +282,7 @@ export function RouterSettingsDialog({
       setModelSetup(setup);
       onModelSetupChange?.(setup);
       setProfiles(profileDraftsFromSetup(setup));
-    } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { onError(friendlyError(error, "Couldn't reset the model profiles.")); }
     finally { setBusy(false); }
   };
 
@@ -293,7 +294,7 @@ export function RouterSettingsDialog({
       await bridgeApi.approveLearningRun(learning.latestRun.id);
       const generation = ++learningReadGeneration.current;
       applyLearning(generation, await bridgeApi.learningState(workspaceId));
-    } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { onError(friendlyError(error, "Couldn't approve the policy.")); }
     finally { setRunning(false); }
   };
   const cancelCandidate = async () => {
@@ -303,7 +304,7 @@ export function RouterSettingsDialog({
       await bridgeApi.cancelLearningRun(learning.latestRun.id);
       const generation = ++learningReadGeneration.current;
       applyLearning(generation, await bridgeApi.learningState(workspaceId));
-    } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { onError(friendlyError(error, "Couldn't cancel the candidate policy.")); }
     finally { setRunning(false); }
   };
   const rollbackPolicy = async () => {
@@ -313,7 +314,7 @@ export function RouterSettingsDialog({
     try {
       const generation = ++learningReadGeneration.current;
       applyLearning(generation, await bridgeApi.rollbackRoutingPolicy(workspaceId, targetVersion, "User requested rollback from adaptive-learning settings"));
-    } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { onError(friendlyError(error, "Couldn't roll back the routing policy.")); }
     finally { setRunning(false); }
   };
   const registerAndCopy = async (kind: ExternalLearningTriggerKind) => {
@@ -323,7 +324,7 @@ export function RouterSettingsDialog({
       await bridgeApi.registerLearningTrigger(kind, registrationId, null, null);
       await bridgeApi.enableLearningTrigger(kind, registrationId);
       copyInstruction(await bridgeApi.learningTriggerInstructions(kind, databasePath ?? "$BRIDGE_DB", registrationId));
-    } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { onError(friendlyError(error, "Couldn't set up the learning trigger.")); }
     finally { setRunning(false); }
   };
 
