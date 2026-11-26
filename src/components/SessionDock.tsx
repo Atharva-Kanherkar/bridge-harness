@@ -86,12 +86,17 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
   const dragging = useRef(false);
   // Expanded means the dock is `flex-1` — the whole split, always wider than
   // the threshold — so the label rides along with it.
-  const showActiveLabel = state.expanded || state.width >= DOCK_TAB_LABEL_MIN_WIDTH;
+  // The stored width is a preference, not a guarantee: the window may have
+  // shrunk, or been zoomed, since it was dragged. Split mode renders the
+  // clamped width so the conversation always keeps its minimum; the sheet
+  // overlays instead, bounded by `max-w-full`.
+  const width = sheet ? state.width : clampDockWidth(state.width, availableWidth);
+  const showActiveLabel = state.expanded || width >= DOCK_TAB_LABEL_MIN_WIDTH;
 
   const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     const originX = event.clientX;
-    const originWidth = state.width;
+    const originWidth = width;
     dragging.current = true;
     event.currentTarget.setPointerCapture(event.pointerId);
     const move = (pointer: PointerEvent) =>
@@ -109,7 +114,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     event.preventDefault();
     const delta = event.key === "ArrowLeft" ? RESIZE_STEP : -RESIZE_STEP;
-    onAction({ type: "set-width", width: state.width + delta, available: availableWidth });
+    onAction({ type: "set-width", width: width + delta, available: availableWidth });
   };
 
   return (
@@ -119,7 +124,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
           role="separator"
           aria-orientation="vertical"
           aria-label="Resize dock"
-          aria-valuenow={state.width}
+          aria-valuenow={width}
           aria-valuemin={MIN_DOCK_WIDTH}
           aria-valuemax={clampDockWidth(MAX_DOCK_WIDTH, availableWidth)}
           tabIndex={0}
@@ -153,7 +158,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
           !concealed && state.open && !state.expanded && sheet && "absolute inset-y-0 right-0 z-30 shadow-2xl",
           !concealed && state.open && !state.expanded && !sheet && "shrink-0",
         )}
-        style={!concealed && state.open && !state.expanded ? { width: state.width } : undefined}
+        style={!concealed && state.open && !state.expanded ? { width } : undefined}
       >
         {state.open && !concealed && (
           <div className="flex min-h-11 shrink-0 items-center gap-1 border-b border-border bg-muted/30 px-2 py-1">
