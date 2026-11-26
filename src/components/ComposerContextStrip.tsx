@@ -72,8 +72,12 @@ export function ComposerContextStrip({
   const branchAvailable = worktreeAvailable && !worktree;
   const displayedBranch = currentBranch || workspace?.branch || "No branch";
 
+  // The project and branch pickers are the only parts with free-form text, so
+  // they are the ones that shrink (`shrink` undoes the Button's own
+  // `shrink-0`, without which `min-w-0` does nothing) and truncate. Otherwise
+  // a long branch name pushes the work mode picker out past the composer.
   return (
-    <div className="@container/composer-context flex min-h-7 items-center gap-0.5 text-muted-foreground" aria-label="Chat context">
+    <div className="@container/composer-context flex min-h-7 min-w-0 items-center gap-0.5 text-muted-foreground" aria-label="Chat context">
       <Button
         variant="quiet"
         size="xs"
@@ -82,7 +86,7 @@ export function ComposerContextStrip({
         aria-expanded={repoMenu.open}
         tooltip={repoMenu.open ? undefined : workspace?.title ?? "No project"}
         onClick={repoMenu.toggle}
-        className="min-w-0 max-w-[16rem]"
+        className="min-w-0 max-w-[16rem] shrink"
       >
         <FolderGit2 size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 truncate">{workspace?.title ?? "No project"}</span>
@@ -116,7 +120,7 @@ export function ComposerContextStrip({
           if (!locked && branchAvailable && !branchBusy) onRequestBranches();
           branchMenu.toggle();
         }}
-        className="min-w-0 max-w-[16rem]"
+        className="min-w-0 max-w-[16rem] shrink"
       >
         <GitBranch size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 truncate">{displayedBranch}</span>

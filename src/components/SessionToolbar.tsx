@@ -121,7 +121,10 @@ export function SessionToolbar({
   return (
     <div
       className={cn(
-        "flex h-11 shrink-0 select-none items-center gap-2 border-b border-border pr-4 sm:pr-6",
+        // A container, because the strip's room is the window minus the
+        // sidebar: viewport breakpoints kept the trail chip on screen while
+        // the title beside it had already collapsed to a single letter.
+        "@container/toolbar flex h-11 shrink-0 select-none items-center gap-2 border-b border-border pr-4 sm:pr-6",
         sidebarHidden ? "u-traffic-inset pl-24" : "pl-4 sm:pl-6",
       )}
       // The window has no native titlebar, so this strip is the grab handle:
@@ -144,7 +147,7 @@ export function SessionToolbar({
       )}
 
       {/* Keep the task visible when the sidebar is hidden or a pane is open. */}
-      <Tip label={projectName ? `${projectName} / ${title}` : title} side="bottom"><div className="min-w-0 flex-1">
+      <Tip label={projectName ? `${projectName} / ${title}` : title} side="bottom"><div className="min-w-12 flex-1">
         <h1 className="truncate text-ui font-semibold leading-4 text-foreground">{title}</h1>
         {projectName && <p className="truncate text-caption leading-4 text-muted-foreground">{projectName}</p>}
       </div></Tip>
@@ -161,7 +164,9 @@ export function SessionToolbar({
             onClick={() => onOpenTrail(trail.id)}
             aria-label={`Open trail ${trail.title}`}
             data-testid="trail-chip"
-            className="hidden max-w-[220px] sm:inline-flex"
+            // Gives way before the title does, and steps aside entirely
+            // once the strip cannot hold both.
+            className="hidden min-w-0 max-w-[220px] shrink @min-[620px]/toolbar:inline-flex"
           >
             <Route aria-hidden="true" />
             <span className="truncate">{trail.title}</span>
@@ -169,10 +174,10 @@ export function SessionToolbar({
         />
       )}
 
-      {sourceBadge && <Tip label={sourceBadge}><span data-testid="import-source-badge" className="hidden max-w-[260px] shrink-0 truncate rounded-full border border-border px-2 py-0.5 font-mono text-caption font-medium text-muted-foreground sm:inline">{sourceBadge}</span></Tip>}
+      {sourceBadge && <Tip label={sourceBadge}><span data-testid="import-source-badge" className="hidden max-w-[260px] min-w-0 truncate rounded-full border border-border px-2 py-0.5 font-mono text-caption font-medium text-muted-foreground @min-[620px]/toolbar:inline">{sourceBadge}</span></Tip>}
 
       {(modelControl || tierLabel) && (
-        <div className="hidden shrink-0 items-center gap-2 lg:flex">
+        <div className="hidden shrink-0 items-center gap-2 @min-[900px]/toolbar:flex">
           {modelControl}
           {tierLabel && (
             <Tip label={tierLabel}><span
