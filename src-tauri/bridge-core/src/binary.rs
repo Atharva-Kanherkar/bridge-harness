@@ -284,8 +284,10 @@ mod tests {
             fs::set_permissions(executable, permissions).unwrap();
         }
 
+        let sparse_path = home.path().join("desktop-bin");
+        fs::create_dir(&sparse_path).unwrap();
         assert_eq!(
-            version_at_with_environment(&launcher, Some(OsStr::new("/usr/bin:/bin")), Some(home.path())).as_deref(),
+            version_at_with_environment(&launcher, Some(sparse_path.as_os_str()), Some(home.path())).as_deref(),
             Some("codex-cli 1.2.3")
         );
     }

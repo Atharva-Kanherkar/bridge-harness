@@ -43,6 +43,16 @@ pub fn route(
     event: &NormalizedEvent,
     meta: &Value,
 ) -> Result<Vec<AgentEvent>, BridgeError> {
+    route_with_repository_state(db, parent, event, meta, None)
+}
+
+pub(crate) fn route_with_repository_state(
+    db: &Connection,
+    parent: &str,
+    event: &NormalizedEvent,
+    meta: &Value,
+    repository_state: Option<&Value>,
+) -> Result<Vec<AgentEvent>, BridgeError> {
     let Some(tag) = event.data.get("subagent") else {
         return Ok(vec![]);
     };
@@ -194,11 +204,16 @@ pub fn route(
     if event.kind != "usage.updated" {
         let mut child_event = event.clone();
         child_event.data["childSessionId"] = json!(child);
-        result.push(store::session_event_in_transaction(
-            &tx,
-            &child,
-            &child_event,
-            meta,
+        let child_state = if repository_state.is_some()
+            && store::repository_location_for_session(&tx, &child)?
+                == store::repository_location_for_session(&tx, parent)?
+        {
+            repository_state
+        } else {
+            None
+        };
+        result.push(store::session_event_in_transaction_with_repository_state(
+            &tx, &child, &child_event, meta, child_state,
         )?);
     }
     if terminal(event) {
@@ -222,6 +237,11 @@ pub fn route(
         }
     }
     tx.commit()?;
+    for event in &result {
+        if event.sequence > 0 && crate::repo_stamp::changes_folder(&event.kind) {
+            crate::repo_stamp::invalidate_session(db, &event.session_id);
+        }
+    }
     Ok(result)
 }
 

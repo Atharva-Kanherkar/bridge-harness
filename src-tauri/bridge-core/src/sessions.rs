@@ -432,8 +432,11 @@ impl BridgeCore {
         session_id: &str,
         entry_id: &str,
     ) -> Result<SessionForestSnapshot, BridgeError> {
-        let db = self.db.lock().unwrap();
-        let snapshot = activate_session_entry_records(&db, session_id, entry_id)?;
+        let prepared = crate::repo_stamp::Prepared::for_session(&self.db, session_id)?;
+        let (db, prepared) = prepared.lock_current(&self.db, session_id)?;
+        let snapshot = activate_session_entry_with_repository_state(
+            &db, session_id, entry_id, prepared.value().clone(),
+        )?;
         self.events.publish(crate::events::CoreEvent::StateChanged);
         Ok(snapshot)
     }
@@ -471,7 +474,14 @@ impl BridgeCore {
         } else {
             None
         };
-        let db = self.db.lock().unwrap();
+        let (db, current_state) = if let Some(worktree) = &worktree_path {
+            let current_state = store::repository_state_for_path(&worktree.path);
+            (self.db.lock().unwrap(), current_state)
+        } else {
+            let prepared = crate::repo_stamp::Prepared::for_session(&self.db, session_id)?;
+            let (db, prepared) = prepared.lock_current(&self.db, session_id)?;
+            (db, prepared.value().clone())
+        };
         let fork_id = match fork_session_records(
             &db,
             session_id,
@@ -491,7 +501,7 @@ impl BridgeCore {
                 return Err(error);
             }
         };
-        let snapshot = session_forest_snapshot(&db, &fork_id)?;
+        let snapshot = session_forest_snapshot_with_repository_state(&db, &fork_id, current_state)?;
         drop(db);
         self.events.publish(crate::events::CoreEvent::StateChanged);
         Ok((fork_id, snapshot, ContinuationFidelity::ProjectedAtBoundary.as_str().into()))
@@ -514,8 +524,8 @@ impl BridgeCore {
         &self,
         session_id: &str,
     ) -> Result<Option<PathBuf>, BridgeError> {
-        let db = self.db.lock().unwrap();
-        store::repository_path_for_session(&db, session_id)
+        let location = store::repository_location_for_session(&self.db.lock().unwrap(), session_id)?;
+        Ok(location.and_then(|location| location.resolve()))
     }
 
     pub fn session_forest_snapshot_with_repository_state(
@@ -1850,12 +1860,12 @@ pub fn session_forest_page_with_repository_state(
     let window =
         store::session_entry_window_with_budget(db, session_id, entry_limit, entry_budget)?;
     let entries = window.entries;
-    let selected_state = head
-        .as_ref()
-        .and_then(|head| head.active_entry_id.as_deref())
-        .and_then(|id| entries.iter().find(|entry| entry.id == id))
-        .and_then(|entry| entry.payload.get("_bridgeRepoState"))
-        .cloned();
+    // A current boundary owns its observation. A streaming row's cache
+    // value may describe a different moment; walk only its own parent chain.
+    let selected_state = match head.as_ref().and_then(|head| head.active_entry_id.as_deref()) {
+        Some(id) => repository_stamp_for_head(db, session_id, id)?,
+        None => None,
+    };
     let comparable = |value: &serde_json::Value| {
         value.get("status").and_then(serde_json::Value::as_str) != Some("unavailable")
     };
@@ -1900,10 +1910,60 @@ pub fn session_forest_page_with_repository_state(
     })
 }
 
+fn repository_stamp_for_head(
+    db: &Connection,
+    session_id: &str,
+    entry_id: &str,
+) -> Result<Option<serde_json::Value>, BridgeError> {
+    let mut links = db.prepare_cached(
+        "SELECT parent_entry_id,kind FROM session_entries WHERE session_id=?1 AND id=?2",
+    )?;
+    let mut stamps = db.prepare_cached(
+        "SELECT CASE WHEN json_valid(payload) THEN
+             CASE WHEN json_type(payload,'$._bridgeRepoState')='object'
+                  THEN json_extract(payload,'$._bridgeRepoState') END
+         END
+         FROM session_entries WHERE session_id=?1 AND id=?2",
+    )?;
+    let mut next = Some(entry_id.to_owned());
+    let mut visited = std::collections::HashSet::new();
+    while let Some(id) = next {
+        if !visited.insert(id.clone()) {
+            break;
+        }
+        let Some((parent, kind)) = links.query_row(params![session_id, id],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+        ).optional()? else {
+            break;
+        };
+        if crate::repo_stamp::exact_kind(&kind) {
+            let raw = stamps.query_row(params![session_id, id],
+                |row| row.get::<_, Option<String>>(0))?;
+            let stamp = raw.and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok())
+                .filter(serde_json::Value::is_object);
+            if id == entry_id || stamp.is_some() {
+                return Ok(stamp);
+            }
+        }
+        next = parent;
+    }
+    Ok(None)
+}
+
 pub fn activate_session_entry_records(
     db: &Connection,
     session_id: &str,
     entry_id: &str,
+) -> Result<SessionForestSnapshot, BridgeError> {
+    let current_state = store::repository_state_for_session(db, session_id)?;
+    activate_session_entry_with_repository_state(db, session_id, entry_id, current_state)
+}
+
+fn activate_session_entry_with_repository_state(
+    db: &Connection,
+    session_id: &str,
+    entry_id: &str,
+    current_state: serde_json::Value,
 ) -> Result<SessionForestSnapshot, BridgeError> {
     let transaction = db.unchecked_transaction()?;
     session_forest::SessionForest::new(&transaction)
@@ -1916,7 +1976,7 @@ pub fn activate_session_entry_records(
         session_id,
         &format!("Conversation head moved to {entry_id}; files were not changed"),
     )?;
-    let snapshot = session_forest_snapshot(&transaction, session_id)?;
+    let snapshot = session_forest_snapshot_with_repository_state(&transaction, session_id, current_state)?;
     transaction.commit()?;
     Ok(snapshot)
 }
@@ -2613,6 +2673,83 @@ mod tests {
         fn normalize(&self, _: &Value) -> Vec<agent::NormalizedEvent> {
             Vec::new()
         }
+    }
+
+    #[test]
+    fn forest_repository_divergence_tracks_edits_and_commits() {
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
+        };
+        git(&["init", "-q"]);
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,harness,label,status,metric_source,cwd) VALUES('repo','codex','Chat','idle','reported',?1)",
+            [repo.path().to_str().unwrap()],
+        ).unwrap();
+        let append = || {
+            let sample = store::repository_state_for_path(repo.path());
+            session_forest::SessionForest::with_repository_state(&db, &sample).append(
+                "repo", session_forest::EntryKind::UserMessage, serde_json::json!({"text": "check"}),
+            ).unwrap()
+        };
+        let divergence = || session_forest_snapshot(&db, "repo").unwrap().repository_divergence.status;
+        let commit = |message: &str| git(&[
+            "-c", "user.name=Bridge Test", "-c", "user.email=bridge@example.invalid",
+            "-c", "commit.gpgsign=false", "commit", "-qm", message,
+        ]);
+        append();
+        assert_eq!(divergence(), "unknown");
+
+        let tracked = repo.path().join("tracked");
+        std::fs::write(&tracked, "first").unwrap();
+        git(&["add", "tracked"]);
+        commit("first");
+        crate::repo_stamp::invalidate_containing(&tracked);
+        append();
+        assert_eq!(divergence(), "aligned");
+
+        std::fs::write(&tracked, "second").unwrap();
+        assert_eq!(divergence(), "diverged");
+        git(&["add", "tracked"]);
+        commit("second");
+        assert_eq!(divergence(), "diverged");
+        crate::repo_stamp::invalidate_containing(&tracked);
+        append();
+        assert_eq!(divergence(), "aligned");
+    }
+
+    #[test]
+    fn mid_turn_divergence_uses_the_stamped_ancestor_outside_the_page() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,harness,label,status,metric_source) VALUES('s','codex','Chat','idle','reported')",
+            [],
+        ).unwrap();
+        let clean = serde_json::json!({"status": "clean", "head": "old", "dirtyHash": "empty"});
+        let dirty = serde_json::json!({"status": "dirty", "head": "old", "dirtyHash": "modified"});
+        for (id, parent, sequence, kind, stamp) in [
+            ("root", None, 1, "user.message", &clean),
+            ("active", Some("root"), 2, "command.started", &dirty),
+            ("sibling", Some("root"), 3, "assistant.message", &dirty),
+        ] {
+            db.execute(
+                "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,semantic_schema_version,kind,payload,context_visibility,created_at)
+                 VALUES(?1,'s',?2,?3,1,?4,?5,'eligible','now')",
+                params![id, parent, sequence, kind, serde_json::json!({"_bridgeRepoState": stamp}).to_string()],
+            ).unwrap();
+        }
+        session_forest::SessionForest::new(&db).move_head("s", Some("active")).unwrap();
+        let snapshot = session_forest_page_with_repository_state(&db, "s", dirty, 1).unwrap();
+        assert_eq!(snapshot.entries.len(), 1);
+        assert_eq!(snapshot.entries[0].id, "active");
+        assert_eq!(snapshot.repository_divergence.selected_state, Some(clean));
+        assert_eq!(snapshot.repository_divergence.status, "diverged");
     }
 
     fn fixture() -> (tempfile::TempDir, BridgeCore) {

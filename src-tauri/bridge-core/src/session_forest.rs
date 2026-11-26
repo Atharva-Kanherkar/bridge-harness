@@ -883,11 +883,17 @@ pub struct IntegrityReport {
 
 pub struct SessionForest<'connection> {
     db: &'connection Connection,
+    repository_state: Option<&'connection Value>,
 }
 
 impl<'connection> SessionForest<'connection> {
     pub fn new(db: &'connection Connection) -> Self {
-        Self { db }
+        Self { db, repository_state: None }
+    }
+
+    /// The caller measured the worktree before taking its database guard.
+    pub fn with_repository_state(db: &'connection Connection, repository_state: &'connection Value) -> Self {
+        Self { db, repository_state: Some(repository_state) }
     }
 
     pub fn append(
@@ -914,7 +920,7 @@ impl<'connection> SessionForest<'connection> {
         }
         let payload = mark_typed_payload(payload);
         let transaction = self.db.unchecked_transaction()?;
-        let entry = store::append_session_entry_tx(
+        let entry = store::append_session_entry_tx_with_repository_state(
             &transaction,
             session_id,
             parent_entry_id,
@@ -923,8 +929,12 @@ impl<'connection> SessionForest<'connection> {
             None,
             kind.context_visibility(),
             None,
+            self.repository_state,
         )?;
         transaction.commit()?;
+        if crate::repo_stamp::changes_folder(kind.as_str()) {
+            crate::repo_stamp::invalidate_session(self.db, session_id);
+        }
         Ok(entry)
     }
 
@@ -1259,6 +1269,16 @@ pub(crate) fn append_in_transaction(
     kind: EntryKind,
     payload: Value,
 ) -> Result<SessionEntry, ForestError> {
+    append_in_transaction_with_repository_state(transaction, session_id, kind, payload, None)
+}
+
+pub(crate) fn append_in_transaction_with_repository_state(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    kind: EntryKind,
+    payload: Value,
+    repository_state: Option<&Value>,
+) -> Result<SessionEntry, ForestError> {
     kind.validate_payload(&payload)?;
     let session_exists: bool = transaction.query_row(
         "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
@@ -1291,7 +1311,7 @@ pub(crate) fn append_in_transaction(
             });
         }
     }
-    Ok(store::append_session_entry_tx(
+    Ok(store::append_session_entry_tx_with_repository_state(
         transaction,
         session_id,
         parent_entry_id.as_deref(),
@@ -1300,6 +1320,7 @@ pub(crate) fn append_in_transaction(
         None,
         kind.context_visibility(),
         None,
+        repository_state,
     )?)
 }
 
