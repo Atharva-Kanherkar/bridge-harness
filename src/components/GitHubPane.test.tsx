@@ -122,6 +122,31 @@ describe("GitHubPane", () => {
     expect(host!.textContent).not.toContain("REVIEW THREADS");
   });
 
+  it("renders a page too narrow for the table as the stacked dock layout", async () => {
+    mockReads();
+    const measure = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect");
+    const sized = (width: number) => measure.mockImplementation(function (this: HTMLElement) {
+      return { width: this.hasAttribute("data-gh-pane-root") ? width : 0, height: 0, top: 0, left: 0, right: 0, bottom: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    });
+    const tabs = () => host!.querySelector('[aria-label="GitHub repository actions"]')!;
+
+    sized(1200);
+    await mount({ layout: "page" });
+    // Roomy: labelled tabs and the four-column table with its header row.
+    expect(tabs().textContent).toContain("Pull requests");
+    expect(host!.textContent).toContain("Checks");
+
+    await act(async () => { root?.unmount(); });
+    host?.remove();
+    sized(560);
+    await mount({ layout: "page" });
+    // Narrow: icon tabs, no table header, and the pull request is still listed.
+    expect(tabs().textContent).not.toContain("Pull requests");
+    expect(tabs().querySelector('[aria-label="Pull requests"]')).not.toBeNull();
+    expect(host!.textContent).not.toContain("Checks");
+    expect(host!.textContent).toContain("Safe GitHub surface");
+  });
+
   it("switches between pull requests, issues, and the repository overview", async () => {
     mockReads();
     vi.spyOn(bridgeApi, "githubIssues").mockResolvedValue({ issues: [{

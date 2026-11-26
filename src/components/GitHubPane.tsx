@@ -107,8 +107,9 @@ export type GitHubPaneProps = {
   intent?: { view: GithubLinkView; nonce: number };
   onJumpToFile: (path: string, line: number | undefined, headBranch: string) => void;
   /** `dock` (default) is the 440px chat pane. `page` is Pulls's full-width
-   *  screen: the repo slug never truncates, and at 1100px and up an open pull
-   *  request or issue sits beside its list instead of replacing it. */
+   *  screen: labelled tabs, a pull request table, and at 1100px and up an open
+   *  pull request or issue beside its list instead of replacing it. A page
+   *  narrower than `PAGE_MIN_WIDTH` renders as `dock`. */
   layout?: "dock" | "page";
 };
 
@@ -371,8 +372,40 @@ function ListSearch({ value, onChange, placeholder }: { value: string; onChange:
   </label>;
 }
 
+/** Narrowest pane that still fits the page layout: the labelled tabs beside
+ *  the repository slug, and a four-column pull request table whose fixed
+ *  columns alone take 27rem. Below it the title column is a word wide and the
+ *  slug runs over the tabs, so the page falls back to the dock's stacked
+ *  layout, which is built for exactly this much room. */
+const PAGE_MIN_WIDTH = 760;
+
+/** Whether an element is narrower than `threshold`, tracked from its own box
+ *  rather than the viewport: the sidebar, the dock and the zoom level all take
+ *  room from a pane without changing the window. Unmeasurable (no layout, no
+ *  observer) reads as not narrow. */
+function useNarrowerThan(threshold: number): [boolean, (element: HTMLElement | null) => void] {
+  const [narrow, setNarrow] = useState(false);
+  const observer = useRef<ResizeObserver | null>(null);
+  const ref = useCallback((element: HTMLElement | null) => {
+    observer.current?.disconnect();
+    observer.current = null;
+    if (!element) return;
+    // Measured before first paint, so a narrow pane never flashes the table.
+    const initial = element.getBoundingClientRect().width;
+    if (initial > 0) setNarrow(initial < threshold);
+    if (typeof ResizeObserver === "undefined") return;
+    observer.current = new ResizeObserver(entries => {
+      const width = entries[0]?.contentRect.width;
+      if (typeof width === "number" && width > 0) setNarrow(width < threshold);
+    });
+    observer.current.observe(element);
+  }, [threshold]);
+  return [narrow, ref];
+}
+
 export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, onJumpToFile, layout = "dock" }: GitHubPaneProps) {
-  const page = layout === "page";
+  const [narrowPane, paneRef] = useNarrowerThan(PAGE_MIN_WIDTH);
+  const page = layout === "page" && !narrowPane;
   const remembered = surfaceSnapshot(workspaceId);
   const [status, setStatus] = useState<GithubStatusResult | undefined>(remembered?.status);
   const [prs, setPrs] = useState<PullRequestListItem[] | undefined>(remembered?.prs);
@@ -725,12 +758,12 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   </Button>;
   const facetOptions = PULL_REQUEST_FACETS.map(choice => ({ value: choice.id, label: choice.label }));
 
-  return <GithubMediaScope.Provider value={mediaScope}><section data-gh-pane-root="" className="relative flex h-full w-full flex-col" aria-label="GitHub repository">
+  return <GithubMediaScope.Provider value={mediaScope}><section ref={paneRef} data-gh-pane-root="" className="relative flex h-full w-full min-w-0 flex-col" aria-label="GitHub repository">
     {page ? <header className="flex shrink-0 flex-col border-b border-border bg-background px-5">
       <div className="flex h-11 items-end gap-3">
         {/* Labelled tabs with live counts: at full width there is room to say
             what each surface is instead of making the reader decode icons. */}
-        <div className="flex min-w-0 items-end gap-1" role="toolbar" aria-label="GitHub repository actions">
+        <div className="flex shrink-0 items-end gap-1" role="toolbar" aria-label="GitHub repository actions">
           {surfaces.map(([id, label, Icon, count]) => <Button
             key={id}
             variant="tab"
@@ -747,9 +780,9 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
             {surfaceTab === id && <span className="absolute inset-x-0 bottom-0 h-0.5 bg-foreground" aria-hidden="true" />}
           </Button>)}
         </div>
-        <div className="ml-auto flex shrink-0 items-center gap-0.5 self-center">
-          {repoLabel && <CopyButton value={repoLabel} label={`Copy ${repoLabel}`}>
-            <span className="whitespace-nowrap font-mono text-caption">{repoLabel}</span>
+        <div className="ml-auto flex min-w-0 items-center gap-0.5 self-center">
+          {repoLabel && <CopyButton value={repoLabel} label={`Copy ${repoLabel}`} className="min-w-0 shrink">
+            <span className="min-w-0 truncate font-mono text-caption">{repoLabel}</span>
           </CopyButton>}
           {repositoryUrl && <OpenOnGithub url={repositoryUrl} what={repoLabel ?? "the repository"} />}
           {refreshButton}
@@ -873,7 +906,9 @@ function PullRequestRow({ pr, index, wide, active, onOpen }: { pr: PullRequestLi
       <PullRequestStateGlyph pr={pr} size={15} className={cn("mt-0.5 shrink-0", stateTone)} />
       <span className="min-w-0 flex-1">
         <span className="flex flex-wrap items-start gap-x-1.5 gap-y-1">
-          <span className="min-w-0 flex-1 text-ui font-medium leading-5 text-foreground">{pr.title}</span>
+          {/* A real basis: with `flex-1` the badges never wrap, and a 320px
+              dock squeezed the title into a column three words wide. */}
+          <span className="min-w-0 grow basis-48 text-ui font-medium leading-5 text-foreground">{pr.title}</span>
           {pr.mergeability === "conflicting" && <Badge variant="warning" size="sm">Conflicts</Badge>}
           {pr.isDraft && <Badge variant="outline" size="sm">Draft</Badge>}
           {review && <Badge variant={review.variant} size="sm">{review.label}</Badge>}
@@ -1162,7 +1197,7 @@ const REVIEW_HARNESSES: ReadonlyArray<{ id: string; label: string }> = [
 ];
 const BUGBOT = { id: "bugbot", label: "Cursor Bugbot", note: "reviews on GitHub" };
 
-const PILL_BASE = "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-caption font-medium capitalize shadow-xs";
+const PILL_BASE = "inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-caption font-medium capitalize shadow-xs";
 const PILL_MERGED = "border-merged/45 bg-merged/15 text-merged";
 const PILL_NEUTRAL = "border-border bg-card text-foreground";
 
@@ -1622,9 +1657,9 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
     {header}
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className={cn("animate-page-mount relative border-b border-border px-5 pb-4 pt-4", merge.celebrate && mergedNow && "merge-sweep play")}>
-        <div className="flex items-center gap-2 text-caption text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-muted-foreground">
           <StatePill icon={mergedNow ? GitMerge : StateIcon} label={mergedNow ? "merged" : summary.isDraft ? "draft" : summary.state} merged={mergedNow} />
-          <span className="font-mono tabular-nums">#{summary.number}</span>
+          <span className="shrink-0 font-mono tabular-nums">#{summary.number}</span>
           <span className="flex min-w-0 items-center gap-1.5"><Avatar login={summary.author?.login} className="size-4 text-micro" /><span className="truncate">{summary.author?.login ?? "ghost"}</span></span>
           {review && <Badge variant={review.variant} size="sm">{review.label}</Badge>}
           <span className="ml-auto flex shrink-0 items-center">
