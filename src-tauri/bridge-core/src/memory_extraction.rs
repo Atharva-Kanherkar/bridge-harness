@@ -3916,6 +3916,22 @@ mod tests {
     }
 
     #[test]
+    fn coverage_lands_with_the_completion_and_feeds_the_next_digest() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        insert_message(&db, "s1", "e1", 1, "user.message", "I prefer tabs");
+        enqueue_after_turn(&db, "s1", &memory(&db), Utc::now()).unwrap();
+        let claimed = claim_due(&db, quiet(), &memory(&db)).unwrap().unwrap();
+        let digest = digest_for_run(&db, ACCOUNT_MEMORY_SCOPE, "s1", &claimed.run_id, &claimed.lease_owner).unwrap().unwrap();
+        assert!(record_coverage(&db, &claimed.run_id, &claimed.lease_owner, &digest.through_entry_id, 3).unwrap());
+        settle(&db, &claimed.run_id, &claimed.lease_owner, "completed", None, Some("claude"), Some("haiku"), Some(&digest.sha256), 10, 20, 0).unwrap();
+        assert!(!record_coverage(&db, &claimed.run_id, &claimed.lease_owner, "e1", 9).unwrap(), "a settled run is not rewritten");
+        assert_eq!(last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().unwrap().known_count, 3);
+        assert!(build_digest(&db, ACCOUNT_MEMORY_SCOPE, "s1").unwrap().is_none(), "the next run starts after e1");
+    }
+
+    #[test]
     fn extraction_never_consults_the_router() {
         let module = format!("{}{}", "learning", "_router");
         let source = include_str!("memory_extraction.rs");

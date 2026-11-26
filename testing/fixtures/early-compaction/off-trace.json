@@ -3038,7 +3038,10 @@
         "lease_expires_at": null,
         "created_at": "<time>",
         "updated_at": "<time>",
-        "mode": "propose"
+        "mode": "propose",
+        "due_at": "<time>",
+        "through_entry_id": null,
+        "known_count": 0
       },
       {
         "id": "<id-15>",
@@ -3056,7 +3059,10 @@
         "lease_expires_at": null,
         "created_at": "<time>",
         "updated_at": "<time>",
-        "mode": "propose"
+        "mode": "propose",
+        "due_at": "<time>",
+        "through_entry_id": null,
+        "known_count": 0
       }
     ],
     "queued_session_input": [
