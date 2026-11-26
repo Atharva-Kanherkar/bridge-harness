@@ -304,8 +304,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       onExit={onExit}
     />
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-    {/* The window's title strip over the page column: it drags the window and
-        lines the first heading up with the rail's search, nothing more. */}
+    {/* Continue the draggable title strip across the page column. */}
     <div data-tauri-drag-region="deep" aria-hidden="true" className="hidden h-11 shrink-0 md:block" />
     <div ref={contentRef} className="relative min-h-0 min-w-0 flex-1 overflow-y-auto">
 

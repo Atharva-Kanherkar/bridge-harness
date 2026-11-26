@@ -4,8 +4,8 @@
 // Settings takes the window's sidebar slot rather than sitting beside it, the
 // way System Settings and most desktop apps do it: two stacked navigation
 // columns made every page narrow and asked the eye to pick which sidebar was
-// in charge. The rail owns the window's leading edge, so its first row keeps
-// clear of the traffic lights and drags the window.
+// in charge. The rail's title strip reserves room for the traffic lights and
+// drags the window. Navigation starts below it.
 //
 // Every page is one click away at every width. On a wide window the rail is a
 // full-height column with its own scroll; below md it collapses to a section
@@ -101,11 +101,10 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
   };
 
   return <nav aria-label="Settings" className="u-vibrancy-sidebar flex w-full shrink-0 flex-col border-b border-sidebar-border bg-sidebar md:h-full md:w-60 md:border-b-0 md:border-r">
-    <div data-tauri-drag-region="deep" className="u-traffic-inset flex h-11 shrink-0 items-center pl-24 pr-3">
-      {onExit && <Button variant="quiet" size="xs" onClick={onExit}>
-        <CaretLeft size={14} strokeWidth={1.7} aria-hidden="true" />Back to app
-      </Button>}
-    </div>
+    <div data-tauri-drag-region="deep" aria-hidden="true" className="h-11 shrink-0" />
+    {onExit && <Button variant="quiet" size="xs" className="mx-3 mb-2 self-start" onClick={onExit}>
+      <CaretLeft size={14} strokeWidth={1.7} aria-hidden="true" />Back to app
+    </Button>}
     <div className="flex shrink-0 items-center gap-2 px-3 pb-2 md:block">
       <div className="min-w-0 flex-1 md:hidden">
         <Select label="Settings section" value={section} options={PICKER_OPTIONS} onChange={value => onSelect(value as PageId)} width="w-full" />
