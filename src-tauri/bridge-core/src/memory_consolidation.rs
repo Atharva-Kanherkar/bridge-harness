@@ -28,9 +28,10 @@
 //!   way to say "leave this alone" answers with a change anyway, and the
 //!   cheapest way to get churn out of a bookkeeping job is to make doing
 //!   nothing an available, counted answer.
-//! * A run is debounced per scope and a new turn replaces the pending one.
-//!   Reflecting in the middle of a conversation reads a scope that is about to
-//!   change, and pays for the privilege.
+//! * A run is a nightly *dream*, not a reaction to a turn. Reflecting in the
+//!   middle of a conversation reads a scope that is about to change, and pays
+//!   for the privilege; once a night, while the user is away, reads it settled
+//!   and pays once. A full scope and "Dream now" are the only other triggers.
 //!
 //! The job is bookkeeping rather than judgement, which is why it runs on the
 //! memory model the user chose rather than a hardcoded one: the right choice
@@ -39,7 +40,7 @@
 use crate::memory_ledger;
 use crate::BridgeError;
 use bridge_protocol::messages::{MemoryModelSettings, MemoryRecord, ACCOUNT_MEMORY_SCOPE};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Deserialize;
 use serde_json::json;
@@ -76,7 +77,17 @@ pub const OPERATIONS: [&str; 6] = [
     OPERATION_KEEP,
 ];
 
-const FENCE_TAG: &str = "```bridge-memory-operations";
+/// What queued a dream: the nightly cadence, "Dream now", or a full scope.
+pub const TRIGGER_NIGHTLY: &str = "nightly";
+pub const TRIGGER_MANUAL: &str = "manual";
+pub const TRIGGER_FULL: &str = "full";
+/// The local hour a nightly dream becomes due.
+pub const DEFAULT_DREAM_HOUR: i64 = 3;
+/// No automatic dream starts sooner than this after the last one, so a dream
+/// at 10:00 by hand is not followed by another at 03:00.
+pub const DREAM_FLOOR_HOURS: i64 = 20;
+
+pub(crate) const FENCE_TAG: &str = "```bridge-memory-operations";
 const LEASE_MINUTES: i64 = 10;
 const DEFAULT_MAX_RECORDS: i64 = 200;
 const DEFAULT_DEBOUNCE_SECONDS: i64 = 600;
@@ -93,9 +104,6 @@ const MAX_TARGETS_PER_OPERATION: usize = 10;
 const MAX_SUBJECT_CHARS: usize = 80;
 const MIN_EXPIRY_DAYS: i64 = 1;
 const MAX_EXPIRY_DAYS: i64 = 3_650;
-/// The kinds real conversations are stored under: `direct` single-agent chats
-/// and `orchestrator` workspace sessions. No production path writes `chat`.
-const ENQUEUEABLE_SESSION_KINDS: [&str; 2] = ["direct", "orchestrator"];
 
 pub(crate) fn install(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     transaction.execute_batch(
@@ -136,13 +144,38 @@ pub(crate) fn install(transaction: &Transaction<'_>) -> Result<(), BridgeError> 
     Ok(())
 }
 
+/// Schema 103: a dream is a consolidation run with a trigger and a report, the
+/// dream hour is a setting, and a record an undo restored is held so a later
+/// dream leaves it alone. Runs from before carry the trigger they had: a turn
+/// queued them, or a full scope did.
+pub(crate) fn install_dream(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    crate::store::add_column_if_missing(transaction, "memory_consolidation_runs", "trigger", "TEXT")?;
+    crate::store::add_column_if_missing(transaction, "memory_consolidation_runs", "report", "TEXT")?;
+    crate::store::add_column_if_missing(transaction, "memory_consolidation_settings", "dream_hour", "INTEGER")?;
+    transaction.execute_batch(
+        "UPDATE memory_consolidation_runs
+            SET trigger = CASE WHEN session_id IS NULL THEN 'full' ELSE 'turn' END
+          WHERE trigger IS NULL;
+         CREATE TABLE IF NOT EXISTS memory_dream_holds (
+            record_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            created_at TEXT NOT NULL
+         );",
+    )?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsolidationSettings {
     pub scope_key: String,
     pub mode: String,
     pub max_records: i64,
+    /// Deprecated: a dream's retire is a restorable retirement, so it no
+    /// longer needs an opt-in. Stored and returned, never read.
     pub allow_removal: bool,
     pub debounce_seconds: i64,
+    /// The local hour, 0-23, a nightly dream becomes due.
+    pub dream_hour: i64,
 }
 
 impl ConsolidationSettings {
@@ -151,14 +184,16 @@ impl ConsolidationSettings {
     }
 }
 
-/// Consolidation is off by default. The budget is not: a scope that never
-/// configured anything still has a ceiling, because the ceiling is what makes
-/// the refusal honest rather than a surprise at some unpredictable size.
+/// Nightly cleanup is on by default: it runs on the memory model, every
+/// change it makes is in the morning report with an Undo, and a scope with no
+/// memory model simply never dreams. The budget is a default too: a scope that
+/// never configured anything still has a ceiling, because the ceiling is what
+/// makes the refusal honest rather than a surprise at some unpredictable size.
 pub fn settings(db: &Connection, scope_key: &str) -> Result<ConsolidationSettings, BridgeError> {
     let scope_key = memory_ledger::parse_scope_key(scope_key)?;
     let row = db
         .query_row(
-            "SELECT mode, max_records, allow_removal, debounce_seconds
+            "SELECT mode, max_records, allow_removal, debounce_seconds, dream_hour
              FROM memory_consolidation_settings WHERE scope_key=?1",
             params![scope_key],
             |row| {
@@ -167,15 +202,17 @@ pub fn settings(db: &Connection, scope_key: &str) -> Result<ConsolidationSetting
                     row.get::<_, i64>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, i64>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
                 ))
             },
         )
         .optional()?;
-    let (mode, max_records, allow_removal, debounce_seconds) = row.unwrap_or((
-        MODE_OFF.to_string(),
+    let (mode, max_records, allow_removal, debounce_seconds, dream_hour) = row.unwrap_or((
+        MODE_PROPOSE.to_string(),
         DEFAULT_MAX_RECORDS,
         0,
         DEFAULT_DEBOUNCE_SECONDS,
+        None,
     ));
     Ok(ConsolidationSettings {
         scope_key,
@@ -183,7 +220,35 @@ pub fn settings(db: &Connection, scope_key: &str) -> Result<ConsolidationSetting
         max_records,
         allow_removal: allow_removal != 0,
         debounce_seconds,
+        dream_hour: dream_hour.unwrap_or(DEFAULT_DREAM_HOUR),
     })
+}
+
+/// The local hour a nightly dream becomes due, 0-23. Everything else about the
+/// scope's settings is kept as it was.
+pub fn update_dream_hour(db: &Connection, dream_hour: i64) -> Result<ConsolidationSettings, BridgeError> {
+    if !(0..=23).contains(&dream_hour) {
+        return Err(BridgeError::Invalid(format!(
+            "The dream hour is a local hour from 0 to 23, not {dream_hour}."
+        )));
+    }
+    let current = settings(db, ACCOUNT_MEMORY_SCOPE)?;
+    db.execute(
+        "INSERT INTO memory_consolidation_settings(
+            scope_key, mode, max_records, allow_removal, debounce_seconds, dream_hour, updated_at
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7)
+         ON CONFLICT(scope_key) DO UPDATE SET dream_hour=?6, updated_at=?7",
+        params![
+            ACCOUNT_MEMORY_SCOPE,
+            current.mode,
+            current.max_records,
+            current.allow_removal as i64,
+            current.debounce_seconds,
+            dream_hour,
+            Utc::now().to_rfc3339(),
+        ],
+    )?;
+    settings(db, ACCOUNT_MEMORY_SCOPE)
 }
 
 /// Propose mode runs on the memory model, so it needs no pin of its own; the
@@ -293,85 +358,173 @@ pub(crate) fn enforce_scope_budget(db: &Connection, scope_key: &str) -> Result<(
     )))
 }
 
-/// Called after a completed turn, and debounced.
-///
-/// A new turn in a scope replaces the pending run rather than queueing a second
-/// one, so the job never reads a conversation that is still going: the due
-/// instant moves out to the end of the debounce window every time somebody
-/// says something. There is at most one open run per scope, which the schema
-/// enforces as well as this does.
-pub fn enqueue_after_turn(
-    db: &Connection,
-    session_id: &str,
-    now: DateTime<Utc>,
-) -> Result<bool, BridgeError> {
-    let kind: Option<Option<String>> = db
-        .query_row(
-            "SELECT kind FROM sessions WHERE id=?1",
-            params![session_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(kind) = kind else { return Ok(false) };
-    let kind = kind.unwrap_or_else(|| "direct".to_string());
-    if !ENQUEUEABLE_SESSION_KINDS.contains(&kind.as_str()) {
-        return Ok(false);
-    }
-    let current = settings(db, ACCOUNT_MEMORY_SCOPE)?;
-    if !current.enabled() {
-        return Ok(false);
-    }
-    // At the budget the calculus flips: every write is being refused, and the
-    // pending consolidation is the one thing that can make room. A busy
-    // conversation must not keep pushing it out of reach — the debounce that
-    // already elapsed stands, and the run becomes due on its original clock.
-    let at_budget = held_records(db, ACCOUNT_MEMORY_SCOPE)? >= current.max_records;
-    let due_at = (now + Duration::seconds(current.debounce_seconds)).to_rfc3339();
-    let now = now.to_rfc3339();
-    let replaced = if at_budget {
-        db.execute(
-            "UPDATE memory_consolidation_runs
-             SET session_id=?2, updated_at=?3
-             WHERE scope_key=?1 AND status='queued'",
-            params![ACCOUNT_MEMORY_SCOPE, session_id, now],
-        )?
-    } else {
-        db.execute(
-            "UPDATE memory_consolidation_runs
-             SET session_id=?2, due_at=?3, updated_at=?4
-             WHERE scope_key=?1 AND status='queued'",
-            params![ACCOUNT_MEMORY_SCOPE, session_id, due_at, now],
-        )?
+/// The latest local instant at `dream_hour:00` at or before `now`: tonight's
+/// dream once the hour has passed, last night's before it. A local hour that a
+/// clock change skips is read an hour later.
+pub fn dream_slot<Tz: TimeZone>(now: &DateTime<Tz>, dream_hour: i64) -> DateTime<Utc> {
+    let hour = u32::try_from(dream_hour.clamp(0, 23)).unwrap_or(3);
+    let zone = now.timezone();
+    let at_hour = |date: NaiveDate| {
+        let naive = date.and_time(NaiveTime::from_hms_opt(hour, 0, 0).unwrap_or(NaiveTime::MIN));
+        zone.from_local_datetime(&naive)
+            .earliest()
+            .or_else(|| zone.from_local_datetime(&(naive + Duration::hours(1))).earliest())
+            .map(|instant| instant.with_timezone(&Utc))
     };
-    if replaced > 0 {
-        return Ok(true);
+    let today = now.date_naive();
+    let now_utc = now.with_timezone(&Utc);
+    match at_hour(today) {
+        Some(slot) if slot <= now_utc => slot,
+        _ => today
+            .pred_opt()
+            .and_then(at_hour)
+            .unwrap_or(now_utc - Duration::days(1)),
     }
-    // A run already leased is executing against the scope it read; the turn
-    // that just finished is the next run's business, not this one's.
-    let running: Option<i64> = db
+}
+
+/// Whether the clock alone makes an automatic dream due.
+///
+/// Never within [`DREAM_FLOOR_HOURS`] of the last dream, whatever queued it.
+/// Otherwise due once the newest dream started before the latest slot. That
+/// one rule covers both nights the app was open, where the slot passes at
+/// 03:00, and nights the Mac slept through, where the first tick after launch
+/// already sits past a slot the last dream never reached. An install that has
+/// never dreamed is due at once.
+pub fn automatic_dream_due<Tz: TimeZone>(
+    now: &DateTime<Tz>,
+    dream_hour: i64,
+    last_dream: Option<DateTime<Utc>>,
+) -> bool {
+    let Some(last) = last_dream else { return true };
+    if now.with_timezone(&Utc) - last < Duration::hours(DREAM_FLOOR_HOURS) {
+        return false;
+    }
+    last < dream_slot(now, dream_hour)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LastDream {
+    started: DateTime<Utc>,
+    /// When it settled, absent while it is still open.
+    settled: Option<String>,
+}
+
+fn last_dream(db: &Connection, scope_key: &str) -> Result<Option<LastDream>, BridgeError> {
+    let row: Option<(String, String, String)> = db
         .query_row(
-            "SELECT 1 FROM memory_consolidation_runs
-             WHERE scope_key=?1 AND status='running' LIMIT 1",
-            params![ACCOUNT_MEMORY_SCOPE],
-            |row| row.get(0),
+            "SELECT created_at, status, updated_at FROM memory_consolidation_runs
+             WHERE scope_key=?1 ORDER BY created_at DESC, id DESC LIMIT 1",
+            params![scope_key],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    if running.is_some() {
-        return Ok(false);
-    }
+    let Some((created_at, status, updated_at)) = row else { return Ok(None) };
+    let started = DateTime::parse_from_rfc3339(&created_at)
+        .map_err(|error| BridgeError::Invalid(format!("A dream's start does not parse: {error}")))?
+        .with_timezone(&Utc);
+    let settled = matches!(status.as_str(), STATUS_COMPLETED | STATUS_FAILED | STATUS_CANCELLED).then_some(updated_at);
+    Ok(Some(LastDream { started, settled }))
+}
+
+/// Whether the scope has anything a dream could act on that the last one did
+/// not see: a record written or changed, or a retention sweep, after it
+/// settled. With no dream yet, any active or waiting record counts.
+pub fn changed_since_last_dream(db: &Connection, scope_key: &str) -> Result<bool, BridgeError> {
+    let since = last_dream(db, scope_key)?.and_then(|last| last.settled);
+    let changed: Option<i64> = match since {
+        None => db
+            .query_row(
+                "SELECT 1 FROM memory_records
+                 WHERE scope_key=?1 AND status IN ('active','proposed') LIMIT 1",
+                params![scope_key],
+                |row| row.get(0),
+            )
+            .optional()?,
+        Some(since) => db
+            .query_row(
+                "SELECT 1 FROM memory_records WHERE scope_key=?1 AND updated_at > ?2
+                 UNION ALL
+                 SELECT 1 FROM memory_retention_sweeps WHERE scope_key=?1 AND at > ?2
+                 LIMIT 1",
+                params![scope_key, since],
+                |row| row.get(0),
+            )
+            .optional()?,
+    };
+    Ok(changed.is_some())
+}
+
+fn open_run(db: &Connection, scope_key: &str) -> Result<Option<String>, BridgeError> {
+    db.query_row(
+        "SELECT id FROM memory_consolidation_runs
+         WHERE scope_key=?1 AND status IN ('queued','running') LIMIT 1",
+        params![scope_key],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(BridgeError::from)
+}
+
+fn insert_run(
+    db: &Connection,
+    trigger: &str,
+    due_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<String, BridgeError> {
+    let id = Uuid::new_v4().to_string();
     db.execute(
         "INSERT INTO memory_consolidation_runs(
-            id, scope_key, session_id, status, due_at, created_at, updated_at
-         ) VALUES(?1,?2,?3,'queued',?4,?5,?5)",
-        params![
-            Uuid::new_v4().to_string(),
-            ACCOUNT_MEMORY_SCOPE,
-            session_id,
-            due_at,
-            now
-        ],
+            id, scope_key, session_id, status, due_at, trigger, created_at, updated_at
+         ) VALUES(?1,?2,NULL,'queued',?3,?4,?5,?5)",
+        params![id, ACCOUNT_MEMORY_SCOPE, due_at.to_rfc3339(), trigger, now.to_rfc3339()],
     )?;
+    Ok(id)
+}
+
+/// The nightly cadence, asked once per maintenance tick with the local clock.
+///
+/// Queues a dream due at once when nightly cleanup is on, a memory model
+/// resolves, nothing is open, the clock says so ([`automatic_dream_due`]) and
+/// something changed since the last dream. Every check is a read, so a tick
+/// that finds nothing to do writes nothing.
+pub fn enqueue_nightly<Tz: TimeZone>(
+    db: &Connection,
+    now: &DateTime<Tz>,
+    memory: &MemoryModelSettings,
+) -> Result<bool, BridgeError> {
+    let current = settings(db, ACCOUNT_MEMORY_SCOPE)?;
+    if !current.enabled() || memory.resolved.is_none() || open_run(db, ACCOUNT_MEMORY_SCOPE)?.is_some() {
+        return Ok(false);
+    }
+    let last = last_dream(db, ACCOUNT_MEMORY_SCOPE)?.map(|last| last.started);
+    if !automatic_dream_due(now, current.dream_hour, last) {
+        return Ok(false);
+    }
+    if !changed_since_last_dream(db, ACCOUNT_MEMORY_SCOPE)? {
+        return Ok(false);
+    }
+    let now = now.with_timezone(&Utc);
+    insert_run(db, TRIGGER_NIGHTLY, now, now)?;
     Ok(true)
+}
+
+/// "Dream now": a run due at once, whatever the hour, the floor, the changes
+/// or the mode, because the user asked for it. A run already queued or running
+/// is returned rather than joined by a second. The second value says which.
+pub fn start_dream(
+    db: &Connection,
+    now: DateTime<Utc>,
+    memory: &MemoryModelSettings,
+) -> Result<(String, bool), BridgeError> {
+    if memory.resolved.is_none() {
+        return Err(BridgeError::Invalid(
+            "No memory model is available to dream on. Choose one under Memory model.".into(),
+        ));
+    }
+    if let Some(open) = open_run(db, ACCOUNT_MEMORY_SCOPE)? {
+        return Ok((open, true));
+    }
+    Ok((insert_run(db, TRIGGER_MANUAL, now, now)?, false))
 }
 
 /// Reaching the budget schedules a run rather than blocking one.
@@ -399,29 +552,21 @@ pub fn enqueue_when_full(
     if held_records(db, ACCOUNT_MEMORY_SCOPE)? < current.max_records {
         return Ok(false);
     }
-    let open: Option<i64> = db
-        .query_row(
-            "SELECT 1 FROM memory_consolidation_runs
-             WHERE scope_key=?1 AND status IN ('queued','running') LIMIT 1",
-            params![ACCOUNT_MEMORY_SCOPE],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if open.is_some() {
+    if open_run(db, ACCOUNT_MEMORY_SCOPE)?.is_some() {
         return Ok(false);
     }
-    let due_at = (now + Duration::seconds(current.debounce_seconds)).to_rfc3339();
-    db.execute(
-        "INSERT INTO memory_consolidation_runs(
-            id, scope_key, session_id, status, due_at, created_at, updated_at
-         ) VALUES(?1,?2,NULL,'queued',?3,?4,?4)",
-        params![
-            Uuid::new_v4().to_string(),
-            ACCOUNT_MEMORY_SCOPE,
-            due_at,
-            now.to_rfc3339()
-        ],
-    )?;
+    // A full scope is a reason to dream before the night, not to dream every
+    // debounce: the floor and the change check hold here too, so a scope that
+    // stays full and unchanged after a dream is not read again and again.
+    if let Some(last) = last_dream(db, ACCOUNT_MEMORY_SCOPE)? {
+        if now - last.started < Duration::hours(DREAM_FLOOR_HOURS) {
+            return Ok(false);
+        }
+    }
+    if !changed_since_last_dream(db, ACCOUNT_MEMORY_SCOPE)? {
+        return Ok(false);
+    }
+    insert_run(db, TRIGGER_FULL, now + Duration::seconds(current.debounce_seconds), now)?;
     Ok(true)
 }
 
@@ -429,8 +574,8 @@ pub fn enqueue_when_full(
 pub struct ClaimedConsolidation {
     pub run_id: String,
     pub scope_key: String,
-    /// The turn that scheduled the run, absent when reaching the budget did.
-    pub session_id: Option<String>,
+    /// `nightly`, `manual` or `full`; `turn` for a run queued before 103.
+    pub trigger: String,
     pub lease_owner: String,
     pub harness: String,
     /// `None` runs the harness on its default model.
@@ -440,10 +585,10 @@ pub struct ClaimedConsolidation {
 /// One due run, leased.
 ///
 /// Two gates settle a run instead of executing it, and neither is a failure nor
-/// a model call: a scope that has since turned consolidation off, because off
-/// means off including for work already queued, and no memory model to run
-/// on. A full scope is deliberately not one of them — see
-/// [`enqueue_when_full`].
+/// a model call: a scope that has since turned nightly cleanup off, because
+/// off means off including for work already queued (but not for "Dream now",
+/// which the user asked for by hand), and no memory model to run on. A full
+/// scope is deliberately not one of them — see [`enqueue_when_full`].
 pub fn claim_due(
     db: &Connection,
     now: DateTime<Utc>,
@@ -452,7 +597,7 @@ pub fn claim_due(
     loop {
         let candidate: Option<(String, String, Option<String>)> = db
             .query_row(
-                "SELECT id, scope_key, session_id FROM memory_consolidation_runs
+                "SELECT id, scope_key, trigger FROM memory_consolidation_runs
                  WHERE (status='queued' AND due_at <= ?1)
                     OR (status='running' AND (lease_expires_at IS NULL OR lease_expires_at < ?1))
                  ORDER BY due_at, created_at LIMIT 1",
@@ -460,11 +605,12 @@ pub fn claim_due(
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
-        let Some((run_id, scope_key, session_id)) = candidate else {
+        let Some((run_id, scope_key, trigger)) = candidate else {
             return Ok(None);
         };
+        let trigger = trigger.unwrap_or_else(|| TRIGGER_NIGHTLY.to_string());
         let current = settings(db, &scope_key)?;
-        if !current.enabled() {
+        if !current.enabled() && trigger != TRIGGER_MANUAL {
             settle_unclaimed(db, &run_id, STATUS_CANCELLED, "consolidation_disabled", now)?;
             continue;
         }
@@ -487,7 +633,7 @@ pub fn claim_due(
         return Ok(Some(ClaimedConsolidation {
             run_id,
             scope_key,
-            session_id,
+            trigger,
             lease_owner,
             harness,
             model,
@@ -1511,7 +1657,7 @@ mod tests {
 
         let due = start + Duration::seconds(MIN_DEBOUNCE_SECONDS + 1);
         let claimed = claim_due(&db, due, &memory(&db)).unwrap().expect("a full scope is claimable");
-        assert_eq!(claimed.session_id, None, "no turn stands behind a capacity run");
+        assert_eq!(claimed.trigger, TRIGGER_FULL, "a capacity run says what queued it");
         assert!(settle(
             &db,
             &claimed.run_id,
@@ -1552,7 +1698,7 @@ mod tests {
         pin(&db, "One");
         pin(&db, "Two");
         let start = Utc::now();
-        assert!(enqueue_after_turn(&db, "s1", start).unwrap());
+        insert_run(&db, TRIGGER_NIGHTLY, start, start).unwrap();
         update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_OFF, None, None, None)
             .unwrap();
         let due = start + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
@@ -1569,7 +1715,7 @@ mod tests {
         // A profile that went missing under a propose-mode scope is a gap
         // rather than a decision, and it stops the run for its own reason.
         propose_mode(&db);
-        assert!(enqueue_after_turn(&db, "s1", due).unwrap());
+        insert_run(&db, TRIGGER_NIGHTLY, due, due).unwrap();
         crate::memory_model::set(&db, None, None).unwrap();
         let later = due + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
         assert!(claim_due(&db, later, &memory(&db)).unwrap().is_none());
@@ -1583,56 +1729,6 @@ mod tests {
     }
 
     #[test]
-    fn a_new_turn_replaces_the_pending_run_rather_than_queueing_another() {
-        let (_dir, db) = consolidation_db();
-        insert_chat(&db, "s1", "direct");
-        insert_chat(&db, "s2", "direct");
-        propose_mode(&db);
-        let start = Utc::now();
-        assert!(enqueue_after_turn(&db, "s1", start).unwrap());
-        let second_turn = start + Duration::seconds(60);
-        assert!(enqueue_after_turn(&db, "s2", second_turn).unwrap());
-        let queued: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM memory_consolidation_runs WHERE status='queued'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(queued, 1, "one pending run per scope");
-
-        let first_window = start + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
-        assert!(
-            claim_due(&db, first_window, &memory(&db)).unwrap().is_none(),
-            "the later turn pushed the run out of the first window"
-        );
-        let second_window = second_turn + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
-        let claimed = claim_due(&db, second_window, &memory(&db)).unwrap().unwrap();
-        assert_eq!(
-            claimed.session_id.as_deref(),
-            Some("s2"),
-            "the pending run follows the newest turn"
-        );
-    }
-
-    #[test]
-    fn hidden_session_kinds_and_an_off_scope_enqueue_nothing() {
-        let (_dir, db) = consolidation_db();
-        insert_chat(&db, "s1", "direct");
-        let now = Utc::now();
-        assert!(!enqueue_after_turn(&db, "s1", now).unwrap(), "off means nothing is queued");
-        propose_mode(&db);
-        insert_chat(&db, "b1", "briefing");
-        insert_chat(&db, "c1", CONSOLIDATION_SESSION_KIND);
-        insert_chat(&db, "w1", "worker");
-        assert!(!enqueue_after_turn(&db, "b1", now).unwrap());
-        assert!(!enqueue_after_turn(&db, "c1", now).unwrap());
-        assert!(!enqueue_after_turn(&db, "w1", now).unwrap());
-        assert!(!enqueue_after_turn(&db, "missing", now).unwrap());
-        assert!(enqueue_after_turn(&db, "s1", now).unwrap());
-    }
-
-    #[test]
     fn a_run_is_leased_settled_once_and_its_spend_observed() {
         let (_dir, db) = consolidation_db();
         insert_chat(&db, "s1", "direct");
@@ -1640,11 +1736,11 @@ mod tests {
         pin(&db, "Something to consolidate");
         pin(&db, "Something else to consolidate");
         let start = Utc::now();
-        assert!(enqueue_after_turn(&db, "s1", start).unwrap());
         let due = start + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
+        insert_run(&db, TRIGGER_FULL, due, start).unwrap();
         assert!(
             claim_due(&db, due - Duration::seconds(DEFAULT_DEBOUNCE_SECONDS), &memory(&db)).unwrap().is_none(),
-            "a run before its debounce window is not due"
+            "a run before its due time is not claimed"
         );
         let claimed = claim_due(&db, due, &memory(&db)).unwrap().unwrap();
         assert_eq!(claimed.harness, "claude");
@@ -1715,8 +1811,8 @@ mod tests {
         pin(&db, "One");
         pin(&db, "Two");
         let start = Utc::now();
-        assert!(enqueue_after_turn(&db, "s1", start).unwrap());
         let due = start + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
+        insert_run(&db, TRIGGER_NIGHTLY, start, start).unwrap();
         let first = claim_due(&db, due, &memory(&db)).unwrap().unwrap();
         let later = due + Duration::minutes(LEASE_MINUTES + 1);
         let second = claim_due(&db, later, &memory(&db)).unwrap().unwrap();
@@ -2013,7 +2109,7 @@ mod tests {
         insert_chat(&db, "s1", "direct");
         update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, None, None, None).unwrap();
         let start = Utc::now();
-        assert!(enqueue_after_turn(&db, "s1", start).unwrap());
+        insert_run(&db, TRIGGER_NIGHTLY, start, start).unwrap();
         let due = start + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
         // No pin and no new-chat default: what a new chat would start on
         // answers, with no model id, so the harness runs its default.
@@ -2025,9 +2121,171 @@ mod tests {
         insert_chat(&db, "s1", "direct");
         update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, None, None, None).unwrap();
         crate::memory_model::set(&db, Some("claude"), Some("claude-haiku-5-5")).unwrap();
-        assert!(enqueue_after_turn(&db, "s1", start).unwrap());
+        insert_run(&db, TRIGGER_NIGHTLY, start, start).unwrap();
         let claimed = claim_due(&db, due, &memory(&db)).unwrap().unwrap();
         assert_eq!(claimed.model.as_deref(), Some("claude-haiku-5-5"), "a pin applies to the next run");
+    }
+
+    fn local(text: &str) -> DateTime<chrono::FixedOffset> {
+        DateTime::parse_from_rfc3339(text).unwrap()
+    }
+
+    fn utc(text: &str) -> DateTime<Utc> {
+        local(text).with_timezone(&Utc)
+    }
+
+    fn runs(db: &Connection) -> Vec<(String, String)> {
+        db.prepare("SELECT trigger, status FROM memory_consolidation_runs ORDER BY created_at")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// A settled dream that started at `started`, finished a minute later.
+    fn dreamed(db: &Connection, trigger: &str, started: DateTime<Utc>) {
+        let id = insert_run(db, trigger, started, started).unwrap();
+        db.execute(
+            "UPDATE memory_consolidation_runs SET status='completed', updated_at=?2 WHERE id=?1",
+            params![id, (started + Duration::minutes(1)).to_rfc3339()],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_dream_is_due_at_the_dream_hour_and_not_a_minute_before() {
+        // Last night's dream ran at 03:00:30 in UTC+05:30.
+        let last = Some(utc("2026-11-25T03:00:30+05:30"));
+        assert!(!automatic_dream_due(&local("2026-11-26T02:59:00+05:30"), 3, last));
+        assert!(automatic_dream_due(&local("2026-11-26T03:00:00+05:30"), 3, last));
+        let at_five = Some(utc("2026-11-25T05:00:30+05:30"));
+        assert!(!automatic_dream_due(&local("2026-11-26T04:59:00+05:30"), 5, at_five), "the hour is a setting");
+        assert!(automatic_dream_due(&local("2026-11-26T05:00:00+05:30"), 5, at_five));
+        assert_eq!(
+            dream_slot(&local("2026-11-26T02:59:00+05:30"), 3),
+            utc("2026-11-25T03:00:00+05:30"),
+            "before the hour, the slot is last night's"
+        );
+        assert!(automatic_dream_due(&local("2026-11-26T12:00:00+05:30"), 3, None), "never dreamed is due");
+    }
+
+    #[test]
+    fn a_missed_night_dreams_on_the_first_tick_after_launch() {
+        // The Mac slept through last night's 03:00; the app opens at 09:00.
+        let last = Some(utc("2026-11-25T03:01:00+00:00"));
+        assert!(automatic_dream_due(&local("2026-11-27T09:00:00+00:00"), 3, last));
+        let (_dir, db) = consolidation_db();
+        pin_memory_model(&db);
+        pin(&db, "Something to look at");
+        dreamed(&db, TRIGGER_NIGHTLY, utc("2026-11-25T03:01:00+00:00"));
+        db.execute("UPDATE memory_records SET updated_at='2026-11-26T08:00:00+00:00'", []).unwrap();
+        assert!(enqueue_nightly(&db, &local("2026-11-27T09:00:00+00:00"), &memory(&db)).unwrap());
+        assert_eq!(runs(&db).last().unwrap(), &(TRIGGER_NIGHTLY.to_string(), "queued".to_string()));
+    }
+
+    #[test]
+    fn no_automatic_dream_within_twenty_hours_of_the_last() {
+        let manual = Some(utc("2026-11-25T10:00:00+00:00"));
+        assert!(!automatic_dream_due(&local("2026-11-26T03:00:00+00:00"), 3, manual), "17 hours later");
+        assert!(automatic_dream_due(&local("2026-11-26T06:00:00+00:00"), 3, manual), "20 hours later");
+        let just_now = Some(utc("2026-11-26T02:00:00+00:00"));
+        assert!(!automatic_dream_due(&local("2026-11-26T21:00:00+00:00"), 3, just_now), "19 hours later, past the slot");
+    }
+
+    #[test]
+    fn nothing_changed_since_the_last_dream_skips_it() {
+        let (_dir, db) = consolidation_db();
+        pin_memory_model(&db);
+        let night = local("2026-11-27T03:05:00+00:00");
+        assert!(!enqueue_nightly(&db, &night, &memory(&db)).unwrap(), "an empty scope has nothing to dream about");
+        let record = pin(&db, "Prefers bun");
+        db.execute(
+            "UPDATE memory_records SET updated_at='2026-11-20T00:00:00+00:00' WHERE id=?1",
+            params![record.id],
+        )
+        .unwrap();
+        dreamed(&db, TRIGGER_NIGHTLY, utc("2026-11-26T03:00:00+00:00"));
+        assert!(!changed_since_last_dream(&db, ACCOUNT_MEMORY_SCOPE).unwrap());
+        assert!(!enqueue_nightly(&db, &night, &memory(&db)).unwrap(), "nothing changed, so no dream");
+        assert_eq!(runs(&db).len(), 1, "a skipped night writes nothing");
+
+        db.execute(
+            "INSERT INTO memory_retention_sweeps(id, scope_key, kind, record_count, record_ids, at)
+             VALUES('s', ?1, 'unused_retired', 1, '[]', '2026-11-26T12:00:00+00:00')",
+            params![ACCOUNT_MEMORY_SCOPE],
+        )
+        .unwrap();
+        assert!(changed_since_last_dream(&db, ACCOUNT_MEMORY_SCOPE).unwrap(), "a retention sweep is a change");
+        assert!(enqueue_nightly(&db, &night, &memory(&db)).unwrap());
+        assert!(!enqueue_nightly(&db, &night, &memory(&db)).unwrap(), "one open dream at a time");
+    }
+
+    #[test]
+    fn a_full_scope_obeys_the_floor_and_the_change_check() {
+        let (_dir, db) = consolidation_db();
+        pin_memory_model(&db);
+        update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, Some(1), None, None).unwrap();
+        pin(&db, "The one memory");
+        let dream = utc("2026-11-26T03:00:00+00:00");
+        dreamed(&db, TRIGGER_NIGHTLY, dream);
+        db.execute("UPDATE memory_records SET updated_at='2026-11-26T04:00:00+00:00'", []).unwrap();
+        assert!(!enqueue_when_full(&db, dream + Duration::hours(19), &memory(&db)).unwrap(), "inside the floor");
+        assert!(enqueue_when_full(&db, dream + Duration::hours(21), &memory(&db)).unwrap(), "a change, past the floor");
+
+        let (_dir, db) = consolidation_db();
+        pin_memory_model(&db);
+        update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, Some(1), None, None).unwrap();
+        let record = pin(&db, "The one memory");
+        db.execute("UPDATE memory_records SET updated_at='2026-11-25T00:00:00+00:00' WHERE id=?1", params![record.id]).unwrap();
+        dreamed(&db, TRIGGER_NIGHTLY, dream);
+        assert!(
+            !enqueue_when_full(&db, dream + Duration::hours(30), &memory(&db)).unwrap(),
+            "full but unchanged since the last dream: reading it again would decide the same"
+        );
+    }
+
+    #[test]
+    fn dream_now_queues_once_and_bypasses_the_cadence() {
+        let (_dir, db) = consolidation_db();
+        let now = Utc::now();
+        assert!(start_dream(&db, now, &memory(&db)).is_err(), "no memory model, no dream");
+        pin_memory_model(&db);
+        update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_OFF, None, None, None).unwrap();
+        dreamed(&db, TRIGGER_NIGHTLY, now - Duration::hours(1));
+        let (first, already) = start_dream(&db, now, &memory(&db)).unwrap();
+        assert!(!already);
+        let (second, already) = start_dream(&db, now, &memory(&db)).unwrap();
+        assert!(already, "a second click returns the open dream");
+        assert_eq!(first, second);
+        let claimed = claim_due(&db, now, &memory(&db)).unwrap().expect("off does not cancel a dream asked for by hand");
+        assert_eq!(claimed.trigger, TRIGGER_MANUAL);
+    }
+
+    #[test]
+    fn a_finished_turn_no_longer_queues_consolidation() {
+        let call = format!("{}{}", "memory_consolidation::", "enqueue_after_turn");
+        assert_eq!(include_str!("live_turn.rs").matches(&call).count(), 0);
+        let definition = format!("{}{}", "pub fn ", "enqueue_after_turn");
+        assert_eq!(include_str!("memory_consolidation.rs").matches(&definition).count(), 0);
+    }
+
+    #[test]
+    fn nightly_cleanup_is_on_by_default_and_off_cancels_automatic_runs_only() {
+        let (_dir, db) = consolidation_db();
+        let defaults = settings(&db, ACCOUNT_MEMORY_SCOPE).unwrap();
+        assert_eq!(defaults.mode, MODE_PROPOSE);
+        assert_eq!(defaults.dream_hour, DEFAULT_DREAM_HOUR);
+        assert!(update_dream_hour(&db, 24).is_err());
+        assert_eq!(update_dream_hour(&db, 5).unwrap().dream_hour, 5);
+        assert_eq!(update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_OFF, None, None, None).unwrap().dream_hour, 5, "the hour survives a mode change");
+
+        pin_memory_model(&db);
+        let now = Utc::now();
+        insert_run(&db, TRIGGER_NIGHTLY, now, now).unwrap();
+        assert!(claim_due(&db, now, &memory(&db)).unwrap().is_none());
+        assert_eq!(last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().unwrap().detail.as_deref(), Some("consolidation_disabled"));
+        assert!(!enqueue_nightly(&db, &now, &memory(&db)).unwrap(), "off queues nothing");
     }
 
     #[test]

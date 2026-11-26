@@ -38,10 +38,10 @@ const MAX_WALL_SECONDS: i64 = 240;
 const POLL_SECONDS: u64 = 60;
 
 /// The cadence loop, started once per host beside the other maintenance
-/// threads. Every tick sweeps expiries and stale proposals, schedules a run for a scope that has
-/// reached its budget, and then claims at most one due run — so the
-/// deterministic half keeps working in a scope that never turns the bounded
-/// half on, and a full scope that nobody is talking to still gets consolidated.
+/// threads. Every tick sweeps expiries and stale proposals, queues the nightly
+/// dream once its hour has passed (or a dream for a scope that reached its
+/// budget), and then claims at most one due run — so the deterministic half
+/// keeps working in a scope that turns dreaming off.
 pub fn start_consolidation_maintenance(core: Arc<BridgeCore>) {
     std::thread::spawn(move || loop {
         std::thread::sleep(StdDuration::from_secs(POLL_SECONDS));
@@ -62,7 +62,13 @@ pub fn start_consolidation_maintenance(core: Arc<BridgeCore>) {
         let claimed = {
             let db = core.db.lock().unwrap();
             crate::memory_model::resolve(&db, &core.adapter_registry).and_then(|memory| {
-                let _ = memory_consolidation::enqueue_when_full(&db, now, &memory);
+                // The local clock decides the night; a failed check is logged
+                // and the tick still claims whatever is already due.
+                if let Err(error) = memory_consolidation::enqueue_nightly(&db, &chrono::Local::now(), &memory)
+                    .and_then(|_| memory_consolidation::enqueue_when_full(&db, now, &memory))
+                {
+                    eprintln!("memory dream: scheduling failed: {error}");
+                }
                 memory_consolidation::claim_due(&db, now, &memory)
             })
         };
