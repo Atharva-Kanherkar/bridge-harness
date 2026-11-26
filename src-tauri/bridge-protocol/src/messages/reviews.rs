@@ -422,8 +422,9 @@ pub struct ReviewJobSettings {
     /// Review checkouts that may exist at once, 1 to 32. A job waits in the
     /// queue while they are all in use.
     pub max_review_worktrees: u8,
-    /// Whether a review may run on two harnesses at once. Off (the default),
-    /// a review runs on one.
+    /// Whether the default reviewers (and so auto-review) may be a pair. Off
+    /// (the default), they are one harness. A review asked for with two
+    /// harnesses (the Review menu's Second opinion) runs on both either way.
     pub second_opinion: bool,
     /// Review pull requests on their own when they open or get new commits.
     /// Off by default.

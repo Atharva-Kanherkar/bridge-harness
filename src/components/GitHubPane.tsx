@@ -29,6 +29,7 @@ import {
   Search,
   Sparkles,
   SquareArrowOutUpRight,
+  Users,
   Tag,
   ThumbsUp,
   TriangleAlert,
@@ -1188,7 +1189,7 @@ type PendingAction = {
 
 /** The harnesses a review job can run on. Model, effort and instructions come
  * from Settings → Pull request reviewer, so the user only picks the agent
- * here; with Second opinion on, they pick two. Cursor Bugbot is not a local
+ * here, or two of them with Second opinion. Cursor Bugbot is not a local
  * job: it posts `cursor review` on the PR. */
 const REVIEW_HARNESSES: ReadonlyArray<{ id: string; label: string }> = [
   { id: "claude", label: "Claude" },
@@ -1196,6 +1197,18 @@ const REVIEW_HARNESSES: ReadonlyArray<{ id: string; label: string }> = [
   { id: "opencode", label: "OpenCode" },
 ];
 const BUGBOT = { id: "bugbot", label: "Cursor Bugbot", note: "reviews on GitHub" };
+const harnessLabel = (id: string) => REVIEW_HARNESSES.find(choice => choice.id === id)?.label ?? id;
+
+/** The pair Second opinion starts with: the stored default reviewers, topped
+ *  up in Claude, Codex, OpenCode order to two different harnesses. */
+function secondOpinionPair(defaults: readonly string[] = []): string[] {
+  const pair: string[] = [];
+  for (const id of [...defaults, ...REVIEW_HARNESSES.map(choice => choice.id)]) {
+    if (pair.length === 2) break;
+    if (REVIEW_HARNESSES.some(choice => choice.id === id) && !pair.includes(id)) pair.push(id);
+  }
+  return pair;
+}
 
 const PILL_BASE = "inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-caption font-medium capitalize shadow-xs";
 const PILL_MERGED = "border-merged/45 bg-merged/15 text-merged";
@@ -1377,19 +1390,22 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   const reviews = usePullRequestReviews(workspaceId, number, startedJob);
   // Bumped to bring the Reviews section into view from the status line.
   const [revealReviews, setRevealReviews] = useState(0);
-  const [secondOpinion, setSecondOpinion] = useState(false);
+  // Second opinion: two harnesses review the PR as one job, and the draft
+  // merges what they found. The pair starts from the stored defaults.
+  const [defaultReviewers, setDefaultReviewers] = useState<string[]>([]);
+  const [pairOpen, setPairOpen] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
   // Picks belong to one opening of the picker on one PR.
-  useEffect(() => { if (!reviewOpen) setPicked([]); }, [reviewOpen]);
-  useEffect(() => { setPicked([]); }, [number]);
+  useEffect(() => { if (!reviewOpen) { setPairOpen(false); setPicked([]); } }, [reviewOpen]);
+  useEffect(() => { setPairOpen(false); setPicked([]); }, [number]);
   // What each harness reviews with, set in the Reviews app's Settings.
   const [reviewerModels, setReviewerModels] = useState<Record<string, { model?: string | null; effort?: string | null }>>({});
   useEffect(() => {
     if (!reviewOpen) return;
     let active = true;
     void bridgeApi.getReviewJobSettings()
-      .then(settings => { if (active) setSecondOpinion(settings.secondOpinion === true); })
-      .catch(() => { if (active) setSecondOpinion(false); });
+      .then(settings => { if (active) setDefaultReviewers(settings.defaultHarnesses ?? []); })
+      .catch(() => { if (active) setDefaultReviewers([]); });
     void bridgeApi.reviewerSettings()
       .then(result => { if (active) setReviewerModels(result.settings.harnesses ?? {}); })
       .catch(() => { if (active) setReviewerModels({}); });
@@ -1448,7 +1464,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
         // A start that found a review already under way, or a draft waiting,
         // gets that job back: say so rather than look like nothing happened.
         if (existing?.id === result.job.id || reviews.jobs.some(job => job.id === result.job.id)) {
-          const who = result.job.harnesses.map(id => REVIEW_HARNESSES.find(choice => choice.id === id)?.label ?? id).join(" and ");
+          const who = result.job.harnesses.map(harnessLabel).join(" and ");
           setReviewNotice({ tone: "info", text: result.job.status === "drafted" ? `${who} already has a draft waiting for you on this pull request.` : `${who} ${result.job.harnesses.length > 1 ? "are" : "is"} already reviewing this pull request.` });
         }
       }
@@ -1750,32 +1766,43 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
           />
           {summary.state === "open" && reviewOpen && <div className="animate-page-mount mt-2 grid gap-1 rounded-lg border border-border bg-card p-1.5" role="group" aria-label="Review harness">
             <p className="px-2 pb-0.5 pt-1 text-caption font-semibold text-muted-foreground">RUN REVIEW WITH</p>
-            {secondOpinion && <p className="px-2 pb-0.5 text-caption text-muted-foreground">Pick two for a second opinion.</p>}
             {REVIEW_HARNESSES.map(choice => {
-              const checked = picked.includes(choice.id);
-              return secondOpinion
-                ? <RowButton key={choice.id} role="checkbox" aria-checked={checked} disabled={reviewBusy || (!checked && picked.length >= 2)} onClick={() => setPicked(current => checked ? current.filter(id => id !== choice.id) : [...current, choice.id])}>
-                    <span aria-hidden="true" className={cn("grid size-3 place-items-center rounded-sm border border-border", checked && "border-primary bg-primary text-primary-foreground")}>{checked && <Check size={9} />}</span>
-                    <span className="min-w-0 flex-1 truncate">{choice.label} <span className="font-mono text-micro text-muted-foreground" data-reviewer-model={choice.id}>{modelLine(choice.id)}</span></span>
-                  </RowButton>
-                : (() => {
-                    const inUse = activeJobFor(reviews.jobs, [choice.id]);
-                    return <RowButton key={choice.id} disabled={reviewBusy || !!inUse} onClick={() => void startReview([choice.id])}>
-                      {inUse && inUse.status !== "drafted"
-                        ? <SkeletonDot className="size-[11px]" />
-                        : <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />}
-                      <span className="min-w-0 flex-1 truncate">{choice.label} <span className="font-mono text-micro text-muted-foreground" data-reviewer-model={choice.id}>{modelLine(choice.id)}</span></span>
-                      {inUse && <span className="shrink-0 text-micro text-muted-foreground">{inUse.status === "drafted" ? "Draft waiting" : "Reviewing"}</span>}
-                    </RowButton>;
-                  })();
+              const inUse = activeJobFor(reviews.jobs, [choice.id]);
+              return <RowButton key={choice.id} disabled={reviewBusy || !!inUse} onClick={() => void startReview([choice.id])}>
+                {inUse && inUse.status !== "drafted"
+                  ? <SkeletonDot className="size-[11px]" />
+                  : <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />}
+                <span className="min-w-0 flex-1 truncate">{choice.label} <span className="font-mono text-micro text-muted-foreground" data-reviewer-model={choice.id}>{modelLine(choice.id)}</span></span>
+                {inUse && <span className="shrink-0 text-micro text-muted-foreground">{inUse.status === "drafted" ? "Draft waiting" : "Reviewing"}</span>}
+              </RowButton>;
             })}
-            {secondOpinion && (() => {
-              const inUse = picked.length > 0 ? activeJobFor(reviews.jobs, picked) : undefined;
-              const names = picked.map(id => REVIEW_HARNESSES.find(choice => choice.id === id)?.label ?? id).join(" and ");
-              return <Button size="xs" disabled={reviewBusy || picked.length === 0 || !!inUse} loading={reviewBusy} onClick={() => void startReview(picked)} className="mx-1 my-0.5">
-                {picked.length === 0 ? "Pick a harness" : inUse ? (inUse.status === "drafted" ? `A draft from ${names} is waiting` : `${names} already reviewing`) : `Review with ${names}`}
-              </Button>;
-            })()}
+            <RowButton aria-expanded={pairOpen} disabled={reviewBusy} onClick={() => {
+              if (pairOpen) { setPairOpen(false); return; }
+              setPicked(secondOpinionPair(defaultReviewers));
+              setPairOpen(true);
+            }}>
+              <Users size={11} className="text-muted-foreground" aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate">Second opinion</span>
+              <span className="shrink-0 text-micro text-muted-foreground">{secondOpinionPair(defaultReviewers).map(harnessLabel).join(" + ")}</span>
+              <ChevronRight size={11} aria-hidden="true" className={cn("shrink-0 text-muted-foreground transition-transform duration-200", pairOpen && "rotate-90")} />
+            </RowButton>
+            {pairOpen && <div className="animate-page-mount ml-3 grid gap-1 border-l border-border pl-1.5" role="group" aria-label="Second opinion harnesses">
+              <p className="px-2 pb-0.5 text-caption text-muted-foreground">Two harnesses review together. Findings both report are marked Both reviewers.</p>
+              {REVIEW_HARNESSES.map(choice => {
+                const checked = picked.includes(choice.id);
+                return <RowButton key={choice.id} role="checkbox" aria-checked={checked} disabled={reviewBusy || (!checked && picked.length >= 2)} onClick={() => setPicked(current => checked ? current.filter(id => id !== choice.id) : [...current, choice.id])}>
+                  <span aria-hidden="true" className={cn("grid size-3 place-items-center rounded-sm border border-border", checked && "border-primary bg-primary text-primary-foreground")}>{checked && <Check size={9} />}</span>
+                  <span className="min-w-0 flex-1 truncate">{choice.label}</span>
+                </RowButton>;
+              })}
+              {(() => {
+                const inUse = picked.length === 2 ? activeJobFor(reviews.jobs, picked) : undefined;
+                const names = picked.map(harnessLabel).join(" and ");
+                return <Button size="xs" disabled={reviewBusy || picked.length !== 2 || !!inUse} loading={reviewBusy} onClick={() => void startReview(picked)} className="mx-1 my-0.5">
+                  {picked.length !== 2 ? "Pick two harnesses" : inUse ? (inUse.status === "drafted" ? `A draft from ${names} is waiting` : `${names} already reviewing`) : `Review with ${names}`}
+                </Button>;
+              })()}
+            </div>}
             <RowButton disabled={reviewBusy} onClick={() => void startReview([BUGBOT.id])}>
               <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />
               <span className="min-w-0 flex-1 truncate">{BUGBOT.label}</span>
