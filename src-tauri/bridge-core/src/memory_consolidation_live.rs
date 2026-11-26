@@ -1,13 +1,13 @@
-//! The production consolidation run: a hidden bounded session on the pinned
-//! harness and model.
+//! The production dream: one hidden bounded session per batch on the memory
+//! model.
 //!
 //! Same shape as the live extraction and evaluation runs, and bounded the same
-//! way: the session is `kind = 'consolidation'` so no surface lists it; the
+//! way: each session is `kind = 'consolidation'` so no surface lists it; the
 //! briefing policy is compiled with an empty scope so every tool call is
-//! denied; there is exactly one turn and no repair; and every exit is a settled
-//! run row with observed tokens and spend. The candidate list is assembled and
-//! the gate runs under short database locks — the model call itself holds none.
-//! The learning router is never consulted.
+//! denied; each batch is exactly one turn with no repair; and every exit is a
+//! settled run row with observed tokens, spend and the report. The plan is
+//! read and each answer gated under short database locks — a model call holds
+//! none. The learning router is never consulted.
 //!
 //! The expiry sweep runs on this thread rather than the model's, because it is
 //! deterministic and has to happen whether or not a scope ever configures a
@@ -28,9 +28,11 @@ use crate::adapters::{ShutdownReason, StartRequest};
 use crate::briefing_policy::BriefingRuntimePolicy;
 use crate::events::CoreEvent;
 use crate::memory_consolidation::{
-    self, ClaimedConsolidation, ConsolidationOutput, CONSOLIDATION_SESSION_KIND, STATUS_COMPLETED,
-    STATUS_FAILED,
+    self, ClaimedConsolidation, ConsolidationModel, ConsolidationOutput, CONSOLIDATION_SESSION_KIND,
+    STATUS_COMPLETED, STATUS_FAILED,
 };
+use crate::memory_dream::{self, DreamDb, DreamOutcome};
+use crate::BridgeError;
 use crate::memory_ledger;
 use crate::runtime::BridgeCore;
 
@@ -38,10 +40,10 @@ const MAX_WALL_SECONDS: i64 = 240;
 const POLL_SECONDS: u64 = 60;
 
 /// The cadence loop, started once per host beside the other maintenance
-/// threads. Every tick sweeps expiries and stale proposals, schedules a run for a scope that has
-/// reached its budget, and then claims at most one due run — so the
-/// deterministic half keeps working in a scope that never turns the bounded
-/// half on, and a full scope that nobody is talking to still gets consolidated.
+/// threads. Every tick sweeps expiries and stale proposals, queues the nightly
+/// dream once its hour has passed (or a dream for a scope that reached its
+/// budget), and then claims at most one due run — so the deterministic half
+/// keeps working in a scope that turns dreaming off.
 pub fn start_consolidation_maintenance(core: Arc<BridgeCore>) {
     std::thread::spawn(move || loop {
         std::thread::sleep(StdDuration::from_secs(POLL_SECONDS));
@@ -62,7 +64,13 @@ pub fn start_consolidation_maintenance(core: Arc<BridgeCore>) {
         let claimed = {
             let db = core.db.lock().unwrap();
             crate::memory_model::resolve(&db, &core.adapter_registry).and_then(|memory| {
-                let _ = memory_consolidation::enqueue_when_full(&db, now, &memory);
+                // The local clock decides the night; a failed check is logged
+                // and the tick still claims whatever is already due.
+                if let Err(error) = memory_consolidation::enqueue_nightly(&db, &chrono::Local::now(), &memory)
+                    .and_then(|_| memory_consolidation::enqueue_when_full(&db, now, &memory))
+                {
+                    eprintln!("memory dream: scheduling failed: {error}");
+                }
                 memory_consolidation::claim_due(&db, now, &memory)
             })
         };
@@ -72,72 +80,62 @@ pub fn start_consolidation_maintenance(core: Arc<BridgeCore>) {
     });
 }
 
+/// The core's store, locked only for each step of a dream.
+struct Locked<'a>(&'a Arc<BridgeCore>);
+
+impl DreamDb for Locked<'_> {
+    fn with<R>(&self, work: impl FnOnce(&rusqlite::Connection) -> R) -> R {
+        let db = self.0.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        work(&db)
+    }
+}
+
+/// One hidden bounded turn per batch on the memory model.
+struct LiveDream<'a> {
+    core: &'a Arc<BridgeCore>,
+    harness: &'a str,
+    model: Option<&'a str>,
+}
+
+impl ConsolidationModel for LiveDream<'_> {
+    fn consolidate(&mut self, prompt: &str) -> Result<ConsolidationOutput, BridgeError> {
+        one_bounded_turn(self.core, self.harness, self.model, prompt).map_err(BridgeError::Invalid)
+    }
+}
+
 pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedConsolidation) {
     let ClaimedConsolidation { run_id, scope_key, lease_owner, harness, model, .. } = claimed;
-
-    let prepared = {
-        let db = core.db.lock().unwrap();
-        memory_consolidation::settings(&db, &scope_key).and_then(|settings| {
-            memory_ledger::sweep_expired(&db, Utc::now())?;
-            Ok((
-                settings.allow_removal,
-                memory_consolidation::build_candidates(&db, &scope_key)?,
-            ))
-        })
+    let mut live = LiveDream { core, harness: &harness, model: model.as_deref() };
+    // The report is stored after every batch, which also renews the lease;
+    // a worker that lost its lease stops instead of writing over the next.
+    let outcome = memory_dream::drive(
+        &Locked(core),
+        &mut live,
+        &scope_key,
+        Utc::now(),
+        |db, report| {
+            let stored = serde_json::to_string(report)
+                .map_err(|error| BridgeError::Invalid(error.to_string()))
+                .and_then(|json| memory_consolidation::record_report(db, &run_id, &lease_owner, &json, Utc::now()));
+            stored.unwrap_or_else(|error| {
+                eprintln!("memory dream: the report was not stored: {error}");
+                false
+            })
+        },
+        || core.events.publish(CoreEvent::MemoryChanged { scope_key: scope_key.clone() }),
+    );
+    let finish = |status: &str, detail: &str, outcome: Option<&DreamOutcome>| {
+        settle(core, &run_id, &lease_owner, status, detail, &harness, model.as_deref(), outcome);
     };
-    let (allow_removal, candidates) = match prepared {
-        Ok((allow_removal, Some(candidates))) => (allow_removal, candidates),
-        Ok((_, None)) => {
-            settle(core, &run_id, &lease_owner, STATUS_COMPLETED, "no_candidates", &harness, model.as_deref(), None, None);
-            return;
+    match outcome {
+        Ok(outcome) if outcome.sha256.is_none() => finish(STATUS_COMPLETED, "no_candidates", None),
+        // Every batch answered with nothing the gate could read: a failure,
+        // not a quiet night.
+        Ok(outcome) if outcome.report.failed_batches == outcome.report.batches => {
+            finish(STATUS_FAILED, &outcome.report.detail(), Some(&outcome))
         }
-        Err(error) => {
-            settle(core, &run_id, &lease_owner, STATUS_FAILED, &error.to_string(), &harness, model.as_deref(), None, None);
-            return;
-        }
-    };
-
-    let prompt = memory_consolidation::compose_prompt(&candidates, allow_removal);
-    let output = match one_bounded_turn(core, &harness, model.as_deref(), &prompt) {
-        Ok(output) => output,
-        Err(detail) => {
-            settle(core, &run_id, &lease_owner, STATUS_FAILED, &detail, &harness, model.as_deref(), Some(&candidates.sha256), None);
-            return;
-        }
-    };
-
-    let report = {
-        let db = core.db.lock().unwrap();
-        memory_consolidation::gate_and_apply(&db, &scope_key, &output.text, Utc::now())
-    };
-    match report {
-        Ok(report) => {
-            if report.applied > 0 {
-                core.events.publish(CoreEvent::MemoryChanged { scope_key: scope_key.clone() });
-            }
-            settle(
-                core,
-                &run_id,
-                &lease_owner,
-                STATUS_COMPLETED,
-                &report.detail(),
-                &harness,
-                model.as_deref(),
-                Some(&candidates.sha256),
-                Some((&output, report.applied as i64, report.refused as i64)),
-            );
-        }
-        Err(error) => settle(
-            core,
-            &run_id,
-            &lease_owner,
-            STATUS_FAILED,
-            &error.to_string(),
-            &harness,
-            model.as_deref(),
-            Some(&candidates.sha256),
-            Some((&output, 0, 0)),
-        ),
+        Ok(outcome) => finish(STATUS_COMPLETED, &outcome.report.detail(), Some(&outcome)),
+        Err(error) => finish(STATUS_FAILED, &error.to_string(), None),
     }
 }
 
@@ -150,31 +148,44 @@ fn settle(
     detail: &str,
     harness: &str,
     model: Option<&str>,
-    prompt_digest: Option<&str>,
-    output: Option<(&ConsolidationOutput, i64, i64)>,
+    outcome: Option<&DreamOutcome>,
 ) {
-    let (tokens, spend, applied, refused) = match output {
-        Some((output, applied, refused)) => {
-            (output.observed_tokens, output.spend_microusd, applied, refused)
-        }
+    let (tokens, spend, applied, refused) = match outcome {
+        Some(outcome) => (
+            outcome.output.observed_tokens,
+            outcome.output.spend_microusd,
+            outcome.report.applied() as i64,
+            (outcome.report.refused_total() + outcome.report.invalid) as i64,
+        ),
         None => (0, 0, 0, 0),
     };
-    let db = core.db.lock().unwrap();
-    let _ = memory_consolidation::settle(
-        &db,
-        run_id,
-        lease_owner,
-        status,
-        Some(detail),
-        Some(harness),
-        model,
-        prompt_digest,
-        tokens,
-        spend,
-        applied,
-        refused,
-        Utc::now(),
-    );
+    let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let stored = outcome
+        .map(|outcome| {
+            serde_json::to_string(&outcome.report)
+                .map_err(|error| BridgeError::Invalid(error.to_string()))
+                .and_then(|json| memory_consolidation::record_report(&db, run_id, lease_owner, &json, Utc::now()))
+        })
+        .unwrap_or(Ok(true));
+    if let Err(error) = stored.and_then(|_| {
+        memory_consolidation::settle(
+            &db,
+            run_id,
+            lease_owner,
+            status,
+            Some(detail),
+            Some(harness),
+            model,
+            outcome.and_then(|outcome| outcome.sha256.as_deref()),
+            tokens,
+            spend,
+            applied,
+            refused,
+            Utc::now(),
+        )
+    }) {
+        eprintln!("memory dream: the run was not settled: {error}");
+    }
 }
 
 /// Spawn the hidden session, send the prompt as its one turn, and read the

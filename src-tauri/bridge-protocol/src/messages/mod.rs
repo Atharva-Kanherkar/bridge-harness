@@ -323,6 +323,10 @@ typed_methods![
     (GetRetentionSettings, _, MemoryRetentionSettings),
     (SetRetentionSettings, SetRetentionSettingsParams, MemoryRetentionSettings),
     (RestoreMemoryRecord, RestoreMemoryRecordParams, MemoryRecord),
+    (StartDream, _, MemoryDreamStarted),
+    (GetDreamReport, GetDreamReportParams, MemoryDreamReport),
+    (UndoDreamOperation, UndoDreamOperationParams, MemoryDreamUndoResult),
+    (UndoDream, UndoDreamParams, MemoryDreamUndoResult),
     // approvals
     (ResolveApproval, ResolveApprovalParams, InteractionResolutionResult),
     (ResolveQuestion, ResolveQuestionParams, InteractionResolutionResult),

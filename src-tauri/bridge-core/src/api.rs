@@ -2819,6 +2819,8 @@ fn consolidation_settings_wire(
     let (harness, model) = memory_model_mirror(core, db)?;
     let last_run = crate::memory_consolidation::last_run(db, &settings.scope_key)?.map(|run| {
         wire::MemoryConsolidationRun {
+            id: Some(run.id),
+            trigger: run.trigger,
             status: run.status,
             applied_count: run.applied_count,
             refused_count: run.refused_count,
@@ -2837,6 +2839,7 @@ fn consolidation_settings_wire(
         max_records: settings.max_records,
         allow_removal: settings.allow_removal,
         debounce_seconds: settings.debounce_seconds,
+        dream_hour: settings.dream_hour,
         held_records,
         last_run,
     })
@@ -2876,17 +2879,82 @@ pub fn update_consolidation_settings(
     max_records: Option<i64>,
     allow_removal: Option<bool>,
     debounce_seconds: Option<i64>,
+    dream_hour: Option<i64>,
 ) -> Result<wire::MemoryConsolidationSettings, BridgeError> {
-    let db = core.db.lock().unwrap();
-    let settings = crate::memory_consolidation::update_settings(
-        &db,
-        memory_ledger::account_memory_scope(),
-        mode,
-        max_records,
-        allow_removal,
-        debounce_seconds,
-    )?;
-    consolidation_settings_wire(core, &db, settings)
+    let wire = {
+        let db = lock_db(core);
+        // The hour is checked first, so a bad hour changes nothing at all.
+        if let Some(hour) = dream_hour {
+            if !(0..=23).contains(&hour) {
+                return Err(BridgeError::Invalid(format!("The dream hour is a local hour from 0 to 23, not {hour}.")));
+            }
+        }
+        let mut settings = crate::memory_consolidation::update_settings(
+            &db,
+            memory_ledger::account_memory_scope(),
+            mode,
+            max_records,
+            allow_removal,
+            debounce_seconds,
+        )?;
+        if let Some(hour) = dream_hour {
+            settings = crate::memory_consolidation::update_dream_hour(&db, hour)?;
+        }
+        consolidation_settings_wire(core, &db, settings)?
+    };
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: memory_ledger::account_memory_scope().to_string(),
+    });
+    Ok(wire)
+}
+
+/// "Dream now": queue a dream due at once on the memory model. The host's
+/// maintenance loop runs it on its next tick.
+pub fn start_dream(core: &Arc<BridgeCore>) -> Result<wire::MemoryDreamStarted, BridgeError> {
+    let started = {
+        let db = lock_db(core);
+        let memory = crate::memory_model::resolve(&db, &core.adapter_registry)?;
+        crate::memory_consolidation::start_dream(&db, chrono::Utc::now(), &memory)?
+    };
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: memory_ledger::account_memory_scope().to_string(),
+    });
+    Ok(wire::MemoryDreamStarted { run_id: started.0, already_open: started.1 })
+}
+
+pub fn get_dream_report(core: &Arc<BridgeCore>, run_id: &str) -> Result<wire::MemoryDreamReport, BridgeError> {
+    Ok(crate::memory_dream::read_dream(&lock_db(core), run_id)?.wire())
+}
+
+/// Undo one change of a settled dream. Every open Memory screen hears about
+/// it once the store lock is released.
+pub fn undo_dream_operation(
+    core: &Arc<BridgeCore>,
+    run_id: &str,
+    op_index: i64,
+) -> Result<wire::MemoryDreamUndoResult, BridgeError> {
+    let index = usize::try_from(op_index)
+        .map_err(|_| BridgeError::Invalid(format!("A change index is never negative, not {op_index}.")))?;
+    let stored = crate::memory_dream::undo_operation(&lock_db(core), run_id, index, chrono::Utc::now())?;
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: memory_ledger::account_memory_scope().to_string(),
+    });
+    Ok(wire::MemoryDreamUndoResult { report: stored.wire(), skipped: Vec::new() })
+}
+
+/// Undo every change of a settled dream that can still be undone.
+pub fn undo_dream(core: &Arc<BridgeCore>, run_id: &str) -> Result<wire::MemoryDreamUndoResult, BridgeError> {
+    let (stored, skipped) = crate::memory_dream::undo_dream(&lock_db(core), run_id, chrono::Utc::now())?;
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: memory_ledger::account_memory_scope().to_string(),
+    });
+    Ok(wire::MemoryDreamUndoResult {
+        report: stored.wire(),
+        skipped: skipped
+            .into_iter()
+            .map(|(index, reason)| wire::MemoryDreamSkip { index: index as i64, reason })
+            .collect(),
+    })
 }
 
 /// The scope as it stood at one instant. History is a read, never a rewrite:

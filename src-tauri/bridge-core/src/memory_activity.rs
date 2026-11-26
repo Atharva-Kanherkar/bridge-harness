@@ -174,23 +174,31 @@ pub fn recall_stats(db: &Connection, scope_key: &str) -> Result<wire::MemoryReca
 pub fn activity_log(db: &Connection, scope_key: &str) -> Result<wire::MemoryActivityLog, BridgeError> {
     let scope_key = memory_ledger::parse_scope_key(scope_key)?;
     let mut statement = db.prepare(
-        "SELECT source, status, applied, refused, detail, at, known FROM (
+        "SELECT source, status, applied, refused, detail, at, known, run_id, spend, report FROM (
              SELECT 'extraction' AS source, status, proposal_count AS applied, 0 AS refused,
-                    detail, updated_at AS at, known_count AS known
+                    detail, updated_at AS at, known_count AS known, NULL AS run_id,
+                    spend_microusd AS spend, NULL AS report
              FROM memory_extraction_runs
              WHERE scope_key=?1 AND status IN ('completed','failed','cancelled')
              UNION ALL
-             SELECT 'consolidation', status, applied_count, refused_count, detail, updated_at, 0
+             SELECT 'consolidation', status, applied_count, refused_count, detail, updated_at, 0,
+                    id, spend_microusd, report
              FROM memory_consolidation_runs
              WHERE scope_key=?1 AND status IN ('completed','failed','cancelled')
              UNION ALL
-             SELECT 'retention', 'completed', record_count, 0, kind, at, 0
+             SELECT 'retention', 'completed', record_count, 0, kind, at, 0, NULL, 0, NULL
              FROM memory_retention_sweeps
              WHERE scope_key=?1
          ) ORDER BY at DESC LIMIT ?2",
     )?;
     let entries = statement
         .query_map(params![scope_key, LOG_LIMIT], |row| {
+            let report: Option<String> = row.get(9)?;
+            // A dream's tally is folded from its report. A report that does
+            // not read leaves the entry with its counts and no tally.
+            let dream = report
+                .and_then(|json| serde_json::from_str::<crate::memory_dream::DreamReport>(&json).ok())
+                .map(|report| report.tally().wire());
             Ok(wire::MemoryActivityEntry {
                 source: row.get(0)?,
                 status: row.get(1)?,
@@ -199,6 +207,9 @@ pub fn activity_log(db: &Connection, scope_key: &str) -> Result<wire::MemoryActi
                 detail: row.get(4)?,
                 at: row.get(5)?,
                 known: row.get(6)?,
+                run_id: row.get(7)?,
+                spend_microusd: row.get(8)?,
+                dream,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -218,10 +229,10 @@ mod tests {
                  selected_ids TEXT NOT NULL, exclusions TEXT NOT NULL, created_at TEXT NOT NULL);
              CREATE TABLE memory_extraction_runs(id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, status TEXT NOT NULL,
                  proposal_count INTEGER NOT NULL DEFAULT 0, detail TEXT, updated_at TEXT NOT NULL,
-                 known_count INTEGER NOT NULL DEFAULT 0);
+                 known_count INTEGER NOT NULL DEFAULT 0, spend_microusd INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE memory_consolidation_runs(id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, status TEXT NOT NULL,
                  applied_count INTEGER NOT NULL DEFAULT 0, refused_count INTEGER NOT NULL DEFAULT 0,
-                 detail TEXT, updated_at TEXT NOT NULL);
+                 detail TEXT, updated_at TEXT NOT NULL, spend_microusd INTEGER NOT NULL DEFAULT 0, report TEXT);
              CREATE TABLE memory_retention_sweeps(id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, kind TEXT NOT NULL,
                  record_count INTEGER NOT NULL, record_ids TEXT NOT NULL, at TEXT NOT NULL);",
         )
@@ -292,17 +303,46 @@ mod tests {
     fn the_log_merges_settled_runs_newest_first() {
         let db = db();
         db.execute_batch(
-            "INSERT INTO memory_extraction_runs VALUES('e1','account:local','completed',3,NULL,'2026-01-02T00:00:00+00:00',2);
-             INSERT INTO memory_extraction_runs VALUES('e2','account:local','queued',0,NULL,'2026-01-09T00:00:00+00:00',0);
-             INSERT INTO memory_consolidation_runs VALUES('c1','account:local','failed',0,2,'budget','2026-01-03T00:00:00+00:00');",
+            "INSERT INTO memory_extraction_runs VALUES('e1','account:local','completed',3,NULL,'2026-01-02T00:00:00+00:00',2,700);
+             INSERT INTO memory_extraction_runs VALUES('e2','account:local','queued',0,NULL,'2026-01-09T00:00:00+00:00',0,0);
+             INSERT INTO memory_consolidation_runs VALUES('c1','account:local','failed',0,2,'budget','2026-01-03T00:00:00+00:00',0,NULL);",
+        )
+        .unwrap();
+        let report = crate::memory_dream::DreamReport {
+            operations: vec![crate::memory_dream::DreamOperation {
+                index: 0,
+                operation: "merge".into(),
+                reason: None,
+                before: vec![],
+                after: vec![],
+                undone_at: Some("2026-01-05T00:00:00+00:00".into()),
+            }],
+            kept: 4,
+            ..Default::default()
+        };
+        db.execute(
+            "INSERT INTO memory_consolidation_runs VALUES('c2','account:local','completed',1,0,NULL,'2026-01-04T00:00:00+00:00',40000,?1)",
+            params![serde_json::to_string(&report).unwrap()],
         )
         .unwrap();
         let log = activity_log(&db, "account:local").unwrap();
         let rows: Vec<_> = log
             .entries
             .iter()
-            .map(|entry| (entry.source.as_str(), entry.status.as_str(), entry.applied, entry.refused, entry.known))
+            .map(|entry| (entry.source.as_str(), entry.status.as_str(), entry.applied, entry.refused, entry.known, entry.spend_microusd))
             .collect();
-        assert_eq!(rows, vec![("consolidation", "failed", 0, 2, 0), ("extraction", "completed", 3, 0, 2)]);
+        assert_eq!(
+            rows,
+            vec![
+                ("consolidation", "completed", 1, 0, 0, 40_000),
+                ("consolidation", "failed", 0, 2, 0, 0),
+                ("extraction", "completed", 3, 0, 2, 700)
+            ]
+        );
+        let dream = log.entries[0].dream.as_ref().expect("a dream carries its tally");
+        assert_eq!((dream.merged, dream.kept, dream.undone), (1, 4, 1));
+        assert_eq!(log.entries[0].run_id.as_deref(), Some("c2"));
+        assert!(log.entries[1].dream.is_none(), "no report, no tally");
+        assert!(log.entries[2].run_id.is_none());
     }
 }

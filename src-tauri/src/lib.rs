@@ -3239,6 +3239,42 @@ async fn restore_memory_record(
 }
 
 #[tauri::command]
+async fn start_dream(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryDreamStarted, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Start dream", move || api::start_dream(&core)).await
+}
+
+#[tauri::command]
+async fn get_dream_report(
+    run_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryDreamReport, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get dream report", move || api::get_dream_report(&core, &run_id)).await
+}
+
+#[tauri::command]
+async fn undo_dream_operation(
+    run_id: String,
+    op_index: i64,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryDreamUndoResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Undo dream change", move || api::undo_dream_operation(&core, &run_id, op_index)).await
+}
+
+#[tauri::command]
+async fn undo_dream(
+    run_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryDreamUndoResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Undo dream", move || api::undo_dream(&core, &run_id)).await
+}
+
+#[tauri::command]
 async fn get_memory_model(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::MemoryModelSettings, BridgeError> {
@@ -3306,6 +3342,7 @@ async fn update_consolidation_settings(
     max_records: Option<i64>,
     allow_removal: Option<bool>,
     debounce_seconds: Option<i64>,
+    dream_hour: Option<i64>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::MemoryConsolidationSettings, BridgeError> {
     // Deprecated and ignored: consolidation runs on the memory model. Kept so
@@ -3319,6 +3356,7 @@ async fn update_consolidation_settings(
             max_records,
             allow_removal,
             debounce_seconds,
+            dream_hour,
         )
     })
     .await
@@ -4331,6 +4369,10 @@ pub fn run() -> i32 {
             get_retention_settings,
             set_retention_settings,
             restore_memory_record,
+            start_dream,
+            get_dream_report,
+            undo_dream_operation,
+            undo_dream,
             interrupt_turn,
             retry_worker_task,
             refresh_account_usage,

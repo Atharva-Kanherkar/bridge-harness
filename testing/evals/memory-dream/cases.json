@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "about": "Labeled nightly-dream cases (issue #1149). Each case seeds records (state: active, pin or proposed; created date; optional confidence), sets the extraction mode (auto_apply is Automatic, propose is Review-first) and dreams once at `now`. expect.merge lists index sets that should fold into one live record carrying expect.mergeTerms; stale/freshPhrase is a contradiction that should leave only the fresh claim active; expire should be expired, retired or given an expiry; approve should end active; reject should end rejected or folded; junk must never be approved; tidy means no change at all. Offline, memory_evals checks an ideal answer meets every expectation and that adversarial answers are refused; live_dream runs a real model and gates pins changed, invented facts, merge recall and wrong approvals.",
+  "cases": [
+    {
+      "name": "researcher-variants",
+      "mode": "auto_apply",
+      "now": "2026-11-26T03:00:00+00:00",
+      "records": [
+        { "body": "Works as an independent researcher", "kind": "fact", "state": "active", "created": "2026-10-02" },
+        { "body": "Is an independent researcher", "kind": "fact", "state": "active", "created": "2026-10-09" },
+        { "body": "Independent researcher who sets their own hours", "kind": "fact", "state": "active", "created": "2026-10-20" },
+        { "body": "The user is an independent researcher, not employed by a company", "kind": "fact", "state": "active", "created": "2026-11-03" },
+        { "body": "Prefers bun over npm for scripts", "kind": "preference", "state": "active", "created": "2026-10-05" }
+      ],
+      "expect": { "merge": [[0, 1, 2, 3]], "mergeTerms": [["independent", "researcher"]], "keep": [4] }
+    },
+    {
+      "name": "em-dash-duplicates",
+      "mode": "auto_apply",
+      "now": "2026-11-26T03:00:00+00:00",
+      "records": [
+        { "body": "Avoids em dashes in prose", "kind": "preference", "state": "active", "created": "2026-10-01" },
+        { "body": "Never use em dashes in anything written for them", "kind": "preference", "state": "active", "created": "2026-11-10" },
+        { "body": "Works in IST", "kind": "fact", "state": "active", "created": "2026-09-14" }
+      ],
+      "expect": { "merge": [[0, 1]], "mergeTerms": [["em", "dashes"]], "keep": [2] }
+    },
+    {
+      "name": "duplicate-proposals",
+      "mode": "propose",
+      "now": "2026-11-26T03:00:00+00:00",
+      "records": [
+        { "body": "Prefers vitest -t filters over whole-file runs while triaging", "kind": "preference", "state": "proposed", "created": "2026-11-21", "confidence": 0.85 },
+        { "body": "When triaging, prefers running vitest with -t filters rather than whole files", "kind": "preference", "state": "proposed", "created": "2026-11-24", "confidence": 0.8 }
+      ],
+      "expect": { "merge": [[0, 1]], "mergeTerms": [["vitest", "filters"]] }
+    },
+    {
+      "name": "contradicted-preference",
+      "mode": "auto_apply",
+      "now": "2026-11-26T03:00:00+00:00",
+      "records": [
+        { "body": "Prefers tabs over spaces in Go code", "kind": "preference", "state": "active", "created": "2026-09-01" },
+        { "body": "Now prefers spaces over tabs in Go code, switched in November", "kind": "preference", "state": "proposed", "created": "2026-11-20", "confidence": 0.93 }
+      ],
+      "expect": { "stale": [0], "freshPhrase": "spaces over tabs" }
+    },
+    {
+      "name": "dated-one-off",
+      "mode": "auto_apply",
+      "now": "2026-11-26T03:00:00+00:00",
+      "records": [
+        { "body": "Has a demo with the Acme team on Friday 2026-11-20", "kind": "fact", "state": "active", "created": "2026-11-15" },
+        { "body": "Reviews diffs before merging", "kind": "preference", "state": "active", "created": "2026-10-11" }
+      ],
+      "expect": { "expire": [0], "keep": [1] }
+    },
+    {
+      "name": "pin-with-paraphrase",
+      "mode": "auto_apply",
+      "now": "2026-11-26T03:00:00+00:00",
+      "records": [
+        { "body": "Never push directly to main", "kind": "constraint", "state": "pin", "created": "2026-09-30" },
+        { "body": "Doesn't push directly to the main branch", "kind": "constraint", "state": "proposed", "created": "2026-11-22", "confidence": 0.9 }
+      ],
+      "expect": { "reject": [1], "junk": [1] }
+    },
+    {
+      "name": "junk-status-updates",
+      "mode": "auto_apply",
+      "now": "2026-11-26T03:00:00+00:00",
+      "records": [
+        { "body": "Is working on the rebase today", "kind": "fact", "state": "proposed", "created": "2026-11-25", "confidence": 0.7 },
+        { "body": "Finished the payments migration this afternoon", "kind": "fact", "state": "proposed", "created": "2026-11-25", "confidence": 0.75 },
+        { "body": "Prefers rebase over merge commits", "kind": "preference", "state": "active", "created": "2026-10-01" }
+      ],
+      "expect": { "reject": [0, 1], "junk": [0, 1], "keep": [2] }
+    },
+    {
+      "name": "good-durable-proposal",
+      "mode": "auto_apply",
+      "now": "2026-11-26T03:00:00+00:00",
+      "records": [
+        { "body": "Writes commit messages in English, even on Japanese-speaking teams", "kind": "preference", "state": "proposed", "created": "2026-11-23", "confidence": 0.95 },
+        { "body": "Prefers tabs over spaces in Go code", "kind": "preference", "state": "active", "created": "2026-10-01" }
+      ],
+      "expect": { "approve": [0], "keep": [1] }
+    },
+    {
+      "name": "review-first-leaves-proposals",
+      "mode": "propose",
+      "now": "2026-11-26T03:00:00+00:00",
+      "records": [
+        { "body": "Is working on the rebase today", "kind": "fact", "state": "proposed", "created": "2026-11-25", "confidence": 0.7 },
+        { "body": "Writes commit messages in English", "kind": "preference", "state": "proposed", "created": "2026-11-23", "confidence": 0.95 },
+        { "body": "Prefers bun over npm", "kind": "preference", "state": "active", "created": "2026-10-01" },
+        { "body": "Prefers bun over npm for scripts", "kind": "preference", "state": "proposed", "created": "2026-11-24", "confidence": 0.85 }
+      ],
+      "expect": { "junk": [0, 1], "reject": [3] }
+    },
+    {
+      "name": "tidy-scope",
+      "mode": "auto_apply",
+      "now": "2026-11-26T03:00:00+00:00",
+      "records": [
+        { "body": "Prefers tabs over spaces in Go code", "kind": "preference", "state": "active", "created": "2026-10-01" },
+        { "body": "Works in IST", "kind": "fact", "state": "active", "created": "2026-09-14" },
+        { "body": "Uses bun for scripts", "kind": "preference", "state": "active", "created": "2026-10-20" },
+        { "body": "Never push directly to main", "kind": "constraint", "state": "pin", "created": "2026-09-30" }
+      ],
+      "expect": { "tidy": true }
+    }
+  ]
+}

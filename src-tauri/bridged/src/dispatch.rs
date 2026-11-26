@@ -556,6 +556,7 @@ pub fn dispatch(
                 p.max_records,
                 p.allow_removal,
                 p.debounce_seconds,
+                p.dream_hour,
             ))
         }
         MethodName::UpdateExtractionSettings => {
@@ -575,6 +576,19 @@ pub fn dispatch(
         MethodName::RestoreMemoryRecord => {
             let p: wire::RestoreMemoryRecordParams = decode(method, params)?;
             reply(api::restore_memory_record(core, &p.record_id))
+        }
+        MethodName::StartDream => reply(api::start_dream(core)),
+        MethodName::GetDreamReport => {
+            let p: wire::GetDreamReportParams = decode(method, params)?;
+            reply(api::get_dream_report(core, &p.run_id))
+        }
+        MethodName::UndoDreamOperation => {
+            let p: wire::UndoDreamOperationParams = decode(method, params)?;
+            reply(api::undo_dream_operation(core, &p.run_id, p.op_index))
+        }
+        MethodName::UndoDream => {
+            let p: wire::UndoDreamParams = decode(method, params)?;
+            reply(api::undo_dream(core, &p.run_id))
         }
         MethodName::GetMemoryModel => reply(api::get_memory_model(core)),
         MethodName::SetMemoryModel => {

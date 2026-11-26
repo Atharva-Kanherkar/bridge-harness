@@ -1052,7 +1052,7 @@ fn preserves_qualifiers(body: &str, source: &str) -> bool {
     qualifier_sequence(body) == qualifier_sequence(source)
 }
 
-fn has_transient_marker(text: &str) -> bool {
+pub(crate) fn has_transient_marker(text: &str) -> bool {
     const MARKERS: &[&str] = &[
         "at the moment",
         "current task",
@@ -1292,7 +1292,7 @@ fn claim_fingerprint(text: &str) -> BTreeSet<String> {
 /// Forgetting a claim is a durable negative signal. Punctuation and a light
 /// paraphrase must not let a later extractor silently reactivate it; possible
 /// matches remain visible in review instead.
-fn matches_deleted_claim(
+pub(crate) fn matches_deleted_claim(
     db: &Connection,
     scope_key: &str,
     body: &str,
@@ -1581,7 +1581,7 @@ fn source_supports_claim(kind: &str, body: &str, source: &str) -> bool {
         && lexically_grounded(body, clause)
 }
 
-fn likely_related_claim(left: &str, right: &str) -> bool {
+pub(crate) fn likely_related_claim(left: &str, right: &str) -> bool {
     let left_terms = lexical_terms(left);
     let right_terms = lexical_terms(right);
     let smaller = left_terms.len().min(right_terms.len());

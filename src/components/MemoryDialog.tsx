@@ -17,6 +17,7 @@ import { searchRecords } from "../memoryStats";
 import { harnessLabel } from "../utils";
 import { relative } from "./UsageInsights";
 import { MemoryInsights } from "./MemoryInsights";
+import { DreamRun } from "./MemoryDreams";
 import type {
   AdapterDescriptor,
   MemoryCapabilities,
@@ -145,6 +146,9 @@ export function MemoryDialog({
   const [injection, setInjection] = useState<boolean>();
   const [stats, setStats] = useState<MemoryRecallStats>();
   const [log, setLog] = useState<MemoryActivityEntry[]>();
+  // Nightly cleanup: `propose` (on) or `off`, and whether a Dream now is in flight.
+  const [dreamMode, setDreamMode] = useState<string>();
+  const [dreamPending, setDreamPending] = useState(false);
   const [filter, setFilter] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [body, setBody] = useState("");
@@ -232,6 +236,7 @@ export function MemoryDialog({
     setInjection(undefined);
     setStats(undefined);
     setLog(undefined);
+    setDreamMode(undefined);
     setFilter(null);
     setQuery("");
     setBody("");
@@ -269,6 +274,7 @@ export function MemoryDialog({
         setRetention(retentionSettings);
         setActiveList(activeRead);
         setBudget({ held: consolidation.heldRecords, max: consolidation.maxRecords });
+        setDreamMode(consolidation.mode);
         setProposedList(proposedRead);
         setSelected(current => {
           const waiting = new Set(proposedRead.records.map(record => record.id));
@@ -796,17 +802,40 @@ export function MemoryDialog({
           <p className="mt-3 text-caption text-faint">Counts what reached a prompt. It does not measure whether a memory helped.</p>
         </section>
         <section className="rounded-xl border border-border-card bg-card px-4 py-3.5">
-          <p className="text-caption text-muted-foreground">Recent runs</p>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-caption text-muted-foreground">Recent runs</p>
+            <div className="flex items-center gap-2">
+              <div className="w-44">
+                <Choice
+                  label="Nightly cleanup"
+                  value={dreamMode ?? "propose"}
+                  options={DREAM_MODE_OPTIONS}
+                  disabled={dreamMode === undefined || busy}
+                  onChange={next => void act(async () => {
+                    setDreamMode((await bridgeApi.updateConsolidationSettings(next)).mode);
+                  }, "Couldn't change nightly cleanup.")}
+                />
+              </div>
+              <Button variant="quiet" size="sm" loading={dreamPending} disabled={dreamPending || memoryModel?.resolved == null} onClick={() => {
+                setDreamPending(true);
+                bridgeApi.startDream()
+                  .catch(error => onError(friendlyError(error, "Couldn't start a dream.")))
+                  .finally(() => setDreamPending(false));
+              }}>Dream now</Button>
+            </div>
+          </div>
+          <p className="mt-1 text-caption text-faint">Once a night the memory model merges duplicates, retires stale memories and, in Automatic mode, reviews proposals. Every change can be undone.</p>
           {log !== undefined && log.length === 0
             ? <p className="py-6 text-center text-caption text-faint">No extraction or consolidation runs yet.</p>
             : <ul className="mt-2 divide-y divide-border">
-              {(log ?? []).map((entry, index) => (
-                <li key={index} className="flex items-baseline gap-3 py-2 text-caption">
+              {(log ?? []).map((entry, index) => entry.source === "consolidation" && entry.runId && entry.dream
+                ? <DreamRun key={entry.runId} entry={entry} onError={onError} />
+                : <li key={index} className="flex items-baseline gap-3 py-2 text-caption">
                   <span className="w-24 shrink-0 font-mono text-caption text-faint font-medium">{entry.source}</span>
                   <Tip label={runDetail(entry)}><span className="min-w-0 flex-1 truncate text-foreground">{runDetail(entry)}</span></Tip>
                   <span className="shrink-0 tabular-nums text-faint">{relative(entry.at)}</span>
                 </li>
-              ))}
+              )}
             </ul>}
         </section>
       </div>}
@@ -834,6 +863,11 @@ function ShowMore({ remaining, loading, disabled, onClick }: { remaining: number
     onClick={onClick}
   >Show <span className="tabular-nums">{Math.min(MEMORY_PAGE_SIZE, Math.max(remaining, 1))}</span> more</Button>;
 }
+
+const DREAM_MODE_OPTIONS = [
+  { value: "propose", label: "Nightly cleanup on" },
+  { value: "off", label: "Nightly cleanup off" },
+];
 
 const PROPOSAL_TTL_OPTIONS = [3, 7, 14, 30].map(days => ({ value: String(days), label: `Expire after ${days} days` }));
 const RETIRE_OPTIONS = [

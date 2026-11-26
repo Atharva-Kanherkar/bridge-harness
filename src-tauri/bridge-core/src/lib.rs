@@ -137,6 +137,7 @@ pub mod outgoing_tools;
 pub mod memory_activity;
 pub mod memory_consolidation;
 pub mod memory_consolidation_live;
+pub mod memory_dream;
 pub mod memory_extraction;
 pub mod memory_extraction_live;
 pub mod memory_ledger;

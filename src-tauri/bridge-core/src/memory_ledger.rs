@@ -29,7 +29,7 @@ pub const PROVENANCE_AGENT_PROPOSAL: &str = "agent_proposal";
 pub const PROPOSAL_TTL_DAYS: i64 = crate::memory_retention::DEFAULT_PROPOSAL_TTL_DAYS;
 const STATUS_ACTIVE: &str = "active";
 const STATUS_PROPOSED: &str = "proposed";
-const STATUS_REJECTED: &str = "rejected";
+pub(crate) const STATUS_REJECTED: &str = "rejected";
 const STATUS_SUPERSEDED: &str = "superseded";
 const STATUS_DELETED: &str = "deleted";
 /// Reached only by the sweep. Distinct from superseded, which names a
@@ -732,7 +732,7 @@ pub(crate) fn insert_update_proposal(
 
 /// Run `work` atomically whether or not the caller already holds a
 /// transaction: a savepoint nests inside one and opens one otherwise.
-fn with_savepoint(db: &Connection, work: impl FnOnce() -> Result<(), BridgeError>) -> Result<(), BridgeError> {
+pub(crate) fn with_savepoint(db: &Connection, work: impl FnOnce() -> Result<(), BridgeError>) -> Result<(), BridgeError> {
     db.execute_batch("SAVEPOINT memory_ledger_step")?;
     match work() {
         Ok(()) => {
@@ -744,6 +744,75 @@ fn with_savepoint(db: &Connection, work: impl FnOnce() -> Result<(), BridgeError
             Err(error)
         }
     }
+}
+
+/// Retire an active memory: it stops holding at `at` and lands in Retired,
+/// where it can be restored ([`crate::memory_retention::restore`]). Unlike a
+/// tombstone the body stays, because a dream may be wrong and the person
+/// must be able to take it back. `false` when the record is no longer active.
+pub(crate) fn retire(db: &Connection, record_id: &str, at: &str) -> Result<bool, BridgeError> {
+    let changed = db.execute(
+        "UPDATE memory_records SET status=?1, valid_to=?2, updated_at=?2 WHERE id=?3 AND status=?4",
+        params![STATUS_EXPIRED, at, record_id, STATUS_ACTIVE],
+    )?;
+    Ok(changed > 0)
+}
+
+/// Several waiting proposals that say the same thing become one waiting
+/// proposal, so the queue shrinks without anything being approved. The
+/// successor is as confident as the least confident source, keeps the first
+/// source's rationale and chat, and waits as long as the newest source had
+/// left; every source is closed as superseded by it.
+pub(crate) fn merge_proposals(
+    db: &Connection,
+    sources: &[MemoryRecord],
+    body: &str,
+    kind: &str,
+    at: &str,
+) -> Result<String, BridgeError> {
+    let first = sources
+        .first()
+        .ok_or_else(|| BridgeError::Invalid("A merge needs at least one source.".into()))?;
+    let confidence = sources.iter().filter_map(|source| source.confidence_bps).min();
+    let waits_from = sources
+        .iter()
+        .map(|source| source.created_at.as_str())
+        .max()
+        .unwrap_or(at)
+        .to_string();
+    let id = Uuid::new_v4().to_string();
+    with_savepoint(db, || {
+        db.execute(
+            "INSERT INTO memory_records(
+                id, scope_key, kind, body, provenance, status, source_session_id,
+                confidence_bps, rationale, valid_from, valid_to, created_at, updated_at
+             ) VALUES(?1,?2,?3,?4,?5,'proposed',?6,?7,?8,?9,?9,?10,?9)",
+            params![
+                id,
+                first.scope_key,
+                kind,
+                body,
+                PROVENANCE_MODEL_PROPOSAL,
+                first.source_session_id,
+                confidence.map(i64::from),
+                first.rationale,
+                at,
+                waits_from,
+            ],
+        )?;
+        for source in sources {
+            let closed = db.execute(
+                "UPDATE memory_records SET status=?1, superseded_by=?2, updated_at=?3
+                 WHERE id=?4 AND status=?5",
+                params![STATUS_SUPERSEDED, id, at, source.id, STATUS_PROPOSED],
+            )?;
+            if closed == 0 {
+                return Err(BridgeError::Invalid(format!("'{}' is no longer waiting.", source.id)));
+            }
+        }
+        Ok(())
+    })?;
+    Ok(id)
 }
 
 /// The active record a waiting proposal would replace on approval, if any.
@@ -1224,25 +1293,6 @@ pub(crate) fn assign_conflict_group(
     )?;
     transaction.commit()?;
     Ok(survivor)
-}
-
-/// Every active record in one scope, oldest first. The consolidation job's
-/// entire view of the world.
-pub(crate) fn active_records(
-    db: &Connection,
-    scope_key: &str,
-    limit: i64,
-) -> Result<Vec<MemoryRecord>, BridgeError> {
-    let mut statement = db.prepare(&format!(
-        "SELECT {RECORD_COLUMNS} FROM memory_records
-         WHERE scope_key=?1 AND status=?2
-         ORDER BY created_at, id
-         LIMIT ?3",
-    ))?;
-    let records = statement
-        .query_map(params![scope_key, STATUS_ACTIVE, limit], map_row)?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(records)
 }
 
 /// Everything extraction may reconcile a candidate against: the scope's active
