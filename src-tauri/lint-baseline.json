@@ -647,7 +647,7 @@
       "src/dock_badge.rs": 2,
       "src/embedded_browser.rs": 6,
       "src/launch.rs": 1,
-      "src/lib.rs": 363,
+      "src/lib.rs": 371,
       "src/menu.rs": 1,
       "src/menu_bar/mod.rs": 16,
       "src/meter_tray.rs": 7,

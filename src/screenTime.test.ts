@@ -2,9 +2,9 @@
 // what the tracker counts, when it sends, what survives a failed send, the
 // opt-out, and how durations read.
 import { describe, expect, it, vi } from "vitest";
-import type { UsageScreenTimeResult } from "./types";
+import type { RecordPresenceParams, UsageScreenTimeResult } from "./types";
 import {
-  DEFAULT_SCREEN_TIME_PREFERENCES, formatDuration, formatLeverage, IDLE_MS, MAX_PENDING_MINUTES, PresenceTracker, readScreenTimePreferences,
+  DEFAULT_SCREEN_TIME_PREFERENCES, formatDuration, formatLeverage, IDLE_MS, MAX_PENDING_MINUTES, presenceParams, PresenceTracker, readScreenTimePreferences,
   SCREEN_TIME_PREFERENCES_KEY, screenTimeParams, summarizeScreenTime, writeScreenTimePreferences, type PresenceEnvironment,
 } from "./screenTime";
 
@@ -12,14 +12,15 @@ const MINUTE = 60_000;
 const START = Date.UTC(2026, 10, 21, 9, 0, 0);
 
 function harness(overrides: Partial<PresenceEnvironment> = {}, initial: Partial<{ focused: boolean }> = {}) {
-  const state = { now: START, focused: true, visible: true, tracking: true, ...initial };
+  const state = { now: START, focused: true, visible: true, tracking: true, chat: null as string | null, ...initial };
   const sent: number[][] = [];
-  const send = vi.fn(async (minutes: number[]) => { sent.push(minutes); });
+  const send = vi.fn(async (presence: RecordPresenceParams) => { sent.push(presence.minutes); });
   const tracker = new PresenceTracker({
     now: () => state.now,
     focused: () => state.focused,
     visible: () => state.visible,
     tracking: () => state.tracking,
+    chat: () => state.chat,
     send,
     ...overrides,
   });
@@ -84,8 +85,47 @@ describe("PresenceTracker", () => {
     state.now += MINUTE;
     tracker.tick();
     await tracker.flush();
-    expect(send).toHaveBeenLastCalledWith([minute(START), minute(START + MINUTE)]);
+    expect(send).toHaveBeenLastCalledWith({ minutes: [minute(START), minute(START + MINUTE)] });
     expect(tracker.pendingMinutes()).toEqual([]);
+  });
+
+  // testing/feat-screen-time-breakdown.md rule 12.
+  it("sends, per chat, the minutes it was open, the last tick of a minute winning", async () => {
+    const { state, tracker, send, minute } = harness();
+    state.chat = "chat-a";
+    tracker.tick();
+    state.now += 20_000;
+    state.chat = "chat-b";
+    tracker.tick();
+    state.now += MINUTE;
+    tracker.tick();
+    state.now += MINUTE;
+    state.chat = null;
+    tracker.tick();
+    state.now += MINUTE;
+    state.chat = "chat-a";
+    tracker.tick();
+    await tracker.flush();
+    const first = minute(START);
+    expect(send).toHaveBeenLastCalledWith({
+      minutes: [first, first + 1, first + 2, first + 3],
+      chats: [{ sessionId: "chat-b", minutes: [first, first + 1] }, { sessionId: "chat-a", minutes: [first + 3] }],
+    });
+  });
+
+  it("keeps chat minutes from a failed send, and a minute counted again keeps its newer chat", async () => {
+    const { state, tracker, send, minute } = harness();
+    let release: () => void = () => undefined;
+    send.mockImplementationOnce(() => new Promise((_, reject) => { release = () => reject(new Error("daemon away")); }));
+    state.chat = "chat-a";
+    tracker.tick();
+    const sending = tracker.flush();
+    state.chat = "chat-b";
+    tracker.tick();
+    release();
+    await sending;
+    await tracker.flush();
+    expect(send).toHaveBeenLastCalledWith({ minutes: [minute(START)], chats: [{ sessionId: "chat-b", minutes: [minute(START)] }] });
   });
 
   it("caps pending minutes at one day, dropping the oldest", async () => {
@@ -170,6 +210,10 @@ describe("Screen Time arithmetic", () => {
       ],
       allTime: { humanSeconds: 10 * 3_600, agentSeconds: 50 * 3_600, humanSinceDay: "2026-10-01", agentSinceDay: "2026-08-01" },
       agentHistory: "complete",
+      projects: [],
+      pullRequests: { opened: 0, merged: 0, open: 0, closed: 0, repos: [], recent: [] },
+      hours: [],
+      harnesses: [],
     };
     const summary = summarizeScreenTime(result);
     expect(summary.today).toEqual({ humanSeconds: 1_800, agentSeconds: 3_600 });
@@ -180,5 +224,11 @@ describe("Screen Time arithmetic", () => {
     const idle = summarizeScreenTime({ ...result, days: result.days.map(day => ({ ...day, humanSeconds: 0 })), allTime: { ...result.allTime, humanSeconds: 0 } });
     expect(idle.leverage).toBeNull();
     expect(idle.cumulative).toEqual([0, 0, 0]);
+  });
+});
+
+describe("presenceParams", () => {
+  it("leaves chats out when no minute had one", () => {
+    expect(presenceParams(new Map([[5, null], [3, null]]))).toEqual({ minutes: [3, 5] });
   });
 });

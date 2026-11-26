@@ -247,9 +247,15 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// `memory/set_retention_settings`, `memory/restore_memory_record`, and
 /// `expired` as a listable status. Additive: a 1.60 daemon serves older
 /// clients; a 1.60 client cannot pair with a 1.59 daemon.
+///
+/// **1.61 breaks Screen Time down**: `usage/record_presence` takes optional
+/// `chats` (which chat was open each minute) and `usage/screen_time` answers
+/// `projects`, `pullRequests`, `hours` and `harnesses`. Additive: a 1.61
+/// daemon serves older clients; a 1.61 client cannot pair with a 1.60
+/// daemon, which refuses the `chats` field.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 60,
+    minor: 61,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -692,9 +698,17 @@ mod tests {
     fn memory_retention_is_additive_for_older_clients() {
         let before = ProtocolVersion { major: 1, minor: 59 };
         let retention = ProtocolVersion { major: 1, minor: 60 };
-        assert_eq!(PROTOCOL_VERSION, retention);
         assert!(retention.accepts(before), "a 1.59 client never asks for retention settings");
         assert!(!before.accepts(retention), "a 1.60 client needs memory/get_retention_settings");
+    }
+
+    #[test]
+    fn a_1_60_client_pairs_with_a_screen_time_breakdown_daemon() {
+        let before = ProtocolVersion { major: 1, minor: 60 };
+        let breakdown = ProtocolVersion { major: 1, minor: 61 };
+        assert_eq!(PROTOCOL_VERSION, breakdown);
+        assert!(breakdown.accepts(before), "a 1.60 client never sends chats and ignores the new result fields");
+        assert!(!before.accepts(breakdown), "a 1.61 client sends chats, which a 1.60 daemon refuses");
     }
 
     #[test]
