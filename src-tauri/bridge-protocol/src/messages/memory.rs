@@ -239,14 +239,24 @@ pub struct UpdateConsolidationSettingsParams {
     /// operation asking for removal is refused rather than downgraded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_removal: Option<bool>,
-    /// How long a scope must stay quiet before a queued run becomes due.
+    /// How long a full scope waits before its dream becomes due.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub debounce_seconds: Option<i64>,
+    /// The local hour, 0-23, the nightly dream becomes due.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dream_hour: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryConsolidationRun {
+    /// The run's id, for `memory/get_dream_report`. Absent from a pre-1.63
+    /// daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// What queued it: `nightly`, `manual`, `full`, or `turn` before 1.63.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
     /// One of `queued`, `running`, `completed`, `failed`, or `cancelled`.
     pub status: String,
     pub applied_count: i64,
@@ -270,8 +280,14 @@ pub struct MemoryConsolidationSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     pub max_records: i64,
+    /// Deprecated and ignored: a dream's retire is restorable, so it needs no
+    /// opt-in.
     pub allow_removal: bool,
     pub debounce_seconds: i64,
+    /// The local hour, 0-23, the nightly dream becomes due. 3 from a pre-1.63
+    /// daemon.
+    #[serde(default = "default_dream_hour")]
+    pub dream_hour: i64,
     /// What the scope currently holds against `maxRecords`. A write that would
     /// take this past the budget is refused; nothing is ever evicted for it.
     pub held_records: i64,
@@ -454,6 +470,128 @@ pub struct MemoryActivityEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     pub at: String,
+    /// The run's id. Present for consolidation runs from a 1.63 daemon, so a
+    /// dream can be opened and undone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// Observed spend. 0 for sweeps and from a pre-1.63 daemon.
+    #[serde(default)]
+    pub spend_microusd: i64,
+    /// What a dream changed, by kind. Absent for other sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dream: Option<MemoryDreamTally>,
+}
+
+/// What one dream applied, by kind, and how many of those were undone.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryDreamTally {
+    pub merged: i64,
+    pub corrected: i64,
+    pub expired: i64,
+    pub grouped: i64,
+    pub retired: i64,
+    pub approved: i64,
+    pub rejected: i64,
+    pub kept: i64,
+    pub undone: i64,
+}
+
+fn default_dream_hour() -> i64 {
+    3
+}
+
+/// "Dream now": the run that will dream, and whether it was already open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryDreamStarted {
+    pub run_id: String,
+    pub already_open: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetDreamReportParams {
+    pub run_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UndoDreamParams {
+    pub run_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UndoDreamOperationParams {
+    pub run_id: String,
+    /// The change's `index` in the report.
+    pub op_index: i64,
+}
+
+/// One record as a dream change saw it, for the before and after of a diff.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryDreamRecord {
+    pub id: String,
+    pub body: String,
+    pub kind: String,
+    pub status: String,
+    /// A memory the person saved themselves.
+    pub pin: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+}
+
+/// One applied change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryDreamOperation {
+    pub index: i64,
+    /// `merge`, `correct`, `expire`, `group`, `retire`, `approve` or `reject`.
+    pub operation: String,
+    /// A rejection's reason or a group's subject.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The records it changed, as they were.
+    pub before: Vec<MemoryDreamRecord>,
+    /// The records it changed or created, as it left them.
+    pub after: Vec<MemoryDreamRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undone_at: Option<String>,
+}
+
+/// Everything one dream did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryDreamReport {
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
+    pub status: String,
+    pub at: String,
+    pub spend_microusd: i64,
+    pub operations: Vec<MemoryDreamOperation>,
+    pub kept: i64,
+    /// Operations the gate refused.
+    pub refused: i64,
+    /// Records past the night's batches, left for the next dream.
+    pub deferred: i64,
+}
+
+/// A change undo all left alone, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryDreamSkip {
+    pub index: i64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryDreamUndoResult {
+    pub report: MemoryDreamReport,
+    pub skipped: Vec<MemoryDreamSkip>,
 }
 
 /// Settled runs, newest first.
@@ -616,6 +754,66 @@ mod tests {
         .unwrap();
         assert_eq!(entry.known, 0);
         assert_eq!(serde_json::to_value(MemoryActivityEntry { known: 4, ..entry }).unwrap()["known"], json!(4));
+    }
+
+    #[test]
+    fn dream_shapes_are_camel_case_and_default_from_an_older_daemon() {
+        let entry: MemoryActivityEntry = serde_json::from_value(json!({
+            "source": "consolidation", "status": "completed", "applied": 2, "refused": 0, "at": "now"
+        }))
+        .unwrap();
+        assert_eq!((entry.run_id.as_deref(), entry.spend_microusd, entry.dream.as_ref()), (None, 0, None));
+        let wire = serde_json::to_value(MemoryActivityEntry {
+            run_id: Some("r".into()),
+            spend_microusd: 40_000,
+            dream: Some(MemoryDreamTally { merged: 6, approved: 4, ..MemoryDreamTally::default() }),
+            ..entry
+        })
+        .unwrap();
+        assert_eq!(wire["runId"], json!("r"));
+        assert_eq!(wire["spendMicrousd"], json!(40_000));
+        assert_eq!(wire["dream"]["merged"], json!(6));
+        assert_eq!(wire["dream"]["undone"], json!(0));
+
+        let settings: MemoryConsolidationSettings = serde_json::from_value(json!({
+            "scopeKey": "account:local", "mode": "propose", "maxRecords": 200, "allowRemoval": false,
+            "debounceSeconds": 600, "heldRecords": 3
+        }))
+        .unwrap();
+        assert_eq!(settings.dream_hour, 3, "a pre-1.63 daemon dreams at 03:00");
+        let update: UpdateConsolidationSettingsParams =
+            serde_json::from_value(json!({ "mode": "off", "dreamHour": 5 })).unwrap();
+        assert_eq!(update.dream_hour, Some(5));
+
+        let undo: UndoDreamOperationParams = serde_json::from_value(json!({ "runId": "r", "opIndex": 2 })).unwrap();
+        assert_eq!(undo.op_index, 2);
+        assert!(serde_json::from_value::<UndoDreamParams>(json!({ "runId": "r", "x": 1 })).is_err());
+        let report = MemoryDreamReport {
+            run_id: "r".into(),
+            trigger: Some("nightly".into()),
+            status: "completed".into(),
+            at: "now".into(),
+            spend_microusd: 1,
+            operations: vec![MemoryDreamOperation {
+                index: 0,
+                operation: "merge".into(),
+                reason: None,
+                before: vec![MemoryDreamRecord { id: "a".into(), body: "b".into(), kind: "fact".into(), status: "active".into(), pin: false, expires_at: None }],
+                after: vec![],
+                undone_at: None,
+            }],
+            kept: 1,
+            refused: 0,
+            deferred: 0,
+        };
+        let wire = serde_json::to_value(MemoryDreamUndoResult { report, skipped: vec![MemoryDreamSkip { index: 0, reason: "changed".into() }] }).unwrap();
+        assert_eq!(wire["report"]["runId"], json!("r"));
+        assert_eq!(wire["report"]["spendMicrousd"], json!(1));
+        assert!(wire["report"]["operations"][0].get("undoneAt").is_none());
+        assert!(wire["report"]["operations"][0]["before"][0].get("expiresAt").is_none());
+        assert_eq!(wire["skipped"][0]["index"], json!(0));
+        let started = serde_json::to_value(MemoryDreamStarted { run_id: "r".into(), already_open: true }).unwrap();
+        assert_eq!(started["alreadyOpen"], json!(true));
     }
 
     #[test]

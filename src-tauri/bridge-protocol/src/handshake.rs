@@ -257,9 +257,16 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.62 reconciles extraction against known memories**: `knownCount` on
 /// `MemoryExtractionRun` and `known` on `MemoryActivityEntry`. Additive: both
 /// default to 0, so a 1.62 daemon serves older clients unchanged.
+///
+/// **1.63 dreams nightly**: `memory/start_dream`, `memory/get_dream_report`,
+/// `memory/undo_dream_operation` and `memory/undo_dream`; `dreamHour` on the
+/// consolidation settings; `id` and `trigger` on `MemoryConsolidationRun`;
+/// `runId`, `spendMicrousd` and `dream` on `MemoryActivityEntry`. Additive: an
+/// older client never calls the new methods and reads the new fields as
+/// absent.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 62,
+    minor: 63,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -718,8 +725,15 @@ mod tests {
     fn a_1_61_client_pairs_with_a_reconciling_daemon() {
         let before = ProtocolVersion { major: 1, minor: 61 };
         let reconcile = ProtocolVersion { major: 1, minor: 62 };
-        assert_eq!(PROTOCOL_VERSION, reconcile);
         assert!(reconcile.accepts(before), "a 1.61 client reads the new counts as absent");
+    }
+
+    #[test]
+    fn a_1_62_client_pairs_with_a_dreaming_daemon() {
+        let before = ProtocolVersion { major: 1, minor: 62 };
+        let dreaming = ProtocolVersion { major: 1, minor: 63 };
+        assert_eq!(PROTOCOL_VERSION, dreaming);
+        assert!(dreaming.accepts(before), "a 1.62 client never asks for a dream and reads its fields as absent");
     }
 
     #[test]

@@ -185,9 +185,10 @@ methods![
     (GetRecallStats, "memory", "get_recall_stats"),
     (GetActivityLog, "memory", "get_activity_log"),
     (GetInsights, "memory", "get_insights"),
-    // consolidation. Settings and reads only: a run is enqueued by a finished
-    // turn and executed by the host that owns the data directory, never by a
-    // client asking for one.
+    // consolidation and nightly dreams. A dream is queued by the nightly
+    // cadence, a full scope or "Dream now", and always executed by the host
+    // that owns the data directory; a client can only ask for one, read its
+    // report, and undo its changes.
     (ListMemoryRecordsAsOf, "memory", "list_memory_records_as_of"),
     (GetConsolidationSettings, "memory", "get_consolidation_settings"),
     (UpdateConsolidationSettings, "memory", "update_consolidation_settings"),
@@ -196,6 +197,10 @@ methods![
     (GetRetentionSettings, "memory", "get_retention_settings"),
     (SetRetentionSettings, "memory", "set_retention_settings"),
     (RestoreMemoryRecord, "memory", "restore_memory_record"),
+    (StartDream, "memory", "start_dream"),
+    (GetDreamReport, "memory", "get_dream_report"),
+    (UndoDreamOperation, "memory", "undo_dream_operation"),
+    (UndoDream, "memory", "undo_dream"),
     // approvals
     (ResolveApproval, "approvals", "resolve_approval"),
     (ResolveQuestion, "approvals", "resolve_question"),

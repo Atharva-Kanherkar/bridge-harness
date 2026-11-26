@@ -12,7 +12,15 @@
       ]
     },
     "debounceSeconds": {
-      "description": "How long a scope must stay quiet before a queued run becomes due.",
+      "description": "How long a full scope waits before its dream becomes due.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "dreamHour": {
+      "description": "The local hour, 0-23, the nightly dream becomes due.",
       "format": "int64",
       "type": [
         "integer",

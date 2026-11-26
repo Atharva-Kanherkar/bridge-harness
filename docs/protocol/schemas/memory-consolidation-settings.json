@@ -14,6 +14,13 @@
             "null"
           ]
         },
+        "id": {
+          "description": "The run's id, for `memory/get_dream_report`. Absent from a pre-1.63 daemon.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "observedTokens": {
           "format": "int64",
           "type": "integer"
@@ -29,6 +36,13 @@
         "status": {
           "description": "One of `queued`, `running`, `completed`, `failed`, or `cancelled`.",
           "type": "string"
+        },
+        "trigger": {
+          "description": "What queued it: `nightly`, `manual`, `full`, or `turn` before 1.63.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "updatedAt": {
           "type": "string"
@@ -47,9 +61,16 @@
   },
   "properties": {
     "allowRemoval": {
+      "description": "Deprecated and ignored: a dream's retire is restorable, so it needs no opt-in.",
       "type": "boolean"
     },
     "debounceSeconds": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "dreamHour": {
+      "default": 3,
+      "description": "The local hour, 0-23, the nightly dream becomes due. 3 from a pre-1.63 daemon.",
       "format": "int64",
       "type": "integer"
     },

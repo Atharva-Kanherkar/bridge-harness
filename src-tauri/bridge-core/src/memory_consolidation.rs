@@ -736,6 +736,8 @@ pub fn settle(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsolidationRunSummary {
+    pub id: String,
+    pub trigger: Option<String>,
     pub status: String,
     pub applied_count: i64,
     pub refused_count: i64,
@@ -754,13 +756,15 @@ pub fn last_run(
     let scope_key = memory_ledger::parse_scope_key(scope_key)?;
     db.query_row(
         "SELECT status, applied_count, refused_count, observed_tokens, spend_microusd,
-                detail, updated_at
+                detail, updated_at, id, trigger
          FROM memory_consolidation_runs
          WHERE scope_key=?1 AND status IN ('completed','failed','cancelled')
          ORDER BY created_at DESC, id DESC LIMIT 1",
         params![scope_key],
         |row| {
             Ok(ConsolidationRunSummary {
+                id: row.get(7)?,
+                trigger: row.get(8)?,
                 status: row.get(0)?,
                 applied_count: row.get(1)?,
                 refused_count: row.get(2)?,

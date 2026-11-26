@@ -1387,6 +1387,61 @@ fn undo_one(db: &Connection, operation: &DreamOperation, run_id: &str, now: &str
     Ok(())
 }
 
+impl DreamTally {
+    pub fn wire(&self) -> bridge_protocol::messages::MemoryDreamTally {
+        bridge_protocol::messages::MemoryDreamTally {
+            merged: self.merged,
+            corrected: self.corrected,
+            expired: self.expired,
+            grouped: self.grouped,
+            retired: self.retired,
+            approved: self.approved,
+            rejected: self.rejected,
+            kept: self.kept,
+            undone: self.undone,
+        }
+    }
+}
+
+fn wire_record(row: &Snapshot) -> bridge_protocol::messages::MemoryDreamRecord {
+    bridge_protocol::messages::MemoryDreamRecord {
+        id: row.id.clone(),
+        body: row.body.clone(),
+        kind: row.kind.clone(),
+        status: row.status.clone(),
+        pin: row.provenance == PROVENANCE_PIN,
+        expires_at: row.expires_at.clone(),
+    }
+}
+
+impl StoredDream {
+    pub fn wire(&self) -> bridge_protocol::messages::MemoryDreamReport {
+        bridge_protocol::messages::MemoryDreamReport {
+            run_id: self.run_id.clone(),
+            trigger: self.trigger.clone(),
+            status: self.status.clone(),
+            at: self.at.clone(),
+            spend_microusd: self.spend_microusd,
+            operations: self
+                .report
+                .operations
+                .iter()
+                .map(|operation| bridge_protocol::messages::MemoryDreamOperation {
+                    index: operation.index as i64,
+                    operation: operation.operation.clone(),
+                    reason: operation.reason.clone(),
+                    before: operation.before.iter().map(wire_record).collect(),
+                    after: operation.after.iter().map(wire_record).collect(),
+                    undone_at: operation.undone_at.clone(),
+                })
+                .collect(),
+            kept: self.report.kept as i64,
+            refused: (self.report.refused_total() + self.report.invalid) as i64,
+            deferred: self.report.deferred as i64,
+        }
+    }
+}
+
 fn require_settled(stored: &StoredDream) -> Result<(), BridgeError> {
     if matches!(stored.status.as_str(), "queued" | "running") {
         return Err(BridgeError::Invalid("This dream is still running. Undo its changes once it has finished.".into()));
