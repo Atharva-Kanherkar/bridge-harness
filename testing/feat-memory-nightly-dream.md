@@ -314,3 +314,18 @@ nightly cadence, proposal review, a report and undo.
 - In mock mode (`bun run dev`), check that the dream entry renders, expands
   and undoes, and that Dream now and Nightly cleanup render. Screenshots go in
   the PR.
+
+## Amendment: found during implementation
+
+- Input, guard, report and undo tests live in `memory_dream::tests`, the
+  module that owns that code. Cadence tests stay in
+  `memory_consolidation::tests`. Added `a_running_dream_cannot_be_undone`.
+- The first-tick catch-up is not a separate rule. The latest slot is always
+  within the past 24 hours, so a dream older than 24 hours always predates
+  it. `a_missed_night_dreams_on_the_first_tick_after_launch` covers the case.
+- The real-data dry run attaches the local database read-only and copies only
+  its memory tables into a temp database, because the database is 8 GB.
+  Nothing is written to the real one.
+- On the first Haiku pass, one four-way duplicate was split across two
+  merges. The merge instruction now asks for every ref that says the same
+  thing in one merge, keeping any detail one of them adds.
