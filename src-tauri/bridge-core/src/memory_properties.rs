@@ -412,3 +412,152 @@ fn the_agent_tools_survive_any_arguments_and_write_only_agent_proposals() {
         })
         .unwrap();
 }
+
+fn dream_element() -> impl Strategy<Value = Value> {
+    let operation = prop::sample::select(vec!["merge", "correct", "expire", "group", "retire", "keep", "approve", "reject", "rewrite"]);
+    let target = prop_oneof![
+        (1usize..12).prop_map(|index| Value::from(format!("r{index}"))),
+        Just(Value::from("c0")),
+        any::<String>().prop_map(Value::from),
+    ];
+    let body = prop_oneof![
+        claim_variant().prop_map(Value::from),
+        Just(Value::from("Lives in Berlin and never reviews migrations")),
+        any::<String>().prop_map(Value::from),
+    ];
+    (
+        operation,
+        prop::collection::vec(target.clone(), 0..4),
+        prop::option::of(body),
+        prop::option::of(-2i64..40),
+        prop::option::of(prop_oneof![Just("deploys".to_string()), any::<String>()]),
+        prop::option::of(target),
+    )
+        .prop_map(|(operation, targets, body, after_days, text, basis)| {
+            let mut element = json!({ "operation": operation, "targets": targets });
+            if let Some(body) = body {
+                element["body"] = body;
+            }
+            if let Some(days) = after_days {
+                element["afterDays"] = days.into();
+            }
+            if let Some(text) = text {
+                let field = if operation == "group" { "subject" } else { "reason" };
+                element[field] = text.into();
+            }
+            if let Some(basis) = basis {
+                let field = if operation == "reject" { "duplicateOf" } else { "basis" };
+                element[field] = basis;
+            }
+            element
+        })
+}
+
+/// An operation with the right fields on aliases the dream shows (r1..r10),
+/// so a good share of answers reach the ledger rather than the refusals.
+fn well_formed_element() -> impl Strategy<Value = Value> {
+    let alias = || (1usize..=10).prop_map(|index| format!("r{index}"));
+    prop_oneof![
+        (alias(), alias(), claim_variant()).prop_map(|(a, b, body)| json!({"operation": "merge", "targets": [a, b], "body": body})),
+        (alias(), alias(), claim_variant()).prop_map(|(a, basis, body)| json!({"operation": "correct", "targets": [a], "basis": basis, "body": body})),
+        (alias(), 1i64..30).prop_map(|(a, days)| json!({"operation": "expire", "targets": [a], "afterDays": days})),
+        (alias(), alias()).prop_map(|(a, b)| json!({"operation": "group", "targets": [a, b], "subject": "deploys"})),
+        alias().prop_map(|a| json!({"operation": "retire", "targets": [a]})),
+        alias().prop_map(|a| json!({"operation": "approve", "targets": [a]})),
+        (alias(), alias()).prop_map(|(a, b)| json!({"operation": "reject", "targets": [a], "reason": "repeats another", "duplicateOf": b})),
+        alias().prop_map(|a| json!({"operation": "keep", "targets": [a]})),
+    ]
+}
+
+fn dream_text() -> impl Strategy<Value = String> {
+    let element = prop_oneof![3 => well_formed_element(), 1 => dream_element()];
+    prop_oneof![
+        4 => prop::collection::vec(element, 0..14)
+            .prop_map(|elements| format!("```bridge-memory-operations\n{}\n```", Value::Array(elements))),
+        1 => any::<String>(),
+        1 => Just("```bridge-memory-operations\n[".to_string()),
+    ]
+}
+
+fn content(db: &Connection) -> Vec<(String, String, String, String)> {
+    let mut rows: Vec<(String, String, String, String)> = db
+        .prepare("SELECT status, body, kind, provenance FROM memory_records WHERE status IN ('active','proposed')")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    rows.sort();
+    rows
+}
+
+#[test]
+fn a_dream_never_changes_a_pin_or_passes_the_budget_and_undo_all_restores_the_night() {
+    let (_dir, db) = property_db();
+    let applied = std::cell::Cell::new(0usize);
+    runner(300)
+        .run(&(dream_text(), 6i64..10, any::<bool>()), |(text, budget, automatic)| {
+            let mode = if automatic { memory_extraction::MODE_AUTO_APPLY } else { memory_extraction::MODE_PROPOSE };
+            reset(&db, budget, mode);
+            db.execute_batch("DELETE FROM memory_consolidation_runs; DELETE FROM memory_dream_holds;").unwrap();
+            for claim in &CLAIMS[..2] {
+                memory_ledger::save(&db, claim, None, None).unwrap();
+            }
+            for claim in &CLAIMS[2..6] {
+                let proposal = memory_ledger::insert_proposal(&db, ACCOUNT_MEMORY_SCOPE, claim, "preference", Some(9_000), None, CHAT).unwrap();
+                memory_ledger::approve(&db, &proposal.id).unwrap();
+            }
+            for claim in &CLAIMS[4..8] {
+                memory_ledger::insert_proposal(&db, ACCOUNT_MEMORY_SCOPE, &format!("{claim} every single time"), "preference", Some(9_000), None, CHAT).unwrap();
+            }
+            let pins = || -> Vec<(String, String, String)> {
+                db.prepare("SELECT id, body, status FROM memory_records WHERE provenance='user_explicit' ORDER BY id")
+                    .unwrap()
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap()
+            };
+            let (pins_before, night_before) = (pins(), content(&db));
+
+            let memory = crate::memory_model::resolve_with(&db, |_| None, || Err("none".into())).unwrap();
+            let now = Utc::now();
+            let (run_id, _) = memory_consolidation::start_dream(&db, now, &memory).unwrap();
+            let claimed = memory_consolidation::claim_due(&db, now, &memory).unwrap().unwrap();
+            struct Canned(String);
+            impl memory_consolidation::ConsolidationModel for Canned {
+                fn consolidate(&mut self, _: &str) -> Result<memory_consolidation::ConsolidationOutput, crate::BridgeError> {
+                    Ok(memory_consolidation::ConsolidationOutput { text: self.0.clone(), observed_tokens: 0, spend_microusd: 0 })
+                }
+            }
+            let lease = claimed.lease_owner.clone();
+            let outcome = crate::memory_dream::drive(&db, &mut Canned(text), ACCOUNT_MEMORY_SCOPE, now, |db, report| {
+                memory_consolidation::record_report(db, &run_id, &lease, &serde_json::to_string(report).unwrap(), now).unwrap()
+            }, || {})
+            .unwrap();
+            memory_consolidation::settle(&db, &run_id, &lease, memory_consolidation::STATUS_COMPLETED, None, None, None, None, 0, 0, 0, 0, now).unwrap();
+
+            applied.set(applied.get() + outcome.report.applied());
+            prop_assert_eq!(pins(), pins_before.clone(), "a dream never changes a pin");
+            prop_assert!(memory_consolidation::held_records(&db, ACCOUNT_MEMORY_SCOPE).unwrap() <= budget);
+            if !automatic {
+                prop_assert!(outcome.report.operations.iter().all(|operation| operation.operation != "approve"), "review-first never approves");
+            }
+            let vocabulary: Vec<String> = night_before.iter().map(|row| row.1.clone()).collect();
+            let vocabulary: Vec<&str> = vocabulary.iter().map(String::as_str).collect();
+            for operation in &outcome.report.operations {
+                let read: BTreeSet<&str> = operation.before.iter().map(|row| row.id.as_str()).collect();
+                for created in operation.after.iter().filter(|row| !read.contains(row.id.as_str())) {
+                    prop_assert!(crate::memory_dream::grounded(&created.body, &vocabulary), "invented: {}", created.body);
+                }
+            }
+
+            let (_, skipped) = crate::memory_dream::undo_dream(&db, &run_id, now + Duration::seconds(1)).unwrap();
+            prop_assert!(skipped.is_empty(), "nothing changed after the dream: {skipped:?}");
+            prop_assert_eq!(content(&db), night_before, "undo all puts back every active and waiting memory");
+            prop_assert_eq!(pins(), pins_before);
+            Ok(())
+        })
+        .unwrap();
+    assert!(applied.get() >= 60, "the generator must reach applied changes, not only refusals: {}", applied.get());
+}

@@ -12,7 +12,12 @@
 //! BRIDGE_MEMORY_EVAL=1 cargo test -p bridge-core --lib memory_evals::live_extraction -- --ignored --nocapture
 //! BRIDGE_MEMORY_EVAL=1 cargo test -p bridge-core --lib memory_evals::live_reconcile -- --ignored --nocapture
 //! BRIDGE_MEMORY_TOOLS_EVAL=1 cargo test -p bridge-core --lib memory_evals::live_tools -- --ignored --nocapture
+//! BRIDGE_MEMORY_EVAL=1 cargo test -p bridge-core --lib memory_evals::live_dream -- --ignored --nocapture
+//! BRIDGE_MEMORY_EVAL=1 BRIDGE_MEMORY_EVAL_DB=/tmp/copy.db cargo test -p bridge-core --lib memory_evals::live_dream_on_a_copy -- --ignored --nocapture
 //! ```
+//!
+//! `live_dream` repeats every labeled dream case `BRIDGE_MEMORY_EVAL_REPEATS`
+//! times (default 3) and prints one `DREAM_EVAL_SUMMARY` JSON line.
 //!
 //! `BRIDGE_MEMORY_EVAL_HARNESS` and `BRIDGE_MEMORY_EVAL_MODEL` pick the
 //! profile (default `claude` on its default model). Changes to the extraction
@@ -690,4 +695,480 @@ fn live_tools() {
     let total = if only.is_some() { 1 } else { cases.len() };
     println!("memory tools: {passed}/{total}, foreign memory tool calls {foreign_calls}");
     assert_eq!(passed, total);
+}
+
+// ---- Nightly dreams (issue #1149) ----
+
+const DREAM_CASES: &str = include_str!("../../../testing/evals/memory-dream/cases.json");
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DreamFile {
+    cases: Vec<DreamCase>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DreamCase {
+    name: String,
+    mode: String,
+    now: String,
+    records: Vec<DreamCaseRecord>,
+    expect: DreamExpect,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DreamCaseRecord {
+    body: String,
+    kind: String,
+    state: String,
+    created: String,
+    confidence: Option<f64>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct DreamExpect {
+    merge: Vec<Vec<usize>>,
+    merge_terms: Vec<Vec<String>>,
+    stale: Vec<usize>,
+    fresh_phrase: Option<String>,
+    expire: Vec<usize>,
+    approve: Vec<usize>,
+    reject: Vec<usize>,
+    junk: Vec<usize>,
+    keep: Vec<usize>,
+    tidy: bool,
+}
+
+fn dream_cases() -> Vec<DreamCase> {
+    serde_json::from_str::<DreamFile>(DREAM_CASES).expect("memory-dream/cases.json parses").cases
+}
+
+fn dream_now(case: &DreamCase) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339(&case.now).expect("a case's now parses").with_timezone(&chrono::Utc)
+}
+
+/// A fresh database holding one case's records under ids `c0`, `c1`, ….
+fn dream_db(case: &DreamCase) -> (tempfile::TempDir, Connection) {
+    let dir = tempfile::tempdir().unwrap();
+    let db = crate::store::open(&dir.path().join("bridge.db")).unwrap();
+    crate::memory_extraction::update_settings(&db, ACCOUNT_MEMORY_SCOPE, &case.mode).unwrap();
+    for (index, record) in case.records.iter().enumerate() {
+        let (status, provenance) = match record.state.as_str() {
+            "pin" => ("active", "user_explicit"),
+            "active" => ("active", "model_proposal"),
+            "proposed" => ("proposed", "model_proposal"),
+            other => panic!("unknown state {other} in {}", case.name),
+        };
+        let at = format!("{}T09:00:00+00:00", record.created);
+        db.execute(
+            "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status, confidence_bps, rationale,
+                 valid_from, valid_to, created_at, updated_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,'Said so in a chat',?8,?9,?8,?8)",
+            params![
+                format!("c{index}"),
+                ACCOUNT_MEMORY_SCOPE,
+                record.kind,
+                record.body,
+                provenance,
+                status,
+                record.confidence.map(|value| (value * 10_000.0).round() as i64),
+                at,
+                (status == "proposed").then_some(at.clone()),
+            ],
+        )
+        .unwrap();
+    }
+    (dir, db)
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct DreamScore {
+    pins_changed: usize,
+    invented: usize,
+    ungrounded: usize,
+    merge_sets: usize,
+    merges_folded: usize,
+    wrong_approvals: usize,
+    approvals: usize,
+    approvals_hit: usize,
+    expiries: usize,
+    expiries_hit: usize,
+    contradictions: usize,
+    contradictions_resolved: usize,
+    rejects: usize,
+    rejects_hit: usize,
+    kept: usize,
+    kept_hit: usize,
+    tidy: usize,
+    tidy_churn: usize,
+    applied: usize,
+    refused: usize,
+}
+
+impl DreamScore {
+    fn add(&mut self, other: DreamScore) {
+        self.pins_changed += other.pins_changed;
+        self.invented += other.invented;
+        self.ungrounded += other.ungrounded;
+        self.merge_sets += other.merge_sets;
+        self.merges_folded += other.merges_folded;
+        self.wrong_approvals += other.wrong_approvals;
+        self.approvals += other.approvals;
+        self.approvals_hit += other.approvals_hit;
+        self.expiries += other.expiries;
+        self.expiries_hit += other.expiries_hit;
+        self.contradictions += other.contradictions;
+        self.contradictions_resolved += other.contradictions_resolved;
+        self.rejects += other.rejects;
+        self.rejects_hit += other.rejects_hit;
+        self.kept += other.kept;
+        self.kept_hit += other.kept_hit;
+        self.tidy += other.tidy;
+        self.tidy_churn += other.tidy_churn;
+        self.applied += other.applied;
+        self.refused += other.refused;
+    }
+
+    /// Every case's expectations met, gates included.
+    fn perfect(&self) -> bool {
+        self.pins_changed == 0
+            && self.invented == 0
+            && self.wrong_approvals == 0
+            && self.merges_folded == self.merge_sets
+            && self.approvals_hit == self.approvals
+            && self.expiries_hit == self.expiries
+            && self.contradictions_resolved == self.contradictions
+            && self.rejects_hit == self.rejects
+            && self.kept_hit == self.kept
+            && self.tidy_churn == 0
+    }
+}
+
+fn dream_row(db: &Connection, id: &str) -> (String, String, Option<String>) {
+    db.query_row("SELECT status, body, expires_at FROM memory_records WHERE id=?1", [id], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })
+    .unwrap()
+}
+
+fn live_bodies(db: &Connection) -> Vec<(String, String)> {
+    db.prepare("SELECT status, lower(body) FROM memory_records WHERE status IN ('active','proposed')")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// What one dream did to one case, judged by outcome rather than by which
+/// operation the model picked: a duplicate set is folded whether it was
+/// merged or all but one were rejected.
+fn score_dream(case: &DreamCase, db: &Connection, report: &crate::memory_dream::DreamReport) -> DreamScore {
+    let id = |index: usize| format!("c{index}");
+    let mut score = DreamScore {
+        applied: report.applied(),
+        refused: report.refused_total() + report.invalid,
+        ungrounded: report.refused.get("ungrounded").copied().unwrap_or(0),
+        ..DreamScore::default()
+    };
+    for (index, record) in case.records.iter().enumerate() {
+        if record.state == "pin" {
+            let (status, body, _) = dream_row(db, &id(index));
+            score.pins_changed += usize::from(status != "active" || body != record.body);
+        }
+    }
+    // Invented: a new body with a word no record in the case ever used.
+    let vocabulary: Vec<&str> = case.records.iter().map(|record| record.body.as_str()).collect();
+    for operation in &report.operations {
+        let before: BTreeSet<&str> = operation.before.iter().map(|row| row.id.as_str()).collect();
+        for created in operation.after.iter().filter(|row| !before.contains(row.id.as_str())) {
+            score.invented += usize::from(!crate::memory_dream::grounded(&created.body, &vocabulary));
+        }
+    }
+    let live = live_bodies(db);
+    for (set, terms) in case.expect.merge.iter().zip(&case.expect.merge_terms) {
+        score.merge_sets += 1;
+        let carrying = live.iter().filter(|(_, body)| terms.iter().all(|term| body.contains(&term.to_lowercase()))).count();
+        let members_live = set.iter().filter(|index| matches!(dream_row(db, &id(**index)).0.as_str(), "active" | "proposed")).count();
+        score.merges_folded += usize::from(carrying == 1 && members_live <= 1);
+    }
+    for index in &case.expect.junk {
+        score.wrong_approvals += usize::from(dream_row(db, &id(*index)).0 == "active");
+    }
+    for index in &case.expect.approve {
+        score.approvals += 1;
+        score.approvals_hit += usize::from(dream_row(db, &id(*index)).0 == "active");
+    }
+    for index in &case.expect.expire {
+        score.expiries += 1;
+        let (status, _, expires) = dream_row(db, &id(*index));
+        score.expiries_hit += usize::from(status == "expired" || expires.is_some());
+    }
+    for index in &case.expect.reject {
+        score.rejects += 1;
+        score.rejects_hit += usize::from(matches!(dream_row(db, &id(*index)).0.as_str(), "rejected" | "superseded"));
+    }
+    for index in &case.expect.keep {
+        score.kept += 1;
+        let (status, body, expires) = dream_row(db, &id(*index));
+        score.kept_hit += usize::from(status == "active" && body == case.records[*index].body && expires.is_none());
+    }
+    if let Some(phrase) = &case.expect.fresh_phrase {
+        score.contradictions += 1;
+        let stale_gone = case.expect.stale.iter().all(|index| dream_row(db, &id(*index)).0 != "active");
+        let fresh_active = live.iter().any(|(status, body)| status == "active" && body.contains(phrase.as_str()));
+        score.contradictions_resolved += usize::from(stale_gone && fresh_active);
+    }
+    if case.expect.tidy {
+        score.tidy += 1;
+        score.tidy_churn += report.applied();
+    }
+    score
+}
+
+/// The answer a careful reader would give a case, in aliases.
+fn ideal_answer(case: &DreamCase, plan: &crate::memory_dream::DreamPlan) -> String {
+    let alias = |index: usize| plan.alias_of(&format!("c{index}")).expect("every case record is planned").to_string();
+    let mut operations: Vec<serde_json::Value> = Vec::new();
+    let mut touched: BTreeSet<usize> = BTreeSet::new();
+    for set in &case.expect.merge {
+        operations.push(serde_json::json!({
+            "operation": "merge",
+            "targets": set.iter().map(|index| alias(*index)).collect::<Vec<_>>(),
+            "body": case.records[set[0]].body,
+        }));
+        touched.extend(set.iter().copied());
+    }
+    if case.expect.fresh_phrase.is_some() {
+        for stale in &case.expect.stale {
+            operations.push(serde_json::json!({ "operation": "retire", "targets": [alias(*stale)] }));
+            touched.insert(*stale);
+        }
+        for (index, record) in case.records.iter().enumerate() {
+            if record.state == "proposed" && !touched.contains(&index) {
+                operations.push(serde_json::json!({ "operation": "approve", "targets": [alias(index)] }));
+                touched.insert(index);
+            }
+        }
+    }
+    for index in &case.expect.expire {
+        operations.push(serde_json::json!({ "operation": "expire", "targets": [alias(*index)], "afterDays": 1 }));
+        touched.insert(*index);
+    }
+    for index in &case.expect.approve {
+        operations.push(serde_json::json!({ "operation": "approve", "targets": [alias(*index)] }));
+        touched.insert(*index);
+    }
+    for index in &case.expect.reject {
+        let mut reject = serde_json::json!({ "operation": "reject", "targets": [alias(*index)], "reason": "Not worth keeping" });
+        if let Some(original) = (0..case.records.len()).find(|other| *other != *index && case.records[*other].state != "proposed") {
+            reject["duplicateOf"] = alias(original).into();
+        }
+        operations.push(reject);
+        touched.insert(*index);
+    }
+    for index in (0..case.records.len()).filter(|index| !touched.contains(index)) {
+        operations.push(serde_json::json!({ "operation": "keep", "targets": [alias(index)] }));
+    }
+    format!("```bridge-memory-operations\n{}\n```", serde_json::Value::Array(operations))
+}
+
+struct CannedDream(String);
+
+impl crate::memory_consolidation::ConsolidationModel for CannedDream {
+    fn consolidate(&mut self, _prompt: &str) -> Result<crate::memory_consolidation::ConsolidationOutput, crate::BridgeError> {
+        Ok(crate::memory_consolidation::ConsolidationOutput { text: self.0.clone(), observed_tokens: 0, spend_microusd: 0 })
+    }
+}
+
+#[test]
+fn dream_cases_hold_offline() {
+    let cases = dream_cases();
+    assert!(cases.len() >= 10, "every labeled case from the contract is here");
+    for case in &cases {
+        let (_dir, db) = dream_db(case);
+        let plan = crate::memory_dream::plan(&db, ACCOUNT_MEMORY_SCOPE).unwrap();
+        assert_eq!(plan.batches.len(), 1, "{} fits one batch", case.name);
+        let mut model = CannedDream(ideal_answer(case, &plan));
+        let (report, _) = crate::memory_dream::run_dream(&db, &mut model, ACCOUNT_MEMORY_SCOPE, dream_now(case)).unwrap();
+        let score = score_dream(case, &db, &report);
+        assert!(score.perfect(), "{}: an ideal answer must meet every expectation: {score:?} {report:?}", case.name);
+    }
+
+    // Adversarial answers the gate must refuse, each changing nothing.
+    let pin_case = cases.iter().find(|case| case.name == "pin-with-paraphrase").unwrap();
+    let (_dir, db) = dream_db(pin_case);
+    let plan = crate::memory_dream::plan(&db, ACCOUNT_MEMORY_SCOPE).unwrap();
+    let (pin, copy) = (plan.alias_of("c0").unwrap(), plan.alias_of("c1").unwrap());
+    let mut model = CannedDream(format!(
+        "```bridge-memory-operations\n[{{\"operation\":\"correct\",\"targets\":[\"{pin}\"],\"basis\":\"{copy}\",\"body\":\"Never push directly to the main branch\"}},\
+         {{\"operation\":\"retire\",\"targets\":[\"c0\"]}},{{\"operation\":\"approve\",\"targets\":[\"{copy}\"]}}]\n```"
+    ));
+    let (report, _) = crate::memory_dream::run_dream(&db, &mut model, ACCOUNT_MEMORY_SCOPE, dream_now(pin_case)).unwrap();
+    assert_eq!(report.refused.get("locked"), Some(&1), "a pin edit: {report:?}");
+    assert_eq!(report.refused.get("foreign_id"), Some(&1), "a raw id");
+    assert_eq!(report.refused.get("conflict"), Some(&1), "approving a repeat of a pin");
+    assert_eq!(score_dream(pin_case, &db, &report).pins_changed, 0);
+
+    let researcher = cases.iter().find(|case| case.name == "researcher-variants").unwrap();
+    let (_dir, db) = dream_db(researcher);
+    let plan = crate::memory_dream::plan(&db, ACCOUNT_MEMORY_SCOPE).unwrap();
+    let (a, b) = (plan.alias_of("c0").unwrap(), plan.alias_of("c1").unwrap());
+    let mut model = CannedDream(format!(
+        "```bridge-memory-operations\n[{{\"operation\":\"merge\",\"targets\":[\"{a}\",\"{b}\"],\"body\":\"Works as an independent researcher in Berlin\"}}]\n```"
+    ));
+    let (report, _) = crate::memory_dream::run_dream(&db, &mut model, ACCOUNT_MEMORY_SCOPE, dream_now(researcher)).unwrap();
+    assert_eq!(report.refused.get("ungrounded"), Some(&1), "an ungrounded merge");
+    assert_eq!(report.applied(), 0);
+
+    let junk = cases.iter().find(|case| case.name == "junk-status-updates").unwrap();
+    let (_dir, db) = dream_db(junk);
+    let plan = crate::memory_dream::plan(&db, ACCOUNT_MEMORY_SCOPE).unwrap();
+    let (first, second) = (plan.alias_of("c0").unwrap(), plan.alias_of("c1").unwrap());
+    let mut model = CannedDream(format!(
+        "```bridge-memory-operations\n[{{\"operation\":\"approve\",\"targets\":[\"{first}\"]}},{{\"operation\":\"approve\",\"targets\":[\"{second}\"]}}]\n```"
+    ));
+    let (report, _) = crate::memory_dream::run_dream(&db, &mut model, ACCOUNT_MEMORY_SCOPE, dream_now(junk)).unwrap();
+    assert_eq!(score_dream(junk, &db, &report).wrong_approvals, 0, "approving junk: {report:?}");
+}
+
+/// One hidden bounded turn per batch on the eval profile, as the host runs a
+/// dream: an empty tool scope and one turn.
+struct LiveDream {
+    registry: std::sync::Arc<crate::adapters::AdapterRegistry>,
+    scratch: std::path::PathBuf,
+}
+
+impl crate::memory_consolidation::ConsolidationModel for LiveDream {
+    fn consolidate(&mut self, prompt: &str) -> Result<crate::memory_consolidation::ConsolidationOutput, crate::BridgeError> {
+        let generation = crate::title_jobs_live::one_hidden_turn(&self.registry, &self.scratch, &eval_harness(), eval_model().as_deref(), "", prompt, None)
+            .map_err(crate::BridgeError::Invalid)?;
+        Ok(crate::memory_consolidation::ConsolidationOutput {
+            text: generation.text,
+            observed_tokens: generation.tokens,
+            spend_microusd: generation.spend_microusd,
+        })
+    }
+}
+
+#[test]
+#[ignore = "runs real provider turns"]
+fn live_dream() {
+    assert!(std::env::var_os("BRIDGE_MEMORY_EVAL").is_some(), "set BRIDGE_MEMORY_EVAL=1");
+    let repeats: usize = std::env::var("BRIDGE_MEMORY_EVAL_REPEATS").ok().and_then(|value| value.parse().ok()).unwrap_or(3);
+    let cases = dream_cases();
+    let mut model = LiveDream { registry: eval_registry(), scratch: std::env::temp_dir().join("bridge-memory-dream-eval") };
+    let (mut total, mut spend, mut wall, mut perfect, mut failures) = (DreamScore::default(), 0i64, 0f64, 0usize, 0usize);
+    for round in 1..=repeats {
+        for case in &cases {
+            let (_dir, db) = dream_db(case);
+            let started = std::time::Instant::now();
+            let outcome = crate::memory_dream::run_dream(&db, &mut model, ACCOUNT_MEMORY_SCOPE, dream_now(case));
+            wall += started.elapsed().as_secs_f64();
+            let (report, output) = match outcome {
+                Ok(done) => done,
+                Err(error) => {
+                    failures += 1;
+                    println!("ERROR round {round} {:<30} {error}", case.name);
+                    continue;
+                }
+            };
+            spend += output.spend_microusd;
+            let score = score_dream(case, &db, &report);
+            perfect += usize::from(score.perfect());
+            total.add(score);
+            let operations: Vec<String> = report.operations.iter().map(|operation| operation.operation.clone()).collect();
+            println!(
+                "{} round {round} {:<30} ops {:?} kept {} refused {:?}",
+                if score.perfect() { "PASS" } else { "MISS" },
+                case.name,
+                operations,
+                report.kept,
+                report.refused
+            );
+            if !score.perfect() {
+                for (status, body) in live_bodies(&db) {
+                    println!("       {status:<8} {body}");
+                }
+            }
+        }
+    }
+    let runs = repeats * cases.len();
+    let ratio = |hit: usize, of: usize| if of == 0 { 1.0 } else { hit as f64 / of as f64 };
+    let merge_recall = ratio(total.merges_folded, total.merge_sets);
+    let summary = serde_json::json!({
+        "model": eval_model().unwrap_or_else(|| "default".into()),
+        "runs": runs,
+        "perfect": perfect,
+        "failures": failures,
+        "pinsChanged": total.pins_changed,
+        "inventedLanded": total.invented,
+        "ungroundedRefused": total.ungrounded,
+        "mergeRecall": merge_recall,
+        "wrongApprovals": total.wrong_approvals,
+        "approvalRecall": ratio(total.approvals_hit, total.approvals),
+        "expiryHit": ratio(total.expiries_hit, total.expiries),
+        "contradictionsResolved": ratio(total.contradictions_resolved, total.contradictions),
+        "rejectHit": ratio(total.rejects_hit, total.rejects),
+        "keptIntact": ratio(total.kept_hit, total.kept),
+        "tidyChurn": total.tidy_churn,
+        "applied": total.applied,
+        "refused": total.refused,
+        "spendUsd": spend as f64 / 1e6,
+        "wallSecondsPerDream": wall / runs as f64,
+    });
+    println!("DREAM_EVAL_SUMMARY {summary}");
+    assert_eq!(failures, 0, "a dream failed outright");
+    assert_eq!(total.pins_changed, 0, "a pin was changed");
+    assert_eq!(total.invented, 0, "a fact nobody wrote landed");
+    assert!(merge_recall >= 0.8, "merge recall {merge_recall:.2} is under 0.80");
+    assert_eq!(total.wrong_approvals, 0, "labeled junk was approved");
+}
+
+/// One full dream over a copy of a real database, reporting aggregates only.
+///
+/// `BRIDGE_MEMORY_EVAL_DB` must name a copy (`sqlite3 -readonly live.db
+/// ".backup copy.db"`); the live database is refused. Per-change detail, which
+/// holds memory text, goes only to `BRIDGE_MEMORY_EVAL_DETAIL` when set.
+#[test]
+#[ignore = "runs real provider turns over a copy of real data"]
+fn live_dream_on_a_copy() {
+    assert!(std::env::var_os("BRIDGE_MEMORY_EVAL").is_some(), "set BRIDGE_MEMORY_EVAL=1");
+    let path = std::env::var("BRIDGE_MEMORY_EVAL_DB").expect("set BRIDGE_MEMORY_EVAL_DB to a copy of bridge.db");
+    assert!(!path.contains("dev.bridge.deck"), "point at a copy, never the live database");
+    let db = crate::store::open(std::path::Path::new(&path)).unwrap();
+    let mut model = LiveDream { registry: eval_registry(), scratch: std::env::temp_dir().join("bridge-memory-dream-eval") };
+    let before: BTreeMap<String, i64> = db
+        .prepare("SELECT status || '/' || provenance, COUNT(*) FROM memory_records WHERE status IN ('active','proposed') GROUP BY 1")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let started = std::time::Instant::now();
+    let (report, output) = crate::memory_dream::run_dream(&db, &mut model, ACCOUNT_MEMORY_SCOPE, chrono::Utc::now()).unwrap();
+    let tally = report.tally();
+    let summary = serde_json::json!({
+        "model": eval_model().unwrap_or_else(|| "default".into()),
+        "before": before,
+        "batches": report.batches,
+        "failedBatches": report.failed_batches,
+        "deferred": report.deferred,
+        "applied": { "merged": tally.merged, "corrected": tally.corrected, "expired": tally.expired, "grouped": tally.grouped,
+                     "retired": tally.retired, "approved": tally.approved, "rejected": tally.rejected },
+        "kept": report.kept,
+        "refused": report.refused,
+        "invalid": report.invalid,
+        "spendUsd": output.spend_microusd as f64 / 1e6,
+        "wallSeconds": started.elapsed().as_secs_f64(),
+    });
+    println!("DREAM_COPY_SUMMARY {summary}");
+    if let Ok(detail) = std::env::var("BRIDGE_MEMORY_EVAL_DETAIL") {
+        std::fs::write(&detail, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+    }
+    assert_eq!(crate::memory_dream::dream_records(&db, ACCOUNT_MEMORY_SCOPE).unwrap().iter().filter(|entry| entry.record.provenance == "user_explicit").count() as i64,
+        before.get("active/user_explicit").copied().unwrap_or(0), "every pin is still active");
 }
