@@ -604,7 +604,8 @@ pub fn build_digest(
     let mut statement = db.prepare(
         "SELECT id, kind, coalesce(json_extract(payload,'$.text'), ''),
                 coalesce(json_extract(payload,'$.appId'), ''),
-                coalesce(json_extract(payload,'$.summary'), '')
+                coalesce(json_extract(payload,'$.summary'), ''),
+                created_at
          FROM session_entries
          WHERE session_id=?1 AND sequence > ?2 AND (
              (kind IN ('user.message','assistant.message')
@@ -612,10 +613,10 @@ pub fn build_digest(
              OR kind=?3)
          ORDER BY sequence ASC LIMIT ?4",
     )?;
-    let rows: Vec<(String, String, String, String, String)> = statement
+    let rows: Vec<(String, String, String, String, String, String)> = statement
         .query_map(
             params![session_id, after, crate::apps::events::APP_EVENT_KIND, (MAX_DIGEST_ENTRIES + 1) as i64],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
         )?
         .collect::<Result<Vec<_>, _>>()?;
     if rows.is_empty() {
@@ -629,7 +630,8 @@ pub fn build_digest(
     let mut evidence = String::new();
     let mut through_entry_id = String::new();
     let mut more = rows.len() > MAX_DIGEST_ENTRIES;
-    for (id, kind, text, app_id, summary) in rows.into_iter().take(MAX_DIGEST_ENTRIES) {
+    let mut days: Vec<chrono::NaiveDate> = Vec::new();
+    for (id, kind, text, app_id, summary, created_at) in rows.into_iter().take(MAX_DIGEST_ENTRIES) {
         if kind == crate::apps::events::APP_EVENT_KIND {
             let Some(app) = crate::apps::builtin(&app_id) else {
                 through_entry_id = id;
@@ -668,6 +670,9 @@ pub fn build_digest(
             break;
         }
         used += line.len();
+        if let Ok(at) = DateTime::parse_from_rfc3339(&created_at) {
+            days.push(at.with_timezone(&Utc).date_naive());
+        }
         if kind == "user.message" {
             has_evidence = true;
             evidence.push_str(&clip(text, MAX_USER_CHARS));
@@ -678,6 +683,15 @@ pub fn build_digest(
     }
     let similar = similar_memories(db, scope_key, &evidence, MAX_KNOWN_MEMORIES)?;
     let (mut text, known) = render_known(&similar);
+    if let (Some(first), Some(last)) = (days.iter().min(), days.iter().max()) {
+        // The anchor for "yesterday" or "last month", so a dated claim can be
+        // written as the date it was.
+        if first == last {
+            text.push_str(&format!("Conversation date: {first}\n\n"));
+        } else {
+            text.push_str(&format!("Conversation dates: {first} to {last}\n\n"));
+        }
+    }
     if !lines.is_empty() {
         text.push_str("Conversation:\n");
         text.push_str(&lines.join("\n"));
@@ -810,17 +824,26 @@ pub fn record_coverage(
 
 pub fn extraction_instructions() -> String {
     "You review one conversation digest and propose only durable facts the user \
-     directly stated about themselves or how they work: preferences, conventions, \
-     decisions, and constraints. Assistant messages are context, never evidence. \
+     directly stated about themselves, their life, or how they work: preferences, \
+     conventions, decisions, constraints, and personal facts. Personal facts include \
+     what they own, use, bought, made, did, attended, or plan; the people and pets \
+     in their life; their places, routines, and the numbers they gave (counts, \
+     amounts, durations, scores, prices, dates). Write each as one standalone \
+     claim that keeps the specific names, numbers, and when it happened, \
+     for example `Bought a used Fender Stratocaster in March 2023`. When a \
+     conversation date is given, turn relative times such as yesterday or last \
+     month into dates from it. Assistant messages are context, never evidence. \
      The same clause that supports the body must contain an explicit first-person \
      or commitment cue: prefer/rather/favorite for a preference; \
      always/never/must/only/require/avoid for a constraint; decided/chosen/going with \
      for a decision; or a concrete first-person fact such as a name, role, job, \
-     timezone, workplace, residence, or tool in regular use. Merely mentioning a \
-     tool, language, place, or topic is not evidence. Quoted, reported, negated, \
+     timezone, workplace, residence, tool in regular use, possession, \
+     relationship, or something they did. Merely mentioning a \
+     tool, language, place, or topic is not evidence, and neither is a question \
+     the user asks the assistant. Quoted, reported, negated, \
      or retracted wording is not a durable claim. Do not infer a claim, copy \
-     temporary chat/task/session state, deadlines, one-off requests, or anything \
-     that conflicts with an already remembered item. \
+     the state of the work this chat is doing, its deadlines, one-off requests to \
+     the assistant, or anything that conflicts with an already remembered item. \
      App activity lines, when present, are the one other source: they record what \
      happened through a Bridge app, and the user did not say them, so the cue \
      rule above does not apply to them. From them, propose only a durable pattern that \
