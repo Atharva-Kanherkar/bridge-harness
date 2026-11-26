@@ -56,7 +56,10 @@ const LEASE_MINUTES: i64 = 10;
 /// How long a chat must stay quiet before its extraction runs. Every finished
 /// turn pushes the run out again, so one conversation costs one run rather
 /// than one per turn, and the run reads a conversation that has stopped.
-pub const IDLE_SECONDS: i64 = 600;
+/// Twenty minutes, not ten: on a real week of chats, ten still ran once per
+/// turn for long agent turns (3.9x fewer runs than per-turn extraction);
+/// twenty clears 5x. Archiving a chat makes its run due at once.
+pub const IDLE_SECONDS: i64 = 1_200;
 /// The detail of a run settled without a model call because the chat said
 /// nothing new since the last run.
 pub const NOTHING_NEW: &str = "nothing_new";
@@ -3650,15 +3653,17 @@ mod tests {
         enqueue_after_turn(&db, "s1", &memory(&db), start).unwrap();
         let due = start + Duration::seconds(IDLE_SECONDS);
         let running = claim_due(&db, due, &memory(&db)).unwrap().unwrap();
-        // A turn while the run executes queues the next one beside it.
+        // A turn while the run executes queues the next one beside it, and an
+        // archive makes that one due at once, still within the first's lease.
         assert!(enqueue_after_turn(&db, "s1", &memory(&db), due).unwrap());
-        enqueue_after_turn(&db, "s2", &memory(&db), due).unwrap();
-        let later = due + Duration::seconds(IDLE_SECONDS);
-        let next = claim_due(&db, later, &memory(&db)).unwrap().unwrap();
+        enqueue_after_turn(&db, "s2", &memory(&db), start).unwrap();
+        let archived = due + Duration::seconds(30);
+        assert!(due_now(&db, "s1", archived).unwrap());
+        let next = claim_due(&db, archived, &memory(&db)).unwrap().unwrap();
         assert_eq!(next.session_id, "s2", "s1 still has a run holding its lease");
-        assert!(claim_due(&db, later, &memory(&db)).unwrap().is_none());
+        assert!(claim_due(&db, archived, &memory(&db)).unwrap().is_none());
         settle(&db, &running.run_id, &running.lease_owner, "completed", None, None, None, None, 0, 0, 0).unwrap();
-        assert_eq!(claim_due(&db, later, &memory(&db)).unwrap().unwrap().session_id, "s1");
+        assert_eq!(claim_due(&db, archived, &memory(&db)).unwrap().unwrap().session_id, "s1");
     }
 
     #[test]
