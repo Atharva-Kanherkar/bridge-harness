@@ -4926,7 +4926,9 @@ function Welcome({ defaultsLoading, adapters, accounts, account, harness, model,
       // before the first message, the same picker the session composer uses.
       modelControl={<ChatModelControl adapters={adapters} accounts={agent ? undefined : accounts} account={account} harness={harness} model={model} knownLabel={knownLabel} loading={loading} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} allowedEfforts={agent ? WORKER_EFFORTS : undefined} onEffortChange={onSelectEffort} speed={speed} onSpeedChange={agent ? undefined : onSelectSpeed} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} accessControl={modelAccessControl} />}
       accessControl={accessControl}
-      footer={workspaces.length > 0 ? <div className="flex min-w-0 items-center gap-2 px-0.5">
+      // `pl-1` starts the strip's icons on the project list's column below;
+      // the mode toggle stays flush with the composer's right edge.
+      footer={workspaces.length > 0 ? <div className="flex min-w-0 items-center gap-2 pl-1">
         <div className="min-w-0 flex-1"><ComposerContextStrip
         workspaces={workspaces}
         workspace={workspace}

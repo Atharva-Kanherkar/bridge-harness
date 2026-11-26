@@ -77,9 +77,8 @@ export type ComposerPillProps = {
   /// tools and chat options. The access mode lives in the model picker's
   /// footer and only joins this row for a chat drawn without the picker.
   accessControl?: ReactNode;
-  /// The context strip, rendered as an attached footer inside the composer frame:
-  /// input → controls row → footer. When present it gets a top hairline and the
-  /// recessed `bg-background` surface, so the frame visually contains it.
+  /// The context strip, a row just below the composer frame. The hero leaves
+  /// more room above it, since the new-chat row carries the boxed mode toggle.
   footer?: ReactNode;
   /// A line attached to the top of the frame, above the input, behind a
   /// hairline: the work shelf. Absent by default; it never reserves height.
@@ -379,8 +378,9 @@ export function ComposerPill({
 
           <div className={cn("flex min-h-8 items-center gap-2", isInline ? "shrink-0" : "flex-wrap justify-between")}>
             {/* Leading edge of the controls row: the model chip, then the chat's
-                controls behind a hairline divider. */}
-            {(!isInline || modelControl || accessControl) && <div className="flex min-w-0 items-center gap-1.5">
+                controls behind a hairline divider. Pulled in by the field's own
+                inset so the chip's icon starts on the text column. */}
+            {(!isInline || modelControl || accessControl) && <div className={cn("flex min-w-0 items-center gap-1.5", !isInline && "-ml-1")}>
               {modelControl}
               {modelControl && accessControl ? <span aria-hidden="true" className="h-4 w-px shrink-0 bg-border" /> : null}
               {accessControl}
@@ -436,7 +436,7 @@ export function ComposerPill({
           </div>
         </form>
       </div>
-      {footer && <div className="pt-1.5">{footer}</div>}
+      {footer && <div className={isHero ? "pt-3" : "pt-1.5"}>{footer}</div>}
     </div>
   );
 }
