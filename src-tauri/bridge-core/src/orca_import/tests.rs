@@ -363,24 +363,94 @@ fn an_orchestration_database_bridge_cannot_read_is_reported_not_fatal() {
 #[test]
 fn the_version_gate_fails_closed_with_the_version_it_saw() {
     let sandbox = sandbox();
-    sandbox.fixture.chats.execute_batch("PRAGMA user_version = 3").unwrap();
-    let error = read(&Paths::at(&sandbox.base)).unwrap_err();
-    assert!(error.contains("newer") && error.contains("version 3"), "{error}");
     sandbox.fixture.chats.execute_batch("PRAGMA user_version = 0").unwrap();
     let error = read(&Paths::at(&sandbox.base)).unwrap_err();
-    assert!(error.contains("older") && error.contains("version 0"), "{error}");
+    assert_eq!(error, "Orca's chat database is older than Bridge knows (version 0)");
     sandbox.fixture.chats.execute_batch("PRAGMA user_version = 2; ALTER TABLE agent_session_records RENAME COLUMN record_json TO record").unwrap();
     let error = read(&Paths::at(&sandbox.base)).unwrap_err();
-    assert!(error.contains("missing what Bridge reads"), "{error}");
+    assert_eq!(error, "Orca's chat database is missing what Bridge reads (version 2)");
 
     let other = self::sandbox();
-    other.fixture.profile("local-default").execute_batch("PRAGMA user_version = 4").unwrap();
+    other.fixture.profile("local-default").execute_batch("PRAGMA user_version = 0").unwrap();
     let error = read(&Paths::at(&other.base)).unwrap_err();
-    assert!(error.contains("version 4"), "{error}");
+    assert_eq!(error, "Orca's profile 'local-default' is older than Bridge knows (version 0)");
     other.fixture.profile("local-default").execute_batch("PRAGMA user_version = 3").unwrap();
     other.fixture.set_document("local-default", "schemaVersion", &json!(2), 1);
     let error = read(&Paths::at(&other.base)).unwrap_err();
     assert!(error.contains("schema 2"), "{error}");
+}
+
+#[test]
+fn a_newer_database_with_everything_bridge_reads_is_read_and_one_without_is_named() {
+    let before = read_base(&sandbox().base);
+    let sandbox = sandbox();
+    sandbox.fixture.chats.execute_batch("PRAGMA user_version = 7; CREATE TABLE future_tokens(token TEXT);").unwrap();
+    sandbox.fixture.profile("local-default").execute_batch("PRAGMA user_version = 9").unwrap();
+    let store = read_base(&sandbox.base);
+    assert_eq!(chats(&store).count(), chats(&before).count());
+    assert!(chats(&store).count() > 0);
+
+    for (chat, reads) in [(true, store::CHAT_NEWEST_READS), (false, store::PROFILE_NEWEST_READS)] {
+        for (table, columns) in reads {
+            for column in *columns {
+                let sandbox = self::sandbox();
+                let profile = sandbox.fixture.profile("local-default");
+                let conn = if chat { &sandbox.fixture.chats } else { &profile };
+                conn.execute_batch(&format!("PRAGMA user_version = 9; DROP TABLE IF EXISTS {table}_shadow;")).unwrap();
+                // Generated columns and triggers may name the column: drop the triggers, rebuild the table without it.
+                let triggers: Vec<String> =
+                    conn.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'").unwrap().query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
+                for trigger in triggers {
+                    conn.execute_batch(&format!("DROP TRIGGER \"{trigger}\"")).unwrap();
+                }
+                let kept: Vec<String> = conn
+                    .prepare(&format!("SELECT name FROM pragma_table_info('{table}') WHERE name != ?1"))
+                    .unwrap()
+                    .query_map([column], |row| row.get(0))
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .collect();
+                let list = kept.iter().map(|name| format!("\"{name}\"")).collect::<Vec<_>>().join(", ");
+                conn.execute_batch(&format!(
+                    "PRAGMA foreign_keys=OFF; CREATE TABLE {table}_shadow AS SELECT {list} FROM {table}; DROP TABLE {table}; ALTER TABLE {table}_shadow RENAME TO {table};"
+                ))
+                .unwrap();
+                let error = read(&Paths::at(&sandbox.base)).unwrap_err();
+                let label = if chat { "Orca's chat database".to_owned() } else { "Orca's profile 'local-default'".to_owned() };
+                assert!(
+                    error.starts_with(&format!("{label} is newer than Bridge knows (version 9) and changed what Bridge reads (")),
+                    "{table}.{column}: {error}"
+                );
+                assert!(error.contains(&format!("{table}.{column}")), "{error}");
+            }
+        }
+    }
+}
+
+#[test]
+fn newest_reads_is_exactly_what_the_readers_read_at_the_newest_checked_versions() {
+    let sandbox = sandbox();
+    let version = |conn: &rusqlite::Connection| conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap();
+    assert_eq!(version(&sandbox.fixture.chats), store::CHAT_VERSIONS.newest_checked);
+    assert_eq!(version(&sandbox.fixture.profile("local-default")), store::PROFILE_VERSIONS.newest_checked);
+    sandbox.fixture.items("16acf9ae", "e1", &[message("u1", "user", "hello", 1)]);
+    STATEMENTS.with(|statements| statements.borrow_mut().clear());
+    let (_, chats) = store::read_chats(&sandbox.fixture.chats).unwrap();
+    for chat in &chats {
+        store::items(&sandbox.fixture.chats, &chat.id).unwrap();
+    }
+    let statements = STATEMENTS.with(|statements| std::mem::take(&mut *statements.borrow_mut()));
+    let allowed = crate::import_sqlite::Allowed { tool: "Orca", tables: store::CHAT_TABLES };
+    crate::import_sqlite::assert_reads_match(&allowed, &sandbox.fixture.chats, store::CHAT_NEWEST_READS, &statements);
+    assert!(!chats.is_empty());
+
+    // Current split parts, so the parts query runs too.
+    sandbox.fixture.worktree_parts("local-default", &[(worktree_id(REPO, &sandbox.login), "From parts", false)], 7);
+    let profile = sandbox.fixture.profile("local-default");
+    store::read_profile(&profile, "local-default").unwrap();
+    let statements = STATEMENTS.with(|statements| std::mem::take(&mut *statements.borrow_mut()));
+    let allowed = crate::import_sqlite::Allowed { tool: "Orca", tables: store::PROFILE_TABLES };
+    crate::import_sqlite::assert_reads_match(&allowed, &profile, store::PROFILE_NEWEST_READS, &statements);
 }
 
 #[test]

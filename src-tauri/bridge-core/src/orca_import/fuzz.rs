@@ -206,6 +206,8 @@ fn mutation() -> impl Strategy<Value = Mutation> {
             ("journal_items", "hidden"),
             ("journal_chat_state", "epoch"),
             ("agent_session_store_meta", "value"),
+            ("journal_items", "ordinal"),
+            ("journal_items", "item_id"),
         ])
         .prop_map(|(table, column)| Mutation::RenameColumn(table, column)),
         proptest::sample::select(vec!["agent_session_records", "journal_items", "journal_chat_state", "agent_session_store_meta"]).prop_map(Mutation::DropTable),
@@ -222,8 +224,9 @@ fn mutation() -> impl Strategy<Value = Mutation> {
 }
 
 fn apply(fixture: &Fixture, mutation: &Mutation) {
+    // A second rename or drop of the same thing does nothing.
     let rename = |conn: &Connection, table: &str, column: &str| {
-        conn.execute_batch(&format!("ALTER TABLE {table} RENAME COLUMN {column} TO {column}_gone")).unwrap();
+        let _ = conn.execute_batch(&format!("ALTER TABLE {table} RENAME COLUMN {column} TO {column}_gone"));
     };
     match mutation {
         Mutation::RenameColumn(table, column) => {
@@ -243,16 +246,30 @@ fn apply(fixture: &Fixture, mutation: &Mutation) {
             if *column == "record_json" {
                 // `adopted_native_id` is generated from it.
                 fixture.chats.execute_batch("DROP INDEX IF EXISTS idx_agent_session_records_adopted_native_id").ok();
-                fixture.chats.execute_batch("ALTER TABLE agent_session_records RENAME TO old_records; CREATE TABLE agent_session_records(session_id TEXT PRIMARY KEY, record_json_gone TEXT); INSERT INTO agent_session_records SELECT session_id, record_json FROM old_records; DROP TABLE old_records;").unwrap();
+                let _ = fixture.chats.execute_batch("BEGIN; ALTER TABLE agent_session_records RENAME TO old_records; CREATE TABLE agent_session_records(session_id TEXT PRIMARY KEY, record_json_gone TEXT); INSERT INTO agent_session_records SELECT session_id, record_json FROM old_records; DROP TABLE old_records; COMMIT;");
+                let _ = fixture.chats.execute_batch("ROLLBACK");
             } else {
                 rename(&fixture.chats, table, column);
             }
         }
-        Mutation::DropTable(table) => fixture.chats.execute_batch(&format!("DROP TABLE {table}")).unwrap(),
+        Mutation::DropTable(table) => fixture.chats.execute_batch(&format!("DROP TABLE IF EXISTS {table}")).unwrap(),
         Mutation::ChatVersion(version) => fixture.chats.execute_batch(&format!("PRAGMA user_version = {version}")).unwrap(),
         Mutation::ProfileVersion(version) => fixture.profile("local-default").execute_batch(&format!("PRAGMA user_version = {version}")).unwrap(),
         Mutation::RunColumn(table, column) => rename(&fixture.runs, table, column),
     }
+}
+
+/// Whether a database must be read: a `user_version` no older than the
+/// oldest, the columns always needed, and for a version newer than the
+/// newest checked every column of `newest_reads`.
+fn readable(conn: &Connection, versions: crate::import_sqlite::Versions, needed: &[(&str, &str)], newest_reads: crate::import_sqlite::Reads) -> bool {
+    let has = |table: &str, column: &str| -> bool {
+        conn.query_row(&format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name=?1"), [column], |row| row.get::<_, i64>(0)).unwrap_or(0) > 0
+    };
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+    version >= versions.oldest
+        && needed.iter().all(|(table, column)| has(table, column))
+        && (version <= versions.newest_checked || newest_reads.iter().all(|(table, columns)| columns.iter().all(|column| has(table, column))))
 }
 
 proptest! {
@@ -263,34 +280,34 @@ proptest! {
     #[test]
     fn a_mutated_schema_fails_closed_or_reads_correctly(
         specs in proptest::collection::vec(spec(), 1..5).prop_map(unique),
-        mutation in mutation(),
+        mutations in proptest::collection::vec(mutation(), 1..4),
     ) {
         let dir = tempfile::tempdir().unwrap();
         let fixture = Fixture::at(dir.path());
         fill(&fixture, &specs);
         fixture.run("run_1", Some(&specs[0].id));
         fixture.terminal_worker("run_1", "ctx_1", "claude", Some("s1"));
-        apply(&fixture, &mutation);
+        for mutation in &mutations {
+            apply(&fixture, mutation);
+        }
         let result = read(&Paths::at(dir.path()));
-        // The independent oracle: what a correct reader must do.
-        let fails = match &mutation {
-            Mutation::RenameColumn("agent_session_records", _) | Mutation::DropTable("agent_session_records") => true,
-            Mutation::ChatVersion(version) => !(1..=2).contains(version),
-            Mutation::ProfileVersion(version) => !(1..=3).contains(version),
-            _ => false,
-        };
-        prop_assert_eq!(result.is_err(), fails, "{:?}", result.as_ref().err());
+        // The independent oracle, asked of SQLite: what a correct reader must do.
+        let fails = !readable(&fixture.chats, store::CHAT_VERSIONS, &[("agent_session_records", "session_id"), ("agent_session_records", "record_json")], store::CHAT_NEWEST_READS)
+            || !readable(&fixture.profile("local-default"), store::PROFILE_VERSIONS, &[("profile_state_documents", "domain"), ("profile_state_documents", "payload"), ("profile_state_documents", "revision")], store::PROFILE_NEWEST_READS);
+        prop_assert_eq!(result.is_err(), fails, "{:?} gave {:?}", mutations, result.as_ref().err());
+        let any = |wanted: &dyn Fn(&Mutation) -> bool| mutations.iter().any(wanted);
         if let Ok((store, _)) = result {
+            let meta_gone = any(&|mutation| matches!(mutation, Mutation::DropTable("agent_session_store_meta") | Mutation::RenameColumn("agent_session_store_meta", _)));
             let expected: BTreeSet<&str> = specs
                 .iter()
-                .filter(|spec| !spec.deleted || matches!(mutation, Mutation::DropTable("agent_session_store_meta") | Mutation::RenameColumn("agent_session_store_meta", _)))
+                .filter(|spec| !spec.deleted || meta_gone)
                 .map(|spec| spec.id.as_str())
                 .collect();
             let got: BTreeSet<&str> = store.chats.iter().map(|chat| chat.id.as_str()).collect();
-            if !matches!(mutation, Mutation::DropTable("agent_session_store_meta") | Mutation::RenameColumn("agent_session_store_meta", "value")) {
+            if !meta_gone {
                 prop_assert_eq!(got, expected);
             }
-            let run_readable = !matches!(mutation, Mutation::RunColumn("runs", _) | Mutation::RunColumn("dispatch_contexts", _));
+            let run_readable = !any(&|mutation| matches!(mutation, Mutation::RunColumn("runs", _) | Mutation::RunColumn("dispatch_contexts", _)));
             prop_assert_eq!(store.runs.is_some(), run_readable);
             for chat in &store.chats {
                 // Missing journal tables or columns read as no copy, or fail with a reason.

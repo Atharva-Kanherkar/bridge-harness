@@ -1003,7 +1003,7 @@ mod conductor {
     }
 
     #[test]
-    fn a_conductor_database_bridge_does_not_know_still_brings_the_folders() {
+    fn a_newer_conductor_database_with_everything_bridge_reads_brings_names_and_archived_state() {
         let root = tempfile::tempdir().unwrap();
         let (home, tokyo) = home(root.path());
         let store = crate::conductor_import::Paths::for_home(&home).store;
@@ -1013,12 +1013,32 @@ mod conductor {
         ).unwrap();
         let scratch = tempfile::tempdir().unwrap();
         let core = core(scratch.path());
+        let job = run_conductor(&core, &home);
+        assert_eq!(job.status, "done", "{job:?}");
+        assert!(!job.not_carried.iter().any(|item| item.text.contains("newer than Bridge knows")), "{:?}", job.not_carried);
+        let title: String = core.db.lock().unwrap().query_row("SELECT title FROM workspaces WHERE path=?1", params![tokyo.to_string_lossy()], |row| row.get(0)).unwrap();
+        assert_eq!(title, "Fix the login", "read from Conductor's database");
+    }
+
+    #[test]
+    fn a_conductor_database_bridge_does_not_know_still_brings_the_folders() {
+        let root = tempfile::tempdir().unwrap();
+        let (home, tokyo) = home(root.path());
+        let store = crate::conductor_import::Paths::for_home(&home).store;
+        let conn = rusqlite::Connection::open(&store).unwrap();
+        conn.execute(
+            "INSERT INTO _sqlx_migrations(version,description,installed_on,success,checksum,execution_time) VALUES(250,'future',1,1,x'00',1)",
+            [],
+        ).unwrap();
+        conn.execute_batch("ALTER TABLE workspaces RENAME COLUMN workspace_name TO title").unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
 
         let job = run_conductor(&core, &home);
 
         assert_eq!(job.status, "done", "{job:?}");
         assert_eq!(job.imported, 2, "tokyo and oslo by folder; archived is unknown without the database: {job:?}");
-        assert!(job.not_carried.iter().any(|item| item.text.contains("newer than Bridge knows")), "{:?}", job.not_carried);
+        assert!(job.not_carried.iter().any(|item| item.text.contains("newer than Bridge knows (version 250) and changed what Bridge reads (workspaces.workspace_name)")), "{:?}", job.not_carried);
         let title: String = core.db.lock().unwrap().query_row("SELECT title FROM workspaces WHERE path=?1", params![tokyo.to_string_lossy()], |row| row.get(0)).unwrap();
         assert_eq!(title, "tokyo");
     }
@@ -1048,6 +1068,11 @@ mod t3code {
     /// whose transcript is still there, an archived and pinned Claude
     /// thread whose transcript is gone, a Codex thread, and a deleted one.
     fn home(root: &Path) -> Home {
+        home_at(root, crate::t3code_import::store::MIGRATIONS.newest_checked)
+    }
+
+    /// The same home on T3 Code's schema at `version` (a real fixture).
+    fn home_at(root: &Path, version: i64) -> Home {
         let home = root.canonicalize().unwrap();
         let main = repo(&home.join("code"), "shop");
         let tree = worktree(&main, &home.join(".t3/worktrees/shop/feat-discount-07db51fef00c511d"), "feat/discount");
@@ -1058,7 +1083,7 @@ mod t3code {
             // Not the test's temp folder: Codex's import leaves chats run there out as background runs.
             &[meta(CODEX, "/work/shop", None), said("u1", "round prices"), replied("a1", "Rounded.")].join("\n"),
         );
-        let fixture = Fixture::in_base(&home.join(".t3"), 102);
+        let fixture = Fixture::in_base(&home.join(".t3"), version);
         fixture.project("p", &main, "shop");
         let row = |id, title, driver, native| ThreadRow { id, project: "p", title, driver, native, updated_at: "2026-11-20T17:20:00.000Z", ..ThreadRow::default() };
         fixture.thread(&ThreadRow { branch: Some("feat/discount"), worktree: Some(&tree), ..row("t-kept", "Add a discount helper", "claudeAgent", Some(KEPT)) });
@@ -1299,17 +1324,61 @@ mod t3code {
         assert!(texts.contains(&("pull request links on threads", 1)), "{texts:?}");
     }
 
+    /// The threads as they come over: title, harness, archived, native key.
+    fn summary(core: &BridgeCore) -> Vec<(String, String, bool, Option<String>)> {
+        chats(core).into_iter().map(|(title, harness, archived, _, native, _)| (title, harness, archived, native)).collect()
+    }
+
     #[test]
-    fn a_t3_database_bridge_does_not_know_stops_with_its_version() {
+    fn every_t3_version_bridge_reads_imports_the_same_threads_and_a_newer_one_too() {
+        // #1175: T3 Code 119 stopped every import while Bridge knew 102.
+        // The versions people run: an old v1 file (43), the last v1 head
+        // (54), the v2 cutover (55), the old head (102), the newest checked,
+        // and releases Bridge has not seen.
+        let newest = crate::t3code_import::store::MIGRATIONS.newest_checked;
+        let mut expected = None;
+        for (version, future) in [(43, None), (54, None), (55, None), (102, None), (newest, None), (newest, Some(newest + 1)), (newest, Some(newest + 40))] {
+            let root = tempfile::tempdir().unwrap();
+            let home = home_at(root.path(), version);
+            if let Some(future) = future {
+                let path = crate::t3code_import::Paths::at(&home.t3).store_v2;
+                let conn = rusqlite::Connection::open(&path).unwrap();
+                conn.execute("INSERT INTO effect_sql_migrations(migration_id,name) VALUES(?1,'Future')", [future]).unwrap();
+                conn.execute_batch("CREATE TABLE future_secrets(token TEXT); ALTER TABLE orchestration_v2_projection_threads ADD COLUMN future_json TEXT;").unwrap();
+            }
+            let scratch = tempfile::tempdir().unwrap();
+            let core = core(scratch.path());
+            let job = run_t3(&core, &home);
+            assert_eq!(job.status, "done", "{version} {future:?}: {job:?}");
+            assert_eq!((job.total, job.imported, job.failed, job.workspaces), (3, 3, 0, 1), "{version} {future:?}: {job:?}");
+            assert!(job.errors.is_empty(), "{version} {future:?}: {:?}", job.errors);
+            let got = summary(&core);
+            assert_eq!(got.len(), 3, "{version}: {got:?}");
+            // Archiving arrived in 17; from 55 the copy is the v2 one. Same chats either way.
+            match &expected {
+                None => expected = Some(got),
+                Some(first) => assert_eq!(&got, first, "{version} {future:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_newer_t3_database_that_changed_what_bridge_reads_stops_and_says_what() {
         let root = tempfile::tempdir().unwrap();
         let home = home(root.path());
         let store = crate::t3code_import::Paths::at(&home.t3).store_v2;
-        rusqlite::Connection::open(&store).unwrap().execute("INSERT INTO effect_sql_migrations(migration_id,name) VALUES(140,'Future')", []).unwrap();
+        let conn = rusqlite::Connection::open(&store).unwrap();
+        conn.execute("INSERT INTO effect_sql_migrations(migration_id,name) VALUES(140,'Future')", []).unwrap();
+        conn.execute_batch("ALTER TABLE orchestration_v2_projection_messages RENAME COLUMN payload_json TO body_json").unwrap();
         let scratch = tempfile::tempdir().unwrap();
         let core = core(scratch.path());
         let job = run_t3(&core, &home);
         assert_eq!(job.status, "failed", "{job:?}");
-        assert!(job.errors.iter().any(|error| error.contains("newer than Bridge knows (version 140)")), "{:?}", job.errors);
+        assert!(
+            job.errors.iter().any(|error| error.contains("newer than Bridge knows (version 140) and changed what Bridge reads (orchestration_v2_projection_messages.payload_json)")),
+            "{:?}",
+            job.errors
+        );
         assert_eq!(chats(&core).len(), 0);
     }
 }
@@ -1575,15 +1644,37 @@ mod orca {
     }
 
     #[test]
-    fn a_newer_chat_database_fails_the_job_and_imports_nothing() {
+    fn a_newer_chat_database_with_everything_bridge_reads_imports_the_same_chats() {
+        let baseline = {
+            let root = tempfile::tempdir().unwrap();
+            let home = home(root.path());
+            let scratch = tempfile::tempdir().unwrap();
+            let core = core(scratch.path());
+            let job = run_orca(&core, &home);
+            assert_eq!(job.status, "done", "{job:?}");
+            (job.imported, chats(&core).len())
+        };
         let root = tempfile::tempdir().unwrap();
         let home = home(root.path());
-        home.fixture.chats.execute_batch("PRAGMA user_version = 9").unwrap();
+        home.fixture.chats.execute_batch("PRAGMA user_version = 9; CREATE TABLE future_tokens(token TEXT);").unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        let job = run_orca(&core, &home);
+        assert_eq!(job.status, "done", "{job:?}");
+        assert_eq!((job.imported, chats(&core).len()), baseline);
+        assert!(baseline.1 > 0);
+    }
+
+    #[test]
+    fn a_newer_chat_database_that_changed_what_bridge_reads_fails_the_job_and_imports_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        home.fixture.chats.execute_batch("PRAGMA user_version = 9; ALTER TABLE journal_chat_state RENAME COLUMN epoch TO generation").unwrap();
         let scratch = tempfile::tempdir().unwrap();
         let core = core(scratch.path());
         let job = run_orca(&core, &home);
         assert_eq!(job.status, "failed", "{job:?}");
-        assert!(job.errors.iter().any(|error| error.contains("version 9")), "{:?}", job.errors);
+        assert!(job.errors.iter().any(|error| error.contains("newer than Bridge knows (version 9) and changed what Bridge reads (journal_chat_state.epoch)")), "{:?}", job.errors);
         assert_eq!(chats(&core).len(), 0);
     }
 
@@ -1820,15 +1911,44 @@ mod superset {
     }
 
     #[test]
-    fn a_newer_host_database_fails_the_job_and_imports_nothing() {
+    fn a_newer_host_database_with_everything_bridge_reads_imports_the_same_chats() {
+        let baseline = {
+            let root = tempfile::tempdir().unwrap();
+            let home = home(root.path());
+            let scratch = tempfile::tempdir().unwrap();
+            let core = core(scratch.path());
+            let job = run_superset(&core, &home);
+            assert_eq!(job.status, "done", "{job:?}");
+            (job.imported, job.workspaces, chats(&core).len())
+        };
         let root = tempfile::tempdir().unwrap();
         let home = home(root.path());
-        home.fixture.host.execute("INSERT INTO __drizzle_migrations(hash, created_at) VALUES('h', ?1)", [superset_import::store::HOST_NEWEST + 1]).unwrap();
+        home.fixture.host.execute("INSERT INTO __drizzle_migrations(hash, created_at) VALUES('h', ?1)", [superset_import::store::HOST_MIGRATIONS.newest_checked + 1]).unwrap();
+        home.fixture.host.execute_batch("CREATE TABLE future_tokens(token TEXT);").unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        let job = run_superset(&core, &home);
+        assert_eq!(job.status, "done", "{job:?}");
+        assert_eq!((job.imported, job.workspaces, chats(&core).len()), baseline);
+        assert!(baseline.2 > 0);
+    }
+
+    #[test]
+    fn a_newer_host_database_that_changed_what_bridge_reads_fails_the_job_and_imports_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home(root.path());
+        let newer = superset_import::store::HOST_MIGRATIONS.newest_checked + 1;
+        home.fixture.host.execute("INSERT INTO __drizzle_migrations(hash, created_at) VALUES('h', ?1)", [newer]).unwrap();
+        home.fixture.host.execute_batch("ALTER TABLE terminal_agent_bindings RENAME COLUMN agent_session_id TO session_id").unwrap();
         let scratch = tempfile::tempdir().unwrap();
         let core = core(scratch.path());
         let job = run_superset(&core, &home);
         assert_eq!(job.status, "failed", "{job:?}");
-        assert!(job.errors.iter().any(|error| error.contains("newer")), "{:?}", job.errors);
+        assert!(
+            job.errors.iter().any(|error| error.contains(&format!("newer than Bridge knows (version {newer}) and changed what Bridge reads (terminal_agent_bindings.agent_session_id)"))),
+            "{:?}",
+            job.errors
+        );
         assert_eq!(chats(&core).len(), 0);
     }
 

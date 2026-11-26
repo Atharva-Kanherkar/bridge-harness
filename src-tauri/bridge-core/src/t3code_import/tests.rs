@@ -201,16 +201,10 @@ fn the_copy_keeps_user_and_assistant_text_in_order() {
 #[test]
 fn the_version_gate_fails_closed_with_the_version_it_saw() {
     let dir = tempfile::tempdir().unwrap();
-    let fixture = Fixture::in_base(dir.path(), 102);
-    fixture.conn.execute("INSERT INTO effect_sql_migrations(migration_id,name) VALUES(103,'Future')", []).unwrap();
-    let error = store::read(&fixture.conn).unwrap_err();
-    assert!(error.contains("newer") && error.contains("103"), "{error}");
-
-    let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::in_base(dir.path(), 5);
     fixture.conn.execute("DELETE FROM effect_sql_migrations WHERE migration_id>=5", []).unwrap();
     let error = store::read(&fixture.conn).unwrap_err();
-    assert!(error.contains("older") && error.contains('4'), "{error}");
+    assert_eq!(error, "T3 Code's database is older than Bridge knows (version 4)");
 
     fixture.conn.execute("DELETE FROM effect_sql_migrations", []).unwrap();
     assert!(store::read(&fixture.conn).unwrap_err().contains("no version"));
@@ -218,12 +212,121 @@ fn the_version_gate_fails_closed_with_the_version_it_saw() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::in_base(dir.path(), 102);
     fixture.conn.execute_batch("ALTER TABLE orchestration_v2_projection_threads RENAME COLUMN payload_json TO payload").unwrap();
-    assert!(store::read(&fixture.conn).unwrap_err().contains("missing what Bridge reads (version 102)"));
+    assert_eq!(store::read(&fixture.conn).unwrap_err(), "T3 Code's database is missing what Bridge reads (version 102)");
 
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::in_base(dir.path(), 43);
     fixture.conn.execute_batch("ALTER TABLE projection_projects RENAME COLUMN workspace_root TO root").unwrap();
     assert!(store::read(&fixture.conn).unwrap_err().contains("missing what Bridge reads (version 43)"));
+}
+
+/// The newest checked schema with a migration T3 Code has not shipped yet.
+fn newer(dir: &Path, migration: i64) -> Fixture {
+    let fixture = Fixture::in_base(dir, store::MIGRATIONS.newest_checked);
+    fixture.conn.execute("INSERT INTO effect_sql_migrations(migration_id,name) VALUES(?1,'Future')", [migration]).unwrap();
+    fixture
+}
+
+#[test]
+fn the_newest_checked_version_is_the_newest_fixture() {
+    assert_eq!(store::MIGRATIONS.newest_checked, *VERSIONS.last().unwrap());
+    assert_eq!(store::MIGRATIONS.oldest, VERSIONS[0]);
+}
+
+#[test]
+fn a_newer_database_with_everything_bridge_reads_is_read_like_the_newest_checked_one() {
+    for migration in [store::MIGRATIONS.newest_checked + 1, 140, 10_000] {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = newer(dir.path(), migration);
+        // What a later release might add: a table and a column Bridge never reads.
+        fixture.conn.execute_batch("CREATE TABLE future_secrets(token TEXT); ALTER TABLE orchestration_v2_projection_threads ADD COLUMN future_json TEXT;").unwrap();
+        fixture.project("p", Path::new("/code/shop"), "Shop");
+        fixture.thread(&ThreadRow { branch: Some("feat/a"), ..row("t1", "Add a discount", Some("11111111-2222-4333-8444-555555555555")) });
+        fixture.message("t1", "m1", "user", "hello", "2026-11-05T00:00:01.000Z", false);
+        let store = read_fixture(&fixture);
+        assert_eq!((store.version, store.era), (migration, Era::V2));
+        assert_eq!(store.threads.len(), 1);
+        assert_eq!(store.threads[0].native, Some(claude("11111111-2222-4333-8444-555555555555")));
+        assert_eq!(store.threads[0].branch.as_deref(), Some("feat/a"));
+        let messages = store::messages(&fixture.conn, store.era, &store.threads[0]).unwrap();
+        assert_eq!(messages.iter().map(|message| message.text.as_str()).collect::<Vec<_>>(), ["hello"]);
+    }
+}
+
+#[test]
+fn a_newer_database_that_changed_any_column_bridge_reads_is_refused_and_names_it() {
+    let migration = store::MIGRATIONS.newest_checked + 1;
+    for (table, columns) in store::NEWEST_READS {
+        for column in *columns {
+            let dir = tempfile::tempdir().unwrap();
+            let fixture = newer(dir.path(), migration);
+            fixture.conn.execute_batch(&format!("ALTER TABLE {table} RENAME COLUMN \"{column}\" TO \"{column}_v2\"")).unwrap();
+            let error = store::read(&fixture.conn).unwrap_err();
+            if (*table, *column) == ("effect_sql_migrations", "migration_id") {
+                assert!(error.contains("no version"), "{error}");
+                continue;
+            }
+            assert!(
+                error.starts_with(&format!("T3 Code's database is newer than Bridge knows (version {migration}) and changed what Bridge reads (")),
+                "{table}.{column}: {error}"
+            );
+            assert!(error.contains(&format!("{table}.{column}")), "{table}.{column}: {error}");
+            assert!(error.ends_with("; update Bridge and try again"), "{error}");
+        }
+    }
+    // A whole table gone names its columns.
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = newer(dir.path(), migration);
+    fixture.conn.execute_batch("DROP TABLE orchestration_v2_legacy_imports").unwrap();
+    let error = store::read(&fixture.conn).unwrap_err();
+    assert!(error.contains("orchestration_v2_legacy_imports.thread_id, orchestration_v2_legacy_imports.transcript_imported_at"), "{error}");
+    // The checked versions keep the narrower check: a column only the
+    // newest version reads may be absent from an older one.
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::in_base(dir.path(), store::MIGRATIONS.newest_checked);
+    fixture.conn.execute_batch("DROP TABLE orchestration_v2_legacy_imports").unwrap();
+    assert!(store::read(&fixture.conn).is_ok());
+}
+
+#[test]
+fn newest_reads_is_exactly_what_the_reader_reads_at_the_newest_checked_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::in_base(dir.path(), store::MIGRATIONS.newest_checked);
+    fixture.project("p", Path::new("/code/a"), "A");
+    fixture.thread(&row("t", "Thread", Some("s-1")));
+    fixture.message("t", "m", "user", "hello", "2026-11-05T00:00:01.000Z", false);
+    fixture.upgraded_thread(&row("u", "Upgraded", Some("s-2")), false);
+    STATEMENTS.with(|statements| statements.borrow_mut().clear());
+    let store = read_fixture(&fixture);
+    store::messages(&fixture.conn, store.era, &store.threads[0]).unwrap();
+    let mut legacy = store.threads[0].clone();
+    legacy.legacy_messages = !legacy.legacy_messages;
+    store::messages(&fixture.conn, store.era, &legacy).unwrap();
+    let statements = STATEMENTS.with(|statements| statements.borrow().clone());
+    let allowed = crate::import_sqlite::Allowed { tool: "T3 Code", tables: store::ALLOWED_TABLES };
+    crate::import_sqlite::assert_reads_match(&allowed, &fixture.conn, store::NEWEST_READS, &statements);
+    for (table, _) in store::NEWEST_READS {
+        assert!(store::ALLOWED_TABLES.contains(table) && !store::DENIED_TABLES.contains(table), "{table}");
+    }
+}
+
+#[test]
+fn the_newest_schema_has_every_denied_table_and_no_allowed_one_is_denied() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::in_base(dir.path(), store::MIGRATIONS.newest_checked);
+    // Denied ahead of time: no checked T3 Code schema has it yet.
+    let ahead = ["auth_connect_denied_requests"];
+    // Dropped by T3 Code after 55; still denied for older databases.
+    let retired = ["checkpoint_diff_blobs"];
+    for table in store::DENIED_TABLES {
+        let expected = !ahead.contains(table) && !retired.contains(table);
+        assert_eq!(fixture.has_table(table), expected, "{table} in the newest schema");
+        assert!(!store::ALLOWED_TABLES.contains(table), "{table}");
+    }
+    let old = tempfile::tempdir().unwrap();
+    assert!(Fixture::in_base(old.path(), 55).has_table("checkpoint_diff_blobs"));
+    let hook: String = fixture.conn.query_row("SELECT token FROM workflow_hooks", [], |row| row.get(0)).unwrap();
+    assert_eq!(hook, CANARY, "the webhook token canary is there");
 }
 
 #[test]

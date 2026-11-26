@@ -12,7 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { runMigrations } from "./Migrations.ts";
 
-const HEADS = [5, 17, 23, 36, 43, 48, 54, 55, 63, 76, 87, 95, 102];
+const HEADS = [5, 17, 23, 36, 43, 48, 54, 55, 63, 76, 87, 95, 102, 119];
 const out = process.env.T3_SCHEMA_OUT ?? NodeOS.tmpdir();
 
 describe("schema dump", () => {

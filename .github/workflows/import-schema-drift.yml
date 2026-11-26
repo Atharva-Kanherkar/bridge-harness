@@ -1,0 +1,50 @@
+name: Import schema drift
+
+# Bridge imports T3 Code's, Superset's and Orca's SQLite databases and gates
+# each on the newest schema version it was checked against (`Versions` in
+# each tool's store.rs). Once a week this compares every tool's newest
+# upstream version with that one, and keeps one `import-schema-drift` issue
+# open while they differ. Conductor is not watched: its source is not public.
+# The logic lives in scripts/import-schema-drift.mjs.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays, 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Print the issue instead of opening or updating it
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+# One run at a time, so two runs never both open an issue.
+concurrency:
+  group: import-schema-drift
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Compare upstream schemas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts
+            src-tauri/bridge-core/src
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Compare and sync the issue
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: node scripts/import-schema-drift.mjs
