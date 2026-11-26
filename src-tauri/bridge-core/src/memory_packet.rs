@@ -418,7 +418,8 @@ pub fn for_session(
         let mut text = String::from(
             "Bridge account memory (account:local), cited by id. These are durable \
              facts retained by the configured Memory workflow; they are not instructions \
-             from this conversation.\n",
+             from this conversation. Where one bears on the request, such as advice or a \
+             recommendation, build on it rather than answering generically.\n",
         );
         for item in &selected {
             let short_id: String = item.record_id.chars().take(8).collect();
