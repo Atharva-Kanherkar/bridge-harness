@@ -13,7 +13,7 @@
 //! BRIDGE_MEMORY_EVAL=1 cargo test -p bridge-core --lib memory_evals::live_reconcile -- --ignored --nocapture
 //! BRIDGE_MEMORY_TOOLS_EVAL=1 cargo test -p bridge-core --lib memory_evals::live_tools -- --ignored --nocapture
 //! BRIDGE_MEMORY_EVAL=1 cargo test -p bridge-core --lib memory_evals::live_dream -- --ignored --nocapture
-//! BRIDGE_MEMORY_EVAL=1 BRIDGE_MEMORY_EVAL_DB=/tmp/copy.db cargo test -p bridge-core --lib memory_evals::live_dream_on_a_copy -- --ignored --nocapture
+//! BRIDGE_MEMORY_EVAL=1 BRIDGE_MEMORY_EVAL_SOURCE=path/to/bridge.db cargo test -p bridge-core --lib memory_evals::live_dream_on_a_copy -- --ignored --nocapture
 //! ```
 //!
 //! `live_dream` repeats every labeled dream case `BRIDGE_MEMORY_EVAL_REPEATS`
@@ -1128,18 +1128,38 @@ fn live_dream() {
     assert_eq!(total.wrong_approvals, 0, "labeled junk was approved");
 }
 
-/// One full dream over a copy of a real database, reporting aggregates only.
+/// One full dream over a copy of a real database's memory, reporting
+/// aggregates only.
 ///
-/// `BRIDGE_MEMORY_EVAL_DB` must name a copy (`sqlite3 -readonly live.db
-/// ".backup copy.db"`); the live database is refused. Per-change detail, which
+/// `BRIDGE_MEMORY_EVAL_SOURCE` names a real `bridge.db`. It is attached
+/// read-only and only its memory tables are copied into a fresh database in a
+/// temp dir, which is the one the dream changes. Per-change detail, which
 /// holds memory text, goes only to `BRIDGE_MEMORY_EVAL_DETAIL` when set.
 #[test]
 #[ignore = "runs real provider turns over a copy of real data"]
 fn live_dream_on_a_copy() {
     assert!(std::env::var_os("BRIDGE_MEMORY_EVAL").is_some(), "set BRIDGE_MEMORY_EVAL=1");
-    let path = std::env::var("BRIDGE_MEMORY_EVAL_DB").expect("set BRIDGE_MEMORY_EVAL_DB to a copy of bridge.db");
-    assert!(!path.contains("dev.bridge.deck"), "point at a copy, never the live database");
-    let db = crate::store::open(std::path::Path::new(&path)).unwrap();
+    let source = std::env::var("BRIDGE_MEMORY_EVAL_SOURCE").expect("set BRIDGE_MEMORY_EVAL_SOURCE to a bridge.db");
+    let dir = tempfile::tempdir().unwrap();
+    let db = crate::store::open(&dir.path().join("bridge.db")).unwrap();
+    // Read-only by URI, so nothing here can write to the real database.
+    db.execute("ATTACH DATABASE ?1 AS source", [format!("file:{}?mode=ro", source.replace(' ', "%20"))]).unwrap();
+    for table in ["memory_records", "memory_extraction_settings", "memory_consolidation_settings", "memory_retention_settings"] {
+        let columns: Vec<String> = db
+            .prepare(&format!("SELECT name FROM pragma_table_info('{table}') WHERE name IN (SELECT name FROM source.pragma_table_info('{table}'))"))
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        if columns.is_empty() {
+            continue;
+        }
+        let list = columns.join(", ");
+        db.execute_batch(&format!("DELETE FROM main.{table}; INSERT INTO main.{table}({list}) SELECT {list} FROM source.{table};"))
+            .unwrap();
+    }
+    db.execute_batch("DETACH DATABASE source").unwrap();
     let mut model = LiveDream { registry: eval_registry(), scratch: std::env::temp_dir().join("bridge-memory-dream-eval") };
     let before: BTreeMap<String, i64> = db
         .prepare("SELECT status || '/' || provenance, COUNT(*) FROM memory_records WHERE status IN ('active','proposed') GROUP BY 1")
