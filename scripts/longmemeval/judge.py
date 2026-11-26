@@ -50,21 +50,24 @@ def score(path):
         for line in open(cache_path):
             item = json.loads(line)
             cache[item["key"]] = item["correct"]
-    todo = []
     for row in rows:
         row["_key"] = hashlib.sha256((JUDGE_MODEL + prompt_for(row)).encode()).hexdigest()
-        if row["_key"] not in cache:
-            todo.append(row)
-    with concurrent.futures.ThreadPoolExecutor(8) as pool, open(cache_path, "a") as out:
-        for row, verdict in zip(todo, pool.map(lambda r: judge(prompt_for(r)), todo)):
-            if verdict is not None:
-                cache[row["_key"]] = verdict
-                out.write(json.dumps({"key": row["_key"], "question_id": row["question_id"], "correct": verdict}) + "\n")
+    for _ in range(3):
+        todo = [row for row in rows if row["_key"] not in cache and not row["error"]]
+        if not todo:
+            break
+        with concurrent.futures.ThreadPoolExecutor(6) as pool, open(cache_path, "a") as out:
+            for row, verdict in zip(todo, pool.map(lambda r: judge(prompt_for(r)), todo)):
+                if verdict is not None:
+                    cache[row["_key"]] = verdict
+                    out.write(json.dumps({"key": row["_key"], "question_id": row["question_id"], "correct": verdict}) + "\n")
     by_type = defaultdict(list)
     for row in rows:
         row["correct"] = cache.get(row["_key"])
         if row["error"]:
             row["correct"] = False
+        if row["correct"] is None:
+            continue
         by_type[row["question_type"]].append(bool(row["correct"]))
     overall = [c for v in by_type.values() for c in v]
     summary = {
@@ -76,6 +79,7 @@ def score(path):
         "task_avg": round(100 * sum(sum(v) / len(v) for v in by_type.values()) / max(1, len(by_type)), 1),
         "by_type": {k: f"{sum(v)}/{len(v)}" for k, v in sorted(by_type.items())},
         "errors": sum(1 for r in rows if r["error"]),
+        "unjudged": sum(1 for r in rows if r["correct"] is None and not r["error"]),
         "mean_records": round(sum(r["active_records"] for r in rows) / max(1, len(rows)), 1),
         "mean_seconds": round(sum(r["seconds_extract"] + r["seconds_answer"] for r in rows) / max(1, len(rows)), 1),
         "mean_packet_chars": round(sum(r["packet_chars"] for r in rows) / max(1, len(rows))),
