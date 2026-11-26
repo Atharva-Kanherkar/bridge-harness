@@ -21,7 +21,7 @@ import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
 import { activeWebDaemon } from "./webDaemon";
 import { asWireKind, readWireKind } from "./transcript/wire";
-import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, ReviewMemoryRecordsResult, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryConsolidationSettings, MemoryExtractionSettings, MemoryInjectionSettings, MemoryModelChoice, MemoryModelSettings, MemoryModelSource, SkippedMemoryModel, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, Workspace, WorkspaceSessionKind } from "./types";
+import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, ReviewMemoryRecordsResult, MemoryRetentionSettings, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryConsolidationSettings, MemoryExtractionSettings, MemoryInjectionSettings, MemoryModelChoice, MemoryModelSettings, MemoryModelSource, SkippedMemoryModel, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, Workspace, WorkspaceSessionKind } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { EarlyCompactionSettings } from "./types";
 import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath, BrowserCloneStatus } from "./types";
@@ -816,6 +816,8 @@ const mockMemoryRecords: MemoryRecord[] = [
   memRecord("mem_p2b5", "Prefers vitest -t filters over whole-file runs while triaging.", "preference", "proposed", "model_proposal", { confidenceBps: 6200, rationale: "run 8813" }),
   memRecord("mem_p3c7", "Check the upstream tracker before deep-diving a security-hunt candidate.", "constraint", "proposed", "agent_proposal", { rationale: "The person said to keep this for every future hunt." }),
   memRecord("mem_d1c9", "Sprint-scoped: land the onboarding picker before Friday.", "constraint", "deleted", "model_proposal", { confidenceBps: 3000, createdAt: "2026-08-05T09:00:00Z", validTo: "2026-08-18T09:00:00Z" }),
+  memRecord("mem_r1e4", "Keeps the staging database on Postgres 15 until the upgrade lands.", "fact", "expired", "model_proposal", { confidenceBps: 7800, rationale: "retired after 90 days unused", createdAt: "2026-05-02T09:00:00Z", validTo: "2026-08-20T09:00:00Z" }),
+  memRecord("mem_r2b8", "Reviews land on Tuesdays and Thursdays.", "decision", "expired", "model_proposal", { confidenceBps: 8100, createdAt: "2026-04-14T09:00:00Z", validTo: "2026-08-12T09:00:00Z" }),
   // A long review queue, so mock mode shows the paged Review tab the way a
   // real account with months of extraction does.
   ...Array.from({ length: 135 }, (_, index) => memRecord(
@@ -868,6 +870,18 @@ function mockMemoryModel(): MemoryModelSettings {
   return { ...(mockMemoryModelPin ? { pinned: { ...mockMemoryModelPin } } : {}), ...(resolved ? { resolved } : {}), skipped };
 }
 const mockMemoryMaxRecords = 200;
+let mockRetention: { proposalTtlDays: number; retireUnusedAfterDays: number | null } = { proposalTtlDays: 7, retireUnusedAfterDays: 90 };
+function mockRetentionSettings(): MemoryRetentionSettings {
+  return {
+    scopeKey: "account:local",
+    proposalTtlDays: mockRetention.proposalTtlDays,
+    ...(mockRetention.retireUnusedAfterDays ? { retireUnusedAfterDays: mockRetention.retireUnusedAfterDays } : {}),
+    maxProposals: 100,
+    maxActive: mockMemoryMaxRecords,
+    heldActive: mockMemoryRecords.filter(item => item.status === "active").length,
+    heldProposals: mockMemoryRecords.filter(item => item.status === "proposed").length,
+  };
+}
 let mockMemoryInjection = true;
 const mockForests: Record<string, SessionForestSnapshot> = {
   "session-2": mockDeckForest(now),
@@ -3710,7 +3724,7 @@ export const bridgeApi = {
     const trimmed = scopeKey.trim();
     if (!trimmed) throw new Error("Memory scope is required; it cannot be empty or NULL");
     const wanted = status ?? "active";
-    if (wanted !== "active" && wanted !== "proposed") throw new Error(`Memory list can show active or proposed records, not '${wanted}'.`);
+    if (wanted !== "active" && wanted !== "proposed" && wanted !== "expired") throw new Error(`Memory list can show active, proposed or expired records, not '${wanted}'.`);
     const limit = page.limit ?? MEMORY_PAGE_SIZE;
     if (limit < 1 || limit > MEMORY_PAGE_SIZE) throw new Error(`A memory page holds 1 to ${MEMORY_PAGE_SIZE} records.`);
     // Core's order and keyset: newest change first, ties by id, and a cursor
@@ -3801,8 +3815,33 @@ export const bridgeApi = {
   },
   getConsolidationSettings: async (): Promise<MemoryConsolidationSettings> => {
     if (hasBackend()) return call("memory/get_consolidation_settings");
-    const heldRecords = mockMemoryRecords.filter(item => item.status === "active" || item.status === "proposed").length;
+    const heldRecords = mockMemoryRecords.filter(item => item.status === "active").length;
     return { scopeKey: "account:local", mode: "off", maxRecords: mockMemoryMaxRecords, heldRecords, allowRemoval: false, debounceSeconds: 600 };
+  },
+  /** How memory cleans itself up: proposal expiry, retiring unused memories, the queue's own cap. */
+  getRetentionSettings: async (): Promise<MemoryRetentionSettings> => {
+    if (hasBackend()) return call("memory/get_retention_settings");
+    return mockRetentionSettings();
+  },
+  setRetentionSettings: async (proposalTtlDays: number, retireUnusedAfterDays: number | null): Promise<MemoryRetentionSettings> => {
+    if (hasBackend()) return call("memory/set_retention_settings", { proposalTtlDays, ...(retireUnusedAfterDays ? { retireUnusedAfterDays } : {}) });
+    if (![3, 7, 14, 30].includes(proposalTtlDays)) throw new Error(`Proposals can wait 3, 7, 14 or 30 days for review, not ${proposalTtlDays}.`);
+    if (retireUnusedAfterDays !== null && ![30, 90, 180].includes(retireUnusedAfterDays)) throw new Error(`Unused memories can retire after 30, 90 or 180 days, or never; not ${retireUnusedAfterDays}.`);
+    mockRetention = { proposalTtlDays, retireUnusedAfterDays };
+    emitMemoryChanged("account:local");
+    return mockRetentionSettings();
+  },
+  /** A retired or expired memory comes back as a new active record that supersedes it. */
+  restoreMemoryRecord: async (recordId: string): Promise<MemoryRecord> => {
+    if (hasBackend()) return call("memory/restore_memory_record", { recordId });
+    const old = mockMemoryRecords.find(item => item.id === recordId && item.status === "expired");
+    if (!old) throw new Error("Only a retired or expired memory can be restored.");
+    const now = new Date().toISOString();
+    const record: MemoryRecord = { ...structuredClone(old), id: crypto.randomUUID(), status: "active", supersedes: old.id, validFrom: now, validTo: undefined, createdAt: now, updatedAt: now };
+    old.status = "superseded";
+    mockMemoryRecords.unshift(record);
+    emitMemoryChanged(record.scopeKey);
+    return structuredClone(record);
   },
   getExtractionSettings: async (): Promise<MemoryExtractionSettings> => {
     if (hasBackend()) return call("memory/get_extraction_settings");

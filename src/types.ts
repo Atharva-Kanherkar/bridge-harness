@@ -134,6 +134,7 @@ export type {
   MemoryRecord,
   ListMemoryRecordsResult,
   ReviewMemoryRecordsResult,
+  MemoryRetentionSettings,
   MemoryReviewRefusal,
   MemoryCapabilities,
   ProviderMemoryCommand,

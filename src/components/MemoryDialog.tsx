@@ -24,6 +24,7 @@ import type {
   MemoryModelSettings,
   MemoryModelSource,
   MemoryRecallStats,
+  MemoryRetentionSettings,
   MemoryRecord,
 } from "../types";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -69,7 +70,7 @@ export function bodyLength(text: string): number {
   return [...text.trim()].length;
 }
 
-type MemoryStatus = "active" | "proposed";
+type MemoryStatus = "active" | "proposed" | "expired";
 /** What one memory list holds: the pages read so far, where the next starts, and the true total. */
 type MemoryList = { records: MemoryRecord[]; total: number; cursor?: string };
 
@@ -130,6 +131,9 @@ export function MemoryDialog({
   const [tab, setTab] = useState<"pins" | "queue" | "activity" | "insights">("pins");
   const [activeList, setActiveList] = useState<MemoryList>();
   const [proposedList, setProposedList] = useState<MemoryList>();
+  // Retired and expired memories a person can restore.
+  const [retiredList, setRetiredList] = useState<MemoryList>();
+  const [retention, setRetention] = useState<MemoryRetentionSettings>();
   // Proposals ticked for one bulk decision. Pruned whenever the queue reloads.
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [loadingMore, setLoadingMore] = useState<MemoryStatus | null>(null);
@@ -161,7 +165,7 @@ export function MemoryDialog({
   const editorRef = useRef<HTMLTextAreaElement>(null);
   // How many records each list shows, and the last one on screen, read by the
   // change-driven reload.
-  const loadedCount = useRef<Record<MemoryStatus, number>>({ active: 0, proposed: 0 });
+  const loadedCount = useRef<Record<MemoryStatus, number>>({ active: 0, proposed: 0, expired: 0 });
   const lastLoaded = useRef<Partial<Record<MemoryStatus, ListPosition>>>({});
   // A page that failed to load is not retried by the automatic read below.
   const failedCursor = useRef<string | undefined>(undefined);
@@ -169,13 +173,13 @@ export function MemoryDialog({
   const proposed = proposedList?.records;
 
   useEffect(() => {
-    loadedCount.current = { active: activeList?.records.length ?? 0, proposed: proposedList?.records.length ?? 0 };
-    lastLoaded.current = { active: activeList?.records.at(-1), proposed: proposedList?.records.at(-1) };
-  }, [activeList, proposedList]);
+    loadedCount.current = { active: activeList?.records.length ?? 0, proposed: proposedList?.records.length ?? 0, expired: retiredList?.records.length ?? 0 };
+    lastLoaded.current = { active: activeList?.records.at(-1), proposed: proposedList?.records.at(-1), expired: retiredList?.records.at(-1) };
+  }, [activeList, proposedList, retiredList]);
 
   /** Append the next page of one list. A reload that lands meanwhile wins. */
   const showMore = async (status: MemoryStatus) => {
-    const list = status === "active" ? activeList : proposedList;
+    const list = status === "active" ? activeList : status === "proposed" ? proposedList : retiredList;
     const cursor = list?.cursor;
     if (!cursor) return;
     const generation = readGeneration.current;
@@ -183,7 +187,7 @@ export function MemoryDialog({
     try {
       const page = await bridgeApi.listMemoryRecords("account:local", status === "active" ? undefined : status, { cursor });
       if (generation !== readGeneration.current) return;
-      (status === "active" ? setActiveList : setProposedList)(current => current?.cursor !== cursor ? current : {
+      (status === "active" ? setActiveList : status === "proposed" ? setProposedList : setRetiredList)(current => current?.cursor !== cursor ? current : {
         records: [...current.records, ...page.records],
         total: page.total ?? current.total,
         cursor: page.nextCursor ?? undefined,
@@ -213,9 +217,11 @@ export function MemoryDialog({
     setTab("pins");
     setActiveList(undefined);
     setProposedList(undefined);
+    setRetiredList(undefined);
+    setRetention(undefined);
     setSelected(new Set());
     setLoadingMore(null);
-    loadedCount.current = { active: 0, proposed: 0 };
+    loadedCount.current = { active: 0, proposed: 0, expired: 0 };
     lastLoaded.current = {};
     setSettings(undefined);
     setBudget(undefined);
@@ -252,8 +258,12 @@ export function MemoryDialog({
         bridgeApi.memoryActivityLog("account:local"),
         bridgeApi.getConsolidationSettings(),
         bridgeApi.getMemoryModel(),
-      ]).then(([activeRead, proposedRead, extraction, injectionSettings, recallStats, activity, consolidation, model]) => {
+        readMemoryPages("expired", loadedCount.current.expired, lastLoaded.current.expired),
+        bridgeApi.getRetentionSettings(),
+      ]).then(([activeRead, proposedRead, extraction, injectionSettings, recallStats, activity, consolidation, model, retiredRead, retentionSettings]) => {
         if (!active || generation !== readGeneration.current) return;
+        setRetiredList(retiredRead);
+        setRetention(retentionSettings);
         setActiveList(activeRead);
         setBudget({ held: consolidation.heldRecords, max: consolidation.maxRecords });
         setProposedList(proposedRead);
@@ -323,6 +333,9 @@ export function MemoryDialog({
     }
     setSelected(new Set());
     if (refused.length) onError(`${refused.length} of ${ids.length} could not be ${approving ? "approved" : "rejected"}: ${refused[0]}`);
+  });
+  const saveRetention = (proposalTtlDays: number, retireUnusedAfterDays: number | null) => act(async () => {
+    setRetention(await bridgeApi.setRetentionSettings(proposalTtlDays, retireUnusedAfterDays));
   });
   const toggleSelected = (id: string) => setSelected(current => {
     const next = new Set(current);
@@ -420,9 +433,9 @@ export function MemoryDialog({
       {full && budget && <div role="status" className="mb-6 flex flex-wrap items-center gap-3 rounded-xl border border-border-card bg-card px-4 py-3">
         <p className="min-w-0 flex-1 basis-64 text-caption text-muted-foreground">
           <span className="font-medium text-foreground">Memory is full.</span>{" "}
-          It holds <span className="tabular-nums">{budget.held}</span> of <span className="tabular-nums">{budget.max}</span> records, counting proposals, so nothing new is saved or proposed and no extraction runs. Review proposals or forget memories you no longer need.
+          It holds <span className="tabular-nums">{budget.held}</span> of <span className="tabular-nums">{budget.max}</span> memories, so nothing new is saved or approved. Proposals still wait for you. Forget memories you no longer need, or let unused ones retire.
         </p>
-        {queueCount > 0 && tab !== "queue" && <Button variant="ghost" size="xs" onClick={() => setTab("queue")}>Review {queueCount}</Button>}
+        {(retiredList?.total ?? 0) > 0 && tab !== "pins" && <Button variant="ghost" size="xs" onClick={() => setTab("pins")}>Retired {retiredList?.total}</Button>}
       </div>}
       {tab === "pins" && <div>
         <section aria-label="Memory editor" className="overflow-hidden rounded-xl border border-border-card bg-card transition-colors focus-within:border-ring/60">
@@ -523,6 +536,29 @@ export function MemoryDialog({
           onClick={() => void showMore("active")}
         />}
 
+        {retiredList !== undefined && retiredList.total > 0 && <section aria-label="Retired memories" className="mt-10">
+          <h2 className="mb-1 px-0.5 text-caption font-medium text-muted-foreground">Retired <span className="tabular-nums text-faint">{retiredList.total}</span></h2>
+          <p className="mb-2 px-0.5 text-caption text-faint">Memories that expired or went unused. They no longer reach chats until you restore them.</p>
+          <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border-card bg-card">
+            {retiredList.records.map(record => <li key={record.id} className="flex flex-wrap items-start gap-3 px-4 py-3">
+              <div className="min-w-0 flex-1 basis-64">
+                <p className="whitespace-pre-wrap break-words text-ui leading-relaxed text-muted-foreground">{record.body}</p>
+                <p className="mt-1 text-caption text-faint">
+                  {KIND_LABEL[record.kind as Kind] ?? record.kind}
+                  {record.validTo && <> · retired {relative(record.validTo)}</>}
+                </p>
+              </div>
+              <Button variant="ghost" size="xs" disabled={busy} onClick={() => void act(() => bridgeApi.restoreMemoryRecord(record.id))}>Restore</Button>
+            </li>)}
+          </ul>
+          {retiredList.cursor && <ShowMore
+            remaining={retiredList.total - retiredList.records.length}
+            loading={loadingMore === "expired"}
+            disabled={loadingMore !== null}
+            onClick={() => void showMore("expired")}
+          />}
+        </section>}
+
         {capabilities && capabilities.providerNative.length > 0 && (
           <section className="mt-10">
             <h2 className="mb-2 px-0.5 text-caption font-medium text-muted-foreground">Provider-owned memory</h2>
@@ -608,6 +644,34 @@ export function MemoryDialog({
             </p>
           )}
         </section>
+        <section aria-label="Clean up">
+          <div className="rounded-xl border border-border-card bg-card px-4 py-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="min-w-0 flex-1 basis-48">
+                <span className="block text-ui text-foreground">Clean up</span>
+                <span className="mt-0.5 block text-caption leading-relaxed text-muted-foreground">Runs on its own, with no model. Pins you saved never retire, and anything retired can be restored.</span>
+              </span>
+              <div className="w-44 shrink-0">
+                <Choice
+                  label="Proposals expire after"
+                  value={String(retention?.proposalTtlDays ?? 7)}
+                  disabled={busy || !retention}
+                  onChange={next => void saveRetention(Number(next), retention?.retireUnusedAfterDays ?? null)}
+                  options={PROPOSAL_TTL_OPTIONS}
+                />
+              </div>
+              <div className="w-44 shrink-0">
+                <Choice
+                  label="Retire unused memories after"
+                  value={String(retention?.retireUnusedAfterDays ?? "never")}
+                  disabled={busy || !retention}
+                  onChange={next => void saveRetention(retention?.proposalTtlDays ?? 7, next === "never" ? null : Number(next))}
+                  options={RETIRE_OPTIONS}
+                />
+              </div>
+            </div>
+          </div>
+        </section>
         <section>
           <h2 className="mb-2 px-0.5 text-ui font-medium text-foreground">Waiting for review</h2>
           {proposed !== undefined && proposed.length === 0
@@ -615,7 +679,10 @@ export function MemoryDialog({
               Nothing to review. Candidates that need your approval land here.
             </p>
             : <>
-              {proposed !== undefined && <p className="mb-2 px-0.5 text-caption text-faint">Proposals you don't review within 30 days expire, which frees their space.</p>}
+              {proposed !== undefined && <p className="mb-2 px-0.5 text-caption text-faint">
+                Proposals you don't review within {retention?.proposalTtlDays ?? 7} days expire.
+                {retention && <> The queue holds <span className="tabular-nums">{retention.heldProposals}</span> of <span className="tabular-nums">{retention.maxProposals}</span>; when it is full, extraction waits.</>}
+              </p>}
               {proposed !== undefined && <div className="mb-2 flex min-h-7 flex-wrap items-center gap-2 px-0.5" role="toolbar" aria-label="Review selected proposals">
                 <label className="flex cursor-pointer items-center gap-2 text-caption text-muted-foreground">
                   <Checkbox
@@ -762,8 +829,20 @@ function ShowMore({ remaining, loading, disabled, onClick }: { remaining: number
   >Show <span className="tabular-nums">{Math.min(MEMORY_PAGE_SIZE, Math.max(remaining, 1))}</span> more</Button>;
 }
 
+const PROPOSAL_TTL_OPTIONS = [3, 7, 14, 30].map(days => ({ value: String(days), label: `Proposals expire after ${days} days` }));
+const RETIRE_OPTIONS = [
+  ...[30, 90, 180].map(days => ({ value: String(days), label: `Retire after ${days} days unused` })),
+  { value: "never", label: "Never retire memories" },
+];
+
 /** One line for a settled run: what it did, or why it did not. */
 function runDetail(entry: MemoryActivityEntry): string {
+  if (entry.source === "retention") {
+    const plural = entry.applied === 1 ? "" : "s";
+    return entry.detail === "unused_retired"
+      ? `Retired ${entry.applied} unused memor${entry.applied === 1 ? "y" : "ies"}`
+      : `${entry.applied} unreviewed proposal${plural} expired`;
+  }
   if (entry.status !== "completed") return entry.detail ? `${entry.status}: ${entry.detail}` : entry.status;
   if (entry.source === "extraction") return `${entry.applied} ${entry.applied === 1 ? "proposal" : "proposals"} written`;
   return `${entry.applied} applied, ${entry.refused} refused${entry.detail ? ` · ${entry.detail}` : ""}`;
