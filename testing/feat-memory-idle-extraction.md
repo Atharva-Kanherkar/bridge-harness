@@ -185,3 +185,18 @@ database, measuring quiet time from the end of each turn, gave:
 
 At 10 minutes the run count misses the 5x target. The owner chose 20 minutes
 on 2026-11-26. Archiving a chat still makes its run due at once.
+
+## Amendment: PR #1184 review
+
+- A chunk with entries but no evidence (for example, enough assistant
+  messages to fill a chunk before the next user message) still makes
+  progress. Its run is settled `completed` with detail `nothing_new`, no model
+  call, and its watermark recorded. If entries remain, a follow-up is queued
+  at once. Only a digest with no entries at all is settled `cancelled`.
+  Test: `an_assistant_only_chunk_advances_to_the_user_message_after_it`.
+- An update whose target is a waiting proposal inherits that proposal's
+  `supersedes`. If active A has pending update B and a later run updates B
+  with C, then C replaces B in the queue and supersedes A on approval. Approving
+  C leaves only C active and does not count against the budget.
+  Test: `an_update_of_a_pending_update_keeps_the_active_predecessor`, single
+  and at full budget.
