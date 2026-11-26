@@ -381,7 +381,9 @@ pub fn compose_prompt(batch: &DreamBatch, automatic: bool, now: DateTime<Utc>) -
     let mode = if automatic {
         "Automatic review is on, so waiting proposals are yours to approve or reject."
     } else {
-        "Review-first is on, so waiting proposals are the person's to decide."
+        "Review-first is on, so the person decides on each distinct waiting proposal. Still fold \
+         waiting proposals that say the same thing into one with merge, and reject one that only \
+         repeats another record, so the person reviews each claim once."
     };
     format!(
         "Today is {}. This is one night's cleanup of the memories a person keeps across their \
