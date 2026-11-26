@@ -1146,7 +1146,7 @@ fn live_dream_on_a_copy() {
     db.execute("ATTACH DATABASE ?1 AS source", [format!("file:{}?mode=ro", source.replace(' ', "%20"))]).unwrap();
     for table in ["memory_records", "memory_extraction_settings", "memory_consolidation_settings", "memory_retention_settings"] {
         let columns: Vec<String> = db
-            .prepare(&format!("SELECT name FROM pragma_table_info('{table}') WHERE name IN (SELECT name FROM source.pragma_table_info('{table}'))"))
+            .prepare(&format!("SELECT name FROM pragma_table_info('{table}') WHERE name IN (SELECT name FROM pragma_table_info('{table}', 'source'))"))
             .unwrap()
             .query_map([], |row| row.get(0))
             .unwrap()
