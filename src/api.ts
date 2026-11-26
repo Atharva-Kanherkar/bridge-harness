@@ -21,7 +21,7 @@ import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
 import { activeWebDaemon } from "./webDaemon";
 import { asWireKind, readWireKind } from "./transcript/wire";
-import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, ReviewMemoryRecordsResult, MemoryRetentionSettings, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryConsolidationSettings, MemoryExtractionSettings, MemoryInjectionSettings, MemoryModelChoice, MemoryModelSettings, MemoryModelSource, SkippedMemoryModel, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, Workspace, WorkspaceSessionKind } from "./types";
+import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, ReviewMemoryRecordsResult, MemoryRetentionSettings, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryConsolidationSettings, MemoryDreamReport, MemoryDreamStarted, MemoryDreamUndoResult, MemoryExtractionSettings, MemoryInjectionSettings, MemoryModelChoice, MemoryModelSettings, MemoryModelSource, SkippedMemoryModel, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, Workspace, WorkspaceSessionKind } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { EarlyCompactionSettings } from "./types";
 import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath, BrowserCloneStatus } from "./types";
@@ -850,11 +850,50 @@ const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISO
 const mockActivityLog: MemoryActivityEntry[] = [
   { source: "extraction", status: "completed", applied: 2, refused: 0, known: 3, at: daysAgo(0.1) },
   { source: "extraction", status: "cancelled", applied: 0, refused: 0, detail: "nothing_new", at: daysAgo(0.5) },
-  { source: "consolidation", status: "completed", applied: 3, refused: 1, detail: "merged two worktree notes", at: daysAgo(1) },
+  { source: "consolidation", status: "completed", applied: 4, refused: 1, detail: "applied 4 refused 1 invalid 0 kept 9 deferred 0", at: daysAgo(0.3), runId: "dream-mock", spendMicrousd: 41_000, dream: { merged: 1, corrected: 0, expired: 1, grouped: 0, retired: 0, approved: 1, rejected: 1, kept: 9, undone: 0 } },
   { source: "extraction", status: "failed", applied: 0, refused: 0, detail: "the harness ended before answering", at: daysAgo(3) },
   { source: "extraction", status: "completed", applied: 1, refused: 0, at: daysAgo(6) },
 ];
 let mockMemoryInsights: MemoryInsightsResult = { status: "empty" };
+/** A night's report for mock mode: a merge, an expiry, an approval and a rejection. */
+const mockDreamRecord = (id: string, body: string, status: string, extra: { kind?: string; pin?: boolean; expiresAt?: string } = {}) =>
+  ({ id, body, status, kind: extra.kind ?? "preference", pin: extra.pin ?? false, ...(extra.expiresAt ? { expiresAt: extra.expiresAt } : {}) });
+const mockDreams: Record<string, MemoryDreamReport> = {
+  "dream-mock": {
+    runId: "dream-mock",
+    trigger: "nightly",
+    status: "completed",
+    at: daysAgo(0.3),
+    spendMicrousd: 41_000,
+    kept: 9,
+    refused: 1,
+    deferred: 0,
+    operations: [
+      { index: 0, operation: "merge", before: [mockDreamRecord("d1", "Works as an independent researcher", "active", { kind: "fact" }), mockDreamRecord("d2", "Is an independent researcher who sets their own hours", "active", { kind: "fact" })], after: [mockDreamRecord("d1", "Works as an independent researcher", "superseded", { kind: "fact" }), mockDreamRecord("d2", "Is an independent researcher who sets their own hours", "superseded", { kind: "fact" }), mockDreamRecord("d3", "Works as an independent researcher who sets their own hours", "active", { kind: "fact" })] },
+      { index: 1, operation: "expire", before: [mockDreamRecord("d4", "Demo for the Acme team on Friday", "active", { kind: "fact" })], after: [mockDreamRecord("d4", "Demo for the Acme team on Friday", "active", { kind: "fact", expiresAt: daysAgo(-1) })] },
+      { index: 2, operation: "approve", before: [mockDreamRecord("d5", "Writes commit messages in English", "proposed")], after: [mockDreamRecord("d5", "Writes commit messages in English", "active")] },
+      { index: 3, operation: "reject", reason: "A status update, not a lasting fact", before: [mockDreamRecord("d6", "Is rebasing branches all afternoon", "proposed", { kind: "fact" })], after: [mockDreamRecord("d6", "Is rebasing branches all afternoon", "rejected", { kind: "fact" })] },
+    ],
+  },
+};
+let mockConsolidationMode = "propose";
+let mockDreamHour = 3;
+/** Mark changes undone in mock mode and keep the Activity tally in step. */
+function mockUndo(runId: string, indexes: number[]): MemoryDreamUndoResult {
+  const report = mockDreams[runId];
+  if (!report) throw new Error(`No dream has the id '${runId}'.`);
+  const at = new Date().toISOString();
+  for (const index of indexes) {
+    const operation = report.operations[index];
+    if (!operation) throw new Error(`This dream has no change ${index}.`);
+    if (operation.undoneAt) throw new Error("This change is already undone.");
+    operation.undoneAt = at;
+  }
+  const entry = mockActivityLog.find(item => item.runId === runId);
+  if (entry?.dream) entry.dream = { ...entry.dream, undone: report.operations.filter(operation => operation.undoneAt).length };
+  emitMemoryChanged("account:local");
+  return { report: structuredClone(report), skipped: [] };
+}
 let mockExtractionSettings: MemoryExtractionSettings = {
   scopeKey: "account:local",
   mode: "propose",
@@ -3875,7 +3914,37 @@ export const bridgeApi = {
   getConsolidationSettings: async (): Promise<MemoryConsolidationSettings> => {
     if (hasBackend()) return call("memory/get_consolidation_settings");
     const heldRecords = mockMemoryRecords.filter(item => item.status === "active").length;
-    return { scopeKey: "account:local", mode: "off", maxRecords: mockMemoryMaxRecords, heldRecords, allowRemoval: false, debounceSeconds: 600 };
+    return { scopeKey: "account:local", mode: mockConsolidationMode, maxRecords: mockMemoryMaxRecords, heldRecords, allowRemoval: false, debounceSeconds: 600, dreamHour: mockDreamHour };
+  },
+  /** Nightly cleanup on (`propose`) or `off`, and the local hour it dreams at. */
+  updateConsolidationSettings: async (mode: string, dreamHour?: number): Promise<MemoryConsolidationSettings> => {
+    if (hasBackend()) return call("memory/update_consolidation_settings", { mode, ...(dreamHour === undefined ? {} : { dreamHour }) });
+    if (mode !== "off" && mode !== "propose") throw new Error(`Unknown consolidation mode '${mode}'. Use off or propose.`);
+    if (dreamHour !== undefined && (dreamHour < 0 || dreamHour > 23)) throw new Error(`The dream hour is a local hour from 0 to 23, not ${dreamHour}.`);
+    mockConsolidationMode = mode;
+    if (dreamHour !== undefined) mockDreamHour = dreamHour;
+    emitMemoryChanged("account:local");
+    return bridgeApi.getConsolidationSettings();
+  },
+  /** "Dream now": the host runs it on its next maintenance tick. */
+  startDream: async (): Promise<MemoryDreamStarted> => {
+    if (hasBackend()) return call("memory/start_dream");
+    return { runId: "dream-mock", alreadyOpen: false };
+  },
+  getDreamReport: async (runId: string): Promise<MemoryDreamReport> => {
+    if (hasBackend()) return call("memory/get_dream_report", { runId });
+    const report = mockDreams[runId];
+    if (!report) throw new Error(`No dream has the id '${runId}'.`);
+    return structuredClone(report);
+  },
+  undoDreamOperation: async (runId: string, opIndex: number): Promise<MemoryDreamUndoResult> => {
+    if (hasBackend()) return call("memory/undo_dream_operation", { runId, opIndex });
+    return mockUndo(runId, [opIndex]);
+  },
+  undoDream: async (runId: string): Promise<MemoryDreamUndoResult> => {
+    if (hasBackend()) return call("memory/undo_dream", { runId });
+    const open = (mockDreams[runId]?.operations ?? []).filter(operation => !operation.undoneAt).map(operation => operation.index);
+    return mockUndo(runId, open);
   },
   /** How memory cleans itself up: proposal expiry, retiring unused memories, the queue's own cap. */
   getRetentionSettings: async (): Promise<MemoryRetentionSettings> => {

@@ -7,7 +7,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
-import type { AdapterDescriptor, MemoryChangedPayload, MemoryExtractionSettings, MemoryModelSettings, MemoryRecord, MemoryRetentionSettings } from "../types";
+import type { AdapterDescriptor, MemoryChangedPayload, MemoryDreamReport, MemoryExtractionSettings, MemoryModelSettings, MemoryRecord, MemoryRetentionSettings } from "../types";
 import { bodyLength, MemoryDialog } from "./MemoryDialog";
 
 const record = (id: string, body: string, kind = "preference"): MemoryRecord => ({
@@ -1001,6 +1001,68 @@ describe("MemoryDialog retention", () => {
     click(tab("Activity"));
     expect(container.textContent).toContain("Retired 3 unused memories");
     expect(container.textContent).toContain("12 unreviewed proposals expired");
+  });
+
+  it("reads a dream, undoes one change and then the rest", async () => {
+    const at = new Date().toISOString();
+    vi.mocked(bridgeApi.memoryActivityLog).mockResolvedValue([{
+      source: "consolidation", status: "completed", applied: 3, refused: 0, at, runId: "d1", spendMicrousd: 40_000,
+      dream: { merged: 2, corrected: 0, expired: 0, grouped: 0, retired: 0, approved: 1, rejected: 0, kept: 5, undone: 0 },
+    }]);
+    const recordOf = (id: string, body: string, status: string) => ({ id, body, status, kind: "fact", pin: false });
+    const report: MemoryDreamReport = {
+      runId: "d1", trigger: "nightly", status: "completed", at, spendMicrousd: 40_000, kept: 5, refused: 0, deferred: 0,
+      operations: [
+        { index: 0, operation: "merge", before: [recordOf("a", "Works as an independent researcher", "active"), recordOf("b", "Is an independent researcher", "active")], after: [recordOf("a", "Works as an independent researcher", "superseded"), recordOf("b", "Is an independent researcher", "superseded"), recordOf("c", "Works as an independent researcher, sets own hours", "active")] },
+        { index: 1, operation: "approve", before: [recordOf("p", "Writes commit messages in English", "proposed")], after: [recordOf("p", "Writes commit messages in English", "active")] },
+      ],
+    };
+    vi.spyOn(bridgeApi, "getDreamReport").mockResolvedValue(structuredClone(report));
+    const undoOne = vi.spyOn(bridgeApi, "undoDreamOperation").mockImplementation(async (_runId, index) => {
+      const next = structuredClone(report);
+      next.operations[index].undoneAt = at;
+      return { report: next, skipped: [] };
+    });
+    const undoAll = vi.spyOn(bridgeApi, "undoDream").mockImplementation(async () => {
+      const next = structuredClone(report);
+      next.operations.forEach(operation => { operation.undoneAt = at; });
+      return { report: next, skipped: [] };
+    });
+    mount();
+    await flush();
+    click(tab("Activity"));
+    expect(container.textContent).toMatch(/Dreamed at \d\d:\d\d: merged 2, approved 1 · \$0\.04/);
+    click([...document.querySelectorAll("button")].find(button => button.textContent?.includes("Dreamed at"))!);
+    await flush();
+    const changes = document.querySelector('[aria-label="Dream changes"]')!;
+    expect(changes.textContent).toContain("Merged 2");
+    expect(changes.textContent).toContain("Works as an independent researcher, sets own hours");
+    expect(changes.textContent).toContain("Approved");
+    click([...changes.querySelectorAll("button")].find(button => button.textContent === "Undo")!);
+    await flush();
+    expect(undoOne).toHaveBeenCalledTimes(1);
+    expect(undoOne).toHaveBeenCalledWith("d1", 0);
+    expect(changes.textContent).toContain("Undone");
+    click(buttonNamed("Undo all")!);
+    await flush();
+    expect(undoAll).toHaveBeenCalledWith("d1");
+    expect(changes.textContent?.match(/Undone/g)).toHaveLength(2);
+    expect(buttonNamed("Undo all")!.disabled).toBe(true);
+  });
+
+  it("dreams now on request and switches nightly cleanup on", async () => {
+    const start = vi.spyOn(bridgeApi, "startDream").mockResolvedValue({ runId: "d2", alreadyOpen: false });
+    const update = vi.spyOn(bridgeApi, "updateConsolidationSettings").mockImplementation(async mode => ({
+      scopeKey: "account:local", mode, maxRecords: 200, heldRecords: 2, allowRemoval: false, debounceSeconds: 600, dreamHour: 3,
+    }));
+    mount();
+    await flush();
+    click(tab("Activity"));
+    click(buttonNamed("Dream now")!);
+    await flush();
+    expect(start).toHaveBeenCalledTimes(1);
+    await choose("Nightly cleanup", "Nightly cleanup on");
+    expect(update).toHaveBeenCalledWith("propose");
   });
 
   it("shows already-known counts and nothing-new runs in Activity", async () => {
