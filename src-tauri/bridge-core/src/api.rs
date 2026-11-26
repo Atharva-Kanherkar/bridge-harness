@@ -4804,53 +4804,15 @@ pub fn resolve_slash_command(
 
 // --- completion / verification -------------------------------------------------
 
-fn completion_repository_stamp(
-    db: &Connection,
-    session_id: &str,
-) -> Result<completion::RepositoryStamp, BridgeError> {
-    let state = store::repository_state_for_session(db, session_id)?;
-    let head = state.get("head").and_then(Value::as_str).ok_or_else(|| {
-        BridgeError::Invalid("completion proof requires a Git repository HEAD".into())
-    })?;
-    let dirty = state
-        .get("dirtyHash")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            BridgeError::Invalid(
-                "completion proof requires a deterministic dirty-tree digest".into(),
-            )
-        })?;
-    Ok(completion::RepositoryStamp {
-        head: head.into(),
-        dirty_digest: dirty.into(),
-    })
-}
-
-fn completion_attempt_repository(
+fn completion_attempt_checkout(
     db: &Connection,
     attempt_id: &str,
-) -> Result<(String, completion::RepositoryStamp), BridgeError> {
-    let (session_id, repository_path, stored_head, stored_dirty): (String, String, String, String) = db.query_row(
-        "SELECT session_id,repository_path,repository_head,dirty_digest FROM eval_attempts WHERE id=?1",
+) -> Result<(String, String), BridgeError> {
+    Ok(db.query_row(
+        "SELECT session_id,repository_path FROM eval_attempts WHERE id=?1",
         params![attempt_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-    )?;
-    let state = store::repository_state_for_path(Path::new(&repository_path));
-    let head = state
-        .get("head")
-        .and_then(Value::as_str)
-        .unwrap_or(&stored_head);
-    let dirty = state
-        .get("dirtyHash")
-        .and_then(Value::as_str)
-        .unwrap_or(&stored_dirty);
-    Ok((
-        session_id,
-        completion::RepositoryStamp {
-            head: head.into(),
-            dirty_digest: dirty.into(),
-        },
-    ))
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?)
 }
 
 /// Every capability a verifier can currently rely on: live adapters plus the
@@ -4878,8 +4840,8 @@ pub fn create_completion_plan(
     markdown_projection: Option<String>,
     markdown_committed: bool,
 ) -> Result<completion::CompletionSummary, BridgeError> {
-    let (workspace_id, implementer_family): (String, Option<String>) = {
-        let db = core.db.lock().unwrap();
+    let (workspace_id, implementer_family, path): (String, Option<String>, PathBuf) = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let workspace_id = db.query_row(
             "SELECT workspace_id FROM sessions WHERE id=?1",
             params![session_id],
@@ -4890,8 +4852,12 @@ pub fn create_completion_plan(
             params![session_id],
             |row| row.get(0),
         ).optional()?;
-        (workspace_id, implementer_family)
+        let path = store::repository_path_for_session(&db, session_id)?.ok_or_else(|| {
+            BridgeError::Invalid("completion proof requires a Git checkout".into())
+        })?;
+        (workspace_id, implementer_family, path)
     };
+    let repository = completion::repository_stamp(&path)?;
     let contract = completion::CompletionContract {
         id: Uuid::new_v4().to_string(),
         workspace_id,
@@ -4903,8 +4869,10 @@ pub fn create_completion_plan(
     };
     let available_capabilities = live_available_capabilities(core);
     let change_labels = completion::labels_for_paths(&changed_paths);
-    let db = core.db.lock().unwrap();
-    let repository_path: String = db.query_row("SELECT COALESCE(s.cwd,w.path) FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1", params![session_id], |row| row.get(0))?;
+    let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if store::repository_path_for_session(&db, session_id)?.as_deref() != Some(path.as_path()) {
+        return Err(BridgeError::Invalid("the session checkout changed while measuring it".into()));
+    }
     let plan = completion::plan_with_registered_manifests(
         &db,
         completion::PlanInput {
@@ -4912,18 +4880,17 @@ pub fn create_completion_plan(
             acceptance_criteria,
             changed_paths,
             repository_commands,
-            repository_root: Some(std::path::PathBuf::from(&repository_path)),
+            repository_root: Some(path.clone()),
         },
         &change_labels,
         &available_capabilities,
     )?;
-    let repository = completion_repository_stamp(&db, session_id)?;
     completion::create_flow(
         &db,
         &contract,
         &plan,
         session_id,
-        &repository_path,
+        &path.to_string_lossy(),
         &repository,
         implementer_family.as_deref(),
     )?;
@@ -4939,8 +4906,14 @@ pub fn record_completion_check(
     attempt_id: &str,
     run: &completion::CheckRun,
 ) -> Result<completion::CompletionSummary, BridgeError> {
-    let db = core.db.lock().unwrap();
-    let (session_id, repository) = completion_attempt_repository(&db, attempt_id)?;
+    let (session_id, path) = completion_attempt_checkout(&core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner), attempt_id)?;
+    let repository = completion::repository_stamp(Path::new(&path))?;
+    let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !completion::confirm_attempt_stamp(&db, attempt_id, &path, &repository)? {
+        drop(db);
+        core.events.publish(CoreEvent::StateChanged);
+        return Err(completion::stale_repository());
+    }
     completion::record_check(&db, attempt_id, run)?;
     completion::finalize(&db, attempt_id, &repository)?;
     completion::reconcile_parent_readiness(&db, &session_id)?;
@@ -4957,8 +4930,26 @@ pub fn waive_completion(
     check_ids: &[String],
     reason: &str,
 ) -> Result<completion::CompletionSummary, BridgeError> {
-    let db = core.db.lock().unwrap();
-    let (session_id, repository) = completion_attempt_repository(&db, attempt_id)?;
+    let (session_id, path) = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let target = completion_attempt_checkout(&db, attempt_id)?;
+        if completion::waive_gate_error(&db, attempt_id, check_ids, reason, "local_user")? {
+            completion::reconcile_parent_readiness(&db, &target.0)?;
+            let summary = completion::latest_summary(&db, &target.0)?
+                .ok_or_else(|| BridgeError::Invalid("completion summary disappeared".into()))?;
+            drop(db);
+            core.events.publish(CoreEvent::StateChanged);
+            return Ok(summary);
+        }
+        target
+    };
+    let repository = completion::repository_stamp(Path::new(&path))?;
+    let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !completion::confirm_attempt_stamp(&db, attempt_id, &path, &repository)? {
+        drop(db);
+        core.events.publish(CoreEvent::StateChanged);
+        return Err(completion::stale_repository());
+    }
     completion::waive(
         &db,
         attempt_id,
@@ -8110,6 +8101,42 @@ mod tests {
 
     fn session_count(core: &crate::runtime::BridgeCore) -> usize {
         crate::store::state(&core.db.lock().unwrap()).unwrap().sessions.len()
+    }
+
+    #[test]
+    fn completion_check_and_waiver_require_a_readable_attempt_checkout() {
+        use super::{completion, create_completion_plan, record_completion_check, waive_completion};
+
+        let fixture = chat_fixture();
+        let path = fixture.chat_worktree.to_str().unwrap();
+        let planned = create_completion_plan(
+            &fixture.core,
+            "chat",
+            vec!["Review the changed behavior".into()],
+            vec!["base.txt".into()],
+            vec![],
+            None,
+            false,
+        )
+        .unwrap();
+        let check = planned.checks.iter().find(|check| check.required).unwrap();
+        let mut run = check.clone();
+        run.status = completion::CheckStatus::Failed;
+        std::fs::remove_dir_all(path).unwrap();
+
+        let recorded = record_completion_check(&fixture.core, &planned.attempt_id, &run);
+        let waived = waive_completion(
+            &fixture.core,
+            &planned.attempt_id,
+            &[check.check_id.clone()],
+            "manual review",
+        );
+        assert!(recorded.is_err(), "{recorded:?}");
+        assert!(waived.is_err(), "{waived:?}");
+        let db = fixture.core.db.lock().unwrap();
+        let summary = completion::latest_summary(&db, "chat").unwrap().unwrap();
+        assert_eq!(summary.checks, planned.checks);
+        assert!(summary.waiver_reason.is_none());
     }
 
     /// The whole point of not reusing `archive_workspace`: a workspace holds
