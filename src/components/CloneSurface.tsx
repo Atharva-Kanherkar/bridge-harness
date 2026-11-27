@@ -16,6 +16,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { useNow } from "../useNow";
 import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 // The dock tenant for a throwaway browser clone: the agent drives a private
 // copy of the browser, and this is where the person watches it, takes it over
@@ -81,12 +82,15 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
   }, [sessionId, currentSession]);
   const status = snapshot?.status ?? "none";
   const live = isLive(status);
-  useEffect(() => {
-    ++latestRequest.current;
+  // Another chat's clone starts clean, before its first frame paints.
+  useResetOnChange([sessionId], () => {
     setSnapshot(undefined);
     setBusy(false);
     setConfirmingDestroy(false);
     setDomainDraft("");
+  });
+  useEffect(() => {
+    ++latestRequest.current;
     // oxlint-disable-next-line react-hooks/exhaustive-deps -- a request generation counter, not a DOM ref: cleanup must bump its latest value
     return () => { ++latestRequest.current; };
   }, [sessionId]);

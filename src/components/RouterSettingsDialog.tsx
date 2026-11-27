@@ -4,7 +4,7 @@ import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "@/components/ui/input-group";
 import { SelectField } from "@/components/ui/select";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useLayoutEffect } from "react";
 import { useForm } from "@tanstack/react-form";
 import { BrainCircuit, CalendarClock, CircleCheck, Copy, ExternalLink, Play, RotateCcw, ShieldCheck, Undo2, X } from "lucide-react";
 import { bridgeApi } from "../api";
@@ -13,6 +13,7 @@ import { openExternalUrl } from "../externalLinks";
 import type { AdapterDescriptor, ExternalLearningTriggerKind, LearningReport, LearningSchedule, LearningState, ModelProfileDraft, ModelSetupState, RouterMode, RouterPreferences } from "../types";
 import { ModelProfileEditor } from "./ModelProfileEditor";
 import { modelProfilesChanged, profileDraftsFromSetup } from "../modelProfiles";
+import { useResetOnChange } from "../useResetOnChange";
 
 const defaults: RouterPreferences = {
   mode: "shadow",
@@ -155,7 +156,7 @@ export function RouterSettingsDialog({
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
   const [profiles, setProfiles] = useState<ModelProfileDraft[]>([]);
   const [learning, setLearning] = useState<LearningState>();
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(open && !!workspaceId);
   const [running, setRunning] = useState(false);
   const savedScheduleRef = useRef<LearningSchedule | null>(null);
   // Which learning-state read is the newest. The notify handler, the four action
@@ -174,20 +175,22 @@ export function RouterSettingsDialog({
     form.setFieldValue("schedule", next.schedule);
   };
 
-  useEffect(() => {
+  // A closed dialog keeps no state: unsaved schedule edits must not greet
+  // the next open, and an in-flight read must not land on it. The state resets
+  // before the closed frame paints and the read counter moves in that commit.
+  useResetOnChange([open], () => { if (!open) setLearning(undefined); });
+  useLayoutEffect(() => {
     if (open) return;
-    // A closed dialog keeps no state: unsaved schedule edits must not greet
-    // the next open, and an in-flight read must not land on it.
     savedScheduleRef.current = null;
     learningReadGeneration.current += 1;
-    setLearning(undefined);
   }, [open]);
 
+  // Opening reads the settings; the dialog is busy from its first frame.
+  useResetOnChange([open, workspaceId], () => { if (open && workspaceId) setBusy(true); });
   useEffect(() => {
     if (!open || !workspaceId) return;
     let active = true;
     let off: (() => void) | undefined;
-    setBusy(true);
     const initialGeneration = ++learningReadGeneration.current;
     Promise.all([bridgeApi.routerPreferences(workspaceId), bridgeApi.modelSetup(), bridgeApi.learningState(workspaceId)]).then(([value, setup, learningState]) => {
       if (!active) return;

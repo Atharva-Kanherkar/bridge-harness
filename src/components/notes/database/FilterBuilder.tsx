@@ -2,7 +2,7 @@
 // group one level deep, and/or per group. It keeps its own tree so a half-typed
 // number stays on screen, and hands out only complete conditions.
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,6 +11,7 @@ import { Segmented } from "@/components/ui/segmented";
 import type { NoteDatabase, Workspace } from "../../../types";
 import { STATUS_GROUPS } from "./formatValue";
 import { addCondition, addGroup, canAdd, choicesOf, completeOnly, defaultCondition, familyOf, filterColumns, isGroup, needsValue, OP_LABELS, opsFor, readFilter, removeAt, retarget, setCondition, setJoin, WITHIN, writeFilter, type Condition, type FieldColumn, type Group, type Path } from "./viewModel";
+import { useResetOnChange } from "../../../useResetOnChange";
 
 export interface FilterBuilderProps {
   database: NoteDatabase;
@@ -132,9 +133,9 @@ function NumberInput({ label, value, onChange }: { label: string; value: unknown
   // The row's condition can change under the field (a row above removed, the
   // property switched): show the number it now applies. Half-typed text that
   // is not yet a number stays.
-  useEffect(() => {
+  useResetOnChange([value], () => {
     if (typeof value === "number" && Number.isFinite(value) && value !== parsed) setText(String(value));
-  }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
+  });
   return <Input
     size="sm"
     aria-label={label}

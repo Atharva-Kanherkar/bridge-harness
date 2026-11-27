@@ -18,6 +18,7 @@ import { STATS_REFRESH_DEBOUNCE_MS } from "./ChangesPanel";
 import { modKey } from "@/lib/platform";
 import { SkeletonDot } from "@/components/ui/skeleton";
 import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 /** Rows the tree actually paints. Deep repositories stay responsive because
  *  only expanded directories contribute. */
@@ -108,7 +109,7 @@ function FilePalette({ paths, onPick, onClose }: { paths: string[]; onPick: (pat
   const results = useMemo(() => rankPaths(paths, query), [paths, query]);
   const active = results[Math.min(index, results.length - 1)];
   const list = useRef<HTMLDivElement>(null);
-  useEffect(() => setIndex(0), [query]);
+  useResetOnChange([query], () => setIndex(0));
   // Arrowing past the fold used to move the highlight off-screen while the
   // list stayed put.
   useEffect(() => {
@@ -233,6 +234,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
     }
   }, [workspaceId]);
 
+  // oxlint-disable-next-line react/set-state-in-effect -- loadTree raises its own loading flag, shared with the refresh button, then sets state from its answer
   useEffect(() => { void loadTree(); }, [loadTree]);
 
   const tree = useMemo(() => collapseChains(buildFileTree(paths)), [paths]);

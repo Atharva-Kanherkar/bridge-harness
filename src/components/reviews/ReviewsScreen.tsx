@@ -24,6 +24,7 @@ import type {
 } from "../../protocol/generated/protocol";
 import { Skeleton, SkeletonDot, SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
 import { useLatest } from "../../useLatest";
+import { useResetOnChange } from "../../useResetOnChange";
 
 // Every PR review Bridge ran, across repositories: what is waiting for the
 // person, what is running, the numbers for a period, how each reviewer does,
@@ -240,7 +241,8 @@ function JobDetail({ jobId, fallback, now, onClose, onOpenChat }: { jobId: strin
   const load = useCallback(() => {
     bridgeApi.getReview(jobId).then(setDetail, cause => setError(friendlyError(cause, "Couldn't load this review.")));
   }, [jobId]);
-  useEffect(() => { setDetail(undefined); setError(undefined); load(); }, [load]);
+  useResetOnChange([jobId], () => { setDetail(undefined); setError(undefined); });
+  useEffect(() => { load(); }, [load]);
   // The fresh job from the overview (live) wins over the detail's snapshot.
   const job = fallback ?? detail?.job;
   useEffect(() => { closeRef.current?.focus(); }, [jobId]);
@@ -340,6 +342,7 @@ export function ReviewsScreen({ onOpenChat }: { onOpenChat?: (sessionId: string)
       .finally(() => setLoading(false));
   }, [query]);
 
+  // oxlint-disable-next-line react/set-state-in-effect -- read raises its loading flag, shared with the refresh control, and sets the rest from its answer
   useEffect(() => { read(); }, [period, repository, read]);
 
   // The model catalog each reviewer can pick from.

@@ -9,6 +9,7 @@ import type { ReviewFinding, ReviewFindingDecisionInput, ReviewJob, ReviewPass, 
 import { GithubMarkdown } from "./GithubMarkdown";
 import { harnessLabel, SEVERITY_TEXT } from "./reviewLabels";
 import { SkeletonRows } from "@/components/ui/skeleton";
+import { useResetOnChange } from "../../useResetOnChange";
 
 // A drafted review, for a person to triage: keep, drop or edit each finding,
 // then post the kept ones as one comment review. Nothing reaches GitHub until
@@ -144,9 +145,9 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
   });
   const items = useRef(new Map<string, HTMLElement>());
 
+  useResetOnChange([job.id], () => { setFindings(undefined); setError(undefined); setDrafts(new Map()); });
   useEffect(() => {
     let active = true;
-    setFindings(undefined); setError(undefined); setDrafts(new Map());
     void bridgeApi.getReview(job.id)
       .then(detail => { if (active) { setFindings(detail.findings); setPasses(detail.passes); } })
       .catch(cause => { if (active) setError(friendlyError(cause, "Couldn't load the draft review.")); });

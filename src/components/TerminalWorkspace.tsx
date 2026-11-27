@@ -160,6 +160,7 @@ export function TerminalWorkspace({ workspaceId, branch, onError }: { workspaceI
       setError(undefined);
     } catch (value) { errorHandler(value, "Couldn't open the terminal workspace."); }
   }, [workspaceId, errorHandler]);
+  // oxlint-disable-next-line react/set-state-in-effect -- load sets state only from its answer, after an await
   useEffect(() => { alive.current = true; void load(); return () => { alive.current = false; }; }, [load]);
   const savedLayout = state?.layout;
   useEffect(() => {

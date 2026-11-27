@@ -29,6 +29,7 @@ import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 // An aside: a standalone chat the user delegated to another agent from inside
 // a conversation, shown as a panel floating over that conversation instead of
@@ -98,7 +99,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
   }, [session.id]);
   const activeTurnInput = useActiveTurnInput(chatSettings?.sessionId === session.id ? chatSettings.value : undefined);
   const activeAction = activeTurnAction(adapters.find(adapter => adapter.id === session.harness)?.capabilities, activeTurnInput);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(initialDraft ?? "");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [composerError, setComposerError] = useState<string>();
   const [sending, setSending] = useState(false);
@@ -142,17 +143,16 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
   }, [mentionQuery, workspaceFileOptions]);
   const mentionOpen = !slashToken && mentionQuery != null && fileMatches.length > 0 && !mentionDismissed;
 
-  useEffect(() => {
+  useResetOnChange([initialDraft], () => {
     if (initialDraft) setDraft(current => current || initialDraft);
-  }, [initialDraft]);
+  });
 
   const completion = useComposerSuggestion(draft, suggestionSettings, session.id, slashToken !== undefined || mentionQuery != null);
   const draftSuggestion = completion.result;
 
-  useEffect(() => {
-    if (!mentionOpen) return;
-    setMentionIndex(index => Math.min(index, Math.max(0, fileMatches.length - 1)));
-  }, [mentionOpen, fileMatches.length]);
+  useResetOnChange([mentionOpen, fileMatches.length], () => {
+    if (mentionOpen) setMentionIndex(index => Math.min(index, Math.max(0, fileMatches.length - 1)));
+  });
 
   useEffect(() => {
     if (!mentionOpen) return;

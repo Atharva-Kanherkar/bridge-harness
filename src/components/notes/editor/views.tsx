@@ -16,6 +16,7 @@ import { assetUrl } from "./assets";
 import { RichFence, richFenceKind } from "../../Markdown";
 import { DrawingBlock, isDrawingFence, readsAsDrawing } from "./drawing";
 import { Callout, CALLOUT_KINDS, DatabaseEmbed, PageLink, WikiLink, type CalloutKind } from "./blocks";
+import { useResetOnChange } from "../../../useResetOnChange";
 
 /** What the views need from the page around the editor. */
 export interface EditorPages {
@@ -55,9 +56,9 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
   // A drag in progress, dropped without saving if the view goes first.
   const dragging = useRef<(() => void) | null>(null);
   useEffect(() => () => dragging.current?.(), []);
+  useResetOnChange([src], () => setFailed(false));
   useEffect(() => {
     let current = true;
-    setFailed(false);
     assetUrl(src).then(next => { if (current) setUrl(next); }, () => { if (current) setFailed(true); });
     return () => { current = false; };
   }, [src]);

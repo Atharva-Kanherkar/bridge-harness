@@ -77,6 +77,9 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
   // build on their own last edit.
   const viewDrafts = useRef(new Map<string, NoteDatabaseView>());
   const withDrafts = (database: NoteDatabase) => [...viewDrafts.current.values()].reduce(withView, database);
+  // Unsaved view edits live in a ref, so a database handed in is merged with
+  // them after commit rather than during render.
+  // oxlint-disable-next-line react/set-state-in-effect -- withDrafts reads the pending view edits from a ref
   useEffect(() => { if (given) setDatabase(withDrafts(given)); }, [given]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Schema reads and writes land newest first, whatever order they answer in.
@@ -88,6 +91,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
       if (page.database && schemaOrder.accept(ticket)) setDatabase(withDrafts(page.database));
     } catch (error) { fail(error, "Couldn't load the database."); }
   }, [databaseId, fail, schemaOrder]);
+  // oxlint-disable-next-line react/set-state-in-effect -- readDatabase sets state only from its answer, after an await
   useEffect(() => { if (!given) void readDatabase(); }, [given, readDatabase]);
 
   const views = useMemo(() => [...(database?.views ?? [])].sort((a, b) => a.order - b.order), [database]);
@@ -137,6 +141,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
     }
   }, [databaseId, viewParams, fail]);
 
+  // oxlint-disable-next-line react/set-state-in-effect -- query sets state only from its answers, after an await
   useEffect(() => { loaded.current = false; if (database) void query(); }, [database ? database.id : null, queryKey, query]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The first painted row closes the first-paint measure.

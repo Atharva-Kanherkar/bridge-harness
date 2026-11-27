@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useLayoutEffect } from "react";
 import { Search, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import { friendlyError } from "../errors";
@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
 import { Input } from "@/components/ui/input";
 import { SkeletonRows } from "@/components/ui/skeleton";
+import { useResetOnChange } from "../useResetOnChange";
 
 export type SessionRecallSearchProps = {
   sessionId: string;
@@ -19,9 +20,13 @@ export type SessionRecallSearchProps = {
  *  a thousand-turn session is reachable instead of merely absent. */
 export const RECALL_PAGE_SIZE = 20;
 
+// One function for every render: a default made inline was a new `search`
+// each render, which re-ran the search effect after every state change.
+const searchEntries: NonNullable<SessionRecallSearchProps["search"]> = (id, query, limit, offset) => bridgeApi.searchSessionEntries(id, query, limit, offset);
+
 export function SessionRecallSearch({
   sessionId,
-  search = (id, query, limit, offset) => bridgeApi.searchSessionEntries(id, query, limit, offset),
+  search = searchEntries,
   onClose,
   onJump,
 }: SessionRecallSearchProps) {
@@ -45,18 +50,20 @@ export function SessionRecallSearch({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // A new query clears or marks the results before it paints; the page
+  // counter moves in the same commit, so a late Show more lands nowhere.
+  useResetOnChange([query, search, sessionId], () => {
+    if (query.trim()) { setStatus("loading"); return; }
+    setHits([]);
+    setHasMore(false);
+    setStatus("idle");
+    setError(null);
+  });
+  useLayoutEffect(() => { generation.current += 1; }, [query, search, sessionId]);
   useEffect(() => {
-    generation.current += 1;
     const trimmed = query.trim();
-    if (!trimmed) {
-      setHits([]);
-      setHasMore(false);
-      setStatus("idle");
-      setError(null);
-      return;
-    }
+    if (!trimmed) return;
     let cancelled = false;
-    setStatus("loading");
     const handle = window.setTimeout(() => {
       void search(sessionId, trimmed, RECALL_PAGE_SIZE, 0)
         .then(result => {

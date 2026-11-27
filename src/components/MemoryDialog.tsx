@@ -1,6 +1,6 @@
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
 import { SkeletonRows } from "@/components/ui/skeleton";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useLayoutEffect } from "react";
 import { Check, Pencil, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -30,6 +30,7 @@ import type {
   MemoryRecord,
 } from "../types";
 import { Checkbox } from "@/components/ui/checkbox";
+import { useResetOnChange } from "../useResetOnChange";
 
 const KINDS = ["preference", "fact", "decision", "constraint"] as const;
 type Kind = typeof KINDS[number];
@@ -151,7 +152,7 @@ export function MemoryDialog({
   const [dreamPending, setDreamPending] = useState(false);
   const [filter, setFilter] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [body, setBody] = useState("");
+  const [body, setBody] = useState(open && initialBody ? initialBody : "");
   const [kind, setKind] = useState<string>("preference");
   // Edit is supersession: the row's body moves here, and saving writes a
   // superseding record — never save-then-forget, never an in-place update.
@@ -217,10 +218,11 @@ export function MemoryDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, searching, activeCursor, loadingMore]);
 
-  useEffect(() => {
+  // A closed dialog keeps no state. The fields reset before the closed frame
+  // paints; the read counters move in the same commit, so an in-flight read
+  // never lands on it.
+  useResetOnChange([open], () => {
     if (open) return;
-    // A closed dialog keeps no state, and an in-flight read must not land on it.
-    readGeneration.current += 1;
     setTab("pins");
     setActiveList(undefined);
     setProposedList(undefined);
@@ -228,8 +230,6 @@ export function MemoryDialog({
     setRetention(undefined);
     setSelected(new Set());
     setLoadingMore(null);
-    loadedCount.current = { active: 0, proposed: 0, expired: 0 };
-    lastLoaded.current = {};
     setSettings(undefined);
     setBudget(undefined);
     setCapabilities(undefined);
@@ -244,11 +244,17 @@ export function MemoryDialog({
     setEditingId(null);
     setModelDraft(null);
     setMemoryModel(undefined);
+  });
+  useLayoutEffect(() => {
+    if (open) return;
+    readGeneration.current += 1;
+    loadedCount.current = { active: 0, proposed: 0, expired: 0 };
+    lastLoaded.current = {};
   }, [open]);
 
-  useEffect(() => {
+  useResetOnChange([open, initialBody], () => {
     if (open && initialBody) setBody(initialBody);
-  }, [open, initialBody]);
+  });
 
   useEffect(() => {
     if (!open) return;

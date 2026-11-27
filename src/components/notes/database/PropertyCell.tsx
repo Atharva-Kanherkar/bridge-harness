@@ -20,6 +20,7 @@ import type { NoteOption, NoteOptionInput, NoteProperty, Workspace } from "../..
 import { MenuLabel, Option, OptionList } from "../NotesUi";
 import { Floating } from "./Floating";
 import { STATUS_GROUPS, formatValue, type Column } from "./formatValue";
+import { useResetOnChange } from "../../../useResetOnChange";
 
 /** What a cell needs from the database around it. */
 export interface CellHost {
@@ -70,6 +71,8 @@ export function PropertyCell({ column, value, host, mode = "panel", editing: con
   const type = column.type;
 
   // A read-only column has no editor to open.
+  // `setEditing` is the table's, so closing a read-only editor waits for the commit.
+  // oxlint-disable-next-line react/set-state-in-effect -- the editing state belongs to the parent table
   useEffect(() => { if (editing && READ_ONLY.has(type)) setEditing(false, "escape"); }); // eslint-disable-line react-hooks/exhaustive-deps
 
   const text = formatValue(column, value, { rowTitle: host.rowTitle, workspaceTitle: id => host.workspaces.find(workspace => workspace.id === id)?.title });
@@ -238,7 +241,7 @@ function OptionPicker({ property, value, seed, host, onPick, onCancel }: { prope
   const [query, setQuery] = useState(seed ?? "");
   const [options, setOptions] = useState<NoteOption[]>(property.options ?? []);
   const [creating, setCreating] = useState(false);
-  useEffect(() => setOptions(property.options ?? []), [property.options]);
+  useResetOnChange([property.options], () => setOptions(property.options ?? []));
   const chosen: string[] = multi ? (Array.isArray(value) ? value.map(String) : []) : value ? [String(value)] : [];
   const matches = options.filter(option => !query.trim() || fold(option.name).includes(fold(query)));
   const exact = options.some(option => fold(option.name) === fold(query));

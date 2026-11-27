@@ -7,6 +7,7 @@ import { TrailPage } from "./trails/TrailPage";
 import { TrailStartDialog, type TrailHarnessOption, type TrailStartRequest } from "./trails/TrailStartDialog";
 import { TrailAddDialog } from "./trails/TrailAddDialog";
 import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 export type { TrailStartRequest } from "./trails/TrailStartDialog";
 
@@ -66,16 +67,19 @@ export function TrailsScreen({ trailId, knownTrails, onSelectTrail, workspaces, 
   }, [selectedRef]);
 
   useEffect(() => { loadList(); }, [loadList]);
-  useEffect(() => {
+  useResetOnChange([trailId], () => {
     setDetail(current => current?.summary.id === trailId ? current : null);
     setDetailError(undefined);
-    refreshRef.current = 0;
     setRefreshing(false);
+  });
+  useEffect(() => {
+    refreshRef.current = 0;
     if (!trailId) return;
     // Paint from what Bridge has stored, then re-read the trail's pull
     // requests and issues from GitHub once, behind the page: that read runs
     // `gh` per pull request and can take seconds.
     let live = true;
+    // oxlint-disable-next-line react/set-state-in-effect -- a read without refresh sets state only from its answer
     void loadDetail(trailId).then(() => { if (live) void loadDetail(trailId, true); });
     return () => { live = false; };
   }, [trailId, loadDetail]);

@@ -19,6 +19,7 @@ import { Pill, PrimaryButton } from "./NotesUi";
 import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
 import { RowButton } from "@/components/ui/row";
 import { useLatest } from "../../useLatest";
+import { useResetOnChange } from "../../useResetOnChange";
 
 const when = (iso: string) => new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
@@ -40,11 +41,14 @@ export function NoteHistoryDialog({ page, open, chatTitle, onClose, onRestore }:
   // Chat names only label entries; a renamed chat must not refetch history.
   const names = useLatest(chatTitle);
 
+  useResetOnChange([open, id], () => {
+    if (!open) return;
+    setEntries(null);
+    setFailure(null);
+  });
   useEffect(() => {
     if (!open) return;
     let current = true;
-    setEntries(null);
-    setFailure(null);
     bridgeApi.notePageHistory(id).then(history => {
       if (!current) return;
       const next = historyEntries(history.versions, sessionId => names.current(sessionId));

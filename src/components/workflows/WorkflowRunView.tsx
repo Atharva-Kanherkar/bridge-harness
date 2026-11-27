@@ -151,6 +151,7 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
     }
   }, [run.sessionId]);
 
+  // oxlint-disable-next-line react/set-state-in-effect -- load sets state only from its answer, after an await
   useEffect(() => { void load(); }, [load, run.status]);
   useEffect(() => {
     if (!active) return;

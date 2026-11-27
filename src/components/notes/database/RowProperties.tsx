@@ -14,6 +14,7 @@ import { useLatestOnly } from "./useLatestOnly";
 import { typeIcon } from "./DatabaseTable";
 import { TYPE_LABELS } from "./formatValue";
 import { Button } from "@/components/ui/button";
+import { useResetOnChange } from "../../../useResetOnChange";
 
 export interface RowPropertiesProps {
   page: NotePage;
@@ -33,7 +34,7 @@ export function RowProperties({ page, workspaces, notes, chatTitle, onOpenChat, 
   const [adding, setAdding] = useState(false);
   const addAnchor = useRef<HTMLDivElement>(null);
   const fail = useCallback((error: unknown, fallback = "Couldn't save the change to this row.") => onError(friendlyError(error, fallback)), [onError]);
-  useEffect(() => setValues(page.values ?? {}), [page.values]);
+  useResetOnChange([page.values], () => setValues(page.values ?? {}));
   // Schema reads and writes land newest first, whatever order they answer in.
   const schemaOrder = useLatestOnly();
   // The schema moves without this row's seq: re-read it whenever the database changes.

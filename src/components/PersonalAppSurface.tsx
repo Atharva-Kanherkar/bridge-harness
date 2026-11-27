@@ -5,6 +5,7 @@ import { friendlyError } from "../errors";
 import type { PersonalAppSurfaceOpen } from "../protocol/generated/protocol";
 import { PersonalAppOpenCard } from "./PersonalAppOpenCall";
 import { Button } from "./ui/button";
+import { useResetOnChange } from "../useResetOnChange";
 
 /** Opens and closes per app, run one at a time across every mount. Core
  *  keeps one surface per app and a new open replaces the last, so an open a
@@ -34,12 +35,16 @@ export function PersonalAppSurface({ appId }: { appId: string }) {
   const [open, setOpen] = useState<PersonalAppSurfaceOpen>();
   const [error, setError] = useState("");
 
+  // A newer locked version opens afresh, from a clean pane.
+  useResetOnChange([appId, enabled, version], () => {
+    if (!enabled) return;
+    setOpen(undefined);
+    setError("");
+  });
   useEffect(() => {
     if (!enabled) return;
     let current = true;
     let made: string | undefined;
-    setOpen(undefined);
-    setError("");
     void serialized(appId, async () => {
       // A pane that went away before its turn opens nothing.
       if (!current) return;

@@ -48,6 +48,7 @@ import {
 } from "./sidebarChats";
 import { useNow } from "../useNow";
 import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 400;
@@ -700,21 +701,22 @@ export function BridgeSidebar({
   }, [collapsed, onCollapsedChange]);
   const [resizing, setResizing] = useState(false);
   const [view, setView] = useState<ChatView>(readChatView);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [query, setQuery] = useState("");
+  // A `/find` that is already waiting opens the field from the first frame.
+  const [searchOpen, setSearchOpen] = useState(!!searchRequest);
+  const [query, setQuery] = useState(searchRequest?.query ?? "");
   const [shownInFull, setShownInFull] = useState<Set<string>>(new Set());
   const [foldedGroups, setFoldedGroups] = useState<Set<string>>(new Set());
   // Chats whose imported subagents are unfolded. The chat holding the open
   // subagent unfolds by itself, so the open row is always on screen.
-  const [openSubagents, setOpenSubagents] = useState<Set<string>>(new Set());
   const activeSubagentOf = useMemo(() => {
     if (!activeSessionId || !subagents) return undefined;
     for (const [chatId, rows] of subagents) if (rows.some(row => row.chat.id === activeSessionId)) return chatId;
     return undefined;
   }, [activeSessionId, subagents]);
-  useEffect(() => {
+  const [openSubagents, setOpenSubagents] = useState<Set<string>>(() => new Set(activeSubagentOf ? [activeSubagentOf] : []));
+  useResetOnChange([activeSubagentOf], () => {
     if (activeSubagentOf) setOpenSubagents(current => current.has(activeSubagentOf) ? current : new Set(current).add(activeSubagentOf));
-  }, [activeSubagentOf]);
+  });
   const toggleSubagents = useCallback((chatId: string) => setOpenSubagents(current => toggleKey(current, chatId)), []);
   // Day headers are relative, so a rail left open past midnight would keep
   // calling yesterday's chats "Today" until the list next changed.
@@ -756,16 +758,17 @@ export function BridgeSidebar({
   // the field is open: a closed field must not keep a deep search alive.
   const chatSearch = useChatSearch(searchOpen ? query : "");
   const { runDeep } = chatSearch;
-  const [pendingDeep, setPendingDeep] = useState<string | null>(null);
-  useEffect(() => {
+  const [pendingDeep, setPendingDeep] = useState<string | null>(searchRequest ? searchRequest.query.trim() : null);
+  useResetOnChange([searchRequest], () => {
     if (!searchRequest) return;
     setSearchOpen(true);
     setQuery(searchRequest.query);
     setPendingDeep(searchRequest.query.trim());
-  }, [searchRequest]);
+  });
   // `/find` asks for the deep stage once the open field holds its query.
   useEffect(() => {
     if (pendingDeep === null || !searchOpen || pendingDeep !== query.trim()) return;
+    // oxlint-disable-next-line react/set-state-in-effect -- consumes the one-shot request in the pass that starts the deep search
     setPendingDeep(null);
     runDeep();
   }, [pendingDeep, searchOpen, query, runDeep]);

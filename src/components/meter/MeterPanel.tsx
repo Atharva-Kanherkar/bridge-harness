@@ -28,16 +28,20 @@ export function MeterPanel() {
   useEffect(followThemeAcrossWindows, []);
   const [usage, setUsage] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
   const [registry, setRegistry] = useState<MeterRegistry | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
+  // The panel asks for fresh limits as it mounts, so it starts refreshing.
+  const [refreshing, setRefreshing] = useState(true);
 
-  const refresh = useCallback(() => {
-    setRefreshing(true);
+  const ask = useCallback(() => {
     void bridgeApi.refreshMeter()
       .catch(() => undefined)
       // The reply rides the usage stream rather than resolving this call, so
       // the spinner is a short acknowledgement, not a completion signal.
       .finally(() => window.setTimeout(() => setRefreshing(false), 900));
   }, []);
+  const refresh = useCallback(() => {
+    setRefreshing(true);
+    ask();
+  }, [ask]);
 
   useEffect(() => {
     let active = true;
@@ -66,12 +70,12 @@ export function MeterPanel() {
   // a hidden menu-bar panel polling limits forever is exactly the waste the
   // adaptive refresh policy exists to avoid.
   useEffect(() => {
-    refresh();
+    ask();
     const tick = window.setInterval(() => {
       if (document.visibilityState === "visible") refresh();
     }, VISIBLE_REFRESH_MS);
     return () => window.clearInterval(tick);
-  }, [refresh]);
+  }, [ask, refresh]);
 
   // The tray asks for a refresh when it opens the panel, so the numbers are
   // current by the time the user reads them.

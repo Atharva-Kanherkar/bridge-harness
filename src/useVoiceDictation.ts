@@ -4,6 +4,7 @@ import type { VoiceCapabilitiesResult, VoiceProviderId, VoiceRecoveryAction } fr
 import { VoiceCapture } from "./voiceCapture";
 import { VoiceDictationController, type VoiceDraft, type VoiceView } from "./voiceDictation";
 import { useLatest } from "./useLatest";
+import { useResetOnChange } from "./useResetOnChange";
 
 // Composers that mount together share one local probe instead of racing two.
 let inflightLocalProbe: Promise<VoiceCapabilitiesResult> | undefined;
@@ -54,11 +55,11 @@ export function useVoiceDictation(options: Options) {
     changed: setView,
   }));
 
+  // A retry starts from a fresh connection, before it paints.
+  useResetOnChange([controller, refresh], () => { setListening(false); setSubscriptionError(undefined); });
   useEffect(() => {
     let active = true;
     let off: (() => void) | undefined;
-    setListening(false);
-    setSubscriptionError(undefined);
     void bridgeApi.onVoiceTranscript(event => { if (active) controller.receive(event); }).then(unlisten => {
       if (active) { off = unlisten; setListening(true); } else unlisten();
     }).catch(() => {
@@ -78,13 +79,12 @@ export function useVoiceDictation(options: Options) {
     };
   }, [controller]);
 
+  // A scope whose answer has not come back reads as "Checking"; one where the
+  // chat's turn is still running needs no probe at all.
+  const waitForTurn = bound && !!options.working;
   useEffect(() => {
+    if (waitForTurn) return;
     let current = true;
-    setCapability({ scope, available: false, reason: "Checking dictation availability" });
-    if (bound && options.working) {
-      setCapability({ scope, available: false, reason: "Wait for the current turn to finish before dictating." });
-      return;
-    }
     void probeCapabilities(bound ? options.sessionId : undefined).then(result => {
       if (!current) return;
       const provider = result.providers.find(item => item.provider === options.provider);
@@ -103,14 +103,15 @@ export function useVoiceDictation(options: Options) {
   useLayoutEffect(() => { controller.draftChanged(); });
   useLayoutEffect(() => () => { controller.cancel(); }, [controller, cancelScope]);
 
-  const currentCapability = capability.scope === scope;
-  const available = !!options.ownerKey && currentCapability && capability.available && listening;
+  const shown: Capability = waitForTurn ? { scope, available: false, reason: "Wait for the current turn to finish before dictating." } : capability;
+  const currentCapability = shown.scope === scope;
+  const available = !!options.ownerKey && currentCapability && shown.available && listening;
 
   return {
     ...view,
     available,
-    unavailableReason: subscriptionError ?? (!currentCapability ? "Checking dictation availability" : capability.available && !listening ? "Connecting to dictation events" : capability.reason),
-    recovery: subscriptionError ? "retry" as const : currentCapability ? capability.recovery : undefined,
+    unavailableReason: subscriptionError ?? (!currentCapability ? "Checking dictation availability" : shown.available && !listening ? "Connecting to dictation events" : shown.reason),
+    recovery: subscriptionError ? "retry" as const : currentCapability ? shown.recovery : undefined,
     active: view.state === "starting" || view.state === "recording" || view.state === "stopping",
     start: () => available ? controller.start(options.provider) : Promise.resolve(),
     stop: () => controller.stop(),

@@ -59,6 +59,7 @@ export function VoiceSettingsPage({ onError, onChanged }: {
 
   useEffect(() => {
     mounted.current = true;
+    // oxlint-disable-next-line react/set-state-in-effect -- refresh sets state only from its answer, after an await
     void refresh();
     return () => { mounted.current = false; generation.current += 1; };
   }, [refresh]);

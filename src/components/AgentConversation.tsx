@@ -55,6 +55,7 @@ import { describeTurnEnds, keepStable, type TurnEnd } from "../turnChanges";
 import type { InteractionResolutionResult, SessionEntryWindowSummary } from "../protocol/generated/protocol";
 import { useNow } from "../useNow";
 import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 type ResolvePermission = (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
 
@@ -750,11 +751,11 @@ function useStartupNarration({ sessionId, switchingToLabel, compactingSince, has
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [streamStartedAt, setStreamStartedAt] = useState<number | null>(null);
 
-  useEffect(() => {
+  useResetOnChange([sessionId], () => {
     setPhase(null);
     setStartedAt(null);
     setStreamStartedAt(null);
-  }, [sessionId]);
+  });
 
   useEffect(() => {
     if (!sessionId) return;
@@ -770,15 +771,22 @@ function useStartupNarration({ sessionId, switchingToLabel, compactingSince, has
     return () => { live = false; off?.(); };
   }, [sessionId]);
 
-  useEffect(() => {
-    // A model switch runs with no pending message, so it starts the clock too.
-    if (hasPendingWork || switchingToLabel) { setStartedAt(value => value ?? Date.now()); return; }
+  // A model switch runs with no pending message, so it starts the clock too.
+  const timing = hasPendingWork || !!switchingToLabel;
+  useResetOnChange([timing], () => {
+    if (timing) return;
     setStartedAt(null);
     setStreamStartedAt(null);
     setPhase(null);
-  }, [hasPendingWork, switchingToLabel]);
+  });
+  // Stamping when work began reads the wall clock, which render must not.
+  useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- records the moment work began; the clock is read after commit
+    if (timing) setStartedAt(value => value ?? Date.now());
+  }, [timing]);
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- records the moment the first token arrived; the clock is read after commit
     if (streaming) setStreamStartedAt(value => value ?? Date.now());
   }, [streaming]);
 

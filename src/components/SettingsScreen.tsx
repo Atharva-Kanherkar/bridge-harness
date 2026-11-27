@@ -32,6 +32,7 @@ import { PAGE_ROWS, SETTINGS_ROWS, type SearchableRow } from "./settings/setting
 import { canonicalSection, PAGES, type PageId, type Section } from "./settings/sections";
 import { ChatDefaultsPage } from "./settings/ChatDefaultsPage";
 import { VoiceSettingsPage } from "./settings/VoiceSettingsPage";
+import { useResetOnChange } from "../useResetOnChange";
 
 export type { PageId, Section };
 export { PermissionsSection };
@@ -77,7 +78,8 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
   const [harnessDetailId, setHarnessDetailId] = useState<string | null>(null);
   const [openCodeCatalog, setOpenCodeCatalog] = useState<OpenCodeCatalog>();
   const [openCodeDiscoveryError, setOpenCodeDiscoveryError] = useState<string>();
-  const [busy, setBusy] = useState(false);
+  // The settings are read on open, so the screen is busy from its first frame.
+  const [busy, setBusy] = useState(true);
   const [saved, setSaved] = useState(false);
   // Reset all deletes the early compaction switch too. That switch loads its
   // own value, so each reset gives it a new key and it reads the value again.
@@ -85,7 +87,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
   // One copy of the runtime list, read by both the Harnesses list and a single
   // harness's detail page, so an install never has to be reported twice.
   const managed = useManagedAgents(undefined, onHealthChange);
-  useEffect(() => { setSection(canonicalSection(initialSection)); setPresetDetailId(null); setHarnessDetailId(null); }, [initialSection]);
+  useResetOnChange([initialSection], () => { setSection(canonicalSection(initialSection)); setPresetDetailId(null); setHarnessDetailId(null); });
   // The row a search hit asked for, revealed once its page has drawn it.
   const [reveal, setReveal] = useState<string | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -117,9 +119,9 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     return () => { cancelled = true; if (retry !== undefined) window.clearTimeout(retry); };
   }, [reveal, section, config, modelSetup]);
 
+  useResetOnChange([onError], () => setBusy(true));
   useEffect(() => {
     let active = true;
-    setBusy(true);
     Promise.all([bridgeApi.configState(), bridgeApi.modelSetup()]).then(([next, setup]) => {
       if (!active) return;
       setConfig(next);

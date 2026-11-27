@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState, useLayoutEffect } from "react";
 import { ArrowLeft, ArrowRight, ExternalLink, Globe, MousePointer2, Plus, RotateCw, Square, Undo2, X } from "lucide-react";
 import { openExternalUrl } from "../externalLinks";
 import { friendlyError } from "../errors";
@@ -14,6 +14,7 @@ import { formatShortcut, modKey } from "../lib/platform";
 import { Input } from "@/components/ui/input";
 import { SkeletonDot } from "@/components/ui/skeleton";
 import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 export type SimpleBrowserProps = {
   sessionId?: string;
@@ -26,7 +27,8 @@ export type SimpleBrowserProps = {
 export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible = true, onAttachSelection, onInvalidateSelection }: SimpleBrowserProps) {
   const [workspace, dispatch] = useReducer(browserWorkspaceReducer, undefined, () => initialUrl ? defaultBrowserWorkspace(initialUrl) : readBrowserWorkspace(sessionId));
   const [snapshots, setSnapshots] = useState<Record<string, BrowserPageSnapshot>>({});
-  const [draft, setDraft] = useState("");
+  // The address field starts on the open tab's address.
+  const [draft, setDraft] = useState(() => workspace.tabs.find(tab => tab.id === workspace.activeTabId)!.url);
   const [error, setError] = useState<string>();
   const [inspecting, setInspecting] = useState(false);
   const [selection, setSelection] = useState<BrowserSelectionContext>();
@@ -65,9 +67,12 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
   // oxlint-disable-next-line react-hooks/exhaustive-deps -- selectionRevision is a counter, not a DOM ref: unmount must bump its latest value
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; selectionRevision.current++; cancelAddressFocus(); }; }, [cancelAddressFocus]);
   useEffect(() => { writeBrowserWorkspace(sessionId, workspace); }, [sessionId, workspace]);
-  useEffect(() => { selectionRevision.current++; setDraft(active.url); setError(undefined); setSelection(undefined); setInspecting(false); setAttaching(false); }, [active.id, active.url]);
+  // Another tab or address starts clean before it paints; the selection
+  // counter moves in that commit, so a pending pick never lands on it.
+  useResetOnChange([active.id, active.url], () => { setDraft(active.url); setError(undefined); setSelection(undefined); setInspecting(false); setAttaching(false); });
+  useLayoutEffect(() => { selectionRevision.current++; }, [active.id, active.url]);
+  useResetOnChange([active.id, live?.loading, live?.navigationId], () => setSlow(false));
   useEffect(() => {
-    setSlow(false);
     if (!live?.loading) return;
     const timer = setTimeout(() => setSlow(true), 8000);
     return () => clearTimeout(timer);
@@ -79,6 +84,8 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
     setSelection(undefined); setInspecting(false); setAnnotation(""); setAttaching(false);
     void pages.current.get(stateRef.current.activeTabId)?.action("cancel_inspect").catch(() => {});
   }, [cancelAddressFocus, stateRef]);
+  // Hiding the browser also tells the page to stop inspecting, so it is an effect.
+  // oxlint-disable-next-line react/set-state-in-effect -- cancelSelection signals the page as well as clearing the pick
   useEffect(() => { if (!visible) cancelSelection(); }, [visible, cancelSelection]);
   const invalidate = (tabId: string, navigationId?: number) => {
     callbacks.current.onInvalidateSelection?.(tabId, navigationId);

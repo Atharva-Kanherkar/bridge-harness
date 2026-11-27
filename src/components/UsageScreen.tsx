@@ -29,6 +29,7 @@ import {
   makeUsageWindow, microToUsdPerMtok, readUsagePreferences, summaryParams, USAGE_LAYOUT_OPTIONS, USAGE_WINDOW_OPTIONS, usdPerMtokToMicro, writeUsagePreferences,
   type UsageLayout, type UsageMetric, type UsagePreferences, type UsageReport, type UsageWindow, type UsageWindowDays,
 } from "../usageReport";
+import { useResetOnChange } from "../useResetOnChange";
 
 // The usage destination: what Bridge's harnesses processed and what it would
 // have cost at API rates, over a window, by harness and model. Every figure
@@ -148,11 +149,15 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
 
   const loadSummary = () => setSummaryTick(tick => tick + 1);
 
-  useEffect(() => {
-    let cancelled = false;
+  // A new window or key shows what the cache holds for it, marked loading,
+  // before it paints.
+  useResetOnChange([window_, key, preferences.includeImported, summaryTick, onError], () => {
     setLoading(true);
     const cached = summaryCache.get(key);
     if (cached) setShown(current => current?.summary === cached ? current : { key, summary: cached });
+  });
+  useEffect(() => {
+    let cancelled = false;
     bridgeApi.usageSummary(summaryParams(window_, preferences.includeImported))
       .then(result => {
         if (cancelled) return;
@@ -177,6 +182,8 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
   useEffect(() => {
     let cancelled = false;
     const scanNow = preferences.includeImported && (refreshTick > 0 || autoScanDue());
+    // Whether a scan is due reads the clock and storage, so it is decided here.
+    // oxlint-disable-next-line react/set-state-in-effect -- the scan decision reads the clock, which render must not
     setScanning(scanNow);
     setScanFailed(false);
     setScanNote(null);

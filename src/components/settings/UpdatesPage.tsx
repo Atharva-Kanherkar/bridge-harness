@@ -3,6 +3,7 @@ import { checkForUpdate, getUpdateChannel, setUpdateChannel, UpdateCheckSupersed
 import { friendlyError } from "../../errors";
 import { GhostButton, SettingsGroup, SettingsPage, SettingsRow, Switch } from "./kit";
 import { PAGES } from "./sections";
+import { useResetOnChange } from "../../useResetOnChange";
 
 export function UpdatesPage({ availableUpdate, onUpdate }: { availableUpdate?: UpdateInfo; onUpdate: (update: UpdateInfo | undefined) => void }) {
   const [channel, setChannel] = useState(getUpdateChannel);
@@ -11,7 +12,7 @@ export function UpdatesPage({ availableUpdate, onUpdate }: { availableUpdate?: U
   const checkId = useRef(0);
 
   useEffect(() => () => { ++checkId.current; }, []);
-  useEffect(() => { if (availableUpdate) setMessage(undefined); }, [availableUpdate]);
+  useResetOnChange([availableUpdate], () => { if (availableUpdate) setMessage(undefined); });
 
   async function check(next = channel) {
     const id = ++checkId.current;

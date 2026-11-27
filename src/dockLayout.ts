@@ -144,7 +144,11 @@ export function writeDockState(key: string, state: DockState, storage: Pick<Stor
 export function useDockLayout(key: string | undefined): [DockState, (action: DockAction) => void] {
   const [state, setState] = useState<DockState>(() => (key ? readDockState(key) : defaultDockState()));
 
+  // The swap waits for the commit on purpose: a click that switches chat and
+  // opens a pane dispatches into the old key's state in the same event, and
+  // swapping during render would drop that pane before it ever mounted.
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- an action dispatched beside the key change must reach the screen first
     setState(key ? readDockState(key) : defaultDockState());
   }, [key]);
 

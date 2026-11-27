@@ -8,6 +8,7 @@ import { plainProviderLoginOutput, providerLoginCode, providerLoginTerminalId, p
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 // `bare` drops the card and header for hosts that supply their own (the
 // sign-in dialog). `onExited` lets that host judge the result instead of
@@ -75,10 +76,10 @@ export function ProviderLoginPane({ provider, label, account, onClose, onExited,
       if (launched && !exited) void (account ? bridgeApi.cancelProviderLogin(provider, account) : bridgeApi.cancelProviderLogin(provider)).catch(() => undefined);
     };
   }, [provider, account, terminalId, label, closeRef, exitedRef]);
-  useEffect(() => {
+  useResetOnChange([terminalId], () => {
     setLaunched(false);
     setSlow(false);
-  }, [terminalId]);
+  });
   useEffect(() => {
     outputRef.current?.scrollTo?.({ top: outputRef.current.scrollHeight });
   }, [output]);

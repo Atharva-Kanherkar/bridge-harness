@@ -12,6 +12,7 @@ import { RowButton } from "@/components/ui/row";
 import { Segmented } from "@/components/ui/segmented";
 import { Tip } from "@/components/ui/tooltip";
 import { PatchView, type HunkRange } from "./DiffView";
+import { useResetOnChange } from "../useResetOnChange";
 
 const InlineFileEditor = lazy(() => import("./editor/InlineFileEditor").then(module => ({ default: module.InlineFileEditor })));
 
@@ -239,8 +240,13 @@ export function ChangesPanel({ workspace, sessionId, chatSignal, visible = false
     }
   }, [scope, sessionId, workspace.id]);
 
+  // Another chat or folder starts from nothing, before its first frame paints.
+  useResetOnChange([scope, sessionId, workspace.id], () => {
+    setLoaded(undefined); setLoadError(undefined); setExpandedPaths(new Set()); setViewedPatches(new Map()); setShowLowSignal(false);
+  });
   useEffect(() => {
-    setLoaded(undefined); setLoadError(undefined); setExpandedPaths(new Set()); setViewedPatches(new Map()); setShowLowSignal(false); statsSeen.current = undefined;
+    statsSeen.current = undefined;
+    // oxlint-disable-next-line react/set-state-in-effect -- reloadChanges sets state only from its answer, after an await
     void reloadChanges();
     return () => { requestGeneration.current += 1; };
   }, [reloadChanges]);

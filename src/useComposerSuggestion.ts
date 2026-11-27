@@ -3,6 +3,7 @@ import { bridgeApi } from "./api";
 import { friendlyError } from "./errors";
 import { createSuggestionQueue, scheduleSuggestion } from "./suggestionTypeahead";
 import type { SuggestCompletionResult, SuggestionSettingsSnapshot } from "./protocol/generated/protocol";
+import { useResetOnChange } from "./useResetOnChange";
 
 export function useComposerSuggestion(text: string, settings: SuggestionSettingsSnapshot | undefined, scope: string | undefined, blocked = false) {
   const [result, setResult] = useState<SuggestCompletionResult>();
@@ -17,7 +18,7 @@ export function useComposerSuggestion(text: string, settings: SuggestionSettings
     generation, queue,
     onError: reason => setError(reason === undefined ? undefined : friendlyError(reason, "Couldn't get an inline suggestion.")),
   }), [text, enabled, scope, settings?.settings.provider, settings?.settings.model, attempt, queue]);
-  useEffect(() => setError(undefined), [scope, settings?.settings.enabled, settings?.settings.provider, settings?.settings.model]);
+  useResetOnChange([scope, settings?.settings.enabled, settings?.settings.provider, settings?.settings.model], () => setError(undefined));
   const clear = useCallback(() => setResult(undefined), []);
   const retry = useCallback(() => { setError(undefined); setAttempt(value => value + 1); }, []);
   return { result, clear, error, retry };

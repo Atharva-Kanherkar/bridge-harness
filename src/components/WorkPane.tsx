@@ -168,6 +168,9 @@ export function WorkPane({ overview, prs, tasks, harness, refreshing, focus, onA
     if (!focus) return;
     const target = focus.number !== undefined ? ordered.find(pr => pr.number === focus.number) : ordered[0];
     if (!target) return;
+    // The pane often mounts with the request, so this opens the row in the
+    // same pass that scrolls it into view and focuses it.
+    // oxlint-disable-next-line react/set-state-in-effect -- a one-shot request from the shelf, handled once per nonce
     setOpenPr(chatPrKey(target));
     requestAnimationFrame(() => {
       const row = rows.current.get(target.number);

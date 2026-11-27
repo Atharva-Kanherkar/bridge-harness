@@ -9,6 +9,7 @@ import { harnessLabel } from "../github/reviewLabels";
 import type { ReviewActivityEntry, ReviewPass } from "../../protocol/generated/protocol";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
+import { useResetOnChange } from "../../useResetOnChange";
 
 // What each reviewer pass did, as a chat: Bridge's request, then the
 // reviewer's messages, tools and commands in order. Live while the review
@@ -68,10 +69,10 @@ export function ReviewActivity({ jobId, passes, running, repositoryUrl }: {
   const following = useRef(true);
 
   // Subscribe first, then read, so nothing between the two is lost.
+  useResetOnChange([jobId], () => { setEntries(undefined); setError(undefined); });
   useEffect(() => {
     let active = true;
     let unlisten: (() => void) | undefined;
-    setEntries(undefined); setError(undefined);
     void (async () => {
       try {
         const stop = await bridgeApi.onReviewActivity(({ jobId: id, entry }) => {

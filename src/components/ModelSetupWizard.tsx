@@ -13,6 +13,7 @@ import { ProviderLoginPane } from "./ProviderLoginPane";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 const NOOP = () => undefined;
 const LOGIN_AGENTS = new Set(["claude", "codex", "opencode", "cursor", "grok"]);
@@ -85,7 +86,7 @@ export function ModelSetupWizard({ adapters, onComplete, onHealthChange = NOOP, 
   const [useDetectedAgents, setUseDetectedAgents] = useState(false);
   const selection = useLatest({ selected, stage });
   const refreshGeneration = useRef(0);
-  useEffect(() => { setCurrentAdapters(adapters); }, [adapters]);
+  useResetOnChange([adapters], () => setCurrentAdapters(adapters));
   useEffect(() => () => { refreshGeneration.current += 1; }, []);
   const refresh = useCallback((requested?: string[]) => {
     const generation = ++refreshGeneration.current;

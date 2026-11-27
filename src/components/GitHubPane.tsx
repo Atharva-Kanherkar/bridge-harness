@@ -91,6 +91,7 @@ import type {
 } from "../protocol/generated/protocol";
 import { SegmentedItem } from "@/components/ui/segmented";
 import { useNow } from "../useNow";
+import { useResetOnChange } from "../useResetOnChange";
 
 // The GitHub surface: a dock pane, not a popover. Lives beside the
 // conversation with real height, survives pane switches, and — unlike the old
@@ -224,7 +225,7 @@ function CopyButton({ value, label, variant = "quiet", className, children }: {
 function ShowInChat({ sessionId, url, number }: { sessionId: string; url: string; number: number }) {
   const [state, setState] = useState<"idle" | "busy" | "done" | "error">("idle");
   const [message, setMessage] = useState<string>();
-  useEffect(() => { setState("idle"); setMessage(undefined); }, [sessionId, number]);
+  useResetOnChange([sessionId, number], () => { setState("idle"); setMessage(undefined); });
   const pin = async () => {
     setState("busy");
     try {
@@ -1319,6 +1320,9 @@ function useCheckSettle(checks: GithubChecksResult["checks"]): ReadonlySet<strin
       previousStatuses.current.set(key, check.status);
     }
     if (!next.size) return;
+    // Which checks just settled is a diff against the last read's statuses,
+    // which this effect keeps; the flash then clears on its own timer.
+    // oxlint-disable-next-line react/set-state-in-effect -- the settled set is a diff the effect computes against its ref
     setSettled(next);
     const timer = window.setTimeout(() => setSettled(new Set()), 750);
     return () => window.clearTimeout(timer);
@@ -1401,8 +1405,8 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   const [pairOpen, setPairOpen] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
   // Picks belong to one opening of the picker on one PR.
-  useEffect(() => { if (!reviewOpen) { setPairOpen(false); setPicked([]); } }, [reviewOpen]);
-  useEffect(() => { setPairOpen(false); setPicked([]); }, [number]);
+  useResetOnChange([reviewOpen], () => { if (!reviewOpen) { setPairOpen(false); setPicked([]); } });
+  useResetOnChange([number], () => { setPairOpen(false); setPicked([]); });
   // What each harness reviews with, set in the Reviews app's Settings.
   const [reviewerModels, setReviewerModels] = useState<Record<string, { model?: string | null; effort?: string | null }>>({});
   useEffect(() => {
@@ -2099,11 +2103,17 @@ function ConnectRepositoryDialog({ workspaceId, onCancel, onConnected }: {
     ? query.trim()
     : undefined;
 
+  // Each new query resets what the last one showed before it paints; one
+  // worth searching is in flight from that first frame.
+  const searchable = !pastedUrl && query.trim().length >= 2;
+  useResetOnChange([query, pastedUrl], () => {
+    setSearching(searchable);
+    if (!searchable) { setCandidates(undefined); setSearchError(undefined); }
+  });
   useEffect(() => {
     const needle = query.trim();
-    if (pastedUrl || needle.length < 2) { setCandidates(undefined); setSearchError(undefined); return; }
+    if (!searchable) return;
     let cancelled = false;
-    setSearching(true);
     const timer = setTimeout(() => {
       void bridgeApi.searchGithubRepos(needle)
         .then(result => { if (!cancelled && alive.current) { setCandidates(result.repositories); setSearchError(undefined); } })
@@ -2112,8 +2122,8 @@ function ConnectRepositoryDialog({ workspaceId, onCancel, onConnected }: {
         .catch(value => { if (!cancelled && alive.current) { setCandidates(undefined); setSearchError(`Couldn't search your repositories. ${friendlyError(value, "")}`.trim()); } })
         .finally(() => { if (!cancelled && alive.current) setSearching(false); });
     }, 250);
-    return () => { cancelled = true; clearTimeout(timer); setSearching(false); };
-  }, [query, pastedUrl]);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [query, searchable]);
 
   async function connect(remoteUrl: string) {
     setBusy(true);

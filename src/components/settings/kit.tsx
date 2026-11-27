@@ -22,6 +22,7 @@ import { Select as SelectRoot, SelectGroup, SelectGroupLabel, SelectItem, Select
 import { Textarea } from "@/components/ui/textarea";
 import { Switch as SwitchControl } from "@/components/ui/switch";
 import { SETTINGS_COLUMN } from "./layout";
+import { useResetOnChange } from "../../useResetOnChange";
 
 export { Segmented } from "@/components/ui/segmented";
 
@@ -367,7 +368,7 @@ export function NumberField({ value, min, max, onChange, disabled, label, width 
 }) {
   const [text, setText] = useState(String(value));
   const timer = useRef<number | undefined>(undefined);
-  useEffect(() => { setText(String(value)); }, [value]);
+  useResetOnChange([value], () => setText(String(value)));
   useEffect(() => () => window.clearTimeout(timer.current), []);
   const parse = (raw: string) => {
     const parsed = raw.trim() === "" ? Number.NaN : Number(raw);

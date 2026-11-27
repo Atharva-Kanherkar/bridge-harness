@@ -15,6 +15,7 @@ import "@excalidraw/excalidraw/index.css";
 import { Check } from "lucide-react";
 import { completeScene, keptAppState, keptFiles, mergeScenes, parseScene, serializeScene, type ConvertSkeletons, type SceneFile, type StoredElement } from "./drawingScene";
 import { Button } from "@/components/ui/button";
+import { useResetOnChange } from "../../../useResetOnChange";
 
 const convert: ConvertSkeletons = (skeletons, opts) => convertToExcalidrawElements(skeletons as never, opts) as unknown as StoredElement[];
 const SAVE_MS = 800;
@@ -22,9 +23,9 @@ const SAVE_MS = 800;
 export function DrawingPreview({ scene, dark }: { scene: SceneFile; dark: boolean }) {
   const host = useRef<HTMLDivElement>(null);
   const [failed, setFailed] = useState(false);
+  useResetOnChange([scene, dark], () => setFailed(false));
   useEffect(() => {
     let current = true;
-    setFailed(false);
     const elements = completeScene(scene, convert);
     exportToSvg({
       elements: elements as never,

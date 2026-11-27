@@ -8,6 +8,7 @@ import { HarnessMark } from "./harnessMarks";
 import { ImportTransfer } from "./ImportTransfer";
 import { PrimaryButton, StatusPill } from "./settings/kit";
 import { SkeletonRows } from "@/components/ui/skeleton";
+import { usePrefersReducedMotion } from "../motion";
 
 // "Move to Bridge": every tool found on this Mac in its own section, with its
 // mark, what it holds, and its own Import button. A tool's import runs in
@@ -114,11 +115,12 @@ function ToolSection({ source, job, starting, otherRunning, onImport }: {
 
 /** A number that glides to its new value instead of jumping. */
 function useGliding(target: number): number {
+  // Reduced motion (or no frames to draw on) shows the target as it is.
+  const instant = usePrefersReducedMotion() || typeof requestAnimationFrame !== "function";
   const [shown, setShown] = useState(target);
   const from = useRef(target);
   useEffect(() => {
-    const reduce = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduce || typeof requestAnimationFrame !== "function") { setShown(target); from.current = target; return; }
+    if (instant) { from.current = target; return; }
     const origin = from.current;
     let start: number | null = null;
     let frame = 0;
@@ -132,8 +134,8 @@ function useGliding(target: number): number {
     };
     frame = requestAnimationFrame(step);
     return () => cancelAnimationFrame(frame);
-  }, [target]);
-  return shown;
+  }, [target, instant]);
+  return instant ? target : shown;
 }
 
 /** The clock, once a second, so the time left keeps moving between batches. */
@@ -145,6 +147,7 @@ function useNow(): number {
   }, []);
   return now;
 }
+
 
 function ImportProgress({ job }: { job: ImportJob }) {
   const counting = job.total === 0;

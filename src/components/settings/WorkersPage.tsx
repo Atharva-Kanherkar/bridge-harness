@@ -8,6 +8,7 @@ import { RouterSettingsDialog } from "../RouterSettingsDialog";
 import { GhostButton, NumberField, Select, SettingsGroup, SettingsPage, SettingsRow, Switch, useSavedFlash } from "./kit";
 import { DelegationNotifySetting } from "./DelegationNotifySetting";
 import { PAGES } from "./sections";
+import { useResetOnChange } from "../../useResetOnChange";
 
 const LIMITS = [
   ["maxConcurrentWorkers", "Tasks running at once", 0, 64, "Per workspace. 0 means no limit."],
@@ -35,10 +36,10 @@ export function WorkersPage({ adapters }: { adapters: AdapterDescriptor[] }) {
     void bridgeApi.state().then(state => { if (active) { setWorkspaces(state.workspaces); setWorkspace(state.workspaces[0]?.id ?? ""); } }).catch(cause => { if (active) setError(friendlyError(cause, "Couldn't load your workspaces.")); });
     return () => { active = false; };
   }, []);
+  useResetOnChange([workspace], () => { if (workspace) { setSettings(undefined); setError(undefined); } });
   useEffect(() => {
     if (!workspace) return;
     let active = true;
-    setSettings(undefined); setError(undefined);
     void bridgeApi.workerSettings(workspace).then(value => { if (active) setSettings(value); }).catch(cause => { if (active) setError(friendlyError(cause, "Couldn't load the task settings.")); });
     return () => { active = false; };
   }, [workspace]);

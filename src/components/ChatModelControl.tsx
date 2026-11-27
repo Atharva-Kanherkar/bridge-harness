@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { RowButton } from "@/components/ui/row";
 import { Tip } from "@/components/ui/tooltip";
 import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 // Vendor noise at the tail of a catalog label. OpenCode Zen's free tier
 // suffixes "(Unlimited)": it names the plan, not the model. Cursor reports a
@@ -135,10 +136,13 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   // since the host is busy with something else now.
   const [inFlight, setInFlight] = useState(false);
   const wasDisabled = useRef(!!disabled);
+  // The host's busy edge drives a small state machine that also hands a queued
+  // effort to the host, so the transition and that call stay in one effect.
   useEffect(() => {
     const was = wasDisabled.current;
     wasDisabled.current = !!disabled;
     if (disabled && !was) {
+      // oxlint-disable-next-line react/set-state-in-effect -- the busy edge is seen only after commit, beside the onEffortChange it may send
       if (!inFlight) { setOpen(false); setPending(null); setQueued(null); }
       return;
     }
@@ -167,13 +171,18 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   // change without ever going busy (the Welcome draft) has nothing of ours
   // outstanding any more; one still busy is confirming early, and stays in
   // flight until it settles.
+  // These run after the busy-edge effect above, in the same pass, so a queued
+  // effort is handed over before the optimistic state is dropped. Moving them
+  // into render would clear it first and the effort would never be sent.
   useEffect(() => {
     if (!pending || pending.harness !== harness || pending.model !== model || pending.account !== currentAccount) return;
+    // oxlint-disable-next-line react/set-state-in-effect -- ordered after the busy-edge effect on purpose
     setPending(null);
     if (!disabled) setInFlight(false);
   }, [harness, model, currentAccount, pending, disabled]);
   useEffect(() => {
     if (!queued?.sent || effort !== queued.value) return;
+    // oxlint-disable-next-line react/set-state-in-effect -- ordered after the busy-edge effect on purpose
     setQueued(null);
     if (!disabled) setInFlight(false);
   }, [effort, queued, disabled]);
@@ -181,6 +190,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   // mid-request keeps it: the pick already went to the host, and a level chosen
   // meanwhile still goes out when the switch settles.
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- ordered after the busy-edge effect on purpose
     if (!open && !disabled) { setPending(null); setQueued(null); }
   }, [open, disabled]);
   // Fit the popover to the window. The composer sits near the bottom of the
@@ -189,8 +199,9 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   // the requested side is too short and the other has more.
   const wrapper = useRef<HTMLDivElement>(null);
   const [fit, setFit] = useState<{ side: "up" | "down"; maxHeight: number } | null>(null);
+  useResetOnChange([open], () => { if (!open) setFit(null); });
   useLayoutEffect(() => {
-    if (!open) { setFit(null); return; }
+    if (!open) return;
     const anchor = wrapper.current;
     if (!anchor) return;
     const measure = () => {
@@ -344,8 +355,9 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   // short grace period so a fast local read never flashes a spinner.
   const awaitingModel = !!loading && !currentModel && !known;
   const [showAwaiting, setShowAwaiting] = useState(false);
+  useResetOnChange([awaitingModel], () => { if (!awaitingModel) setShowAwaiting(false); });
   useEffect(() => {
-    if (!awaitingModel) { setShowAwaiting(false); return; }
+    if (!awaitingModel) return;
     const timer = setTimeout(() => setShowAwaiting(true), MODEL_LOADING_DELAY_MS);
     return () => clearTimeout(timer);
   }, [awaitingModel]);
@@ -429,8 +441,9 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   }, [jump]);
   // Opening lands on the chat's own harness and account, with focus in the
   // search box so typing filters at once.
+  useResetOnChange([open], () => { if (!open) { setSection(null); setJump(null); } });
   useLayoutEffect(() => {
-    if (!open) { setSection(null); setJump(null); return; }
+    if (!open) return;
     scrollListTo(activeHarness, activeAccount);
     searchRef.current?.focus({ preventScroll: true });
     // Only on open: later changes to the active model must not yank the list.
@@ -445,6 +458,8 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
     lastQuery.current = q;
     const list = listRef.current;
     if (!list) return;
+    // The section to light is read off the list as drawn, so this is a layout effect.
+    // oxlint-disable-next-line react/set-state-in-effect -- the highlighted section comes from the rendered list
     if (!q) { setSection(null); scrollListTo(activeHarness, activeAccount); return; }
     list.scrollTop = 0;
     ownScroll.current = 0;

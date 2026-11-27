@@ -9,6 +9,7 @@ import { Field, GhostButton, SettingsGroup, SettingsPage, TextButton } from "./k
 import { PAGES } from "./sections";
 import { AgentConversation } from "../AgentConversation";
 import { RowButton } from "@/components/ui/row";
+import { useResetOnChange } from "../../useResetOnChange";
 
 export function ArchivedChatsPage() {
   const [query, setQuery] = useState("");
@@ -31,9 +32,9 @@ export function ArchivedChatsPage() {
   const [moreContent, setMoreContent] = useState(false);
   const viewing = conversation ?? selected;
 
+  useResetOnChange([query, offset, viewing, revision, sequence], () => { setLoading(true); setError(undefined); });
   useEffect(() => {
     let active = true;
-    setLoading(true); setError(undefined);
     const request = viewing
       ? bridgeApi.replaySessionEvents(viewing.id, sequence, 200).then(page => {
           if (!active) return;
@@ -53,10 +54,10 @@ export function ArchivedChatsPage() {
     return () => { active = false; };
   }, [query, offset, viewing, revision, sequence]);
 
+  useResetOnChange([selected, childrenOffset, revision], () => { if (selected) setChildrenLoading(true); });
   useEffect(() => {
     if (!selected) return;
     let active = true;
-    setChildrenLoading(true);
     void bridgeApi.listArchivedChats("", childrenOffset, selected.id).then(page => {
       if (active) { setChildren(page.chats); setMoreChildren(page.hasMore); }
     }).catch(cause => { if (active) setError(friendlyError(cause, "Couldn't load the chats inside this one.")); })

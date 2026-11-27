@@ -28,6 +28,7 @@ import { DatabaseView } from "./database/DatabaseView";
 import { RowProperties } from "./database/RowProperties";
 import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
 import { Skeleton, SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
+import { useResetOnChange } from "../../useResetOnChange";
 
 export const NOTE_KINDS = ["note", "idea", "task", "question"];
 export const NOTE_STATES = ["inbox", "open", "doing", "done", "archived"];
@@ -367,7 +368,7 @@ function TitleField({ note, onCommit, onEnter }: { note: Note; onCommit: (title:
   const [title, setTitle] = useState(note.title ?? "");
   const [editing, setEditing] = useState(false);
   const box = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => { if (!editing) setTitle(note.title ?? ""); }, [note.title, editing]);
+  useResetOnChange([note.title, editing], () => { if (!editing) setTitle(note.title ?? ""); });
   useAutoGrow(box, title);
   // oxlint-disable-next-line bridge/no-raw-controls -- the page title is a heading typed in place; Textarea's field padding and minimum height would break its line
   return <textarea

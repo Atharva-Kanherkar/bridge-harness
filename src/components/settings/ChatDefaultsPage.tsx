@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useLayoutEffect } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
 import { friendlyError } from "../../errors";
@@ -9,6 +9,7 @@ import { Segmented, SettingsGroup, SettingsPage, SettingsRow, TextButton, Select
 import { acceptApplicationChatDefaults } from "../../activeTurnSettings";
 import { LimitRecoverySection } from "./LimitRecoverySection";
 import { PAGES } from "./sections";
+import { useResetOnChange } from "../../useResetOnChange";
 
 const INHERIT = "inherit";
 function targetValue(target: ChatLaunchTarget | null | undefined) {
@@ -41,8 +42,12 @@ export function ChatDefaultsPage({ adapters, agents }: { adapters: AdapterDescri
   const [isFlashed, flash] = useSavedFlash();
   const [reload, setReload] = useState(0);
   const generation = useRef(0);
+  // Another scope (or a reload) starts from nothing before it paints; the
+  // generation moves in that commit, so an older answer never lands.
+  useResetOnChange([scope, reload], () => { setBusy(true); setView(undefined); setError(undefined); });
+  useLayoutEffect(() => { generation.current += 1; }, [scope, reload]);
   useEffect(() => {
-    const request = ++generation.current; setBusy(true); setView(undefined); setError(undefined);
+    const request = generation.current;
     void Promise.all([bridgeApi.state(), bridgeApi.getChatDefaults(scope || null)]).then(([state, next]) => {
       if (generation.current !== request) return;
       setProjects(state.projects); setView(next); setDraft(structuredClone((scope ? next.project : next.application)?.defaults ?? {}));

@@ -62,6 +62,7 @@ export function AutomationsPanel({ initialCatalog, embedded = false }: { initial
     }
   }, []);
 
+  // oxlint-disable-next-line react/set-state-in-effect -- refresh raises its loading flag, shared with the Refresh button, and sets the rest from its answer
   useEffect(() => { void refresh(); }, [refresh]);
 
   const automations = useMemo(

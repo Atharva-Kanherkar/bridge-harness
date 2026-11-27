@@ -576,6 +576,7 @@ export function StoragePage({ onError, title = PAGES.data.label, extra, copilot 
     const refresh = firstLoad.current && Date.now() - lastVisitRefresh > VISIT_REFRESH_MS;
     firstLoad.current = false;
     if (refresh) lastVisitRefresh = Date.now();
+    // oxlint-disable-next-line react/set-state-in-effect -- load sets state only from its answers, after an await
     void load(path, refresh);
   }, [path]); // eslint-disable-line react-hooks/exhaustive-deps -- reload on navigation only
 

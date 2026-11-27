@@ -8,6 +8,7 @@ import { EstimateMark, formatMetric, HarnessName, HeroCaption, LAYOUT_CARD, type
 import { Tip } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { DataCell } from "@/components/ui/data-cell";
+import { useResetOnChange } from "../useResetOnChange";
 
 // Layout E: time is the navigation. The calendar is the hero; clicking a day
 // selects it, and shift-click or a drag extends the range. Everything under
@@ -44,7 +45,7 @@ export function UsageCalendar({ summary, periods, window, metric }: UsageLayoutP
   // resets it; a new window instance, even for the same range, starts clean.
   const axisKey = `${axis[0] ?? ""}:${axis.length}`;
   const [selection, setSelection] = useState<{ window: UsageWindow; axisKey: string; anchor: number; range: [number, number] } | null>(null);
-  useEffect(() => { setSelection(null); }, [window]);
+  useResetOnChange([window], () => setSelection(null));
   const active = selection && selection.window === window && selection.axisKey === axisKey ? selection : null;
   const anchor = active?.anchor ?? null;
   const range = active?.range ?? null;

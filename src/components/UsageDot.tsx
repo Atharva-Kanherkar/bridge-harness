@@ -256,7 +256,9 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
   // Compact rides the composer, so its card belongs to the pill's own box:
   // portalling onto `[data-composer-frame]` anchors it to the composer's edge
   // rather than to a button that scrolls with the controls row.
+  // The frame is found in the DOM, so only after this component has mounted.
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- the portal target is looked up in the mounted DOM
     if (!compact) { setFrame(null); return; }
     setFrame(rootRef.current?.closest<HTMLElement>("[data-composer-frame]") ?? null);
   }, [compact]);

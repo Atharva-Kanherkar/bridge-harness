@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ComponentType, type FormEvent } from "react";
+import { useEffect, useRef, useState, useLayoutEffect, type ComponentType, type FormEvent } from "react";
 import { CircleDot, FileText, GitPullRequest, MessagesSquare, Plus, Route, Search, Send } from "lucide-react";
 import type { TrailCandidate, TrailMemberKind, TrailMemberRef, TrailSummary } from "@/protocol/generated/protocol";
 import { bridgeApi } from "@/api";
@@ -13,6 +13,7 @@ import { RowButton } from "@/components/ui/row";
 import { Input } from "@/components/ui/input";
 import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { useResetOnChange } from "../../useResetOnChange";
 
 const KINDS: { kind: TrailMemberKind; label: string; plural: string; icon: ComponentType<{ className?: string }> }[] = [
   { kind: "note", label: "Note", plural: "notes", icon: FileText },
@@ -127,10 +128,13 @@ export function TrailAddDialog({ trail, initialKind = "note", onAdd, onAddIssue,
   const request = useRef(0);
   const meta = KINDS.find(item => item.kind === kind)!;
 
+  // A new list query clears the old list before it paints; the request
+  // counter moves in that commit, so an older answer never lands.
+  useResetOnChange([trail.id, kind, query, reload], () => { if (kind !== "issue") setCandidates(null); });
+  useLayoutEffect(() => { if (kind !== "issue") request.current += 1; }, [trail.id, kind, query, reload]);
   useEffect(() => {
     if (kind === "issue") return;
-    const id = ++request.current;
-    setCandidates(null);
+    const id = request.current;
     const timer = window.setTimeout(() => {
       bridgeApi.listTrailCandidates(trail.id, kind, query)
         .then(result => { if (id === request.current) { setCandidates(result.candidates); setError(undefined); } })
