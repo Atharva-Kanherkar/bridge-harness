@@ -152,8 +152,14 @@ export function TrailPage({ trail, summary: knownSummary, workspaceTitle, loadin
     if (next && next !== summary?.title) await onRename(next);
   }
 
-  // One count down the timeline, so its events cascade in order across days.
+  // One count down the timeline, so its events cascade in order across days:
+  // each day starts where the one above it ended.
+  const dayOrder: number[] = [];
   let order = 0;
+  for (const day of days) {
+    dayOrder.push(order);
+    order += day.events.length;
+  }
 
   return (
     <TrailScroll
@@ -231,14 +237,14 @@ export function TrailPage({ trail, summary: knownSummary, workspaceTitle, loadin
                 )}
                 {days.map((day, dayIndex) => (
                   <li key={day.key}>
-                    <p className="trail-rise mb-3 pl-10 text-caption font-medium text-muted-foreground" style={riseDelay(order)}>{day.label}</p>
+                    <p className="trail-rise mb-3 pl-10 text-caption font-medium text-muted-foreground" style={riseDelay(dayOrder[dayIndex])}>{day.label}</p>
                     <ol>
                       {day.events.map((event, index) => (
                         <EventRow
                           key={event.id}
                           event={event}
                           last={dayIndex === days.length - 1 && index === day.events.length - 1}
-                          order={order++}
+                          order={dayOrder[dayIndex] + index}
                           onOpen={event.kind === "removed" ? undefined : () => onOpenEvent(event)}
                           onRemove={event.kind === "checks" ? undefined : () => onRemove(event)}
                         />

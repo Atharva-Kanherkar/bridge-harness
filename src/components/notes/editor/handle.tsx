@@ -77,6 +77,8 @@ export function BlockHandle({ editor, area }: { editor: Editor; area: RefObject<
     event.dataTransfer.setData("text/plain", text);
     event.dataTransfer.effectAllowed = "copyMove";
     event.dataTransfer.setDragImage(hover.element, 0, 0);
+    // ProseMirror reads a block drag off its view; setting it is its API.
+    // oxlint-disable-next-line react/immutability -- the editor view is ProseMirror's object, not React state
     view.dragging = { slice, move: true };
   };
   const moveBy = (step: -1 | 1) => {

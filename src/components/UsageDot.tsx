@@ -246,6 +246,7 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
   const clock = useMeterClock();
   // The timer ages idle readings. A newly pushed snapshot can arrive between
   // ticks, so judge it against the current wall clock rather than the old tick.
+  // oxlint-disable-next-line react/purity -- a tick alone would call a just-pushed snapshot future-dated
   const now = (nowMs ?? Math.max(clock, Date.now())) / 1000;
   const [frame, setFrame] = useState<HTMLElement | null>(null);
   const [availableHeight, setAvailableHeight] = useState<number>();

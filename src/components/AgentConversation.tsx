@@ -53,6 +53,7 @@ import { UsageResetRow } from "./UsageResetRow";
 import { TurnChangesCard, TurnEndBlock, TurnLine } from "./TurnChangesCard";
 import { describeTurnEnds, keepStable, type TurnEnd } from "../turnChanges";
 import type { InteractionResolutionResult, SessionEntryWindowSummary } from "../protocol/generated/protocol";
+import { useNow } from "../useNow";
 
 type ResolvePermission = (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
 
@@ -734,18 +735,19 @@ const ROW_VARIANTS = {
 /// Ties the pure narration computation in `startupNarration.ts` to the live
 /// `session-startup` subscription and a tick clock. Resets whenever the
 /// session id changes, so switching chats never carries over a stale phase.
-function useStartupNarration({ sessionId, switchingToLabel, compactingSince, hasPendingWork, streaming }: {
+function useStartupNarration({ sessionId, switchingToLabel, compactingSince, hasPendingWork, streaming, now }: {
   sessionId?: string;
   switchingToLabel: string | null;
   compactingSince: number | null;
   hasPendingWork: boolean;
   streaming: boolean;
+  /** The transcript's live clock, ticking while there is work to time. */
+  now: number;
 }): NarrationView {
   const reducedMotion = useReducedMotion() ?? false;
   const [phase, setPhase] = useState<SessionStartupPhase | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [streamStartedAt, setStreamStartedAt] = useState<number | null>(null);
-  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     setPhase(null);
@@ -778,15 +780,6 @@ function useStartupNarration({ sessionId, switchingToLabel, compactingSince, has
   useEffect(() => {
     if (streaming) setStreamStartedAt(value => value ?? Date.now());
   }, [streaming]);
-
-  // The only reason to keep re-rendering while idle: the elapsed counter and
-  // the collapse-after-first-token timer both read the clock.
-  const compacting = compactingSince !== null;
-  useEffect(() => {
-    if (!hasPendingWork && !switchingToLabel && !compacting) return;
-    const id = window.setInterval(() => setNow(Date.now()), 250);
-    return () => window.clearInterval(id);
-  }, [hasPendingWork, switchingToLabel, compacting]);
 
   return computeNarration({
     hasPendingWork,
@@ -1077,12 +1070,17 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // Hooks run unconditionally, ahead of the early returns below: the row
   // itself only renders past them, but its state still has to track every
   // render this component makes.
+  const hasPendingWork = !!working || pendingMessages.length > 0;
+  // The only reason to keep re-rendering while idle: the elapsed counter, the
+  // collapse-after-first-token timer and the stall check all read the clock.
+  const liveNow = useNow(hasPendingWork || !!modelSwitch?.label || compaction?.since != null ? 250 : null);
   const startupNarration = useStartupNarration({
     sessionId: session?.id,
     switchingToLabel: modelSwitch?.label ?? null,
     compactingSince: compaction?.since ?? null,
-    hasPendingWork: !!working || pendingMessages.length > 0,
+    hasPendingWork,
     streaming,
+    now: liveNow,
   });
   if (!session && !preview && !readOnly) return <Empty title="No chat yet" copy="Start a chat from the sidebar, or open a workspace agent."/>;
   if (readOnly && !visibleItems.length) return <Empty title={events.length ? "No displayable transcript content" : "No recorded messages"} copy="This history segment has no renderable conversation events." />;
@@ -1121,7 +1119,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // while a resend of it is already on its way.
   const retryable = !readOnly && !preview && !turnActive && !optimistic.length && (onRetryTurn || onEditTurn) ? failedTurn(visibleItems) : null;
   const lastEventAt = events.length ? new Date(events[events.length - 1]?.createdAt ?? 0).getTime() : 0;
-  const clock = now ?? Date.now();
+  const clock = now ?? liveNow;
   const stalled = !!working && !stopping && !streaming && lastEventAt > 0 && clock - lastEventAt > 45_000;
   const tailLength = visibleItems.length ? visibleItems[visibleItems.length - 1].text.length : 0;
   // Hydration is a layout change above the reader: when they are pinned to the

@@ -135,18 +135,21 @@ function VerticalBars({ block, prepared }: { block: ChartBlock; prepared: Prepar
   // Waterfall: each step floats from the running total; totals stand on zero.
   const steps = useMemo(() => {
     if (!waterfall) return [];
+    const out: { from: number; to: number; kind: "total" | "up" | "down"; cell: ReturnType<typeof cellOf> }[] = [];
     let running = 0;
-    return prepared.categories.map(category => {
+    for (const category of prepared.categories) {
       const cell = cellOf(prepared, category, prepared.series[0]);
       const value = cell?.value ?? 0;
       if (cell?.total) {
         running = value;
-        return { from: 0, to: value, kind: "total" as const, cell };
+        out.push({ from: 0, to: value, kind: "total", cell });
+        continue;
       }
       const from = running;
       running += value;
-      return { from, to: running, kind: value >= 0 ? ("up" as const) : ("down" as const), cell };
-    });
+      out.push({ from, to: running, kind: value >= 0 ? "up" : "down", cell });
+    }
+    return out;
   }, [prepared, waterfall]);
 
   const extent = useMemo(() => {
@@ -536,14 +539,17 @@ function Proportion({ block }: { block: ChartBlock }) {
   const format = (channel(block, "x") ?? channel(block, "theta"))?.axis?.format;
   const gap = 3;
   const usable = width - gap * (parts.length - 1);
+  const segments: { part: string; entry: (typeof parts)[number][1]; x: number; w: number }[] = [];
   let cursor = 0;
+  for (const [part, entry] of parts) {
+    const w = Math.max(3, (entry.value / sum) * usable);
+    segments.push({ part, entry, x: cursor, w });
+    cursor += w + gap;
+  }
   return (
     <div ref={ref} className="w-full">
       <svg width={width} height={14} viewBox={`0 0 ${width} 14`} role="img" aria-label={`proportion of ${sizeField} by ${partField}`} className="block">
-        {parts.map(([part, entry]) => {
-          const w = Math.max(3, (entry.value / sum) * usable);
-          const x = cursor;
-          cursor += w + gap;
+        {segments.map(({ part, entry, x, w }) => {
           const color = colors.get(part)!;
           return <rect key={part} x={x} y={0} width={w} height={14} rx={5} fill={color} fillOpacity={entry.estimate ? 0.35 : 0.95} stroke={entry.estimate ? color : undefined} strokeDasharray={entry.estimate ? "4 3" : undefined} opacity={hover === null || hover === part ? 1 : 0.4} onMouseEnter={() => setHover(part)} onMouseLeave={() => setHover(null)} />;
         })}

@@ -54,13 +54,14 @@ export function TurnChangesCard({ changes, onReview, className }: { changes: Tur
 
   // The first files in tree order, so a cut never leaves a folder half drawn
   // above a file from a folder further down.
+  const shown: typeof tree = [];
   let budget = showAll ? Infinity : SHOWN_FILES;
-  const shown = tree.flatMap(group => {
-    if (budget <= 0) return [];
+  for (const group of tree) {
+    if (budget <= 0) break;
     const files = group.files.slice(0, budget);
     budget -= files.length;
-    return [{ ...group, files }];
-  });
+    shown.push({ ...group, files });
+  }
 
   const toggleFile = (path: string) => setOpenFiles(previous => {
     const next = new Set(previous);

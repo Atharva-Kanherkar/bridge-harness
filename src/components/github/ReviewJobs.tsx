@@ -196,8 +196,13 @@ export function ReviewJobsView({ reviews, repositoryUrl, reveal, sectionRef }: {
   // finished ones past the first few fold away.
   const shown = useMemo(() => {
     if (showAll) return jobs;
+    const kept: typeof jobs = [];
     let finished = 0;
-    return jobs.filter(job => !TERMINAL.has(job.status) || ++finished <= FINISHED_SHOWN);
+    for (const job of jobs) {
+      if (!TERMINAL.has(job.status)) kept.push(job);
+      else if (++finished <= FINISHED_SHOWN) kept.push(job);
+    }
+    return kept;
   }, [jobs, showAll]);
   const hidden = jobs.length - shown.length;
   if (!loaded && !jobs.length) return null;

@@ -162,7 +162,10 @@ export function FittedTitle({ title, ladder, className }: {
     return <span ref={ref} className={className}>{text}</span>;
   }
   const added = addedWords(from, text);
-  let order = 0;
+  // Each new word's place among the new words, so they stagger in reading order.
+  const order: number[] = [];
+  let next = 0;
+  for (const isAdded of added) order.push(isAdded ? next++ : -1);
   return (
     <span ref={ref} className={className}>
       {text.split(/\s+/).filter(Boolean).map((word, index) => (
@@ -173,7 +176,7 @@ export function FittedTitle({ title, ladder, className }: {
             <span
               key={text}
               className="title-word-in"
-              style={{ "--title-word-delay": `${order++ * WORD_STAGGER_MS}ms` } as CSSProperties}
+              style={{ "--title-word-delay": `${order[index] * WORD_STAGGER_MS}ms` } as CSSProperties}
             >
               {word}
             </span>

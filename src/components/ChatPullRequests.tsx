@@ -126,7 +126,7 @@ export function useSidebarPullRequests(): SidebarPullRequests {
   const queued = useRef<boolean | null>(null);
   const lastRefresh = useRef(0);
 
-  const load = useCallback(async (refresh: boolean) => {
+  const load = useCallback(async function load(refresh: boolean): Promise<void> {
     if (inflight.current) { queued.current = (queued.current ?? false) || refresh; return; }
     inflight.current = true;
     if (refresh) lastRefresh.current = Date.now();

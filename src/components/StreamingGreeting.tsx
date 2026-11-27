@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useReducedMotion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import type { GreetingPart } from "../greetings";
@@ -75,9 +75,10 @@ export function StreamingGreeting({ lines, projectClassName }: { lines: Greeting
 
   // The caret sits where the reveal has reached, at the end of a part when the
   // reveal stops exactly on a boundary.
+  const rendered: ReactNode[] = [];
   let offset = 0;
   let caretPart = -1;
-  const rendered = line.map((part, partIndex) => {
+  for (const [partIndex, part] of line.entries()) {
     const from = offset;
     offset += part.text.length;
     const visible = part.text.slice(0, Math.max(0, shown - from));
@@ -85,12 +86,12 @@ export function StreamingGreeting({ lines, projectClassName }: { lines: Greeting
     const caret = streaming && caretPart < 0 && shown >= from && shown <= offset;
     if (caret) caretPart = partIndex;
     const styled = part.kind === "project" ? projectClassName : undefined;
-    return <span key={partIndex}>
+    rendered.push(<span key={partIndex}>
       {visible && <span className={styled}>{visible}</span>}
       {caret && <Caret />}
       {hidden && <span className="invisible">{hidden}</span>}
-    </span>;
-  });
+    </span>);
+  }
 
   return <span className="grid">
     <span className="sr-only">{text}</span>

@@ -49,7 +49,7 @@ export function TrailsScreen({ trailId, knownTrails, onSelectTrail, workspaces, 
   const requestRef = useRef(0);
   // The newest GitHub re-read: only its settling stops the spinner.
   const refreshRef = useRef(0);
-  const loadDetail = useCallback((id: string, refresh = false): Promise<void> => {
+  const loadDetail = useCallback(function loadDetail(id: string, refresh = false): Promise<void> {
     const request = ++requestRef.current;
     const current = () => request === requestRef.current && selectedRef.current === id;
     if (refresh) { refreshRef.current = request; setRefreshing(true); }

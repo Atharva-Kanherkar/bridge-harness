@@ -33,6 +33,10 @@ export function useSmoothText(text: string, streaming: boolean): string {
   const [clock, setClock] = useState(0);
   let current = run;
   if (text !== run.text || streaming !== run.streaming) {
+    // The reveal anchors to the moment the text changed. This render-time
+    // adjustment is the documented "store information from previous renders"
+    // pattern; the rAF clock is stale when idle, so it cannot stand in here.
+    // oxlint-disable-next-line react/purity -- read once per text change, never per frame
     const now = performance.now();
     const shownNow = revealedLength(run.from, run.text.length, now - run.start);
     // Only an extension that is still streaming has a reveal left to run.

@@ -165,6 +165,15 @@ export function RouterSettingsDialog({
   const learningReadGeneration = useRef(0);
   const models = useMemo(() => adapters.flatMap(adapter => adapter.models.map(model => ({ ...model, harness: adapter.id, harnessLabel: adapter.label }))), [adapters]);
 
+  const applyLearning = (generation: number, fresh: LearningState) => {
+    if (generation !== learningReadGeneration.current) return;
+    const draftSchedule = form.getFieldValue("schedule");
+    const next = mergeLearningState(fresh, savedScheduleRef.current, draftSchedule);
+    if (next.schedule === fresh.schedule) savedScheduleRef.current = fresh.schedule;
+    setLearning(next);
+    form.setFieldValue("schedule", next.schedule);
+  };
+
   useEffect(() => {
     if (open) return;
     // A closed dialog keeps no state: unsaved schedule edits must not greet
@@ -214,14 +223,6 @@ export function RouterSettingsDialog({
 
   if (!open || !workspaceId) return null;
   const errorClass = "text-caption font-normal normal-case tracking-normal text-destructive";
-  const applyLearning = (generation: number, fresh: LearningState) => {
-    if (generation !== learningReadGeneration.current) return;
-    const draftSchedule = form.getFieldValue("schedule");
-    const next = mergeLearningState(fresh, savedScheduleRef.current, draftSchedule);
-    if (next.schedule === fresh.schedule) savedScheduleRef.current = fresh.schedule;
-    setLearning(next);
-    form.setFieldValue("schedule", next.schedule);
-  };
   const save = async (value: RouterFormValues) => {
     setBusy(true);
     try {

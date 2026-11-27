@@ -46,6 +46,7 @@ import {
   writeChatView,
   type ChatView,
 } from "./sidebarChats";
+import { useNow } from "../useNow";
 
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 400;
@@ -715,7 +716,9 @@ export function BridgeSidebar({
     if (activeSubagentOf) setOpenSubagents(current => current.has(activeSubagentOf) ? current : new Set(current).add(activeSubagentOf));
   }, [activeSubagentOf]);
   const toggleSubagents = useCallback((chatId: string) => setOpenSubagents(current => toggleKey(current, chatId)), []);
-  const [now, setNow] = useState(() => Date.now());
+  // Day headers are relative, so a rail left open past midnight would keep
+  // calling yesterday's chats "Today" until the list next changed.
+  const now = useNow(60_000);
   const widthRef = useRef(width);
   const resizeHandleRef = useRef<HTMLDivElement>(null);
   widthRef.current = width;
@@ -725,13 +728,6 @@ export function BridgeSidebar({
   useEffect(() => {
     if (!collapsed) localStorage.setItem(WIDTH_KEY, String(width));
   }, [width, collapsed]);
-
-  // Day headers are relative, so a rail left open past midnight would keep
-  // calling yesterday's chats "Today" until the list next changed.
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
-    return () => window.clearInterval(timer);
-  }, []);
 
   useEffect(() => {
     localStorage.setItem(COLLAPSED_KEY, collapsed ? "1" : "0");
@@ -860,12 +856,17 @@ export function BridgeSidebar({
   // Every chat with a turn or a worker in flight, whatever the filters say.
   // The clocks carry from pass to pass, so a run whose start the live buffer
   // has since dropped keeps the time it had rather than starting over.
+  // `seen` is a cache of the moment this view first saw each run, so it has to
+  // be read and written where the rows are built, against the clock right then.
+  // A render React discards only records a start time that is kept anyway.
   const runningSeen = useRef<ReadonlyMap<string, number>>(new Map());
+  /* oxlint-disable react/refs, react/purity -- first-seen start times, a cache that never decides what renders */
   const running = useMemo(() => {
     const rows = runningChats({ chats, liveAgents, sessions, sending: sendingChatIds, events: liveEvents, seen: runningSeen.current, now: Date.now() });
     runningSeen.current = rememberRunning(rows);
     return rows;
   }, [chats, liveAgents, sessions, sendingChatIds, liveEvents]);
+  /* oxlint-enable react/refs, react/purity */
   const showRunning = running.length > 0 && !searching;
 
   // Collapsing takes the rail off the screen entirely; the panel controls move

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, useLayoutEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -21,8 +21,10 @@ let host: HTMLDivElement;
 let state: ReturnType<typeof useBridgeServerState>;
 let response: WorkBoard;
 function Observer() {
-  state = useBridgeServerState();
-  return <div>{state.workBoard?.suggestions.state}:{state.workBoard?.tasks.map(task => task.title).join(",")}</div>;
+  const current = useBridgeServerState();
+  // Hand the hook to the test once React commits, never from render itself.
+  useLayoutEffect(() => { state = current; });
+  return <div>{current.workBoard?.suggestions.state}:{current.workBoard?.tasks.map(task => task.title).join(",")}</div>;
 }
 async function tick(ms: number) {
   await act(async () => { await vi.advanceTimersByTimeAsync(ms); });

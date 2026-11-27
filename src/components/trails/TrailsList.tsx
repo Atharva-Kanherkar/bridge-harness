@@ -112,8 +112,14 @@ export function TrailsList({ trails, loading, error, workspaces, defaultWorkspac
   const titleOf = (id?: string | null) => workspaces.find(workspace => workspace.id === id)?.title;
   const sections = trails ? groupTrails(trails) : [];
   const archived = trails?.filter(trail => trail.archivedAt) ?? [];
-  // One count across the sections, so the rows cascade top to bottom.
+  // One count across the sections, so the rows cascade top to bottom: each
+  // section starts where the one above it ended.
+  const sectionOrder: number[] = [];
   let order = 0;
+  for (const section of sections) {
+    sectionOrder.push(order);
+    order += section.trails.length;
+  }
   return (
     <TrailScroll
       title="Trails"
@@ -143,13 +149,13 @@ export function TrailsList({ trails, loading, error, workspaces, defaultWorkspac
             <Button size="sm" onClick={() => setCreating(true)}><Plus aria-hidden="true" />New trail</Button>
           </div>
         )}
-        {sections.map(section => (
+        {sections.map((section, sectionIndex) => (
           <section key={section.state} className="mb-5" aria-label={section.label}>
             <h2 className="mb-1 px-4 text-caption font-medium text-faint">
               {section.label} · {section.trails.length}
             </h2>
             <ul>
-              {section.trails.map(trail => <TrailRow key={trail.id} trail={trail} order={order++} workspaceTitle={titleOf(trail.workspaceId)} onOpen={() => onOpen(trail.id)} />)}
+              {section.trails.map((trail, index) => <TrailRow key={trail.id} trail={trail} order={sectionOrder[sectionIndex] + index} workspaceTitle={titleOf(trail.workspaceId)} onOpen={() => onOpen(trail.id)} />)}
             </ul>
           </section>
         ))}

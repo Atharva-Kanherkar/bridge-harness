@@ -9,6 +9,7 @@ import { runSteps, toolLabel } from "./WorkflowRunView";
 import { Dot, ErrorNote } from "./parts";
 import { RowButton } from "@/components/ui/row";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
+import { useNow } from "../../useNow";
 
 /** Results newest first; among runs of the same moment, unread first. */
 export function orderResults(runs: WorkflowRun[]): WorkflowRun[] {
@@ -63,7 +64,7 @@ export function WorkflowInbox({ runs, names, onOpenRun, onChanged }: {
   onOpenRun: (run: WorkflowRun) => void;
   onChanged: () => void;
 }) {
-  const now = Date.now();
+  const now = useNow(60_000);
   const name = useCallback((run: WorkflowRun) => names.get(run.workflowId) ?? "A workflow", [names]);
   const waiting = runs.filter(run => run.status === "waiting_approval" || run.status === "waiting_quota");
   const results = orderResults(runs.filter(run => !["waiting_approval", "waiting_quota", "queued", "running"].includes(run.status)));

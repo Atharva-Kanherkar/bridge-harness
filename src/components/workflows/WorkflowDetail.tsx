@@ -5,6 +5,7 @@ import { ScreenHeading } from "../ui/screen";
 import { RUN_STATUS_LABEL, relativeTime, runTone, triggerSummary } from "./format";
 import { CHIP, Card, Dot, Section, StatusChip } from "./parts";
 import { RowButton } from "@/components/ui/row";
+import { useNow } from "../../useNow";
 
 function duration(run: WorkflowRun): string {
   if (!run.startedAt || !run.finishedAt) return "";
@@ -29,7 +30,7 @@ export function WorkflowDetail({ workflow, runs, projects, nextRunAt, busy, onBa
   const definition = workflow.definition;
   const step = definition.steps[0];
   const project = definition.projectId ? projects.find(candidate => candidate.id === definition.projectId)?.name ?? "missing project" : "No project";
-  const now = Date.now();
+  const now = useNow(60_000);
   const status = !workflow.approved ? { label: "needs approval", tone: "warn" as const }
     : !workflow.enabled ? { label: workflow.disabledReason === "project_removed" ? "project gone" : "paused", tone: "warn" as const }
     : { label: "active", tone: "ok" as const };

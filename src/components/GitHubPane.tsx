@@ -90,6 +90,7 @@ import type {
   ReviewJob,
 } from "../protocol/generated/protocol";
 import { SegmentedItem } from "@/components/ui/segmented";
+import { useNow } from "../useNow";
 
 // The GitHub surface: a dock pane, not a popover. Lives beside the
 // conversation with real height, survives pane switches, and — unlike the old
@@ -274,8 +275,9 @@ function PaneNotice({ icon: Icon, title, children }: { icon: typeof GitPullReque
 /** A comment's relative age; omitted entirely when the timestamp is junk —
  * a raw ISO string (or "unknown") is noise, not information. */
 function CommentTime({ iso }: { iso: string }) {
+  const now = useNow(60_000);
   if (Number.isNaN(Date.parse(iso))) return null;
-  return <Tip label={new Date(iso).toLocaleString()}><time dateTime={iso} className="text-caption text-muted-foreground">{relativeTime(iso, new Date())}</time></Tip>;
+  return <Tip label={new Date(iso).toLocaleString()}><time dateTime={iso} className="text-caption text-muted-foreground">{relativeTime(iso, new Date(now))}</time></Tip>;
 }
 
 /** Placeholder rows shaped like the shared list. One quiet loading state:

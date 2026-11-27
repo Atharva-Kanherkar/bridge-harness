@@ -14,6 +14,7 @@ import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
 import { Tip } from "@/components/ui/tooltip";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { useNow } from "../useNow";
 
 // The dock tenant for a throwaway browser clone: the agent drives a private
 // copy of the browser, and this is where the person watches it, takes it over
@@ -223,6 +224,8 @@ const POINTER_VISIBLE_MS = 6000;
 function LiveView({ snapshot, takenOver, agentLabel, onInput }: { snapshot: BrowserCloneSnapshot; takenOver: boolean; agentLabel: string; onInput: (input: CloneInputEvent) => void }) {
   const pending = useRef("");
   const timer = useRef<ReturnType<typeof setTimeout>>();
+  // Ticks only while there is a cursor to fade, so a quiet clone costs nothing.
+  const now = useNow(snapshot.agentPointer && !takenOver ? 1000 : null);
   const flush = () => {
     clearTimeout(timer.current);
     const text = pending.current;
@@ -268,7 +271,7 @@ function LiveView({ snapshot, takenOver, agentLabel, onInput }: { snapshot: Brow
   const pointer = snapshot.agentPointer;
   // The cursor lingers where the agent last acted, then fades, so a quiet page
   // does not look like it is still being driven.
-  const pointerShown = !!pointer && !takenOver && Date.now() - pointer.at < POINTER_VISIBLE_MS;
+  const pointerShown = !!pointer && !takenOver && now - pointer.at < POINTER_VISIBLE_MS;
   return <div data-clone-viewport tabIndex={takenOver ? 0 : undefined} aria-label={takenOver ? "Clone page. Click and type to control it" : undefined}
     onKeyDown={forwardKey} onWheel={forwardWheel} onPaste={event => { if (!takenOver) return; event.preventDefault(); pending.current += event.clipboardData.getData("text"); flush(); }}
     className={cn("overflow-hidden rounded-lg border border-border bg-background shadow-sm outline-none transition-shadow",

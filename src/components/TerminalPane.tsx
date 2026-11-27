@@ -41,6 +41,13 @@ const sleep = (ms: number) => new Promise<void>(resolve => { window.setTimeout(r
  *  UI memory, the PTYs and their history live in the runtime. */
 const rosters = new Map<string, { ids: string[]; labels: Map<string, string>; active: string; counter: number }>();
 
+/** A shell id no shell of this workspace has had, counting up per workspace. */
+function nextShellId(workspaceId: string): string {
+  const roster = rosterFor(workspaceId);
+  roster.counter += 1;
+  return `t${roster.counter}`;
+}
+
 function rosterFor(workspaceId: string) {
   let roster = rosters.get(workspaceId);
   if (!roster) {
@@ -346,7 +353,7 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
         variant="quiet"
         size="icon-xs"
         className="ml-1"
-        onClick={() => { roster.counter += 1; const terminalId = `t${roster.counter}`; openShell(workspaceId, terminalId); setFocusShell(terminalId); }}
+        onClick={() => { const terminalId = nextShellId(workspaceId); openShell(workspaceId, terminalId); setFocusShell(terminalId); }}
         aria-label="New shell"
         tooltip="New shell"
       ><Plus size={13} strokeWidth={1.8} aria-hidden="true" /></Button>

@@ -569,10 +569,11 @@ export function StoragePage({ onError, title = PAGES.data.label, extra, copilot 
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- once per visit
   useEffect(() => { copilot?.onVisit?.(); }, []);
-  const visitRefresh = useRef(Date.now() - lastVisitRefresh > VISIT_REFRESH_MS);
+  // Only the first load of a visit may ask for a fresh scan.
+  const firstLoad = useRef(true);
   useEffect(() => {
-    const refresh = visitRefresh.current;
-    visitRefresh.current = false;
+    const refresh = firstLoad.current && Date.now() - lastVisitRefresh > VISIT_REFRESH_MS;
+    firstLoad.current = false;
     if (refresh) lastVisitRefresh = Date.now();
     void load(path, refresh);
   }, [path]); // eslint-disable-line react-hooks/exhaustive-deps -- reload on navigation only

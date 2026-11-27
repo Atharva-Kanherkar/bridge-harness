@@ -21,6 +21,7 @@ import { RowButton } from "@/components/ui/row";
 import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
 import { Checkbox } from "@/components/ui/checkbox";
 import { SkeletonRows } from "@/components/ui/skeleton";
+import { useNow } from "../useNow";
 
 type Tab = "workflows" | "templates" | "inbox" | "native";
 type Editing = { workflow: Workflow | null; initial?: WorkflowDefinition | null; notes?: string[] } | null;
@@ -76,7 +77,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
   const [refreshing, setRefreshing] = useState(false);
   const selectedId = useRef<string | null>(null);
   selectedId.current = selected?.id ?? null;
-  const now = Date.now();
+  const now = useNow(60_000);
 
   const refreshList = useCallback(async () => {
     try {
