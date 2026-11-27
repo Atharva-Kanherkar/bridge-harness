@@ -31,13 +31,14 @@ pub const OUTPUT_CONTRACT: &str = r#"End your final message with exactly one fen
 
 ```json
 {"summary":"<what the change does and your overall verdict, in a few sentences>",
- "findings":[{"path":"<a changed file, exactly as in files.json>","line":<line number>,
+ "findings":[{"path":"<a changed file, exactly as in files.json>","line":<the line the problem is on>,
    "startLine":<first line, for a range; omit for one line>,"side":"RIGHT",
    "severity":"critical|major|minor|nit","title":"<one line, at most 120 characters>",
    "body":"<markdown: what is wrong, why it matters, how to fix it>","confidence":<0.0 to 1.0>}]}
 ```
 
 - `side` is "RIGHT" for a line in the new version of the file and "LEFT" for a line only in the old version (a deleted line). Line numbers are those of that side.
+- `line` is the line the problem is on: the faulty condition, call or statement itself, never the closing brace or last line of the block, function or hunk around it. A problem spanning several lines gives its first line as `startLine` and its last as `line`.
 - Comment only on lines inside the diff's hunks; anything else goes in the summary.
 - Use `"findings":[]` when you found nothing worth raising. Never invent a problem to fill the list.
 - On a re-review only, add `"fixed":["<id>"]` with the `id` of each earlier finding in prior_findings.json that the new commits fixed. Leave it out otherwise."#;
@@ -259,6 +260,49 @@ impl Hunk {
             ReviewSide::Right => self.new.contains(&line),
         }
     }
+
+    /// One side's lines with their numbers, as the diff shows them.
+    fn side_lines(&self, side: ReviewSide) -> Vec<(u32, &str)> {
+        let numbers = match side {
+            ReviewSide::Left => &self.old,
+            ReviewSide::Right => &self.new,
+        };
+        let body = self.text.lines().skip(1).filter_map(|line| match (line.as_bytes().first(), side) {
+            (Some(b'\\'), _) | (Some(b'+'), ReviewSide::Left) | (Some(b'-'), ReviewSide::Right) => None,
+            (Some(b'+' | b'-' | b' '), _) => Some(&line[1..]),
+            _ => Some(line),
+        });
+        numbers.iter().copied().zip(body).collect()
+    }
+}
+
+/// Where the block closed on `line` opens, when `line` holds nothing but
+/// closing brackets (`}`, `});`) and the opening sits earlier in the same
+/// hunk. A reviewer that names a block's closing line means the block: Claude
+/// reports a bug in an `if` condition on the `if`'s closing brace (#1151).
+/// A continuation such as `} else {` belongs to the block it continues, so the
+/// start is the `if`, not the `else`.
+fn block_start(hunk: &Hunk, side: ReviewSide, line: u32) -> Option<u32> {
+    let lines = hunk.side_lines(side);
+    let at = lines.iter().position(|(number, _)| *number == line)?;
+    let closing = lines[at].1.trim();
+    if !closing.contains(['}', ')', ']']) || !closing.chars().all(|ch| matches!(ch, '}' | ')' | ']' | ';' | ',') || ch.is_whitespace()) {
+        return None;
+    }
+    let mut depth = 0i64;
+    for (number, text) in lines[..=at].iter().rev() {
+        for ch in text.chars() {
+            match ch {
+                '}' | ')' | ']' => depth += 1,
+                '{' | '(' | '[' => depth -= 1,
+                _ => {}
+            }
+        }
+        if *number != line && depth <= 0 {
+            return Some(*number);
+        }
+    }
+    None
 }
 
 /// An open hunk: what it holds so far, the next line on each side, and how
@@ -469,7 +513,8 @@ pub struct Validated {
 
 /// Check a parsed review against the files that changed and the diff's
 /// hunks. A finding on a changed file whose lines all sit in one hunk on its
-/// side is inline; anything else is kept, marked `outside_diff`.
+/// side is inline; anything else is kept, marked `outside_diff`. A one-line
+/// finding on a block's closing line becomes a range over the block.
 pub fn validate(review: RawReview, changed: &HashSet<String>, hunks: &BTreeMap<String, Vec<Hunk>>) -> Validated {
     let mut seen = HashSet::new();
     let mut kept = Vec::new();
@@ -494,6 +539,7 @@ pub fn validate(review: RawReview, changed: &HashSet<String>, hunks: &BTreeMap<S
                     hunk.covers(raw.side, raw.line) && start_line.is_none_or(|start| hunk.covers(raw.side, start))
                 })
             });
+        let start_line = start_line.or_else(|| hunk.and_then(|hunk| block_start(hunk, raw.side, raw.line)));
         let confidence = if raw.confidence.is_finite() { raw.confidence.clamp(0.0, 1.0) } else { 0.0 };
         kept.push(DraftFinding {
             fingerprint: fingerprint(&raw.path, &title, hunk.map_or("", |hunk| hunk.text.as_str())),
