@@ -27,6 +27,7 @@
     "build:macos-smoke": "sh scripts/build-macos-smoke.sh",
     "smoke:macos-app": "python3 scripts/smoke-packaged-macos-app.py src-tauri/target/release/bundle/macos/Bridge.app",
     "release:dmg": "sh scripts/release-dmg.sh",
+    "release:dmg:adhoc": "sh scripts/release-dmg-adhoc.sh",
     "notarize:dmg": "sh scripts/notarize-dmg.sh",
     "lint": "node scripts/lint-ratchet.mjs",
     "lint:update": "node scripts/lint-ratchet.mjs --update",
