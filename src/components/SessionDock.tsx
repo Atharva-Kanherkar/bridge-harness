@@ -77,6 +77,14 @@ const RESIZE_STEP = 16;
  */
 export const DOCK_TAB_LABEL_MIN_WIDTH = 400;
 
+/** Largest count a tab badge spells out; past it the badge reads "99+" and
+ *  the tooltip carries the exact number. */
+export const DOCK_BADGE_MAX = 99;
+
+export function dockBadgeText(count: number): string {
+  return count > DOCK_BADGE_MAX ? `${DOCK_BADGE_MAX}+` : String(count);
+}
+
 export function SessionDock({ state, panes, availableWidth, sheet, concealed = false, onAction, onConnectFolder, hiddenPanes = [], onAddPane, children }: SessionDockProps) {
   // `panes` is every pane, so a body never unmounts because its tab was
   // hidden; the strip draws only the ones this chat shows.
@@ -169,11 +177,14 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                 // The chord follows DOCK_PANES, not the strip order: a pane
                 // drawn first must not borrow the first pane's digit.
                 const chord = dockPaneChord(pane.id);
+                const badge = pane.available && pane.badge ? pane.badge : 0;
                 return (
-                  <Tip key={pane.id} label={`${pane.label}${chord ? `  ${formatShortcut({ meta: true, alt: true }, chord)}` : ""}${pane.available ? "" : ` — ${pane.unavailableReason ?? "unavailable"}`}`}>
+                  <Tip key={pane.id} label={`${pane.label}${badge > DOCK_BADGE_MAX ? ` (${badge})` : ""}${chord ? `  ${formatShortcut({ meta: true, alt: true }, chord)}` : ""}${pane.available ? "" : ` — ${pane.unavailableReason ?? "unavailable"}`}`}>
                   <Button
                     variant="quiet"
-                    size={active && showActiveLabel ? "xs" : "icon-xs"}
+                    // A square tab holds an icon and nothing else: a label or a
+                    // count needs a tab that grows, or it spills over its neighbours.
+                    size={(active && showActiveLabel) || badge ? "xs" : "icon-xs"}
                     role="tab"
                     id={`${dockId}-tab-${pane.id}`}
                     aria-controls={`${dockId}-pane-${pane.id}`}
@@ -196,8 +207,8 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                     {/* Unavailable panes stay reachable (they explain why) but recede. */}
                     <Icon size={13} strokeWidth={1.7} aria-hidden="true" className={!pane.available && !active ? "opacity-40" : undefined} />
                     {active && showActiveLabel && <span className="min-w-0 truncate pr-0.5">{pane.label}</span>}
-                    {!!pane.badge && pane.available && (
-                      <span className="rounded-full bg-accent px-1 font-mono text-caption leading-4 text-muted-foreground">{pane.badge}</span>
+                    {!!badge && (
+                      <span className="rounded-full bg-accent px-1 font-mono text-caption leading-4 tabular-nums text-muted-foreground">{dockBadgeText(badge)}</span>
                     )}
                     {pane.alert && pane.available && (
                       <span data-testid={`dock-alert-${pane.id}`} className="mission-live-accent pointer-events-none absolute right-0 top-0 h-[5px] w-[5px] rounded-full bg-warning" />
