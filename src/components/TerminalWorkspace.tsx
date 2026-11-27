@@ -161,12 +161,13 @@ export function TerminalWorkspace({ workspaceId, branch, onError }: { workspaceI
     } catch (value) { errorHandler(value, "Couldn't open the terminal workspace."); }
   }, [workspaceId, errorHandler]);
   useEffect(() => { alive.current = true; void load(); return () => { alive.current = false; }; }, [load]);
+  const savedLayout = state?.layout;
   useEffect(() => {
-    if (!state || !dirty.current) return;
-    const layout = state.layout;
+    if (!savedLayout || !dirty.current) return;
+    const layout = savedLayout;
     const timer = setTimeout(() => { dirty.current = false; void saveLayout(workspaceId, layout).catch(value => { errorHandler(value, "Couldn't save the terminal layout."); if (alive.current) setRetrySave(true); }); }, 200);
     return () => clearTimeout(timer);
-  }, [state?.layout, workspaceId, errorHandler]);
+  }, [savedLayout, workspaceId, errorHandler]);
   useEffect(() => () => {
     if (dirty.current && current.current) void saveLayout(workspaceId, current.current.layout).catch(() => {});
   }, [workspaceId, current]);

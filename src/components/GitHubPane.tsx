@@ -578,7 +578,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
     setSelected(undefined); setDetail(undefined); setDetailError(undefined);
     setSelectedIssue(undefined); setIssueDetail(undefined); setIssueError(undefined);
     void loadSurface();
-  }, [loadSurface]);
+  }, [loadSurface, workspaceId]);
 
   useEffect(() => {
     if (selected === undefined || !detail || !checksNeedPolling(detail.checks.checks)) return;

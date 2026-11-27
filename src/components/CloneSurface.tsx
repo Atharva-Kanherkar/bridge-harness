@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { useEffect, useRef, useState, useCallback, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { Skeleton, SkeletonRegion, SkeletonRows } from "@/components/ui/skeleton";
 import { AlertTriangle, ArrowRight, Bot, ChevronRight, Eye, EyeOff, Globe, Hand, Lock, MousePointer2, Timer, Trash2 } from "lucide-react";
 import { bridgeApi } from "../api";
@@ -71,14 +71,14 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
   const latestRequest = useRef(0);
   const currentSession = useLatest(sessionId);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     if (currentSession.current !== sessionId) return;
     // Only the newest read lands: an action's refresh must not be overwritten
     // by a slower poll that started before it.
     const request = ++latestRequest.current;
     const next = await bridgeApi.browserCloneState(sessionId);
     if (request === latestRequest.current && currentSession.current === sessionId) setSnapshot(next);
-  };
+  }, [sessionId, currentSession]);
   const status = snapshot?.status ?? "none";
   const live = isLive(status);
   useEffect(() => {
@@ -98,7 +98,7 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
   useEffect(() => {
     if (!visible && !live) return;
     return startSerialPoll(refresh, visible ? CLONE_POLL_VISIBLE_MS : CLONE_POLL_HIDDEN_MS);
-  }, [visible, live, sessionId]);
+  }, [visible, live, refresh]);
   const run = async (task: () => Promise<unknown>) => {
     setBusy(true);
     try { await task(); await refresh(); }

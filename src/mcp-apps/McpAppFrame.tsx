@@ -88,6 +88,11 @@ export function McpAppFrame({ input, theme, displayMode = "inline", actions, cla
   const bridge = useRef<Bridge | null>(null);
   const [height, setHeight] = useState(initialHeight);
   const latest = useLatest({ input, theme, displayMode, actions, onHeight, onToolCall });
+  // The frame is rebuilt only when the view itself changes, so the effect
+  // reads it as plain values rather than as an object made each render.
+  const personal = personalView !== undefined;
+  const personalHtml = personalView?.html ?? "";
+  const personalUri = personalView?.resourceUri;
 
   useLayoutEffect(() => {
     const node = frame.current;
@@ -98,14 +103,14 @@ export function McpAppFrame({ input, theme, displayMode = "inline", actions, cla
       // over half a megabyte.
       const [{ AppBridge, PostMessageTransport }, viewHtml] = await Promise.all([
         import("@modelcontextprotocol/ext-apps/app-bridge"),
-        personalView ? Promise.resolve(personalView.html) : import("./visual/generated/visual.html?raw").then(module => module.default),
+        personal ? Promise.resolve(personalHtml) : import("./visual/generated/visual.html?raw").then(module => module.default),
       ]);
       const target = node.contentWindow;
       if (cancelled || !target) return;
       const app = new AppBridge(
         null,
         { name: "bridge", version: "1" },
-        personalView ? { serverTools: {} } : { openLinks: {}, message: { text: {} } },
+        personal ? { serverTools: {} } : { openLinks: {}, message: { text: {} } },
         { hostContext: hostContext(latest.current.theme, latest.current.displayMode) },
       );
       app.oninitialized = () => {
@@ -113,12 +118,12 @@ export function McpAppFrame({ input, theme, displayMode = "inline", actions, cla
       };
       app.onsizechange = ({ height: next }) => {
         if (typeof next !== "number" || !Number.isFinite(next)) return;
-        const clamped = Math.max(48, Math.min(personalView ? 1200 : Infinity, Math.ceil(next)));
+        const clamped = Math.max(48, Math.min(personal ? 1200 : Infinity, Math.ceil(next)));
         setHeight(clamped);
         latest.current.onHeight?.(clamped);
       };
       app.onmessage = async ({ content }) => {
-        if (personalView) throw new Error("Use the native Revise button");
+        if (personal) throw new Error("Use the native Revise button");
         const text = (Array.isArray(content) ? content : [])
           .map(part => (part && typeof part === "object" && "text" in part && typeof part.text === "string" ? part.text : ""))
           .join("\n")
@@ -127,12 +132,12 @@ export function McpAppFrame({ input, theme, displayMode = "inline", actions, cla
         return {};
       };
       app.onopenlink = async ({ url }) => {
-        if (personalView) throw new Error("Personal previews cannot open external links");
+        if (personal) throw new Error("Personal previews cannot open external links");
         if (/^https?:\/\//i.test(url)) latest.current.actions?.open?.(url);
         return {};
       };
       app.onrequestdisplaymode = async () => ({ mode: latest.current.displayMode });
-      if (personalView) app.oncalltool = async ({ name, arguments: args }) => {
+      if (personal) app.oncalltool = async ({ name, arguments: args }) => {
         if (!latest.current.onToolCall) throw new Error("Live tools are unavailable in this preview");
         return latest.current.onToolCall(name, args ?? {});
       };
@@ -144,14 +149,14 @@ export function McpAppFrame({ input, theme, displayMode = "inline", actions, cla
       bridge.current = app as unknown as Bridge;
       // Only now that the bridge listens does the view get its document.
       const initial = { theme: latest.current.theme, variables: styleVariables() };
-      node.srcdoc = personalView ? personalViewDocument(viewHtml, initial) : viewDocument(viewHtml, initial);
+      node.srcdoc = personal ? personalViewDocument(viewHtml, initial) : viewDocument(viewHtml, initial);
     })();
     return () => {
       cancelled = true;
       void bridge.current?.close();
       bridge.current = null;
     };
-  }, [personalView?.html, personalView?.resourceUri]);
+  }, [personal, personalHtml, personalUri, latest]);
 
   useEffect(() => {
     bridge.current?.setHostContext(hostContext(theme, displayMode));

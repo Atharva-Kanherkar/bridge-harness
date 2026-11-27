@@ -110,10 +110,13 @@ function relativeStamp(iso: string | null | undefined): string {
 
 export function UsageScreen({ onError, onOpenMeter }: { onError: (message: string) => void; onOpenMeter?: () => void }) {
   const providerUsage = useProviderUsageOverviews();
-  useEffect(() => { providerUsage.refresh(); }, [providerUsage.refresh]);
+  const { refresh: refreshProviderUsage } = providerUsage;
+  useEffect(() => { refreshProviderUsage(); }, [refreshProviderUsage]);
   const [preferences, setPreferences] = useState<UsagePreferences>(() => readUsagePreferences());
   const [refreshTick, setRefreshTick] = useState(0);
   const [summaryTick, setSummaryTick] = useState(0);
+  // A refresh re-anchors the window on the clock, so its tick is a key here.
+  // oxlint-disable-next-line react-hooks/exhaustive-deps -- refreshTick re-reads the clock inside makeUsageWindow
   const window_ = useMemo(() => makeUsageWindow(preferences.windowDays), [preferences.windowDays, refreshTick]);
   const periods = useMemo(() => enumeratePeriods(window_), [window_]);
   const key = summaryKey(preferences);

@@ -104,15 +104,15 @@ export function TrailPage({ trail, summary: knownSummary, workspaceTitle, loadin
   const summary = trail?.summary ?? knownSummary ?? null;
   const memberCount = trail?.summary.memberCount ?? 0;
 
+  const trailId = trail?.summary.id;
   useEffect(() => {
-    if (!trail) return;
-    const trailId = trail.summary.id;
+    if (!trailId) return;
     let live = true;
     bridgeApi.previewTrailBrief(trailId)
       .then(result => { if (live) setBrief({ trailId, result }); })
       .catch(() => { if (live) setBrief({ trailId, result: null }); });
     return () => { live = false; };
-  }, [trail?.summary.id, trail?.summary.updatedAt, memberCount]);
+  }, [trailId, trail?.summary.updatedAt, memberCount]);
 
   const back = (
     <Button variant="text" size="inline" onClick={onBack}>
