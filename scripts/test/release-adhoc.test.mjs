@@ -31,6 +31,7 @@ printf built > "$PWD/build-ran"
 case "$1" in -s) echo ${os} ;; -m) echo arm64 ;; esac
 `);
   executable(join(dir, "bin/plutil"), `#!/bin/sh\necho ${bundleVersion}\n`);
+  executable(join(dir, "bin/ditto"), '#!/bin/sh\ncp -R "$1" "$2"\n');
   // create: write the source folder's listing as the "image"; verify: succeed.
   executable(join(dir, "bin/hdiutil"), `#!/bin/sh
 if [ "$1" = create ]; then
