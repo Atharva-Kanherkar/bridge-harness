@@ -303,3 +303,70 @@ fn fixed_is_optional_and_read_on_a_re_review() {
     let validated = validate(again, &HashSet::new(), &BTreeMap::new());
     assert_eq!(validated.fixed, ["f-1", "f-2"], "validation passes them on; the pass checks them against prior findings");
 }
+
+/// The live second-opinion fixture's `get`: lines 7 to 13, the faulty bound
+/// check on line 8, its `if` closing on line 12. Lines 3 and 4 close `first`,
+/// which opens on line 2, outside the hunk.
+const BLOCK_PATCH: &str = "diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -3,2 +3,11 @@ pub fn first(items: &[i32]) -> Option<i32> {
+     items.first().copied()
+ }
++
++/// The item at `index`, or `None` when it is out of range.
++pub fn get(items: &[i32], index: usize) -> Option<i32> {
++    if index <= items.len() {
++        Some(items[index])
++    } else {
++        None
++    }
++}
+@@ -20,5 +29,2 @@ fn gone() {
+-    run(|| {
+-        step();
+-    });
+     keep();
+ }
+";
+
+fn anchored(findings: serde_json::Value) -> Vec<(u32, Option<u32>)> {
+    let changed = ["src/lib.rs".to_owned()].into_iter().collect();
+    let review = parse(&fenced(json!({"summary": "s", "findings": findings}))).unwrap();
+    let validated = validate(review, &changed, &hunks(BLOCK_PATCH));
+    assert!(validated.findings.iter().all(|finding| !finding.outside_diff), "every finding stays inline");
+    validated.findings.iter().map(|finding| (finding.line, finding.start_line)).collect()
+}
+
+#[test]
+fn a_finding_on_a_closing_brace_covers_the_block_from_its_opening_line() {
+    let mut on_left = finding("src/lib.rs", 22, "minor", "Closure no longer runs");
+    on_left["side"] = json!("LEFT");
+    let placed = anchored(json!([
+        finding("src/lib.rs", 12, "major", "Off by one bound check"),
+        finding("src/lib.rs", 13, "minor", "get duplicates slice::get"),
+        on_left,
+    ]));
+    assert_eq!(placed[0], (12, Some(8)), "the `if`'s brace, past `}} else {{`, opens on the faulty line");
+    assert_eq!(placed[1], (13, Some(7)), "a function's closing brace covers the function");
+    assert_eq!(placed[2], (22, Some(20)), "`}});` on the old side closes the call it opens");
+}
+
+#[test]
+fn findings_the_reviewer_placed_or_ranged_are_left_alone() {
+    let mut ranged = finding("src/lib.rs", 12, "major", "Ranged already");
+    ranged["startLine"] = json!(9);
+    let placed = anchored(json!([
+        finding("src/lib.rs", 8, "major", "On the faulty line"),
+        finding("src/lib.rs", 9, "major", "On a code line"),
+        ranged,
+        finding("src/lib.rs", 4, "nit", "Opens outside the hunk"),
+    ]));
+    assert_eq!(placed, [(8, None), (9, None), (12, Some(9)), (4, None)]);
+}
+
+#[test]
+fn the_contract_asks_for_the_faulty_line_not_the_end_of_its_block() {
+    assert!(OUTPUT_CONTRACT.contains("`line` is the line the problem is on"));
+    assert!(OUTPUT_CONTRACT.contains("never the closing brace"));
+}
