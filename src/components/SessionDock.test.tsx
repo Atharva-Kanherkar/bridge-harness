@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { Code2, FileCode2, TerminalSquare } from "lucide-react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_DOCK_WIDTH, defaultDockState, MIN_CONVERSATION_WIDTH, MIN_DOCK_WIDTH, type DockAction, type DockState } from "../dockLayout";
-import { DOCK_TAB_LABEL_MIN_WIDTH, SessionDock, type DockPaneDescriptor } from "./SessionDock";
+import { DOCK_TAB_LABEL_MIN_WIDTH, dockBadgeText, SessionDock, type DockPaneDescriptor } from "./SessionDock";
 
 // Contract: testing/feat-dock-shell.md §3.
 
@@ -212,6 +212,26 @@ describe("SessionDock", () => {
     mount({ state: open({ pane: "code", visited: ["code"] }) });
     const changesTab = tabs().find(tab => tab.getAttribute("aria-label") === "Changes")!;
     expect(changesTab.textContent).toContain("4");
+  });
+
+  // A badge inside a fixed 28px square spilled past the tab and covered the
+  // next tab's icon; a four-digit count covered two.
+  it("grows a badged tab instead of spilling the count over its neighbours", () => {
+    const panes = PANES.map(pane => pane.id === "changes" ? { ...pane, badge: 8047 } : pane);
+    mount({ state: open({ pane: "code", visited: ["code"] }), panes });
+    const changesTab = tabs().find(tab => tab.getAttribute("aria-label") === "Changes")!;
+    const terminalTab = tabs().find(tab => tab.getAttribute("aria-label") === "Terminal")!;
+    expect(changesTab.textContent).toBe("99+");
+    expect(changesTab.className).not.toMatch(/\bsize-7\b/);
+    expect(changesTab.className).toMatch(/\bh-7\b/);
+    expect(terminalTab.className).toMatch(/\bsize-7\b/);
+  });
+
+  it("spells out counts up to the cap", () => {
+    expect(dockBadgeText(4)).toBe("4");
+    expect(dockBadgeText(99)).toBe("99");
+    expect(dockBadgeText(100)).toBe("99+");
+    expect(dockBadgeText(8047)).toBe("99+");
   });
 
   it("marks an alerting pane on the open switcher", () => {
