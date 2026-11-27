@@ -65,7 +65,7 @@ Subset: 60 questions from `longmemeval_oracle` (10 per question type, seed 0,
 sessions (1 to 6 chats), so it measures extraction, retrieval and answering
 without distractor chats.
 
-### Baseline (main at `55a8db69`)
+### Baseline (main at `55a8db69`, first judge pass)
 
 | Harness · model | Overall | single user | single assistant | preference | multi-session | temporal | knowledge update | records / Q | s / Q |
 |---|---|---|---|---|---|---|---|---|---|
@@ -92,3 +92,21 @@ What the misses have in common:
   guidance only tells the agent to search when asked what it remembers.
 - Codex also called foreign memory tools (`recall_memories`,
   `recall_episodes`) from the user's own MCP config.
+
+### After the fixes in #1190 (one judge pass over every run)
+
+The judge treated a usage-limit message as "no" in the first pass, so every
+run below was re-scored together with the hardened judge, which only accepts a
+yes or a no.
+
+| Harness · model | Before | After | temporal before / after | preference before / after |
+|---|---|---|---|---|
+| Claude · claude-sonnet-5-5 | 66.7% | **81.7%** | 5/10 · 7/10 | 2/10 · 6/10 |
+| Codex · gpt-6.1-sol | 50.0% | **86.7%** | 2/10 · 8/10 | 0/10 · 7/10 |
+| OpenCode · openai/gpt-5.5 | 58.3% | **83.3%** | 5/10 · 10/10 | 1/10 · 5/10 |
+
+`longmemeval_s` (about 50 chats per question, mostly distractors), 30
+questions (5 per type), after the fixes: Codex 80.0%, OpenCode 83.3%. The
+Claude runs at this size hit the subscription's 5-hour limit and are being
+rerun. With 60 questions, one question is 1.7 points, and two judge passes over
+the same replies differed by up to 7 points, so small differences are noise.

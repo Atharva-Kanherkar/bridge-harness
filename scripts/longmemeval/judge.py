@@ -9,6 +9,7 @@ from collections import defaultdict
 
 JUDGE_MODEL = os.environ.get("LME_JUDGE_MODEL", "claude-sonnet-5-5")
 SCRATCH = os.environ.get("LME_JUDGE_CWD") or tempfile.mkdtemp(prefix="lme-judge-")
+os.makedirs(SCRATCH, exist_ok=True)
 
 BASE = ("I will give you a question, a correct answer, and a response from a model. Please answer yes if the response "
         "contains the correct answer. Otherwise, answer no. If the response is equivalent to the correct answer or "
@@ -35,9 +36,14 @@ def judge(prompt):
         try:
             out = subprocess.run(["claude", "-p", "--model", JUDGE_MODEL], input=prompt, capture_output=True,
                                  text=True, cwd=SCRATCH, timeout=180).stdout.strip().lower()
-            if out:
-                return "yes" in out[:20]
-        except subprocess.TimeoutExpired:
+            # Only a yes or a no is a verdict. Anything else (a usage limit,
+            # an error) is retried, then left unjudged rather than scored wrong.
+            word = out.strip("*. \n")[:3]
+            if word.startswith("yes"):
+                return True
+            if word.startswith("no"):
+                return False
+        except (subprocess.TimeoutExpired, OSError):
             pass
     return None
 
