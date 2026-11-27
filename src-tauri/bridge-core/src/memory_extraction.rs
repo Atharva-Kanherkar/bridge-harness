@@ -683,15 +683,7 @@ pub fn build_digest(
     }
     let similar = similar_memories(db, scope_key, &evidence, MAX_KNOWN_MEMORIES)?;
     let (mut text, known) = render_known(&similar);
-    if let (Some(first), Some(last)) = (days.iter().min(), days.iter().max()) {
-        // The anchor for "yesterday" or "last month", so a dated claim can be
-        // written as the date it was.
-        if first == last {
-            text.push_str(&format!("Conversation date: {first}\n\n"));
-        } else {
-            text.push_str(&format!("Conversation dates: {first} to {last}\n\n"));
-        }
-    }
+    text.push_str(&conversation_dates(&days));
     if !lines.is_empty() {
         text.push_str("Conversation:\n");
         text.push_str(&lines.join("\n"));
@@ -704,6 +696,16 @@ pub fn build_digest(
     }
     let sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
     Ok(Some(ExtractionDigest { text, sha256, through_entry_id, more, has_evidence, known }))
+}
+
+/// The anchor for "yesterday" or "last month", so a dated claim can be
+/// written as the date it was. Empty when no entry carries a readable time.
+fn conversation_dates(days: &[chrono::NaiveDate]) -> String {
+    match (days.iter().min(), days.iter().max()) {
+        (Some(first), Some(last)) if first == last => format!("Conversation date: {first}\n\n"),
+        (Some(first), Some(last)) => format!("Conversation dates: {first} to {last}\n\n"),
+        _ => String::new(),
+    }
 }
 
 /// The similar memories as `[mN]` lines, and the alias map the gate checks.
