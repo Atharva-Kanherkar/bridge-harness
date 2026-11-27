@@ -3778,7 +3778,13 @@ mod tests {
         let root = Path::new(&repo);
         let first_target = fixture.path().join("outside");
         let second_target = fixture.path().join("other");
-        let link = root.join(std::ffi::OsStr::from_bytes(b"link-\xff"));
+        // APFS refuses names that are not UTF-8 (EILSEQ), so macOS uses a
+        // non-ASCII UTF-8 name, which Git still quotes unless it runs with -z.
+        #[cfg(target_os = "macos")]
+        let raw_name: &[u8] = "link-\u{e9}".as_bytes();
+        #[cfg(not(target_os = "macos"))]
+        let raw_name: &[u8] = b"link-\xff";
+        let link = root.join(std::ffi::OsStr::from_bytes(raw_name));
         std::fs::write(&first_target, b"outside").unwrap();
         symlink(&first_target, &link).unwrap();
         let first = repository_stamp(Path::new(&repo)).unwrap();
