@@ -106,6 +106,24 @@ pub(crate) fn install_lifecycle(transaction: &Transaction<'_>) -> Result<(), Bri
 
 /// Schema 33 (record half): trust fields arrive with their first honest
 /// producer, the extractor. Explicit saves keep both NULL.
+/// The memory index with Porter stemming, so a search for "restaurant"
+/// finds a memory about "restaurants" and "moved" finds "moving". Rebuilt from
+/// the active records; the triggers name the table, so they carry over.
+pub(crate) fn install_stemmed_search(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "DROP TABLE IF EXISTS memory_record_fts;
+        CREATE VIRTUAL TABLE memory_record_fts USING fts5(
+            record_id UNINDEXED,
+            scope_key UNINDEXED,
+            body,
+            tokenize = 'porter unicode61 remove_diacritics 2'
+        );
+        INSERT INTO memory_record_fts(record_id, scope_key, body)
+        SELECT id, scope_key, body FROM memory_records WHERE status = 'active';",
+    )?;
+    Ok(())
+}
+
 pub(crate) fn install_trust_fields(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     crate::store::add_column_if_missing(transaction, "memory_records", "confidence_bps", "INTEGER")?;
     crate::store::add_column_if_missing(transaction, "memory_records", "rationale", "TEXT")?;
@@ -1343,6 +1361,56 @@ pub fn search(
         }
         Some(value) => value as i64,
     };
+    let offset = i64::try_from(offset).unwrap_or(i64::MAX);
+    let wanted = offset.saturating_add(limit);
+    // Every word first. An agent asks in a sentence ("what car does the
+    // person drive"), and a record that holds the answer rarely holds every
+    // word of the question, so a short AND result is topped up with records
+    // that share any content word, best match first, after the AND hits. The
+    // AND hits keep their place, so paging stays stable.
+    let mut records = search_matching(db, &scope_key, &match_query, wanted)?;
+    if (records.len() as i64) < wanted {
+        if let Some(any_word) = any_word_query(query) {
+            let seen: std::collections::HashSet<String> = records.iter().map(|record| record.id.clone()).collect();
+            let relaxed = search_matching(db, &scope_key, &any_word, wanted.saturating_add(seen.len() as i64))?;
+            records.extend(relaxed.into_iter().filter(|record| !seen.contains(&record.id)));
+        }
+    }
+    Ok(records
+        .into_iter()
+        .skip(usize::try_from(offset).unwrap_or(usize::MAX))
+        .take(limit as usize)
+        .collect())
+}
+
+/// Words a relaxed search leaves out: they match nearly every record, so they
+/// would rank noise as highly as the word that names the subject.
+const SEARCH_STOP_WORDS: &[&str] = &[
+    "a", "about", "am", "an", "and", "any", "are", "as", "at", "be", "been", "but", "by", "can",
+    "could", "did", "do", "does", "for", "from", "had", "has", "have", "how", "i", "if", "in",
+    "is", "it", "its", "me", "my", "of", "on", "or", "our", "person", "should", "so", "that",
+    "the", "their", "them", "they", "this", "to", "user", "was", "we", "were", "what", "when",
+    "where", "which", "who", "why", "will", "with", "would", "you", "your",
+];
+
+/// The OR of a query's content words, or `None` when fewer than two remain
+/// (one word is already what the AND searched).
+fn any_word_query(query: &str) -> Option<String> {
+    let mut words: Vec<String> = Vec::new();
+    for word in query.split(|character: char| !character.is_alphanumeric()).filter(|word| !word.is_empty()) {
+        let lowered = word.to_lowercase();
+        if SEARCH_STOP_WORDS.contains(&lowered.as_str())
+            || matches!(lowered.as_str(), "and" | "or" | "not" | "near")
+            || words.contains(&lowered)
+        {
+            continue;
+        }
+        words.push(lowered);
+    }
+    (words.len() > 1).then(|| words.iter().map(|word| format!("\"{word}\"")).collect::<Vec<_>>().join(" OR "))
+}
+
+fn search_matching(db: &Connection, scope_key: &str, match_query: &str, limit: i64) -> Result<Vec<MemoryRecord>, BridgeError> {
     let mut statement = db.prepare(
         "SELECT m.id, m.scope_key, m.kind, m.body, m.provenance, m.status,
                 m.source_session_id, m.confidence_bps, m.rationale,
@@ -1352,13 +1420,10 @@ pub fn search(
          JOIN memory_records m ON m.id = f.record_id
          WHERE f.scope_key = ?1 AND memory_record_fts MATCH ?2 AND m.status = ?3
          ORDER BY rank, m.updated_at DESC, m.id
-         LIMIT ?4 OFFSET ?5",
+         LIMIT ?4",
     )?;
     let records = statement
-        .query_map(
-            params![scope_key, match_query, STATUS_ACTIVE, limit, i64::try_from(offset).unwrap_or(i64::MAX)],
-            map_row,
-        )?
+        .query_map(params![scope_key, match_query, STATUS_ACTIVE, limit], map_row)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(records)
 }
@@ -1859,15 +1924,34 @@ mod tests {
         let scoped = search(&db, ACCOUNT_MEMORY_SCOPE, "deploys", None, 0).unwrap();
         assert_eq!(scoped.len(), 1, "the other scope's match stays invisible");
         assert_eq!(scoped[0].scope_key, ACCOUNT_MEMORY_SCOPE);
-        assert!(
-            search(&db, ACCOUNT_MEMORY_SCOPE, "deploys OR secret", None, 0)
-                .unwrap()
-                .is_empty(),
-            "OR is a stripped word, not an operator that widens the query"
+        let widened = search(&db, ACCOUNT_MEMORY_SCOPE, "deploys OR secret", None, 0).unwrap();
+        assert_eq!(
+            widened.iter().map(|record| record.scope_key.as_str()).collect::<Vec<_>>(),
+            vec![ACCOUNT_MEMORY_SCOPE],
+            "relaxing the words never relaxes the scope"
         );
         assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "\"", None, 0).is_err());
         assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "deploys", Some(0), 0).is_err());
         assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "deploys", Some(51), 0).is_err());
+    }
+
+    #[test]
+    fn a_question_finds_the_record_that_answers_it() {
+        let (_dir, db) = ledger_db();
+        save(&db, "Drives a 2019 Subaru Outback", Some("fact"), None).unwrap();
+        save(&db, "Prefers tabs over spaces", Some("preference"), None).unwrap();
+        save(&db, "Has tried three Korean restaurants in town", Some("fact"), None).unwrap();
+        let bodies = |query: &str| -> Vec<String> {
+            search(&db, ACCOUNT_MEMORY_SCOPE, query, None, 0).unwrap().into_iter().map(|record| record.body).collect()
+        };
+        assert_eq!(bodies("what car does the person drive")[0], "Drives a 2019 Subaru Outback", "a sentence finds its subject");
+        assert_eq!(bodies("Subaru Outback"), vec!["Drives a 2019 Subaru Outback"], "every word still wins outright");
+        assert_eq!(bodies("restaurant")[0], "Has tried three Korean restaurants in town", "a singular finds a plural");
+        assert!(bodies("what is the").is_empty(), "stop words alone match nothing");
+        let first = search(&db, ACCOUNT_MEMORY_SCOPE, "car drive tabs korean", Some(1), 0).unwrap();
+        let rest = search(&db, ACCOUNT_MEMORY_SCOPE, "car drive tabs korean", Some(5), 1).unwrap();
+        assert_eq!(first.len() + rest.len(), 3, "relaxed pages neither skip nor repeat");
+        assert!(!rest.iter().any(|record| record.id == first[0].id));
     }
 
     #[test]

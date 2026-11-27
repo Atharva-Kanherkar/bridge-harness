@@ -36,7 +36,7 @@ const MAX_RATIONALE_CHARS: usize = 500;
 /// half the time in the live eval: an agent searching its deferred tools for
 /// "memory" found several and picked one. The frame is in the conversation, so
 /// the agent reads it before it searches.
-pub const SESSION_GUIDANCE: &str = "Bridge memory: memory_search recalls and memory_propose remembers, across every chat, agent and harness in Bridge, and nothing else reaches all of them. When the person asks what you remember, or asks you to remember something for later chats, use these two tools, not another memory tool and not a note.";
+pub const SESSION_GUIDANCE: &str = "Bridge memory: memory_search recalls and memory_propose remembers, across every chat, agent and harness in Bridge, and nothing else reaches all of them. When the person asks what you remember, or asks you to remember something for later chats, use these two tools, not another memory tool and not a note. When an answer depends on the person's own past (what they did, own, said or decided before) and the memory packet does not settle it, search before answering: the packet is only the top of what Bridge remembers. Memory keeps short claims, not whole chats, so when it lacks a detail, or the answer counts or adds up things across chats, also search past chats with chats_search.";
 
 /// Harnesses whose adapter attaches the `bridge` MCP server to a chat.
 const HARNESSES_WITH_BRIDGE_TOOLS: [&str; 3] = ["claude", "codex", "opencode"];
@@ -111,6 +111,9 @@ fn summary(record: &MemoryRecord) -> Value {
         "body": record.body,
         "status": record.status,
         "provenance": record.provenance,
+        // When Bridge learned it: what makes "when did I" and "what is my
+        // latest" answerable, and tells an old claim from its correction.
+        "since": record.valid_from.get(..10).unwrap_or(&record.valid_from),
     })
 }
 
