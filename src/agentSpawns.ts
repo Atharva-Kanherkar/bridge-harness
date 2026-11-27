@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useLatest } from "./useLatest";
 
 // Which agents a chat just started. The dock opens on the Agents pane when an
 // orchestrator spawns one, so this has to tell a spawn apart from an agent that
@@ -17,8 +18,7 @@ export function readSpawns(previous: SpawnWatch | undefined, chatId: string, liv
 /// Calls `onSpawn` with the newest agent each time `chatId` starts one.
 export function useAgentSpawns(chatId: string | undefined, liveIds: readonly string[], onSpawn: (sessionId: string) => void) {
   const watch = useRef<SpawnWatch>();
-  const latest = useRef(onSpawn);
-  latest.current = onSpawn;
+  const latest = useLatest(onSpawn);
   const key = liveIds.join("\n");
   useEffect(() => {
     if (!chatId) {
@@ -28,5 +28,5 @@ export function useAgentSpawns(chatId: string | undefined, liveIds: readonly str
     const { next, spawned } = readSpawns(watch.current, chatId, key ? key.split("\n") : []);
     watch.current = next;
     if (spawned.length > 0) latest.current(spawned[spawned.length - 1]);
-  }, [chatId, key]);
+  }, [chatId, key, latest]);
 }

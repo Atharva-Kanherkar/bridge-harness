@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { useEffect, useRef, useState, useCallback, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { Skeleton, SkeletonRegion, SkeletonRows } from "@/components/ui/skeleton";
 import { AlertTriangle, ArrowRight, Bot, ChevronRight, Eye, EyeOff, Globe, Hand, Lock, MousePointer2, Timer, Trash2 } from "lucide-react";
 import { bridgeApi } from "../api";
@@ -14,6 +14,9 @@ import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
 import { Tip } from "@/components/ui/tooltip";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { useNow } from "../useNow";
+import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 // The dock tenant for a throwaway browser clone: the agent drives a private
 // copy of the browser, and this is where the person watches it, takes it over
@@ -67,25 +70,27 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
   const [startBrowser, setStartBrowser] = useState<CloneBrowserKind>("chrome");
   const [startPath, setStartPath] = useState<CloneSignInPath>("import");
   const latestRequest = useRef(0);
-  const currentSession = useRef(sessionId);
-  currentSession.current = sessionId;
+  const currentSession = useLatest(sessionId);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     if (currentSession.current !== sessionId) return;
     // Only the newest read lands: an action's refresh must not be overwritten
     // by a slower poll that started before it.
     const request = ++latestRequest.current;
     const next = await bridgeApi.browserCloneState(sessionId);
     if (request === latestRequest.current && currentSession.current === sessionId) setSnapshot(next);
-  };
+  }, [sessionId, currentSession]);
   const status = snapshot?.status ?? "none";
   const live = isLive(status);
-  useEffect(() => {
-    ++latestRequest.current;
+  // Another chat's clone starts clean, before its first frame paints.
+  useResetOnChange([sessionId], () => {
     setSnapshot(undefined);
     setBusy(false);
     setConfirmingDestroy(false);
     setDomainDraft("");
+  });
+  useEffect(() => {
+    ++latestRequest.current;
     // oxlint-disable-next-line react-hooks/exhaustive-deps -- a request generation counter, not a DOM ref: cleanup must bump its latest value
     return () => { ++latestRequest.current; };
   }, [sessionId]);
@@ -97,7 +102,7 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
   useEffect(() => {
     if (!visible && !live) return;
     return startSerialPoll(refresh, visible ? CLONE_POLL_VISIBLE_MS : CLONE_POLL_HIDDEN_MS);
-  }, [visible, live, sessionId]);
+  }, [visible, live, refresh]);
   const run = async (task: () => Promise<unknown>) => {
     setBusy(true);
     try { await task(); await refresh(); }
@@ -223,6 +228,8 @@ const POINTER_VISIBLE_MS = 6000;
 function LiveView({ snapshot, takenOver, agentLabel, onInput }: { snapshot: BrowserCloneSnapshot; takenOver: boolean; agentLabel: string; onInput: (input: CloneInputEvent) => void }) {
   const pending = useRef("");
   const timer = useRef<ReturnType<typeof setTimeout>>();
+  // Ticks only while there is a cursor to fade, so a quiet clone costs nothing.
+  const now = useNow(snapshot.agentPointer && !takenOver ? 1000 : null);
   const flush = () => {
     clearTimeout(timer.current);
     const text = pending.current;
@@ -268,7 +275,7 @@ function LiveView({ snapshot, takenOver, agentLabel, onInput }: { snapshot: Brow
   const pointer = snapshot.agentPointer;
   // The cursor lingers where the agent last acted, then fades, so a quiet page
   // does not look like it is still being driven.
-  const pointerShown = !!pointer && !takenOver && Date.now() - pointer.at < POINTER_VISIBLE_MS;
+  const pointerShown = !!pointer && !takenOver && now - pointer.at < POINTER_VISIBLE_MS;
   return <div data-clone-viewport tabIndex={takenOver ? 0 : undefined} aria-label={takenOver ? "Clone page. Click and type to control it" : undefined}
     onKeyDown={forwardKey} onWheel={forwardWheel} onPaste={event => { if (!takenOver) return; event.preventDefault(); pending.current += event.clipboardData.getData("text"); flush(); }}
     className={cn("overflow-hidden rounded-lg border border-border bg-background shadow-sm outline-none transition-shadow",

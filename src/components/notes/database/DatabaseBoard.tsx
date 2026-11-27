@@ -3,7 +3,7 @@
 // the grouped value (drag, or "Move to…" from the keyboard); the move shows at
 // once and goes back if the write is refused. Cards follow the view's sorts.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, useLayoutEffect } from "react";
 import { ArrowRightLeft, Plus } from "lucide-react";
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
@@ -17,6 +17,7 @@ import { composeFilter, readAll } from "./viewBody";
 import { filterColumns, type Condition, type FieldColumn } from "./viewModel";
 import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
+import { useResetOnChange } from "../../../useResetOnChange";
 
 export const GROUP_LIMIT = 50;
 const MOVABLE = new Set(["select", "status", "multiSelect", "checkbox", "kind", "state", "project"]);
@@ -91,7 +92,8 @@ export function DatabaseBoard({ database, view, query, groups, run, host, onComm
   // A fresh answer from the server supersedes local moves and pages, and
   // starts a new generation: a page asked for before it is dropped.
   const generation = useRef(0);
-  useEffect(() => { generation.current += 1; setMoves([]); setExtra({}); }, [groups]);
+  useResetOnChange([groups], () => { setMoves([]); setExtra({}); });
+  useLayoutEffect(() => { generation.current += 1; }, [groups]);
 
   if (!grouping || !groups) return <p role="status" className="m-0 rounded-lg bg-muted px-3 py-6 text-center text-ui text-muted-foreground">Choose a property to group by</p>;
   // A date grouping is a bucket of days, which a move cannot write.

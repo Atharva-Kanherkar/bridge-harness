@@ -12,6 +12,7 @@ import { Markdown } from "../Markdown";
 import { ACTIVE_RUN_STATUSES, RUN_STATUS_LABEL, formatCost, ordinal, relativeTime, runTone } from "./format";
 import { Card, ErrorNote, StatusChip, errorText } from "./parts";
 import { SkeletonDot, SkeletonRows } from "@/components/ui/skeleton";
+import { useNow } from "../../useNow";
 
 const TRIGGER_LABEL: Record<WorkflowRun["triggerKind"], string> = { manual: "Run now", schedule: "schedule", catch_up: "catch-up", event: "event" };
 
@@ -139,6 +140,7 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const active = ACTIVE_RUN_STATUSES.includes(run.status);
+  const now = useNow(60_000);
 
   const load = useCallback(async () => {
     if (!run.sessionId) return;
@@ -149,6 +151,7 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
     }
   }, [run.sessionId]);
 
+  // oxlint-disable-next-line react/set-state-in-effect -- load sets state only from its answer, after an await
   useEffect(() => { void load(); }, [load, run.status]);
   useEffect(() => {
     if (!active) return;
@@ -183,7 +186,7 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue, queuePositi
   const cost = formatCost(run.costMicrousd);
   const eventCount = run.eventCount ?? 0;
   const meta = [workflow.definition.projectId ? null : "No project", eventCount > 1 ? `${eventCount} events` : TRIGGER_LABEL[run.triggerKind], run.dryRun ? "dry run" : null,
-    run.missedSlots > 0 ? `${run.missedSlots} missed slot${run.missedSlots === 1 ? "" : "s"}` : null, relativeTime(when, Date.now()), tokens,
+    run.missedSlots > 0 ? `${run.missedSlots} missed slot${run.missedSlots === 1 ? "" : "s"}` : null, relativeTime(when, now), tokens,
     cost ? `≈ ${cost}` : null, run.quotaUnknown ? "quota unknown" : null].filter(Boolean).join(" · ");
 
   return <div>

@@ -4,6 +4,7 @@ import { CreateDialogShell } from "./CreateDialogShell";
 import { Input } from "@/components/ui/input";
 import { RowButton } from "@/components/ui/row";
 import { Button } from "@/components/ui/button";
+import { useResetOnChange } from "../useResetOnChange";
 
 export type ForkWorktreeChoice = "shared" | "new";
 
@@ -37,11 +38,13 @@ export function ForkDialog({
   const [worktree, setWorktree] = useState<ForkWorktreeChoice>("shared");
   const submitRef = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
+  useResetOnChange([open], () => {
     if (!open) return;
     setTitle("");
     setWorktree("shared");
-    submitRef.current?.focus();
+  });
+  useEffect(() => {
+    if (open) submitRef.current?.focus();
   }, [open]);
 
   useEffect(() => {

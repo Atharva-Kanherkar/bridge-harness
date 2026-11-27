@@ -28,6 +28,8 @@ import type { ChatSessionSettings, InteractionResolutionResult, QuestionAction, 
 import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
+import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 // An aside: a standalone chat the user delegated to another agent from inside
 // a conversation, shown as a panel floating over that conversation instead of
@@ -97,7 +99,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
   }, [session.id]);
   const activeTurnInput = useActiveTurnInput(chatSettings?.sessionId === session.id ? chatSettings.value : undefined);
   const activeAction = activeTurnAction(adapters.find(adapter => adapter.id === session.harness)?.capabilities, activeTurnInput);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(initialDraft ?? "");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [composerError, setComposerError] = useState<string>();
   const [sending, setSending] = useState(false);
@@ -112,7 +114,6 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const slashListRef = useRef<HTMLDivElement>(null);
   const mentionListRef = useRef<HTMLDivElement>(null);
-  const typeaheadOpenRef = useRef(false);
   const ownEvents = events.filter(event => event.sessionId === session.id);
 
   const slashToken = composerSlashToken(draft, selection?.[0] ?? draft.length, selection?.[1] ?? draft.length);
@@ -142,17 +143,16 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
   }, [mentionQuery, workspaceFileOptions]);
   const mentionOpen = !slashToken && mentionQuery != null && fileMatches.length > 0 && !mentionDismissed;
 
-  useEffect(() => {
+  useResetOnChange([initialDraft], () => {
     if (initialDraft) setDraft(current => current || initialDraft);
-  }, [initialDraft]);
+  });
 
   const completion = useComposerSuggestion(draft, suggestionSettings, session.id, slashToken !== undefined || mentionQuery != null);
   const draftSuggestion = completion.result;
 
-  useEffect(() => {
-    if (!mentionOpen) return;
-    setMentionIndex(index => Math.min(index, Math.max(0, fileMatches.length - 1)));
-  }, [mentionOpen, fileMatches.length]);
+  useResetOnChange([mentionOpen, fileMatches.length], () => {
+    if (mentionOpen) setMentionIndex(index => Math.min(index, Math.max(0, fileMatches.length - 1)));
+  });
 
   useEffect(() => {
     if (!mentionOpen) return;
@@ -168,7 +168,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
     root.querySelector<HTMLElement>(`[data-slash-index="${slashIndex}"]`)?.scrollIntoView?.({ block: "nearest" });
   }, [slashOpen, slashIndex]);
 
-  typeaheadOpenRef.current = mentionOpen || slashOpen;
+  const typeaheadOpenRef = useLatest(mentionOpen || slashOpen);
 
   // The durable side of the transcript: without it the handoff brief the aside
   // was created around is invisible, because the brief is a forest entry and
@@ -189,7 +189,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
     window.addEventListener("keydown", onKeyDown);
     inputRef.current?.focus();
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [docked, onClose]);
+  }, [docked, onClose, typeaheadOpenRef]);
 
   async function send() {
     const text = draft.trim();

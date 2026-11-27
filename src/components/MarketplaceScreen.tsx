@@ -14,6 +14,7 @@ import { Segmented, SegmentedGroup, SegmentedItem } from "@/components/ui/segmen
 import { SkillMarketplace } from "./SkillMarketplace";
 import { StoreApps } from "./StoreApps";
 import type { AppKey } from "../apps/registry";
+import { useResetOnChange } from "../useResetOnChange";
 
 type InstallTarget = MarketplaceProvider | "both";
 type CatalogScope = "public" | "personal";
@@ -259,8 +260,10 @@ function PluginMarketplace() {
     finally { authRefreshBusy.current = false; }
   }, []);
   const refresh = useCallback(async () => { setLoading(true); try { setCatalog(await bridgeApi.marketplaceCatalog()); setCatalogFailed(false); } catch { setCatalogFailed(true); } finally { setLoading(false); } }, []);
+  // oxlint-disable-next-line react/set-state-in-effect -- refresh raises its loading flag (already up on mount) and sets the rest from its answer
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- refreshAuth sets state only from its answer, after an await
     void refreshAuth();
     const timer = window.setInterval(() => {
       const needsAuthRefresh = resolvedRef.current?.providers.some(item => item.variants.some(variant => variant.installed && variant.authenticationState.toLowerCase() !== "connected" && (variant.appConnectorIds.length > 0 || variant.connectorType === "app")));
@@ -270,7 +273,7 @@ function PluginMarketplace() {
     }, 15_000);
     return () => window.clearInterval(timer);
   }, [refreshAuth]);
-  useEffect(() => { setPageLimit(PAGE_SIZE); }, [query, provider, scope, view, category]);
+  useResetOnChange([query, provider, scope, view, category], () => setPageLimit(PAGE_SIZE));
 
   // App identities arrive after the catalog (Codex app/list is slow, and it is
   // the same call the auth poll makes). Keeping them in separate state means a
@@ -306,7 +309,8 @@ function PluginMarketplace() {
         return b.count - a.count || a.label.localeCompare(b.label);
       });
   }, [services]);
-  useEffect(() => { if (category !== "all" && !categories.some(item => item.key === category)) setCategory("all"); }, [categories, category]);
+  // A category the catalog no longer has falls back to All before it paints.
+  if (category !== "all" && !categories.some(item => item.key === category)) setCategory("all");
   const visible = useMemo(() => {
     if (searching) return services;
     if (view === "all") return category === "all" ? services : services.filter(service => (serviceCategory(service) ?? "") === category);

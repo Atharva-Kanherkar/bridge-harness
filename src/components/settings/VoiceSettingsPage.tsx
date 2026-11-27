@@ -6,6 +6,7 @@ import type { VoiceLocalSetupState, VoiceLocalStatusResult } from "../../protoco
 import { VoiceMicrophoneTest } from "./VoiceMicrophoneTest";
 import { GhostButton, SettingsBlockRow, SettingsGroup, SettingsPage, SettingsRow, StatusPill, TextButton, type PillTone } from "./kit";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
+import { useLatest } from "../../useLatest";
 
 const ACTIVE = new Set<VoiceLocalSetupState>(["downloadingRuntime", "downloadingModel", "installing"]);
 const STATE_LABEL: Record<VoiceLocalSetupState, string> = {
@@ -33,8 +34,7 @@ export function VoiceSettingsPage({ onError, onChanged }: {
   const [testing, setTesting] = useState(false);
   const [details, setDetails] = useState(false);
   const previousState = useRef<VoiceLocalSetupState>();
-  const latest = useRef({ onChanged, onError });
-  latest.current = { onChanged, onError };
+  const latest = useLatest({ onChanged, onError });
   const generation = useRef(0);
   const mounted = useRef(false);
   const mutation = useRef(false);
@@ -44,7 +44,7 @@ export function VoiceSettingsPage({ onError, onChanged }: {
     setLoadError(undefined);
     if (previousState.current !== next.state && (next.state === "ready" || (previousState.current && next.state === "notInstalled"))) latest.current.onChanged?.();
     previousState.current = next.state;
-  }, []);
+  }, [latest]);
 
   const refresh = useCallback(async () => {
     if (mutation.current) return;
@@ -59,6 +59,7 @@ export function VoiceSettingsPage({ onError, onChanged }: {
 
   useEffect(() => {
     mounted.current = true;
+    // oxlint-disable-next-line react/set-state-in-effect -- refresh sets state only from its answer, after an await
     void refresh();
     return () => { mounted.current = false; generation.current += 1; };
   }, [refresh]);

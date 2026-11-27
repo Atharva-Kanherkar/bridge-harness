@@ -5,6 +5,7 @@ import { CodeEditor } from "./CodeEditor";
 import { isDirty, isReadOnly, loadBuffer, saveBuffer, settleSave, stateAfterEdit, statusLabel, type FileBuffer } from "./fileBuffer";
 import { modKey } from "@/lib/platform";
 import { Button } from "@/components/ui/button";
+import { useLatest } from "../../useLatest";
 
 /**
  * One file from the Changes tab, opened for editing in place.
@@ -41,8 +42,7 @@ export function InlineFileEditor({ workspaceId, path, onDirtyChange, onSaved }: 
 
   // The latest buffer for callbacks fired between renders (⌘S and a click in
   // one tick), and the write in flight; see CodePanel's `saving`.
-  const latest = useRef(buffer);
-  latest.current = buffer;
+  const latest = useLatest(buffer);
   const saving = useRef(false);
   const live = useRef(true);
   useEffect(() => () => { live.current = false; }, []);
@@ -63,7 +63,7 @@ export function InlineFileEditor({ workspaceId, path, onDirtyChange, onSaved }: 
     } finally {
       saving.current = false;
     }
-  }, [onSaved, workspaceId]);
+  }, [onSaved, workspaceId, latest]);
 
   const reload = useCallback(async () => {
     const seed = (latest.current?.seed ?? 0) + 1;
@@ -71,7 +71,7 @@ export function InlineFileEditor({ workspaceId, path, onDirtyChange, onSaved }: 
     if (!live.current) return;
     content.current = loaded.saved;
     setBuffer(loaded);
-  }, [path, workspaceId]);
+  }, [path, workspaceId, latest]);
 
   if (!buffer) return <SkeletonRegion label={`Opening ${path}`} className="px-3.5 py-4"><SkeletonText lines={6} /></SkeletonRegion>;
 

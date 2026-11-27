@@ -46,6 +46,9 @@ import {
   writeChatView,
   type ChatView,
 } from "./sidebarChats";
+import { useNow } from "../useNow";
+import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 400;
@@ -90,8 +93,7 @@ export const PREFETCH_INTENT_MS = 90;
  * callback once; a pointer that moves on before the delay does not. */
 function usePrefetchIntent(onPrefetch?: () => void) {
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const latest = useRef(onPrefetch);
-  latest.current = onPrefetch;
+  const latest = useLatest(onPrefetch);
   useEffect(() => () => clearTimeout(timer.current), []);
   return useMemo(() => ({
     start: () => {
@@ -100,7 +102,7 @@ function usePrefetchIntent(onPrefetch?: () => void) {
     },
     cancel: () => clearTimeout(timer.current),
     now: () => { clearTimeout(timer.current); latest.current?.(); },
-  }), []);
+  }), [latest]);
 }
 
 function ChatRow({
@@ -699,39 +701,34 @@ export function BridgeSidebar({
   }, [collapsed, onCollapsedChange]);
   const [resizing, setResizing] = useState(false);
   const [view, setView] = useState<ChatView>(readChatView);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [query, setQuery] = useState("");
+  // A `/find` that is already waiting opens the field from the first frame.
+  const [searchOpen, setSearchOpen] = useState(!!searchRequest);
+  const [query, setQuery] = useState(searchRequest?.query ?? "");
   const [shownInFull, setShownInFull] = useState<Set<string>>(new Set());
   const [foldedGroups, setFoldedGroups] = useState<Set<string>>(new Set());
   // Chats whose imported subagents are unfolded. The chat holding the open
   // subagent unfolds by itself, so the open row is always on screen.
-  const [openSubagents, setOpenSubagents] = useState<Set<string>>(new Set());
   const activeSubagentOf = useMemo(() => {
     if (!activeSessionId || !subagents) return undefined;
     for (const [chatId, rows] of subagents) if (rows.some(row => row.chat.id === activeSessionId)) return chatId;
     return undefined;
   }, [activeSessionId, subagents]);
-  useEffect(() => {
+  const [openSubagents, setOpenSubagents] = useState<Set<string>>(() => new Set(activeSubagentOf ? [activeSubagentOf] : []));
+  useResetOnChange([activeSubagentOf], () => {
     if (activeSubagentOf) setOpenSubagents(current => current.has(activeSubagentOf) ? current : new Set(current).add(activeSubagentOf));
-  }, [activeSubagentOf]);
+  });
   const toggleSubagents = useCallback((chatId: string) => setOpenSubagents(current => toggleKey(current, chatId)), []);
-  const [now, setNow] = useState(() => Date.now());
-  const widthRef = useRef(width);
+  // Day headers are relative, so a rail left open past midnight would keep
+  // calling yesterday's chats "Today" until the list next changed.
+  const now = useNow(60_000);
   const resizeHandleRef = useRef<HTMLDivElement>(null);
-  widthRef.current = width;
+  const widthRef = useLatest(width);
 
   // A hidden rail keeps the width it was last dragged to, so reopening lands
   // where the user left it rather than back at the default.
   useEffect(() => {
     if (!collapsed) localStorage.setItem(WIDTH_KEY, String(width));
   }, [width, collapsed]);
-
-  // Day headers are relative, so a rail left open past midnight would keep
-  // calling yesterday's chats "Today" until the list next changed.
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
-    return () => window.clearInterval(timer);
-  }, []);
 
   useEffect(() => {
     localStorage.setItem(COLLAPSED_KEY, collapsed ? "1" : "0");
@@ -761,16 +758,17 @@ export function BridgeSidebar({
   // the field is open: a closed field must not keep a deep search alive.
   const chatSearch = useChatSearch(searchOpen ? query : "");
   const { runDeep } = chatSearch;
-  const [pendingDeep, setPendingDeep] = useState<string | null>(null);
-  useEffect(() => {
+  const [pendingDeep, setPendingDeep] = useState<string | null>(searchRequest ? searchRequest.query.trim() : null);
+  useResetOnChange([searchRequest], () => {
     if (!searchRequest) return;
     setSearchOpen(true);
     setQuery(searchRequest.query);
     setPendingDeep(searchRequest.query.trim());
-  }, [searchRequest]);
+  });
   // `/find` asks for the deep stage once the open field holds its query.
   useEffect(() => {
     if (pendingDeep === null || !searchOpen || pendingDeep !== query.trim()) return;
+    // oxlint-disable-next-line react/set-state-in-effect -- consumes the one-shot request in the pass that starts the deep search
     setPendingDeep(null);
     runDeep();
   }, [pendingDeep, searchOpen, query, runDeep]);
@@ -832,7 +830,7 @@ export function BridgeSidebar({
     handle.addEventListener("pointermove", onMove);
     handle.addEventListener("pointerup", onEnd);
     handle.addEventListener("pointercancel", onEnd);
-  }, [collapsed, stopResize]);
+  }, [collapsed, stopResize, widthRef]);
 
   useEffect(() => () => stopResize(), [stopResize]);
 
@@ -860,12 +858,17 @@ export function BridgeSidebar({
   // Every chat with a turn or a worker in flight, whatever the filters say.
   // The clocks carry from pass to pass, so a run whose start the live buffer
   // has since dropped keeps the time it had rather than starting over.
+  // `seen` is a cache of the moment this view first saw each run, so it has to
+  // be read and written where the rows are built, against the clock right then.
+  // A render React discards only records a start time that is kept anyway.
   const runningSeen = useRef<ReadonlyMap<string, number>>(new Map());
+  /* oxlint-disable react/refs, react/purity -- first-seen start times, a cache that never decides what renders */
   const running = useMemo(() => {
     const rows = runningChats({ chats, liveAgents, sessions, sending: sendingChatIds, events: liveEvents, seen: runningSeen.current, now: Date.now() });
     runningSeen.current = rememberRunning(rows);
     return rows;
   }, [chats, liveAgents, sessions, sendingChatIds, liveEvents]);
+  /* oxlint-enable react/refs, react/purity */
   const showRunning = running.length > 0 && !searching;
 
   // Collapsing takes the rail off the screen entirely; the panel controls move

@@ -58,6 +58,10 @@ export function UsageResetRow({ snapshot, onUpdated, compact = false }: { snapsh
   const pending = useRef<{ key: string; creditId: string | null } | null>(null);
   if (!summary) return result ? <p role="status" className="text-caption text-muted-foreground">{result}</p> : null;
   const { credit, reason } = pickCredit(snapshot);
+  // Judged against the wall clock at render, not a tick: a snapshot that just
+  // arrived would read as from the future against a clock that last ticked
+  // before it, and the reset would be refused until the next tick.
+  // oxlint-disable-next-line react/purity -- the age must be as fresh as the snapshot it judges
   const age = snapshot.observedAt == null ? Infinity : Date.now() / 1000 - snapshot.observedAt;
   const disabledReason = reason ?? (!snapshot.account ? "Sign in to use a reset" : snapshot.error || age < 0 || age >= 600 ? "Refresh account usage before using a reset" : null);
   const disabled = busy || !!disabledReason;

@@ -7,6 +7,8 @@ import { SignInProgress, type SignInStage } from "./SignInProgress";
 import { plainProviderLoginOutput, providerLoginCode, providerLoginTerminalId, providerLoginUrl } from "../providerLoginPresentation";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 // `bare` drops the card and header for hosts that supply their own (the
 // sign-in dialog). `onExited` lets that host judge the result instead of
@@ -34,10 +36,8 @@ export function ProviderLoginPane({ provider, label, account, onClose, onExited,
   const [launched, setLaunched] = useState(false);
   const [slow, setSlow] = useState(false);
   const outputRef = useRef<HTMLPreElement>(null);
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  const exitedRef = useRef(onExited);
-  exitedRef.current = onExited;
+  const closeRef = useLatest(onClose);
+  const exitedRef = useLatest(onExited);
   // Listen before launch: both subscriptions must be registered before the
   // vendor process starts, or its first output (OAuth URL, initial prompt)
   // can be lost permanently.
@@ -75,11 +75,11 @@ export function ProviderLoginPane({ provider, label, account, onClose, onExited,
       unlistenExit?.();
       if (launched && !exited) void (account ? bridgeApi.cancelProviderLogin(provider, account) : bridgeApi.cancelProviderLogin(provider)).catch(() => undefined);
     };
-  }, [provider, account, terminalId, label]);
-  useEffect(() => {
+  }, [provider, account, terminalId, label, closeRef, exitedRef]);
+  useResetOnChange([terminalId], () => {
     setLaunched(false);
     setSlow(false);
-  }, [terminalId]);
+  });
   useEffect(() => {
     outputRef.current?.scrollTo?.({ top: outputRef.current.scrollHeight });
   }, [output]);

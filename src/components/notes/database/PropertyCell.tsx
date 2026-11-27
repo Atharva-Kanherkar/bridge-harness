@@ -20,6 +20,7 @@ import type { NoteOption, NoteOptionInput, NoteProperty, Workspace } from "../..
 import { MenuLabel, Option, OptionList } from "../NotesUi";
 import { Floating } from "./Floating";
 import { STATUS_GROUPS, formatValue, type Column } from "./formatValue";
+import { useResetOnChange } from "../../../useResetOnChange";
 
 /** What a cell needs from the database around it. */
 export interface CellHost {
@@ -70,6 +71,8 @@ export function PropertyCell({ column, value, host, mode = "panel", editing: con
   const type = column.type;
 
   // A read-only column has no editor to open.
+  // `setEditing` is the table's, so closing a read-only editor waits for the commit.
+  // oxlint-disable-next-line react/set-state-in-effect -- the editing state belongs to the parent table
   useEffect(() => { if (editing && READ_ONLY.has(type)) setEditing(false, "escape"); }); // eslint-disable-line react-hooks/exhaustive-deps
 
   const text = formatValue(column, value, { rowTitle: host.rowTitle, workspaceTitle: id => host.workspaces.find(workspace => workspace.id === id)?.title });
@@ -238,7 +241,7 @@ function OptionPicker({ property, value, seed, host, onPick, onCancel }: { prope
   const [query, setQuery] = useState(seed ?? "");
   const [options, setOptions] = useState<NoteOption[]>(property.options ?? []);
   const [creating, setCreating] = useState(false);
-  useEffect(() => setOptions(property.options ?? []), [property.options]);
+  useResetOnChange([property.options], () => setOptions(property.options ?? []));
   const chosen: string[] = multi ? (Array.isArray(value) ? value.map(String) : []) : value ? [String(value)] : [];
   const matches = options.filter(option => !query.trim() || fold(option.name).includes(fold(query)));
   const exact = options.some(option => fold(option.name) === fold(query));
@@ -339,14 +342,20 @@ function RelationPicker({ property, value, host, onPick, onCancel }: { property:
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<{ id: string; title: string }[]>([]);
   const [chosen, setChosen] = useState<string[]>(Array.isArray(value) ? value.map(String) : []);
-  const titles = useRef(new Map<string, string>());
+  // Every title a search has shown, so a chosen page keeps its name after it
+  // drops out of the results.
+  const [titles, setTitles] = useState<ReadonlyMap<string, string>>(() => new Map());
   const ticket = useRef(0);
   useEffect(() => {
     if (!target) return;
     const mine = ++ticket.current;
     void host.searchRows(target, query).then(rows => {
       if (mine !== ticket.current) return;
-      for (const row of rows) titles.current.set(row.id, row.title);
+      setTitles(current => {
+        const next = new Map(current);
+        for (const row of rows) next.set(row.id, row.title);
+        return next;
+      });
       setResults(rows);
     }, () => undefined);
   }, [target, query, host]);
@@ -355,7 +364,7 @@ function RelationPicker({ property, value, host, onPick, onCancel }: { property:
     setChosen(next);
     onPick(next);
   };
-  const name = (id: string) => titles.current.get(id) ?? host.rowTitle(id) ?? "Untitled";
+  const name = (id: string) => titles.get(id) ?? host.rowTitle(id) ?? "Untitled";
   const others = useMemo(() => results.filter(row => !chosen.includes(row.id)), [results, chosen]);
   return <div>
     <SearchBox label={`Search ${property.name} pages`} value={query} onChange={setQuery} onCancel={onCancel} onEnter={() => { if (others[0]) toggle(others[0].id); }} />

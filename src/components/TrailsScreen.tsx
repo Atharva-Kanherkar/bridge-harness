@@ -6,6 +6,8 @@ import { TrailsList, type TrailWorkspace } from "./trails/TrailsList";
 import { TrailPage } from "./trails/TrailPage";
 import { TrailStartDialog, type TrailHarnessOption, type TrailStartRequest } from "./trails/TrailStartDialog";
 import { TrailAddDialog } from "./trails/TrailAddDialog";
+import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 export type { TrailStartRequest } from "./trails/TrailStartDialog";
 
@@ -44,12 +46,11 @@ export function TrailsScreen({ trailId, knownTrails, onSelectTrail, workspaces, 
   // A read answers for the trail it asked about. Only the newest request for
   // the trail still on screen may land, success or error: a slow refresh of a
   // trail the person left must not replace the one rename and archive act on.
-  const selectedRef = useRef(trailId);
-  selectedRef.current = trailId;
+  const selectedRef = useLatest(trailId);
   const requestRef = useRef(0);
   // The newest GitHub re-read: only its settling stops the spinner.
   const refreshRef = useRef(0);
-  const loadDetail = useCallback((id: string, refresh = false): Promise<void> => {
+  const loadDetail = useCallback(function loadDetail(id: string, refresh = false): Promise<void> {
     const request = ++requestRef.current;
     const current = () => request === requestRef.current && selectedRef.current === id;
     if (refresh) { refreshRef.current = request; setRefreshing(true); }
@@ -63,19 +64,22 @@ export function TrailsScreen({ trailId, knownTrails, onSelectTrail, workspaces, 
       })
       .catch(cause => { if (current()) setDetailError(friendlyError(cause, "Couldn't load this trail.")); })
       .finally(() => { if (refresh && refreshRef.current === request) setRefreshing(false); });
-  }, []);
+  }, [selectedRef]);
 
   useEffect(() => { loadList(); }, [loadList]);
-  useEffect(() => {
+  useResetOnChange([trailId], () => {
     setDetail(current => current?.summary.id === trailId ? current : null);
     setDetailError(undefined);
-    refreshRef.current = 0;
     setRefreshing(false);
+  });
+  useEffect(() => {
+    refreshRef.current = 0;
     if (!trailId) return;
     // Paint from what Bridge has stored, then re-read the trail's pull
     // requests and issues from GitHub once, behind the page: that read runs
     // `gh` per pull request and can take seconds.
     let live = true;
+    // oxlint-disable-next-line react/set-state-in-effect -- a read without refresh sets state only from its answer
     void loadDetail(trailId).then(() => { if (live) void loadDetail(trailId, true); });
     return () => { live = false; };
   }, [trailId, loadDetail]);

@@ -1,4 +1,5 @@
-import { useCallback, useLayoutEffect, useRef } from "react";
+import { useCallback, useRef } from "react";
+import { useLatest } from "./useLatest";
 
 /**
  * A function whose identity never changes but always calls the newest `fn`.
@@ -7,11 +8,8 @@ import { useCallback, useLayoutEffect, useRef } from "react";
  * Only call the result from event handlers or effects, never during render.
  */
 export function useStableCallback<Args extends unknown[], Result>(fn: (...args: Args) => Result): (...args: Args) => Result {
-  const latest = useRef(fn);
-  useLayoutEffect(() => {
-    latest.current = fn;
-  });
-  return useCallback((...args: Args) => latest.current(...args), []);
+  const latest = useLatest(fn);
+  return useCallback((...args: Args) => latest.current(...args), [latest]);
 }
 
 /**
@@ -23,10 +21,15 @@ export function useStableCallback<Args extends unknown[], Result>(fn: (...args: 
 export function useShallowStableArray<T>(next: T[]): T[];
 export function useShallowStableArray<T>(next: T[] | undefined): T[] | undefined;
 export function useShallowStableArray<T>(next: T[] | undefined): T[] | undefined {
+  // The ref is an identity cache: it only decides whether the last array can be
+  // reused, never what renders. State would cost the caller (App) a second
+  // render for every new event batch.
+  /* oxlint-disable react/refs -- an identity cache read and written in render on purpose */
   const previous = useRef(next);
   const current = previous.current;
   if (current !== next && !(current && next && sameItems(current, next))) previous.current = next;
   return previous.current;
+  /* oxlint-enable react/refs */
 }
 
 export function sameItems<T>(left: readonly T[], right: readonly T[]): boolean {

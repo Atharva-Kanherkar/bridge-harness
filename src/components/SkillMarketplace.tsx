@@ -25,6 +25,7 @@ export function SkillMarketplace() {
   const [failure, setFailure] = useState<string>();
   const [busy, setBusy] = useState(false);
   const refresh = useCallback(async () => { try { setCatalog(await bridgeApi.skillCatalog()); setFailure(undefined); } catch (error) { setFailure(friendlyError(error, "Couldn't load the skills.")); } }, []);
+  // oxlint-disable-next-line react/set-state-in-effect -- refresh sets state only from its answer, after an await
   useEffect(() => { void refresh(); }, [refresh]);
   const community = useMemo(() => {
     const needle = query.trim().toLowerCase();

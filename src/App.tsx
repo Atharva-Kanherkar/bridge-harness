@@ -200,6 +200,7 @@ const NotesScreen = lazy(() => import("./components/NotesScreen").then(module =>
 import { NotesScreenSkeleton } from "./components/notes/NotesSkeleton";
 import { Skeleton, SkeletonPanel, SkeletonRegion, SkeletonRows } from "@/components/ui/skeleton";
 import type { NoteChatRequest, NotesCopilotHost } from "./components/NotesScreen";
+import { useLatest } from "./useLatest";
 /** Longest rest between two state reads triggered by `state-changed`. Ten
  *  running chats send one on every turn start and usage update, and slow
  *  reads used to run end to end for as long as the chats did. */
@@ -484,7 +485,9 @@ function AppContent() {
     setReplyTo(next.replyTo);
     setComposerSelection(undefined);
     refreshReferences(next.text);
-  }, [selectedSessionId]);
+    // Only a change of chat swaps the draft; `drafts` and `setComposer` never
+    // change identity.
+  }, [selectedSessionId, drafts, setComposer]);
   // A draft is only worth holding while its chat exists.
   useEffect(() => {
     if (stateLoaded && drafts.size) drafts.retain(new Set(state.sessions.map(item => item.id)));
@@ -500,6 +503,8 @@ function AppContent() {
       drafts.put(sessionId, { text, attachments: [] });
     }
   };
+  /** For stable callbacks that seed a draft after an await. */
+  const seedDraftRef = useLatest(seedDraft);
   /** Take what a send used out of the chat's draft, keeping anything added since. */
   const consumeDraft = (sessionId: string | undefined, sent: ComposerDraft) => {
     if (draftOwnerRef.current === sessionId) {
@@ -1718,13 +1723,18 @@ function AppContent() {
     : null;
   const [chatConfiguration, setChatConfiguration] = useState<{sessionId:string; value:ChatSessionSettings}>();
   const currentChatConfiguration = chatConfiguration?.sessionId === session?.id ? chatConfiguration?.value : undefined;
+  // Re-read when the chat, its model or effort, or its first event changes.
+  const configuredSessionId = session && !session.parentSessionId ? session.id : undefined;
+  const sessionModel = session?.model;
+  const sessionEffort = session?.effort;
+  const firstEventId = state.events[0]?.id;
   useEffect(() => {
     let active = true;
-    if (session && !session.parentSessionId) void bridgeApi.chatSettings(session.id).then(value => {
-      if (active) setChatConfiguration({sessionId:session.id,value});
+    if (configuredSessionId) void bridgeApi.chatSettings(configuredSessionId).then(value => {
+      if (active) setChatConfiguration({sessionId:configuredSessionId,value});
     }).catch(error => { if(active) setError(errorMessage(error)); });
     return () => { active = false; };
-  }, [session?.id, session?.model, session?.effort, state.events[0]?.id]);
+  }, [configuredSessionId, sessionModel, sessionEffort, firstEventId]);
   function patchDraft(patch: ChatDefaults) {
     setNewChatDraft(current => ({ ...(current ?? { workspaceId: resolvedWelcomeWorkspaceId }), overrides: { ...current?.overrides, ...patch } }));
   }
@@ -1737,13 +1747,14 @@ function AppContent() {
   // draft's first message if it has to. Declared after the workspace-change
   // reset of the code reveal, so it runs after it.
   const [pendingPullsJump, setPendingPullsJump] = useState<PullsJump>();
+  const jumpToReviewCommentRef = useLatest(jumpToReviewComment);
   useEffect(() => {
     if (!pendingPullsJump) return;
     const step = pullsJumpStep(pendingPullsJump, { view, sessionWorkspaceId: session?.workspaceId, draftWorkspaceId: newChatDraft?.workspaceId });
     if (step === "wait") return;
-    if (step === "jump") jumpToReviewComment(pendingPullsJump.path, pendingPullsJump.line, pendingPullsJump.headBranch);
+    if (step === "jump") jumpToReviewCommentRef.current(pendingPullsJump.path, pendingPullsJump.line, pendingPullsJump.headBranch);
     setPendingPullsJump(undefined);
-  }, [pendingPullsJump, view, session?.workspaceId, newChatDraft?.workspaceId]);
+  }, [pendingPullsJump, view, session?.workspaceId, newChatDraft?.workspaceId, jumpToReviewCommentRef]);
   const [branchWorkspaceId, setBranchWorkspaceId] = useState<string | null>(null);
   const [workspaceBranches, setWorkspaceBranches] = useState<string[]>([]);
   const [workspaceBranchCurrent, setWorkspaceBranchCurrent] = useState<string | null>(null);
@@ -1908,11 +1919,12 @@ function AppContent() {
     return () => window.clearTimeout(timer);
   }, [draftSuggestion]);
 
+  const { clear: clearCompletion } = completion;
   const acceptSuggestion = useCallback(() => {
     if (!draftSuggestion?.suggestion) return;
     setComposer(current => current + draftSuggestion.suggestion);
-    completion.clear();
-  }, [draftSuggestion, completion.clear]);
+    clearCompletion();
+  }, [draftSuggestion, clearCompletion, setComposer]);
 
   useEffect(() => {
     if (!slashOpen) return;
@@ -2130,14 +2142,16 @@ function AppContent() {
   // (`$claude …` from a Codex session, say), so it needs its own server-scoped
   // catalog rather than reusing the parent's — the parent's is scoped to the
   // parent's harness and would filter down to nothing for the aside.
+  const asideSessionId = asideSession?.id;
+  const asideHarness = asideSession?.harness;
   useEffect(() => {
-    if (!asideSession) { setAsideSlashCommands([]); return; }
+    if (!asideSessionId) { setAsideSlashCommands([]); return; }
     let active = true;
-    void bridgeApi.listSlashCommands(asideSession.id)
+    void bridgeApi.listSlashCommands(asideSessionId)
       .then(commands => { if (active) setAsideSlashCommands(commands); })
       .catch(() => undefined);
     return () => { active = false; };
-  }, [adaptersReady, asideSession?.id, asideSession?.harness]);
+  }, [adaptersReady, asideSessionId, asideHarness]);
 
   // Always land on the Agent tab: focusing a session (especially a blocked
   // worker from Agent Fleet) must reveal its conversation and approval card,
@@ -2250,8 +2264,8 @@ function AppContent() {
         // Open the session with the draft in the composer. Nothing is sent: the user edits
         // and presses Send, which is the whole point of preparing rather than starting.
         setState(await bridgeApi.state());
-        seedDraft(prepared.sessionId, prepared.draft);
-        openSession(prepared.sessionId);
+        seedDraftRef.current(prepared.sessionId, prepared.draft);
+        openSessionRef.current(prepared.sessionId);
         return { ok: true };
       }
       const snoozedUntil = action === "snooze"
@@ -2264,7 +2278,7 @@ function AppContent() {
     } catch (error) {
       return { ok: false, reason: friendlyError(error, "Couldn't update the task.") };
     }
-  }, [adapters, refetchWorkBoard]);
+  }, [adapters, refetchWorkBoard, seedDraftRef]);
 
   const toggleWorkTaskPin = useCallback(async (task: WorkTask): Promise<WorkActionOutcome> => {
     try {
@@ -2281,7 +2295,7 @@ function AppContent() {
     try {
       const target = await bridgeApi.workTaskOpenEvidence(task.id);
       if (target.kind === "session") {
-        openSession(target.sessionId);
+        openSessionRef.current(target.sessionId);
         return;
       }
       await openExternalUrl(target.url);
@@ -2299,7 +2313,7 @@ function AppContent() {
     if (route.kind !== "code") return;
     const inWorkspace = visibleSessions.find(item => item.workspaceId === route.workspaceId);
     if (inWorkspace) {
-      openSession(inWorkspace.id);
+      openSessionRef.current(inWorkspace.id);
       return;
     }
     setView("workspace");
@@ -2344,7 +2358,7 @@ function AppContent() {
       switch (action.kind) {
         case "reviewCompletionCheck":
         case "answerApproval":
-          openSession(action.sessionId);
+          openSessionRef.current(action.sessionId);
           return { ok: true };
         case "refreshWorkspaceBase":
           await bridgeApi.refreshWorkspaceBase(action.sessionId);
@@ -2967,7 +2981,7 @@ function AppContent() {
     // session happened to become active in the meantime (#350).
     if (!pending || session?.id !== pending.sessionId) return;
     pendingWelcomeMessageRef.current = null;
-    void sendPrompt(pending.text, pending.attachments);
+    void sendPromptRef.current(pending.text, pending.attachments);
   }, [session?.id]);
   // Workspace "+": ask whether this orchestrator should get an isolated worktree.
   function requestWorkspaceSession(workspaceId: string) {

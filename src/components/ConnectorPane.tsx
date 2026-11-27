@@ -1,5 +1,5 @@
 import { ConnectorApprovalSheet } from "./ConnectorApprovalSheet";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import {
   AtSign,
@@ -38,6 +38,8 @@ import type {
 } from "../protocol/generated/protocol";
 import { RowButton } from "@/components/ui/row";
 import { Textarea } from "@/components/ui/textarea";
+import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 // The connector inbox: a dock pane that renders one notification at a time and
 // lets you answer it without leaving Bridge.
@@ -63,20 +65,19 @@ export function ConnectorPane({ visible = true, focusItemKey, onClose, onUnreadC
 }) {
   const [inbox, setInbox] = useState<ConnectorInboxResult>();
   const [connectors, setConnectors] = useState<ConnectorDescriptor[]>([]);
-  const [selectedKey, setSelectedKey] = useState<string>();
+  const [selectedKey, setSelectedKey] = useState<string | undefined>(focusItemKey);
   const [draft, setDraft] = useState("");
   const [pendingApproval, setPendingApproval] = useState<{ effect: string; action: ConnectorActionRequest }>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
   // Only a read while the pane shows counts as someone viewing the Inbox.
-  const visibleRef = useRef(visible);
-  visibleRef.current = visible;
+  const visibleRef = useLatest(visible);
   const refresh = useCallback(async () => {
     const [next, list] = await Promise.all([bridgeApi.connectorInbox(undefined, visibleRef.current), bridgeApi.connectorList()]);
     setInbox(next);
     setConnectors(list.connectors);
-  }, []);
+  }, [visibleRef]);
 
   useEffect(() => { void refresh(); }, [refresh, visible]);
   useEffect(() => {
@@ -89,9 +90,9 @@ export function ConnectorPane({ visible = true, focusItemKey, onClose, onUnreadC
     });
     return () => { cancelled = true; unlisten?.(); };
   }, [visible, refresh]);
-  useEffect(() => {
+  useResetOnChange([focusItemKey], () => {
     if (focusItemKey) setSelectedKey(focusItemKey);
-  }, [focusItemKey]);
+  });
   useEffect(() => {
     onUnreadChange?.(inbox ? unreadCount(inbox.items) : 0);
   }, [inbox, onUnreadChange]);

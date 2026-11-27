@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Check, ChevronLeft, ChevronRight, SlidersHorizontal } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
@@ -13,6 +13,7 @@ import {
 } from "./sidebarChats";
 import { RowButton } from "@/components/ui/row";
 import { Button } from "@/components/ui/button";
+import { useResetOnChange } from "../useResetOnChange";
 
 type Panel = "root" | "status" | "agent" | "groupBy" | "sortBy";
 
@@ -50,9 +51,7 @@ export function SidebarFilterMenu({ view, agents, allowProjectGrouping, onChange
   const [panel, setPanel] = useState<Panel>("root");
 
   // Reopening always starts at the top level rather than wherever it was left.
-  useEffect(() => {
-    if (!menu.open) setPanel("root");
-  }, [menu.open]);
+  useResetOnChange([menu.open], () => { if (!menu.open) setPanel("root"); });
 
   const agentLabel = view.agent === "all"
     ? ALL_LABEL

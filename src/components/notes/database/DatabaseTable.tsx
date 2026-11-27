@@ -19,6 +19,7 @@ import { AddProperty, ColumnMenu, type ColumnActions } from "./SchemaMenu";
 import { SYSTEM_COLUMNS, TYPE_LABELS, cellValue, columnsOf, defaultWidth, nextWidth, type Column } from "./formatValue";
 import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
+import { useResetOnChange } from "../../../useResetOnChange";
 
 export const ROW_HEIGHT = 36;
 export const OVERSCAN = 10;
@@ -107,7 +108,7 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
   const [adding, setAdding] = useState(false);
   const [madeId, setMadeId] = useState<string | null>(null);
   // A width dragged here holds until the saved view brings its own.
-  useEffect(() => setWidths({}), [view]);
+  useResetOnChange([view], () => setWidths({}));
 
   useLayoutEffect(() => {
     const box = scroller.current;
@@ -121,9 +122,7 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
   }, []);
 
   // The selection stays inside the table as rows and columns come and go.
-  useEffect(() => {
-    if (focus && (!visible.some(column => column.id === focus.column) || !rows.some(row => row.note.id === focus.id))) { setFocus(null); setEditing(null); }
-  }, [focus, rows, visible]);
+  if (focus && (!visible.some(column => column.id === focus.column) || !rows.some(row => row.note.id === focus.id))) { setFocus(null); setEditing(null); }
 
 
   const [start, end] = windowOf(rows.length, scrollTop, height);
@@ -150,6 +149,9 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
     if (!madeId) return;
     const index = rows.findIndex(row => row.note.id === madeId);
     if (index < 0) return;
+    // Scrolling the new row into the window is DOM work, so selecting it
+    // happens in the same pass, once the query has returned it.
+    // oxlint-disable-next-line react/set-state-in-effect -- a one-shot reveal of the row `+ New` made
     setMadeId(null);
     reveal(index);
     setFocus({ id: madeId, column: "title" });

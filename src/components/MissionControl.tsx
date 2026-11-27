@@ -25,6 +25,7 @@ import { createBackgroundWorkStore } from "../backgroundTasks";
 import { fixPrompt } from "../workSummary";
 import { useChatPullRequests } from "./ChatPullRequests";
 import { ChatWorkShelf } from "./WorkShelf";
+import { useLatest } from "../useLatest";
 
 export type MissionControlProps = {
   sessions: Session[];
@@ -414,6 +415,9 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
   // Keyed by content, not identity: the arrays are rebuilt every render.
   const layout: MissionLayout = useMemo(() => ({ version: 2, order, pinnedSessionIds, dismissedSessionIds, expandedId, stageLimit: stored.stageLimit }),
     [orderKey, pinnedKey, dismissedKey, expandedId, stored.stageLimit]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The reconciled layout is folded back into state in the commit that also
+  // writes it to storage, so the next reconcile starts from what was saved.
+  // oxlint-disable-next-line react/set-state-in-effect -- keeps state and storage in step; sameLayout stops it at one pass
   useEffect(() => { setStored(prev => sameLayout(prev, layout) ? prev : layout); writeLayout(layout); }, [layout]);
 
   const statuses = useMemo(() => new Map(order.flatMap(id => { const session = sessionMap.get(id); return session ? [[id, tileStatus(session, runtimes.get(id))] as const] : []; })), [order, sessionMap, runtimes]);
@@ -439,10 +443,9 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
   // a tile on the stage shows its conversation, so reading it there is reading
   // the chat: the host stamps it seen like the chat open in the single view.
   const stageKey = stageIds.join("\u0000");
-  const onStageChangeRef = useRef(onStageChange);
-  onStageChangeRef.current = onStageChange;
-  useEffect(() => { onStageChangeRef.current?.(stageKey ? stageKey.split("\u0000") : []); }, [stageKey]);
-  useEffect(() => () => onStageChangeRef.current?.([]), []);
+  const onStageChangeRef = useLatest(onStageChange);
+  useEffect(() => { onStageChangeRef.current?.(stageKey ? stageKey.split("\u0000") : []); }, [stageKey, onStageChangeRef]);
+  useEffect(() => () => onStageChangeRef.current?.([]), [onStageChangeRef]);
 
   const update = (change: (prev: MissionLayout) => Partial<MissionLayout>) => setStored(prev => ({ ...prev, order, pinnedSessionIds, dismissedSessionIds, expandedId, ...change({ ...prev, order, pinnedSessionIds, dismissedSessionIds, expandedId }) }));
 
@@ -485,6 +488,7 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
     if (!jumpTarget) return;
     const tile = [...board.current?.querySelectorAll<HTMLElement>("[data-session-id]") ?? []].find(element => element.dataset.sessionId === jumpTarget);
     tile?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+    // oxlint-disable-next-line react/set-state-in-effect -- consumes the jump once the tile it focuses is mounted
     setJumpTarget(null);
   }, [jumpTarget]);
 

@@ -19,6 +19,9 @@ export function Floating({ anchor, label, onClose, width = "w-72", children }: {
     const rect = anchor.current?.getBoundingClientRect();
     if (!rect) return;
     const below = rect.bottom + 320 < window.innerHeight || rect.top < 320;
+    // Measuring the anchor and placing the panel before paint is what a
+    // layout effect is for.
+    // oxlint-disable-next-line react/set-state-in-effect -- placement comes from the anchor's measured box
     setPlace({ left: Math.max(8, Math.min(rect.left, window.innerWidth - 296)), ...(below ? { top: rect.bottom + 4 } : { bottom: window.innerHeight - rect.top + 4 }) });
   }, [anchor]);
   useEffect(() => {

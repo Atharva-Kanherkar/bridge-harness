@@ -8,6 +8,7 @@ import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/sea
 import { languageFromPath } from "../highlight";
 import { bridgeHighlighter } from "./highlighter";
 import { loadLanguage } from "./language";
+import { useLatest } from "../../useLatest";
 
 /**
  * The editor's fixed extension set.
@@ -112,8 +113,7 @@ export function CodeEditor({ docKey, doc, path, readOnly = false, visible = true
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView>();
   // Callbacks live in refs so a re-render never rebuilds the editor.
-  const handlers = useRef({ onChange, onSave });
-  handlers.current = { onChange, onSave };
+  const handlers = useLatest({ onChange, onSave });
 
   const syncSeen = useRef(syncDoc?.version ?? 0);
   const separator = useRef<string | undefined>(undefined);

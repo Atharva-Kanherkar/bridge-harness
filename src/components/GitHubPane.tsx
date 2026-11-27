@@ -90,6 +90,8 @@ import type {
   ReviewJob,
 } from "../protocol/generated/protocol";
 import { SegmentedItem } from "@/components/ui/segmented";
+import { useNow } from "../useNow";
+import { useResetOnChange } from "../useResetOnChange";
 
 // The GitHub surface: a dock pane, not a popover. Lives beside the
 // conversation with real height, survives pane switches, and — unlike the old
@@ -223,7 +225,7 @@ function CopyButton({ value, label, variant = "quiet", className, children }: {
 function ShowInChat({ sessionId, url, number }: { sessionId: string; url: string; number: number }) {
   const [state, setState] = useState<"idle" | "busy" | "done" | "error">("idle");
   const [message, setMessage] = useState<string>();
-  useEffect(() => { setState("idle"); setMessage(undefined); }, [sessionId, number]);
+  useResetOnChange([sessionId, number], () => { setState("idle"); setMessage(undefined); });
   const pin = async () => {
     setState("busy");
     try {
@@ -274,8 +276,9 @@ function PaneNotice({ icon: Icon, title, children }: { icon: typeof GitPullReque
 /** A comment's relative age; omitted entirely when the timestamp is junk —
  * a raw ISO string (or "unknown") is noise, not information. */
 function CommentTime({ iso }: { iso: string }) {
+  const now = useNow(60_000);
   if (Number.isNaN(Date.parse(iso))) return null;
-  return <Tip label={new Date(iso).toLocaleString()}><time dateTime={iso} className="text-caption text-muted-foreground">{relativeTime(iso, new Date())}</time></Tip>;
+  return <Tip label={new Date(iso).toLocaleString()}><time dateTime={iso} className="text-caption text-muted-foreground">{relativeTime(iso, new Date(now))}</time></Tip>;
 }
 
 /** Placeholder rows shaped like the shared list. One quiet loading state:
@@ -576,7 +579,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
     setSelected(undefined); setDetail(undefined); setDetailError(undefined);
     setSelectedIssue(undefined); setIssueDetail(undefined); setIssueError(undefined);
     void loadSurface();
-  }, [loadSurface]);
+  }, [loadSurface, workspaceId]);
 
   useEffect(() => {
     if (selected === undefined || !detail || !checksNeedPolling(detail.checks.checks)) return;
@@ -1015,10 +1018,13 @@ function CommentList({ comments, repositoryUrl }: {
   const reduced = useReducedMotion();
   // The first paint staggers in; a comment that arrives later (the one just
   // posted) rises on its own without replaying the whole list.
+  // Read in render to pick each comment's entrance delay; flipping it must not
+  // re-render, or the first paint's stagger would restart mid-flight.
   const mounted = useRef(false);
   useEffect(() => { mounted.current = true; }, []);
   return <div className="space-y-2">
     <AnimatePresence initial>
+      {/* oxlint-disable-next-line react/refs -- only the entrance delay reads it, and only a later render may see it set */}
       {comments.map((comment, index) => <motion.article
         key={comment.id}
         layout={reduced ? false : "position"}
@@ -1314,6 +1320,9 @@ function useCheckSettle(checks: GithubChecksResult["checks"]): ReadonlySet<strin
       previousStatuses.current.set(key, check.status);
     }
     if (!next.size) return;
+    // Which checks just settled is a diff against the last read's statuses,
+    // which this effect keeps; the flash then clears on its own timer.
+    // oxlint-disable-next-line react/set-state-in-effect -- the settled set is a diff the effect computes against its ref
     setSettled(next);
     const timer = window.setTimeout(() => setSettled(new Set()), 750);
     return () => window.clearTimeout(timer);
@@ -1396,8 +1405,8 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   const [pairOpen, setPairOpen] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
   // Picks belong to one opening of the picker on one PR.
-  useEffect(() => { if (!reviewOpen) { setPairOpen(false); setPicked([]); } }, [reviewOpen]);
-  useEffect(() => { setPairOpen(false); setPicked([]); }, [number]);
+  useResetOnChange([reviewOpen], () => { if (!reviewOpen) { setPairOpen(false); setPicked([]); } });
+  useResetOnChange([number], () => { setPairOpen(false); setPicked([]); });
   // What each harness reviews with, set in the Reviews app's Settings.
   const [reviewerModels, setReviewerModels] = useState<Record<string, { model?: string | null; effort?: string | null }>>({});
   useEffect(() => {
@@ -1428,9 +1437,9 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   const [tab, setTab] = useState<PullRequestTab>("conversation");
   // The panel slides in from the direction of travel (issue #1028).
   const reducedMotion = useReducedMotion();
-  const tabDirection = useRef(1);
+  const [tabDirection, setTabDirection] = useState(1);
   const selectTab = useCallback((next: PullRequestTab) => {
-    tabDirection.current = Math.sign(TAB_ORDER.indexOf(next) - TAB_ORDER.indexOf(tab));
+    setTabDirection(Math.sign(TAB_ORDER.indexOf(next) - TAB_ORDER.indexOf(tab)));
     setTab(next);
   }, [tab]);
   const seenFocus = useRef(0);
@@ -1837,10 +1846,10 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
       <DetailTabs id={detailId} tabs={tabs} active={tab} onSelect={selectTab} label="Pull request detail" />
 
       <div id={`${detailId}-panel`} role="tabpanel" aria-labelledby={`${detailId}-${tab}`} tabIndex={0} className="relative min-h-0">
-        <AnimatePresence mode="popLayout" initial={false} custom={tabDirection.current}>
+        <AnimatePresence mode="popLayout" initial={false} custom={tabDirection}>
           <motion.div
             key={tab}
-            custom={tabDirection.current}
+            custom={tabDirection}
             variants={reducedMotion ? TAB_PANEL_REDUCED_VARIANTS : TAB_PANEL_VARIANTS}
             initial="enter"
             animate="center"
@@ -2094,11 +2103,17 @@ function ConnectRepositoryDialog({ workspaceId, onCancel, onConnected }: {
     ? query.trim()
     : undefined;
 
+  // Each new query resets what the last one showed before it paints; one
+  // worth searching is in flight from that first frame.
+  const searchable = !pastedUrl && query.trim().length >= 2;
+  useResetOnChange([query, pastedUrl], () => {
+    setSearching(searchable);
+    if (!searchable) { setCandidates(undefined); setSearchError(undefined); }
+  });
   useEffect(() => {
     const needle = query.trim();
-    if (pastedUrl || needle.length < 2) { setCandidates(undefined); setSearchError(undefined); return; }
+    if (!searchable) return;
     let cancelled = false;
-    setSearching(true);
     const timer = setTimeout(() => {
       void bridgeApi.searchGithubRepos(needle)
         .then(result => { if (!cancelled && alive.current) { setCandidates(result.repositories); setSearchError(undefined); } })
@@ -2107,8 +2122,8 @@ function ConnectRepositoryDialog({ workspaceId, onCancel, onConnected }: {
         .catch(value => { if (!cancelled && alive.current) { setCandidates(undefined); setSearchError(`Couldn't search your repositories. ${friendlyError(value, "")}`.trim()); } })
         .finally(() => { if (!cancelled && alive.current) setSearching(false); });
     }, 250);
-    return () => { cancelled = true; clearTimeout(timer); setSearching(false); };
-  }, [query, pastedUrl]);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [query, searchable]);
 
   async function connect(remoteUrl: string) {
     setBusy(true);

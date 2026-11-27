@@ -22,9 +22,8 @@ export function MemoryInsights({ onError }: { onError: (message: string) => void
   const [loading, setLoading] = useState(true);
   const [step, setStep] = useState(0);
 
-  const load = (refresh: boolean) => {
-    setLoading(true);
-    setStep(0);
+  // The read itself; its state lands from timers and the answer.
+  const read = (refresh: boolean) => {
     const ticker = window.setInterval(() => setStep(current => current + 1), refresh ? 4_000 : 1_000);
     bridgeApi.memoryInsights(refresh)
       .then(setResult)
@@ -35,8 +34,14 @@ export function MemoryInsights({ onError }: { onError: (message: string) => void
       })
       .finally(() => { window.clearInterval(ticker); setLoading(false); });
   };
+  const load = (refresh: boolean) => {
+    setLoading(true);
+    setStep(0);
+    read(refresh);
+  };
 
-  useEffect(() => { load(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // The first read starts already loading, at the first step.
+  useEffect(() => { read(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const report = result?.report ?? null;
   const analyseButton = <Button variant="outline" size="sm" className="shrink-0" onClick={() => load(true)} disabled={loading} loading={loading}>

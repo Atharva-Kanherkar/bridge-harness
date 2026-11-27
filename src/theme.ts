@@ -204,7 +204,10 @@ export function useThemePreference(): {
   const [resolved, setResolved] = useState<ResolvedTheme>(() => resolveTheme(preference));
   const [skin, setSkinState] = useState<ThemeSkin>(() => readThemeSkin());
 
+  // Applying the theme to the document is the effect; what it resolved to
+  // (the OS mode, or an Omarchy skin's) comes back from that application.
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- the resolved theme is read back from applying it to the document
     setResolved(applyTheme(preference));
     return watchSystemTheme(prefersDark => setResolved(applyTheme(preference, prefersDark)));
   }, [preference]);

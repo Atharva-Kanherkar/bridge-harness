@@ -13,6 +13,7 @@ import { onTerminalRun, type TerminalRun } from "../terminal/runQueue";
 import { TERMINAL_SCROLLBACK, type TerminalRecord } from "../terminal/types";
 import { TerminalSurface } from "./TerminalSurface";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
+import { useLatest } from "../useLatest";
 
 // The terminal pane: several real shells per workspace, each a PTY in the
 // workspace's worktree. A dev server, a test watcher, and an ad-hoc prompt
@@ -40,6 +41,13 @@ const sleep = (ms: number) => new Promise<void>(resolve => { window.setTimeout(r
 /** Which shells each workspace has, surviving pane unmounts. The roster is
  *  UI memory, the PTYs and their history live in the runtime. */
 const rosters = new Map<string, { ids: string[]; labels: Map<string, string>; active: string; counter: number }>();
+
+/** A shell id no shell of this workspace has had, counting up per workspace. */
+function nextShellId(workspaceId: string): string {
+  const roster = rosterFor(workspaceId);
+  roster.counter += 1;
+  return `t${roster.counter}`;
+}
 
 function rosterFor(workspaceId: string) {
   let roster = rosters.get(workspaceId);
@@ -73,10 +81,8 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
   /** The shell the user last put the cursor in; it takes focus when shown. */
   const [focusShell, setFocusShell] = useState<string>();
   const terms = useRef(new Map<string, Terminal>());
-  const activeRef = useRef(active);
-  activeRef.current = active;
-  const visibleRef = useRef(visible);
-  visibleRef.current = visible;
+  const activeRef = useLatest(active);
+  const visibleRef = useLatest(visible);
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
@@ -86,8 +92,7 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
   const shellWaiters = useRef(new Map<string, () => void>());
   const born = useRef(new Map<string, number>());
   const spokeAt = useRef(new Map<string, number>());
-  const marksRef = useRef(marks);
-  marksRef.current = marks;
+  const marksRef = useLatest(marks);
   const runs = useRef(Promise.resolve());
 
   const registerTerm = useCallback((terminalId: string, term: Terminal | null) => {
@@ -202,7 +207,7 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
     } catch (error) {
       run.fail(error);
     }
-  }, [openShell, shellFor, promptDrawn]);
+  }, [openShell, shellFor, promptDrawn, activeRef, marksRef]);
 
   // Reattach instead of respawn: the runtime knows which shells are still
   // alive; the roster remembers which the user had. Their union is the strip.
@@ -271,7 +276,7 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
       setMarks(previous => new Map(previous).set(exit.terminalId, "exited"));
     }).then(fn => { if (live) offExit = fn; else fn(); });
     return () => { live = false; offChunk?.(); offExit?.(); };
-  }, [workspaceId]);
+  }, [workspaceId, activeRef, visibleRef]);
 
   useEffect(() => {
     const exited = shells.filter(id => marks.get(id) === "exited").length;
@@ -346,7 +351,7 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
         variant="quiet"
         size="icon-xs"
         className="ml-1"
-        onClick={() => { roster.counter += 1; const terminalId = `t${roster.counter}`; openShell(workspaceId, terminalId); setFocusShell(terminalId); }}
+        onClick={() => { const terminalId = nextShellId(workspaceId); openShell(workspaceId, terminalId); setFocusShell(terminalId); }}
         aria-label="New shell"
         tooltip="New shell"
       ><Plus size={13} strokeWidth={1.8} aria-hidden="true" /></Button>

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { StrictMode, act } from "react";
+import { StrictMode, act, useLayoutEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { VoiceTranscriptPayload } from "./api";
@@ -24,12 +24,14 @@ const commit = vi.fn();
 const available = { sessionId: "chat", providers: [{ provider: "codex", state: "ready" }] };
 
 function Harness({ harness = "codex", owner = "chat", provider = "codex", fresh = false, working = false }: { harness?: string; owner?: string; provider?: "local" | "codex"; fresh?: boolean; working?: boolean }) {
-  voice = useVoiceDictation({
+  const current = useVoiceDictation({
     ownerKey: owner, sessionId: fresh ? undefined : owner, provider, harness, kind: "direct", runtimeStatus: working ? "working" : "idle", working,
     readDraft: () => ({ ownerKey: owner, sessionId: fresh ? undefined : owner, text: "draft", revision: 0, selectionStart: 5, selectionEnd: 5 }),
     commit,
   });
-  return <span>{voice.state}</span>;
+  // Hand the hook to the test once React commits, never from render itself.
+  useLayoutEffect(() => { voice = current; });
+  return <span>{current.state}</span>;
 }
 
 beforeEach(() => {

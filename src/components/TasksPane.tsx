@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { clsx } from "clsx";
 import { PaneState } from "@/components/ui/pane";
 import { Kbd } from "@/components/ui/kbd";
@@ -20,6 +20,7 @@ import { dockPaneChord } from "../dockLayout";
 import { WORKER_STATE_TEXT, formatWorkerClock, sentenceCase, stateOfTone, useTickingNow, type WorkerState } from "./workerFanOut";
 import { RowButton } from "@/components/ui/row";
 import { SkeletonDot } from "@/components/ui/skeleton";
+import { useResetOnChange } from "../useResetOnChange";
 
 // The Agents pane: the agents this chat has running right now, and nothing
 // else, drawn as the agent tree they form: the orchestrator on top, each
@@ -188,9 +189,7 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
   onOpenTerminal?: () => void;
 }) {
   const [selected, setSelected] = useState<string | undefined>(() => focus?.sessionId ?? undefined);
-  useEffect(() => {
-    if (focus) setSelected(focus.sessionId ?? undefined);
-  }, [focus]);
+  useResetOnChange([focus], () => { if (focus) setSelected(focus.sessionId ?? undefined); });
   const rows = activeAgentRows(chatSessionId, sessions, runtimes, pinned);
   const mine = descendantIds(chatSessionId, sessions);
   const now = useTickingNow(rows.some(row => isActiveTone(workerStatus(row.session, row.runtime).tone)));

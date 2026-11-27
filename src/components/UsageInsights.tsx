@@ -164,9 +164,8 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
   const [loading, setLoading] = useState(true);
   const [step, setStep] = useState(0);
 
-  const load = (refresh: boolean) => {
-    setLoading(true);
-    setStep(0);
+  // The read itself; its state lands from timers and the answer.
+  const read = (refresh: boolean) => {
     const ticker = window.setInterval(() => setStep(current => current + 1), refresh ? 4_000 : 1_000);
     bridgeApi.usageInsights({ windowDays, refresh })
       .then(setResult)
@@ -176,9 +175,15 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
       })
       .finally(() => { window.clearInterval(ticker); setLoading(false); });
   };
+  const load = (refresh: boolean) => {
+    setLoading(true);
+    setStep(0);
+    read(refresh);
+  };
 
   // The stored report first; running the model is always an explicit click.
-  useEffect(() => { load(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // The first read starts already loading, at the first step.
+  useEffect(() => { read(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const report = result?.report ?? null;
   const analyseButton = <Button variant="outline" size="sm" onClick={() => load(true)} disabled={loading} loading={loading}>

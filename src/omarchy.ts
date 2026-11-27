@@ -7,7 +7,7 @@
 // macOS, in mock mode, and on Linux without Omarchy nothing ever arrives, so
 // the skin stays hidden and Graphite renders as it always has.
 
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 import { isHexColor, OMARCHY_TOKEN_NAMES, omarchyTokens, type OmarchyMode } from "./lib/omarchyTheme";
 
 /** Mirrors `ThemePayload` in `src-tauri/src/omarchy.rs`. */
@@ -108,10 +108,5 @@ export function startOmarchyThemeSync(): void {
 
 /** The latest payload, re-rendering when the theme switches. */
 export function useOmarchyTheme(): OmarchyThemePayload | null {
-  const [payload, setPayload] = useState(currentOmarchyTheme);
-  useEffect(() => {
-    setPayload(currentOmarchyTheme());
-    return onOmarchyTheme(() => setPayload(currentOmarchyTheme()));
-  }, []);
-  return payload;
+  return useSyncExternalStore(onOmarchyTheme, currentOmarchyTheme, currentOmarchyTheme);
 }

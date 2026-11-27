@@ -126,7 +126,7 @@ export function useSidebarPullRequests(): SidebarPullRequests {
   const queued = useRef<boolean | null>(null);
   const lastRefresh = useRef(0);
 
-  const load = useCallback(async (refresh: boolean) => {
+  const load = useCallback(async function load(refresh: boolean): Promise<void> {
     if (inflight.current) { queued.current = (queued.current ?? false) || refresh; return; }
     inflight.current = true;
     if (refresh) lastRefresh.current = Date.now();
@@ -148,6 +148,7 @@ export function useSidebarPullRequests(): SidebarPullRequests {
   }, []);
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- load sets state only from its answer, after an await
     void load(false).then(() => load(true));
     const touches = (payload: { number: number }) => { if (numbers.current.has(payload.number)) void load(true); };
     const unlisten: Array<Promise<() => void>> = [
@@ -299,6 +300,9 @@ export function useStatusAnnouncements(prs: SessionPullRequest[]) {
       if (line) lines.push(line);
       phases.current.set(key, chatPrStatus(pr).phase);
     }
+    // The phases a poll moved from live in a ref the effect advances, so the
+    // line is known only here, after the commit that showed the new phase.
+    // oxlint-disable-next-line react/set-state-in-effect -- the announcement is a diff against the last committed phases
     if (lines.length > 0) setSpoken(lines.join(" "));
   }, [prs]);
   return spoken;

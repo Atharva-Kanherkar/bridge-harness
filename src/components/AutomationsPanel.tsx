@@ -13,6 +13,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Segmented } from "@/components/ui/segmented";
 import { RowButton } from "@/components/ui/row";
+import { useNow } from "../useNow";
 
 const PROVIDER_LABELS: Record<AutomationProvider, string> = { claude: "Claude Code", codex: "Codex", cursor: "Cursor", opencode: "OpenCode" };
 const providerLabel = (provider: AutomationProvider) => PROVIDER_LABELS[provider] ?? provider;
@@ -44,7 +45,7 @@ export function AutomationsPanel({ initialCatalog, embedded = false }: { initial
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(!initialCatalog);
   const refreshGeneration = useRef(0);
-  const now = Date.now();
+  const now = useNow(60_000);
 
   const refresh = useCallback(async () => {
     const generation = ++refreshGeneration.current;
@@ -61,6 +62,7 @@ export function AutomationsPanel({ initialCatalog, embedded = false }: { initial
     }
   }, []);
 
+  // oxlint-disable-next-line react/set-state-in-effect -- refresh raises its loading flag, shared with the Refresh button, and sets the rest from its answer
   useEffect(() => { void refresh(); }, [refresh]);
 
   const automations = useMemo(

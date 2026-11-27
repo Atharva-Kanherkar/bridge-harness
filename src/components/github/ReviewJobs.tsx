@@ -10,6 +10,7 @@ import { harnessLabel, REVIEW_STATUS, SEVERITIES, SEVERITY_TEXT } from "./review
 import { Tip } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { SkeletonDot } from "@/components/ui/skeleton";
+import { useResetOnChange } from "../../useResetOnChange";
 
 // The PR's review jobs, newest first, kept current by `reviews/job_updated`:
 // a review started here, from another window, or while another chat was open
@@ -115,9 +116,9 @@ export function usePullRequestReviews(workspaceId: string, number: number, start
   // after that arrives as an event, so a job's latest event is never older
   // than the list's copy of it: the list fills in only jobs no event has
   // touched.
+  useResetOnChange([workspaceId, number], () => { setJobs([]); setLoaded(false); setError(undefined); });
   useEffect(() => {
     let active = true;
-    setJobs([]); setLoaded(false); setError(undefined);
     let unlisten: (() => void) | undefined;
     const live = new Set<string>();
     void (async () => {
@@ -140,7 +141,10 @@ export function usePullRequestReviews(workspaceId: string, number: number, start
     return () => { active = false; unlisten?.(); };
   }, [workspaceId, number, update]);
 
+  // A job this pane just started joins the list with a fresh clock reading,
+  // which render must not take.
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- update stamps the clock as it folds the job in
     if (started && started.workspaceId === workspaceId && started.number === number) update(started);
   }, [started, workspaceId, number, update]);
 
@@ -196,8 +200,13 @@ export function ReviewJobsView({ reviews, repositoryUrl, reveal, sectionRef }: {
   // finished ones past the first few fold away.
   const shown = useMemo(() => {
     if (showAll) return jobs;
+    const kept: typeof jobs = [];
     let finished = 0;
-    return jobs.filter(job => !TERMINAL.has(job.status) || ++finished <= FINISHED_SHOWN);
+    for (const job of jobs) {
+      if (!TERMINAL.has(job.status)) kept.push(job);
+      else if (++finished <= FINISHED_SHOWN) kept.push(job);
+    }
+    return kept;
   }, [jobs, showAll]);
   const hidden = jobs.length - shown.length;
   if (!loaded && !jobs.length) return null;

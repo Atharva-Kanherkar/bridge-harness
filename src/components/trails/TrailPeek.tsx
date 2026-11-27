@@ -9,6 +9,7 @@ import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 import { KIND_ICON, StageBar, StateWord, TONE_INK } from "./TrailParts";
 import { clsx as cn } from "clsx";
 import { RowButton } from "@/components/ui/row";
+import { useResetOnChange } from "../../useResetOnChange";
 
 // A trail at a glance, from wherever a chat names its trail: the sidebar row's
 // trail button and the chat header's trail chip. It opens on hover or focus
@@ -31,10 +32,10 @@ type Read = { detail: TrailDetail | null; failed: boolean };
 /** Read the trail's stored detail (no GitHub refresh) while the card is open. */
 function useTrailDetail(trailId: string, open: boolean, updatedAt: string): Read {
   const [read, setRead] = useState<Read>(() => ({ detail: lastRead.get(trailId) ?? null, failed: false }));
+  useResetOnChange([trailId, open, updatedAt], () => { if (open) setRead({ detail: lastRead.get(trailId) ?? null, failed: false }); });
   useEffect(() => {
     if (!open) return;
     let live = true;
-    setRead({ detail: lastRead.get(trailId) ?? null, failed: false });
     bridgeApi.readTrail(trailId)
       .then(result => {
         lastRead.set(trailId, result.trail);

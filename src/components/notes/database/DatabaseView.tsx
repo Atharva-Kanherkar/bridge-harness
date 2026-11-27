@@ -25,6 +25,7 @@ import type { ViewBodyProps } from "./viewBody";
 import { groupableColumns, filterColumns, type FieldColumn } from "./viewModel";
 import { ViewTabs, type ViewActions } from "./ViewTabs";
 import { ViewToolbar } from "./ViewToolbar";
+import { useLatest } from "../../../useLatest";
 
 export const FIRST_PAGE = 100;
 export const LATER_PAGE = 500;
@@ -67,16 +68,18 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
   const painted = useRef(false);
   /** Rows of the current view have landed once. */
   const loaded = useRef(false);
-  const latest = useRef({ onError });
-  latest.current = { onError };
+  const latest = useLatest({ onError });
   /** Report a refused read or write as one plain sentence; `fallback` names what failed. */
-  const fail = useCallback((error: unknown, fallback = "Couldn't update the database.") => latest.current.onError(friendlyError(error, fallback)), []);
+  const fail = useCallback((error: unknown, fallback = "Couldn't update the database.") => latest.current.onError(friendlyError(error, fallback)), [latest]);
 
   /** The newest view edit not yet saved, kept over any read that lands first. */
   // Per view, so queued edits to different views (a reorder moves two) each
   // build on their own last edit.
   const viewDrafts = useRef(new Map<string, NoteDatabaseView>());
   const withDrafts = (database: NoteDatabase) => [...viewDrafts.current.values()].reduce(withView, database);
+  // Unsaved view edits live in a ref, so a database handed in is merged with
+  // them after commit rather than during render.
+  // oxlint-disable-next-line react/set-state-in-effect -- withDrafts reads the pending view edits from a ref
   useEffect(() => { if (given) setDatabase(withDrafts(given)); }, [given]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Schema reads and writes land newest first, whatever order they answer in.
@@ -88,6 +91,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
       if (page.database && schemaOrder.accept(ticket)) setDatabase(withDrafts(page.database));
     } catch (error) { fail(error, "Couldn't load the database."); }
   }, [databaseId, fail, schemaOrder]);
+  // oxlint-disable-next-line react/set-state-in-effect -- readDatabase sets state only from its answer, after an await
   useEffect(() => { if (!given) void readDatabase(); }, [given, readDatabase]);
 
   const views = useMemo(() => [...(database?.views ?? [])].sort((a, b) => a.order - b.order), [database]);
@@ -137,6 +141,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
     }
   }, [databaseId, viewParams, fail]);
 
+  // oxlint-disable-next-line react/set-state-in-effect -- query sets state only from its answers, after an await
   useEffect(() => { loaded.current = false; if (database) void query(); }, [database ? database.id : null, queryKey, query]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The first painted row closes the first-paint measure.
@@ -224,10 +229,8 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
 
   // View edits apply at once, each built on the one before it (still unsaved
   // or not), and save in order; only the newest answer replaces the view.
-  const latestDatabase = useRef(database);
-  latestDatabase.current = database;
-  const latestView = useRef(view);
-  latestView.current = view;
+  const latestDatabase = useLatest(database);
+  const latestView = useLatest(view);
   const saves = useRef<Promise<unknown>>(Promise.resolve());
   const saveSeq = useRef(0);
   /** Queue a view edit; resolves to whether it was stored. */
@@ -256,7 +259,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
       fail(error, "Couldn't save the view.");
     });
     return write.then(() => true, () => false);
-  }, [databaseId, query, readDatabase, fail]);
+  }, [databaseId, query, readDatabase, fail, latestDatabase, latestView]);
 
   const host: CellHost = useMemo(() => ({
     addOption: async (property: NoteProperty, option) => {
@@ -300,8 +303,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
   }, [databaseId, query, fail, commit]);
 
   // Views: made, renamed, retyped, duplicated, moved and deleted.
-  const views_ = useRef(views);
-  views_.current = views;
+  const views_ = useLatest(views);
   // Orders go through the same queue as every other view edit, each built on
   // that view's latest, so a slow reorder never writes an older field back.
   const saveOrder = useCallback(async (ordered: NoteDatabaseView[]) => {
@@ -348,7 +350,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
       ordered.splice(Math.max(0, Math.min(index, ordered.length)), 0, target);
       void saveOrder(ordered).catch(error => fail(error, "Couldn't move the view."));
     },
-  }), [databaseId, typeDefaults, saveView, saveOrder, fail]);
+  }), [databaseId, typeDefaults, saveView, saveOrder, fail, views_]);
 
   const run = useCallback((params: Omit<QueryDatabaseParams, "databaseId">) => bridgeApi.queryDatabase({ databaseId, ...params }), [databaseId]);
 
@@ -370,6 +372,8 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
       onReset={() => override.reset(view)}
       onSave={() => void override.save(view, query => saveView(() => ({ filter: query.filter, sorts: query.sorts, groupBy: query.groupBy }), view))}
     />}
+    {/* `body` carries callbacks that read refs only when called. */}
+    {/* oxlint-disable-next-line react/refs -- nothing here reads a ref during render */}
     {rows === null || !body
       ? <SkeletonRows label="Loading rows" rows={4} meta={false} framed={false} className="my-1" />
       : view?.type === "board" ? <DatabaseBoard {...body} />

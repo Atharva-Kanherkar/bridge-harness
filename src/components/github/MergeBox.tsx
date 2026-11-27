@@ -37,6 +37,7 @@ import type {
 } from "@/protocol/generated/protocol";
 import { MergeGraph } from "./MergeGraph";
 import { RollupMeter } from "../GitHubPane";
+import { useResetOnChange } from "../../useResetOnChange";
 
 // The merge box (issue #1028): one card that owns readiness, the strategy,
 // the confirm step and the receipt. Merge expands the card into the confirm
@@ -223,7 +224,7 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
   const reduced = usePrefersReducedMotion();
   const [menuOpen, setMenuOpen] = useState(false);
   const more = useMenuPanel<HTMLButtonElement>({ width: 208, height: 12 + overflow.length * 28 });
-  const [shaking, setShaking] = useState(false);
+  const [shaking, setShaking] = useState(() => state.phase === "failed" && !reduced);
   const boxRef = useRef<HTMLDivElement>(null);
 
   const open = state.phase === "idle";
@@ -235,9 +236,7 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
   const celebrate = merged && state.celebrate && !reduced;
 
   // The refusal shakes the button once; it re-arms for the next "Try again".
-  useEffect(() => {
-    if (failed && !reduced) setShaking(true);
-  }, [failed, reduced]);
+  useResetOnChange([failed, reduced], () => { if (failed && !reduced) setShaking(true); });
 
   // Menus close on any press outside or on Escape (the confirm's own Escape
   // is handled at the detail level).

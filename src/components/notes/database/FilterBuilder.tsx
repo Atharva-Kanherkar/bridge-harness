@@ -2,7 +2,7 @@
 // group one level deep, and/or per group. It keeps its own tree so a half-typed
 // number stays on screen, and hands out only complete conditions.
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,6 +11,7 @@ import { Segmented } from "@/components/ui/segmented";
 import type { NoteDatabase, Workspace } from "../../../types";
 import { STATUS_GROUPS } from "./formatValue";
 import { addCondition, addGroup, canAdd, choicesOf, completeOnly, defaultCondition, familyOf, filterColumns, isGroup, needsValue, OP_LABELS, opsFor, readFilter, removeAt, retarget, setCondition, setJoin, WITHIN, writeFilter, type Condition, type FieldColumn, type Group, type Path } from "./viewModel";
+import { useResetOnChange } from "../../../useResetOnChange";
 
 export interface FilterBuilderProps {
   database: NoteDatabase;
@@ -65,6 +66,9 @@ export function FilterBuilder({ database, value, onChange, workspaces = [] }: Fi
   return <div aria-label="Filter builder" className="flex w-[34rem] max-w-[calc(100vw-2rem)] flex-col gap-1.5 p-1">
     {tree.items.length > 1 && <JoinSwitch label="Match" join={tree.join} onChange={join => apply(setJoin(tree, [], join))} />}
     {tree.items.length
+      // `keyOf` hands each condition object a stable key the first time it is
+      // drawn; the WeakMap is a cache keyed by identity, so render fills it.
+      // oxlint-disable-next-line react/refs -- an identity-keyed cache of row keys
       ? <ol className="m-0 flex list-none flex-col gap-1 p-0">{rows(tree, [])}</ol>
       : <p className="m-0 px-1 py-1.5 text-meta text-muted-foreground">No filters. Every row shows.</p>}
     <div className="flex gap-1">
@@ -129,9 +133,9 @@ function NumberInput({ label, value, onChange }: { label: string; value: unknown
   // The row's condition can change under the field (a row above removed, the
   // property switched): show the number it now applies. Half-typed text that
   // is not yet a number stays.
-  useEffect(() => {
+  useResetOnChange([value], () => {
     if (typeof value === "number" && Number.isFinite(value) && value !== parsed) setText(String(value));
-  }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
+  });
   return <Input
     size="sm"
     aria-label={label}

@@ -8,6 +8,7 @@ import type { CloneSettings, CloneSignInPath } from "../types";
 import { Select, Switch } from "./settings/kit";
 import { Button } from "./ui/button";
 import { CLONE_BROWSERS, SAFARI_SIGN_IN_HINT, selectCloneBrowser } from "../cloneSettings";
+import { useLatest } from "../useLatest";
 
 const LIFETIMES = [10, 15, 30, 60, 120, 240];
 const lifetimeLabel = (minutes: number) => minutes < 60 ? `${minutes} min` : minutes === 60 ? "1 hour" : `${minutes / 60} hours`;
@@ -39,12 +40,14 @@ export function CloneConsentCard({ request, label, onOpen, onResolved, onError }
 }) {
   const [settings, setSettings] = useState<CloneSettings>();
   const [busy, setBusy] = useState(false);
+  // Read once per request; a new error handler alone must not re-read.
+  const latestOnError = useLatest(onError);
   useEffect(() => {
     let active = true;
     bridgeApi.readCloneSettings().then(next => { if (active) setSettings({ ...next.settings, agentVision: next.settings.agentVision ?? true, defaultSignInPath: next.settings.defaultBrowser === "safari" ? "sign_in_inside" : next.settings.defaultSignInPath }); })
-      .catch(error => onError(friendlyError(error, "Couldn't load the browser settings.")));
+      .catch(error => latestOnError.current(friendlyError(error, "Couldn't load the browser settings.")));
     return () => { active = false; };
-  }, [request.requestId]);
+  }, [request.requestId, latestOnError]);
   const resolve = async (allow: boolean) => {
     if (!settings) return;
     setBusy(true);

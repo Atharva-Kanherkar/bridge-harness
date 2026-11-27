@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { bridgeApi } from "./api";
 import { webCanPostBanners } from "./webNotify";
+import { useLatest } from "./useLatest";
 
 const inTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 /** The desktop always can; a browser tab says whether its person allowed it. */
@@ -24,8 +25,7 @@ export const CLIENT_ID = typeof crypto !== "undefined" && "randomUUID" in crypto
  */
 export function useBannerOwner(focused: boolean, clientId = CLIENT_ID, renewMs = PRESENCE_RENEW_MS): boolean {
   const [owner, setOwner] = useState(true);
-  const focusedRef = useRef(focused);
-  focusedRef.current = focused;
+  const focusedRef = useLatest(focused);
   // One request counter for renewals and focus changes alike, so a late
   // answer never overwrites a newer one.
   const reportRef = useRef<() => void>(() => undefined);
@@ -51,7 +51,7 @@ export function useBannerOwner(focused: boolean, clientId = CLIENT_ID, renewMs =
       window.clearInterval(timer);
       window.removeEventListener("pagehide", leave);
     };
-  }, [clientId, renewMs]);
+  }, [clientId, renewMs, focusedRef]);
 
   const mounted = useRef(false);
   useEffect(() => {

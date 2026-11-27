@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useLatest } from "../useLatest";
 
 /**
  * A chat title that fits its width by wording, not by an ellipsis.
@@ -123,8 +124,7 @@ export function FittedTitle({ title, ladder, className }: {
   const ref = useRef<HTMLSpanElement>(null);
   // `from` is what was showing before this rung, when the change should animate.
   const [shown, setShown] = useState<{ text: string; from: string | null } | null>(null);
-  const titleRef = useRef(title);
-  titleRef.current = title;
+  const titleRef = useLatest(title);
   const mounted = useRef(false);
   const rungs = ladder && ladder.length > 1 ? ladder : null;
   const key = rungs?.join("\n") ?? "";
@@ -162,7 +162,10 @@ export function FittedTitle({ title, ladder, className }: {
     return <span ref={ref} className={className}>{text}</span>;
   }
   const added = addedWords(from, text);
-  let order = 0;
+  // Each new word's place among the new words, so they stagger in reading order.
+  const order: number[] = [];
+  let next = 0;
+  for (const isAdded of added) order.push(isAdded ? next++ : -1);
   return (
     <span ref={ref} className={className}>
       {text.split(/\s+/).filter(Boolean).map((word, index) => (
@@ -173,7 +176,7 @@ export function FittedTitle({ title, ladder, className }: {
             <span
               key={text}
               className="title-word-in"
-              style={{ "--title-word-delay": `${order++ * WORD_STAGGER_MS}ms` } as CSSProperties}
+              style={{ "--title-word-delay": `${order[index] * WORD_STAGGER_MS}ms` } as CSSProperties}
             >
               {word}
             </span>

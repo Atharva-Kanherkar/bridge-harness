@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { ErrorNote } from "./parts";
 import { EVENT_APPS, EVENT_OPTIONS, eventFilters, localTimezone, presetCron, presetFor, presetForCron, WEEKDAY_OPTIONS, type SchedulePreset } from "./format";
 import { SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
+import { useResetOnChange } from "../../useResetOnChange";
 
 const FIELD = "block text-caption font-medium text-muted-foreground";
 
@@ -139,7 +140,6 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
   const [batchPreset, setBatchPreset] = useState<BatchPreset>(batchPresetFor(startEvent?.batch?.cron));
   // A preview belongs to the trigger it answered (R11).
   const [preview, setPreview] = useState<{ key: string; result: WorkflowTriggerPreview } | null>(null);
-  const [previewing, setPreviewing] = useState(false);
   const step = definition.steps[0];
   const grants = definition.grants ?? [];
   const harness = options?.harnesses.find(candidate => candidate.id === step.harness);
@@ -157,10 +157,15 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
 
   // What this trigger would have done last week, refreshed as it is edited.
   const triggerKey = JSON.stringify(composed.trigger);
+  const previewable = open && composed.trigger.kind === "event";
+  const [previewing, setPreviewing] = useState(previewable);
+  useResetOnChange([open, triggerKey], () => {
+    if (previewable) setPreviewing(true);
+    else setPreview(null);
+  });
   useEffect(() => {
-    if (!open || composed.trigger.kind !== "event") { setPreview(null); return; }
+    if (!previewable) return;
     let current = true;
-    setPreviewing(true);
     const key = triggerKey;
     const timer = window.setTimeout(() => {
       bridgeApi.previewWorkflowTrigger(composed.trigger)
@@ -178,6 +183,8 @@ export function WorkflowEditor({ open, workflow, initial, notes = [], options, p
     if (!options || step.model.trim()) return;
     const candidate = options.harnesses.find(entry => entry.id === step.harness);
     const model = candidate?.defaultModel ?? candidate?.models[0]?.id;
+    // A model chosen here makes the next pass a no-op, so this settles at once.
+    // oxlint-disable-next-line react/set-state-in-effect -- fills a model only while the step has none
     if (model) setDefinition(current => ({ ...current, steps: [{ ...current.steps[0], model }] }));
   }, [options, step.harness, step.model]);
 

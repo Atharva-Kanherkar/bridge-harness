@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ExternalLink, FolderGit2, Play, Plus, Settings2, Sparkles, Workflow as WorkflowIcon } from "lucide-react";
 import { bridgeApi } from "../api";
 import { friendlyError } from "../errors";
@@ -21,6 +21,9 @@ import { RowButton } from "@/components/ui/row";
 import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
 import { Checkbox } from "@/components/ui/checkbox";
 import { SkeletonRows } from "@/components/ui/skeleton";
+import { useNow } from "../useNow";
+import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 type Tab = "workflows" | "templates" | "inbox" | "native";
 type Editing = { workflow: Workflow | null; initial?: WorkflowDefinition | null; notes?: string[] } | null;
@@ -63,7 +66,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
   const [selected, setSelected] = useState<Workflow | null>(null);
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [openRun, setOpenRun] = useState<WorkflowRun | null>(null);
-  const [editing, setEditing] = useState<Editing>(null);
+  const [editing, setEditing] = useState<Editing>(() => initialDraft ? { workflow: null, initial: initialDraft.definition, notes: initialDraft.notes } : null);
   const [settings, setSettings] = useState<WorkflowSettingsSnapshot | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -74,9 +77,8 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
   const [describe, setDescribe] = useState("");
   const [drafting, setDrafting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const selectedId = useRef<string | null>(null);
-  selectedId.current = selected?.id ?? null;
-  const now = Date.now();
+  const selectedId = useLatest(selected?.id ?? null);
+  const now = useNow(60_000);
 
   const refreshList = useCallback(async () => {
     try {
@@ -100,6 +102,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
   }, []);
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- refreshList sets state only from its answer, after an await
     void refreshList();
     bridgeApi.workflowOptions().then(setOptions).catch(reason => setError(friendlyError(reason, "Couldn't load the workflow options.")));
     bridgeApi.readWorkflowSettings().then(setSettings).catch(() => {});
@@ -116,14 +119,18 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
     void bridgeApi.onWorkflowsChanged(follow).then(stop => disposed ? stop() : unlisten.push(stop));
     void bridgeApi.onWorkflowRunChanged(follow).then(stop => disposed ? stop() : unlisten.push(stop));
     return () => { disposed = true; unlisten.forEach(stop => stop()); };
-  }, [refreshList, refreshSelected]);
+  }, [refreshList, refreshSelected, selectedId]);
 
-  useEffect(() => {
+  // A drafted workflow opens in the editor before it paints; telling the
+  // parent it was taken is the parent's state, so that waits for the commit.
+  useResetOnChange([initialDraft], () => {
     if (!initialDraft) return;
     setEditorError(null);
     setSelected(null);
     setEditing({ workflow: null, initial: initialDraft.definition, notes: initialDraft.notes });
-    onDraftOpened?.();
+  });
+  useEffect(() => {
+    if (initialDraft) onDraftOpened?.();
   }, [initialDraft, onDraftOpened]);
 
   const draftFromText = async () => {
@@ -359,13 +366,13 @@ function WorkflowSettingsDialog({ open, snapshot, onClose, onSaved }: {
   const [reserve, setReserve] = useState(snapshot?.settings.quotaReservePercent ?? 25);
   const [concurrent, setConcurrent] = useState(snapshot?.settings.maxConcurrentRuns ?? 2);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
+  useResetOnChange([open, snapshot], () => {
     if (!open) return;
     setPaused(snapshot?.settings.paused ?? false);
     setReserve(snapshot?.settings.quotaReservePercent ?? 25);
     setConcurrent(snapshot?.settings.maxConcurrentRuns ?? 2);
     setError(null);
-  }, [open, snapshot]);
+  });
   const save = async () => {
     try {
       onSaved(await bridgeApi.writeWorkflowSettings({ paused, quotaReservePercent: reserve, maxConcurrentRuns: concurrent }));

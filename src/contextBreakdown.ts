@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useLayoutEffect } from "react";
 import { bridgeApi } from "./api";
 import { errorMessage } from "./errors";
 import { startSerialPoll } from "./polling";
 import type { ContextBreakdownResult, ContextBreakdownSegment } from "./protocol/generated/protocol";
+import { useResetOnChange } from "./useResetOnChange";
 
 export type BreakdownGroup = "conversation" | "prompt" | "adapter";
 
@@ -155,10 +156,14 @@ export function useContextBreakdown(
   const digestRef = useRef<string | null>(null);
   const failuresRef = useRef(0);
 
-  useEffect(() => {
+  // Another chat starts from nothing before it paints; the poll's own
+  // counters restart in that commit.
+  useResetOnChange([sessionId, enabled, intervalMs, fetchers, scheduler], () => setState({ result: null, reconciledAt: null, unavailable: false }));
+  useLayoutEffect(() => {
     digestRef.current = null;
     failuresRef.current = 0;
-    setState({ result: null, reconciledAt: null, unavailable: false });
+  }, [sessionId, enabled, intervalMs, fetchers, scheduler]);
+  useEffect(() => {
     if (!enabled || !sessionId) return;
 
     let dead = false;

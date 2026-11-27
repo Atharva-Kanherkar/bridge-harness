@@ -9,6 +9,7 @@ import { pacePhrase, paceVisible, paceWeekly } from "../../meter";
 import { HarnessMark, harnessChartDot, harnessChartText } from "../harnessMarks";
 import { harnessLabel } from "../../utils";
 import { RowButton } from "@/components/ui/row";
+import { useNow } from "../../useNow";
 
 export const PROVIDER_ORDER: UsageProvider[] = ["codex", "claude", "cursor", "opencode"];
 
@@ -25,12 +26,7 @@ export function headlineWindow(windows: RateWindow[]): RateWindow | undefined {
 
 /** Countdowns and pace go stale against a frozen clock, so tick while shown. */
 export function useMeterClock(): number {
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNowMs(Date.now()), 30_000);
-    return () => window.clearInterval(timer);
-  }, []);
-  return nowMs;
+  return useNow(30_000);
 }
 
 /** A ring gauge: the headline window's usage as an arc in the harness colour. */

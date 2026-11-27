@@ -7,6 +7,8 @@ import type { TerminalRecord } from "../terminal/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
+import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 /** One terminal on screen. The xterm, its checkpoint replay, and its input
  *  live in a `TerminalEngine`; this view gives it a host, a size, and the
@@ -23,10 +25,9 @@ export function TerminalSurface({ record, focused, onRecord, onSearchHandled = (
 }) {
   const host = useRef<HTMLDivElement>(null);
   const engineRef = useRef<TerminalEngine>();
-  const latest = useRef({ onRecord, onSearchHandled, onTerminal, focused });
-  latest.current = { onRecord, onSearchHandled, onTerminal, focused };
+  const latest = useLatest({ onRecord, onSearchHandled, onTerminal, focused });
   const [view, setView] = useState<TerminalViewState>({ restoring: true });
-  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(!!searchRequest);
   const [query, setQuery] = useState("");
   const [matches, setMatches] = useState("");
   const { workspaceId, terminalId, generation } = record;
@@ -44,6 +45,7 @@ export function TerminalSurface({ record, focused, onRecord, onSearchHandled = (
     latest.current.onTerminal?.(engine.terminal);
     return () => {
       observer.disconnect();
+      // oxlint-disable-next-line react-hooks/exhaustive-deps -- the newest callback is the one to tell; useLatest keeps it current
       latest.current.onTerminal?.(null);
       engineRef.current = undefined;
       releaseTerminalEngine(engine);
@@ -53,9 +55,11 @@ export function TerminalSurface({ record, focused, onRecord, onSearchHandled = (
   }, [workspaceId, terminalId, generation]);
 
   useEffect(() => { engineRef.current?.setFocused(focused && !searchOpen); }, [focused, searchOpen]);
+  useResetOnChange([searchRequest], () => { if (searchRequest) setSearchOpen(true); });
+  // Telling the parent it was handled is its state, so it waits for the commit.
   useEffect(() => {
-    if (searchRequest) { setSearchOpen(true); latest.current.onSearchHandled(); }
-  }, [searchRequest]);
+    if (searchRequest) latest.current.onSearchHandled();
+  }, [searchRequest, latest]);
   function find(previous = false) {
     const options = { decorations: terminalSearchDecorations() };
     if (previous) engineRef.current?.search.findPrevious(query, options); else engineRef.current?.search.findNext(query, options);

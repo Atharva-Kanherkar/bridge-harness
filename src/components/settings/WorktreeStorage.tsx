@@ -164,6 +164,7 @@ export function WorktreeStorage({ onError }: { onError?: (message: string) => vo
     } finally { setLoading(false); }
   }, [onError]);
 
+  // oxlint-disable-next-line react/set-state-in-effect -- load raises its loading flag, shared with the refresh control, and sets the rest from its answer
   useEffect(() => { void load(); }, [load]);
 
   const reclaim = async (entry: WorktreeInventoryEntry, force: boolean) => {

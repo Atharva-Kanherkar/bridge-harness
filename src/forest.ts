@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useLayoutEffect } from "react";
 import { bridgeApi } from "./api";
 import { startSerialPoll } from "./polling";
 import type { SessionForestSnapshot } from "./types";
+import { useResetOnChange } from "./useResetOnChange";
 
 // Heartbeats legitimately change worker runtime data every few seconds. Keep
 // the durable entry array referentially stable when its contents did not
@@ -33,9 +34,9 @@ export function mergeForestSnapshot(
 export function usePolledSessionForest(sessionId: string, intervalMs = 3000): SessionForestSnapshot | undefined {
   const [forest, setForest] = useState<SessionForestSnapshot>();
   const digestRef = useRef("");
+  useResetOnChange([sessionId, intervalMs], () => setForest(undefined));
+  useLayoutEffect(() => { digestRef.current = ""; }, [sessionId, intervalMs]);
   useEffect(() => {
-    digestRef.current = "";
-    setForest(undefined);
     let active = true;
     let pollsSinceFullFetch = 0;
     const refresh = async () => {

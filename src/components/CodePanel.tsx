@@ -17,6 +17,8 @@ import { isDirty, isReadOnly, loadBuffer, saveBuffer, settleSave, stateAfterEdit
 import { STATS_REFRESH_DEBOUNCE_MS } from "./ChangesPanel";
 import { modKey } from "@/lib/platform";
 import { SkeletonDot } from "@/components/ui/skeleton";
+import { useLatest } from "../useLatest";
+import { useResetOnChange } from "../useResetOnChange";
 
 /** Rows the tree actually paints. Deep repositories stay responsive because
  *  only expanded directories contribute. */
@@ -107,7 +109,7 @@ function FilePalette({ paths, onPick, onClose }: { paths: string[]; onPick: (pat
   const results = useMemo(() => rankPaths(paths, query), [paths, query]);
   const active = results[Math.min(index, results.length - 1)];
   const list = useRef<HTMLDivElement>(null);
-  useEffect(() => setIndex(0), [query]);
+  useResetOnChange([query], () => setIndex(0));
   // Arrowing past the fold used to move the highlight off-screen while the
   // list stayed put.
   useEffect(() => {
@@ -212,8 +214,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
   const saving = useRef(new Map<string, string>());
   // The latest committed tabs, for callbacks that must not be rebuilt (and
   // must not cancel their own timers) every time a tab's state flips.
-  const openRef = useRef(open);
-  openRef.current = open;
+  const openRef = useLatest(open);
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
 
@@ -233,6 +234,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
     }
   }, [workspaceId]);
 
+  // oxlint-disable-next-line react/set-state-in-effect -- loadTree raises its own loading flag, shared with the refresh button, then sets state from its answer
   useEffect(() => { void loadTree(); }, [loadTree]);
 
   const tree = useMemo(() => collapseChains(buildFileTree(paths)), [paths]);
@@ -260,7 +262,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
     } finally {
       loading.current.delete(path);
     }
-  }, [workspaceId]);
+  }, [workspaceId, openRef]);
 
   // One open per reveal nonce. The ref carries the last honoured request so a
   // re-render with the same reveal object is inert.
@@ -287,7 +289,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
     // tab happened to be opened last.
     setActivePath(current => current === path ? (remaining[index] ?? remaining[index - 1])?.path : current);
     setOpen(current => current.filter(entry => entry.path !== path));
-  }, []);
+  }, [openRef]);
 
   /** Typing only re-renders when the *dirty flag* flips, not on every key. */
   const handleChange = useCallback((path: string, value: string) => {
@@ -326,7 +328,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
     } finally {
       saving.current.delete(path);
     }
-  }, [onSaved, patch, workspaceId]);
+  }, [onSaved, patch, workspaceId, openRef]);
 
   /** Discard the local buffer and take what is on disk now, in place, so the
    *  caret and scroll survive. */
@@ -383,7 +385,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
     } finally {
       probing.current = false;
     }
-  }, [workspaceId]);
+  }, [workspaceId, openRef]);
 
   // The agent writes the same tree this panel edits. When the workspace's
   // stats settle after a drift, probe the open buffers and pick up files the
@@ -417,7 +419,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
     };
     tick();
     return () => { live = false; window.clearTimeout(timer); };
-  }, [visible, probe]);
+  }, [visible, probe, openRef]);
 
   // ⌘P and ⌘S also work when focus is in the tree or the tab strip; the
   // editor has its own ⌘S so a save never depends on where the caret is.

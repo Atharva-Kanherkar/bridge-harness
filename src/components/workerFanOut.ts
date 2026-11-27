@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
 import { delegationChildSessionId, delegationFacet, type ConversationItem } from "../conversation";
 import type { Session, WorkerRuntimeRecord } from "../types";
+import { useNow } from "../useNow";
 import { agentName, agentTopic } from "./agentIdentity";
 import { workerStatus, type WorkerTone } from "./workerStatus";
 
@@ -273,12 +273,5 @@ export function sentenceCase(label: string): string {
 /// Now, once a second while `active`. One interval per caller, and none at
 /// all once nothing it draws is live, so a settled card costs nothing.
 export function useTickingNow(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return;
-    setNow(Date.now());
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, [active]);
-  return now;
+  return useNow(active ? 1000 : null);
 }

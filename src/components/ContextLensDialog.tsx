@@ -2,7 +2,7 @@
 // in it (the chat model, an orchestrator, each worker), how full each one is,
 // what fills it and what Bridge adds. Numbers come only from what each harness
 // reports; a window that cannot report says why instead of showing a zero.
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Skeleton, SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 import { Minimize2, TrendingUp } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +18,7 @@ import { compactTokens, contextTone, TONE_TEXT, useContextWindows, windowComposi
 import { harnessLabel, modelLabel } from "../utils";
 import { ContextGauge } from "./ContextRing";
 import { HarnessMark } from "./harnessMarks";
+import { useResetOnChange } from "../useResetOnChange";
 
 // Segments wear one neutral ink at six strengths, strongest for the largest,
 // so the bar and the legend agree without a lookup and colour stays free to
@@ -232,7 +233,7 @@ function CompactAction({ window, owner, urgent, onCompact }: {
   const [state, setState] = useState<CompactState>({ phase: "idle" });
   // A new reading means the compaction landed (or the window moved on), so
   // the button is offered again.
-  useEffect(() => { setState({ phase: "idle" }); }, [window.sessionId, window.current?.observedAt]);
+  useResetOnChange([window.sessionId, window.current?.observedAt], () => setState({ phase: "idle" }));
   const harness = harnessLabel(window.harness);
   const native = owner ? owner === "harness" : NATIVE_COMPACT.has(window.harness);
   const how = native
@@ -363,8 +364,8 @@ export function ContextLensDialog({ open, sessionId, focusSessionId, refreshKey,
   onCompact?: (sessionId: string) => Promise<void>;
 }) {
   const { result, unavailable } = useContextWindows(sessionId, open, refreshKey);
-  const [selected, setSelected] = useState<string | null>(null);
-  useEffect(() => { if (open) setSelected(focusSessionId ?? sessionId); }, [open, focusSessionId, sessionId]);
+  const [selected, setSelected] = useState<string | null>(open ? focusSessionId ?? sessionId : null);
+  useResetOnChange([open, focusSessionId, sessionId], () => { if (open) setSelected(focusSessionId ?? sessionId); });
   const windows = result?.windows ?? [];
   const detail = windows.find(window => window.sessionId === selected) ?? windows[0];
   const live = windows.filter(window => window.current).length;

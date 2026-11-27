@@ -12,6 +12,7 @@ import { Input } from "./ui/input";
 import { RowButton } from "./ui/row";
 import { Tip } from "./ui/tooltip";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
+import { useLatest } from "../useLatest";
 
 const PANE_DRAG = "application/x-bridge-terminal-pane";
 const TAB_DRAG = "application/x-bridge-terminal-tab";
@@ -143,8 +144,9 @@ export function TerminalWorkspace({ workspaceId, branch, onError }: { workspaceI
   const [agentMenu, setAgentMenu] = useState(false);
   const [shortcuts, setShortcuts] = useState(false);
   const [searchRequest, setSearchRequest] = useState<{ id: string; serial: number } | null>(null);
-  const current = useRef(state); current.current = state;
-  const elements = useRef(new Map<string, HTMLElement>());
+  const current = useLatest(state);
+  // Where each pane's element is, filled in by the panes' ref callbacks.
+  const [elements] = useState(() => new Map<string, HTMLElement>());
   const [backgroundDrop, setBackgroundDrop] = useState(false);
   const alive = useRef(true);
   const dirty = useRef(false);
@@ -158,16 +160,18 @@ export function TerminalWorkspace({ workspaceId, branch, onError }: { workspaceI
       setError(undefined);
     } catch (value) { errorHandler(value, "Couldn't open the terminal workspace."); }
   }, [workspaceId, errorHandler]);
+  // oxlint-disable-next-line react/set-state-in-effect -- load sets state only from its answer, after an await
   useEffect(() => { alive.current = true; void load(); return () => { alive.current = false; }; }, [load]);
+  const savedLayout = state?.layout;
   useEffect(() => {
-    if (!state || !dirty.current) return;
-    const layout = state.layout;
+    if (!savedLayout || !dirty.current) return;
+    const layout = savedLayout;
     const timer = setTimeout(() => { dirty.current = false; void saveLayout(workspaceId, layout).catch(value => { errorHandler(value, "Couldn't save the terminal layout."); if (alive.current) setRetrySave(true); }); }, 200);
     return () => clearTimeout(timer);
-  }, [state?.layout, workspaceId, errorHandler]);
+  }, [savedLayout, workspaceId, errorHandler]);
   useEffect(() => () => {
     if (dirty.current && current.current) void saveLayout(workspaceId, current.current.layout).catch(() => {});
-  }, [workspaceId]);
+  }, [workspaceId, current]);
   const change = (update: (layout: TerminalLayout) => TerminalLayout, movesPanes = false) => {
     if (movesPanes) releaseTerminalFocus();
     dirty.current = true;
@@ -192,7 +196,7 @@ export function TerminalWorkspace({ workspaceId, branch, onError }: { workspaceI
         const records = { ...previous.records, [record.terminalId]: record };
         const tab = target ? previous.layout.tabs.find(t => leafIds(t.root).includes(target)) : undefined;
         if (!tab || !target) return { records, layout: addTab(previous.layout, record.terminalId, displayTitle(record)) };
-        const direction = placement.direction ?? measuredDirection(elements.current.get(target)) ?? autoSplitDirection(tab.root, target);
+        const direction = placement.direction ?? measuredDirection(elements.get(target)) ?? autoSplitDirection(tab.root, target);
         return { records, layout: insertSplit(previous.layout, target, record.terminalId, direction) };
       });
     } catch (value) { if (alive.current) onError(friendlyError(value, agentId ? "Couldn't start the agent." : "Couldn't open a terminal.")); }
@@ -248,7 +252,7 @@ export function TerminalWorkspace({ workspaceId, branch, onError }: { workspaceI
   // Persisted tab titles may still carry a raw agent id; label from the live record.
   const tabLabel = (t: TerminalLayout["tabs"][number]) => { const first = state?.records[leafIds(t.root)[0]]; return first && t.title === first.title ? displayTitle(first) : t.title; };
   const actions: PaneActions = {
-    workspaceId, branch, layout, records: state?.records ?? {}, searchRequest, onRecord, elements: elements.current,
+    workspaceId, branch, layout, records: state?.records ?? {}, searchRequest, onRecord, elements,
     searchHandled: () => setSearchRequest(null),
     focus: id => { if (current.current?.layout.activeLeafId !== id) change(l => ({ ...l, activeLeafId: id })); },
     split: (id, direction) => { void launch(undefined, { target: id, direction }); },

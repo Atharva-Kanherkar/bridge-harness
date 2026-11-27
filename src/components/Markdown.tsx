@@ -549,9 +549,9 @@ function MermaidBlock({ code }: { code: string }) {
   const [failed, setFailed] = useState<{ code: string; dark: boolean } | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [containerWidth, setContainerWidth] = useState(0);
-  const id = useRef("");
+  // Unique across every root, which `useId` is not, and valid in a selector.
+  const [id] = useState(() => `bridge-mermaid-${++mermaidSequence}`);
   const holder = useRef<HTMLDivElement>(null);
-  if (!id.current) id.current = `bridge-mermaid-${++mermaidSequence}`;
 
   useEffect(() => {
     const element = holder.current;
@@ -571,14 +571,14 @@ function MermaidBlock({ code }: { code: string }) {
         const mermaid = (await import("mermaid")).default;
         mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default", securityLevel: "strict" });
         await mermaid.parse(code);
-        const result = await mermaid.render(id.current, code);
+        const result = await mermaid.render(id, code);
         if (!cancelled) setRendered({ code, dark, svg: result.svg });
       } catch {
         if (!cancelled) setFailed({ code, dark });
       }
     })();
     return () => { cancelled = true; };
-  }, [code, dark]);
+  }, [code, dark, id]);
 
   if (failed?.code === code && failed.dark === dark) {
     return <div className="my-[0.8em]">

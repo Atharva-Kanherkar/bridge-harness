@@ -13,6 +13,8 @@ import { Tip } from "@/components/ui/tooltip";
 import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
 import { RowButton } from "@/components/ui/row";
 import { Button } from "@/components/ui/button";
+import { useNow } from "../../useNow";
+import { useResetOnChange } from "../../useResetOnChange";
 
 // Review conversations: the part of a pull request a reviewer works through
 // and closes. Each one is a card that says where it is, shows the lines it is
@@ -28,8 +30,9 @@ type Filter = "all" | "open" | "resolved";
 const EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
 function Timestamp({ iso }: { iso: string }) {
+  const now = useNow(60_000);
   if (Number.isNaN(Date.parse(iso))) return null;
-  return <Tip label={new Date(iso).toLocaleString()}><time dateTime={iso} className="text-caption text-muted-foreground">{relativeTime(iso, new Date())}</time></Tip>;
+  return <Tip label={new Date(iso).toLocaleString()}><time dateTime={iso} className="text-caption text-muted-foreground">{relativeTime(iso, new Date(now))}</time></Tip>;
 }
 
 /** The lines a conversation was opened on. */
@@ -66,7 +69,7 @@ function ThreadCard({ thread, index, number, repositoryUrl, headBranch, checkedO
   const [justResolved, setJustResolved] = useState(false);
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
-  useEffect(() => { setIntent(undefined); }, [thread.isResolved]);
+  useResetOnChange([thread.isResolved], () => setIntent(undefined));
 
   const rootId = thread.comments[0]?.databaseId ?? null;
   const line = thread.line ?? thread.originalLine ?? undefined;

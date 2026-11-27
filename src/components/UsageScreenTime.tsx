@@ -12,6 +12,7 @@ import { LAYOUT_CARD, UsageLoadingState, useScrub } from "./UsageLayoutParts";
 import { Switch } from "./settings/kit";
 import { Button } from "@/components/ui/button";
 import { HarnessesCard, HoursCard, ProjectsCard, PullRequestsCard } from "./UsageScreenTimeBreakdown";
+import { useResetOnChange } from "../useResetOnChange";
 
 // The Time tab: Screen Time for Bridge. Your time is minutes the window was
 // focused and in use; agent time is minutes your chats spent working, added
@@ -159,11 +160,14 @@ export function UsageScreenTime({ onError, refreshKey = 0 }: { onError: (message
   const [loading, setLoading] = useState(true);
   const [poll, setPoll] = useState(0);
 
-  useEffect(() => {
-    let cancelled = false;
+  // A new range shows what the cache holds for it, marked loading, before it paints.
+  useResetOnChange([range, refreshKey, poll, onError], () => {
     setLoading(true);
     const cached = cache.get(range);
     if (cached) setShown({ range, result: cached });
+  });
+  useEffect(() => {
+    let cancelled = false;
     bridgeApi.screenTime(screenTimeParams(range))
       .then(result => {
         if (cancelled) return;
