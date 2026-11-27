@@ -1,4 +1,5 @@
-import { useCallback, useLayoutEffect, useRef } from "react";
+import { useCallback, useRef } from "react";
+import { useLatest } from "./useLatest";
 
 /**
  * A function whose identity never changes but always calls the newest `fn`.
@@ -7,11 +8,8 @@ import { useCallback, useLayoutEffect, useRef } from "react";
  * Only call the result from event handlers or effects, never during render.
  */
 export function useStableCallback<Args extends unknown[], Result>(fn: (...args: Args) => Result): (...args: Args) => Result {
-  const latest = useRef(fn);
-  useLayoutEffect(() => {
-    latest.current = fn;
-  });
-  return useCallback((...args: Args) => latest.current(...args), []);
+  const latest = useLatest(fn);
+  return useCallback((...args: Args) => latest.current(...args), [latest]);
 }
 
 /**

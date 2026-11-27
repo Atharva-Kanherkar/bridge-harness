@@ -7,23 +7,13 @@ import {
   type BackgroundWorkStore,
 } from "../backgroundTasks";
 import type { ConversationItem } from "../conversation";
+import { useNow } from "../useNow";
 
 /// One line of news after a task leaves the list: which task, and how it ended.
 export type BackgroundNotice = { key: string; label: string; outcome: BackgroundOutcome; more: number };
 
 const NO_ITEMS: ConversationItem[] = [];
 export const NOTICE_MS = 4000;
-
-function useClock(intervalMs: number | null): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    setNow(Date.now());
-    if (intervalMs === null) return;
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
-}
 
 /**
  * The open chat's background tasks, read from what its transcript published.
@@ -35,7 +25,7 @@ function useClock(intervalMs: number | null): number {
 export function useBackgroundTasks(scope: string | undefined, store: BackgroundWorkStore = backgroundWork) {
   const work = useSyncExternalStore(store.subscribe, store.read);
   const items = work && scope && work.scope === scope ? work.items : NO_ITEMS;
-  const now = useClock(items.length ? 1000 : null);
+  const now = useNow(items.length ? 1000 : null);
   const tasks = useMemo(() => items.map(item => describeBackgroundTask(item, now)), [items, now]);
   const [notice, setNotice] = useState<BackgroundNotice | null>(null);
 

@@ -9,6 +9,7 @@ import { friendlyError } from "../errors";
 import { AttachPullRequest, CHECK_ICON, PullRequestGlyph } from "./ChatPullRequests";
 import { SHELF_TONE, TaskKindGlyph } from "./WorkShelf";
 import { useBackgroundTasks } from "./useBackgroundTasks";
+import { useNow } from "../useNow";
 import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
 import { Tip } from "@/components/ui/tooltip";
@@ -21,17 +22,6 @@ import { Tip } from "@/components/ui/tooltip";
 export type WorkFocus = { number?: number; nonce: number };
 
 const SECTION = "flex items-center gap-2 px-2 pb-1 pt-3 text-caption font-medium text-faint";
-
-function useClock(intervalMs: number | null) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    setNow(Date.now());
-    if (intervalMs === null) return;
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
-}
 
 function PullRequestDetail({ pr, now, onFix, onOpenGithub, onRetry, retrying }: {
   pr: SessionPullRequest;
@@ -170,7 +160,7 @@ export function WorkPane({ overview, prs, tasks, harness, refreshing, focus, onA
   const [openPr, setOpenPr] = useState<string | null>(null);
   const [openTask, setOpenTask] = useState<string | null>(null);
   const rows = useRef(new Map<number, HTMLButtonElement>());
-  const now = useClock(prs.length ? 15_000 : null);
+  const now = useNow(prs.length ? 15_000 : null);
 
   // A shelf click names the PR to show: open it, bring it into view, focus it.
   // Without a number (several PRs) the worst one leads the list already.
