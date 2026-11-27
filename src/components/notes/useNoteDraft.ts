@@ -4,11 +4,12 @@
 // page never loses the person's typing, and the person never overwrites the
 // agent. One save is in flight at a time.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useLayoutEffect } from "react";
 import { bridgeApi } from "../../api";
 import { friendlyError } from "../../errors";
 import { rebaseDraft } from "../../notesDraft";
 import type { NotePage } from "../../types";
+import { useLatest } from "../../useLatest";
 
 export const AUTOSAVE_MS = 800;
 
@@ -37,8 +38,10 @@ export function useNoteDraft(initial: NotePage, onSaved: (page: NotePage) => voi
   const [text, setTextState] = useState(initial.markdown);
   const [status, setStatus] = useState<DraftStatus>("saved");
   const [changedUnderneath, setChangedUnderneath] = useState(false);
-  const callbacks = useRef({ onSaved, onError });
-  callbacks.current = { onSaved, onError };
+  const callbacks = useLatest({ onSaved, onError });
+  // The autosave timer reschedules the newest `save`, which is built below
+  // from `saveOnce`; it is synced after each commit, like `useLatest`.
+  const saveRef = useRef<() => Promise<boolean>>(() => Promise.resolve(true));
 
   const show = useCallback((next: string) => { draft.current = next; setTextState(next); }, []);
 
@@ -66,7 +69,7 @@ export function useNoteDraft(initial: NotePage, onSaved: (page: NotePage) => voi
       setStatus(pending ? "unsaved" : "saved");
       if (pending) timer.current = setTimeout(() => void saveRef.current(), AUTOSAVE_MS);
     }
-  }, [id, show]);
+  }, [id, show, callbacks]);
 
   const save = useCallback((): Promise<boolean> => {
     clearTimeout(timer.current);
@@ -76,8 +79,7 @@ export function useNoteDraft(initial: NotePage, onSaved: (page: NotePage) => voi
     inflight.current = run;
     return run;
   }, [saveOnce]);
-  const saveRef = useRef(save);
-  saveRef.current = save;
+  useLayoutEffect(() => { saveRef.current = save; });
 
   const flush = useCallback(async (): Promise<boolean> => {
     // A save can end with newer typing still pending; keep going until the
@@ -115,7 +117,7 @@ export function useNoteDraft(initial: NotePage, onSaved: (page: NotePage) => voi
     if (!saving.current && draft.current !== base.current.text) {
       void bridgeApi.editNotePage({ id, text: draft.current, baseSeq: base.current.seq, allowDeletingChildren: true }).catch(error => callbacks.current.onError(friendlyError(error, "Couldn't save the note.")));
     }
-  }, [id]);
+  }, [id, callbacks]);
 
   return { text, status, changedUnderneath, setText, flush, load };
 }

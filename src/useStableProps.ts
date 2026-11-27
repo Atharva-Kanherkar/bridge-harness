@@ -21,10 +21,15 @@ export function useStableCallback<Args extends unknown[], Result>(fn: (...args: 
 export function useShallowStableArray<T>(next: T[]): T[];
 export function useShallowStableArray<T>(next: T[] | undefined): T[] | undefined;
 export function useShallowStableArray<T>(next: T[] | undefined): T[] | undefined {
+  // The ref is an identity cache: it only decides whether the last array can be
+  // reused, never what renders. State would cost the caller (App) a second
+  // render for every new event batch.
+  /* oxlint-disable react/refs -- an identity cache read and written in render on purpose */
   const previous = useRef(next);
   const current = previous.current;
   if (current !== next && !(current && next && sameItems(current, next))) previous.current = next;
   return previous.current;
+  /* oxlint-enable react/refs */
 }
 
 export function sameItems<T>(left: readonly T[], right: readonly T[]): boolean {

@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useLatest } from "../useLatest";
 
 /**
  * A chat title that fits its width by wording, not by an ellipsis.
@@ -123,8 +124,7 @@ export function FittedTitle({ title, ladder, className }: {
   const ref = useRef<HTMLSpanElement>(null);
   // `from` is what was showing before this rung, when the change should animate.
   const [shown, setShown] = useState<{ text: string; from: string | null } | null>(null);
-  const titleRef = useRef(title);
-  titleRef.current = title;
+  const titleRef = useLatest(title);
   const mounted = useRef(false);
   const rungs = ladder && ladder.length > 1 ? ladder : null;
   const key = rungs?.join("\n") ?? "";

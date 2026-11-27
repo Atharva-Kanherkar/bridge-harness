@@ -65,6 +65,9 @@ export function FilterBuilder({ database, value, onChange, workspaces = [] }: Fi
   return <div aria-label="Filter builder" className="flex w-[34rem] max-w-[calc(100vw-2rem)] flex-col gap-1.5 p-1">
     {tree.items.length > 1 && <JoinSwitch label="Match" join={tree.join} onChange={join => apply(setJoin(tree, [], join))} />}
     {tree.items.length
+      // `keyOf` hands each condition object a stable key the first time it is
+      // drawn; the WeakMap is a cache keyed by identity, so render fills it.
+      // oxlint-disable-next-line react/refs -- an identity-keyed cache of row keys
       ? <ol className="m-0 flex list-none flex-col gap-1 p-0">{rows(tree, [])}</ol>
       : <p className="m-0 px-1 py-1.5 text-meta text-muted-foreground">No filters. Every row shows.</p>}
     <div className="flex gap-1">

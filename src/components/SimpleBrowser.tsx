@@ -13,6 +13,7 @@ import { cn } from "../lib/utils";
 import { formatShortcut, modKey } from "../lib/platform";
 import { Input } from "@/components/ui/input";
 import { SkeletonDot } from "@/components/ui/skeleton";
+import { useLatest } from "../useLatest";
 
 export type SimpleBrowserProps = {
   sessionId?: string;
@@ -40,12 +41,9 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
   const address = useRef<HTMLInputElement>(null);
   const addressFocusFrame = useRef<number>();
   const addressFocusRevision = useRef(0);
-  const stateRef = useRef(workspace);
-  stateRef.current = workspace;
-  const snapshotsRef = useRef(snapshots);
-  snapshotsRef.current = snapshots;
-  const callbacks = useRef({ onAttachSelection, onInvalidateSelection });
-  callbacks.current = { onAttachSelection, onInvalidateSelection };
+  const stateRef = useLatest(workspace);
+  const snapshotsRef = useLatest(snapshots);
+  const callbacks = useLatest({ onAttachSelection, onInvalidateSelection });
   const active = workspace.tabs.find(tab => tab.id === workspace.activeTabId)!;
   const live = snapshots[active.id];
   const mounted = useRef(true);
@@ -80,7 +78,7 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
     selectionRevision.current++;
     setSelection(undefined); setInspecting(false); setAnnotation(""); setAttaching(false);
     void pages.current.get(stateRef.current.activeTabId)?.action("cancel_inspect").catch(() => {});
-  }, [cancelAddressFocus]);
+  }, [cancelAddressFocus, stateRef]);
   useEffect(() => { if (!visible) cancelSelection(); }, [visible, cancelSelection]);
   const invalidate = (tabId: string, navigationId?: number) => {
     callbacks.current.onInvalidateSelection?.(tabId, navigationId);

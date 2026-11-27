@@ -5,6 +5,7 @@ import { bridgeApi } from "../api";
 import { asWireKind } from "../transcript/wire";
 import type { AgentEvent, Session, SessionEntry, SessionForestSnapshot } from "../types";
 import { Button } from "@/components/ui/button";
+import { useLatest } from "../useLatest";
 
 // Development-only component fixture: real conversation/pane components,
 // deterministic provider-shaped data, and controls with local effects only.
@@ -29,7 +30,7 @@ export function HarnessSubagentsPreview() {
   const [sessions, setSessions] = useState([parent, ...children]);
   const [focus, setFocus] = useState<AgentFocus>();
   const [pinned, setPinned] = useState<Set<string>>(new Set());
-  const current = useRef(sessions); current.current = sessions;
+  const current = useLatest(sessions);
   const approved = useRef(false);
   useEffect(() => {
     const originalForest = bridgeApi.sessionForest;
@@ -47,7 +48,7 @@ export function HarnessSubagentsPreview() {
       return { disposition: "resolved", interactionKind: "permission", status: "accepted", resolvedBy: "human", decision: "accept" };
     };
     return () => { bridgeApi.sessionForest = originalForest; bridgeApi.sessionForestDigest = originalDigest; bridgeApi.resolveApproval = originalApproval; };
-  }, []);
+  }, [current]);
   const rootEvents = [
     event(1, parent.id, "message.completed", { itemId: "user-ask", role: "user", text: "Check attribution, lifecycle and Stop independently using three subagents." }),
     event(2, parent.id, "message.completed", { itemId: "parent-reply", role: "assistant", text: "I started three subagents. Their progress and approvals are available in Agents while I continue reviewing the integration." }),

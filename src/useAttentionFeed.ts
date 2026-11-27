@@ -1,6 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { bridgeApi } from "./api";
 import type { AttentionItem } from "./types";
+import { useLatest } from "./useLatest";
 
 /** How long a request waits before it may notify. An auto-approved permission
  * (Full access) is opened and answered within a few milliseconds; holding
@@ -28,8 +29,7 @@ const SHOWN_KINDS: ReadonlySet<string> = new Set<AttentionItem["kind"]>(["finish
  * same open request.
  */
 export function useAttentionFeed(onArrive: (item: AttentionItem) => void, holdMs = NEEDS_YOU_HOLD_MS): void {
-  const onArriveRef = useRef(onArrive);
-  onArriveRef.current = onArrive;
+  const onArriveRef = useLatest(onArrive);
 
   useEffect(() => {
     let active = true;
@@ -159,5 +159,5 @@ export function useAttentionFeed(onArrive: (item: AttentionItem) => void, holdMs
       holds.clear();
       unlisten?.();
     };
-  }, [holdMs]);
+  }, [holdMs, onArriveRef]);
 }

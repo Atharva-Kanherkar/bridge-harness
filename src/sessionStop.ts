@@ -1,5 +1,6 @@
-import { useEffect, useReducer, useRef } from "react";
+import { useEffect, useReducer, useState } from "react";
 import type { Session } from "./types";
+import { useLatest } from "./useLatest";
 
 type StopSession = Pick<Session, "id" | "status" | "activeTurnId">;
 const delivered = (session: StopSession) => !!session.activeTurnId || ["working", "waiting", "checkpointing"].includes(session.status);
@@ -97,13 +98,11 @@ export function createSessionStops(interrupt: (id: string) => Promise<void>, cha
 
 export function useSessionStops(sessions: Session[], pendingIds: ReadonlySet<string>, interrupt: (id: string) => Promise<void>, failed: (id: string, error: unknown) => void) {
   const [revision, changed] = useReducer(value => value + 1, 0);
-  const callbacks = useRef({ interrupt, failed });
-  callbacks.current = { interrupt, failed };
-  const controller = useRef<ReturnType<typeof createSessionStops>>();
-  if (!controller.current) controller.current = createSessionStops(id => callbacks.current.interrupt(id), changed, (id, error) => callbacks.current.failed(id, error));
-  useEffect(() => controller.current!.reconcile(sessions, pendingIds), [sessions, pendingIds, revision]);
+  const callbacks = useLatest({ interrupt, failed });
+  const [controller] = useState(() => createSessionStops(id => callbacks.current.interrupt(id), changed, (id, error) => callbacks.current.failed(id, error)));
+  useEffect(() => controller.reconcile(sessions, pendingIds), [controller, sessions, pendingIds, revision]);
   // Requests are scoped to this mounted app. Promise callbacks never touch a
   // newer controller after teardown.
-  useEffect(() => { controller.current!.activate(); return () => controller.current!.dispose(); }, []);
-  return controller.current;
+  useEffect(() => { controller.activate(); return () => controller.dispose(); }, [controller]);
+  return controller;
 }

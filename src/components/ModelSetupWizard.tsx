@@ -12,6 +12,7 @@ import { HarnessMark } from "./harnessMarks";
 import { ProviderLoginPane } from "./ProviderLoginPane";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { useLatest } from "../useLatest";
 
 const NOOP = () => undefined;
 const LOGIN_AGENTS = new Set(["claude", "codex", "opencode", "cursor", "grok"]);
@@ -82,8 +83,7 @@ export function ModelSetupWizard({ adapters, onComplete, onHealthChange = NOOP, 
   const [error, setError] = useState<string>();
   const [login, setLogin] = useState<string | null>(null);
   const [useDetectedAgents, setUseDetectedAgents] = useState(false);
-  const selection = useRef({ selected, stage });
-  selection.current = { selected, stage };
+  const selection = useLatest({ selected, stage });
   const refreshGeneration = useRef(0);
   useEffect(() => { setCurrentAdapters(adapters); }, [adapters]);
   useEffect(() => () => { refreshGeneration.current += 1; }, []);
@@ -103,7 +103,7 @@ export function ModelSetupWizard({ adapters, onComplete, onHealthChange = NOOP, 
       }
     })
       .finally(() => { if (generation === refreshGeneration.current) setRefreshing(false); });
-  }, [onHealthChange]);
+  }, [onHealthChange, selection]);
   const managed = useManagedAgents(undefined, refresh);
   const choices = onboardingChoices(managed.listError ? [] : managed.agents ?? [], currentAdapters, !!managed.listError);
   const selectedAgents = choices.filter(agent => selected.includes(agent.agentId));

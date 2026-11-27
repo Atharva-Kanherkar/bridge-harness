@@ -3,6 +3,7 @@ import { useVoiceDictation } from "../../useVoiceDictation";
 import { VoiceControls, VoiceStatus } from "../VoiceControls";
 import { SettingsBlockRow, TextButton } from "./kit";
 import { Textarea } from "@/components/ui/textarea";
+import { useLatest } from "../../useLatest";
 
 /** Uses production capture and transcription, without creating or sending a chat. */
 export function VoiceMicrophoneTest({ onActiveChange }: { onActiveChange(active: boolean): void }) {
@@ -27,10 +28,9 @@ export function VoiceMicrophoneTest({ onActiveChange }: { onActiveChange(active:
       });
     },
   });
-  const notify = useRef(onActiveChange);
-  notify.current = onActiveChange;
-  useEffect(() => { notify.current(voice.active); }, [voice.active]);
-  useEffect(() => () => { notify.current(false); }, []);
+  const notify = useLatest(onActiveChange);
+  useEffect(() => { notify.current(voice.active); }, [voice.active, notify]);
+  useEffect(() => () => { notify.current(false); }, [notify]);
   const previousState = useRef(voice.state);
   useEffect(() => {
     if (previousState.current === voice.state) return;

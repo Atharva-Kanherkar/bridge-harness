@@ -1017,10 +1017,13 @@ function CommentList({ comments, repositoryUrl }: {
   const reduced = useReducedMotion();
   // The first paint staggers in; a comment that arrives later (the one just
   // posted) rises on its own without replaying the whole list.
+  // Read in render to pick each comment's entrance delay; flipping it must not
+  // re-render, or the first paint's stagger would restart mid-flight.
   const mounted = useRef(false);
   useEffect(() => { mounted.current = true; }, []);
   return <div className="space-y-2">
     <AnimatePresence initial>
+      {/* oxlint-disable-next-line react/refs -- only the entrance delay reads it, and only a later render may see it set */}
       {comments.map((comment, index) => <motion.article
         key={comment.id}
         layout={reduced ? false : "position"}
@@ -1430,9 +1433,9 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   const [tab, setTab] = useState<PullRequestTab>("conversation");
   // The panel slides in from the direction of travel (issue #1028).
   const reducedMotion = useReducedMotion();
-  const tabDirection = useRef(1);
+  const [tabDirection, setTabDirection] = useState(1);
   const selectTab = useCallback((next: PullRequestTab) => {
-    tabDirection.current = Math.sign(TAB_ORDER.indexOf(next) - TAB_ORDER.indexOf(tab));
+    setTabDirection(Math.sign(TAB_ORDER.indexOf(next) - TAB_ORDER.indexOf(tab)));
     setTab(next);
   }, [tab]);
   const seenFocus = useRef(0);
@@ -1839,10 +1842,10 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
       <DetailTabs id={detailId} tabs={tabs} active={tab} onSelect={selectTab} label="Pull request detail" />
 
       <div id={`${detailId}-panel`} role="tabpanel" aria-labelledby={`${detailId}-${tab}`} tabIndex={0} className="relative min-h-0">
-        <AnimatePresence mode="popLayout" initial={false} custom={tabDirection.current}>
+        <AnimatePresence mode="popLayout" initial={false} custom={tabDirection}>
           <motion.div
             key={tab}
-            custom={tabDirection.current}
+            custom={tabDirection}
             variants={reducedMotion ? TAB_PANEL_REDUCED_VARIANTS : TAB_PANEL_VARIANTS}
             initial="enter"
             animate="center"

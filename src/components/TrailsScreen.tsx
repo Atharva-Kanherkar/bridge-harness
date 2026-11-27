@@ -6,6 +6,7 @@ import { TrailsList, type TrailWorkspace } from "./trails/TrailsList";
 import { TrailPage } from "./trails/TrailPage";
 import { TrailStartDialog, type TrailHarnessOption, type TrailStartRequest } from "./trails/TrailStartDialog";
 import { TrailAddDialog } from "./trails/TrailAddDialog";
+import { useLatest } from "../useLatest";
 
 export type { TrailStartRequest } from "./trails/TrailStartDialog";
 
@@ -44,8 +45,7 @@ export function TrailsScreen({ trailId, knownTrails, onSelectTrail, workspaces, 
   // A read answers for the trail it asked about. Only the newest request for
   // the trail still on screen may land, success or error: a slow refresh of a
   // trail the person left must not replace the one rename and archive act on.
-  const selectedRef = useRef(trailId);
-  selectedRef.current = trailId;
+  const selectedRef = useLatest(trailId);
   const requestRef = useRef(0);
   // The newest GitHub re-read: only its settling stops the spinner.
   const refreshRef = useRef(0);
@@ -63,7 +63,7 @@ export function TrailsScreen({ trailId, knownTrails, onSelectTrail, workspaces, 
       })
       .catch(cause => { if (current()) setDetailError(friendlyError(cause, "Couldn't load this trail.")); })
       .finally(() => { if (refresh && refreshRef.current === request) setRefreshing(false); });
-  }, []);
+  }, [selectedRef]);
 
   useEffect(() => { loadList(); }, [loadList]);
   useEffect(() => {

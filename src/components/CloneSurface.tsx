@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { Tip } from "@/components/ui/tooltip";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { useNow } from "../useNow";
+import { useLatest } from "../useLatest";
 
 // The dock tenant for a throwaway browser clone: the agent drives a private
 // copy of the browser, and this is where the person watches it, takes it over
@@ -68,8 +69,7 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
   const [startBrowser, setStartBrowser] = useState<CloneBrowserKind>("chrome");
   const [startPath, setStartPath] = useState<CloneSignInPath>("import");
   const latestRequest = useRef(0);
-  const currentSession = useRef(sessionId);
-  currentSession.current = sessionId;
+  const currentSession = useLatest(sessionId);
 
   const refresh = async () => {
     if (currentSession.current !== sessionId) return;

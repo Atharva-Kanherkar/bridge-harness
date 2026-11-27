@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { RowButton } from "@/components/ui/row";
 import { Tip } from "@/components/ui/tooltip";
+import { useLatest } from "../useLatest";
 
 // Vendor noise at the tail of a catalog label. OpenCode Zen's free tier
 // suffixes "(Unlimited)": it names the plan, not the model. Cursor reports a
@@ -255,8 +256,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   // closes itself on Escape — without this, dismissing the picker tore down
   // the whole aside). A menu the footer portalled out (access mode) closes
   // itself first.
-  const closeRef = useRef(closePicker);
-  closeRef.current = closePicker;
+  const closeRef = useLatest(closePicker);
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -269,7 +269,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [open]);
+  }, [open, closeRef]);
   // The backend descriptor is the authority. A provider is a chat runtime when
   // it advertises messages or a model catalog; adding a new adapter must not
   // require another frontend provider-name allowlist.

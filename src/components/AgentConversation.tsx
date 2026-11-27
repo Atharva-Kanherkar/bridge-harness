@@ -54,6 +54,7 @@ import { TurnChangesCard, TurnEndBlock, TurnLine } from "./TurnChangesCard";
 import { describeTurnEnds, keepStable, type TurnEnd } from "../turnChanges";
 import type { InteractionResolutionResult, SessionEntryWindowSummary } from "../protocol/generated/protocol";
 import { useNow } from "../useNow";
+import { useLatest } from "../useLatest";
 
 type ResolvePermission = (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
 
@@ -1006,7 +1007,10 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // the row they follow. The running turn has neither until it settles.
   // Unchanged ends keep the object the last render held, so a live flush
   // never redraws a settled turn's card.
+  // An identity cache, so it is read and written in render on purpose; state
+  // would render the whole transcript twice for every live flush.
   const heldTurnEnds = useRef<ReadonlyMap<string, TurnEnd>>(new Map());
+  /* oxlint-disable react/refs -- identity cache for settled turn ends */
   const turnEnds = useMemo(() => keepStable(heldTurnEnds.current, describeTurnEnds(shownItems, visibleItems, {
     liveTurn: turnActive ? latestTurn : null,
     cwd: session?.cwd,
@@ -1014,6 +1018,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     now,
   })), [shownItems, visibleItems, turnActive, latestTurn, session?.cwd, session?.model, now]);
   heldTurnEnds.current = turnEnds;
+  /* oxlint-enable react/refs */
   const processSnapshots = useMemo(() => projectActiveProcesses(activeProcessEntries, events), [activeProcessEntries, events]);
   const processIds = useMemo(() => new Set(processSnapshots.map(item => item.identity)), [processSnapshots]);
   const snapshotSequence = Math.max(0, ...forestEntries?.map(entry => entry.sequence) ?? []);
@@ -1044,8 +1049,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     return `${item.identity}:${item.eventId}:${item.text.length}:${call.status}:${call.progress ?? ""}:${call.durationMs ?? ""}:${(call.output ?? "").length}`;
   }).join("|");
   const backgroundScope = readOnly || preview ? undefined : session?.id;
-  const reportBackgroundWork = useRef(onBackgroundWork);
-  reportBackgroundWork.current = onBackgroundWork;
+  const reportBackgroundWork = useLatest(onBackgroundWork);
   useEffect(() => {
     if (!backgroundScope || !onBackgroundWork) return;
     onBackgroundWork({
@@ -1065,8 +1069,9 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // Leaving the chat takes its tasks with it, quietly: no outcome, no notice.
   useEffect(() => {
     if (!backgroundScope) return;
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- the newest reporter is the one to tell; useLatest keeps it current
     return () => reportBackgroundWork.current?.({ scope: backgroundScope, items: [], signature: "", outcomeOf: () => undefined });
-  }, [backgroundScope]);
+  }, [backgroundScope, reportBackgroundWork]);
   // Hooks run unconditionally, ahead of the early returns below: the row
   // itself only renders past them, but its state still has to track every
   // render this component makes.

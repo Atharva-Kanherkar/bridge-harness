@@ -47,6 +47,7 @@ import {
   type ChatView,
 } from "./sidebarChats";
 import { useNow } from "../useNow";
+import { useLatest } from "../useLatest";
 
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 400;
@@ -91,8 +92,7 @@ export const PREFETCH_INTENT_MS = 90;
  * callback once; a pointer that moves on before the delay does not. */
 function usePrefetchIntent(onPrefetch?: () => void) {
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const latest = useRef(onPrefetch);
-  latest.current = onPrefetch;
+  const latest = useLatest(onPrefetch);
   useEffect(() => () => clearTimeout(timer.current), []);
   return useMemo(() => ({
     start: () => {
@@ -101,7 +101,7 @@ function usePrefetchIntent(onPrefetch?: () => void) {
     },
     cancel: () => clearTimeout(timer.current),
     now: () => { clearTimeout(timer.current); latest.current?.(); },
-  }), []);
+  }), [latest]);
 }
 
 function ChatRow({
@@ -719,9 +719,8 @@ export function BridgeSidebar({
   // Day headers are relative, so a rail left open past midnight would keep
   // calling yesterday's chats "Today" until the list next changed.
   const now = useNow(60_000);
-  const widthRef = useRef(width);
   const resizeHandleRef = useRef<HTMLDivElement>(null);
-  widthRef.current = width;
+  const widthRef = useLatest(width);
 
   // A hidden rail keeps the width it was last dragged to, so reopening lands
   // where the user left it rather than back at the default.
@@ -828,7 +827,7 @@ export function BridgeSidebar({
     handle.addEventListener("pointermove", onMove);
     handle.addEventListener("pointerup", onEnd);
     handle.addEventListener("pointercancel", onEnd);
-  }, [collapsed, stopResize]);
+  }, [collapsed, stopResize, widthRef]);
 
   useEffect(() => () => stopResize(), [stopResize]);
 

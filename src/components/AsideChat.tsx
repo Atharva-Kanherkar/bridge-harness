@@ -28,6 +28,7 @@ import type { ChatSessionSettings, InteractionResolutionResult, QuestionAction, 
 import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
+import { useLatest } from "../useLatest";
 
 // An aside: a standalone chat the user delegated to another agent from inside
 // a conversation, shown as a panel floating over that conversation instead of
@@ -112,7 +113,6 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const slashListRef = useRef<HTMLDivElement>(null);
   const mentionListRef = useRef<HTMLDivElement>(null);
-  const typeaheadOpenRef = useRef(false);
   const ownEvents = events.filter(event => event.sessionId === session.id);
 
   const slashToken = composerSlashToken(draft, selection?.[0] ?? draft.length, selection?.[1] ?? draft.length);
@@ -168,7 +168,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
     root.querySelector<HTMLElement>(`[data-slash-index="${slashIndex}"]`)?.scrollIntoView?.({ block: "nearest" });
   }, [slashOpen, slashIndex]);
 
-  typeaheadOpenRef.current = mentionOpen || slashOpen;
+  const typeaheadOpenRef = useLatest(mentionOpen || slashOpen);
 
   // The durable side of the transcript: without it the handoff brief the aside
   // was created around is invisible, because the brief is a forest entry and
@@ -189,7 +189,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
     window.addEventListener("keydown", onKeyDown);
     inputRef.current?.focus();
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [docked, onClose]);
+  }, [docked, onClose, typeaheadOpenRef]);
 
   async function send() {
     const text = draft.trim();

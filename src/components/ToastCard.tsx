@@ -1,8 +1,9 @@
-import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
+import { useEffect, type CSSProperties, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
+import { useLatest } from "../useLatest";
 
 // The one card every toast draws: glass, an icon, a body that opens what it is
 // about, an optional action area, and the X. It also owns the timer, so every
@@ -46,13 +47,12 @@ export function ToastCard({
   // Parents recreate `onDismiss` on every render (App's git poll renders every
   // few seconds), which is not a reason to restart the timer. Only a new key
   // or occurrence is.
-  const onDismissRef = useRef(onDismiss);
-  onDismissRef.current = onDismiss;
+  const onDismissRef = useLatest(onDismiss);
   useEffect(() => {
     if (durationMs === null) return;
     const timer = window.setTimeout(() => onDismissRef.current(toastKey), durationMs);
     return () => window.clearTimeout(timer);
-  }, [toastKey, firedAt, durationMs]);
+  }, [toastKey, firedAt, durationMs, onDismissRef]);
 
   return <div
     className={cn("u-glass-popover pointer-events-auto flex w-[min(22rem,calc(100vw-1.5rem))] items-start gap-2.5 rounded-xl border border-border p-3 shadow-2xl", entrance, className)}

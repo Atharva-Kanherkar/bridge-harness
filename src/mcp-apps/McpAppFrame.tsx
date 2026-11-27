@@ -18,6 +18,7 @@ import type { McpUiHostContext } from "@modelcontextprotocol/ext-apps/app-bridge
 import type { CallToolResult } from "@modelcontextprotocol/client";
 import { cn } from "@/lib/utils";
 import { personalViewDocument, viewDocument } from "./viewDocument";
+import { useLatest } from "../useLatest";
 export { VIEW_CSP, viewDocument } from "./viewDocument";
 
 export type DisplayMode = "inline" | "fullscreen";
@@ -86,8 +87,7 @@ export function McpAppFrame({ input, theme, displayMode = "inline", actions, cla
   const frame = useRef<HTMLIFrameElement>(null);
   const bridge = useRef<Bridge | null>(null);
   const [height, setHeight] = useState(initialHeight);
-  const latest = useRef({ input, theme, displayMode, actions, onHeight, onToolCall });
-  latest.current = { input, theme, displayMode, actions, onHeight, onToolCall };
+  const latest = useLatest({ input, theme, displayMode, actions, onHeight, onToolCall });
 
   useLayoutEffect(() => {
     const node = frame.current;

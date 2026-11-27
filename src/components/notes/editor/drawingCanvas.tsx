@@ -58,16 +58,17 @@ export function DrawingEditor({ body, dark, title, onSave, onClose }: {
   // `loaded` once Excalidraw shows the opened scene, `dirty` once the person
   // changed it: nothing is saved before both, so a canvas still loading (or
   // React's StrictMode remount) never writes an empty drawing over the page.
-  const opened = useRef<{ base: { stored: StoredElement[]; complete: StoredElement[] }; written: string; version: number; loaded: boolean; dirty: boolean } | null>(null);
-  if (!opened.current) {
+  // The scene as the page held it on open, parsed once for both the canvas
+  // and the record of what is on disk.
+  const [opening] = useState(() => {
     const scene = parseScene(body) ?? parseScene("")!;
-    const complete = completeScene(scene, convert);
-    opened.current = { base: { stored: scene.elements, complete }, written: body, version: getSceneVersion(complete as never), loaded: false, dirty: false };
-  }
-  const [initial] = useState(() => {
-    const scene = parseScene(body) ?? parseScene("")!;
-    return { elements: opened.current!.base.complete as never, appState: { ...scene.appState, theme: dark ? "dark" : "light" } as never, files: (scene.files ?? {}) as never, scrollToContent: true };
+    return { scene, complete: completeScene(scene, convert), body };
   });
+  const opened = useRef<{ base: { stored: StoredElement[]; complete: StoredElement[] }; written: string; version: number; loaded: boolean; dirty: boolean } | null>(null);
+  if (opened.current === null) {
+    opened.current = { base: { stored: opening.scene.elements, complete: opening.complete }, written: opening.body, version: getSceneVersion(opening.complete as never), loaded: false, dirty: false };
+  }
+  const [initial] = useState(() => ({ elements: opening.complete as never, appState: { ...opening.scene.appState, theme: dark ? "dark" : "light" } as never, files: (opening.scene.files ?? {}) as never, scrollToContent: true }));
   const timer = useRef<number | null>(null);
 
   const flush = () => {

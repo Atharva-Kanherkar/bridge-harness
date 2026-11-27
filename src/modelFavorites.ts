@@ -7,7 +7,7 @@
 // own login). The picker resolves each against the live catalog and skips one
 // that no longer exists, so a retired model never shows as a dead row.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useLayoutEffect } from "react";
 
 export const MODEL_FAVORITES_STORAGE_KEY = "bridge.modelFavorites";
 
@@ -91,8 +91,10 @@ export function toggleModelFavorite(favorites: readonly ModelFavorite[], candida
 /** The starred models and a toggle that persists and broadcasts the change. */
 export function useModelFavorites(): [ModelFavorite[], (candidate: ModelFavorite) => void] {
   const [favorites, setFavorites] = useState<ModelFavorite[]>(() => readModelFavorites());
+  // The list a toggle starts from: the committed one, or the one the last
+  // toggle produced if React has not rendered it yet.
   const current = useRef(favorites);
-  current.current = favorites;
+  useLayoutEffect(() => { current.current = favorites; }, [favorites]);
   useEffect(() => {
     const reread = () => setFavorites(readModelFavorites());
     const onStorage = (event: StorageEvent) => { if (event.key === null || event.key === MODEL_FAVORITES_STORAGE_KEY) reread(); };

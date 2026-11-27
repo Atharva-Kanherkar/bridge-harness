@@ -13,6 +13,7 @@ import { onTerminalRun, type TerminalRun } from "../terminal/runQueue";
 import { TERMINAL_SCROLLBACK, type TerminalRecord } from "../terminal/types";
 import { TerminalSurface } from "./TerminalSurface";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
+import { useLatest } from "../useLatest";
 
 // The terminal pane: several real shells per workspace, each a PTY in the
 // workspace's worktree. A dev server, a test watcher, and an ad-hoc prompt
@@ -80,10 +81,8 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
   /** The shell the user last put the cursor in; it takes focus when shown. */
   const [focusShell, setFocusShell] = useState<string>();
   const terms = useRef(new Map<string, Terminal>());
-  const activeRef = useRef(active);
-  activeRef.current = active;
-  const visibleRef = useRef(visible);
-  visibleRef.current = visible;
+  const activeRef = useLatest(active);
+  const visibleRef = useLatest(visible);
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
@@ -93,8 +92,7 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
   const shellWaiters = useRef(new Map<string, () => void>());
   const born = useRef(new Map<string, number>());
   const spokeAt = useRef(new Map<string, number>());
-  const marksRef = useRef(marks);
-  marksRef.current = marks;
+  const marksRef = useLatest(marks);
   const runs = useRef(Promise.resolve());
 
   const registerTerm = useCallback((terminalId: string, term: Terminal | null) => {
@@ -209,7 +207,7 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
     } catch (error) {
       run.fail(error);
     }
-  }, [openShell, shellFor, promptDrawn]);
+  }, [openShell, shellFor, promptDrawn, activeRef, marksRef]);
 
   // Reattach instead of respawn: the runtime knows which shells are still
   // alive; the roster remembers which the user had. Their union is the strip.
@@ -278,7 +276,7 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
       setMarks(previous => new Map(previous).set(exit.terminalId, "exited"));
     }).then(fn => { if (live) offExit = fn; else fn(); });
     return () => { live = false; offChunk?.(); offExit?.(); };
-  }, [workspaceId]);
+  }, [workspaceId, activeRef, visibleRef]);
 
   useEffect(() => {
     const exited = shells.filter(id => marks.get(id) === "exited").length;

@@ -339,14 +339,20 @@ function RelationPicker({ property, value, host, onPick, onCancel }: { property:
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<{ id: string; title: string }[]>([]);
   const [chosen, setChosen] = useState<string[]>(Array.isArray(value) ? value.map(String) : []);
-  const titles = useRef(new Map<string, string>());
+  // Every title a search has shown, so a chosen page keeps its name after it
+  // drops out of the results.
+  const [titles, setTitles] = useState<ReadonlyMap<string, string>>(() => new Map());
   const ticket = useRef(0);
   useEffect(() => {
     if (!target) return;
     const mine = ++ticket.current;
     void host.searchRows(target, query).then(rows => {
       if (mine !== ticket.current) return;
-      for (const row of rows) titles.current.set(row.id, row.title);
+      setTitles(current => {
+        const next = new Map(current);
+        for (const row of rows) next.set(row.id, row.title);
+        return next;
+      });
       setResults(rows);
     }, () => undefined);
   }, [target, query, host]);
@@ -355,7 +361,7 @@ function RelationPicker({ property, value, host, onPick, onCancel }: { property:
     setChosen(next);
     onPick(next);
   };
-  const name = (id: string) => titles.current.get(id) ?? host.rowTitle(id) ?? "Untitled";
+  const name = (id: string) => titles.get(id) ?? host.rowTitle(id) ?? "Untitled";
   const others = useMemo(() => results.filter(row => !chosen.includes(row.id)), [results, chosen]);
   return <div>
     <SearchBox label={`Search ${property.name} pages`} value={query} onChange={setQuery} onCancel={onCancel} onEnter={() => { if (others[0]) toggle(others[0].id); }} />

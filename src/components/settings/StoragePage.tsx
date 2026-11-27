@@ -32,6 +32,8 @@ import type { StorageCopilotHost } from "./StorageCopilot";
 import { WorktreeStorage } from "./WorktreeStorage";
 import { PAGES } from "./sections";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
+import { useLatest } from "../../useLatest";
+import { useStableCallback } from "../../useStableProps";
 
 const POLL_MS = 1500;
 
@@ -437,9 +439,9 @@ function ConfirmDialog({ confirming, busy, home, onCancel, onPermanent, onRemove
   onEmptyTrash: () => void;
 }) {
   // Keep the last content on screen while the dialog animates closed.
-  const last = useRef(confirming);
-  if (confirming) last.current = confirming;
-  const shown = confirming ?? last.current;
+  const [last, setLast] = useState(confirming);
+  if (confirming && confirming !== last) setLast(confirming);
+  const shown = confirming ?? last;
   if (!shown) return null;
   const emptying = shown === "empty-trash";
   const entries = emptying ? [] : shown.entries;
@@ -537,8 +539,7 @@ export function StoragePage({ onError, title = PAGES.data.label, extra, copilot 
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [error, setError] = useState<string>();
   const explorerRef = useRef<HTMLElement>(null);
-  const pathRef = useRef(path);
-  pathRef.current = path;
+  const pathRef = useLatest(path);
   const [railWidth, setRailWidth] = useState(storedRailWidth);
   const gridRef = useRef<HTMLDivElement>(null);
   const railRef = useRef<HTMLDivElement>(null);
@@ -565,7 +566,7 @@ export function StoragePage({ onError, title = PAGES.data.label, extra, copilot 
       if (nextListing.path === nextOverview.home) setHome(nextListing);
       else if (!home || home.measuring) setHome(await api.scanDirectory(null));
     } catch (caught) { fail(caught, "Couldn't measure your disk."); }
-  }, [fail, home]);
+  }, [fail, home, pathRef]);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- once per visit
   useEffect(() => { copilot?.onVisit?.(); }, []);
@@ -585,14 +586,14 @@ export function StoragePage({ onError, title = PAGES.data.label, extra, copilot 
   useEffect(() => {
     if (wasWorking.current && !agentWorking) void load(pathRef.current, true);
     wasWorking.current = agentWorking;
-  }, [agentWorking, load]);
+  }, [agentWorking, load, pathRef]);
 
   const measuring = Boolean(overview?.measuring || listing?.measuring || home?.measuring);
   useEffect(() => {
     if (!measuring) return;
     const timer = window.setTimeout(() => void load(pathRef.current), POLL_MS);
     return () => window.clearTimeout(timer);
-  }, [measuring, overview, listing, home, load]);
+  }, [measuring, overview, listing, home, load, pathRef]);
 
   const open = (next: string | null) => {
     setPath(next);
@@ -646,13 +647,15 @@ export function StoragePage({ onError, title = PAGES.data.label, extra, copilot 
   const lastSnapshot = useRef("");
   const [trashedByAgent, setTrashedByAgent] = useState<{ path: string; sizeBytes: number | null }[]>([]);
   const unreported = useRef<{ path: string; sizeBytes: number | null }[]>([]);
-  const brief = (question: string) => {
+  // Briefing happens when a question is sent, never while drawing the rail,
+  // so the rail gets a stable function that reads the newest listing.
+  const brief = useStableCallback((question: string) => {
     const snapshot = storageSnapshot({ overview, listing, home, selected: selection, trashed: unreported.current });
     if (snapshot === lastSnapshot.current) return question.trim();
     lastSnapshot.current = snapshot;
     unreported.current = [];
     return withSnapshot(question, snapshot);
-  };
+  });
   const ask = (question: string) => copilot?.ask(brief(question));
   const askAbout = (name: string, path: string, size: number | null | undefined) =>
     ask(`What is ${name} (${displayPath(path, overview?.home)}, ${diskBytes(size)})? Can I get that space back, and how?`);

@@ -3,7 +3,7 @@
 // page), and one button to bring it back. Restoring writes the old words as a
 // new change, so nothing in the history is ever lost, including the restore.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
 import { friendlyError } from "../../errors";
@@ -18,6 +18,7 @@ import { clsx } from "clsx";
 import { Pill, PrimaryButton } from "./NotesUi";
 import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
 import { RowButton } from "@/components/ui/row";
+import { useLatest } from "../../useLatest";
 
 const when = (iso: string) => new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
@@ -37,8 +38,7 @@ export function NoteHistoryDialog({ page, open, chatTitle, onClose, onRestore }:
   const [restoring, setRestoring] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   // Chat names only label entries; a renamed chat must not refetch history.
-  const names = useRef(chatTitle);
-  names.current = chatTitle;
+  const names = useLatest(chatTitle);
 
   useEffect(() => {
     if (!open) return;
@@ -54,7 +54,7 @@ export function NoteHistoryDialog({ page, open, chatTitle, onClose, onRestore }:
       setSelected(next[1]?.seq ?? next[0]?.seq ?? null);
     }, error => { if (current) setFailure(friendlyError(error, "Couldn't load the page history.")); });
     return () => { current = false; };
-  }, [open, id]);
+  }, [open, id, names]);
 
   useEffect(() => {
     if (!open || selected === null) return;

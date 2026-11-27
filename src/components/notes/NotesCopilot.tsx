@@ -11,6 +11,7 @@ import type { NotePage } from "../../types";
 import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
 import { Textarea } from "@/components/ui/textarea";
+import { useStableCallback } from "../../useStableProps";
 
 export interface NotesQuickAsk { label: string; prompt: string; needsPage: boolean; needsDrawing?: boolean }
 
@@ -36,12 +37,14 @@ export function NotesCopilot({ page, projectName, starting = false, onAsk, onClo
   renderChat?: (send: (text: string, deliver: (message: string) => Promise<unknown>) => Promise<void>) => ReactNode;
 }) {
   const lastContext = useRef("");
-  const send = async (text: string, deliver: (message: string) => Promise<unknown>) => {
+  // Sending is an event, never part of drawing the chat, so the chat gets a
+  // stable function that reads the newest page when it runs.
+  const send = useStableCallback(async (text: string, deliver: (message: string) => Promise<unknown>) => {
     const context = page ? notesContext({ note: page.note, markdown: page.markdown, projectName }) : "";
     const fold = !!context && context !== lastContext.current;
     await deliver(fold ? withNotesContext(text, context) : text.trim());
     if (fold) lastContext.current = context;
-  };
+  });
   const ask = (text: string) => void send(text, async message => {
     if (!(await onAsk(message))) throw new Error("not sent");
   }).catch(() => undefined);

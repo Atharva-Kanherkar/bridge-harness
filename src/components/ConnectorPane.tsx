@@ -1,5 +1,5 @@
 import { ConnectorApprovalSheet } from "./ConnectorApprovalSheet";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import {
   AtSign,
@@ -38,6 +38,7 @@ import type {
 } from "../protocol/generated/protocol";
 import { RowButton } from "@/components/ui/row";
 import { Textarea } from "@/components/ui/textarea";
+import { useLatest } from "../useLatest";
 
 // The connector inbox: a dock pane that renders one notification at a time and
 // lets you answer it without leaving Bridge.
@@ -70,13 +71,12 @@ export function ConnectorPane({ visible = true, focusItemKey, onClose, onUnreadC
   const [error, setError] = useState<string>();
 
   // Only a read while the pane shows counts as someone viewing the Inbox.
-  const visibleRef = useRef(visible);
-  visibleRef.current = visible;
+  const visibleRef = useLatest(visible);
   const refresh = useCallback(async () => {
     const [next, list] = await Promise.all([bridgeApi.connectorInbox(undefined, visibleRef.current), bridgeApi.connectorList()]);
     setInbox(next);
     setConnectors(list.connectors);
-  }, []);
+  }, [visibleRef]);
 
   useEffect(() => { void refresh(); }, [refresh, visible]);
   useEffect(() => {

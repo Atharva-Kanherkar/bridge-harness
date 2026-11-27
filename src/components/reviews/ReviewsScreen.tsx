@@ -23,6 +23,7 @@ import type {
   ReviewHarnessStats, ReviewJob, ReviewJobDetail, ReviewOverview, ReviewOverviewFinding, ReviewOverviewStats, ReviewSeverity,
 } from "../../protocol/generated/protocol";
 import { Skeleton, SkeletonDot, SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
+import { useLatest } from "../../useLatest";
 
 // Every PR review Bridge ran, across repositories: what is waiting for the
 // person, what is running, the numbers for a period, how each reviewer does,
@@ -326,8 +327,7 @@ export function ReviewsScreen({ onOpenChat }: { onOpenChat?: (sessionId: string)
   const [tab, setTab] = useState<Tab>("reviews");
   const [openJob, setOpenJob] = useState<string>();
   const [now, setNow] = useState(() => Date.now());
-  const query = useRef({ period, repository });
-  query.current = { period, repository };
+  const query = useLatest({ period, repository });
 
   const read = useCallback(() => {
     const { period: days, repository: repo } = query.current;
@@ -338,7 +338,7 @@ export function ReviewsScreen({ onOpenChat }: { onOpenChat?: (sessionId: string)
         if (query.current.period === days && query.current.repository === repo) { setOverview(next); setError(undefined); setNow(Date.now()); }
       }, cause => setError(friendlyError(cause, "Couldn't load your reviews.")))
       .finally(() => setLoading(false));
-  }, []);
+  }, [query]);
 
   useEffect(() => { read(); }, [period, repository, read]);
 

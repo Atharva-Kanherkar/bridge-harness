@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ExternalLink, FolderGit2, Play, Plus, Settings2, Sparkles, Workflow as WorkflowIcon } from "lucide-react";
 import { bridgeApi } from "../api";
 import { friendlyError } from "../errors";
@@ -22,6 +22,7 @@ import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
 import { Checkbox } from "@/components/ui/checkbox";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { useNow } from "../useNow";
+import { useLatest } from "../useLatest";
 
 type Tab = "workflows" | "templates" | "inbox" | "native";
 type Editing = { workflow: Workflow | null; initial?: WorkflowDefinition | null; notes?: string[] } | null;
@@ -75,8 +76,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
   const [describe, setDescribe] = useState("");
   const [drafting, setDrafting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const selectedId = useRef<string | null>(null);
-  selectedId.current = selected?.id ?? null;
+  const selectedId = useLatest(selected?.id ?? null);
   const now = useNow(60_000);
 
   const refreshList = useCallback(async () => {
@@ -117,7 +117,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
     void bridgeApi.onWorkflowsChanged(follow).then(stop => disposed ? stop() : unlisten.push(stop));
     void bridgeApi.onWorkflowRunChanged(follow).then(stop => disposed ? stop() : unlisten.push(stop));
     return () => { disposed = true; unlisten.forEach(stop => stop()); };
-  }, [refreshList, refreshSelected]);
+  }, [refreshList, refreshSelected, selectedId]);
 
   useEffect(() => {
     if (!initialDraft) return;

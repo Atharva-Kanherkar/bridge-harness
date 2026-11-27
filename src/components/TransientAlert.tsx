@@ -1,8 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { X } from "lucide-react";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useLatest } from "../useLatest";
 
 export const TRANSIENT_ALERT_TTL_MS = 5_000;
 
@@ -14,13 +15,12 @@ export function TransientAlert({ title, message, variant, onDismiss, action, cla
   action?: { label: string; onClick: () => void };
   className?: string;
 }) {
-  const onDismissRef = useRef(onDismiss);
-  onDismissRef.current = onDismiss;
+  const onDismissRef = useLatest(onDismiss);
 
   useEffect(() => {
     const timer = window.setTimeout(() => onDismissRef.current(), TRANSIENT_ALERT_TTL_MS);
     return () => window.clearTimeout(timer);
-  }, [title, message]);
+  }, [title, message, onDismissRef]);
 
   return <Alert floating variant={variant} className={cn(
     "fixed right-3 bottom-3 z-40 max-w-[min(32rem,calc(100vw-1.5rem))] sm:right-4.5 sm:bottom-4.5",

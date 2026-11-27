@@ -25,6 +25,7 @@ import { createBackgroundWorkStore } from "../backgroundTasks";
 import { fixPrompt } from "../workSummary";
 import { useChatPullRequests } from "./ChatPullRequests";
 import { ChatWorkShelf } from "./WorkShelf";
+import { useLatest } from "../useLatest";
 
 export type MissionControlProps = {
   sessions: Session[];
@@ -439,10 +440,9 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
   // a tile on the stage shows its conversation, so reading it there is reading
   // the chat: the host stamps it seen like the chat open in the single view.
   const stageKey = stageIds.join("\u0000");
-  const onStageChangeRef = useRef(onStageChange);
-  onStageChangeRef.current = onStageChange;
-  useEffect(() => { onStageChangeRef.current?.(stageKey ? stageKey.split("\u0000") : []); }, [stageKey]);
-  useEffect(() => () => onStageChangeRef.current?.([]), []);
+  const onStageChangeRef = useLatest(onStageChange);
+  useEffect(() => { onStageChangeRef.current?.(stageKey ? stageKey.split("\u0000") : []); }, [stageKey, onStageChangeRef]);
+  useEffect(() => () => onStageChangeRef.current?.([]), [onStageChangeRef]);
 
   const update = (change: (prev: MissionLayout) => Partial<MissionLayout>) => setStored(prev => ({ ...prev, order, pinnedSessionIds, dismissedSessionIds, expandedId, ...change({ ...prev, order, pinnedSessionIds, dismissedSessionIds, expandedId }) }));
 

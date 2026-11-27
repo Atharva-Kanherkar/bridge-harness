@@ -1,8 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { bridgeApi } from "./api";
 import type { VoiceCapabilitiesResult, VoiceProviderId, VoiceRecoveryAction } from "./protocol/generated/protocol";
 import { VoiceCapture } from "./voiceCapture";
 import { VoiceDictationController, type VoiceDraft, type VoiceView } from "./voiceDictation";
+import { useLatest } from "./useLatest";
 
 // Composers that mount together share one local probe instead of racing two.
 let inflightLocalProbe: Promise<VoiceCapabilitiesResult> | undefined;
@@ -28,8 +29,7 @@ type Options = {
 
 /** React owns presentation; the controller owns all async recording resources. */
 export function useVoiceDictation(options: Options) {
-  const latest = useRef(options);
-  latest.current = options;
+  const latest = useLatest(options);
   const [view, setView] = useState<VoiceView>({ state: "idle", preview: "" });
   const [capability, setCapability] = useState<Capability>({ scope: "", available: false, reason: "Checking dictation availability" });
   const [listening, setListening] = useState(false);

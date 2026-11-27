@@ -179,6 +179,8 @@ export function ComposerPill({
   const [, setCaretEpoch] = useState(0);
   const voiceBusy = voiceIsBusy(voiceState);
   const displayValue = voiceBusy ? voiceDraftPreview ?? (voicePreview || value) : value;
+  // The live caret, read in render on purpose: `caretEpoch` re-renders when it moves.
+  // oxlint-disable-next-line react/refs -- the caret position lives in the DOM, not in state
   const showSuggestion = !voiceBusy && !!suggestion && caretAtEnd();
   const noteCaret = () => {
     setCaretEpoch(n => n + 1);

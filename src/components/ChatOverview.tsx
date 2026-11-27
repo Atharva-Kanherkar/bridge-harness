@@ -207,12 +207,16 @@ export function ChatOverview({ session, workspace, projectName, entries, activeL
 
   // A hidden pane keeps what it last showed: replaying the chat on every
   // streamed frame nobody can see is work for nothing.
+  // A cache of the last replay, so it is read and written in render on purpose;
+  // state would render the pane twice for every streamed frame it does show.
   const lastItems = useRef<ReturnType<typeof chatConversationItems>>([]);
+  /* oxlint-disable react/refs -- the hidden pane's cache of what it last showed */
   const items = useMemo(
     () => visible ? chatConversationItems(entries, activeLeafId, events) : lastItems.current,
     [visible, entries, activeLeafId, events],
   );
   lastItems.current = items;
+  /* oxlint-enable react/refs */
 
   const model = useMemo(() => chatOverview({
     path: session.cwd || workspace?.path,

@@ -5,6 +5,7 @@ import type { VoiceState, VoiceView } from "@/voiceDictation";
 import type { VoiceRecoveryAction } from "@/protocol/generated/protocol";
 import { Button } from "@/components/ui/button";
 import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
+import { useLatest } from "../useLatest";
 
 export function voiceIsBusy(state: VoiceState): boolean {
   return state === "starting" || state === "recording" || state === "stopping";
@@ -29,8 +30,7 @@ export function VoiceControls({ state, available, disabled, unavailableReason, p
   const busy = voiceIsBusy(state);
   const pointer = useRef<{ id: number; at: number; alreadyActive: boolean }>();
   const heldKey = useRef(false);
-  const latest = useRef({ onStop, onCancel });
-  latest.current = { onStop, onCancel };
+  const latest = useLatest({ onStop, onCancel });
   useEffect(() => {
     if (!busy) { heldKey.current = false; pointer.current = undefined; }
   }, [busy]);
@@ -49,7 +49,7 @@ export function VoiceControls({ state, available, disabled, unavailableReason, p
     window.addEventListener("keyup", release);
     window.addEventListener("blur", blur);
     return () => { window.removeEventListener("keyup", release); window.removeEventListener("blur", blur); };
-  }, []);
+  }, [latest]);
   const recoveryAction = error && recovery !== "setup" ? "retry" : recovery;
   const recover = recoveryAction === "setup" && onSetup ? { label: "Set up voice", run: onSetup }
     : recoveryAction === "retry" && onRetry ? { label: "Retry voice", run: onRetry } : undefined;
