@@ -1,4 +1,4 @@
-import { latestReleaseUrl, repoUrl } from "../content/site";
+import { latestReleaseUrl, macAdhocBuild, repoUrl } from "../content/site";
 
 export type DownloadPlatform = "macos" | "linux";
 
@@ -25,9 +25,41 @@ export function stableAssetUrl(release: unknown, platform: DownloadPlatform): st
   return latestReleaseUrl;
 }
 
+type AdhocBuild = { version: string; url: string } | null;
+
+function versionParts(version: string): number[] {
+  return version.split(".").map((part) => Number.parseInt(part, 10) || 0);
+}
+
+function isOlder(version: string, than: string): boolean {
+  const a = versionParts(version);
+  const b = versionParts(than);
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) < (b[i] ?? 0);
+  }
+  return false;
+}
+
+// Serve the ad-hoc macOS build only while the notarized DMG is older or missing.
+export function preferNewerMacBuild(stableUrl: string, adhoc: AdhocBuild): string {
+  if (!adhoc) return stableUrl;
+  const stableVersion = /\/Bridge_([\d.]+)_(?:aarch64|arm64)\.dmg$/.exec(stableUrl)?.[1];
+  if (stableVersion && !isOlder(stableVersion, adhoc.version)) return stableUrl;
+  return adhoc.url;
+}
+
 export async function latestDownloadUrl(
   platform: DownloadPlatform,
   fetchRelease: typeof fetch = fetch,
+  adhoc: AdhocBuild = macAdhocBuild,
+): Promise<string> {
+  const resolved = await latestStableUrl(platform, fetchRelease);
+  return platform === "macos" ? preferNewerMacBuild(resolved, adhoc) : resolved;
+}
+
+async function latestStableUrl(
+  platform: DownloadPlatform,
+  fetchRelease: typeof fetch,
 ): Promise<string> {
   try {
     const response = await fetchRelease(

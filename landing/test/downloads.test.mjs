@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { latestDownloadUrl, stableAssetUrl } from "../app/lib/downloads.ts";
+import { latestDownloadUrl, preferNewerMacBuild, stableAssetUrl } from "../app/lib/downloads.ts";
 import { latestReleaseUrl, repoUrl } from "../app/content/site.ts";
 
 function asset(name) {
@@ -59,6 +59,28 @@ test("API failures and invalid JSON fall back to the release page", async () => 
     async () => { throw new Error("network unavailable"); },
     async () => new Response("not JSON"),
   ]) {
-    assert.equal(await latestDownloadUrl("macos", fetchRelease), latestReleaseUrl);
+    assert.equal(await latestDownloadUrl("macos", fetchRelease, null), latestReleaseUrl);
+    assert.equal(await latestDownloadUrl("macos", fetchRelease, adhoc), adhoc.url);
+    assert.equal(await latestDownloadUrl("linux", fetchRelease, adhoc), latestReleaseUrl);
   }
+});
+
+const adhoc = { version: "0.10.0", url: `${repoUrl}/releases/download/adhoc-2026-11-27/Bridge_0.10.0_aarch64_adhoc.dmg` };
+
+test("a newer ad-hoc macOS build wins over an older notarized one", async () => {
+  assert.equal(preferNewerMacBuild(`${repoUrl}/releases/download/v0.8.0/Bridge_0.8.0_aarch64.dmg`, adhoc), adhoc.url);
+  assert.equal(preferNewerMacBuild(`${repoUrl}/releases/download/v0.9.12/Bridge_0.9.12_aarch64.dmg`, adhoc), adhoc.url);
+  assert.equal(await latestDownloadUrl("macos", async () => Response.json(release), adhoc), adhoc.url);
+});
+
+test("a notarized build at or past the ad-hoc version takes over again", () => {
+  for (const version of ["0.10.0", "0.10.1", "0.11.0", "1.0.0"]) {
+    const notarized = `${repoUrl}/releases/download/v${version}/Bridge_${version}_aarch64.dmg`;
+    assert.equal(preferNewerMacBuild(notarized, adhoc), notarized);
+  }
+});
+
+test("Linux and an unset ad-hoc build keep the notarized resolution", async () => {
+  assert.equal(await latestDownloadUrl("linux", async () => Response.json(release), adhoc), linux.browser_download_url);
+  assert.equal(await latestDownloadUrl("macos", async () => Response.json(release), null), mac.browser_download_url);
 });

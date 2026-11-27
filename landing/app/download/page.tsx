@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import SiteFooter from "../components/SiteFooter";
 import SiteHeader from "../components/SiteHeader";
-import { changelogPath, latestReleaseUrl, linuxDownloadPath, macDownloadPath, releasesUrl, signingIdentity } from "../content/site";
+import { changelogPath, latestReleaseUrl, linuxDownloadPath, macAdhocBuild, macDownloadPath, releasesUrl, signingIdentity } from "../content/site";
 
 export const metadata: Metadata = {
   title: "Download",
@@ -74,6 +74,23 @@ export default function Download() {
             </li>
           ))}
         </ol>
+
+        {macAdhocBuild && (
+          <div className="mt-6 rounded-xl border border-border-card p-5">
+            <h3 className="font-display text-lg font-semibold">If macOS won&rsquo;t open it</h3>
+            <p className="mt-2 text-[14px] leading-6 text-muted-foreground">
+              Bridge {macAdhocBuild.version} for macOS is ad-hoc signed and not yet notarized by Apple, so macOS blocks the
+              first launch. After dragging Bridge into Applications, run this once in Terminal, then open Bridge:
+            </p>
+            <pre className="mt-4 overflow-x-auto rounded-lg border border-border-card bg-code p-4 font-mono text-[12.5px] text-code-foreground">
+              /usr/bin/xattr -cr /Applications/Bridge.app
+            </pre>
+            <p className="mt-4 text-[13px] leading-6 text-muted-foreground">
+              Without Terminal: open Bridge once, dismiss the warning, then click Open Anyway in System Settings &gt; Privacy
+              &amp; Security. The in-app updater does not offer this build; download new versions here.
+            </p>
+          </div>
+        )}
 
         <h2 className="mt-12 font-display text-2xl font-semibold tracking-[-0.03em]">Install on Linux</h2>
         <p className="mt-4 text-[14px] leading-6 text-muted-foreground">
