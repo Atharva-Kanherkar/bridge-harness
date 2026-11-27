@@ -74,7 +74,7 @@ test("the ad-hoc DMG is named as ad-hoc and ships the opening instructions", (t)
   assert.match(image, /^Bridge\.app$/m);
   assert.match(image, /^Applications$/m);
   assert.match(image, /^\/Applications$/m);
-  assert.match(image, /xattr -cr \/Applications\/Bridge\.app/);
+  assert.match(image, /\/usr\/bin\/xattr -cr \/Applications\/Bridge\.app/);
   assert.match(image, /Open Anyway/);
   assert.match(readFileSync(`${dmg}.sha256`, "utf8"), /^[0-9a-f]{64}  Bridge_1\.2\.3_aarch64_adhoc\.dmg\n$/);
   assert.match(out.stdout, /not notarized/);

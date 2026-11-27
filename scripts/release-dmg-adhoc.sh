@@ -45,7 +45,7 @@ This copy of Bridge is not notarized by Apple, so macOS blocks the first launch.
    Downloads or Documents.
 2. Open Terminal and run:
 
-   xattr -cr /Applications/Bridge.app
+   /usr/bin/xattr -cr /Applications/Bridge.app
 
 3. Open Bridge from Applications.
 
