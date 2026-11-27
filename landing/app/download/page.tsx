@@ -83,7 +83,7 @@ export default function Download() {
               first launch. After dragging Bridge into Applications, run this once in Terminal, then open Bridge:
             </p>
             <pre className="mt-4 overflow-x-auto rounded-lg border border-border-card bg-code p-4 font-mono text-[12.5px] text-code-foreground">
-              xattr -cr /Applications/Bridge.app
+              /usr/bin/xattr -cr /Applications/Bridge.app
             </pre>
             <p className="mt-4 text-[13px] leading-6 text-muted-foreground">
               Without Terminal: open Bridge once, dismiss the warning, then click Open Anyway in System Settings &gt; Privacy
