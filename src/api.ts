@@ -3,6 +3,8 @@ import { mockChatTools, mockSaveFirstToolChoice, mockUpdateChatTools } from "./c
 import type { GetChatToolsParams, GetChatToolsResult, UpdateChatToolsParams, UpdateChatToolsResult } from "./protocol/generated/protocol";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
 import type { AppPreferences, AppPreferenceValues } from "./protocol/generated/protocol";
+import type { AccountStatus, BeginAccountSignIn } from "./protocol/generated/protocol";
+import { mockAccountStatus, mockBeginAccountSignIn, mockCancelAccountSignIn, mockSignOutAccount, onMockAccountChanged } from "./accountMock";
 import type { ReviewFindingDecisionInput, ReviewFindingList, ReviewJob, ReviewJobDetail, ReviewJobList, ReviewJobResult, ReviewJobSettings, ReviewOverview, ReviewTrigger, ReviewActivityEntry, ReviewActivityList } from "./protocol/generated/protocol";
 import type { LimitRecoverySettings, LimitRecoveryStatus } from "./protocol/generated/protocol";
 import type { AlwaysAllowToolResult, RunWorkflowResult, WorkflowDraftResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowEventSample, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary, WorkflowTemplate, WorkflowTemplateList, WorkflowTrigger, WorkflowTriggerPreview } from "./protocol/generated/protocol";
@@ -2115,6 +2117,18 @@ function mockImportSources(): ImportSourcesDetection {
 }
 
 export const bridgeApi = {
+  /** Who is signed in to Bridge itself. No method here carries a token: the
+   *  host keeps the session, and the webview only learns who it belongs to. */
+  accountStatus: async (): Promise<AccountStatus> => hasBackend() ? call("account/account_status") : mockAccountStatus(),
+  /** Starts a sign-in and answers the page to open in the system browser. */
+  beginAccountSignIn: async (): Promise<BeginAccountSignIn> => hasBackend() ? call("account/begin_account_sign_in") : mockBeginAccountSignIn(),
+  cancelAccountSignIn: async (): Promise<AccountStatus> => hasBackend() ? call("account/cancel_account_sign_in") : mockCancelAccountSignIn(),
+  signOutAccount: async (): Promise<AccountStatus> => hasBackend() ? call("account/sign_out_account") : mockSignOutAccount(),
+  /** Refetch hint: read `accountStatus` again. Carries nothing. */
+  onAccountChanged: async (handler: () => void): Promise<UnlistenFn> => {
+    if (hasBackend()) return subscribe("account/changed", () => handler());
+    return onMockAccountChanged(handler);
+  },
   /** The app preferences record (theme, skin, transcript display). The core
    *  keeps it so a chat or another window can change it; see `appPreferences.ts`. */
   getAppPreferences: async (): Promise<AppPreferences> => hasBackend() ? call("config/get_app_preferences") : { ...mockAppPreferences, values: { ...mockAppPreferences.values } },

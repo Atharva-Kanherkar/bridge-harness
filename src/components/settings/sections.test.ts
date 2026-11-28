@@ -5,7 +5,7 @@ describe("settings pages", () => {
   it("puts every page in the rail, grouped, with Updates in the footer", () => {
     expect(RAIL_GROUPS.map(group => group.label)).toEqual(["Basics", "Agents & models", "Data", "Advanced"]);
     expect(RAIL_GROUPS.map(group => group.pages)).toEqual([
-      ["general", "notifications", "voice", "composer", "menuBar"],
+      ["account", "general", "notifications", "voice", "composer", "menuBar"],
       ["chatDefaults", "codingAgents", "models", "agents", "permissions", "keys"],
       ["import", "archives", "data"],
       ["workers", "prompts", "work"],

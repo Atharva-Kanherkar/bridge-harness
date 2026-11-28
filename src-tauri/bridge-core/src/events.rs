@@ -130,6 +130,9 @@ pub enum CoreEvent {
     AppsChanged,
     /// Refetch hint: the app preferences record moved.
     AppPreferencesChanged,
+    /// Refetch hint: who is signed in to Bridge changed, or a sign-in started
+    /// or ended. Carries nothing, so it can never carry a token.
+    AccountChanged,
     /// Refetch hint: one workflow was saved, approved, enabled, disabled or
     /// deleted.
     WorkflowsChanged { workflow_id: String },
@@ -175,6 +178,7 @@ impl CoreEvent {
             CoreEvent::AttentionChanged => NotificationName::AttentionChanged,
             CoreEvent::AppsChanged => NotificationName::AppsChanged,
             CoreEvent::AppPreferencesChanged => NotificationName::AppPreferencesChanged,
+            CoreEvent::AccountChanged => NotificationName::AccountChanged,
             CoreEvent::WorkflowsChanged { .. } => NotificationName::WorkflowsChanged,
             CoreEvent::WorkflowRunChanged { .. } => NotificationName::WorkflowRunChanged,
             CoreEvent::ReviewJobUpdated { .. } => NotificationName::ReviewJobUpdated,
@@ -185,7 +189,7 @@ impl CoreEvent {
     /// The wire payload, exactly as today's `app.emit` serializes it.
     pub fn payload(&self) -> Value {
         match self {
-            CoreEvent::StateChanged | CoreEvent::AdaptersChanged | CoreEvent::AttentionChanged | CoreEvent::AppsChanged | CoreEvent::AppPreferencesChanged => Value::Null,
+            CoreEvent::StateChanged | CoreEvent::AdaptersChanged | CoreEvent::AttentionChanged | CoreEvent::AppsChanged | CoreEvent::AppPreferencesChanged | CoreEvent::AccountChanged => Value::Null,
             CoreEvent::Agent(event) => serde_json::to_value(event).expect("agent event serializes"),
             CoreEvent::LearningJobChanged(payload) => payload.clone(),
             // The scope only. Rebuilding a record from the hint would leave a
@@ -284,6 +288,7 @@ struct ReconciliationState {
     attention_changed: bool,
     apps_changed: bool,
     app_preferences_changed: bool,
+    account_changed: bool,
     /// Which workflows changed while a subscriber was lagging. Same shape, for
     /// the same reason: the hint names its workflow.
     workflows_changed: std::collections::BTreeSet<String>,
@@ -359,6 +364,9 @@ impl EventReceiver {
         }
         if state.app_preferences_changed {
             events.push(CoreEvent::AppPreferencesChanged);
+        }
+        if state.account_changed {
+            events.push(CoreEvent::AccountChanged);
         }
         events
     }
@@ -488,6 +496,7 @@ impl EventBus {
                 CoreEvent::AttentionChanged => state.attention_changed = true,
                 CoreEvent::AppsChanged => state.apps_changed = true,
                 CoreEvent::AppPreferencesChanged => state.app_preferences_changed = true,
+                CoreEvent::AccountChanged => state.account_changed = true,
                 CoreEvent::WorkflowsChanged { workflow_id } => {
                     state.workflows_changed.insert(workflow_id.clone());
                 }
@@ -769,6 +778,7 @@ mod tests {
             CoreEvent::AttentionChanged,
             CoreEvent::AppsChanged,
             CoreEvent::AppPreferencesChanged,
+            CoreEvent::AccountChanged,
             CoreEvent::WorkflowsChanged { workflow_id: "w1".into() },
             CoreEvent::WorkflowRunChanged { run: run_fixture() },
             CoreEvent::ReviewJobUpdated { job: review_job_fixture() },

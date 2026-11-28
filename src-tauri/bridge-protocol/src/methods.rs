@@ -352,6 +352,11 @@ methods![
     (GetSuggestionSettings, "models", "get_suggestion_settings"),
     (SaveSuggestionSettings, "models", "save_suggestion_settings"),
     (SuggestCompletion, "models", "suggest_completion"),
+    // account — who is signed in to Bridge itself; no method carries a token
+    (AccountStatus, "account", "account_status"),
+    (BeginAccountSignIn, "account", "begin_account_sign_in"),
+    (CancelAccountSignIn, "account", "cancel_account_sign_in"),
+    (SignOutAccount, "account", "sign_out_account"),
     // configuration
     (GetConfigState, "config", "get_config_state"),
     (SaveHarnessConfig, "config", "save_harness_config"),

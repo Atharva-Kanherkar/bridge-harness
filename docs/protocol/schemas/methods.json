@@ -1934,6 +1934,34 @@
       "resultSchema": "suggest-completion-result.json"
     },
     {
+      "command": "account_status",
+      "domain": "account",
+      "method": "account/account_status",
+      "paramsSchema": null,
+      "resultSchema": "account-status.json"
+    },
+    {
+      "command": "begin_account_sign_in",
+      "domain": "account",
+      "method": "account/begin_account_sign_in",
+      "paramsSchema": null,
+      "resultSchema": "begin-account-sign-in.json"
+    },
+    {
+      "command": "cancel_account_sign_in",
+      "domain": "account",
+      "method": "account/cancel_account_sign_in",
+      "paramsSchema": null,
+      "resultSchema": "account-status.json"
+    },
+    {
+      "command": "sign_out_account",
+      "domain": "account",
+      "method": "account/sign_out_account",
+      "paramsSchema": null,
+      "resultSchema": "account-status.json"
+    },
+    {
       "command": "get_config_state",
       "domain": "config",
       "method": "config/get_config_state",
@@ -2671,7 +2699,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 63
+    "minor": 64
   },
   "reserved": {
     "cancel": "$/cancel",

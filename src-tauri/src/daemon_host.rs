@@ -988,6 +988,8 @@ fn emit_reconciliation<E: Fn(&str, Value)>(emit: &E) {
     emit(NotificationName::AppsChanged.as_str(), Value::Null);
     // App preferences are one small record; a gap costs one reread.
     emit(NotificationName::AppPreferencesChanged.as_str(), Value::Null);
+    // Who is signed in is one small read; a gap costs one reread.
+    emit(NotificationName::AccountChanged.as_str(), Value::Null);
     // Terminals reconcile their sequenced VT checkpoints after lag or reconnect.
     emit(NotificationName::StreamLagged.as_str(), Value::Null);
 }
@@ -1195,10 +1197,10 @@ mod tests {
             seen.iter()
                 .map(|(kind, _)| kind.as_str())
                 .collect::<Vec<_>>(),
-            vec!["state-changed", "adapters-changed", "attention/changed", "apps/changed", "config/app_preferences_changed", "stream-lagged", "session-output"],
+            vec!["state-changed", "adapters-changed", "attention/changed", "apps/changed", "config/app_preferences_changed", "account/changed", "stream-lagged", "session-output"],
         );
         assert_eq!(seen[0].1, Value::Null);
-        assert_eq!(seen[6].1["data"], "x");
+        assert_eq!(seen[7].1["data"], "x");
     }
 
     #[test]

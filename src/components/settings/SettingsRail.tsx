@@ -17,7 +17,7 @@
 import { useState } from "react";
 import {
   RotateCcw as ArrowCounterClockwise, ChevronLeft as CaretLeft, ChevronRight as CaretRight, Code, Download as DownloadSimple, RefreshCw, type LucideIcon as Icon, Keyboard, Search as MagnifyingGlass, Bot as Robot,
-  ScrollText as Scroll, ShieldCheck, SlidersHorizontal, Sparkles as Sparkle, Sun, HardDrive, Archive, Mic, Bell, KeyRound, MessagesSquare, Newspaper, Cpu,
+  ScrollText as Scroll, ShieldCheck, SlidersHorizontal, Sparkles as Sparkle, Sun, HardDrive, Archive, Mic, Bell, KeyRound, MessagesSquare, Newspaper, Cpu, CircleUser,
 } from "lucide-react";
 import { ALL_PAGES, PAGES, RAIL_GROUPS, type PageId } from "./sections";
 import { filterSettingsRows, type SearchableRow } from "./settingsSearch";
@@ -29,6 +29,7 @@ import { Button } from "@/components/ui/button";
 import { RowButton } from "@/components/ui/row";
 
 const PAGE_ICONS: Record<PageId, Icon> = {
+  account: CircleUser,
   general: Sun,
   notifications: Bell,
   voice: Mic,

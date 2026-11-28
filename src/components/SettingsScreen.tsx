@@ -16,6 +16,7 @@ import { SettingsPage } from "./settings/kit";
 import { EarlyCompactionSetting } from "./settings/EarlyCompactionSetting";
 import { AppearancePage } from "./settings/AppearancePage";
 import { UpdatesPage } from "./settings/UpdatesPage";
+import { AccountPage } from "./settings/AccountPage";
 import { NotificationsPage } from "./settings/NotificationsPage";
 import type { UpdateInfo } from "../updater";
 import { PermissionsSection } from "./settings/PermissionsPage";
@@ -318,6 +319,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       </SettingsPage> : null}
 
       {section === "chatDefaults" && config && <ChatDefaultsPage adapters={adapters} agents={config.agents} />}
+      {section === "account" && <AccountPage />}
       {section === "general" && <AppearancePage />}
       {section === "data" && <StoragePage onError={onError} copilot={storageCopilot} />}
       {section === "updates" && <UpdatesPage availableUpdate={availableUpdate} onUpdate={onUpdate} />}

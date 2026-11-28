@@ -9436,6 +9436,20 @@ fn publish_memory_model_inputs_changed(core: &Arc<BridgeCore>) {
         scope_key: memory_ledger::account_memory_scope().to_string(),
     });
 }
+/// Who is signed in to Bridge itself. See `bridge_account`; none of these
+/// returns a token.
+pub fn account_status(core: &Arc<BridgeCore>) -> Result<wire::AccountStatus, BridgeError> {
+    crate::bridge_account::status(core)
+}
+pub fn begin_account_sign_in(core: &Arc<BridgeCore>) -> Result<wire::BeginAccountSignIn, BridgeError> {
+    crate::bridge_account::begin_sign_in(core)
+}
+pub fn cancel_account_sign_in(core: &Arc<BridgeCore>) -> Result<wire::AccountStatus, BridgeError> {
+    crate::bridge_account::cancel_sign_in(core)
+}
+pub fn sign_out_account(core: &Arc<BridgeCore>) -> Result<wire::AccountStatus, BridgeError> {
+    crate::bridge_account::sign_out(core)
+}
 pub fn get_app_preferences(core: &Arc<BridgeCore>) -> Result<wire::AppPreferences, BridgeError> {
     crate::app_preferences::read(&core.db.lock().unwrap())
 }

@@ -127,6 +127,29 @@ credential source cannot be verified yet. A refusal is error **1006
 `credential_policy_violation`** naming the policy and what it requires. An
 unparseable `BRIDGE_CREDENTIAL_POLICY` fails closed to `api-key-only`.
 
+## Bridge account
+
+`account/*` is who is signed in to Bridge itself, through WorkOS AuthKit. It is
+separate from provider accounts and never touches a vendor credential.
+
+| Method | Answers |
+| --- | --- |
+| `account/account_status` | `{ state, user?, error?, available }`; `state` is `signed_out`, `signing_in` or `signed_in` |
+| `account/begin_account_sign_in` | `{ authorizationUrl }`, and starts a one-shot `127.0.0.1` callback listener |
+| `account/cancel_account_sign_in` | the status after closing that listener |
+| `account/sign_out_account` | the status after removing the session |
+
+`account/changed` is a refetch hint with an empty payload.
+
+The host is a public OAuth client: PKCE (S256), no client secret, and the
+client opens `authorizationUrl` in the system browser. The refresh token lives
+in the OS keychain (`dev.bridge.deck.account`), the access token in host
+memory, and the store keeps the profile only. **No method accepts or returns a
+token.** `available` is false when the host has no client id
+(`BRIDGE_WORKOS_CLIENT_ID`) or no keychain, and Bridge then works as it does
+signed out. Every failure ends signed out with a readable `error`; an
+unreachable WorkOS leaves a signed-in profile in place.
+
 ## Clients
 
 **`bridge-client`** (`src-tauri/bridge-client/`) is the shared Rust client:

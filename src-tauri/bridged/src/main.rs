@@ -114,18 +114,24 @@ fn main() -> ExitCode {
     }
 }
 
+/// The Keychain services this helper will read. Anything that can run
+/// `bridged` can run the helper, a sandboxed worker included, so a service is
+/// listed only when a harness needs it read this way. The Bridge account's
+/// refresh token is not: its only reader is the host process itself.
+fn keychain_helper_serves(service: &str) -> bool {
+    [
+        "Claude Code-credentials",
+        "dev.bridge.deck.provider-usage",
+        bridge_core::api_keys::KEYCHAIN_SERVICE,
+    ]
+    .contains(&service)
+}
+
 fn keychain_read_helper(args: &[String]) -> ExitCode {
     let Some(service) = args.get(1) else {
         return ExitCode::from(2);
     };
-    if args.len() > 3
-        || ![
-            "Claude Code-credentials",
-            "dev.bridge.deck.provider-usage",
-            bridge_core::api_keys::KEYCHAIN_SERVICE,
-        ]
-        .contains(&service.as_str())
-    {
+    if args.len() > 3 || !keychain_helper_serves(service) {
         return ExitCode::from(2);
     }
     let interactive = args[0] == "--bridge-keychain-read-interactive";
@@ -295,5 +301,22 @@ fn default_data_dir() -> Option<PathBuf> {
                 std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
             })
             .map(|base| base.join("dev.bridge.deck"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_keychain_helper_refuses_the_bridge_account_item() {
+        let args = |service: &str| vec!["--bridge-keychain-read".to_owned(), service.to_owned(), "refresh-token".to_owned()];
+        assert!(!keychain_helper_serves(bridge_core::bridge_account::KEYCHAIN_SERVICE));
+        // Refused before any Keychain call: exit 2 is the helper's "not served".
+        assert_eq!(
+            format!("{:?}", keychain_read_helper(&args(bridge_core::bridge_account::KEYCHAIN_SERVICE))),
+            format!("{:?}", ExitCode::from(2))
+        );
+        assert!(keychain_helper_serves(bridge_core::api_keys::KEYCHAIN_SERVICE), "the services harnesses need still read");
     }
 }

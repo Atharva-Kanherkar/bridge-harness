@@ -143,6 +143,11 @@ notifications![
     // display), whether a person or a chat changed it. Transient: a client that
     // missed it rereads `config/get_app_preferences`, whose revision is the truth.
     (AppPreferencesChanged, "config/app_preferences_changed", Transient),
+    // Refetch hint: who is signed in to Bridge changed, or a sign-in started
+    // or ended. Empty payload on purpose: the status comes from
+    // `account/account_status`, and a hint that carried it would be one more
+    // place a token could one day be put by mistake.
+    (AccountChanged, "account/changed", Transient),
     // Refetch hint: one workflow was saved, approved, enabled, disabled or
     // deleted. Payload `{"workflowId": "<id>"}`.
     (WorkflowsChanged, "workflows/changed", Transient),
@@ -217,6 +222,7 @@ mod tests {
             NotificationName::StreamLagged,
             NotificationName::AttentionChanged,
             NotificationName::AppsChanged,
+            NotificationName::AccountChanged,
             NotificationName::ReviewJobUpdated,
             NotificationName::ReviewActivity,
         ] {
