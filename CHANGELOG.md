@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.11.0](https://github.com/Atharva-Kanherkar/bridge-harness/compare/v0.10.0...v0.11.0) (2026-11-28)
+
+
+### Features
+
+* **account:** sign in to Bridge with WorkOS AuthKit ([#1211](https://github.com/Atharva-Kanherkar/bridge-harness/issues/1211)) ([ee43059](https://github.com/Atharva-Kanherkar/bridge-harness/commit/ee430597cf374011d585cdea8d4d0ff058185927)), closes [#1209](https://github.com/Atharva-Kanherkar/bridge-harness/issues/1209)
+* **memory:** a Taste tab to approve, write, trace and delete taste rules ([#1216](https://github.com/Atharva-Kanherkar/bridge-harness/issues/1216)) ([b28dc3c](https://github.com/Atharva-Kanherkar/bridge-harness/commit/b28dc3cc19c13a676557e021d55d6ce03107c7dc))
+* **memory:** coding agents get your taste rules on every harness ([#1218](https://github.com/Atharva-Kanherkar/bridge-harness/issues/1218)) ([35dd214](https://github.com/Atharva-Kanherkar/bridge-harness/commit/35dd214df1eb877abf1b650a6421c26c74050bb5))
+* **memory:** ledger layers, project scopes, evidence links and outcome scores ([#1210](https://github.com/Atharva-Kanherkar/bridge-harness/issues/1210)) ([5bba6bd](https://github.com/Atharva-Kanherkar/bridge-harness/commit/5bba6bd0bb29441f7a3099c8b67de5bef86f9f1f))
+* **release:** build an ad-hoc signed DMG for sharing without a Developer ID ([#1193](https://github.com/Atharva-Kanherkar/bridge-harness/issues/1193)) ([e060978](https://github.com/Atharva-Kanherkar/bridge-harness/commit/e060978ee55aba8526b9afad1a814e7ebe87f26e))
+* **reviews:** hide new findings that match ones you keep dropping ([#1214](https://github.com/Atharva-Kanherkar/bridge-harness/issues/1214)) ([4bf9e3f](https://github.com/Atharva-Kanherkar/bridge-harness/commit/4bf9e3fa4f6c4ec533165f466fd5bfaea62004ab))
+* **reviews:** the reviewer follows your taste rules ([#1217](https://github.com/Atharva-Kanherkar/bridge-harness/issues/1217)) ([f50500a](https://github.com/Atharva-Kanherkar/bridge-harness/commit/f50500a4147a488d54069f0b4df60b088b209e02))
+* **taste:** export and import taste rules as AGENTS.md, CLAUDE.md and BUGBOT.md ([#1220](https://github.com/Atharva-Kanherkar/bridge-harness/issues/1220)) ([1836946](https://github.com/Atharva-Kanherkar/bridge-harness/commit/18369469e0d206d0dfc88b2ef3de13abe9fa5abf))
+* **taste:** learn review rules from your decisions, proposed with evidence ([#1215](https://github.com/Atharva-Kanherkar/bridge-harness/issues/1215)) ([d8998bf](https://github.com/Atharva-Kanherkar/bridge-harness/commit/d8998bfcbf4dbce87bcb97ec51adf79e5b81d6f9))
+* **taste:** one signal log of what you keep, edit, drop and fix ([#1212](https://github.com/Atharva-Kanherkar/bridge-harness/issues/1212)) ([ae878f7](https://github.com/Atharva-Kanherkar/bridge-harness/commit/ae878f7dfa1a300231170aa34d967d088e48f175))
+* **taste:** outcome scores, auto-pause and expiry for taste rules ([#1219](https://github.com/Atharva-Kanherkar/bridge-harness/issues/1219)) ([ed41125](https://github.com/Atharva-Kanherkar/bridge-harness/commit/ed41125077a3200da10c937b3429dd5e7276d104))
+* **taste:** suggest what to do about tool requests you keep answering the same way ([#1221](https://github.com/Atharva-Kanherkar/bridge-harness/issues/1221)) ([bd61c16](https://github.com/Atharva-Kanherkar/bridge-harness/commit/bd61c16b41b9762c08342440a2079e14f9aba7d6))
+
+
+### Bug Fixes
+
+* **reviews:** anchor findings on the faulty line, not the block's closing brace ([#1195](https://github.com/Atharva-Kanherkar/bridge-harness/issues/1195)) ([b0872b1](https://github.com/Atharva-Kanherkar/bridge-harness/commit/b0872b16aa35d95e8b749718ce1cbd6eb5e72fe2))
+
 ## [0.10.0](https://github.com/Atharva-Kanherkar/bridge-harness/compare/v0.9.0...v0.10.0) (2026-11-27)
 
 
