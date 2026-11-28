@@ -786,6 +786,13 @@ pub fn decide(
         if changed != 1 {
             return Err(BridgeError::Invalid(format!("This review has no finding {}", decision.finding_id)));
         }
+        crate::taste::signals::record_decision(
+            &transaction,
+            &decision.finding_id,
+            decision.decision.as_str(),
+            edited_body.as_deref(),
+            &stamp(now),
+        )?;
     }
     transaction.commit()?;
     Ok(())
@@ -887,7 +894,7 @@ pub fn complete_pass(
     }
     finish_pass(&transaction, pass_id, ReviewPassStatus::Done, None, Some(outcome), now)?;
     insert_findings(&transaction, job_id, pass_id, &outcome.findings, now)?;
-    mark_fixed(&transaction, job_id, &outcome.fixed)?;
+    mark_fixed(&transaction, job_id, &outcome.fixed, now)?;
     transaction.commit()?;
     Ok(true)
 }
@@ -1450,10 +1457,11 @@ pub fn prior_findings(db: &Connection, pr: PrKey<'_>, job_id: &str) -> Result<Ve
 /// cannot have been fixed by it. Order is git's: the runner passes only
 /// findings `prepare` placed at an ancestor of this head
 /// (`Prepared::fixable`), whatever order the reviews were queued in.
-fn mark_fixed(db: &Connection, job_id: &str, finding_ids: &[String]) -> Result<usize, BridgeError> {
+fn mark_fixed(db: &Connection, job_id: &str, finding_ids: &[String], now: DateTime<Utc>) -> Result<usize, BridgeError> {
     let mut marked = 0;
+    let at = stamp(now);
     for id in finding_ids {
-        marked += db.execute(
+        let changed = db.execute(
             "UPDATE review_findings SET fixed_in_sha=(SELECT head_sha FROM review_jobs WHERE id=?2)
              WHERE id=?1 AND job_id<>?2 AND fixed_in_sha IS NULL
                AND (decision IN ('kept','edited') OR posted_at IS NOT NULL)
@@ -1464,6 +1472,11 @@ fn mark_fixed(db: &Connection, job_id: &str, finding_ids: &[String]) -> Result<u
                      AND other.head_sha<>this.head_sha)",
             params![id, job_id],
         )?;
+        if changed > 0 {
+            let head: String = db.query_row("SELECT head_sha FROM review_jobs WHERE id=?1", params![job_id], |row| row.get(0))?;
+            crate::taste::signals::record_fixed(db, id, &head, &at)?;
+        }
+        marked += changed;
     }
     Ok(marked)
 }

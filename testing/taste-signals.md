@@ -33,7 +33,9 @@ and its producers. Nothing reads it yet.
    A chat's signals belong to its workspace's reviewed repository, else
    `workspace:<id>`, else `account:local`.
 7. **Text is safe.** Titles, bodies and edits are secret-redacted, trimmed and
-   capped at 4000 characters.
+   capped at 4000 characters. Every `at` is stored in one format (UTC,
+   milliseconds, `Z`), so string order is time order whoever wrote it, and a
+   fix is dated by the re-review that found it.
 8. **Category and language.** A keyword classifier reads the title first, then
    the body, into `security | correctness | error-handling | tests |
    performance | naming | docs | style | other`; the language comes from the
@@ -60,6 +62,7 @@ and its producers. Nothing reads it yet.
 - `signals_older_than_a_year_are_swept`
 - `categories_read_the_title_first`
 - `languages_come_from_the_extension`
+- `every_instant_in_the_log_has_one_format`
 
 ## Verification
 `cargo test -p bridge-core --lib` for `taste::`, `reviews::`, `store::`,
