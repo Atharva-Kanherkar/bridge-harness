@@ -81,10 +81,10 @@ function RuleRow({ rule, busy, showRepository, onApprove, onReject, onDelete, on
       {rule.pathGlobs?.length ? <span className="font-mono">{rule.pathGlobs.join(", ")}</span> : null}
       {rule.provenance === "user_explicit" ? <span>Written by you</span> : <span>Learned</span>}
       {rule.rationale && <span>{rule.rationale}</span>}
-      {decisions > 0 && <button type="button" className="inline-flex items-center gap-0.5 text-foreground/80 hover:text-foreground" aria-expanded={open} onClick={() => setOpen(current => !current)}>
+      {decisions > 0 && <Button variant="text" size="inline" aria-expanded={open} onClick={() => setOpen(current => !current)}>
         {open ? <ChevronDown className="size-3" aria-hidden="true" /> : <ChevronRight className="size-3" aria-hidden="true" />}
         From {decisions} {decisions === 1 ? "decision" : "decisions"}
-      </button>}
+      </Button>}
     </div>
     {open && <div className="mt-2 rounded-md border border-border bg-background px-3 py-2"><Evidence recordId={rule.id} onError={onError} /></div>}
   </li>;
@@ -110,6 +110,7 @@ export function TasteRules({ onError, onCount }: { onError: (message: string) =>
     onCount?.(proposed.rules.length);
   };
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- load sets state only from its answers, after an await
     void load().catch(cause => onError(friendlyError(cause, "Couldn't load your taste rules.")));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
