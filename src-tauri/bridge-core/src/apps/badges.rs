@@ -34,7 +34,7 @@ pub fn workflow_runs(db: &Connection) -> Result<u32, BridgeError> {
 /// read the frontend used stopped at 50.
 pub fn memory_proposals(db: &Connection) -> Result<u32, BridgeError> {
     let value: i64 = db.query_row(
-        "SELECT COUNT(*) FROM memory_records WHERE scope_key=?1 AND status='proposed'",
+        "SELECT COUNT(*) FROM memory_records WHERE scope_key=?1 AND layer='memory' AND status='proposed'",
         [crate::memory_ledger::account_memory_scope()],
         |row| row.get(0),
     )?;

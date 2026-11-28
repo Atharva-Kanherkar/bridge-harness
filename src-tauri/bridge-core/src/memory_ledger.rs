@@ -9,6 +9,7 @@ use crate::BridgeError;
 use bridge_protocol::messages::{
     ListMemoryRecordsResult, MemoryRecord, MemoryReviewRefusal, ReviewMemoryRecordsResult,
     ACCOUNT_MEMORY_SCOPE, MAX_MEMORY_BODY_CHARS, MAX_MEMORY_LIST_LIMIT, MAX_MEMORY_REVIEW_BATCH,
+    MEMORY_LAYER, TASTE_LAYER,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -168,6 +169,74 @@ pub(crate) fn install_validity_intervals(
     Ok(())
 }
 
+/// Schema 105: the taste layer's fields, on the same ledger as memory.
+///
+/// `layer` says what a record is: a `memory` (what a person or agent said) or
+/// a `taste` rule (learned from what a person kept, edited and dropped). Every
+/// existing row is a memory, and every memory surface reads only that layer,
+/// so nothing a person sees today changes. `path_globs`, `outcome_score` and
+/// `last_confirmed_at` are for taste rules; `visibility` has one value until
+/// records can be shared. `memory_evidence` links a record to the signals
+/// that justify it, and a successor inherits its sources' links.
+pub(crate) fn install_taste_fields(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    use crate::store::add_column_if_missing;
+    add_column_if_missing(
+        transaction,
+        "memory_records",
+        "layer",
+        "TEXT NOT NULL DEFAULT 'memory' CHECK(layer IN ('memory','taste'))",
+    )?;
+    add_column_if_missing(transaction, "memory_records", "path_globs", "TEXT")?;
+    add_column_if_missing(transaction, "memory_records", "outcome_score", "REAL NOT NULL DEFAULT 0")?;
+    add_column_if_missing(transaction, "memory_records", "last_confirmed_at", "TEXT")?;
+    add_column_if_missing(
+        transaction,
+        "memory_records",
+        "visibility",
+        "TEXT NOT NULL DEFAULT 'private' CHECK(visibility IN ('private'))",
+    )?;
+    transaction.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_memory_records_scope_layer_status
+             ON memory_records(scope_key, layer, status, updated_at);
+         CREATE TABLE IF NOT EXISTS memory_evidence(
+             record_id TEXT NOT NULL,
+             signal_id TEXT NOT NULL,
+             weight REAL NOT NULL DEFAULT 1,
+             added_at TEXT NOT NULL,
+             PRIMARY KEY(record_id, signal_id)
+         ) WITHOUT ROWID;
+         CREATE INDEX IF NOT EXISTS idx_memory_evidence_signal ON memory_evidence(signal_id);",
+    )?;
+    Ok(())
+}
+
+/// `memory` or `taste`; anything else is refused.
+pub fn parse_layer(raw: Option<&str>) -> Result<&'static str, BridgeError> {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        None | Some(MEMORY_LAYER) => Ok(MEMORY_LAYER),
+        Some(TASTE_LAYER) => Ok(TASTE_LAYER),
+        Some(other) => Err(BridgeError::Invalid(format!(
+            "Unknown memory layer '{other}'. Use {MEMORY_LAYER} or {TASTE_LAYER}."
+        ))),
+    }
+}
+
+/// The scope of one repository, `project:<owner>/<repo>`, from a GitHub slug.
+/// Lowercased, since GitHub treats names case-insensitively.
+pub fn project_scope(owner: &str, repo: &str) -> Result<String, BridgeError> {
+    parse_scope_key(&format!("project:{owner}/{repo}"))
+}
+
+/// A GitHub owner or repository name: letters, digits, `-`, `_` and `.`, and
+/// never `.` or `..` on its own.
+fn valid_slug_part(part: &str) -> bool {
+    !part.is_empty()
+        && part.len() <= 100
+        && part != "."
+        && part != ".."
+        && part.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+}
+
 /// Reject empty, whitespace, and anything that is not a named scope.
 pub fn parse_scope_key(raw: &str) -> Result<String, BridgeError> {
     let trimmed = raw.trim();
@@ -186,6 +255,17 @@ pub fn parse_scope_key(raw: &str) -> Result<String, BridgeError> {
             ));
         }
         return Ok(format!("workspace:{workspace_id}"));
+    }
+    if let Some(slug) = trimmed.strip_prefix("project:") {
+        let slug = slug.to_ascii_lowercase();
+        return match slug.split_once('/') {
+            Some((owner, repo)) if valid_slug_part(owner) && valid_slug_part(repo) => {
+                Ok(format!("project:{owner}/{repo}"))
+            }
+            _ => Err(BridgeError::Invalid(format!(
+                "A project memory scope is project:<owner>/<repo>, not '{trimmed}'."
+            ))),
+        };
     }
     Err(BridgeError::Invalid(format!(
         "Unknown memory scope '{trimmed}'. Account pins use {ACCOUNT_MEMORY_SCOPE}."
@@ -248,12 +328,19 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryRecord> {
         conflict_group: row.get(13)?,
         created_at: row.get(14)?,
         updated_at: row.get(15)?,
+        layer: row.get(16)?,
+        path_globs: row
+            .get::<_, Option<String>>(17)?
+            .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok()),
+        outcome_score: row.get(18)?,
+        evidence_count: row.get::<_, i64>(19)?.clamp(0, i64::from(u32::MAX)) as u32,
     })
 }
 
 const RECORD_COLUMNS: &str = "id, scope_key, kind, body, provenance, status, source_session_id, \
      confidence_bps, rationale, supersedes, valid_from, valid_to, expires_at, conflict_group, \
-     created_at, updated_at";
+     created_at, updated_at, layer, path_globs, outcome_score, \
+     (SELECT COUNT(*) FROM memory_evidence WHERE memory_evidence.record_id = memory_records.id)";
 
 fn session_exists(db: &Connection, session_id: &str) -> Result<bool, BridgeError> {
     let found: Option<i64> = db
@@ -316,6 +403,10 @@ pub fn save(
         conflict_group: None,
         created_at: now.clone(),
         updated_at: now,
+        layer: MEMORY_LAYER.to_string(),
+        path_globs: None,
+        outcome_score: 0.0,
+        evidence_count: 0,
     };
     db.execute(
         "INSERT INTO memory_records(
@@ -346,19 +437,38 @@ pub fn list(
     list_page(db, scope_key, status, None, None)
 }
 
+/// One page of a scope's memories. [`list_layer_page`] for another layer.
+pub fn list_page(
+    db: &Connection,
+    scope_key: &str,
+    status: Option<&str>,
+    cursor: Option<&str>,
+    limit: Option<u32>,
+) -> Result<ListMemoryRecordsResult, BridgeError> {
+    list_layer_page(db, scope_key, None, status, cursor, limit)
+}
+
 /// Where a page ended, so the next page starts strictly after it. Keyset
 /// rather than offset: approving, rejecting or editing a record between two
 /// reads cannot shift a later page and skip or repeat a record.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PageCursor {
     status: String,
+    /// Absent in cursors issued before layers existed, which listed memories.
+    #[serde(default = "memory_layer_name")]
+    layer: String,
     updated_at: String,
     id: String,
 }
 
-fn encode_cursor(status: &str, record: &MemoryRecord) -> Result<String, BridgeError> {
+fn memory_layer_name() -> String {
+    MEMORY_LAYER.to_string()
+}
+
+fn encode_cursor(status: &str, layer: &str, record: &MemoryRecord) -> Result<String, BridgeError> {
     use base64::Engine;
     let cursor = PageCursor {
+        layer: layer.to_string(),
         status: status.to_string(),
         updated_at: record.updated_at.clone(),
         id: record.id.clone(),
@@ -368,7 +478,7 @@ fn encode_cursor(status: &str, record: &MemoryRecord) -> Result<String, BridgeEr
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json))
 }
 
-fn decode_cursor(raw: &str, status: &str) -> Result<PageCursor, BridgeError> {
+fn decode_cursor(raw: &str, status: &str, layer: &str) -> Result<PageCursor, BridgeError> {
     use base64::Engine;
     let refused = || {
         BridgeError::Invalid(
@@ -385,19 +495,28 @@ fn decode_cursor(raw: &str, status: &str) -> Result<PageCursor, BridgeError> {
             cursor.status
         )));
     }
+    if cursor.layer != layer {
+        return Err(BridgeError::Invalid(format!(
+            "That memory page cursor lists the {} layer, not {layer}.",
+            cursor.layer
+        )));
+    }
     Ok(cursor)
 }
 
-/// One page of a scope's `active` or `proposed` records, newest change first,
-/// with the status's total and a cursor for the next page.
-pub fn list_page(
+/// One page of a scope's `active`, `proposed` or `expired` records in one
+/// layer (`memory` when absent), newest change first, with the status's total
+/// and a cursor for the next page.
+pub fn list_layer_page(
     db: &Connection,
     scope_key: &str,
+    layer: Option<&str>,
     status: Option<&str>,
     cursor: Option<&str>,
     limit: Option<u32>,
 ) -> Result<ListMemoryRecordsResult, BridgeError> {
     let scope_key = parse_scope_key(scope_key)?;
+    let layer = parse_layer(layer)?;
     let status = match status.map(str::trim).filter(|value| !value.is_empty()) {
         None => STATUS_ACTIVE,
         Some(STATUS_ACTIVE) => STATUS_ACTIVE,
@@ -421,7 +540,7 @@ pub fn list_page(
     let after = cursor
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(|raw| decode_cursor(raw, status))
+        .map(|raw| decode_cursor(raw, status, layer))
         .transpose()?;
     // One row past the page tells whether another page exists without a
     // second count query.
@@ -431,12 +550,12 @@ pub fn list_page(
             let mut statement = db.prepare(&format!(
                 "SELECT {RECORD_COLUMNS}
                  FROM memory_records
-                 WHERE scope_key=?1 AND status=?2
+                 WHERE scope_key=?1 AND status=?2 AND layer=?4
                  ORDER BY updated_at DESC, id DESC
                  LIMIT ?3",
             ))?;
             let rows = statement
-                .query_map(params![scope_key, status, fetch], map_row)?
+                .query_map(params![scope_key, status, fetch, layer], map_row)?
                 .collect::<Result<Vec<_>, _>>()?;
             rows
         }
@@ -444,14 +563,14 @@ pub fn list_page(
             let mut statement = db.prepare(&format!(
                 "SELECT {RECORD_COLUMNS}
                  FROM memory_records
-                 WHERE scope_key=?1 AND status=?2
+                 WHERE scope_key=?1 AND status=?2 AND layer=?6
                    AND (updated_at < ?3 OR (updated_at = ?3 AND id < ?4))
                  ORDER BY updated_at DESC, id DESC
                  LIMIT ?5",
             ))?;
             let rows = statement
                 .query_map(
-                    params![scope_key, status, after.updated_at, after.id, fetch],
+                    params![scope_key, status, after.updated_at, after.id, fetch, layer],
                     map_row,
                 )?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -462,14 +581,14 @@ pub fn list_page(
         records.truncate(limit as usize);
         records
             .last()
-            .map(|record| encode_cursor(status, record))
+            .map(|record| encode_cursor(status, layer, record))
             .transpose()?
     } else {
         None
     };
     let total: i64 = db.query_row(
-        "SELECT COUNT(*) FROM memory_records WHERE scope_key=?1 AND status=?2",
-        params![scope_key, status],
+        "SELECT COUNT(*) FROM memory_records WHERE scope_key=?1 AND status=?2 AND layer=?3",
+        params![scope_key, status, layer],
         |row| row.get(0),
     )?;
     Ok(ListMemoryRecordsResult {
@@ -736,6 +855,7 @@ pub(crate) fn insert_update_proposal(
                 supersedes,
             ],
         )?;
+        inherit_from(db, &id, &[target.id.as_str()])?;
         if replaces_proposal {
             db.execute(
                 "UPDATE memory_records SET status=?1, superseded_by=?2, updated_at=?3
@@ -762,6 +882,94 @@ pub(crate) fn with_savepoint(db: &Connection, work: impl FnOnce() -> Result<(), 
             Err(error)
         }
     }
+}
+
+/// What a successor carries over besides its text: its sources' layer, path
+/// globs, trust and visibility, and the union of their evidence. An edit or a
+/// merge of a taste rule stays a rule with its history; for a memory, which has
+/// none of these, nothing changes. The widest paths win (a source with none
+/// means every path), and so does the highest trust. Sources from different
+/// layers are refused: merging them would turn a memory into a rule.
+pub(crate) fn inherit_from(db: &Connection, successor: &str, sources: &[&str]) -> Result<(), BridgeError> {
+    type Carried = (String, Option<String>, f64, Option<String>, String);
+    let mut carried: Vec<Carried> = Vec::new();
+    for source in sources {
+        let row = db
+            .query_row(
+                "SELECT layer, path_globs, outcome_score, last_confirmed_at, visibility
+                 FROM memory_records WHERE id=?1",
+                params![source],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .optional()?;
+        carried.extend(row);
+        db.execute(
+            "INSERT OR IGNORE INTO memory_evidence(record_id, signal_id, weight, added_at)
+             SELECT ?1, signal_id, weight, added_at FROM memory_evidence WHERE record_id=?2",
+            params![successor, source],
+        )?;
+    }
+    let Some((layer, _, _, _, visibility)) = carried.first().cloned() else {
+        return Ok(());
+    };
+    if carried.iter().any(|(other, ..)| *other != layer) {
+        return Err(BridgeError::Invalid(
+            "A memory and a taste rule cannot be merged into one record.".into(),
+        ));
+    }
+    if layer == MEMORY_LAYER {
+        return Ok(());
+    }
+    let mut globs: Option<Vec<String>> = Some(Vec::new());
+    for (_, raw, ..) in &carried {
+        match raw.as_deref().and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok()) {
+            Some(more) => {
+                if let Some(globs) = globs.as_mut() {
+                    globs.extend(more);
+                }
+            }
+            None => globs = None,
+        }
+    }
+    let globs = globs.map(|mut globs| {
+        globs.sort();
+        globs.dedup();
+        globs
+    });
+    let score = carried.iter().map(|(_, _, score, ..)| *score).fold(f64::NEG_INFINITY, f64::max);
+    let confirmed = carried.iter().filter_map(|(_, _, _, at, _)| at.clone()).max();
+    db.execute(
+        "UPDATE memory_records
+         SET layer=?2, path_globs=?3, outcome_score=?4, last_confirmed_at=?5, visibility=?6
+         WHERE id=?1",
+        params![
+            successor,
+            layer,
+            globs.map(|globs| serde_json::to_string(&globs).unwrap_or_else(|_| "[]".into())),
+            score,
+            confirmed,
+            visibility,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Link a record to a signal that justifies it. Linking the same signal again
+/// keeps the first link. Its producers arrive with the signal log (#1198) and
+/// the learner (#1201).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn add_evidence(
+    db: &Connection,
+    record_id: &str,
+    signal_id: &str,
+    weight: f64,
+    at: &str,
+) -> Result<(), BridgeError> {
+    db.execute(
+        "INSERT OR IGNORE INTO memory_evidence(record_id, signal_id, weight, added_at) VALUES(?1,?2,?3,?4)",
+        params![record_id, signal_id, weight, at],
+    )?;
+    Ok(())
 }
 
 /// Retire an active memory: it stops holding at `at` and lands in Retired,
@@ -818,6 +1026,8 @@ pub(crate) fn merge_proposals(
                 waits_from,
             ],
         )?;
+        let source_ids: Vec<&str> = sources.iter().map(|source| source.id.as_str()).collect();
+        inherit_from(db, &id, &source_ids)?;
         for source in sources {
             let closed = db.execute(
                 "UPDATE memory_records SET status=?1, superseded_by=?2, updated_at=?3
@@ -864,7 +1074,7 @@ pub(crate) fn body_already_known(
     let found: Option<i64> = db
         .query_row(
             "SELECT 1 FROM memory_records
-             WHERE scope_key=?1 AND status<>'deleted' AND lower(trim(body))=lower(trim(?2))
+             WHERE scope_key=?1 AND layer='memory' AND status<>'deleted' AND lower(trim(body))=lower(trim(?2))
                AND NOT (status='expired' AND valid_to IS valid_from)
              LIMIT 1",
             params![scope_key, body],
@@ -885,7 +1095,7 @@ fn active_with_same_text(
     let wanted = crate::memory_similarity::normalize(body);
     let mut statement = db.prepare(&format!(
         "SELECT {RECORD_COLUMNS} FROM memory_records
-         WHERE scope_key=?1 AND status=?2
+         WHERE scope_key=?1 AND status=?2 AND layer='memory'
          ORDER BY created_at, id",
     ))?;
     let records = statement.query_map(params![scope_key, STATUS_ACTIVE], map_row)?;
@@ -909,7 +1119,7 @@ pub(crate) fn near_duplicate_of(
 ) -> Result<Option<MemoryRecord>, BridgeError> {
     let mut statement = db.prepare(&format!(
         "SELECT {RECORD_COLUMNS} FROM memory_records
-         WHERE scope_key=?1 AND status IN ('active','proposed','rejected')
+         WHERE scope_key=?1 AND layer='memory' AND status IN ('active','proposed','rejected')
          ORDER BY status='active' DESC, created_at, id",
     ))?;
     let records = statement.query_map(params![scope_key], map_row)?;
@@ -1083,6 +1293,8 @@ pub(crate) fn write_supersession(
             conflict_group,
         ],
     )?;
+    let predecessor_ids: Vec<&str> = predecessors.iter().map(|record| record.id.as_str()).collect();
+    inherit_from(transaction, &replacement_id, &predecessor_ids)?;
     for predecessor in predecessors {
         transaction.execute(
             "UPDATE memory_records
@@ -1124,7 +1336,7 @@ pub fn list_as_of(
     let mut statement = db.prepare(&format!(
         "SELECT {RECORD_COLUMNS}
          FROM memory_records
-         WHERE scope_key=?1 AND status<>?4
+         WHERE scope_key=?1 AND layer='memory' AND status<>?4
            AND valid_from <= ?2 AND (valid_to IS NULL OR valid_to > ?2)
          ORDER BY updated_at DESC, id DESC
          LIMIT ?3",
@@ -1139,7 +1351,7 @@ pub fn list_as_of(
     // held at the instant, so a surface can say what it is not showing.
     let total: i64 = db.query_row(
         "SELECT COUNT(*) FROM memory_records
-         WHERE scope_key=?1 AND status<>?3
+         WHERE scope_key=?1 AND layer='memory' AND status<>?3
            AND valid_from <= ?2 AND (valid_to IS NULL OR valid_to > ?2)",
         params![scope_key, at, STATUS_DELETED],
         |row| row.get(0),
@@ -1322,7 +1534,7 @@ pub(crate) fn reconcilable_records(
 ) -> Result<Vec<MemoryRecord>, BridgeError> {
     let mut statement = db.prepare(&format!(
         "SELECT {RECORD_COLUMNS} FROM memory_records
-         WHERE scope_key=?1 AND status IN (?2, ?3)
+         WHERE scope_key=?1 AND layer='memory' AND status IN (?2, ?3)
          ORDER BY updated_at DESC, id
          LIMIT ?4",
     ))?;
@@ -1415,10 +1627,12 @@ fn search_matching(db: &Connection, scope_key: &str, match_query: &str, limit: i
         "SELECT m.id, m.scope_key, m.kind, m.body, m.provenance, m.status,
                 m.source_session_id, m.confidence_bps, m.rationale,
                 m.supersedes, m.valid_from, m.valid_to, m.expires_at, m.conflict_group,
-                m.created_at, m.updated_at
+                m.created_at, m.updated_at, m.layer, m.path_globs, m.outcome_score,
+                (SELECT COUNT(*) FROM memory_evidence e WHERE e.record_id = m.id)
          FROM memory_record_fts f
          JOIN memory_records m ON m.id = f.record_id
          WHERE f.scope_key = ?1 AND memory_record_fts MATCH ?2 AND m.status = ?3
+           AND m.layer = 'memory'
          ORDER BY rank, m.updated_at DESC, m.id
          LIMIT ?4",
     )?;
@@ -1510,6 +1724,10 @@ pub fn format_forgotten(record: &MemoryRecord) -> String {
 fn short_id(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
+
+#[cfg(test)]
+#[path = "memory_taste_fields_tests.rs"]
+mod taste_fields_tests;
 
 #[cfg(test)]
 mod tests {

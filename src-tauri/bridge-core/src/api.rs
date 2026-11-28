@@ -2588,12 +2588,13 @@ pub fn save_memory_record(
 pub fn list_memory_records(
     core: &Arc<BridgeCore>,
     scope_key: &str,
+    layer: Option<&str>,
     status: Option<&str>,
     cursor: Option<&str>,
     limit: Option<u32>,
 ) -> Result<bridge_protocol::messages::ListMemoryRecordsResult, BridgeError> {
     let db = core.db.lock().unwrap();
-    memory_ledger::list_page(&db, scope_key, status, cursor, limit)
+    memory_ledger::list_layer_page(&db, scope_key, layer, status, cursor, limit)
 }
 
 pub fn delete_memory_record(

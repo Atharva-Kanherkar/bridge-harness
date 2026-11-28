@@ -1324,7 +1324,7 @@ pub(crate) fn matches_deleted_claim(
 ) -> Result<bool, BridgeError> {
     let mut statement = db.prepare(
         "SELECT body FROM memory_records
-         WHERE scope_key=?1 AND status='deleted'",
+         WHERE scope_key=?1 AND layer='memory' AND status='deleted'",
     )?;
     let deleted = statement
         .query_map(params![scope_key], |row| row.get::<_, String>(0))?
@@ -1635,7 +1635,7 @@ pub(crate) fn likely_related_claim(left: &str, right: &str) -> bool {
 fn likely_conflict(db: &Connection, scope_key: &str, body: &str) -> Result<bool, BridgeError> {
     let mut statement = db.prepare(
         "SELECT body FROM memory_records
-         WHERE scope_key=?1 AND status IN ('active','proposed')",
+         WHERE scope_key=?1 AND layer='memory' AND status IN ('active','proposed')",
     )?;
     let existing = statement
         .query_map(params![scope_key], |row| row.get::<_, String>(0))?

@@ -7,6 +7,28 @@ pub const MAX_MEMORY_BODY_CHARS: usize = 4000;
 pub const MAX_MEMORY_LIST_LIMIT: u32 = 50;
 /// The kind vocabulary, in the order surfaces present it.
 pub const MEMORY_KINDS: [&str; 4] = ["preference", "fact", "decision", "constraint"];
+/// The layer every memory a person or agent saves belongs to.
+pub const MEMORY_LAYER: &str = "memory";
+/// Rules learned from what a person keeps, edits and drops (the taste layer).
+pub const TASTE_LAYER: &str = "taste";
+/// The layers, in the order surfaces present them.
+pub const MEMORY_LAYERS: [&str; 2] = [MEMORY_LAYER, TASTE_LAYER];
+
+fn memory_layer() -> String {
+    MEMORY_LAYER.to_string()
+}
+
+fn is_memory_layer(layer: &str) -> bool {
+    layer == MEMORY_LAYER
+}
+
+fn is_zero_score(score: &f64) -> bool {
+    *score == 0.0
+}
+
+fn is_zero_count(count: &u32) -> bool {
+    *count == 0
+}
 
 /// Explicit pin. Scope is always written as `account:local` by the server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -30,10 +52,13 @@ pub struct ListMemoryRecordsParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// The `nextCursor` of the previous page. Absent reads the first page. A
-    /// cursor that does not parse, or belongs to another status, is refused
-    /// rather than read as the first page.
+    /// cursor that does not parse, or belongs to another status or layer, is
+    /// refused rather than read as the first page.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    /// `memory` (default) or `taste`. A list shows one layer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
     /// Records per page, 1 to [`MAX_MEMORY_LIST_LIMIT`]. Absent is the maximum.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
@@ -45,7 +70,7 @@ pub struct DeleteMemoryRecordParams {
     pub record_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryRecord {
     pub id: String,
@@ -84,6 +109,22 @@ pub struct MemoryRecord {
     pub conflict_group: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// `memory` or `taste`. Absent on the wire means `memory`, so a memory
+    /// reads exactly as it did before layers existed.
+    #[serde(default = "memory_layer", skip_serializing_if = "is_memory_layer")]
+    pub layer: String,
+    /// Taste rules only: the paths a rule applies to, as globs. Absent means
+    /// every path in its scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_globs: Option<Vec<String>>,
+    /// Taste rules only: how well the rule has held up. It rises when what it
+    /// shaped is kept and falls when it is dropped. Absent means 0.
+    #[serde(default, skip_serializing_if = "is_zero_score")]
+    pub outcome_score: f64,
+    /// How many signals (kept, edited, dropped or fixed findings) back the
+    /// record. Absent means none.
+    #[serde(default, skip_serializing_if = "is_zero_count")]
+    pub evidence_count: u32,
 }
 
 /// Read a scope as it stood at an instant: exactly the records whose validity
@@ -96,7 +137,7 @@ pub struct ListMemoryRecordsAsOfParams {
     pub at: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ListMemoryRecordsResult {
     pub scope_key: String,
@@ -673,6 +714,38 @@ pub struct ProviderMemoryCommand {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn record_json() -> serde_json::Value {
+        json!({
+            "id": "r", "scopeKey": "account:local", "kind": "preference", "body": "Uses bun",
+            "provenance": "user_explicit", "status": "active", "validFrom": "t",
+            "createdAt": "t", "updatedAt": "t"
+        })
+    }
+
+    #[test]
+    fn a_memory_reads_and_writes_as_it_did_before_layers() {
+        let record: MemoryRecord = serde_json::from_value(record_json()).unwrap();
+        assert_eq!((record.layer.as_str(), record.path_globs.clone(), record.outcome_score, record.evidence_count), (MEMORY_LAYER, None, 0.0, 0));
+        assert_eq!(serde_json::to_value(&record).unwrap(), record_json(), "no new keys on a memory");
+    }
+
+    #[test]
+    fn a_taste_rule_carries_its_layer_paths_trust_and_evidence() {
+        let mut wire = record_json();
+        wire["layer"] = json!("taste");
+        wire["pathGlobs"] = json!(["src/**"]);
+        wire["outcomeScore"] = json!(2.5);
+        wire["evidenceCount"] = json!(4);
+        let record: MemoryRecord = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(record.layer, TASTE_LAYER);
+        assert_eq!(record.path_globs.as_deref(), Some(&["src/**".to_string()][..]));
+        assert_eq!((record.outcome_score, record.evidence_count), (2.5, 4));
+        assert_eq!(serde_json::to_value(&record).unwrap(), wire);
+        let params: ListMemoryRecordsParams =
+            serde_json::from_value(json!({"scopeKey": "project:a/b", "layer": "taste"})).unwrap();
+        assert_eq!(params.layer.as_deref(), Some("taste"));
+    }
 
     #[test]
     fn list_pages_and_review_batches_have_camel_case_wire_shapes() {

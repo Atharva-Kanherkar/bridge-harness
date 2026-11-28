@@ -4,7 +4,14 @@
   "additionalProperties": false,
   "properties": {
     "cursor": {
-      "description": "The `nextCursor` of the previous page. Absent reads the first page. A cursor that does not parse, or belongs to another status, is refused rather than read as the first page.",
+      "description": "The `nextCursor` of the previous page. Absent reads the first page. A cursor that does not parse, or belongs to another status or layer, is refused rather than read as the first page.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "layer": {
+      "description": "`memory` (default) or `taste`. A list shows one layer.",
       "type": [
         "string",
         "null"

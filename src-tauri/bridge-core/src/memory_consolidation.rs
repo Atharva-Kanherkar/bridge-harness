@@ -310,7 +310,7 @@ pub fn update_settings(
 pub fn held_records(db: &Connection, scope_key: &str) -> Result<i64, BridgeError> {
     db.query_row(
         "SELECT COUNT(*) FROM memory_records
-         WHERE scope_key=?1 AND status='active'",
+         WHERE scope_key=?1 AND layer='memory' AND status='active'",
         params![scope_key],
         |row| row.get(0),
     )
@@ -430,14 +430,14 @@ pub fn changed_since_last_dream(db: &Connection, scope_key: &str) -> Result<bool
         None => db
             .query_row(
                 "SELECT 1 FROM memory_records
-                 WHERE scope_key=?1 AND status IN ('active','proposed') LIMIT 1",
+                 WHERE scope_key=?1 AND layer='memory' AND status IN ('active','proposed') LIMIT 1",
                 params![scope_key],
                 |row| row.get(0),
             )
             .optional()?,
         Some(since) => db
             .query_row(
-                "SELECT 1 FROM memory_records WHERE scope_key=?1 AND updated_at > ?2
+                "SELECT 1 FROM memory_records WHERE scope_key=?1 AND layer='memory' AND updated_at > ?2
                  UNION ALL
                  SELECT 1 FROM memory_retention_sweeps WHERE scope_key=?1 AND at > ?2
                  LIMIT 1",

@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 104;
+const LATEST_SCHEMA_VERSION: i64 = 105;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -916,6 +916,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // Memory search stems words, so a question finds a memory phrased
             // in another form of the same word.
             104 => crate::memory_ledger::install_stemmed_search(&transaction)?,
+            // The taste layer's fields on the memory ledger: a layer, path
+            // globs, an outcome score, visibility, and evidence links.
+            105 => crate::memory_ledger::install_taste_fields(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"

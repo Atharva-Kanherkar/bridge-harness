@@ -118,7 +118,7 @@ fn gather(db: &Connection) -> Result<Input, BridgeError> {
     let scope = memory_ledger::account_memory_scope();
     let mut stats = memory_activity::recall_stats(db, scope)?;
     let proposed: i64 = db.query_row(
-        "SELECT COUNT(*) FROM memory_records WHERE scope_key=?1 AND status='proposed'",
+        "SELECT COUNT(*) FROM memory_records WHERE scope_key=?1 AND layer='memory' AND status='proposed'",
         params![scope],
         |row| row.get(0),
     )?;
@@ -127,7 +127,7 @@ fn gather(db: &Connection) -> Result<Input, BridgeError> {
     let mut memories: Vec<Sampled> = {
         let mut statement = db.prepare(
             "SELECT id, kind, provenance, body FROM memory_records
-             WHERE scope_key=?1 AND status='active' ORDER BY updated_at DESC, id DESC",
+             WHERE scope_key=?1 AND layer='memory' AND status='active' ORDER BY updated_at DESC, id DESC",
         )?;
         let rows = statement
             .query_map(params![scope], |row| {
