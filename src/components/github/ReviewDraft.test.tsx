@@ -169,6 +169,28 @@ describe("ReviewDraft", () => {
     expect(postButton().disabled).toBe(true);
   });
 
+  it("lists what your taste hid apart, with the reason, and brings one back on Show again", async () => {
+    const hiddenNit = finding("hidden-nit", { severity: "nit", title: "Add a doc comment to `helper`", hiddenReason: "You dropped 4 like this, last on #212." });
+    const { decide } = mockStore([...FINDINGS, hiddenNit]);
+    await mount();
+    expect(item("hidden-nit")).toBeNull();
+    const tucked = host!.querySelector<HTMLDetailsElement>("[data-taste-hidden]")!;
+    expect(tucked.querySelector("summary")!.textContent).toContain("Hidden by your taste (1)");
+    expect(tucked.textContent).toContain("You dropped 4 like this, last on #212.");
+
+    await act(async () => { button(host!, "Keep all").click(); await flush(); });
+    expect(decide).toHaveBeenLastCalledWith("job-1", FINDINGS.map(entry => ({ findingId: entry.id, decision: "kept" })));
+    expect(postButton().textContent).toContain("Post 4 findings");
+    expect(host!.textContent).toContain("4 kept, 1 hidden");
+
+    await act(async () => { button(tucked, "Show again").click(); await flush(); });
+    expect(host!.querySelector("[data-taste-hidden]")).toBeNull();
+    expect(item("hidden-nit").textContent).toContain("Your taste hid this: You dropped 4 like this, last on #212.");
+    await act(async () => { button(item("hidden-nit"), "Keep").click(); await flush(); });
+    expect(decide).toHaveBeenLastCalledWith("job-1", [{ findingId: "hidden-nit", decision: "kept", editedBody: null }]);
+    expect(postButton().textContent).toContain("Post 5 findings");
+  });
+
   it("is driven from the keyboard: arrows move, K keeps, D drops, E edits", async () => {
     const { decide } = mockStore(FINDINGS);
     await mount();

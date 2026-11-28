@@ -137,6 +137,17 @@ pub fn live(db: &Connection, scope_key: &str, limit: u32) -> Result<Vec<Signal>,
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// Every live signal of a scope, oldest first: the past a new review is
+/// judged against.
+pub fn live_in(db: &Connection, scope_key: &str) -> Result<Vec<Signal>, BridgeError> {
+    let mut statement = db.prepare(&format!(
+        "SELECT {SIGNAL_COLUMNS} FROM taste_signals
+         WHERE scope_key=?1 AND superseded_by IS NULL ORDER BY at, id"
+    ))?;
+    let rows = statement.query_map(params![scope_key], map_signal)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
 /// Every signal ever written, superseded ones included, oldest first.
 pub fn all(db: &Connection) -> Result<Vec<Signal>, BridgeError> {
     let mut statement = db.prepare(&format!("SELECT {SIGNAL_COLUMNS} FROM taste_signals ORDER BY at, id"))?;
@@ -167,6 +178,8 @@ struct NewSignal {
     harness: Option<String>,
     path: Option<String>,
     severity: Option<String>,
+    /// The finding's own category; guessed from its text when absent.
+    category: Option<String>,
     title: Option<String>,
     body: Option<String>,
     edited_body: Option<String>,
@@ -197,7 +210,11 @@ fn append(db: &Connection, signal: NewSignal) -> Result<Option<String>, BridgeEr
     let id = Uuid::new_v4().to_string();
     let at = instant(&signal.at);
     let language = signal.path.as_deref().and_then(language_of).map(str::to_owned);
-    let category = category_of(signal.title.as_deref().unwrap_or_default(), signal.body.as_deref().unwrap_or_default());
+    let category = category_or_guess(
+        signal.category.as_deref(),
+        signal.title.as_deref().unwrap_or_default(),
+        signal.body.as_deref().unwrap_or_default(),
+    );
     if let Some((previous, ..)) = &current {
         db.execute("UPDATE taste_signals SET superseded_by=?1 WHERE id=?2", params![id, previous])?;
     }
@@ -249,6 +266,8 @@ fn clean(text: &str) -> String {
 /// A finding as the log needs it, with its job's repository and the harness
 /// of the pass that raised it.
 struct FindingFacts {
+    category: Option<String>,
+    hidden: bool,
     path: String,
     severity: String,
     title: String,
@@ -266,7 +285,8 @@ fn finding_facts(db: &Connection, finding_id: &str) -> Result<Option<FindingFact
     Ok(db
         .query_row(
             "SELECT f.path, f.severity, f.title, f.body, f.fingerprint, f.job_id,
-                    j.workspace_id, j.repo_owner, j.repo_name, j.pr_number, p.harness
+                    j.workspace_id, j.repo_owner, j.repo_name, j.pr_number, p.harness,
+                    f.category, f.hidden_reason IS NOT NULL
              FROM review_findings f
              JOIN review_jobs j ON j.id = f.job_id
              LEFT JOIN review_passes p ON p.id = f.pass_id
@@ -285,6 +305,8 @@ fn finding_facts(db: &Connection, finding_id: &str) -> Result<Option<FindingFact
                     repo_name: row.get(8)?,
                     pr_number: row.get(9)?,
                     harness: row.get(10)?,
+                    category: row.get(11)?,
+                    hidden: row.get(12)?,
                 })
             },
         )
@@ -305,6 +327,7 @@ fn review_signal(facts: FindingFacts, finding_id: &str, source: &'static str, ve
         verdict,
         subject_id: finding_id.to_string(),
         harness: facts.harness,
+        category: facts.category,
         path: Some(facts.path),
         severity: Some(facts.severity),
         title: Some(facts.title),
@@ -332,8 +355,14 @@ pub(crate) fn record_decision(
         _ => return Ok(None),
     };
     let Some(facts) = finding_facts(db, finding_id)? else { return Ok(None) };
+    let hidden = facts.hidden;
     let mut signal = review_signal(facts, finding_id, SOURCE_REVIEW_DECISION, verdict, at);
     signal.edited_body = edited_body.filter(|_| verdict == "edited").map(str::to_owned);
+    // A finding the taste layer hid and the person brought back and kept is
+    // the strongest sign the hiding was wrong.
+    if hidden {
+        signal.detail = Some(serde_json::json!({"wasHidden": true}));
+    }
     append(db, signal)
 }
 
@@ -515,6 +544,20 @@ pub fn language_of(path: &str) -> Option<&'static str> {
     })
 }
 
+/// The categories a finding can have.
+pub const CATEGORIES: [&str; 9] =
+    ["security", "correctness", "error-handling", "tests", "performance", "naming", "docs", "style", "other"];
+
+/// A finding's own category when it is one of [`CATEGORIES`], else a guess
+/// from its text.
+pub fn category_or_guess(given: Option<&str>, title: &str, body: &str) -> &'static str {
+    given
+        .map(str::trim)
+        .and_then(|given| CATEGORIES.iter().find(|known| known.eq_ignore_ascii_case(given)))
+        .copied()
+        .unwrap_or_else(|| category_of(title, body))
+}
+
 /// What a finding is about, as one of a fixed set of slugs, read from its
 /// title first and its body only when the title says nothing: a finding
 /// titled "No tests" that mentions the bug they would catch is about tests.
@@ -522,7 +565,7 @@ pub fn category_of(title: &str, body: &str) -> &'static str {
     classify(title).or_else(|| classify(body)).unwrap_or("other")
 }
 
-static CATEGORIES: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
+static PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
     [
         (
             "security",
@@ -547,7 +590,7 @@ static CATEGORIES: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
 });
 
 fn classify(text: &str) -> Option<&'static str> {
-    CATEGORIES.iter().find(|(_, pattern)| pattern.is_match(text)).map(|(slug, _)| *slug)
+    PATTERNS.iter().find(|(_, pattern)| pattern.is_match(text)).map(|(slug, _)| *slug)
 }
 
 #[cfg(test)]

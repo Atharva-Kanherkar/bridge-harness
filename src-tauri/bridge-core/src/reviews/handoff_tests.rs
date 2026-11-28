@@ -85,6 +85,7 @@ fn finding(path: &str, severity: ReviewSeverity, title: &str) -> DraftFinding {
         confidence: 0.8,
         fingerprint: format!("fp-{title}"),
         outside_diff: false,
+        category: None,
     }
 }
 

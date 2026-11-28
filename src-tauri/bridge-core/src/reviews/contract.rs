@@ -33,12 +33,14 @@ pub const OUTPUT_CONTRACT: &str = r#"End your final message with exactly one fen
 {"summary":"<what the change does and your overall verdict, in a few sentences>",
  "findings":[{"path":"<a changed file, exactly as in files.json>","line":<the line the problem is on>,
    "startLine":<first line, for a range; omit for one line>,"side":"RIGHT",
-   "severity":"critical|major|minor|nit","title":"<one line, at most 120 characters>",
+   "severity":"critical|major|minor|nit","category":"security|correctness|error-handling|tests|performance|naming|docs|style|other",
+   "title":"<one line, at most 120 characters>",
    "body":"<markdown: what is wrong, why it matters, how to fix it>","confidence":<0.0 to 1.0>}]}
 ```
 
 - `side` is "RIGHT" for a line in the new version of the file and "LEFT" for a line only in the old version (a deleted line). Line numbers are those of that side.
 - `line` is the line the problem is on: the faulty condition, call or statement itself, never the closing brace or last line of the block, function or hunk around it. A problem spanning several lines gives its first line as `startLine` and its last as `line`.
+- `category` is what the finding is about; use `other` when none fits.
 - Comment only on lines inside the diff's hunks; anything else goes in the summary.
 - Use `"findings":[]` when you found nothing worth raising. Never invent a problem to fill the list.
 - On a re-review only, add `"fixed":["<id>"]` with the `id` of each earlier finding in prior_findings.json that the new commits fixed. Leave it out otherwise."#;
@@ -72,6 +74,14 @@ pub struct RawFinding {
     pub body: String,
     #[serde(default = "middling", deserialize_with = "confidence")]
     pub confidence: f64,
+    /// Read leniently: anything not one of the known categories is dropped
+    /// in validation, so a model's own word never fails a pass.
+    #[serde(default, deserialize_with = "loose_text")]
+    pub category: Option<String>,
+}
+
+fn loose_text<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(deserializer)?.and_then(|value| value.as_str().map(str::to_owned)))
 }
 
 fn right() -> ReviewSide {
@@ -497,6 +507,12 @@ fn cut(title: &str) -> String {
     }
 }
 
+/// `raw` as one of [`crate::taste::signals::CATEGORIES`], if it is one.
+fn known_category(raw: &str) -> Option<&'static str> {
+    let raw = raw.trim();
+    crate::taste::signals::CATEGORIES.iter().copied().find(|known| known.eq_ignore_ascii_case(raw))
+}
+
 /// What a pass produced, checked against the diff.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Validated {
@@ -552,6 +568,7 @@ pub fn validate(review: RawReview, changed: &HashSet<String>, hunks: &BTreeMap<S
             body: raw.body.trim().to_owned(),
             confidence,
             outside_diff: hunk.is_none(),
+            category: raw.category.as_deref().and_then(known_category).map(str::to_owned),
         });
     }
     kept.sort_by(|left, right| {

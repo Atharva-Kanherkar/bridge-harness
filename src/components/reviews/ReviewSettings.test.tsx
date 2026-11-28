@@ -170,6 +170,17 @@ it("round-trips auto-review, draft skipping and incremental re-review, each sayi
   expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ autoReview: "off", skipDraftPrs: false, incremental: true }));
 });
 
+it("hides findings you keep dropping by default, and says so, until turned off", async () => {
+  const save = mockJobSettings();
+  await act(async () => { root.render(<ReviewSettings adapters={[codex]} />); });
+  const toggle = () => host.querySelector<HTMLButtonElement>('[aria-label="Hide findings you keep dropping"]')!;
+  expect(toggle().getAttribute("aria-checked")).toBe("true");
+  expect(host.textContent).toContain("critical or security findings are never hidden");
+  await act(async () => toggle().click());
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ hideRepeatDrops: false }));
+  expect(host.textContent).toContain("Every finding shows in the draft.");
+});
+
 it("turning Second opinion off keeps only the first default reviewer", async () => {
   const save = mockJobSettings({ ...JOB_DEFAULTS, secondOpinion: true, defaultHarnesses: ["codex", "claude"] });
   await act(async () => { root.render(<ReviewSettings adapters={[codex]} />); });

@@ -50,7 +50,7 @@ pub fn day(days: f64) -> DateTime<Utc> {
         + Duration::minutes((days * 24.0 * 60.0) as i64)
 }
 
-fn finding(path: &str, severity: ReviewSeverity, title: &str) -> DraftFinding {
+pub fn finding(path: &str, severity: ReviewSeverity, title: &str) -> DraftFinding {
     DraftFinding {
         path: path.into(),
         line: 10,
@@ -62,12 +62,13 @@ fn finding(path: &str, severity: ReviewSeverity, title: &str) -> DraftFinding {
         confidence: 0.7,
         fingerprint: format!("fp-{path}-{title}"),
         outside_diff: false,
+        category: None,
     }
 }
 
 /// A drafted review of `octo/<repo>#number` at `sha`, started at `at`.
 /// Returns the job and its finding ids in the order given.
-fn review(
+pub fn review(
     db: &Connection,
     repo: &str,
     number: u64,
@@ -109,7 +110,7 @@ fn review(
     (job.id, ids)
 }
 
-fn decide(db: &Connection, job: &str, at: DateTime<Utc>, choices: &[(&str, Decision, Option<&str>)]) {
+pub fn decide(db: &Connection, job: &str, at: DateTime<Utc>, choices: &[(&str, Decision, Option<&str>)]) {
     let decisions: Vec<wire::ReviewFindingDecisionInput> = choices
         .iter()
         .map(|(id, decision, body)| wire::ReviewFindingDecisionInput {

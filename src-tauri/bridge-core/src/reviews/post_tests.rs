@@ -68,6 +68,8 @@ fn finding(id: &str, decision: ReviewFindingDecision) -> wire::ReviewFinding {
         github_comment_id: None,
         posted_at: None,
         fixed_in_sha: None,
+        category: None,
+        hidden_reason: None,
     }
 }
 
@@ -582,6 +584,7 @@ fn draft(path: &str, line: u32, side: ReviewSide, outside_diff: bool) -> DraftFi
         confidence: 0.9,
         fingerprint: path.into(),
         outside_diff,
+        category: None,
     }
 }
 

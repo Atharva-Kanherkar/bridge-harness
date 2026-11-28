@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, Pencil, Send, X } from "lucide-react";
+import { Check, EyeOff, Pencil, Send, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,6 +14,9 @@ import { useResetOnChange } from "../../useResetOnChange";
 // A drafted review, for a person to triage: keep, drop or edit each finding,
 // then post the kept ones as one comment review. Nothing reaches GitHub until
 // Post. Keyboard: arrows move between findings, K keeps, D drops, E edits.
+// Findings like ones the person keeps dropping arrive hidden by their taste:
+// listed apart with the reason, one click from coming back, never posted
+// without a decision.
 
 const SEVERITY_RANK: Record<ReviewSeverity, number> = { critical: 0, major: 1, minor: 2, nit: 3 };
 const OUTSIDE = "Outside the diff";
@@ -44,6 +47,10 @@ const where = (finding: ReviewFinding) => {
 };
 
 const chosen = (finding: ReviewFinding) => finding.decision === "kept" || finding.decision === "edited";
+
+/** Hidden by the person's taste and not yet brought back or decided. */
+const tucked = (finding: ReviewFinding, shown: ReadonlySet<string>) =>
+  Boolean(finding.hiddenReason) && finding.decision === "pending" && !shown.has(finding.id);
 
 /** What a finding says now: the person's saved edit, else the reviewer's body. */
 const savedBody = (finding: ReviewFinding) => finding.editedBody ?? finding.body;
@@ -96,6 +103,9 @@ function FindingItem({ finding, harnesses, repositoryUrl, draft, busy, onDraft, 
       {harnesses.length > 0 && <span>{harnesses.map(harnessLabel).join(" and ")}</span>}
       {finding.decision !== "pending" && <span className="font-medium text-foreground">{finding.decision === "kept" ? "Kept" : finding.decision === "edited" ? "Edited" : "Dropped"}</span>}
     </div>
+    {finding.hiddenReason && <p className="mt-0.5 flex items-center gap-1 text-caption text-muted-foreground">
+      <EyeOff className="size-3" aria-hidden="true" /> Your taste hid this: {finding.hiddenReason}
+    </p>}
     {editing
       ? <div className="mt-2 grid gap-1.5">
           <Textarea
@@ -144,8 +154,10 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
     return next;
   });
   const items = useRef(new Map<string, HTMLElement>());
+  // Hidden findings the person brought back, by id.
+  const [shown, setShown] = useState<ReadonlySet<string>>(new Set());
 
-  useResetOnChange([job.id], () => { setFindings(undefined); setError(undefined); setDrafts(new Map()); });
+  useResetOnChange([job.id], () => { setFindings(undefined); setError(undefined); setDrafts(new Map()); setShown(new Set()); });
   useEffect(() => {
     let active = true;
     void bridgeApi.getReview(job.id)
@@ -154,7 +166,8 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
     return () => { active = false; };
   }, [job.id]);
 
-  const groups = useMemo(() => groupFindings(findings ?? []), [findings]);
+  const hidden = useMemo(() => (findings ?? []).filter(finding => tucked(finding, shown)), [findings, shown]);
+  const groups = useMemo(() => groupFindings((findings ?? []).filter(finding => !tucked(finding, shown))), [findings, shown]);
   const flat = useMemo(() => groups.flatMap(group => group.findings), [groups]);
   const harnessOf = useMemo(() => new Map(passes.map(pass => [pass.id, pass.harness])), [passes]);
 
@@ -188,10 +201,11 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
   if (!findings) return <div className="border-t border-border/70 px-3 py-2">
     {error ? <p role="alert" className="text-meta text-destructive">{error}</p> : <SkeletonRows label="Loading the draft" rows={2} framed={false} density="menu" />}
   </div>;
-  // Keep all and Drop all pass over a finding being edited.
-  const settled = findings.filter(finding => !drafts.has(finding.id));
+  // Keep all and Drop all pass over a finding being edited, and over what
+  // the person's taste hid: deciding those takes bringing them back first.
+  const settled = findings.filter(finding => !drafts.has(finding.id) && !tucked(finding, shown));
   const count = findings.filter(chosen).length;
-  const undecided = findings.filter(finding => finding.decision === "pending").length;
+  const undecided = findings.filter(finding => finding.decision === "pending" && !tucked(finding, shown)).length;
   const unsaved = findings.some(finding => drafts.has(finding.id) && drafts.get(finding.id) !== savedBody(finding));
   const blocked = unsaved || (findings.length > 0 && count === 0);
   const reason = unsaved ? "Save or cancel your edit to post." : blocked ? "Keep or edit at least one finding to post." : undefined;
@@ -222,10 +236,27 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
         />)}
       </ul>
     </div>)}
+    {hidden.length > 0 && <details data-taste-hidden className="mb-2.5">
+      <summary className="cursor-pointer select-none text-caption font-medium text-muted-foreground">
+        Hidden by your taste ({hidden.length})
+      </summary>
+      <ul role="list" aria-label="Hidden by your taste" className="mt-1 grid gap-1">
+        {hidden.map(finding => <li key={finding.id} data-hidden-finding={finding.id}
+          className="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md border border-dashed border-border px-3 py-1.5">
+          <span className={cn("text-caption font-semibold", SEVERITY_TEXT[finding.severity])}>{finding.severity.charAt(0).toUpperCase() + finding.severity.slice(1)}</span>
+          <span className="min-w-0 flex-1 text-meta text-foreground">{finding.title}</span>
+          <span className="text-caption text-muted-foreground">{finding.hiddenReason}</span>
+          <Button variant="ghost" size="2xs" disabled={busy}
+            onClick={() => setShown(current => new Set(current).add(finding.id))}>Show again</Button>
+        </li>)}
+      </ul>
+    </details>}
     {error && <p role="alert" className="mb-2 text-meta text-destructive">{error}</p>}
     <div className="flex items-center justify-end gap-2">
       {reason && <span className="text-caption text-muted-foreground">{reason}</span>}
-      {!reason && undecided > 0 && <span className="text-caption text-muted-foreground">{count} kept, {undecided} not decided</span>}
+      {!reason && (undecided > 0 || hidden.length > 0) && <span className="text-caption text-muted-foreground">
+        {count} kept{undecided > 0 ? `, ${undecided} not decided` : ""}{hidden.length > 0 ? `, ${hidden.length} hidden` : ""}
+      </span>}
       <Button size="xs" disabled={busy || blocked} loading={posting} onClick={() => void post()}>
         <Send className="size-3" aria-hidden="true" /> {label}
       </Button>

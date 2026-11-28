@@ -230,6 +230,9 @@ pub struct DraftFinding {
     pub confidence: f64,
     pub fingerprint: String,
     pub outside_diff: bool,
+    /// What the finding is about, as the reviewer tagged it (one of
+    /// [`crate::taste::signals::CATEGORIES`]); absent when it did not say.
+    pub category: Option<String>,
 }
 
 /// What a finished pass produced.

@@ -27,6 +27,7 @@ fn draft(path: &str, title: &str, body: &str) -> DraftFinding {
         confidence: 0.5,
         fingerprint: format!("fp-{path}"),
         outside_diff: false,
+        category: None,
     }
 }
 

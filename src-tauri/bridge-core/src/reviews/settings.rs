@@ -235,6 +235,7 @@ mod tests {
                 skip_draft_prs: false,
                 incremental: true,
                 handoff: wire::ReviewHandoff::Posted,
+                hide_repeat_drops: false,
             },
         )
         .unwrap();

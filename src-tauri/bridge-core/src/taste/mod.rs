@@ -4,3 +4,4 @@
 
 pub mod replay;
 pub mod signals;
+pub mod suppress;

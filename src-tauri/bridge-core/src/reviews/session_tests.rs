@@ -767,6 +767,7 @@ fn draft(path: &str, title: &str, fingerprint: &str, severity: ReviewSeverity) -
         confidence: 0.8,
         fingerprint: fingerprint.into(),
         outside_diff: false,
+        category: None,
     }
 }
 
