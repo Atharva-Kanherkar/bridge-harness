@@ -591,6 +591,10 @@ pub fn dispatch(
             let p: wire::AddTasteRuleParams = decode(method, params)?;
             reply(api::add_taste_rule(core, &p))
         }
+        MethodName::SetTasteRuleState => {
+            let p: wire::SetTasteRuleStateParams = decode(method, params)?;
+            reply(api::set_taste_rule_state(core, &p))
+        }
         MethodName::GetDreamReport => {
             let p: wire::GetDreamReportParams = decode(method, params)?;
             reply(api::get_dream_report(core, &p.run_id))

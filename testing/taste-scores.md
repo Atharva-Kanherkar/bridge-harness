@@ -33,7 +33,7 @@ neither.
    - pin or unpin any rule.
 
    Other transitions are refused.
-8. **Schema 110**: `memory_records.pinned`, `memory_records.paused_reason`.
+8. **Schema 111**: `memory_records.pinned`, `memory_records.paused_reason`.
    Wire: `MemoryRecord.pinned`, `.pausedReason`;
    `ListTasteRulesResult.neverUsed`; `list_taste_rules` accepts `paused`.
 9. **Taste tab:**

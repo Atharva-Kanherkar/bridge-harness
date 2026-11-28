@@ -159,6 +159,7 @@ export type BridgeMethod =
   | "taste/list_taste_rules"
   | "taste/get_taste_evidence"
   | "taste/add_taste_rule"
+  | "taste/set_taste_rule_state"
   | "approvals/resolve_approval"
   | "approvals/resolve_question"
   | "attention/list_attention"
@@ -549,6 +550,7 @@ export const BRIDGE_METHODS = [
   { method: "taste/list_taste_rules", domain: "taste", command: "list_taste_rules" },
   { method: "taste/get_taste_evidence", domain: "taste", command: "get_taste_evidence" },
   { method: "taste/add_taste_rule", domain: "taste", command: "add_taste_rule" },
+  { method: "taste/set_taste_rule_state", domain: "taste", command: "set_taste_rule_state" },
   { method: "approvals/resolve_approval", domain: "approvals", command: "resolve_approval" },
   { method: "approvals/resolve_question", domain: "approvals", command: "resolve_question" },
   { method: "attention/list_attention", domain: "attention", command: "list_attention" },
@@ -1010,6 +1012,7 @@ export interface BridgeMethodParams {
   "taste/list_taste_rules": ListTasteRulesParams;
   "taste/get_taste_evidence": GetTasteEvidenceParams;
   "taste/add_taste_rule": AddTasteRuleParams;
+  "taste/set_taste_rule_state": SetTasteRuleStateParams;
   "approvals/resolve_approval": ResolveApprovalParams;
   "approvals/resolve_question": ResolveQuestionParams;
   "attention/list_attention": ListAttentionParams;
@@ -1432,6 +1435,7 @@ export interface BridgeMethodResults {
   "taste/list_taste_rules": ListTasteRulesResult;
   "taste/get_taste_evidence": TasteEvidence;
   "taste/add_taste_rule": MemoryRecord;
+  "taste/set_taste_rule_state": MemoryRecord;
   "approvals/resolve_approval": InteractionResolutionResult;
   "approvals/resolve_question": InteractionResolutionResult;
   "attention/list_attention": ListAttentionResult;
@@ -2798,6 +2802,8 @@ export interface MemoryRecord {
   layer?: string;
   outcomeScore?: number;
   pathGlobs?: string[] | null;
+  pausedReason?: string | null;
+  pinned?: boolean;
   provenance: string;
   rationale?: string | null;
   scopeKey: string;
@@ -5766,6 +5772,7 @@ export interface ListTasteRulesParams {
 }
 
 export interface ListTasteRulesResult {
+  neverUsed?: string[];
   rules: MemoryRecord[];
 }
 
@@ -5783,6 +5790,12 @@ export interface AddTasteRuleParams {
   kind: string;
   pathGlobs?: string[] | null;
   scopeKey: string;
+}
+
+export interface SetTasteRuleStateParams {
+  pinned?: boolean | null;
+  recordId: string;
+  state?: string | null;
 }
 
 export interface ResolveApprovalParams {

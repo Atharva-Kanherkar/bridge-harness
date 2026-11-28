@@ -4070,11 +4070,16 @@ export const bridgeApi = {
   // an explicit action, because it sends memory text to the harness.
   /** Taste rules in one status across every repository. The preview has
    *  no reviews to learn from, so it has none. */
-  listTasteRules: (status?: "active" | "proposed" | "rejected" | "expired"): Promise<ListTasteRulesResult> =>
+  listTasteRules: (status?: "active" | "proposed" | "paused" | "rejected" | "expired"): Promise<ListTasteRulesResult> =>
     hasBackend() ? call("taste/list_taste_rules", { status: status ?? null }) : Promise.resolve({ rules: [] }),
   /** The review decisions behind one taste rule, oldest first. */
   getTasteEvidence: (recordId: string): Promise<TasteEvidence> =>
     hasBackend() ? call("taste/get_taste_evidence", { recordId }) : Promise.resolve({ signals: [], swept: 0 }),
+  /** Pause, resume or pin a taste rule. */
+  setTasteRuleState: (recordId: string, change: { state?: "active" | "paused"; pinned?: boolean }): Promise<MemoryRecord> =>
+    hasBackend()
+      ? call("taste/set_taste_rule_state", { recordId, state: change.state ?? null, pinned: change.pinned ?? null })
+      : Promise.reject(new Error("Taste rules need the desktop app.")),
   /** A rule the person writes, active at once. */
   addTasteRule: (params: AddTasteRuleParams): Promise<MemoryRecord> =>
     hasBackend() ? call("taste/add_taste_rule", params) : Promise.reject(new Error("Taste rules need the desktop app.")),

@@ -296,7 +296,7 @@ fn the_taste_view_lists_rules_across_repositories_with_the_decisions_behind_them
     let waiting = crate::memory_ledger::list_taste(&conn, Some("proposed")).unwrap();
     assert_eq!(waiting.iter().map(|rule| rule.id.as_str()).collect::<Vec<_>>(), [id.as_str()]);
     assert!(crate::memory_ledger::list_taste(&conn, None).unwrap().is_empty(), "nothing active yet");
-    assert!(crate::memory_ledger::list_taste(&conn, Some("paused")).is_err());
+    assert!(crate::memory_ledger::list_taste(&conn, Some("superseded")).is_err());
 
     let evidence = crate::memory_ledger::taste_evidence(&conn, &id).unwrap();
     assert_eq!(evidence.swept, 0);

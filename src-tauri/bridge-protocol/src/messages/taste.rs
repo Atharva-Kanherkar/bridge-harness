@@ -15,7 +15,7 @@ pub const TASTE_RULE_KINDS: [&str; 3] = ["review_avoid", "review_prefer", "code_
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListTasteRulesParams {
-    /// `active` (default), `proposed`, `rejected` or `expired`.
+    /// `active` (default), `proposed`, `paused`, `rejected` or `expired`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
 }
@@ -25,6 +25,22 @@ pub struct ListTasteRulesParams {
 #[serde(rename_all = "camelCase")]
 pub struct ListTasteRulesResult {
     pub rules: Vec<MemoryRecord>,
+    /// Rules given to at least ten reviews and cited by none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub never_used: Vec<String>,
+}
+
+/// Pause, resume or pin a taste rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetTasteRuleStateParams {
+    pub record_id: String,
+    /// `active` or `paused`; absent leaves it as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// Absent leaves the pin as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

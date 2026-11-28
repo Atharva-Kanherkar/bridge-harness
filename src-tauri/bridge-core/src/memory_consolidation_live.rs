@@ -81,7 +81,32 @@ pub fn start_consolidation_maintenance(core: Arc<BridgeCore>) {
             execute(&core, run);
         }
         learn_taste_if_due(&core);
+        rescore_taste_hourly(&core);
     });
+}
+
+/// Taste rules are rescored from what happened, at most once an hour: their
+/// trust decays and noisy learned rules pause (#1203).
+fn rescore_taste_hourly(core: &Arc<BridgeCore>) {
+    static LAST: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+    {
+        let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if last.is_some_and(|at| at.elapsed() < StdDuration::from_secs(3600)) {
+            return;
+        }
+        *last = Some(Instant::now());
+    }
+    let changed = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::taste::score::recompute(&db, Utc::now())
+    };
+    match changed {
+        Ok(done) if !done.paused.is_empty() || !done.expired.is_empty() => {
+            core.events.publish(CoreEvent::MemoryChanged { scope_key: memory_ledger::account_memory_scope().to_string() });
+        }
+        Ok(_) => {}
+        Err(error) => eprintln!("[taste] rescoring failed: {error}"),
+    }
 }
 
 /// The taste learner's nightly turn (#1201): at most one repository a tick,

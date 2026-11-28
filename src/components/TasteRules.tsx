@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Plus, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Pause, Pencil, Pin, PinOff, Play, Plus, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { Tip } from "@/components/ui/tooltip";
 import { bridgeApi } from "../api";
 import { friendlyError } from "../errors";
 import type { MemoryRecord, TasteEvidence } from "../protocol/generated/protocol";
@@ -54,9 +55,17 @@ function Evidence({ recordId, onError }: { recordId: string; onError: (message: 
   </ul>;
 }
 
-function RuleRow({ rule, busy, showRepository, onApprove, onReject, onDelete, onError }: {
+/** A rule's trust, signed, one decimal. */
+const trust = (score: number) => `${score > 0 ? "+" : score < 0 ? "−" : ""}${Math.abs(score).toFixed(1)}`;
+
+function RuleRow({ rule, busy, showRepository, neverUsed, onApprove, onReject, onDelete, onPause, onResume, onPin, onEdit, onError }: {
   rule: MemoryRecord;
   busy: boolean;
+  neverUsed?: boolean;
+  onPause?: () => void;
+  onResume?: () => void;
+  onPin?: (pinned: boolean) => void;
+  onEdit?: (body: string) => void;
   /** Name the repository on the row, where rules of several are mixed. */
   showRepository?: boolean;
   onApprove?: () => void;
@@ -65,12 +74,28 @@ function RuleRow({ rule, busy, showRepository, onApprove, onReject, onDelete, on
   onError: (message: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<string>();
   const decisions = rule.evidenceCount ?? 0;
+  const learned = rule.provenance !== "user_explicit";
   return <li data-taste-rule={rule.id} className="px-4 py-3">
     <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
       <span className="mt-0.5 shrink-0 rounded-sm bg-muted px-1.5 text-caption font-medium text-muted-foreground">{kindLabel(rule.kind)}</span>
-      <span className="min-w-0 flex-1 basis-64 text-ui text-foreground">{rule.body}</span>
+      {editing === undefined
+        ? <span className="min-w-0 flex-1 basis-64 text-ui text-foreground">{rule.body}</span>
+        : <span className="grid min-w-0 flex-1 basis-64 gap-1.5">
+            <Textarea aria-label={`Edit rule: ${rule.body}`} rows={2} value={editing} onChange={event => setEditing(event.target.value)} />
+            <span className="flex justify-end gap-1.5">
+              <Button variant="quiet" size="2xs" onClick={() => setEditing(undefined)}>Cancel</Button>
+              <Button size="2xs" disabled={busy || !editing.trim() || editing.trim() === rule.body} onClick={() => { onEdit?.(editing.trim()); setEditing(undefined); }}>Save</Button>
+            </span>
+          </span>}
       <span className="flex shrink-0 gap-1">
+        {onEdit && editing === undefined && <Button variant="ghost" size="2xs" disabled={busy} aria-label={`Edit rule: ${rule.body}`} onClick={() => setEditing(rule.body)}><Pencil className="size-3" aria-hidden="true" /></Button>}
+        {onPin && learned && <Button variant="ghost" size="2xs" disabled={busy} aria-pressed={Boolean(rule.pinned)} aria-label={rule.pinned ? `Unpin rule: ${rule.body}` : `Pin rule: ${rule.body}`} onClick={() => onPin(!rule.pinned)}>
+          {rule.pinned ? <PinOff className="size-3" aria-hidden="true" /> : <Pin className="size-3" aria-hidden="true" />}
+        </Button>}
+        {onPause && <Button variant="ghost" size="2xs" disabled={busy} aria-label={`Pause rule: ${rule.body}`} onClick={onPause}><Pause className="size-3" aria-hidden="true" /></Button>}
+        {onResume && <Button size="2xs" disabled={busy} onClick={onResume}><Play className="size-3" aria-hidden="true" /> Resume</Button>}
         {onApprove && <Button size="2xs" disabled={busy} onClick={onApprove}><Check className="size-3" aria-hidden="true" /> Approve</Button>}
         {onReject && <Button variant="ghost" size="2xs" disabled={busy} onClick={onReject}><X className="size-3" aria-hidden="true" /> Reject</Button>}
         {onDelete && <Button variant="ghost" size="2xs" disabled={busy} aria-label={`Delete rule: ${rule.body}`} onClick={onDelete}><Trash2 className="size-3" aria-hidden="true" /></Button>}
@@ -79,7 +104,10 @@ function RuleRow({ rule, busy, showRepository, onApprove, onReject, onDelete, on
     <div className="mt-1 flex flex-wrap items-center gap-x-3 text-caption text-muted-foreground">
       {showRepository && <span className="font-mono">{repositoryLabel(rule.scopeKey)}</span>}
       {rule.pathGlobs?.length ? <span className="font-mono">{rule.pathGlobs.join(", ")}</span> : null}
-      {rule.provenance === "user_explicit" ? <span>Written by you</span> : <span>Learned</span>}
+      {rule.provenance === "user_explicit" ? <span>Written by you</span> : <span>Learned{rule.pinned ? " · pinned" : ""}</span>}
+      {learned && rule.status !== "proposed" && <Tip label="Rises when what it shaped is kept, falls when it is dropped; halves every 60 days."><span className="tabular-nums">Trust {trust(rule.outcomeScore ?? 0)}</span></Tip>}
+      {neverUsed && <span className="text-warning">Never used</span>}
+      {rule.pausedReason && <span>{rule.pausedReason}</span>}
       {rule.rationale && <span>{rule.rationale}</span>}
       {decisions > 0 && <Button variant="text" size="inline" aria-expanded={open} onClick={() => setOpen(current => !current)}>
         {open ? <ChevronDown className="size-3" aria-hidden="true" /> : <ChevronRight className="size-3" aria-hidden="true" />}
@@ -99,14 +127,20 @@ function group(rules: MemoryRecord[]): [string, MemoryRecord[]][] {
 export function TasteRules({ onError, onCount }: { onError: (message: string) => void; onCount?: (waiting: number) => void }) {
   const [waiting, setWaiting] = useState<MemoryRecord[]>();
   const [active, setActive] = useState<MemoryRecord[]>();
+  const [paused, setPaused] = useState<MemoryRecord[]>([]);
+  const [neverUsed, setNeverUsed] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [writing, setWriting] = useState(false);
   const [draft, setDraft] = useState({ repository: "", kind: "review_avoid" as Kind, body: "", paths: "" });
 
   const load = async () => {
-    const [proposed, current] = await Promise.all([bridgeApi.listTasteRules("proposed"), bridgeApi.listTasteRules("active")]);
+    const [proposed, current, resting] = await Promise.all([
+      bridgeApi.listTasteRules("proposed"), bridgeApi.listTasteRules("active"), bridgeApi.listTasteRules("paused"),
+    ]);
     setWaiting(proposed.rules);
     setActive(current.rules);
+    setPaused(resting.rules);
+    setNeverUsed(new Set(current.neverUsed ?? []));
     onCount?.(proposed.rules.length);
   };
   useEffect(() => {
@@ -177,11 +211,23 @@ export function TasteRules({ onError, onCount }: { onError: (message: string) =>
             {group(active).map(([scope, rules]) => <div key={scope}>
               <p className="mb-1 px-0.5 font-mono text-caption text-muted-foreground">{repositoryLabel(scope)}</p>
               <ul aria-label={`Taste rules for ${repositoryLabel(scope)}`} className="divide-y divide-border overflow-hidden rounded-xl border border-border-card bg-card">
-                {rules.map(rule => <RuleRow key={rule.id} rule={rule} busy={busy} onError={onError}
-                  onDelete={() => void act(() => bridgeApi.deleteMemoryRecord(rule.id), "Couldn't delete that rule.")} />)}
+                {rules.map(rule => <RuleRow key={rule.id} rule={rule} busy={busy} onError={onError} neverUsed={neverUsed.has(rule.id)}
+                  onDelete={() => void act(() => bridgeApi.deleteMemoryRecord(rule.id), "Couldn't delete that rule.")}
+                  onPause={() => void act(() => bridgeApi.setTasteRuleState(rule.id, { state: "paused" }), "Couldn't pause that rule.")}
+                  onPin={pinned => void act(() => bridgeApi.setTasteRuleState(rule.id, { pinned }), "Couldn't pin that rule.")}
+                  onEdit={body => void act(() => bridgeApi.supersedeMemoryRecord(rule.id, body), "Couldn't edit that rule.")} />)}
               </ul>
             </div>)}
           </div>}
     </section>
+    {paused.length > 0 && <section>
+      <h2 className="mb-2 px-0.5 text-ui font-medium text-foreground">Paused <span className="tabular-nums text-faint">{paused.length}</span></h2>
+      <ul aria-label="Paused taste rules" className="divide-y divide-border overflow-hidden rounded-xl border border-border-card bg-card">
+        {paused.map(rule => <RuleRow key={rule.id} rule={rule} busy={busy} onError={onError} showRepository
+          onResume={() => void act(() => bridgeApi.setTasteRuleState(rule.id, { state: "active" }), "Couldn't resume that rule.")}
+          onDelete={() => void act(() => bridgeApi.deleteMemoryRecord(rule.id), "Couldn't delete that rule.")} />)}
+      </ul>
+      <p className="mt-2 px-0.5 text-caption text-faint">A learned rule pauses itself when what it shapes keeps getting dropped. Paused rules reach no review and no chat.</p>
+    </section>}
   </div>;
 }

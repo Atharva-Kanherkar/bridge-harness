@@ -21,7 +21,29 @@ function mockRules() {
     rule("mine", { scopeKey: "account:local", kind: "code_prefer", body: "No `unwrap()` outside tests", provenance: "user_explicit" }),
     rule("repo", { scopeKey: "project:octo/repo", kind: "review_prefer", body: "Flag bounds checks that use `<=`", evidenceCount: 3, pathGlobs: ["src/**"] }),
   ];
-  vi.spyOn(bridgeApi, "listTasteRules").mockImplementation(async status => ({ rules: status === "proposed" ? proposed : active }));
+  let paused: MemoryRecord[] = [];
+  vi.spyOn(bridgeApi, "listTasteRules").mockImplementation(async status => ({
+    rules: status === "proposed" ? proposed : status === "paused" ? paused : active,
+    neverUsed: status === "active" ? ["repo"] : [],
+  }));
+  const state = vi.spyOn(bridgeApi, "setTasteRuleState").mockImplementation(async (id, change) => {
+    if (change.state === "paused") {
+      const moved = active.find(item => item.id === id)!;
+      active = active.filter(item => item.id !== id);
+      paused = [{ ...moved, status: "paused", pausedReason: "Paused by you." }, ...paused];
+    }
+    if (change.state === "active") {
+      const moved = paused.find(item => item.id === id)!;
+      paused = paused.filter(item => item.id !== id);
+      active = [{ ...moved, status: "active", pausedReason: undefined }, ...active];
+    }
+    if (change.pinned !== undefined) active = active.map(item => item.id === id ? { ...item, pinned: change.pinned } : item);
+    return rule(id, {});
+  });
+  const supersede = vi.spyOn(bridgeApi, "supersedeMemoryRecord").mockImplementation(async (id, body) => {
+    active = active.map(item => item.id === id ? { ...item, body } : item);
+    return rule(id, { body });
+  });
   vi.spyOn(bridgeApi, "getTasteEvidence").mockResolvedValue({
     signals: [
       { id: "s1", at: "2026-10-01T00:00:00Z", source: "review_decision", verdict: "kept", title: "Bounds check uses <=", path: "src/get.rs", prNumber: 101, weight: 1 },
@@ -40,7 +62,7 @@ function mockRules() {
     active = active.filter(item => item.id !== id);
     return rule(id, { status: "deleted" });
   });
-  return { review, add, remove };
+  return { review, add, remove, state, supersede };
 }
 
 async function mount(onError = vi.fn(), onCount = vi.fn()) {
@@ -119,5 +141,31 @@ describe("TasteRules", () => {
     await act(async () => { button(row("mine"), "Delete rule").click(); await flush(); });
     expect(remove).toHaveBeenCalledWith("mine");
     expect(row("mine")).toBeNull();
+  });
+
+  it("shows trust and rules never used, and pauses, resumes, pins and edits", async () => {
+    const { state, supersede } = mockRules();
+    await mount();
+    expect(row("repo").textContent).toContain("Trust 0.0");
+    expect(row("repo").textContent).toContain("Never used");
+    expect(row("mine").textContent).not.toContain("Trust");
+    expect(button(row("mine"), "Pin rule")).toBeUndefined();
+
+    await act(async () => { button(row("repo"), "Pin rule").click(); await flush(); });
+    expect(state).toHaveBeenLastCalledWith("repo", { pinned: true });
+    expect(row("repo").textContent).toContain("Learned · pinned");
+
+    await act(async () => { button(row("repo"), "Edit rule").click(); await flush(); });
+    await type(row("repo").querySelector<HTMLTextAreaElement>("textarea")!, "Flag bounds checks that use `<=` on a length");
+    await act(async () => { button(row("repo"), "Save").click(); await flush(); });
+    expect(supersede).toHaveBeenCalledWith("repo", "Flag bounds checks that use `<=` on a length");
+
+    await act(async () => { button(row("repo"), "Pause rule").click(); await flush(); });
+    expect(state).toHaveBeenLastCalledWith("repo", { state: "paused" });
+    const resting = host!.querySelector('[aria-label="Paused taste rules"]')!;
+    expect(resting.textContent).toContain("Paused by you.");
+    await act(async () => { button(resting, "Resume").click(); await flush(); });
+    expect(state).toHaveBeenLastCalledWith("repo", { state: "active" });
+    expect(host!.querySelector('[aria-label="Paused taste rules"]')).toBeNull();
   });
 });

@@ -62,6 +62,17 @@
         "null"
       ]
     },
+    "pausedReason": {
+      "description": "Taste rules only: why a paused rule paused.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pinned": {
+      "description": "Taste rules only: kept from pausing or expiring on its own.",
+      "type": "boolean"
+    },
     "provenance": {
       "type": "string"
     },

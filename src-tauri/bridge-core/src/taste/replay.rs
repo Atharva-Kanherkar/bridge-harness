@@ -184,6 +184,11 @@ pub fn candidates(db: &Connection) -> Result<Vec<Candidate>, BridgeError> {
     candidates_where(db, "1", params![])
 }
 
+/// One finding, as [`candidates`] reads it.
+pub fn candidate(db: &Connection, finding_id: &str) -> Result<Option<Candidate>, BridgeError> {
+    Ok(candidates_where(db, "f.id = ?1", params![finding_id])?.into_iter().next())
+}
+
 /// One review's findings, as [`candidates`] reads them.
 pub fn candidates_of_job(db: &Connection, job_id: &str) -> Result<Vec<Candidate>, BridgeError> {
     candidates_where(db, "f.job_id = ?1", params![job_id])
