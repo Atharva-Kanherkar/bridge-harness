@@ -3298,6 +3298,31 @@ async fn set_taste_rule_state(
 }
 
 #[tauri::command]
+async fn export_taste_rules(
+    scope_key: String,
+    workspace_id: Option<String>,
+    targets: Option<Vec<String>>,
+    write: bool,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ExportTasteRulesResult, BridgeError> {
+    let core = state.inner().clone();
+    let params = bridge_protocol::messages::ExportTasteRulesParams { scope_key, workspace_id, targets, write };
+    blocking("Export taste rules", move || api::export_taste_rules(&core, &params)).await
+}
+
+#[tauri::command]
+async fn import_taste_rules(
+    scope_key: String,
+    workspace_id: Option<String>,
+    apply: bool,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ImportTasteRulesResult, BridgeError> {
+    let core = state.inner().clone();
+    let params = bridge_protocol::messages::ImportTasteRulesParams { scope_key, workspace_id, apply };
+    blocking("Import taste rules", move || api::import_taste_rules(&core, &params)).await
+}
+
+#[tauri::command]
 async fn start_dream(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::MemoryDreamStarted, BridgeError> {
@@ -4438,6 +4463,8 @@ pub fn run() -> i32 {
             get_taste_evidence,
             add_taste_rule,
             set_taste_rule_state,
+            export_taste_rules,
+            import_taste_rules,
             get_dream_report,
             undo_dream_operation,
             undo_dream,

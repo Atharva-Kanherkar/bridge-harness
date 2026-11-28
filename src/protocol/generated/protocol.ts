@@ -160,6 +160,8 @@ export type BridgeMethod =
   | "taste/get_taste_evidence"
   | "taste/add_taste_rule"
   | "taste/set_taste_rule_state"
+  | "taste/export_taste_rules"
+  | "taste/import_taste_rules"
   | "approvals/resolve_approval"
   | "approvals/resolve_question"
   | "attention/list_attention"
@@ -551,6 +553,8 @@ export const BRIDGE_METHODS = [
   { method: "taste/get_taste_evidence", domain: "taste", command: "get_taste_evidence" },
   { method: "taste/add_taste_rule", domain: "taste", command: "add_taste_rule" },
   { method: "taste/set_taste_rule_state", domain: "taste", command: "set_taste_rule_state" },
+  { method: "taste/export_taste_rules", domain: "taste", command: "export_taste_rules" },
+  { method: "taste/import_taste_rules", domain: "taste", command: "import_taste_rules" },
   { method: "approvals/resolve_approval", domain: "approvals", command: "resolve_approval" },
   { method: "approvals/resolve_question", domain: "approvals", command: "resolve_question" },
   { method: "attention/list_attention", domain: "attention", command: "list_attention" },
@@ -1013,6 +1017,8 @@ export interface BridgeMethodParams {
   "taste/get_taste_evidence": GetTasteEvidenceParams;
   "taste/add_taste_rule": AddTasteRuleParams;
   "taste/set_taste_rule_state": SetTasteRuleStateParams;
+  "taste/export_taste_rules": ExportTasteRulesParams;
+  "taste/import_taste_rules": ImportTasteRulesParams;
   "approvals/resolve_approval": ResolveApprovalParams;
   "approvals/resolve_question": ResolveQuestionParams;
   "attention/list_attention": ListAttentionParams;
@@ -1436,6 +1442,8 @@ export interface BridgeMethodResults {
   "taste/get_taste_evidence": TasteEvidence;
   "taste/add_taste_rule": MemoryRecord;
   "taste/set_taste_rule_state": MemoryRecord;
+  "taste/export_taste_rules": ExportTasteRulesResult;
+  "taste/import_taste_rules": ImportTasteRulesResult;
   "approvals/resolve_approval": InteractionResolutionResult;
   "approvals/resolve_question": InteractionResolutionResult;
   "attention/list_attention": ListAttentionResult;
@@ -3890,6 +3898,24 @@ export interface SuggestionSettings {
   provider: string;
 }
 
+export interface TasteCheckout {
+  path: string;
+  title: string;
+  workspaceId: string;
+}
+
+export interface TasteFileChange {
+  after: string;
+  before: string;
+  changed: boolean;
+  path: string;
+}
+
+export interface TasteRuleUpdate {
+  body: string;
+  recordId: string;
+}
+
 export interface TasteSignal {
   at: string;
   harness?: string | null;
@@ -5796,6 +5822,33 @@ export interface SetTasteRuleStateParams {
   pinned?: boolean | null;
   recordId: string;
   state?: string | null;
+}
+
+export interface ExportTasteRulesParams {
+  scopeKey: string;
+  targets?: string[] | null;
+  workspaceId?: string | null;
+  write: boolean;
+}
+
+export interface ExportTasteRulesResult {
+  checkouts: TasteCheckout[];
+  files: TasteFileChange[];
+  workspaceId: string;
+}
+
+export interface ImportTasteRulesParams {
+  apply: boolean;
+  scopeKey: string;
+  workspaceId?: string | null;
+}
+
+export interface ImportTasteRulesResult {
+  added: string[];
+  checkouts: TasteCheckout[];
+  missing: string[];
+  updated: TasteRuleUpdate[];
+  workspaceId: string;
 }
 
 export interface ResolveApprovalParams {

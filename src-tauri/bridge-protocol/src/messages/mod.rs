@@ -336,6 +336,8 @@ typed_methods![
     (GetTasteEvidence, GetTasteEvidenceParams, TasteEvidence),
     (AddTasteRule, AddTasteRuleParams, MemoryRecord),
     (SetTasteRuleState, SetTasteRuleStateParams, MemoryRecord),
+    (ExportTasteRules, ExportTasteRulesParams, ExportTasteRulesResult),
+    (ImportTasteRules, ImportTasteRulesParams, ImportTasteRulesResult),
     // approvals
     (ResolveApproval, ResolveApprovalParams, InteractionResolutionResult),
     (ResolveQuestion, ResolveQuestionParams, InteractionResolutionResult),

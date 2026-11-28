@@ -2607,6 +2607,82 @@ pub fn list_taste_rules(
     Ok(bridge_protocol::messages::ListTasteRulesResult { rules: memory_ledger::list_taste(&db, status)?, never_used })
 }
 
+/// The checkouts of a repository Bridge knows, and the one to use.
+fn taste_checkout(
+    core: &Arc<BridgeCore>,
+    scope_key: &str,
+    wanted: Option<&str>,
+) -> Result<(Vec<bridge_protocol::messages::TasteCheckout>, bridge_protocol::messages::TasteCheckout), BridgeError> {
+    let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let scope = memory_ledger::parse_scope_key(scope_key)?;
+    let workspaces: Vec<(String, String, String)> = {
+        let mut statement = db.prepare("SELECT id, title, path FROM workspaces ORDER BY created_at, id")?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let mut checkouts = Vec::new();
+    for (id, title, path) in workspaces {
+        if crate::taste::repository::scope_of_workspace(&db, &id)?.as_deref() == Some(scope.as_str()) {
+            checkouts.push(bridge_protocol::messages::TasteCheckout { workspace_id: id, title, path });
+        }
+    }
+    let chosen = match wanted {
+        Some(id) => checkouts.iter().find(|checkout| checkout.workspace_id == id).cloned(),
+        None => checkouts.first().cloned(),
+    }
+    .ok_or_else(|| {
+        BridgeError::Invalid(format!(
+            "Bridge has no checkout of {} to write to. Open the repository as a project first.",
+            scope.trim_start_matches("project:")
+        ))
+    })?;
+    Ok((checkouts, chosen))
+}
+
+pub fn export_taste_rules(
+    core: &Arc<BridgeCore>,
+    params: &bridge_protocol::messages::ExportTasteRulesParams,
+) -> Result<bridge_protocol::messages::ExportTasteRulesResult, BridgeError> {
+    use crate::taste::export::{export, Target};
+    let targets: Vec<Target> = match &params.targets {
+        None => Target::ALL.to_vec(),
+        Some(names) => names
+            .iter()
+            .map(|name| Target::parse(name).ok_or_else(|| BridgeError::Invalid(format!("'{name}' is not a file taste rules go to."))))
+            .collect::<Result<_, _>>()?,
+    };
+    let (checkouts, chosen) = taste_checkout(core, &params.scope_key, params.workspace_id.as_deref())?;
+    let root = if params.write { locked_workspace_path(core, &chosen.workspace_id)? } else { chosen.path.clone() };
+    let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let files = export(&db, &memory_ledger::parse_scope_key(&params.scope_key)?, std::path::Path::new(&root), &targets, params.write)?
+        .into_iter()
+        .map(|change| bridge_protocol::messages::TasteFileChange { path: change.path, before: change.before, after: change.after, changed: change.changed })
+        .collect();
+    Ok(bridge_protocol::messages::ExportTasteRulesResult { checkouts, workspace_id: chosen.workspace_id, files })
+}
+
+pub fn import_taste_rules(
+    core: &Arc<BridgeCore>,
+    params: &bridge_protocol::messages::ImportTasteRulesParams,
+) -> Result<bridge_protocol::messages::ImportTasteRulesResult, BridgeError> {
+    let (checkouts, chosen) = taste_checkout(core, &params.scope_key, params.workspace_id.as_deref())?;
+    let scope = memory_ledger::parse_scope_key(&params.scope_key)?;
+    let plan = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::taste::export::import(&db, &scope, std::path::Path::new(&chosen.path), params.apply)?
+    };
+    if params.apply {
+        core.events.publish(CoreEvent::MemoryChanged { scope_key: scope });
+    }
+    Ok(bridge_protocol::messages::ImportTasteRulesResult {
+        checkouts,
+        workspace_id: chosen.workspace_id,
+        added: plan.added,
+        updated: plan.updated.into_iter().map(|(record_id, body)| bridge_protocol::messages::TasteRuleUpdate { record_id, body }).collect(),
+        missing: plan.missing,
+    })
+}
+
 pub fn set_taste_rule_state(
     core: &Arc<BridgeCore>,
     params: &bridge_protocol::messages::SetTasteRuleStateParams,

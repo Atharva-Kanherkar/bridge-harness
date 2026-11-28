@@ -1073,6 +1073,20 @@
       "resultSchema": "memory-record.json"
     },
     {
+      "command": "export_taste_rules",
+      "domain": "taste",
+      "method": "taste/export_taste_rules",
+      "paramsSchema": "export-taste-rules-params.json",
+      "resultSchema": "export-taste-rules-result.json"
+    },
+    {
+      "command": "import_taste_rules",
+      "domain": "taste",
+      "method": "taste/import_taste_rules",
+      "paramsSchema": "import-taste-rules-params.json",
+      "resultSchema": "import-taste-rules-result.json"
+    },
+    {
       "command": "resolve_approval",
       "domain": "approvals",
       "method": "approvals/resolve_approval",

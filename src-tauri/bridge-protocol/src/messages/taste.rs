@@ -96,3 +96,76 @@ pub struct AddTasteRuleParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_globs: Option<Vec<String>>,
 }
+
+/// A checkout of the repository, where rule files are read and written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TasteCheckout {
+    pub workspace_id: String,
+    pub title: String,
+    pub path: String,
+}
+
+/// One instruction file as export would leave it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TasteFileChange {
+    /// `AGENTS.md`, `CLAUDE.md` or `.cursor/BUGBOT.md`, from the checkout's root.
+    pub path: String,
+    pub before: String,
+    pub after: String,
+    pub changed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExportTasteRulesParams {
+    /// `project:<owner>/<repo>`.
+    pub scope_key: String,
+    /// The checkout to write into; absent uses the first one Bridge knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// Files to write; absent is all three.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub targets: Option<Vec<String>>,
+    /// False previews; true writes. Bridge never commits.
+    pub write: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportTasteRulesResult {
+    pub checkouts: Vec<TasteCheckout>,
+    pub workspace_id: String,
+    pub files: Vec<TasteFileChange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImportTasteRulesParams {
+    pub scope_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// False previews; true applies.
+    pub apply: bool,
+}
+
+/// A rule whose text the file changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TasteRuleUpdate {
+    pub record_id: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportTasteRulesResult {
+    pub checkouts: Vec<TasteCheckout>,
+    pub workspace_id: String,
+    /// New bullets, which become rules you wrote.
+    pub added: Vec<String>,
+    pub updated: Vec<TasteRuleUpdate>,
+    /// Active rules the files no longer list. Reported, never deleted.
+    pub missing: Vec<String>,
+}

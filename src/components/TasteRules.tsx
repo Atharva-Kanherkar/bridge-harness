@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Pause, Pencil, Pin, PinOff, Play, Plus, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, FileText, Pause, Pencil, Pin, PinOff, Play, Plus, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SegmentedGroup, SegmentedItem } from "@/components/ui/segmented";
@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { bridgeApi } from "../api";
 import { friendlyError } from "../errors";
-import type { MemoryRecord, TasteEvidence } from "../protocol/generated/protocol";
+import type { ExportTasteRulesResult, ImportTasteRulesResult, MemoryRecord, TasteEvidence } from "../protocol/generated/protocol";
 
 // The Memory app's Taste tab: rules learned from what you keep, edit and drop
 // in reviews, and the ones you write yourself. Learned rules wait here for
@@ -118,6 +118,78 @@ function RuleRow({ rule, busy, showRepository, neverUsed, onApprove, onReject, o
   </li>;
 }
 
+const START = "<!-- bridge:taste:start v1 -->";
+const END = "<!-- bridge:taste:end -->";
+
+/** The managed section of a file's text, as export writes it. */
+const section = (text: string) => {
+  const start = text.indexOf(START);
+  const end = text.indexOf(END, start);
+  return start < 0 || end < 0 ? "" : text.slice(start, end + END.length);
+};
+
+/** A repository's rules out to its instruction files and back. Nothing is
+ *  written or applied without a click, and Bridge never commits. */
+function TasteFiles({ scopeKey, onChanged, onError }: { scopeKey: string; onChanged: () => void; onError: (message: string) => void }) {
+  const [preview, setPreview] = useState<ExportTasteRulesResult>();
+  const [plan, setPlan] = useState<ImportTasteRulesResult>();
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<string>();
+  const run = async (work: () => Promise<void>, failure: string) => {
+    setBusy(true); setDone(undefined);
+    try { await work(); } catch (cause) { onError(friendlyError(cause, failure)); } finally { setBusy(false); }
+  };
+  useEffect(() => {
+    let active = true;
+    void bridgeApi.exportTasteRules({ scopeKey, write: false })
+      .then(found => { if (active) setPreview(found); })
+      .catch(cause => { if (active) onError(friendlyError(cause, "Couldn't read this repository's files.")); });
+    return () => { active = false; };
+  }, [scopeKey, onError]);
+  if (!preview) return <SkeletonRows label="Reading the files" rows={2} framed={false} density="menu" />;
+  const checkout = preview.checkouts.find(item => item.workspaceId === preview.workspaceId);
+  const changed = preview.files.filter(file => file.changed);
+  return <div aria-label={`Files for ${repositoryLabel(scopeKey)}`} role="group" className="grid gap-3 rounded-xl border border-border-card bg-card px-4 py-3">
+    <p className="text-caption text-muted-foreground">
+      In <span className="font-mono text-foreground">{checkout?.path}</span>. Bridge writes only between its markers and never commits.
+    </p>
+    {preview.files.map(file => <div key={file.path}>
+      <p className="mb-1 flex items-center gap-2 text-caption">
+        <span className="font-mono text-foreground">{file.path}</span>
+        <span className="text-muted-foreground">{file.changed ? (file.before ? "will be updated" : "will be created") : "up to date"}</span>
+      </p>
+      {file.changed && <pre className="max-h-48 overflow-auto rounded-md border border-border bg-background px-3 py-2 text-caption whitespace-pre-wrap">{section(file.after)}</pre>}
+    </div>)}
+    <div className="flex flex-wrap items-center justify-end gap-1.5">
+      {done && <span role="status" className="mr-auto text-caption text-muted-foreground">{done}</span>}
+      <Button variant="outline" size="xs" disabled={busy} onClick={() => void run(async () => {
+        setPlan(await bridgeApi.importTasteRules({ scopeKey, workspaceId: preview.workspaceId, apply: false }));
+      }, "Couldn't read the files back.")}>Read back from files</Button>
+      <Button size="xs" disabled={busy || changed.length === 0} onClick={() => void run(async () => {
+        setPreview(await bridgeApi.exportTasteRules({ scopeKey, workspaceId: preview.workspaceId, write: true }));
+        setDone(`Wrote ${changed.map(file => file.path).join(", ")}.`);
+      }, "Couldn't write the files.")}>Write files</Button>
+    </div>
+    {plan && <div aria-label="What the files would change" className="grid gap-1 rounded-md border border-border bg-background px-3 py-2 text-caption">
+      {plan.added.length + plan.updated.length + plan.missing.length === 0
+        ? <p className="text-muted-foreground">The files say what your rules say.</p>
+        : <>
+            {plan.added.map(body => <p key={`add-${body}`}><span className="font-medium text-foreground">New</span> {body}</p>)}
+            {plan.updated.map(update => <p key={`edit-${update.recordId}`}><span className="font-medium text-foreground">Changed</span> {update.body}</p>)}
+            {plan.missing.length > 0 && <p className="text-muted-foreground">{plan.missing.length} {plan.missing.length === 1 ? "rule is" : "rules are"} not in the files. Nothing is deleted; pause them here if you meant to.</p>}
+            {(plan.added.length > 0 || plan.updated.length > 0) && <div className="flex justify-end">
+              <Button size="2xs" disabled={busy} onClick={() => void run(async () => {
+                await bridgeApi.importTasteRules({ scopeKey, workspaceId: preview.workspaceId, apply: true });
+                setPlan(undefined);
+                setDone("Your rules now match the files.");
+                onChanged();
+              }, "Couldn't apply what the files say.")}>Apply</Button>
+            </div>}
+          </>}
+    </div>}
+  </div>;
+}
+
 function group(rules: MemoryRecord[]): [string, MemoryRecord[]][] {
   const byScope = new Map<string, MemoryRecord[]>();
   for (const rule of rules) byScope.set(rule.scopeKey, [...(byScope.get(rule.scopeKey) ?? []), rule]);
@@ -129,6 +201,8 @@ export function TasteRules({ onError, onCount }: { onError: (message: string) =>
   const [active, setActive] = useState<MemoryRecord[]>();
   const [paused, setPaused] = useState<MemoryRecord[]>([]);
   const [neverUsed, setNeverUsed] = useState<ReadonlySet<string>>(new Set());
+  // The repository whose files panel is open.
+  const [files, setFiles] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [writing, setWriting] = useState(false);
   const [draft, setDraft] = useState({ repository: "", kind: "review_avoid" as Kind, body: "", paths: "" });
@@ -209,7 +283,14 @@ export function TasteRules({ onError, onCount }: { onError: (message: string) =>
           </p>
         : <div className="space-y-4">
             {group(active).map(([scope, rules]) => <div key={scope}>
-              <p className="mb-1 px-0.5 font-mono text-caption text-muted-foreground">{repositoryLabel(scope)}</p>
+              <div className="mb-1 flex items-center gap-2 px-0.5">
+                <p className="flex-1 font-mono text-caption text-muted-foreground">{repositoryLabel(scope)}</p>
+                {scope.startsWith("project:") && <Button variant="quiet" size="2xs" aria-expanded={files === scope}
+                  onClick={() => setFiles(current => current === scope ? undefined : scope)}>
+                  <FileText className="size-3" aria-hidden="true" /> Files
+                </Button>}
+              </div>
+              {files === scope && <div className="mb-2"><TasteFiles scopeKey={scope} onError={onError} onChanged={() => void load()} /></div>}
               <ul aria-label={`Taste rules for ${repositoryLabel(scope)}`} className="divide-y divide-border overflow-hidden rounded-xl border border-border-card bg-card">
                 {rules.map(rule => <RuleRow key={rule.id} rule={rule} busy={busy} onError={onError} neverUsed={neverUsed.has(rule.id)}
                   onDelete={() => void act(() => bridgeApi.deleteMemoryRecord(rule.id), "Couldn't delete that rule.")}
