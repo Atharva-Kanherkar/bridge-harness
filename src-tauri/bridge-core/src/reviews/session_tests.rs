@@ -382,6 +382,39 @@ fn a_pass_reads_the_context_and_keeps_inline_and_outside_findings_apart() {
     assert!(script.sent.lock().unwrap()[0].starts_with("Review pull request #42: Parse input"));
 }
 
+#[test]
+fn a_pass_with_taste_rules_names_them_and_keeps_only_the_ids_it_was_given() {
+    let scratch = tempfile::tempdir().unwrap();
+    let core = BridgeCore::for_tests(scratch.path());
+    let checkout = scratch.path().join("checkout");
+    let context = scratch.path().join("context");
+    std::fs::create_dir_all(&checkout).unwrap();
+    std::fs::create_dir_all(&context).unwrap();
+    std::fs::write(context.join("pr.json"), json!({"number": 42, "title": "Parse input", "changedFiles": 1, "tasteRules": 1}).to_string()).unwrap();
+    std::fs::write(context.join("files.json"), json!([{"path": "src/a.rs", "status": "modified"}]).to_string()).unwrap();
+    std::fs::write(context.join("diff.patch"), PATCH).unwrap();
+    std::fs::write(context.join("threads.json"), "[]").unwrap();
+    std::fs::write(
+        context.join(crate::taste::review_rules::TASTE_FILE),
+        json!([{"id": "rule-1", "kind": "review_prefer", "rule": "Flag unwrap on user input", "pathGlobs": null}]).to_string(),
+    )
+    .unwrap();
+    let job = job(&core);
+    let prepared = Prepared { worktree: Some(checkout), context: Some(context), head_sha: "h".into(), ..Prepared::default() };
+    let findings = json!([
+        {"path": "src/a.rs", "line": 2, "side": "RIGHT", "severity": "major", "title": "Unwrap on user input", "body": "b", "confidence": 0.9, "ruleIds": ["rule-1", "made-up", "rule-1"]},
+        {"path": "src/a.rs", "line": 3, "side": "RIGHT", "severity": "minor", "title": "Name is unclear", "body": "b", "confidence": 0.5, "ruleIds": "rule-1"},
+    ]);
+    let script = script(vec![vec![Step::Events(vec![event("turn.started"), said("m", &answer(findings)), event("turn.completed")])]]);
+    let meter = crate::reviews::steps::UsageMeter::default();
+    let request = PassRequest { job: &job, prepared: &prepared, pass_id: "p", harness: "claude", usage: &meter };
+    let outcome = review_pass_with(&core, &ScriptedTransport(script.clone()), request, &CancelToken::new(), Limits::default()).unwrap();
+    let shaped: Vec<(&str, Vec<String>)> = outcome.findings.iter().map(|finding| (finding.title.as_str(), finding.rule_ids.clone())).collect();
+    assert_eq!(shaped, [("Unwrap on user input", vec!["rule-1".to_string()]), ("Name is unclear", Vec::new())]);
+    assert_eq!(outcome.taste_rule_ids, ["rule-1"], "the rules it was given, cited or not");
+    assert!(script.sent.lock().unwrap()[0].contains("/taste.json`: rules the person set"), "the prompt names the file");
+}
+
 /// A real harness reviews a fixture PR with one planted bug. Run by hand:
 ///
 /// ```text
@@ -768,6 +801,7 @@ fn draft(path: &str, title: &str, fingerprint: &str, severity: ReviewSeverity) -
         fingerprint: fingerprint.into(),
         outside_diff: false,
         category: None,
+        rule_ids: Vec::new(),
     }
 }
 
@@ -979,6 +1013,53 @@ fn live_second_opinion_on_a_fixture_pr() {
         }),
     );
     assert!(pass, "the bug once, agreed by both, ranked first: {checks}");
+}
+
+/// A real harness reviews the second-opinion fixture twice: once as is, once
+/// with an approved `review_avoid` rule against naming nits (#1202). Claude
+/// flags `Sum_All`'s name on every plain run; with the rule it should not,
+/// and the off-by-one bug must be found both times. Run by hand:
+///
+/// ```text
+/// BRIDGE_REVIEW_LIVE_HARNESS=claude \
+///   cargo test -p bridge-core --lib reviews::session::tests::live_review_follows_taste_rules -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "live: runs a real harness; set BRIDGE_REVIEW_LIVE_HARNESS"]
+fn live_review_follows_taste_rules() {
+    let harness = std::env::var("BRIDGE_REVIEW_LIVE_HARNESS").expect("set BRIDGE_REVIEW_LIVE_HARNESS to claude, codex or opencode");
+    let model = std::env::var("BRIDGE_REVIEW_LIVE_MODEL").ok();
+    let registry = Arc::new(AdapterRegistry::built_in().unwrap());
+    std::thread::sleep(Duration::from_secs(8));
+    let transport = RegistryTransport { registry };
+    let about = |finding: &DraftFinding, words: &[&str]| {
+        let text = format!("{} {}", finding.title, finding.body).to_lowercase();
+        words.iter().any(|word| text.contains(word))
+    };
+    let mut runs = Vec::new();
+    for with_rule in [false, true] {
+        let (_scratch, repo, patch, mut pr, context_name) = second_opinion_fixture(false);
+        if with_rule {
+            let rule = json!([{"id": "rule-naming", "kind": "review_avoid", "rule": "Don't flag function naming or casing conventions, such as snake_case names.", "pathGlobs": null}]);
+            std::fs::write(repo.join(&context_name).join(crate::taste::review_rules::TASTE_FILE), rule.to_string()).unwrap();
+            pr["tasteRules"] = json!(1);
+        }
+        let instructions = instructions(&conventions_in(&repo.join(&context_name)), REVIEW_INSTRUCTIONS, false);
+        let start = SessionStart { cwd: &repo, model: model.as_deref(), effort: Some("medium"), instructions: &instructions, activity: None };
+        let (result, _) = run_answered(&transport, &harness, &start, &prompt(&pr, &context_name), &CancelToken::new(), Limits::default());
+        let (review, _) = result.expect("a valid findings set");
+        let changed = ["src/lib.rs".to_owned()].into_iter().collect();
+        let findings = contract::validate(review, &changed, &contract::hunks(&patch)).findings;
+        for finding in &findings {
+            eprintln!("{} [{}] {:?} {}", if with_rule { "rule " } else { "plain" }, finding.severity.as_str(), finding.rule_ids, finding.title);
+        }
+        let bug = findings.iter().any(|finding| about(finding, &["bound", "off-by-one", "off by one", "<=", "panic"]));
+        let naming = findings.iter().any(|finding| about(finding, &["naming", "snake_case", "snake case", "sum_all` violates", "non_snake"]) && finding.title.to_lowercase().contains("sum_all"));
+        runs.push((with_rule, bug, naming));
+    }
+    eprintln!("{harness}: (with rule, bug found, naming raised) {runs:?}");
+    assert!(runs.iter().all(|(_, bug, _)| *bug), "the bug is found with and without the rule");
+    assert!(!runs[1].2, "with the rule, the naming nit is not raised");
 }
 
 /// The second-opinion fixture: a repository whose PR adds `get` (lines 6-13,

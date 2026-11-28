@@ -70,6 +70,7 @@ fn finding(id: &str, decision: ReviewFindingDecision) -> wire::ReviewFinding {
         fixed_in_sha: None,
         category: None,
         hidden_reason: None,
+        rule_ids: Vec::new(),
     }
 }
 
@@ -585,6 +586,7 @@ fn draft(path: &str, line: u32, side: ReviewSide, outside_diff: bool) -> DraftFi
         fingerprint: path.into(),
         outside_diff,
         category: None,
+        rule_ids: Vec::new(),
     }
 }
 

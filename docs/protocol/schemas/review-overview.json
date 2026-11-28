@@ -97,6 +97,13 @@
             "null"
           ]
         },
+        "ruleIds": {
+          "description": "The person's taste rules the reviewer says shaped this finding.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "severity": {
           "$ref": "#/definitions/ReviewSeverity"
         },

@@ -191,6 +191,18 @@ describe("ReviewDraft", () => {
     expect(postButton().textContent).toContain("Post 5 findings");
   });
 
+  it("names the taste rules that shaped a finding, and only rules you have", async () => {
+    mockStore([finding("shaped", { ruleIds: ["rule-1", "gone"] }), finding("plain")]);
+    vi.spyOn(bridgeApi, "listTasteRules").mockResolvedValue({ rules: [{
+      id: "rule-1", scopeKey: "project:octo/repo", kind: "review_prefer", body: "Flag bounds checks that use `<=`", provenance: "model_proposal",
+      status: "active", validFrom: "t", createdAt: "t", updatedAt: "t", layer: "taste",
+    }] });
+    await mount();
+    expect(item("shaped").textContent).toContain("Shaped by your rule: Flag bounds checks that use `<=`");
+    expect(item("shaped").textContent?.match(/Shaped by/g)?.length).toBe(1);
+    expect(item("plain").textContent).not.toContain("Shaped by");
+  });
+
   it("is driven from the keyboard: arrows move, K keeps, D drops, E edits", async () => {
     const { decide } = mockStore(FINDINGS);
     await mount();

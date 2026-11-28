@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, EyeOff, Pencil, Send, X } from "lucide-react";
+import { Check, EyeOff, Pencil, Send, Sparkles, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -55,8 +55,10 @@ const tucked = (finding: ReviewFinding, shown: ReadonlySet<string>) =>
 /** What a finding says now: the person's saved edit, else the reviewer's body. */
 const savedBody = (finding: ReviewFinding) => finding.editedBody ?? finding.body;
 
-function FindingItem({ finding, harnesses, repositoryUrl, draft, busy, onDraft, onFocusMove, onDecide, onEdit, onCancelEdit, register }: {
+function FindingItem({ finding, harnesses, rules, repositoryUrl, draft, busy, onDraft, onFocusMove, onDecide, onEdit, onCancelEdit, register }: {
   finding: ReviewFinding;
+  /** The person's taste rules by id, to name the ones that shaped it. */
+  rules: ReadonlyMap<string, string>;
   /** The reviewers that flagged it: one, or both for a merged second opinion. */
   harnesses: string[];
   repositoryUrl?: string;
@@ -103,6 +105,9 @@ function FindingItem({ finding, harnesses, repositoryUrl, draft, busy, onDraft, 
       {harnesses.length > 0 && <span>{harnesses.map(harnessLabel).join(" and ")}</span>}
       {finding.decision !== "pending" && <span className="font-medium text-foreground">{finding.decision === "kept" ? "Kept" : finding.decision === "edited" ? "Edited" : "Dropped"}</span>}
     </div>
+    {(finding.ruleIds ?? []).filter(id => rules.has(id)).map(id => <p key={id} className="mt-0.5 flex items-center gap-1 text-caption text-muted-foreground">
+      <Sparkles className="size-3" aria-hidden="true" /> Shaped by your rule: {rules.get(id)}
+    </p>)}
     {finding.hiddenReason && <p className="mt-0.5 flex items-center gap-1 text-caption text-muted-foreground">
       <EyeOff className="size-3" aria-hidden="true" /> Your taste hid this: {finding.hiddenReason}
     </p>}
@@ -156,6 +161,15 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
   const items = useRef(new Map<string, HTMLElement>());
   // Hidden findings the person brought back, by id.
   const [shown, setShown] = useState<ReadonlySet<string>>(new Set());
+  // The person's active taste rules, to name the ones that shaped a finding.
+  const [rules, setRules] = useState<ReadonlyMap<string, string>>(new Map());
+  useEffect(() => {
+    let active = true;
+    void bridgeApi.listTasteRules("active")
+      .then(found => { if (active) setRules(new Map(found.rules.map(rule => [rule.id, rule.body]))); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, []);
 
   useResetOnChange([job.id], () => { setFindings(undefined); setError(undefined); setDrafts(new Map()); setShown(new Set()); });
   useEffect(() => {
@@ -224,6 +238,7 @@ export function ReviewDraft({ job, repositoryUrl, onPosting }: {
           key={finding.id}
           finding={finding}
           harnesses={(finding.passIds?.length ? finding.passIds : [finding.passId]).flatMap(id => harnessOf.get(id) ?? [])}
+          rules={rules}
           repositoryUrl={repositoryUrl}
           draft={drafts.get(finding.id)}
           busy={busy}

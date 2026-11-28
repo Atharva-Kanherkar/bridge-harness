@@ -402,7 +402,7 @@ pub fn owned_paths_cover_path(patterns: &[String], path: &str) -> bool {
 
 /// Match one normalized pattern against one normalized path. `**` spans path
 /// separators, `*` and `?` do not.
-fn glob_matches(pattern: &str, path: &str) -> bool {
+pub(crate) fn glob_matches(pattern: &str, path: &str) -> bool {
     let pattern: Vec<&str> = pattern.split('/').collect();
     let path: Vec<&str> = path.split('/').collect();
     segments_match(&pattern, &path)

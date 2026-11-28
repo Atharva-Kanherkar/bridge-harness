@@ -375,6 +375,7 @@ fn passes_and_findings_round_trip_into_the_wire_job() {
         fingerprint: "f".into(),
         outside_diff: false,
         category: None,
+        rule_ids: Vec::new(),
     };
     insert_findings(&db, &job.id, &fallback, &[finding(ReviewSeverity::Nit, 0.9), finding(ReviewSeverity::Critical, 1.7)], at(5)).unwrap();
 
@@ -406,6 +407,7 @@ fn draft(path: &str) -> DraftFinding {
         fingerprint: format!("fp-{path}"),
         outside_diff: false,
         category: None,
+        rule_ids: Vec::new(),
     }
 }
 

@@ -3412,6 +3412,7 @@ export interface ReviewFinding {
   passIds?: string[];
   path: string;
   postedAt?: string | null;
+  ruleIds?: string[];
   severity: ReviewSeverity;
   side: ReviewSide;
   startLine?: number | null;
@@ -3478,6 +3479,7 @@ export interface ReviewJobSettings {
   autoReview?: ReviewAutoMode;
   defaultHarnesses?: string[];
   fallbackHarnesses?: string[];
+  followTasteRules?: boolean;
   handoff?: ReviewHandoff;
   hideRepeatDrops?: boolean;
   incremental?: boolean;
@@ -3536,6 +3538,7 @@ export interface ReviewPass {
   slot: number;
   startedAt?: string | null;
   status: ReviewPassStatus;
+  tasteRuleIds?: string[];
   tokensIn: number;
   tokensOut: number;
 }

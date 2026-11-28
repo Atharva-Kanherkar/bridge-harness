@@ -97,6 +97,13 @@
             "null"
           ]
         },
+        "ruleIds": {
+          "description": "The person's taste rules the reviewer says shaped this finding.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "severity": {
           "$ref": "#/definitions/ReviewSeverity"
         },
@@ -422,6 +429,13 @@
         },
         "status": {
           "$ref": "#/definitions/ReviewPassStatus"
+        },
+        "tasteRuleIds": {
+          "description": "The person's taste rules this pass was given.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "tokensIn": {
           "format": "uint64",

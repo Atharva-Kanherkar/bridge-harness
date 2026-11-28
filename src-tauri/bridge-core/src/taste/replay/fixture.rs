@@ -63,6 +63,7 @@ pub fn finding(path: &str, severity: ReviewSeverity, title: &str) -> DraftFindin
         fingerprint: format!("fp-{path}-{title}"),
         outside_diff: false,
         category: None,
+        rule_ids: Vec::new(),
     }
 }
 

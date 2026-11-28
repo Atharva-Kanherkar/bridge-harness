@@ -233,6 +233,9 @@ pub struct DraftFinding {
     /// What the finding is about, as the reviewer tagged it (one of
     /// [`crate::taste::signals::CATEGORIES`]); absent when it did not say.
     pub category: Option<String>,
+    /// The person's taste rules the reviewer says shaped this finding, only
+    /// ids it was given.
+    pub rule_ids: Vec<String>,
 }
 
 /// What a finished pass produced.
@@ -249,6 +252,9 @@ pub struct PassOutcome {
     pub tokens_out: u64,
     pub cost_microusd: u64,
     pub denied_requests: u32,
+    /// The taste rules the pass was given, so a rule given and never cited
+    /// still counts as used.
+    pub taste_rule_ids: Vec<String>,
 }
 
 /// A review on GitHub, posted now or found by its marker.

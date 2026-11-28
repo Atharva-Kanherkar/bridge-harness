@@ -25,6 +25,7 @@ fn finding(path: &str, severity: ReviewSeverity) -> DraftFinding {
         fingerprint: format!("fp-{path}"),
         outside_diff: false,
         category: None,
+        rule_ids: Vec::new(),
     }
 }
 

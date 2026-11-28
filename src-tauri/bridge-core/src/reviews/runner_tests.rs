@@ -79,6 +79,7 @@ fn outcome() -> PassOutcome {
             fingerprint: "fp-1".into(),
             outside_diff: false,
             category: None,
+            rule_ids: Vec::new(),
         }],
         session_id: Some("hidden".into()),
         ..PassOutcome::default()
