@@ -954,10 +954,45 @@ pub(crate) fn inherit_from(db: &Connection, successor: &str, sources: &[&str]) -
     Ok(())
 }
 
+/// A rule the taste learner drafted, waiting for the person: a `taste` record
+/// in `scope`, proposed, with an empty validity interval like every proposal,
+/// and its evidence linked. Returns its id.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn insert_taste_proposal(
+    db: &Connection,
+    scope_key: &str,
+    kind: &str,
+    body: &str,
+    rationale: Option<&str>,
+    path_globs: Option<&[String]>,
+    evidence: &[(String, f64)],
+    at: &str,
+) -> Result<String, BridgeError> {
+    let scope_key = parse_scope_key(scope_key)?;
+    let body = require_body(body)?;
+    let id = Uuid::new_v4().to_string();
+    let globs = path_globs
+        .map(|globs| serde_json::to_string(globs).map_err(|error| BridgeError::Invalid(error.to_string())))
+        .transpose()?;
+    with_savepoint(db, || {
+        db.execute(
+            "INSERT INTO memory_records(
+                id, scope_key, kind, body, provenance, status, rationale,
+                valid_from, valid_to, created_at, updated_at, layer, path_globs
+             ) VALUES(?1,?2,?3,?4,?5,'proposed',?6,?7,?7,?7,?7,'taste',?8)",
+            params![id, scope_key, kind, body, PROVENANCE_MODEL_PROPOSAL, rationale, at, globs],
+        )?;
+        for (signal, weight) in evidence {
+            add_evidence(db, &id, signal, *weight, at)?;
+        }
+        Ok(())
+    })?;
+    Ok(id)
+}
+
 /// Link a record to a signal that justifies it. Linking the same signal again
 /// keeps the first link. Its producers arrive with the signal log (#1198) and
 /// the learner (#1201).
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn add_evidence(
     db: &Connection,
     record_id: &str,

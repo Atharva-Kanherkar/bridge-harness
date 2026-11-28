@@ -80,7 +80,38 @@ pub fn start_consolidation_maintenance(core: Arc<BridgeCore>) {
         if let Ok(Some(run)) = claimed {
             execute(&core, run);
         }
+        learn_taste_if_due(&core);
     });
+}
+
+/// The taste learner's nightly turn (#1201): at most one repository a tick,
+/// on the memory model, when dreaming is on. Its proposals wait for the
+/// person like any other.
+fn learn_taste_if_due(core: &Arc<BridgeCore>) {
+    let due = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::memory_model::resolve(&db, &core.adapter_registry).and_then(|memory| {
+            let Some(model) = memory.resolved else { return Ok(None) };
+            Ok(crate::taste::learn::due_scope(&db, &chrono::Local::now())?.map(|scope| (scope, model)))
+        })
+    };
+    let (scope, model) = match due {
+        Ok(Some(due)) => due,
+        Ok(None) => return,
+        Err(error) => {
+            eprintln!("[taste] learning could not be scheduled: {error}");
+            return;
+        }
+    };
+    let mut live = LiveDream { core, harness: &model.harness, model: model.model.as_deref() };
+    let lock = || core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    match crate::taste::learn::run(lock, &mut live, &scope, Utc::now()) {
+        Ok(report) if !report.proposed.is_empty() || report.attached > 0 => {
+            core.events.publish(CoreEvent::MemoryChanged { scope_key: scope });
+        }
+        Ok(_) => {}
+        Err(error) => eprintln!("[taste] learning {scope} failed: {error}"),
+    }
 }
 
 /// The core's store, locked only for each step of a dream.
