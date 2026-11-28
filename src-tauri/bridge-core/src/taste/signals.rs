@@ -137,6 +137,13 @@ pub fn live(db: &Connection, scope_key: &str, limit: u32) -> Result<Vec<Signal>,
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// Every signal ever written, superseded ones included, oldest first.
+pub fn all(db: &Connection) -> Result<Vec<Signal>, BridgeError> {
+    let mut statement = db.prepare(&format!("SELECT {SIGNAL_COLUMNS} FROM taste_signals ORDER BY at, id"))?;
+    let rows = statement.query_map([], map_signal)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
 /// Every signal about one subject, superseded ones included, oldest first.
 pub fn history(db: &Connection, source: &str, subject_id: &str) -> Result<Vec<Signal>, BridgeError> {
     let mut statement = db.prepare(&format!(
@@ -286,7 +293,7 @@ fn finding_facts(db: &Connection, finding_id: &str) -> Result<Option<FindingFact
 
 /// A repository's scope, or its workspace's when the name is not one GitHub
 /// would give.
-fn repository_scope(owner: &str, repo: &str, workspace_id: &str) -> String {
+pub(crate) fn repository_scope(owner: &str, repo: &str, workspace_id: &str) -> String {
     crate::memory_ledger::project_scope(owner, repo).unwrap_or_else(|_| format!("workspace:{workspace_id}"))
 }
 
