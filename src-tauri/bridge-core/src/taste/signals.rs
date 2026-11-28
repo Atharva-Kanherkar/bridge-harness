@@ -533,7 +533,9 @@ static CATEGORIES: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
         ("style", r"\b(style|format\w*|readab\w*|idiom\w*|simplif\w*|nits?|cleanup|verbose|lint\w*)\b"),
     ]
     .into_iter()
-    .map(|(slug, pattern)| (slug, Regex::new(&format!("(?i){pattern}")).expect("category patterns compile")))
+    // Fixed patterns, checked by the category tests; one that failed to
+    // compile would only leave its category unguessed.
+    .filter_map(|(slug, pattern)| Regex::new(&format!("(?i){pattern}")).ok().map(|pattern| (slug, pattern)))
     .collect()
 });
 

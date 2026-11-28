@@ -326,7 +326,9 @@ fn a_person_declining_a_tool_request_in_a_chat_is_logged() {
     };
     // No harness is running to receive the answer; the decision is still the
     // person's, and it is logged when it is claimed.
-    let _ = crate::api::resolve_approval(&core, "chat", sequence, "decline", None);
+    if let Err(error) = crate::api::resolve_approval(&core, "chat", sequence, "decline", None) {
+        eprintln!("no harness to answer, as expected: {error}");
+    }
     let db = core.db.lock().unwrap();
     let signals = live(&db, ACCOUNT_SCOPE, 5).unwrap();
     assert_eq!(signals.len(), 1, "{signals:?}");
