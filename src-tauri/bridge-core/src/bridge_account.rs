@@ -97,7 +97,7 @@ mod keychain {
     pub fn save(token: &str) -> Result<(), BridgeError> {
         // Replacing in place needs the old item's access list to name this
         // binary; a delete does not.
-        let _ = store::delete(KEYCHAIN_SERVICE, KEYCHAIN_ITEM);
+        store::delete(KEYCHAIN_SERVICE, KEYCHAIN_ITEM).ok();
         store::save(KEYCHAIN_SERVICE, KEYCHAIN_ITEM, token)
     }
 
@@ -248,10 +248,13 @@ fn page(heading: &str, detail: &str) -> tiny_http::Response<std::io::Cursor<Vec<
          <body style=\"font:16px -apple-system,system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0;background:#111;color:#eee\">\
          <main style=\"text-align:center\"><h1 style=\"font-size:20px\">{heading}</h1><p style=\"opacity:.7\">{detail}</p></main>"
     );
-    tiny_http::Response::from_string(body)
-        .with_header("Content-Type: text/html; charset=utf-8".parse::<tiny_http::Header>().expect("static header"))
-        .with_header("Cache-Control: no-store".parse::<tiny_http::Header>().expect("static header"))
-        .with_header("Referrer-Policy: no-referrer".parse::<tiny_http::Header>().expect("static header"))
+    let mut response = tiny_http::Response::from_string(body);
+    for (name, value) in [("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store"), ("Referrer-Policy", "no-referrer")] {
+        if let Ok(header) = tiny_http::Header::from_bytes(name, value) {
+            response.add_header(header);
+        }
+    }
+    response
 }
 
 /// Serve the listener until the callback arrives, the person cancels, or the
@@ -270,19 +273,19 @@ fn wait_for_code(server: tiny_http::Server, expected_state: &str, cancelled: &At
             continue;
         };
         if *request.method() != tiny_http::Method::Get {
-            let _ = request.respond(tiny_http::Response::empty(405));
+            request.respond(tiny_http::Response::empty(405)).ok();
             continue;
         }
         match read_callback(request.url(), expected_state) {
             Callback::Ignore => {
-                let _ = request.respond(tiny_http::Response::empty(404));
+                request.respond(tiny_http::Response::empty(404)).ok();
             }
             Callback::Code(code) => {
-                let _ = request.respond(page("You're signed in", "You can close this tab and return to Bridge."));
+                request.respond(page("You're signed in", "You can close this tab and return to Bridge.")).ok();
                 return Ok(code);
             }
             Callback::Rejected(reason) => {
-                let _ = request.respond(page("Sign-in did not finish", "Return to Bridge and try again.").with_status_code(400));
+                request.respond(page("Sign-in did not finish", "Return to Bridge and try again.").with_status_code(400)).ok();
                 return Err(reason);
             }
         }
@@ -419,7 +422,7 @@ fn revoke(config: &Config, session_id: &str) {
     ) else {
         return;
     };
-    let _ = client.get(url).send();
+    client.get(url).send().ok();
 }
 
 // ---------------------------------------------------------------------------
@@ -562,7 +565,7 @@ fn adopt(core: &BridgeCore, inner: &mut Inner, session: Session) -> Result<(), B
     keychain::save(&session.refresh_token)
         .map_err(|_| BridgeError::Invalid("Bridge could not save your sign-in in the macOS Keychain.".into()))?;
     if let Err(error) = store_user(&core.db.lock().unwrap_or_else(|poisoned| poisoned.into_inner()), &session.user) {
-        let _ = keychain::delete();
+        keychain::delete().ok();
         return Err(error);
     }
     inner.epoch += 1;
@@ -605,9 +608,10 @@ fn sign_out_with(core: &BridgeCore, config: Option<Config>) -> Result<AccountSta
     clear_user(&core.db.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))?;
     core.events.publish(CoreEvent::AccountChanged);
     if let (Some(config), Some(session_id)) = (config.clone(), access_token.as_deref().and_then(|token| session_id(token))) {
-        let _ = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("bridge-account-sign-out".into())
-            .spawn(move || revoke(&config, &session_id));
+            .spawn(move || revoke(&config, &session_id))
+            .ok();
     }
     removed?;
     status_with(core, config.as_ref())
@@ -651,8 +655,8 @@ fn refresh_with(core: &BridgeCore, config: &Config) {
                 inner.epoch += 1;
                 inner.access_token = None;
                 inner.error = Some(EXPIRED.into());
-                let _ = keychain::delete();
-                let _ = clear_user(&core.db.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+                keychain::delete().ok();
+                clear_user(&core.db.lock().unwrap_or_else(|poisoned| poisoned.into_inner())).ok();
             }
         }
     }
@@ -661,9 +665,10 @@ fn refresh_with(core: &BridgeCore, config: &Config) {
 
 /// Refresh once, off the boot path. Startup never waits on WorkOS.
 pub fn start_account_refresh(core: Arc<BridgeCore>) {
-    let _ = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("bridge-account-refresh".into())
-        .spawn(move || refresh(&core));
+        .spawn(move || refresh(&core))
+        .ok();
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ const REFRESH_2: &str = "rt_second_Qw8xUu2mZk41TnPbVc7RyLs0HdEa";
 fn keychain_guard() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: Mutex<()> = Mutex::new(());
     let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _ = keychain::delete();
+    keychain::delete().ok();
     guard
 }
 
@@ -47,14 +47,16 @@ fn fake_workos(respond: impl Fn(&Seen) -> (u16, serde_json::Value) + Send + 'sta
     std::thread::spawn(move || {
         for mut request in server.incoming_requests() {
             let mut body = String::new();
-            let _ = request.as_reader().read_to_string(&mut body);
+            request.as_reader().read_to_string(&mut body).ok();
             let seen = Seen { path: request.url().to_owned(), body: serde_json::from_str(&body).unwrap_or(serde_json::Value::Null) };
             let (status, answer) = respond(&seen);
-            let _ = request.respond(
-                tiny_http::Response::from_string(answer.to_string())
-                    .with_status_code(status)
-                    .with_header("Content-Type: application/json".parse::<tiny_http::Header>().unwrap()),
-            );
+            request
+                .respond(
+                    tiny_http::Response::from_string(answer.to_string())
+                        .with_status_code(status)
+                        .with_header("Content-Type: application/json".parse::<tiny_http::Header>().unwrap()),
+                )
+                .ok();
             if sender.send(seen).is_err() {
                 break;
             }
@@ -408,7 +410,7 @@ fn a_refresh_that_lands_after_a_sign_out_is_dropped() {
     let (release, held) = mpsc::channel::<()>();
     let held = Mutex::new(held);
     let (config, seen) = fake_workos(move |_| {
-        let _ = held.lock().unwrap().recv_timeout(Duration::from_secs(10));
+        held.lock().unwrap().recv_timeout(Duration::from_secs(10)).ok();
         (200, session_body(REFRESH_2))
     });
     let refreshing = { let (core, config) = (core.clone(), config.clone()); std::thread::spawn(move || refresh_with(&core, &config)) };

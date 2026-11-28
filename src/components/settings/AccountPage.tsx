@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridgeApi } from "../../api";
 import { Button } from "@/components/ui/button";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { friendlyError } from "../../errors";
 import { openInSystemBrowser } from "../../externalLinks";
 import type { AccountStatus } from "../../protocol/generated/protocol";
@@ -73,7 +74,7 @@ export function AccountPage({ api = bridgeApi, openUrl = openInSystemBrowser }: 
 
   return <SettingsPage title={PAGES.account.label} description={PAGES.account.description}>
     <SettingsGroup label="Bridge account" note="Optional. Bridge works the same signed out, and your chats stay on this Mac.">
-      {!status && !failure && <SettingsRow anchor="bridge-account" label="Bridge account" description="Checking…" />}
+      {!status && !failure && <SkeletonRows label="Loading your Bridge account" rows={1} trailing framed={false} />}
 
       {state === "signed_in" && user && <SettingsRow
         anchor="bridge-account"
