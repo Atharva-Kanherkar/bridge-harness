@@ -156,6 +156,9 @@ export type BridgeMethod =
   | "memory/get_dream_report"
   | "memory/undo_dream_operation"
   | "memory/undo_dream"
+  | "taste/list_taste_rules"
+  | "taste/get_taste_evidence"
+  | "taste/add_taste_rule"
   | "approvals/resolve_approval"
   | "approvals/resolve_question"
   | "attention/list_attention"
@@ -539,6 +542,9 @@ export const BRIDGE_METHODS = [
   { method: "memory/get_dream_report", domain: "memory", command: "get_dream_report" },
   { method: "memory/undo_dream_operation", domain: "memory", command: "undo_dream_operation" },
   { method: "memory/undo_dream", domain: "memory", command: "undo_dream" },
+  { method: "taste/list_taste_rules", domain: "taste", command: "list_taste_rules" },
+  { method: "taste/get_taste_evidence", domain: "taste", command: "get_taste_evidence" },
+  { method: "taste/add_taste_rule", domain: "taste", command: "add_taste_rule" },
   { method: "approvals/resolve_approval", domain: "approvals", command: "resolve_approval" },
   { method: "approvals/resolve_question", domain: "approvals", command: "resolve_question" },
   { method: "attention/list_attention", domain: "attention", command: "list_attention" },
@@ -991,6 +997,9 @@ export interface BridgeMethodParams {
   "memory/get_dream_report": GetDreamReportParams;
   "memory/undo_dream_operation": UndoDreamOperationParams;
   "memory/undo_dream": UndoDreamParams;
+  "taste/list_taste_rules": ListTasteRulesParams;
+  "taste/get_taste_evidence": GetTasteEvidenceParams;
+  "taste/add_taste_rule": AddTasteRuleParams;
   "approvals/resolve_approval": ResolveApprovalParams;
   "approvals/resolve_question": ResolveQuestionParams;
   "attention/list_attention": ListAttentionParams;
@@ -1406,6 +1415,9 @@ export interface BridgeMethodResults {
   "memory/get_dream_report": MemoryDreamReport;
   "memory/undo_dream_operation": MemoryDreamUndoResult;
   "memory/undo_dream": MemoryDreamUndoResult;
+  "taste/list_taste_rules": ListTasteRulesResult;
+  "taste/get_taste_evidence": TasteEvidence;
+  "taste/add_taste_rule": MemoryRecord;
   "approvals/resolve_approval": InteractionResolutionResult;
   "approvals/resolve_question": InteractionResolutionResult;
   "attention/list_attention": ListAttentionResult;
@@ -3841,6 +3853,19 @@ export interface SuggestionSettings {
   provider: string;
 }
 
+export interface TasteSignal {
+  at: string;
+  harness?: string | null;
+  id: string;
+  path?: string | null;
+  prNumber?: number | null;
+  severity?: string | null;
+  source: string;
+  title?: string | null;
+  verdict: string;
+  weight: number;
+}
+
 export interface TerminalRecord {
   agentId?: string | null;
   cols: number;
@@ -5703,6 +5728,30 @@ export interface MemoryDreamUndoResult {
 
 export interface UndoDreamParams {
   runId: string;
+}
+
+export interface ListTasteRulesParams {
+  status?: string | null;
+}
+
+export interface ListTasteRulesResult {
+  rules: MemoryRecord[];
+}
+
+export interface GetTasteEvidenceParams {
+  recordId: string;
+}
+
+export interface TasteEvidence {
+  signals: TasteSignal[];
+  swept: number;
+}
+
+export interface AddTasteRuleParams {
+  body: string;
+  kind: string;
+  pathGlobs?: string[] | null;
+  scopeKey: string;
 }
 
 export interface ResolveApprovalParams {

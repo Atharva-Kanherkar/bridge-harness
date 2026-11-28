@@ -201,6 +201,11 @@ methods![
     (GetDreamReport, "memory", "get_dream_report"),
     (UndoDreamOperation, "memory", "undo_dream_operation"),
     (UndoDream, "memory", "undo_dream"),
+    // taste — rules learned from what a person keeps, edits and drops; they
+    // are memory records, approved and edited through the memory methods
+    (ListTasteRules, "taste", "list_taste_rules"),
+    (GetTasteEvidence, "taste", "get_taste_evidence"),
+    (AddTasteRule, "taste", "add_taste_rule"),
     // approvals
     (ResolveApproval, "approvals", "resolve_approval"),
     (ResolveQuestion, "approvals", "resolve_question"),

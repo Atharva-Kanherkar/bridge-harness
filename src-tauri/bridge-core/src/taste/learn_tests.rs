@@ -286,3 +286,43 @@ fn live_learn_on_the_fixture() {
     assert!(rules.iter().any(|rule| rule.kind != KIND_REVIEW_AVOID && rule.body.contains('?')), "a rule for the kept `?` advice");
     assert!(rules.iter().all(|rule| !rule.body.to_lowercase().contains("injection")), "never one to stop raising a security finding");
 }
+
+#[test]
+fn the_taste_view_lists_rules_across_repositories_with_the_decisions_behind_them() {
+    let (_scratch, db) = open();
+    let mut model = Scripted::says(serde_json::json!([{ "group": 1, "kind": "review_avoid", "rule": NIT_RULE }]));
+    let id = learn(&db, &mut model).proposed[0].clone();
+    let conn = db.lock().unwrap();
+    let waiting = crate::memory_ledger::list_taste(&conn, Some("proposed")).unwrap();
+    assert_eq!(waiting.iter().map(|rule| rule.id.as_str()).collect::<Vec<_>>(), [id.as_str()]);
+    assert!(crate::memory_ledger::list_taste(&conn, None).unwrap().is_empty(), "nothing active yet");
+    assert!(crate::memory_ledger::list_taste(&conn, Some("paused")).is_err());
+
+    let evidence = crate::memory_ledger::taste_evidence(&conn, &id).unwrap();
+    assert_eq!(evidence.swept, 0);
+    let seen: Vec<(String, Option<u64>)> = evidence.signals.iter().map(|signal| (signal.verdict.clone(), signal.pr_number)).collect();
+    assert_eq!(seen, (101..=105).map(|number| ("dropped".to_string(), Some(number))).collect::<Vec<_>>());
+    assert_eq!(evidence.signals[0].title.as_deref(), Some(fixture::NIT));
+
+    // Approved through the memory review, it is an active rule.
+    crate::memory_ledger::review_batch(&conn, SCOPE, &[id.clone()], &[]).unwrap();
+    assert_eq!(crate::memory_ledger::list_taste(&conn, None).unwrap()[0].id, id);
+    conn.execute("DELETE FROM taste_signals WHERE pr_number=101", []).unwrap();
+    assert_eq!(crate::memory_ledger::taste_evidence(&conn, &id).unwrap().swept, 1, "a swept decision is counted, not shown");
+}
+
+#[test]
+fn a_rule_you_write_is_active_at_once_and_written_once() {
+    let (_scratch, db) = open();
+    let conn = db.lock().unwrap();
+    let globs = vec!["src/**".to_string(), " ".to_string()];
+    let rule = crate::memory_ledger::save_taste_rule(&conn, "project:Octo/Repo", KIND_CODE_PREFER, "No `unwrap()` outside tests", Some(&globs)).unwrap();
+    assert_eq!((rule.status.as_str(), rule.provenance.as_str(), rule.layer.as_str(), rule.scope_key.as_str()), ("active", "user_explicit", "taste", SCOPE));
+    assert_eq!(rule.path_globs, Some(vec!["src/**".to_string()]), "blank globs dropped");
+    let again = crate::memory_ledger::save_taste_rule(&conn, SCOPE, KIND_CODE_PREFER, "no `unwrap()` outside tests", None).unwrap();
+    assert_eq!(again.id, rule.id, "the same rule twice is one");
+    assert!(crate::memory_ledger::save_taste_rule(&conn, "account:local", KIND_REVIEW_AVOID, "Skip nits about import order", None).is_ok(), "a rule for every repository");
+    assert!(crate::memory_ledger::save_taste_rule(&conn, SCOPE, "preference", "x y", None).is_err(), "not a taste kind");
+    assert!(crate::memory_ledger::save_taste_rule(&conn, "workspace:w1", KIND_REVIEW_AVOID, "x y", None).is_err(), "rules belong to a repository");
+    assert!(crate::memory_ledger::list(&conn, "account:local", None).unwrap().records.is_empty(), "never a memory");
+}

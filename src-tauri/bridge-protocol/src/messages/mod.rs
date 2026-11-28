@@ -59,6 +59,7 @@ mod skills;
 mod slash;
 mod state;
 mod storage;
+mod taste;
 mod terminal;
 mod trails;
 mod usage;
@@ -104,6 +105,7 @@ pub use skills::*;
 pub use slash::*;
 pub use state::*;
 pub use storage::*;
+pub use taste::*;
 pub use terminal::*;
 pub use trails::*;
 pub use usage::*;
@@ -327,6 +329,10 @@ typed_methods![
     (GetDreamReport, GetDreamReportParams, MemoryDreamReport),
     (UndoDreamOperation, UndoDreamOperationParams, MemoryDreamUndoResult),
     (UndoDream, UndoDreamParams, MemoryDreamUndoResult),
+    // taste
+    (ListTasteRules, ListTasteRulesParams, ListTasteRulesResult),
+    (GetTasteEvidence, GetTasteEvidenceParams, TasteEvidence),
+    (AddTasteRule, AddTasteRuleParams, MemoryRecord),
     // approvals
     (ResolveApproval, ResolveApprovalParams, InteractionResolutionResult),
     (ResolveQuestion, ResolveQuestionParams, InteractionResolutionResult),

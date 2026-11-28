@@ -3247,6 +3247,37 @@ async fn restore_memory_record(
 }
 
 #[tauri::command]
+async fn list_taste_rules(
+    status: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ListTasteRulesResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("List taste rules", move || api::list_taste_rules(&core, status.as_deref())).await
+}
+
+#[tauri::command]
+async fn get_taste_evidence(
+    record_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::TasteEvidence, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Read taste evidence", move || api::get_taste_evidence(&core, &record_id)).await
+}
+
+#[tauri::command]
+async fn add_taste_rule(
+    scope_key: String,
+    kind: String,
+    body: String,
+    path_globs: Option<Vec<String>>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state.inner().clone();
+    let params = bridge_protocol::messages::AddTasteRuleParams { scope_key, kind, body, path_globs };
+    blocking("Add a taste rule", move || api::add_taste_rule(&core, &params)).await
+}
+
+#[tauri::command]
 async fn start_dream(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::MemoryDreamStarted, BridgeError> {
@@ -4378,6 +4409,9 @@ pub fn run() -> i32 {
             set_retention_settings,
             restore_memory_record,
             start_dream,
+            list_taste_rules,
+            get_taste_evidence,
+            add_taste_rule,
             get_dream_report,
             undo_dream_operation,
             undo_dream,
