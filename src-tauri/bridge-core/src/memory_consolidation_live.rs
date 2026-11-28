@@ -56,6 +56,9 @@ pub fn start_consolidation_maintenance(core: Arc<BridgeCore>) {
                 Ok(expired)
             })
         };
+        if let Err(error) = crate::taste::signals::sweep(&core.db.lock().unwrap(), now) {
+            eprintln!("[taste] signal retention sweep failed: {error}");
+        }
         if matches!(&swept, Ok(expired) if !expired.is_empty()) {
             core.events.publish(CoreEvent::MemoryChanged {
                 scope_key: memory_ledger::account_memory_scope().to_string(),

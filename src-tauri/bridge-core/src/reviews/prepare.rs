@@ -27,6 +27,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
+use bridge_protocol::messages::ReviewFindingDecision;
 use serde_json::json;
 
 use super::steps::{
@@ -331,6 +332,7 @@ pub fn prepare(
         None => Incremental::Full,
     };
     let threads = core.github_surface.pr_review_threads_in(&workspace, &repository, number).map_err(surface_error)?;
+    record_thread_signals(core, job, &threads);
     let prior = if job.incremental_from_sha.is_some() {
         let prior = store::prior_findings(&super::lock_db(core), store::PrKey::of(job), &job.id).map_err(fatal)?;
         before_head(&workspace, &remote, &head, &from_ref, prior)
@@ -575,6 +577,45 @@ fn incremental_json(incremental: &Incremental, head: &str, omitted: Option<&[Str
     }
 }
 
+/// The GitHub thread a posted finding's comment opened, if any.
+fn thread_of<'a>(
+    finding: &store::PriorFinding,
+    threads: &'a [crate::github_surface::ReviewThread],
+) -> Option<&'a crate::github_surface::ReviewThread> {
+    let comment = finding.github_comment_id.as_deref()?;
+    threads
+        .iter()
+        .find(|thread| thread.comments.iter().any(|item| item.database_id.is_some_and(|id| id.to_string() == comment)))
+}
+
+/// How the threads of this PR's earlier posted findings stand, as taste
+/// signals: resolved, or gone stale with no reply. Best effort, since a review
+/// must not fail because its signals could not be written.
+fn record_thread_signals(core: &Arc<BridgeCore>, job: &JobRow, threads: &[crate::github_surface::ReviewThread]) {
+    use crate::taste::signals;
+    let db = super::lock_db(core);
+    let at = store::stamp(chrono::Utc::now());
+    let result = store::prior_findings(&db, store::PrKey::of(job), &job.id).and_then(|prior| {
+        for finding in prior.iter().filter(|finding| finding.posted) {
+            let Some(thread) = thread_of(finding, threads) else { continue };
+            let outcome = signals::thread_outcome(
+                thread.is_resolved,
+                thread.is_outdated,
+                thread.comments.len().saturating_sub(1),
+                finding.fixed_in_sha.is_some(),
+                finding.decision == ReviewFindingDecision::Dropped,
+            );
+            if let Some(outcome) = outcome {
+                signals::record_thread(&db, &finding.id, outcome, &at)?;
+            }
+        }
+        Ok(())
+    });
+    if let Err(error) = result {
+        eprintln!("[reviews] could not record thread signals for job {}: {error}", job.id);
+    }
+}
+
 /// Each earlier finding with its decision, whether it was posted, how its
 /// head stands to the one under review, and the state of its thread on
 /// GitHub (found by the posted comment's id).
@@ -582,11 +623,7 @@ pub fn prior_findings_json(prior: &[(store::PriorFinding, Relation)], threads: &
     json!(prior
         .iter()
         .map(|(finding, relation)| {
-            let thread = finding.github_comment_id.as_deref().and_then(|comment| {
-                threads.iter().find(|thread| {
-                    thread.comments.iter().any(|item| item.database_id.is_some_and(|id| id.to_string() == comment))
-                })
-            });
+            let thread = thread_of(finding, threads);
             json!({
                 "id": finding.id,
                 "reviewedHead": finding.head_sha,

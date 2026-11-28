@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 105;
+const LATEST_SCHEMA_VERSION: i64 = 106;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -919,6 +919,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // The taste layer's fields on the memory ledger: a layer, path
             // globs, an outcome score, visibility, and evidence links.
             105 => crate::memory_ledger::install_taste_fields(&transaction)?,
+            // The taste layer's decision log, with every review decision and
+            // fix already stored copied in.
+            106 => crate::taste::signals::install(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
