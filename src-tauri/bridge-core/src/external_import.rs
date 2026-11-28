@@ -1101,7 +1101,7 @@ fn destination_conflicts(
         })?;
         let kind = imported_memory_kind()?;
         return Ok(db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM memory_records WHERE scope_key=?1 AND kind=?2 AND status='active')",
+            "SELECT EXISTS(SELECT 1 FROM memory_records WHERE scope_key=?1 AND layer='memory' AND kind=?2 AND status='active')",
             params![scope, kind],
             |row| row.get(0),
         )?);
@@ -1746,7 +1746,7 @@ fn existing_memory_conflict(
 ) -> Result<Option<String>, BridgeError> {
     Ok(db
         .query_row(
-            "SELECT id FROM memory_records WHERE scope_key=?1 AND kind=?2 AND status='active'
+            "SELECT id FROM memory_records WHERE scope_key=?1 AND layer='memory' AND kind=?2 AND status='active'
              ORDER BY updated_at DESC LIMIT 1",
             params![scope, kind],
             |row| row.get(0),

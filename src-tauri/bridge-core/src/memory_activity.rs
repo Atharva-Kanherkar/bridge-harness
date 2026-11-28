@@ -52,7 +52,7 @@ pub fn recall_stats(db: &Connection, scope_key: &str) -> Result<wire::MemoryReca
     let records: Vec<Record> = {
         let mut statement = db.prepare(
             "SELECT id, kind, status, body FROM memory_records
-             WHERE scope_key=?1 AND status!='deleted'",
+             WHERE scope_key=?1 AND layer='memory' AND status!='deleted'",
         )?;
         let rows = statement
             .query_map(params![scope_key], |row| {
@@ -224,7 +224,7 @@ mod tests {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch(
             "CREATE TABLE memory_records(id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, kind TEXT NOT NULL,
-                 body TEXT NOT NULL, status TEXT NOT NULL);
+                 body TEXT NOT NULL, status TEXT NOT NULL, layer TEXT NOT NULL DEFAULT 'memory');
              CREATE TABLE memory_retrieval_audits(id TEXT PRIMARY KEY, scope_key TEXT NOT NULL,
                  selected_ids TEXT NOT NULL, exclusions TEXT NOT NULL, created_at TEXT NOT NULL);
              CREATE TABLE memory_extraction_runs(id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, status TEXT NOT NULL,
@@ -242,7 +242,7 @@ mod tests {
 
     fn record(db: &Connection, id: &str, kind: &str, body: &str, status: &str) {
         db.execute(
-            "INSERT INTO memory_records VALUES(?1,'account:local',?2,?3,?4)",
+            "INSERT INTO memory_records(id, scope_key, kind, body, status) VALUES(?1,'account:local',?2,?3,?4)",
             params![id, kind, body, status],
         )
         .unwrap();
