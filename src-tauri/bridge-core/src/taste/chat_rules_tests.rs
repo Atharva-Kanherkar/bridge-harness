@@ -116,3 +116,86 @@ fn a_chat_in_an_unreviewed_checkout_is_placed_by_its_origin_remote() {
     assert!(for_chat(&db, "elsewhere").unwrap().is_empty());
     assert_eq!(crate::taste::repository::scope_of_session(&db, "fresh").unwrap().as_deref(), Some("project:octo/repo"));
 }
+
+/// A real chat on a real harness, with and without an approved code rule for
+/// its repository (#1204). The rule reaches the chat the way every launch
+/// sends memory: the session context frame beside the first message. Run by
+/// hand:
+///
+/// ```text
+/// BRIDGE_TASTE_LIVE_HARNESS=claude \
+///   cargo test -p bridge-core --lib taste::chat_rules::tests::live_chat_follows_code_rules -- --ignored --nocapture
+/// ```
+///
+/// `BRIDGE_TASTE_LIVE_MODEL` picks a model (OpenCode Go: `opencode-go/glm-5.3`).
+#[test]
+#[ignore = "live: runs a real harness; set BRIDGE_TASTE_LIVE_HARNESS"]
+fn live_chat_follows_code_rules() {
+    use crate::adapters::{AdapterRegistry, ShutdownReason, StartRequest, TurnContext};
+    use std::io::BufRead;
+    let harness = std::env::var("BRIDGE_TASTE_LIVE_HARNESS").expect("set BRIDGE_TASTE_LIVE_HARNESS to claude, codex or opencode");
+    let model = std::env::var("BRIDGE_TASTE_LIVE_MODEL").ok();
+    let registry = std::sync::Arc::new(AdapterRegistry::built_in().unwrap());
+    std::thread::sleep(std::time::Duration::from_secs(8));
+    let ask = "Reply with one Rust code block and nothing else. Do not create files or run tools. \
+               Write `fn load_port(path: &str)` that reads a config file and parses its first line as a TCP port.";
+    let rule = "Fallible functions return `anyhow::Result`, and every `?` carries `.context(\"...\")` saying what failed.";
+    let mut outcomes = Vec::new();
+    for with_rule in [false, true] {
+        let (_scratch, db) = open();
+        chat(&db, "live", "w1", "/tmp/taste-live", true);
+        if with_rule {
+            crate::memory_ledger::save_taste_rule(&db, "project:octo/repo", CODE_KIND, rule, None).unwrap();
+        }
+        let frame = crate::session_context::build("", memory_packet::for_compile(&db, "live").unwrap().as_deref());
+        assert_eq!(frame.as_ref().is_some_and(|frame| frame.text().contains("anyhow::Result")), with_rule, "the rule rides in the frame only when set");
+        let cwd = tempfile::tempdir().unwrap();
+        let cwd_text = cwd.path().to_string_lossy().to_string();
+        let started = registry
+            .start(
+                &harness,
+                StartRequest {
+                    session_id: None,
+                    cwd: &cwd_text,
+                    model: model.as_deref(),
+                    effort: None,
+                    speed: None,
+                    instructions: None,
+                    write_mode: None,
+                    read_only_sandbox: None,
+                    briefing: None,
+                    interactive: true,
+                    account: None,
+                    on_progress: None,
+                },
+            )
+            .unwrap_or_else(|error| panic!("{harness} did not start: {error}"));
+        let mut runtime = started.runtime;
+        runtime
+            .send_turn_with_context(ask, TurnContext { session: frame.as_ref().map(crate::session_context::SessionContext::text), credentials: None })
+            .unwrap();
+        let mut reply = String::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
+        let mut lines = started.reader.lines();
+        while std::time::Instant::now() < deadline {
+            let Some(Ok(line)) = lines.next() else { break };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            let mut done = false;
+            for event in registry.normalize(&harness, &value) {
+                if event.kind == "message.completed" && event.role.as_deref() == Some("assistant") {
+                    reply.push_str(event.text.as_deref().unwrap_or_default());
+                }
+                done |= event.kind == "turn.completed" || event.kind == "turn.failed";
+            }
+            if done {
+                break;
+            }
+        }
+        runtime.stop(ShutdownReason::Completed);
+        let follows = reply.contains("anyhow") && reply.contains(".context(");
+        eprintln!("{harness} {} follows={follows}\n{reply}\n", if with_rule { "with rule" } else { "plain    " });
+        outcomes.push((with_rule, follows));
+    }
+    eprintln!("{harness}: (with rule, follows) {outcomes:?}");
+    assert!(outcomes[1].1, "with the rule, the code follows it");
+}
