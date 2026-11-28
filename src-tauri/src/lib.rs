@@ -3323,6 +3323,23 @@ async fn import_taste_rules(
 }
 
 #[tauri::command]
+async fn list_permission_suggestions(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::PermissionSuggestionList, BridgeError> {
+    let core = state.inner().clone();
+    blocking("List permission suggestions", move || api::list_permission_suggestions(&core)).await
+}
+
+#[tauri::command]
+async fn dismiss_permission_suggestion(
+    key: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::PermissionSuggestionList, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Dismiss a permission suggestion", move || api::dismiss_permission_suggestion(&core, &key)).await
+}
+
+#[tauri::command]
 async fn start_dream(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::MemoryDreamStarted, BridgeError> {
@@ -4465,6 +4482,8 @@ pub fn run() -> i32 {
             set_taste_rule_state,
             export_taste_rules,
             import_taste_rules,
+            list_permission_suggestions,
+            dismiss_permission_suggestion,
             get_dream_report,
             undo_dream_operation,
             undo_dream,

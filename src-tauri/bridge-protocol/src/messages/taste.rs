@@ -169,3 +169,32 @@ pub struct ImportTasteRulesResult {
     /// Active rules the files no longer list. Reported, never deleted.
     pub missing: Vec<String>,
 }
+
+/// A tool request the person keeps answering the same way. A suggestion only:
+/// nothing is granted or refused because of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionSuggestion {
+    pub key: String,
+    pub scope_key: String,
+    pub tool: String,
+    /// The command's first words, or the folder the tool touches.
+    pub pattern: String,
+    /// `allowed` or `declined`.
+    pub verdict: String,
+    pub count: u32,
+    pub sessions: u32,
+    pub last_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionSuggestionList {
+    pub suggestions: Vec<PermissionSuggestion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DismissPermissionSuggestionParams {
+    pub key: String,
+}

@@ -5,6 +5,7 @@
 pub mod chat_rules;
 pub mod export;
 pub mod learn;
+pub mod permissions;
 pub mod replay;
 pub mod repository;
 pub mod review_rules;

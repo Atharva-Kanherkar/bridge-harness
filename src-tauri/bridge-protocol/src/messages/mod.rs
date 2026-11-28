@@ -338,6 +338,8 @@ typed_methods![
     (SetTasteRuleState, SetTasteRuleStateParams, MemoryRecord),
     (ExportTasteRules, ExportTasteRulesParams, ExportTasteRulesResult),
     (ImportTasteRules, ImportTasteRulesParams, ImportTasteRulesResult),
+    (ListPermissionSuggestions, _, PermissionSuggestionList),
+    (DismissPermissionSuggestion, DismissPermissionSuggestionParams, PermissionSuggestionList),
     // approvals
     (ResolveApproval, ResolveApprovalParams, InteractionResolutionResult),
     (ResolveQuestion, ResolveQuestionParams, InteractionResolutionResult),

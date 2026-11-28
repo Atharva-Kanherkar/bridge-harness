@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { bridgeApi } from "../api";
 import { friendlyError } from "../errors";
-import type { ExportTasteRulesResult, ImportTasteRulesResult, MemoryRecord, TasteEvidence } from "../protocol/generated/protocol";
+import type { ExportTasteRulesResult, ImportTasteRulesResult, MemoryRecord, PermissionSuggestion, TasteEvidence } from "../protocol/generated/protocol";
 
 // The Memory app's Taste tab: rules learned from what you keep, edit and drop
 // in reviews, and the ones you write yourself. Learned rules wait here for
@@ -190,6 +190,40 @@ function TasteFiles({ scopeKey, onChanged, onError }: { scopeKey: string; onChan
   </div>;
 }
 
+/** Requests you keep answering the same way. Bridge grants nothing from
+ *  them: an allow points at chat access, a decline can become a code rule. */
+function Suggestions({ items, busy, onDismiss, onRule }: {
+  items: PermissionSuggestion[];
+  busy: boolean;
+  onDismiss: (key: string) => void;
+  onRule: (item: PermissionSuggestion) => void;
+}) {
+  if (items.length === 0) return null;
+  return <section>
+    <h2 className="mb-2 px-0.5 text-ui font-medium text-foreground">From your approvals</h2>
+    <ul aria-label="Suggestions from your approvals" className="divide-y divide-border overflow-hidden rounded-xl border border-border-card bg-card">
+      {items.map(item => {
+        const what = item.pattern ? `${item.tool} \`${item.pattern}\`` : item.tool;
+        const where = repositoryLabel(item.scopeKey);
+        return <li key={item.key} data-suggestion={item.key} className="flex flex-wrap items-start gap-x-3 gap-y-1 px-4 py-3">
+          <span className="min-w-0 flex-1 basis-64 text-ui text-foreground">
+            You {item.verdict === "allowed" ? "allowed" : "declined"} {what} {item.count} times in {item.sessions} chats ({where}).
+            <span className="mt-0.5 block text-caption text-muted-foreground">
+              {item.verdict === "allowed"
+                ? "To stop being asked, give chats there more access in Settings, Chats. Bridge grants nothing on its own."
+                : "Write it down as a code rule, so agents stop asking to run it."}
+            </span>
+          </span>
+          <span className="flex shrink-0 gap-1">
+            {item.verdict === "declined" && <Button size="2xs" disabled={busy} onClick={() => onRule(item)}>Make it a rule</Button>}
+            <Button variant="ghost" size="2xs" disabled={busy} onClick={() => onDismiss(item.key)}>Dismiss</Button>
+          </span>
+        </li>;
+      })}
+    </ul>
+  </section>;
+}
+
 function group(rules: MemoryRecord[]): [string, MemoryRecord[]][] {
   const byScope = new Map<string, MemoryRecord[]>();
   for (const rule of rules) byScope.set(rule.scopeKey, [...(byScope.get(rule.scopeKey) ?? []), rule]);
@@ -203,14 +237,17 @@ export function TasteRules({ onError, onCount }: { onError: (message: string) =>
   const [neverUsed, setNeverUsed] = useState<ReadonlySet<string>>(new Set());
   // The repository whose files panel is open.
   const [files, setFiles] = useState<string>();
+  const [suggested, setSuggested] = useState<PermissionSuggestion[]>([]);
   const [busy, setBusy] = useState(false);
   const [writing, setWriting] = useState(false);
   const [draft, setDraft] = useState({ repository: "", kind: "review_avoid" as Kind, body: "", paths: "" });
 
   const load = async () => {
-    const [proposed, current, resting] = await Promise.all([
+    const [proposed, current, resting, hints] = await Promise.all([
       bridgeApi.listTasteRules("proposed"), bridgeApi.listTasteRules("active"), bridgeApi.listTasteRules("paused"),
+      bridgeApi.listPermissionSuggestions(),
     ]);
+    setSuggested(hints.suggestions);
     setWaiting(proposed.rules);
     setActive(current.rules);
     setPaused(resting.rules);
@@ -301,6 +338,16 @@ export function TasteRules({ onError, onCount }: { onError: (message: string) =>
             </div>)}
           </div>}
     </section>
+    <Suggestions items={suggested} busy={busy}
+      onDismiss={key => void act(() => bridgeApi.dismissPermissionSuggestion(key), "Couldn't dismiss that suggestion.")}
+      onRule={item => void act(async () => {
+        await bridgeApi.addTasteRule({
+          scopeKey: item.scopeKey.startsWith("project:") ? item.scopeKey : "account:local",
+          kind: "code_prefer",
+          body: `Don't run \`${item.pattern || item.tool}\` without asking me first.`,
+        });
+        await bridgeApi.dismissPermissionSuggestion(item.key);
+      }, "Couldn't write that rule.")} />
     {paused.length > 0 && <section>
       <h2 className="mb-2 px-0.5 text-ui font-medium text-foreground">Paused <span className="tabular-nums text-faint">{paused.length}</span></h2>
       <ul aria-label="Paused taste rules" className="divide-y divide-border overflow-hidden rounded-xl border border-border-card bg-card">
