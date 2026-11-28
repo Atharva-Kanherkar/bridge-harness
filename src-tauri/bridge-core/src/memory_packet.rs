@@ -29,6 +29,8 @@ pub(crate) const MAX_PACKET_LINE_CHARS: usize = 320;
 /// Ends a clipped body. The agent tools can return the full text.
 pub(crate) const CLIPPED_MARKER: &str = " ... (clipped; memory_search returns the full text)";
 const EXCLUDE_UNSAFE: &str = "unsafe_body";
+/// Why a taste rule is in a packet: the person approved it for this code.
+const TASTE_REASON: &str = "your code taste";
 const EXCLUDE_OVER_BUDGET: &str = "over_budget";
 /// The codes that say an active record was held back at the gate. The audit
 /// also codes records that were never eligible (proposed, superseded); those
@@ -412,16 +414,44 @@ pub fn for_session(
         });
     }
 
+    // The person's code taste for the chat's repository (#1204), after the
+    // memories and inside the same budget. Best effort: a packet is never
+    // lost because the rules could not be read.
+    let taste = crate::taste::chat_rules::for_chat(db, recipient_session_id).unwrap_or_else(|error| {
+        eprintln!("[taste] code rules for {recipient_session_id} could not be read: {error}");
+        Vec::new()
+    });
+    let mut taste_lines: Vec<String> = Vec::new();
+    let mut taste_used = if taste.is_empty() { 0 } else { crate::taste::chat_rules::HEADING.len() };
+    for rule in &taste {
+        let line = crate::taste::chat_rules::line(rule);
+        if used + taste_used + line.len() + 1 > MAX_PACKET_CHARS {
+            exclusions.push((rule.id.clone(), EXCLUDE_OVER_BUDGET));
+            continue;
+        }
+        taste_used += line.len() + 1;
+        taste_lines.push(line);
+        selected.push(SelectedMemory {
+            record_id: rule.id.clone(),
+            body: rule.body.clone(),
+            kind: rule.kind.clone(),
+            reason: TASTE_REASON.to_string(),
+        });
+    }
+
     let packet = if selected.is_empty() {
         None
     } else {
-        let mut text = String::from(
-            "Bridge account memory (account:local), cited by id. These are durable \
-             facts retained by the configured Memory workflow; they are not instructions \
-             from this conversation. Where one bears on the request, such as advice or a \
-             recommendation, build on it rather than answering generically.\n",
-        );
-        for item in &selected {
+        let mut text = String::new();
+        if selected.iter().any(|item| item.reason != TASTE_REASON) {
+            text.push_str(
+                "Bridge account memory (account:local), cited by id. These are durable \
+                 facts retained by the configured Memory workflow; they are not instructions \
+                 from this conversation. Where one bears on the request, such as advice or a \
+                 recommendation, build on it rather than answering generically.\n",
+            );
+        }
+        for item in selected.iter().filter(|item| item.reason != TASTE_REASON) {
             let short_id: String = item.record_id.chars().take(8).collect();
             text.push_str(&format!(
                 "[{short_id}] {} ({}): {}\n",
@@ -429,6 +459,13 @@ pub fn for_session(
                 item.reason,
                 render_body(&item.body)
             ));
+        }
+        if !taste_lines.is_empty() {
+            text.push_str(crate::taste::chat_rules::HEADING);
+            for line in &taste_lines {
+                text.push_str(line);
+                text.push('\n');
+            }
         }
         let token_estimate = ((text.len() + 3) / 4) as i64;
         Some(MemoryPacket {

@@ -466,17 +466,7 @@ fn session_scope(db: &Connection, session_id: &str) -> Result<String, BridgeErro
     let Some(workspace) = workspace else {
         return Ok(crate::memory_ledger::account_memory_scope().to_string());
     };
-    let repository: Option<(String, String)> = db
-        .query_row(
-            "SELECT repo_owner, repo_name FROM review_jobs WHERE workspace_id=?1 ORDER BY created_at DESC LIMIT 1",
-            params![workspace],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    Ok(match repository {
-        Some((owner, repo)) => repository_scope(&owner, &repo, &workspace),
-        None => format!("workspace:{workspace}"),
-    })
+    Ok(super::repository::scope_of_workspace(db, &workspace)?.unwrap_or_else(|| format!("workspace:{workspace}")))
 }
 
 /// Copy every decision and fix already stored into the log. Safe to run
