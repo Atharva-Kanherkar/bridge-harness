@@ -1087,6 +1087,20 @@
       "resultSchema": "import-taste-rules-result.json"
     },
     {
+      "command": "list_permission_suggestions",
+      "domain": "taste",
+      "method": "taste/list_permission_suggestions",
+      "paramsSchema": null,
+      "resultSchema": "permission-suggestion-list.json"
+    },
+    {
+      "command": "dismiss_permission_suggestion",
+      "domain": "taste",
+      "method": "taste/dismiss_permission_suggestion",
+      "paramsSchema": "dismiss-permission-suggestion-params.json",
+      "resultSchema": "permission-suggestion-list.json"
+    },
+    {
       "command": "resolve_approval",
       "domain": "approvals",
       "method": "approvals/resolve_approval",

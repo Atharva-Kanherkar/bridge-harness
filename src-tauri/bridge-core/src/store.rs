@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 111;
+const LATEST_SCHEMA_VERSION: i64 = 112;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -934,6 +934,8 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             110 => crate::taste::review_rules::install(&transaction)?,
             // A taste rule's pin and why it paused.
             111 => crate::taste::score::install(&transaction)?,
+            // Permission suggestions the person dismissed.
+            112 => crate::taste::permissions::install(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"

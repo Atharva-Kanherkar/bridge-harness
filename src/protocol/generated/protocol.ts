@@ -162,6 +162,8 @@ export type BridgeMethod =
   | "taste/set_taste_rule_state"
   | "taste/export_taste_rules"
   | "taste/import_taste_rules"
+  | "taste/list_permission_suggestions"
+  | "taste/dismiss_permission_suggestion"
   | "approvals/resolve_approval"
   | "approvals/resolve_question"
   | "attention/list_attention"
@@ -555,6 +557,8 @@ export const BRIDGE_METHODS = [
   { method: "taste/set_taste_rule_state", domain: "taste", command: "set_taste_rule_state" },
   { method: "taste/export_taste_rules", domain: "taste", command: "export_taste_rules" },
   { method: "taste/import_taste_rules", domain: "taste", command: "import_taste_rules" },
+  { method: "taste/list_permission_suggestions", domain: "taste", command: "list_permission_suggestions" },
+  { method: "taste/dismiss_permission_suggestion", domain: "taste", command: "dismiss_permission_suggestion" },
   { method: "approvals/resolve_approval", domain: "approvals", command: "resolve_approval" },
   { method: "approvals/resolve_question", domain: "approvals", command: "resolve_question" },
   { method: "attention/list_attention", domain: "attention", command: "list_attention" },
@@ -1019,6 +1023,8 @@ export interface BridgeMethodParams {
   "taste/set_taste_rule_state": SetTasteRuleStateParams;
   "taste/export_taste_rules": ExportTasteRulesParams;
   "taste/import_taste_rules": ImportTasteRulesParams;
+  "taste/list_permission_suggestions": undefined;
+  "taste/dismiss_permission_suggestion": DismissPermissionSuggestionParams;
   "approvals/resolve_approval": ResolveApprovalParams;
   "approvals/resolve_question": ResolveQuestionParams;
   "attention/list_attention": ListAttentionParams;
@@ -1444,6 +1450,8 @@ export interface BridgeMethodResults {
   "taste/set_taste_rule_state": MemoryRecord;
   "taste/export_taste_rules": ExportTasteRulesResult;
   "taste/import_taste_rules": ImportTasteRulesResult;
+  "taste/list_permission_suggestions": PermissionSuggestionList;
+  "taste/dismiss_permission_suggestion": PermissionSuggestionList;
   "approvals/resolve_approval": InteractionResolutionResult;
   "approvals/resolve_question": InteractionResolutionResult;
   "attention/list_attention": ListAttentionResult;
@@ -3125,6 +3133,17 @@ export interface PermissionPolicy {
   autoApproveProviderPermissions?: boolean;
   updatedAt?: string;
   workerPromptProposalRoles?: PromptProposalWorkerRole[];
+}
+
+export interface PermissionSuggestion {
+  count: number;
+  key: string;
+  lastAt: string;
+  pattern: string;
+  scopeKey: string;
+  sessions: number;
+  tool: string;
+  verdict: string;
 }
 
 export interface PersonalAppEntry {
@@ -5849,6 +5868,14 @@ export interface ImportTasteRulesResult {
   missing: string[];
   updated: TasteRuleUpdate[];
   workspaceId: string;
+}
+
+export interface PermissionSuggestionList {
+  suggestions: PermissionSuggestion[];
+}
+
+export interface DismissPermissionSuggestionParams {
+  key: string;
 }
 
 export interface ResolveApprovalParams {

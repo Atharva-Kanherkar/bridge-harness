@@ -599,6 +599,11 @@ pub fn dispatch(
             let p: wire::ExportTasteRulesParams = decode(method, params)?;
             reply(api::export_taste_rules(core, &p))
         }
+        MethodName::ListPermissionSuggestions => reply(api::list_permission_suggestions(core)),
+        MethodName::DismissPermissionSuggestion => {
+            let p: wire::DismissPermissionSuggestionParams = decode(method, params)?;
+            reply(api::dismiss_permission_suggestion(core, &p.key))
+        }
         MethodName::ImportTasteRules => {
             let p: wire::ImportTasteRulesParams = decode(method, params)?;
             reply(api::import_taste_rules(core, &p))

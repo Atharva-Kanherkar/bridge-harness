@@ -23,7 +23,7 @@ to do less.
    (by first word, risky pairs such as `git push` and `npm publish`, or
    secret-like words). Declines are always fine to suggest.
 4. **Show** at most 3, most answered first. A dismissed suggestion (schema
-   111, `taste_dismissed_suggestions`) never shows again.
+   112, `taste_dismissed_suggestions`) never shows again.
 5. **Methods:** `taste/list_permission_suggestions` and
    `taste/dismiss_permission_suggestion {key}`. The latter returns the list
    after the dismissal.

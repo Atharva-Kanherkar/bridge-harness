@@ -204,4 +204,30 @@ describe("TasteRules", () => {
     expect(imported).toHaveBeenLastCalledWith({ scopeKey: "project:octo/repo", workspaceId: "w", apply: true });
     expect(panel.textContent).toContain("Your rules now match the files.");
   });
+
+  it("points out answers you keep repeating, grants nothing, and turns a decline into a rule", async () => {
+    const { add } = mockRules();
+    let hints = [
+      { key: "allowed|project:octo/repo|Bash|cargo test", scopeKey: "project:octo/repo", tool: "Bash", pattern: "cargo test", verdict: "allowed", count: 6, sessions: 2, lastAt: "t" },
+      { key: "declined|account:local|Bash|git push", scopeKey: "account:local", tool: "Bash", pattern: "git push", verdict: "declined", count: 5, sessions: 2, lastAt: "t" },
+    ];
+    vi.spyOn(bridgeApi, "listPermissionSuggestions").mockImplementation(async () => ({ suggestions: hints }));
+    const dismiss = vi.spyOn(bridgeApi, "dismissPermissionSuggestion").mockImplementation(async key => {
+      hints = hints.filter(item => item.key !== key);
+      return { suggestions: hints };
+    });
+    await mount();
+    const list = host!.querySelector('[aria-label="Suggestions from your approvals"]')!;
+    expect(list.textContent).toContain("You allowed Bash `cargo test` 6 times in 2 chats (octo/repo).");
+    expect(list.textContent).toContain("Bridge grants nothing on its own.");
+    expect(list.textContent).toContain("You declined Bash `git push` 5 times in 2 chats (Every repository).");
+    const allowed = host!.querySelector<HTMLElement>('[data-suggestion="allowed|project:octo/repo|Bash|cargo test"]')!;
+    expect(button(allowed, "Make it a rule")).toBeUndefined();
+    const declined = host!.querySelector<HTMLElement>('[data-suggestion="declined|account:local|Bash|git push"]')!;
+    await act(async () => { button(declined, "Make it a rule").click(); await flush(); });
+    expect(add).toHaveBeenCalledWith({ scopeKey: "account:local", kind: "code_prefer", body: "Don't run `git push` without asking me first." });
+    expect(dismiss).toHaveBeenCalledWith("declined|account:local|Bash|git push");
+    await act(async () => { button(host!.querySelector<HTMLElement>('[data-suggestion^="allowed"]')!, "Dismiss").click(); await flush(); });
+    expect(host!.querySelector('[aria-label="Suggestions from your approvals"]')).toBeNull();
+  });
 });

@@ -209,6 +209,8 @@ methods![
     (SetTasteRuleState, "taste", "set_taste_rule_state"),
     (ExportTasteRules, "taste", "export_taste_rules"),
     (ImportTasteRules, "taste", "import_taste_rules"),
+    (ListPermissionSuggestions, "taste", "list_permission_suggestions"),
+    (DismissPermissionSuggestion, "taste", "dismiss_permission_suggestion"),
     // approvals
     (ResolveApproval, "approvals", "resolve_approval"),
     (ResolveQuestion, "approvals", "resolve_question"),

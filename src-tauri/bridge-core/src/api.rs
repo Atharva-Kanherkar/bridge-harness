@@ -2683,6 +2683,34 @@ pub fn import_taste_rules(
     })
 }
 
+fn permission_suggestion_list(db: &rusqlite::Connection) -> Result<wire::PermissionSuggestionList, BridgeError> {
+    let suggestions = crate::taste::permissions::suggestions(db, chrono::Utc::now())?
+        .into_iter()
+        .map(|found| wire::PermissionSuggestion {
+            key: found.key,
+            scope_key: found.scope_key,
+            tool: found.tool,
+            pattern: found.pattern,
+            verdict: found.verdict,
+            count: found.count.min(u32::MAX as usize) as u32,
+            sessions: found.sessions.min(u32::MAX as usize) as u32,
+            last_at: found.last_at,
+        })
+        .collect();
+    Ok(wire::PermissionSuggestionList { suggestions })
+}
+
+pub fn list_permission_suggestions(core: &Arc<BridgeCore>) -> Result<wire::PermissionSuggestionList, BridgeError> {
+    let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    permission_suggestion_list(&db)
+}
+
+pub fn dismiss_permission_suggestion(core: &Arc<BridgeCore>, key: &str) -> Result<wire::PermissionSuggestionList, BridgeError> {
+    let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    crate::taste::permissions::dismiss(&db, key, chrono::Utc::now())?;
+    permission_suggestion_list(&db)
+}
+
 pub fn set_taste_rule_state(
     core: &Arc<BridgeCore>,
     params: &bridge_protocol::messages::SetTasteRuleStateParams,
