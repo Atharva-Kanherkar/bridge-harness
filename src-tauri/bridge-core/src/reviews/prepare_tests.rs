@@ -376,6 +376,7 @@ fn posted_review_titled(fixture: &Fixture, head: &str, prefix: &str) -> String {
         confidence: 0.8,
         fingerprint: format!("fp-{title}"),
         outside_diff: false,
+        category: None,
     };
     let titles = ["Kept one", "Dropped one", "Pending one"].map(|title| format!("{prefix}{title}"));
     store::insert_findings(&db, &job.id, &pass, &titles.iter().map(|title| finding(title)).collect::<Vec<_>>(), chrono::Utc::now()).unwrap();

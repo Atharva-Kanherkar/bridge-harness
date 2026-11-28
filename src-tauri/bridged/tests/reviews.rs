@@ -102,6 +102,7 @@ fn seed(data_dir: &Path, repo: &Path) -> String {
             confidence: 0.9,
             fingerprint: "fp".into(),
             outside_diff: false,
+            category: None,
         }],
         chrono::Utc::now(),
     )

@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 105;
+const LATEST_SCHEMA_VERSION: i64 = 109;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -916,9 +916,20 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // Memory search stems words, so a question finds a memory phrased
             // in another form of the same word.
             104 => crate::memory_ledger::install_stemmed_search(&transaction)?,
+            // The taste layer's fields on the memory ledger: a layer, path
+            // globs, an outcome score, visibility, and evidence links.
+            105 => crate::memory_ledger::install_taste_fields(&transaction)?,
+            // The taste layer's decision log, with every review decision and
+            // fix already stored copied in.
+            106 => crate::taste::signals::install(&transaction)?,
+            // A review finding's own category, and why the taste layer hid it.
+            107 => crate::taste::suppress::install(&transaction)?,
+            // The taste learner's runs, so a group is offered again only once
+            // it has grown.
+            108 => crate::taste::learn::install(&transaction)?,
             // Who is signed in to Bridge itself. One row, no tokens: the
             // refresh token lives in the keychain. See `bridge_account`.
-            105 => crate::bridge_account::install_store(&transaction)?,
+            109 => crate::bridge_account::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -7609,7 +7620,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_105_adds_the_bridge_account_to_an_existing_database_with_no_token_columns() {
+    fn migration_109_adds_the_bridge_account_to_an_existing_database_with_no_token_columns() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bridge.db");
         create_legacy_fixture(&path);

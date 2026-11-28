@@ -786,6 +786,13 @@ pub fn decide(
         if changed != 1 {
             return Err(BridgeError::Invalid(format!("This review has no finding {}", decision.finding_id)));
         }
+        crate::taste::signals::record_decision(
+            &transaction,
+            &decision.finding_id,
+            decision.decision.as_str(),
+            edited_body.as_deref(),
+            &stamp(now),
+        )?;
     }
     transaction.commit()?;
     Ok(())
@@ -887,7 +894,11 @@ pub fn complete_pass(
     }
     finish_pass(&transaction, pass_id, ReviewPassStatus::Done, None, Some(outcome), now)?;
     insert_findings(&transaction, job_id, pass_id, &outcome.findings, now)?;
-    mark_fixed(&transaction, job_id, &outcome.fixed)?;
+    // Best effort: a review never fails because its taste could not be read.
+    if let Err(error) = crate::taste::suppress::apply(&transaction, job_id) {
+        eprintln!("[reviews] could not apply taste to job {job_id}: {error}");
+    }
+    mark_fixed(&transaction, job_id, &outcome.fixed, now)?;
     transaction.commit()?;
     Ok(true)
 }
@@ -1035,8 +1046,8 @@ pub fn insert_findings(
 ) -> Result<usize, BridgeError> {
     let mut statement = db.prepare(
         "INSERT INTO review_findings(id, job_id, pass_id, path, line, start_line, side, severity, title, body,
-            confidence, fingerprint, outside_diff, created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+            confidence, fingerprint, outside_diff, created_at, category)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
     )?;
     for finding in findings {
         statement.execute(params![
@@ -1054,6 +1065,7 @@ pub fn insert_findings(
             finding.fingerprint,
             finding.outside_diff,
             stamp(now),
+            finding.category,
         ])?;
     }
     Ok(findings.len())
@@ -1065,7 +1077,8 @@ const SEVERITY_RANK: &str =
 pub fn findings(db: &Connection, job_id: &str) -> Result<Vec<wire::ReviewFinding>, BridgeError> {
     let mut statement = db.prepare(&format!(
         "SELECT id, job_id, pass_id, path, line, start_line, side, severity, title, body, confidence, fingerprint,
-            agreed_by, outside_diff, decision, edited_body, github_comment_id, posted_at, decided_at, fixed_in_sha, pass_ids
+            agreed_by, outside_diff, decision, edited_body, github_comment_id, posted_at, decided_at, fixed_in_sha, pass_ids,
+            category, hidden_reason
          FROM review_findings WHERE job_id=?1
          ORDER BY agreed_by DESC, {SEVERITY_RANK}, confidence DESC, rowid"
     ))?;
@@ -1099,6 +1112,8 @@ pub fn findings(db: &Connection, job_id: &str) -> Result<Vec<wire::ReviewFinding
                 github_comment_id: row.get(16)?,
                 posted_at: row.get(17)?,
                 fixed_in_sha: row.get(19)?,
+                category: row.get(21)?,
+                hidden_reason: row.get(22)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -1153,6 +1168,7 @@ pub fn merge_entries(db: &Connection, job_id: &str) -> Result<Vec<super::merge::
                     confidence: row.get(9)?,
                     fingerprint: row.get(10)?,
                     outside_diff: row.get(11)?,
+                    category: None,
                 },
             })
         })?
@@ -1450,10 +1466,11 @@ pub fn prior_findings(db: &Connection, pr: PrKey<'_>, job_id: &str) -> Result<Ve
 /// cannot have been fixed by it. Order is git's: the runner passes only
 /// findings `prepare` placed at an ancestor of this head
 /// (`Prepared::fixable`), whatever order the reviews were queued in.
-fn mark_fixed(db: &Connection, job_id: &str, finding_ids: &[String]) -> Result<usize, BridgeError> {
+fn mark_fixed(db: &Connection, job_id: &str, finding_ids: &[String], now: DateTime<Utc>) -> Result<usize, BridgeError> {
     let mut marked = 0;
+    let at = stamp(now);
     for id in finding_ids {
-        marked += db.execute(
+        let changed = db.execute(
             "UPDATE review_findings SET fixed_in_sha=(SELECT head_sha FROM review_jobs WHERE id=?2)
              WHERE id=?1 AND job_id<>?2 AND fixed_in_sha IS NULL
                AND (decision IN ('kept','edited') OR posted_at IS NOT NULL)
@@ -1464,6 +1481,11 @@ fn mark_fixed(db: &Connection, job_id: &str, finding_ids: &[String]) -> Result<u
                      AND other.head_sha<>this.head_sha)",
             params![id, job_id],
         )?;
+        if changed > 0 {
+            let head: String = db.query_row("SELECT head_sha FROM review_jobs WHERE id=?1", params![job_id], |row| row.get(0))?;
+            crate::taste::signals::record_fixed(db, id, &head, &at)?;
+        }
+        marked += changed;
     }
     Ok(marked)
 }

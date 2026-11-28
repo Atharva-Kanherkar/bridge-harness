@@ -24,6 +24,12 @@
     "createdAt": {
       "type": "string"
     },
+    "evidenceCount": {
+      "description": "How many signals (kept, edited, dropped or fixed findings) back the record. Absent means none.",
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    },
     "expiresAt": {
       "description": "When set, the instant after which the record stops applying. The sweep closes the interval at this instant rather than at the moment it ran.",
       "type": [
@@ -36,6 +42,25 @@
     },
     "kind": {
       "type": "string"
+    },
+    "layer": {
+      "description": "`memory` or `taste`. Absent on the wire means `memory`, so a memory reads exactly as it did before layers existed.",
+      "type": "string"
+    },
+    "outcomeScore": {
+      "description": "Taste rules only: how well the rule has held up. It rises when what it shaped is kept and falls when it is dropped. Absent means 0.",
+      "format": "double",
+      "type": "number"
+    },
+    "pathGlobs": {
+      "description": "Taste rules only: the paths a rule applies to, as globs. Absent means every path in its scope.",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
     },
     "provenance": {
       "type": "string"

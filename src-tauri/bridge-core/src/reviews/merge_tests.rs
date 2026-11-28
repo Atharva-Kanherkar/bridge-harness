@@ -16,6 +16,7 @@ fn entry(id: &str, pass: &str, line: u32, title: &str) -> Entry {
             confidence: 0.5,
             fingerprint: format!("fp-{id}"),
             outside_diff: false,
+            category: None,
         },
     }
 }

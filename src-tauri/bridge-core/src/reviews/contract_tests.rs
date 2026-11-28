@@ -370,3 +370,19 @@ fn the_contract_asks_for_the_faulty_line_not_the_end_of_its_block() {
     assert!(OUTPUT_CONTRACT.contains("`line` is the line the problem is on"));
     assert!(OUTPUT_CONTRACT.contains("never the closing brace"));
 }
+
+#[test]
+fn a_finding_may_say_what_it_is_about_and_anything_else_is_dropped() {
+    let tagged = |category: serde_json::Value| {
+        let mut finding = finding("src/a.rs", 3, "major", "Unwrap on input");
+        finding["category"] = category;
+        let review = parse(&fenced(json!({"summary": "s", "findings": [finding]}))).unwrap();
+        validate(review, &changed(), &hunks(PATCH)).findings[0].category.clone()
+    };
+    assert_eq!(tagged(json!("error-handling")), Some("error-handling".to_string()));
+    assert_eq!(tagged(json!(" Security ")), Some("security".to_string()), "trimmed and lowercased");
+    assert_eq!(tagged(json!("vibes")), None, "not a category: dropped, the pass still reads");
+    assert_eq!(tagged(json!(7)), None);
+    assert_eq!(tagged(serde_json::Value::Null), None);
+    assert!(OUTPUT_CONTRACT.contains("\"category\":\"security|correctness|error-handling|tests|performance|naming|docs|style|other\""));
+}

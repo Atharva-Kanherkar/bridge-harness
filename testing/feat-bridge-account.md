@@ -21,7 +21,7 @@ Bridge is a public OAuth client (PKCE, loopback redirect, no client secret).
 | A secret key is refused as a client id | `the_client_id_comes_from_the_environment_before_the_build_and_is_never_a_secret_key` |
 | No token in the status, the row, or the authorization URL | `signing_in_exchanges_the_code_…` |
 | Tokens do not survive `secret_interception::sanitize`, JSON-quoted keys included | `account_tokens_do_not_survive_redaction` |
-| Migration 105 applies to an existing database and has no token column | `store::tests::migration_105_…` |
+| Migration 109 applies to an existing database and has no token column | `store::tests::migration_109_…` |
 | `bridged`'s keychain read helper refuses the account service | `bridged` bin: `the_keychain_helper_refuses_the_bridge_account_item` |
 | The page renders signed out, signing in, signed in, an error, and an unavailable build; search finds it | `src/components/settings/AccountPage.test.tsx` |
 | Wire shapes and the schema snapshot | `bridge-protocol` `messages::account` tests and the artifact drift test |

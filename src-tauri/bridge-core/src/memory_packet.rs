@@ -281,7 +281,7 @@ pub fn for_session(
     let mut statement = db.prepare(
         "SELECT id, body, kind, provenance, confidence_bps, conflict_group
          FROM memory_records
-         WHERE scope_key=?1 AND status='active'
+         WHERE scope_key=?1 AND layer='memory' AND status='active'
          ORDER BY provenance='user_explicit' DESC,
                   CASE kind WHEN 'constraint' THEN 0 WHEN 'preference' THEN 1
                             WHEN 'decision' THEN 2 WHEN 'fact' THEN 3 ELSE 4 END,
@@ -339,7 +339,7 @@ pub fn for_session(
     let mut statement = db.prepare(
         "SELECT id, status
          FROM memory_records
-         WHERE scope_key=?1 AND status NOT IN ('active', 'deleted')
+         WHERE scope_key=?1 AND layer='memory' AND status NOT IN ('active', 'deleted')
          ORDER BY updated_at DESC, id DESC
          LIMIT ?2",
     )?;

@@ -13,6 +13,13 @@
         "body": {
           "type": "string"
         },
+        "category": {
+          "description": "What the finding is about, as the reviewer tagged it: `security`, `correctness`, `error-handling`, `tests`, `performance`, `naming`, `docs`, `style` or `other`. Absent when it did not say.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "confidence": {
           "format": "double",
           "type": "number"
@@ -44,6 +51,13 @@
           ]
         },
         "githubCommentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hiddenReason": {
+          "description": "Set when the taste layer hid the finding because the person kept dropping ones like it, in their words (\"You dropped 4 like this, last on #212.\"). A hidden finding is still pending: it can be shown and decided like any other, and it is never posted without a decision.",
           "type": [
             "string",
             "null"

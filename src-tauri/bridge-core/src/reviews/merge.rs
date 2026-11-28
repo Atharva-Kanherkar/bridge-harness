@@ -165,6 +165,11 @@ pub fn title_overlap(a: &str, b: &str) -> f64 {
     jaccard(&words(a), &words(b))
 }
 
+/// Jaccard overlap of the code two texts quote in backticks.
+pub fn code_overlap(a: &str, b: &str) -> f64 {
+    jaccard(&quoted(a), &quoted(b))
+}
+
 fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
     if a.is_empty() || b.is_empty() {
         return 0.0;

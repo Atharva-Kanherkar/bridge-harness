@@ -141,7 +141,7 @@ pub fn update_settings(
 
 pub fn held_proposals(db: &Connection, scope_key: &str) -> Result<i64, BridgeError> {
     Ok(db.query_row(
-        "SELECT COUNT(*) FROM memory_records WHERE scope_key=?1 AND status='proposed'",
+        "SELECT COUNT(*) FROM memory_records WHERE scope_key=?1 AND layer='memory' AND status='proposed'",
         params![scope_key],
         |row| row.get(0),
     )?)
@@ -223,7 +223,7 @@ pub fn sweep_unused(db: &Connection, now: DateTime<Utc>) -> Result<Vec<String>, 
     let cutoff = (now - Duration::days(days)).to_rfc3339();
     let mut statement = db.prepare(
         "SELECT id FROM memory_records
-         WHERE scope_key=?1 AND status='active' AND provenance<>'user_explicit'
+         WHERE scope_key=?1 AND layer='memory' AND status='active' AND provenance<>'user_explicit'
            AND COALESCE(last_used_at, created_at) <= ?2
          ORDER BY id",
     )?;
@@ -284,6 +284,7 @@ pub fn restore(db: &Connection, record_id: &str) -> Result<MemoryRecord, BridgeE
             old.conflict_group
         ],
     )?;
+    memory_ledger::inherit_from(&transaction, &id, &[old.id.as_str()])?;
     transaction.execute(
         "UPDATE memory_records SET status='superseded', superseded_by=?1 WHERE id=?2",
         params![id, old.id],

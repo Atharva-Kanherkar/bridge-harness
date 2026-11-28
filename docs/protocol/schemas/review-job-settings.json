@@ -110,6 +110,11 @@
       "default": "off",
       "description": "Send finished reviews to the chat that wrote the pull request, which then works on them. Off by default."
     },
+    "hideRepeatDrops": {
+      "default": true,
+      "description": "Hide a new finding that closely resembles ones the person dropped at least three times across two pull requests. Hidden findings stay one click away and are never posted without a decision; critical and security findings are never hidden. On by default.",
+      "type": "boolean"
+    },
     "incremental": {
       "default": false,
       "description": "A later review of a PR looks at the commits since its last posted review and remembers what was said and decided. Off by default.",

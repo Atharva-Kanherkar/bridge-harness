@@ -24,6 +24,7 @@ fn finding(path: &str, severity: ReviewSeverity) -> DraftFinding {
         confidence: 0.7,
         fingerprint: format!("fp-{path}"),
         outside_diff: false,
+        category: None,
     }
 }
 

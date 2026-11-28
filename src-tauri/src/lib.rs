@@ -3063,6 +3063,7 @@ async fn save_memory_record(
 #[tauri::command]
 async fn list_memory_records(
     scope_key: String,
+    layer: Option<String>,
     status: Option<String>,
     cursor: Option<String>,
     limit: Option<u32>,
@@ -3070,7 +3071,14 @@ async fn list_memory_records(
 ) -> Result<bridge_protocol::messages::ListMemoryRecordsResult, BridgeError> {
     let core = state.inner().clone();
     blocking("List memory records", move || {
-        api::list_memory_records(&core, &scope_key, status.as_deref(), cursor.as_deref(), limit)
+        api::list_memory_records(
+            &core,
+            &scope_key,
+            layer.as_deref(),
+            status.as_deref(),
+            cursor.as_deref(),
+            limit,
+        )
     })
     .await
 }

@@ -149,7 +149,7 @@ pub fn dream_records(db: &Connection, scope_key: &str) -> Result<Vec<DreamRecord
     let held = held_ids(db)?;
     let mut statement = db.prepare(
         "SELECT id, last_used_at FROM memory_records
-         WHERE scope_key=?1 AND status IN ('active','proposed')
+         WHERE scope_key=?1 AND layer='memory' AND status IN ('active','proposed')
          ORDER BY created_at, id LIMIT ?2",
     )?;
     let rows = statement
@@ -1029,7 +1029,7 @@ impl DreamGate {
         // A claim close to an active memory is a duplicate to reject or a
         // contradiction to settle, never a second active memory beside it.
         let mut statement = db.prepare(
-            "SELECT id, body FROM memory_records WHERE scope_key=?1 AND status='active'",
+            "SELECT id, body FROM memory_records WHERE scope_key=?1 AND layer='memory' AND status='active'",
         )?;
         let active = statement
             .query_map(params![self.scope_key], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
@@ -1325,6 +1325,7 @@ fn insert_copy(db: &Connection, from: &Snapshot, restores: &str, now: &str) -> R
             from.last_used_at,
         ],
     )?;
+    crate::memory_ledger::inherit_from(db, &id, &[from.id.as_str()])?;
     Ok(id)
 }
 

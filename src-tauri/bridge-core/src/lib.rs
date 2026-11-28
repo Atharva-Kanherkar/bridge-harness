@@ -235,6 +235,7 @@ pub mod worker_settings;
 pub mod reviewer_settings;
 pub mod reviews;
 pub mod bridge_account;
+pub mod taste;
 pub mod limit_recovery;
 pub mod dependency_seed;
 pub mod worker_sandbox;

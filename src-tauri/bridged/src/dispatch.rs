@@ -494,6 +494,7 @@ pub fn dispatch(
             reply(api::list_memory_records(
                 core,
                 &p.scope_key,
+                p.layer.as_deref(),
                 p.status.as_deref(),
                 p.cursor.as_deref(),
                 p.limit,
