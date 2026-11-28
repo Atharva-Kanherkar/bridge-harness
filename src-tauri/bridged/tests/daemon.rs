@@ -1140,6 +1140,26 @@ fn shutdown_drains_open_connections_before_completing() {
 }
 
 #[test]
+fn a_daemon_nobody_signed_in_to_answers_signed_out_and_never_a_token() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&running.socket_path);
+    assert!(client.handshake(&running.token).get("result").is_some());
+    for (id, method) in ["account/account_status", "account/cancel_account_sign_in", "account/sign_out_account"].into_iter().enumerate() {
+        let (answer, _) = client.call(id as i64 + 1, method, None);
+        let status = &answer["result"];
+        assert_eq!(status["state"], json!("signed_out"), "{method}");
+        assert!(status.get("user").is_none(), "{method}");
+        let keys: Vec<&str> = status.as_object().unwrap().keys().map(String::as_str).collect();
+        assert!(keys.iter().all(|key| ["state", "error", "available"].contains(key)), "{method} answered {keys:?}");
+    }
+    let (bad, _) = client.call(9, "account/account_status", Some(json!({"token": "x"})));
+    assert_eq!(bad["error"]["code"], -32602, "the account methods take no parameters, a token least of all");
+    drop(client);
+    running.stop();
+}
+
+#[test]
 fn app_preferences_merge_announce_and_survive_daemon_restart() {
     let fixture = tempfile::tempdir().unwrap();
     let running = RunningDaemon::start(fixture.path());

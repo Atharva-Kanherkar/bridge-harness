@@ -289,6 +289,7 @@ impl Daemon {
         bridge_core::title_jobs_live::start_title_maintenance(core.clone());
         bridge_core::reviews::start_review_maintenance(core.clone());
         bridge_core::limit_recovery::start_limit_recovery_maintenance(core.clone());
+        bridge_core::bridge_account::start_account_refresh(core.clone());
         bridge_core::notes::live::start_note_maintenance(core.clone());
         bridge_core::live_turn::start_queued_input_maintenance(core.clone());
         bridge_core::live_turn::start_worktree_maintenance(core.clone());

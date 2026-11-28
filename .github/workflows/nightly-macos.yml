@@ -154,6 +154,9 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ runner.temp }}/bridge-auth.p8
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # Public OAuth client id for Bridge sign-in, compiled into the app.
+          # A repository variable, not a secret: no WorkOS key belongs here.
+          BRIDGE_WORKOS_CLIENT_ID: ${{ vars.BRIDGE_WORKOS_CLIENT_ID }}
         run: sh scripts/release-dmg.sh
 
       - name: Retain verified DMG and updater artifacts

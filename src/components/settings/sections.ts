@@ -4,7 +4,7 @@
 
 /** A page the rail can land on. */
 export type PageId =
-  | "general" | "notifications" | "voice" | "composer" | "menuBar"
+  | "account" | "general" | "notifications" | "voice" | "composer" | "menuBar"
   | "chatDefaults" | "codingAgents" | "models" | "agents" | "permissions" | "keys"
   | "import" | "archives" | "data"
   | "workers" | "prompts" | "work"
@@ -20,6 +20,7 @@ export type RailGroupId = "basics" | "agents" | "data" | "advanced";
 export type PageInfo = { label: string; description: string; group: RailGroupId | "footer" };
 
 export const PAGES: Record<PageId, PageInfo> = {
+  account: { label: "Account", description: "Sign in to Bridge. Optional, and separate from your coding agents' own accounts.", group: "basics" },
   general: { label: "General", description: "How Bridge looks, its zoom level, and what a conversation shows.", group: "basics" },
   notifications: { label: "Notifications", description: "Toasts, banners and sounds for each kind of notice, and quiet hours.", group: "basics" },
   voice: { label: "Voice", description: "Dictate, review, then send. Private English speech recognition on your Mac.", group: "basics" },
@@ -41,7 +42,7 @@ export const PAGES: Record<PageId, PageInfo> = {
 };
 
 export const RAIL_GROUPS: { id: RailGroupId; label: string; pages: PageId[] }[] = [
-  { id: "basics", label: "Basics", pages: ["general", "notifications", "voice", "composer", "menuBar"] },
+  { id: "basics", label: "Basics", pages: ["account", "general", "notifications", "voice", "composer", "menuBar"] },
   { id: "agents", label: "Agents & models", pages: ["chatDefaults", "codingAgents", "models", "agents", "permissions", "keys"] },
   { id: "data", label: "Data", pages: ["import", "archives", "data"] },
   { id: "advanced", label: "Advanced", pages: ["workers", "prompts", "work"] },

@@ -74,7 +74,7 @@ Every PR gets a plan note before any code (a Bridge note: What, Why with a Merma
 
 ## Environment
 
-`BRIDGE_DATA_DIR`, `BRIDGE_DESKTOP_HOST`, `BRIDGE_DAEMON_BIN`, `BRIDGE_CLAUDE_SIDECAR`, `BRIDGE_BROWSER_EXTENSION`, `BRIDGE_WORKER_OUTPUT_DIR`. Provider CLIs (`codex`, `claude`, `opencode`) are optional — a missing binary shows its adapter as unavailable instead of blocking startup, so check `command -v` when debugging discovery. Vendor runtimes under `runtimes/` are pinned npm closures installed with `npm ci --ignore-scripts` and verified by receipt.
+`BRIDGE_DATA_DIR`, `BRIDGE_DESKTOP_HOST`, `BRIDGE_DAEMON_BIN`, `BRIDGE_CLAUDE_SIDECAR`, `BRIDGE_BROWSER_EXTENSION`, `BRIDGE_WORKER_OUTPUT_DIR`, `BRIDGE_WORKOS_CLIENT_ID` (the public client id for Bridge sign-in: baked in at build time, or set at run time for a staging environment; never a WorkOS API key). Provider CLIs (`codex`, `claude`, `opencode`) are optional — a missing binary shows its adapter as unavailable instead of blocking startup, so check `command -v` when debugging discovery. Vendor runtimes under `runtimes/` are pinned npm closures installed with `npm ci --ignore-scripts` and verified by receipt.
 
 ## PR review reply attribution
 

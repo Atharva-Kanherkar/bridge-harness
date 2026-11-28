@@ -908,6 +908,10 @@ pub fn dispatch(
         }
         MethodName::GetChatDefaults => { let p:wire::GetChatDefaultsParams=decode(method,params)?; reply(api::get_chat_defaults(core,p.project_id.as_deref())) },
         MethodName::SaveChatDefaults => { let p:wire::SaveChatDefaultsParams=decode(method,params)?; reply(api::save_chat_defaults(core,&p)) },
+        MethodName::AccountStatus => reply(api::account_status(core)),
+        MethodName::BeginAccountSignIn => reply(api::begin_account_sign_in(core)),
+        MethodName::CancelAccountSignIn => reply(api::cancel_account_sign_in(core)),
+        MethodName::SignOutAccount => reply(api::sign_out_account(core)),
         MethodName::GetAppPreferences => reply(api::get_app_preferences(core)),
         MethodName::SaveAppPreferences => { let p:wire::SaveAppPreferencesParams=decode(method,params)?; reply(api::save_app_preferences(core,&p)) },
         MethodName::ResolveChatSettings => { let p:wire::ResolveChatSettingsParams=decode(method,params)?; reply(api::resolve_chat_settings(core,&p)) },

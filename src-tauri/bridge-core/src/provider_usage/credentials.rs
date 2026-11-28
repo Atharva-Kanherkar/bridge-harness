@@ -169,6 +169,15 @@ pub fn keychain_helper_read(
     raw_keychain(service, account, allow_interaction)
 }
 
+/// Read an item in this process, never raising a Keychain dialog. For items
+/// that must not be reachable through the `bridged` read helper, which anything
+/// able to run `bridged` can call.
+#[cfg(target_os = "macos")]
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn keychain_in_process(service: &str, account: &str) -> Result<Vec<u8>, String> {
+    raw_keychain(service, Some(account), false)
+}
+
 #[cfg(target_os = "macos")]
 fn raw_keychain(
     service: &str,

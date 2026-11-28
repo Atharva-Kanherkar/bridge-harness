@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 108;
+const LATEST_SCHEMA_VERSION: i64 = 109;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -927,6 +927,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // The taste learner's runs, so a group is offered again only once
             // it has grown.
             108 => crate::taste::learn::install(&transaction)?,
+            // Who is signed in to Bridge itself. One row, no tokens: the
+            // refresh token lives in the keychain. See `bridge_account`.
+            109 => crate::bridge_account::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -7614,6 +7617,26 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM session_entries", [], |row| row.get(0))
             .unwrap();
         assert_eq!(entries, 2, "backfilled entries survive the Work migration");
+    }
+
+    #[test]
+    fn migration_109_adds_the_bridge_account_to_an_existing_database_with_no_token_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        create_legacy_fixture(&path);
+        let db = open(&path).unwrap();
+        let columns: Vec<String> = db
+            .prepare("SELECT name FROM pragma_table_info('bridge_account')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(columns, ["id", "user_id", "email", "name", "avatar_url", "organization_id", "signed_in_at"]);
+        assert!(columns.iter().all(|column| !column.contains("token") && !column.contains("secret")));
+        assert!(crate::bridge_account::stored_user(&db).unwrap().is_none(), "an upgraded install starts signed out");
+        let sessions: i64 = db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0)).unwrap();
+        assert_eq!(sessions, 1, "the fixture's own rows are untouched");
     }
 
     /// The inventory has to arrive already knowing what the machine holds,

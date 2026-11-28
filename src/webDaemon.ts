@@ -408,6 +408,8 @@ export class WebDaemonClient {
     this.emit("adapters-changed", null);
     // App preferences are one small record; a gap costs one reread.
     this.emit("config/app_preferences_changed", null);
+    // Who is signed in is one small read; a gap costs one reread.
+    this.emit("account/changed", null);
     this.emit("stream-lagged", null);
   }
 

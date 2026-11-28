@@ -31,6 +31,8 @@ export type SearchGroup = {
 export type RegistryRow = SearchableRow & { id: string };
 
 export const SETTINGS_ROWS: RegistryRow[] = [
+  { page: "account", id: "bridge-account", label: "Bridge account", description: "Sign in or sign out of Bridge, and who is signed in" },
+
   { page: "general", id: "mode", label: "Mode", description: "Match macOS, Paper, or Graphite" },
   { page: "general", id: "window-background", label: "Window background", description: "Solid or tinted by your desktop" },
   { page: "general", id: "zoom", label: "Window zoom", description: "Scale the whole window" },

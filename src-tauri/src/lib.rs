@@ -1464,6 +1464,14 @@ async fn get_chat_defaults(project_id: Option<String>, state: State<'_, Arc<Brid
 #[tauri::command]
 async fn save_chat_defaults(project_id: Option<String>, expected_revision:u32, defaults:bridge_protocol::messages::ChatDefaults, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ChatDefaultsView, BridgeError> { api::save_chat_defaults(state.inner(),&bridge_protocol::messages::SaveChatDefaultsParams {project_id,expected_revision,defaults}) }
 #[tauri::command]
+async fn account_status(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::AccountStatus, BridgeError> { api::account_status(state.inner()) }
+#[tauri::command]
+async fn begin_account_sign_in(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::BeginAccountSignIn, BridgeError> { api::begin_account_sign_in(state.inner()) }
+#[tauri::command]
+async fn cancel_account_sign_in(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::AccountStatus, BridgeError> { api::cancel_account_sign_in(state.inner()) }
+#[tauri::command]
+async fn sign_out_account(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::AccountStatus, BridgeError> { api::sign_out_account(state.inner()) }
+#[tauri::command]
 async fn get_app_preferences(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::AppPreferences, BridgeError> { api::get_app_preferences(state.inner()) }
 #[tauri::command]
 async fn save_app_preferences(values: bridge_protocol::messages::AppPreferenceValues, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::AppPreferences, BridgeError> { api::save_app_preferences(state.inner(), &bridge_protocol::messages::SaveAppPreferencesParams { values }) }
@@ -4009,6 +4017,7 @@ fn setup_embedded(
     bridge_core::title_jobs_live::start_title_maintenance(core.clone());
     bridge_core::reviews::start_review_maintenance(core.clone());
     bridge_core::limit_recovery::start_limit_recovery_maintenance(core.clone());
+    bridge_core::bridge_account::start_account_refresh(core.clone());
     bridge_core::notes::live::start_note_maintenance(core.clone());
     live_turn::start_queued_input_maintenance(core.clone());
     live_turn::start_worktree_maintenance(core.clone());
@@ -4208,6 +4217,10 @@ pub fn run() -> i32 {
             save_worker_settings,
             get_chat_defaults,
             save_chat_defaults,
+            account_status,
+            begin_account_sign_in,
+            cancel_account_sign_in,
+            sign_out_account,
             get_app_preferences,
             save_app_preferences,
             resolve_chat_settings,

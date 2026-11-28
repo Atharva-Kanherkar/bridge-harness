@@ -21,6 +21,7 @@
 //! each naming the core type still to be mirrored; a method missing from both
 //! tables fails the coverage test below.
 
+mod account;
 mod agents;
 mod apps;
 mod app_preferences;
@@ -67,6 +68,7 @@ mod work;
 mod workspaces;
 mod worktrees;
 
+pub use account::*;
 pub use agents::*;
 pub use apps::*;
 pub use app_preferences::*;
@@ -445,6 +447,11 @@ typed_methods![
     (SaveWorkerSettings, SaveWorkerSettingsParams, WorkerSettings),
     (GetChatDefaults, GetChatDefaultsParams, ChatDefaultsView),
     (SaveChatDefaults, SaveChatDefaultsParams, ChatDefaultsView),
+    // account: who is signed in to Bridge itself
+    (AccountStatus, _, AccountStatus),
+    (BeginAccountSignIn, _, BeginAccountSignIn),
+    (CancelAccountSignIn, _, AccountStatus),
+    (SignOutAccount, _, AccountStatus),
     (GetAppPreferences, _, AppPreferences),
     (SaveAppPreferences, SaveAppPreferencesParams, AppPreferences),
     (ResolveChatSettings, ResolveChatSettingsParams, ResolvedChatSettings),

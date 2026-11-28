@@ -264,9 +264,15 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// `runId`, `spendMicrousd` and `dream` on `MemoryActivityEntry`. Additive: an
 /// older client never calls the new methods and reads the new fields as
 /// absent.
+///
+/// **1.64 adds the account domain**: `account/account_status`,
+/// `account/begin_account_sign_in`, `account/cancel_account_sign_in`,
+/// `account/sign_out_account` and the `account/changed` hint. No method in it
+/// accepts or returns a token. A 1.63 client still pairs: it never calls
+/// `account/*` and ignores the hint.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 63,
+    minor: 64,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -732,8 +738,17 @@ mod tests {
     fn a_1_62_client_pairs_with_a_dreaming_daemon() {
         let before = ProtocolVersion { major: 1, minor: 62 };
         let dreaming = ProtocolVersion { major: 1, minor: 63 };
-        assert_eq!(PROTOCOL_VERSION, dreaming);
         assert!(dreaming.accepts(before), "a 1.62 client never asks for a dream and reads its fields as absent");
+    }
+
+    #[test]
+    fn a_1_63_client_pairs_with_a_daemon_that_has_accounts() {
+        let before = ProtocolVersion { major: 1, minor: 63 };
+        let accounts = ProtocolVersion { major: 1, minor: 64 };
+        assert_eq!(PROTOCOL_VERSION, accounts);
+        assert!(accounts.accepts(before), "a 1.63 client never calls account/* and ignores the hint");
+        assert!(!before.accepts(accounts), "a 1.64 client needs the account domain");
+        assert!(MethodName::domains().contains(&"account"));
     }
 
     #[test]

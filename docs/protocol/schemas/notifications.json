@@ -111,6 +111,10 @@
     },
     {
       "delivery": "transient",
+      "notification": "account/changed"
+    },
+    {
+      "delivery": "transient",
       "notification": "workflows/changed"
     },
     {
