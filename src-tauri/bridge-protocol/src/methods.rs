@@ -207,6 +207,8 @@ methods![
     (GetTasteEvidence, "taste", "get_taste_evidence"),
     (AddTasteRule, "taste", "add_taste_rule"),
     (SetTasteRuleState, "taste", "set_taste_rule_state"),
+    (ExportTasteRules, "taste", "export_taste_rules"),
+    (ImportTasteRules, "taste", "import_taste_rules"),
     // approvals
     (ResolveApproval, "approvals", "resolve_approval"),
     (ResolveQuestion, "approvals", "resolve_question"),

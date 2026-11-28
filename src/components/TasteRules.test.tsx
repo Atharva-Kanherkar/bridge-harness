@@ -168,4 +168,40 @@ describe("TasteRules", () => {
     expect(state).toHaveBeenLastCalledWith("repo", { state: "active" });
     expect(host!.querySelector('[aria-label="Paused taste rules"]')).toBeNull();
   });
+
+  it("previews a repository's rule files, writes them, and reads them back", async () => {
+    mockRules();
+    const section = "<!-- bridge:taste:start v1 -->\n## Review rules (from Bridge)\n\n- Flag bounds checks <!-- id:repo kind:review_prefer -->\n<!-- bridge:taste:end -->\n";
+    const exported = vi.spyOn(bridgeApi, "exportTasteRules").mockImplementation(async params => ({
+      checkouts: [{ workspaceId: "w", title: "Repo", path: "/code/repo" }],
+      workspaceId: "w",
+      files: [
+        { path: "AGENTS.md", before: "# Agents\n", after: "# Agents\n", changed: false },
+        { path: ".cursor/BUGBOT.md", before: "", after: section, changed: !params.write },
+      ],
+    }));
+    const imported = vi.spyOn(bridgeApi, "importTasteRules").mockImplementation(async params => ({
+      checkouts: [], workspaceId: "w", added: params.apply ? [] : ["Prefer early returns"], updated: [], missing: params.apply ? [] : ["mine"],
+    }));
+    await mount();
+    expect(button(host!, "Files")).toBeDefined();
+    await act(async () => { button(host!, "Files").click(); await flush(); });
+    const panel = host!.querySelector('[aria-label="Files for octo/repo"]')!;
+    expect(exported).toHaveBeenCalledWith({ scopeKey: "project:octo/repo", write: false });
+    expect(panel.textContent).toContain("/code/repo");
+    expect(panel.textContent).toContain("AGENTS.mdup to date");
+    expect(panel.textContent).toContain(".cursor/BUGBOT.mdwill be created");
+    expect(panel.querySelector("pre")!.textContent).toContain("Flag bounds checks");
+    await act(async () => { button(panel, "Write files").click(); await flush(); });
+    expect(exported).toHaveBeenLastCalledWith({ scopeKey: "project:octo/repo", workspaceId: "w", write: true });
+    expect(panel.textContent).toContain("Wrote .cursor/BUGBOT.md.");
+
+    await act(async () => { button(panel, "Read back from files").click(); await flush(); });
+    const changes = panel.querySelector('[aria-label="What the files would change"]')!;
+    expect(changes.textContent).toContain("New Prefer early returns");
+    expect(changes.textContent).toContain("1 rule is not in the files. Nothing is deleted");
+    await act(async () => { button(changes, "Apply").click(); await flush(); });
+    expect(imported).toHaveBeenLastCalledWith({ scopeKey: "project:octo/repo", workspaceId: "w", apply: true });
+    expect(panel.textContent).toContain("Your rules now match the files.");
+  });
 });

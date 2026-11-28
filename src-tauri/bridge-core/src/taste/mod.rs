@@ -3,6 +3,7 @@
 //! live on the memory ledger with `layer = taste`.
 
 pub mod chat_rules;
+pub mod export;
 pub mod learn;
 pub mod replay;
 pub mod repository;

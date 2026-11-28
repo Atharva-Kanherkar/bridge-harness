@@ -6,7 +6,7 @@ import type { AppPreferences, AppPreferenceValues } from "./protocol/generated/p
 import type { AccountStatus, BeginAccountSignIn } from "./protocol/generated/protocol";
 import { mockAccountStatus, mockBeginAccountSignIn, mockCancelAccountSignIn, mockSignOutAccount, onMockAccountChanged } from "./accountMock";
 import type { ReviewFindingDecisionInput, ReviewFindingList, ReviewJob, ReviewJobDetail, ReviewJobList, ReviewJobResult, ReviewJobSettings, ReviewOverview, ReviewTrigger, ReviewActivityEntry, ReviewActivityList } from "./protocol/generated/protocol";
-import type { AddTasteRuleParams, ListTasteRulesResult, TasteEvidence } from "./protocol/generated/protocol";
+import type { AddTasteRuleParams, ExportTasteRulesParams, ExportTasteRulesResult, ImportTasteRulesParams, ImportTasteRulesResult, ListTasteRulesResult, TasteEvidence } from "./protocol/generated/protocol";
 import type { LimitRecoverySettings, LimitRecoveryStatus } from "./protocol/generated/protocol";
 import type { AlwaysAllowToolResult, RunWorkflowResult, WorkflowDraftResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowEventSample, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary, WorkflowTemplate, WorkflowTemplateList, WorkflowTrigger, WorkflowTriggerPreview } from "./protocol/generated/protocol";
 import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, MarkAttentionUnreadResult, ReportPresenceResult, UnreadSummary } from "./protocol/generated/protocol";
@@ -4080,6 +4080,13 @@ export const bridgeApi = {
     hasBackend()
       ? call("taste/set_taste_rule_state", { recordId, state: change.state ?? null, pinned: change.pinned ?? null })
       : Promise.reject(new Error("Taste rules need the desktop app.")),
+  /** What writing a repository's rules into AGENTS.md, CLAUDE.md and
+   *  .cursor/BUGBOT.md would change (`write: false`), or write them. */
+  exportTasteRules: (params: ExportTasteRulesParams): Promise<ExportTasteRulesResult> =>
+    hasBackend() ? call("taste/export_taste_rules", params) : Promise.reject(new Error("Taste rules need the desktop app.")),
+  /** What reading those files back would change (`apply: false`), or apply it. */
+  importTasteRules: (params: ImportTasteRulesParams): Promise<ImportTasteRulesResult> =>
+    hasBackend() ? call("taste/import_taste_rules", params) : Promise.reject(new Error("Taste rules need the desktop app.")),
   /** A rule the person writes, active at once. */
   addTasteRule: (params: AddTasteRuleParams): Promise<MemoryRecord> =>
     hasBackend() ? call("taste/add_taste_rule", params) : Promise.reject(new Error("Taste rules need the desktop app.")),
