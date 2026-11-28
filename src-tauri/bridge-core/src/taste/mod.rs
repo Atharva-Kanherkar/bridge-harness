@@ -7,5 +7,6 @@ pub mod learn;
 pub mod replay;
 pub mod repository;
 pub mod review_rules;
+pub mod score;
 pub mod signals;
 pub mod suppress;

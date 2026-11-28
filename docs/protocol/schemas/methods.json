@@ -1066,6 +1066,13 @@
       "resultSchema": "memory-record.json"
     },
     {
+      "command": "set_taste_rule_state",
+      "domain": "taste",
+      "method": "taste/set_taste_rule_state",
+      "paramsSchema": "set-taste-rule-state-params.json",
+      "resultSchema": "memory-record.json"
+    },
+    {
       "command": "resolve_approval",
       "domain": "approvals",
       "method": "approvals/resolve_approval",

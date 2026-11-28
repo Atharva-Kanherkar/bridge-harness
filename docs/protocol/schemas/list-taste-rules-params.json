@@ -4,7 +4,7 @@
   "additionalProperties": false,
   "properties": {
     "status": {
-      "description": "`active` (default), `proposed`, `rejected` or `expired`.",
+      "description": "`active` (default), `proposed`, `paused`, `rejected` or `expired`.",
       "type": [
         "string",
         "null"

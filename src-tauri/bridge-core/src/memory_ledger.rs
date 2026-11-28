@@ -334,13 +334,16 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryRecord> {
             .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok()),
         outcome_score: row.get(18)?,
         evidence_count: row.get::<_, i64>(19)?.clamp(0, i64::from(u32::MAX)) as u32,
+        pinned: row.get(20)?,
+        paused_reason: row.get(21)?,
     })
 }
 
 const RECORD_COLUMNS: &str = "id, scope_key, kind, body, provenance, status, source_session_id, \
      confidence_bps, rationale, supersedes, valid_from, valid_to, expires_at, conflict_group, \
      created_at, updated_at, layer, path_globs, outcome_score, \
-     (SELECT COUNT(*) FROM memory_evidence WHERE memory_evidence.record_id = memory_records.id)";
+     (SELECT COUNT(*) FROM memory_evidence WHERE memory_evidence.record_id = memory_records.id), \
+     pinned, paused_reason";
 
 fn session_exists(db: &Connection, session_id: &str) -> Result<bool, BridgeError> {
     let found: Option<i64> = db
@@ -407,6 +410,8 @@ pub fn save(
         path_globs: None,
         outcome_score: 0.0,
         evidence_count: 0,
+        pinned: false,
+        paused_reason: None,
     };
     db.execute(
         "INSERT INTO memory_records(
@@ -962,9 +967,10 @@ pub fn list_taste(db: &Connection, status: Option<&str>) -> Result<Vec<MemoryRec
         Some(STATUS_PROPOSED) => STATUS_PROPOSED,
         Some(STATUS_REJECTED) => STATUS_REJECTED,
         Some(STATUS_EXPIRED) => STATUS_EXPIRED,
+        Some(crate::taste::score::STATUS_PAUSED) => crate::taste::score::STATUS_PAUSED,
         Some(other) => {
             return Err(BridgeError::Invalid(format!(
-                "Taste rules list as active, proposed, rejected or expired, not '{other}'."
+                "Taste rules list as active, proposed, paused, rejected or expired, not '{other}'."
             )))
         }
     };
@@ -1772,7 +1778,7 @@ fn search_matching(db: &Connection, scope_key: &str, match_query: &str, limit: i
                 m.source_session_id, m.confidence_bps, m.rationale,
                 m.supersedes, m.valid_from, m.valid_to, m.expires_at, m.conflict_group,
                 m.created_at, m.updated_at, m.layer, m.path_globs, m.outcome_score,
-                (SELECT COUNT(*) FROM memory_evidence e WHERE e.record_id = m.id)
+                (SELECT COUNT(*) FROM memory_evidence e WHERE e.record_id = m.id), m.pinned, m.paused_reason
          FROM memory_record_fts f
          JOIN memory_records m ON m.id = f.record_id
          WHERE f.scope_key = ?1 AND memory_record_fts MATCH ?2 AND m.status = ?3

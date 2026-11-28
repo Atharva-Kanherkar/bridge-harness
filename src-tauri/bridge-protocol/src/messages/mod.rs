@@ -335,6 +335,7 @@ typed_methods![
     (ListTasteRules, ListTasteRulesParams, ListTasteRulesResult),
     (GetTasteEvidence, GetTasteEvidenceParams, TasteEvidence),
     (AddTasteRule, AddTasteRuleParams, MemoryRecord),
+    (SetTasteRuleState, SetTasteRuleStateParams, MemoryRecord),
     // approvals
     (ResolveApproval, ResolveApprovalParams, InteractionResolutionResult),
     (ResolveQuestion, ResolveQuestionParams, InteractionResolutionResult),

@@ -148,6 +148,13 @@ pub fn live_in(db: &Connection, scope_key: &str) -> Result<Vec<Signal>, BridgeEr
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// One signal by id.
+pub fn by_id(db: &Connection, id: &str) -> Result<Option<Signal>, BridgeError> {
+    Ok(db
+        .query_row(&format!("SELECT {SIGNAL_COLUMNS} FROM taste_signals WHERE id=?1"), params![id], map_signal)
+        .optional()?)
+}
+
 /// Every signal ever written, superseded ones included, oldest first.
 pub fn all(db: &Connection) -> Result<Vec<Signal>, BridgeError> {
     let mut statement = db.prepare(&format!("SELECT {SIGNAL_COLUMNS} FROM taste_signals ORDER BY at, id"))?;

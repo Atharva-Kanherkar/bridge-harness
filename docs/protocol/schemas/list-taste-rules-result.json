@@ -64,6 +64,17 @@
             "null"
           ]
         },
+        "pausedReason": {
+          "description": "Taste rules only: why a paused rule paused.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pinned": {
+          "description": "Taste rules only: kept from pausing or expiring on its own.",
+          "type": "boolean"
+        },
         "provenance": {
           "type": "string"
         },
@@ -123,6 +134,13 @@
   },
   "description": "Every taste rule in one status, in every repository, newest change first.",
   "properties": {
+    "neverUsed": {
+      "description": "Rules given to at least ten reviews and cited by none.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "rules": {
       "items": {
         "$ref": "#/definitions/MemoryRecord"

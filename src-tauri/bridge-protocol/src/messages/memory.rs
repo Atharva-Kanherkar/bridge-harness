@@ -125,6 +125,12 @@ pub struct MemoryRecord {
     /// record. Absent means none.
     #[serde(default, skip_serializing_if = "is_zero_count")]
     pub evidence_count: u32,
+    /// Taste rules only: kept from pausing or expiring on its own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+    /// Taste rules only: why a paused rule paused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_reason: Option<String>,
 }
 
 /// Read a scope as it stood at an instant: exactly the records whose validity

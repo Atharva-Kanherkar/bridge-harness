@@ -3286,6 +3286,18 @@ async fn add_taste_rule(
 }
 
 #[tauri::command]
+async fn set_taste_rule_state(
+    record_id: String,
+    state: Option<String>,
+    pinned: Option<bool>,
+    state_handle: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state_handle.inner().clone();
+    let params = bridge_protocol::messages::SetTasteRuleStateParams { record_id, state, pinned };
+    blocking("Change a taste rule", move || api::set_taste_rule_state(&core, &params)).await
+}
+
+#[tauri::command]
 async fn start_dream(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::MemoryDreamStarted, BridgeError> {
@@ -4425,6 +4437,7 @@ pub fn run() -> i32 {
             list_taste_rules,
             get_taste_evidence,
             add_taste_rule,
+            set_taste_rule_state,
             get_dream_report,
             undo_dream_operation,
             undo_dream,

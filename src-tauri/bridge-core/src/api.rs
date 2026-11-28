@@ -2602,7 +2602,23 @@ pub fn list_taste_rules(
     status: Option<&str>,
 ) -> Result<bridge_protocol::messages::ListTasteRulesResult, BridgeError> {
     let db = core.db.lock().unwrap();
-    Ok(bridge_protocol::messages::ListTasteRulesResult { rules: memory_ledger::list_taste(&db, status)? })
+    let mut never_used: Vec<String> = crate::taste::score::never_used(&db)?.into_iter().collect();
+    never_used.sort();
+    Ok(bridge_protocol::messages::ListTasteRulesResult { rules: memory_ledger::list_taste(&db, status)?, never_used })
+}
+
+pub fn set_taste_rule_state(
+    core: &Arc<BridgeCore>,
+    params: &bridge_protocol::messages::SetTasteRuleStateParams,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let record = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::taste::score::set_state(&db, params.record_id.trim(), params.state.as_deref(), params.pinned)?;
+        memory_ledger::load_record(&db, params.record_id.trim())?
+            .ok_or_else(|| BridgeError::Invalid("The rule vanished.".into()))?
+    };
+    core.events.publish(CoreEvent::MemoryChanged { scope_key: record.scope_key.clone() });
+    Ok(record)
 }
 
 pub fn get_taste_evidence(
