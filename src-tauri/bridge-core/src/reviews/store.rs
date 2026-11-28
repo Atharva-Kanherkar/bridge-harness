@@ -983,7 +983,8 @@ pub fn finish_pass(
     db.execute(
         "UPDATE review_passes SET status=?2, error=?3, session_id=COALESCE(?4, session_id),
             model=COALESCE(?5, model), effort=COALESCE(?6, effort), tokens_in=?7, tokens_out=?8,
-            cost_microusd=?9, denied_requests=?10, finished_at=?11
+            cost_microusd=?9, denied_requests=?10, finished_at=?11,
+            taste_rule_ids=COALESCE(?12, taste_rule_ids)
          WHERE id=?1",
         params![
             pass_id,
@@ -997,6 +998,7 @@ pub fn finish_pass(
             outcome.cost_microusd as i64,
             outcome.denied_requests,
             stamp(now),
+            (!outcome.taste_rule_ids.is_empty()).then(|| serde_json::to_string(&outcome.taste_rule_ids).unwrap_or_else(|_| "[]".into())),
         ],
     )?;
     Ok(())
@@ -1005,7 +1007,7 @@ pub fn finish_pass(
 pub fn passes(db: &Connection, job_id: &str) -> Result<Vec<wire::ReviewPass>, BridgeError> {
     let mut statement = db.prepare(
         "SELECT id, job_id, slot, harness, model, effort, status, session_id, error, denied_requests,
-            tokens_in, tokens_out, cost_microusd, started_at, finished_at, attempt
+            tokens_in, tokens_out, cost_microusd, started_at, finished_at, attempt, taste_rule_ids
          FROM review_passes WHERE job_id=?1 ORDER BY attempt, slot, created_at, rowid",
     )?;
     let rows = statement
@@ -1028,6 +1030,10 @@ pub fn passes(db: &Connection, job_id: &str) -> Result<Vec<wire::ReviewPass>, Br
                 cost_microusd: row.get::<_, i64>(12)?.max(0) as u64,
                 started_at: row.get(13)?,
                 finished_at: row.get(14)?,
+                taste_rule_ids: row
+                    .get::<_, Option<String>>(16)?
+                    .and_then(|text| serde_json::from_str(&text).ok())
+                    .unwrap_or_default(),
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -1046,8 +1052,8 @@ pub fn insert_findings(
 ) -> Result<usize, BridgeError> {
     let mut statement = db.prepare(
         "INSERT INTO review_findings(id, job_id, pass_id, path, line, start_line, side, severity, title, body,
-            confidence, fingerprint, outside_diff, created_at, category)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+            confidence, fingerprint, outside_diff, created_at, category, rule_ids)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
     )?;
     for finding in findings {
         statement.execute(params![
@@ -1066,6 +1072,7 @@ pub fn insert_findings(
             finding.outside_diff,
             stamp(now),
             finding.category,
+            (!finding.rule_ids.is_empty()).then(|| serde_json::to_string(&finding.rule_ids).unwrap_or_else(|_| "[]".into())),
         ])?;
     }
     Ok(findings.len())
@@ -1078,7 +1085,7 @@ pub fn findings(db: &Connection, job_id: &str) -> Result<Vec<wire::ReviewFinding
     let mut statement = db.prepare(&format!(
         "SELECT id, job_id, pass_id, path, line, start_line, side, severity, title, body, confidence, fingerprint,
             agreed_by, outside_diff, decision, edited_body, github_comment_id, posted_at, decided_at, fixed_in_sha, pass_ids,
-            category, hidden_reason
+            category, hidden_reason, rule_ids
          FROM review_findings WHERE job_id=?1
          ORDER BY agreed_by DESC, {SEVERITY_RANK}, confidence DESC, rowid"
     ))?;
@@ -1114,6 +1121,10 @@ pub fn findings(db: &Connection, job_id: &str) -> Result<Vec<wire::ReviewFinding
                 fixed_in_sha: row.get(19)?,
                 category: row.get(21)?,
                 hidden_reason: row.get(22)?,
+                rule_ids: row
+                    .get::<_, Option<String>>(23)?
+                    .and_then(|text| serde_json::from_str(&text).ok())
+                    .unwrap_or_default(),
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -1169,6 +1180,7 @@ pub fn merge_entries(db: &Connection, job_id: &str) -> Result<Vec<super::merge::
                     fingerprint: row.get(10)?,
                     outside_diff: row.get(11)?,
                     category: None,
+                    rule_ids: Vec::new(),
                 },
             })
         })?

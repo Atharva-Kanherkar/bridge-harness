@@ -270,6 +270,9 @@ pub struct ReviewPass {
     pub started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
+    /// The person's taste rules this pass was given.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub taste_rule_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -408,6 +411,9 @@ pub struct ReviewFinding {
     /// decided like any other, and it is never posted without a decision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hidden_reason: Option<String>,
+    /// The person's taste rules the reviewer says shaped this finding.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rule_ids: Vec<String>,
 }
 
 /// How review jobs run. One record for the account, separate from
@@ -453,6 +459,9 @@ pub struct ReviewJobSettings {
     /// click away and are never posted without a decision; critical and
     /// security findings are never hidden. On by default.
     pub hide_repeat_drops: bool,
+    /// Give the reviewer the person's active taste rules for the repository,
+    /// and let it say which shaped a finding. On by default.
+    pub follow_taste_rules: bool,
 }
 
 /// When a finished review goes to the chat that wrote the pull request.
@@ -489,6 +498,7 @@ impl Default for ReviewJobSettings {
             incremental: false,
             handoff: ReviewHandoff::Off,
             hide_repeat_drops: true,
+            follow_taste_rules: true,
         }
     }
 }

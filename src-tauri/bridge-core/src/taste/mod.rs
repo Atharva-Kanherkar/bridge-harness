@@ -4,5 +4,6 @@
 
 pub mod learn;
 pub mod replay;
+pub mod review_rules;
 pub mod signals;
 pub mod suppress;

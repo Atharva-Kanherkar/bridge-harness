@@ -747,6 +747,10 @@ pub fn prompt(pr: &Value, context: &str) -> String {
 - `{context}/threads.json`: review threads already on the PR. Do not repeat what they already say.\n\n\
 Read the diff, read the code around it, then answer as the contract says."
     );
+    if pr["tasteRules"].as_u64().unwrap_or_default() > 0 {
+        let at = text.rfind("\n\nRead the diff").unwrap_or(text.len());
+        text.insert_str(at, &format!("\n{}", crate::taste::review_rules::prompt_line(context)));
+    }
     let omitted: Vec<&str> = pr["omittedFiles"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
     if !omitted.is_empty() {
         text.push_str(&format!(
@@ -831,8 +835,9 @@ fn place_context_as(context: &Path, checkout: &Path, name: &str) -> Result<PathB
     for file in ["pr.json", "diff.patch", "files.json", "threads.json"] {
         copy_file(&context.join(file), &target.join(file), file)?;
     }
-    // A re-review's extra files, when it has them.
-    for file in [INCREMENTAL_PATCH, PRIOR_FINDINGS] {
+    // A re-review's extra files, and the person's taste rules, when there
+    // are any.
+    for file in [INCREMENTAL_PATCH, PRIOR_FINDINGS, crate::taste::review_rules::TASTE_FILE] {
         if context.join(file).is_file() {
             copy_file(&context.join(file), &target.join(file), file)?;
         }
@@ -944,7 +949,16 @@ pub fn review_pass_with(
         .collect();
     let validated = contract::validate(review, &changed, &contract::hunks(&patch));
     let prior = read_prior(&placed)?;
-    let findings = without_repeats(validated.findings, &prior);
+    // Only rules this pass was given can have shaped a finding.
+    let given = crate::taste::review_rules::given(&placed);
+    let findings: Vec<_> = without_repeats(validated.findings, &prior)
+        .into_iter()
+        .map(|mut finding| {
+            finding.rule_ids.retain(|id| given.contains(id));
+            finding.rule_ids.dedup();
+            finding
+        })
+        .collect();
     let reviewed = if request.prepared.head_sha.is_empty() { request.job.head_sha.as_str() } else { request.prepared.head_sha.as_str() };
     let fixed = known_fixed(&validated.fixed, &prior, reviewed);
     let mut summary = validated.summary;
@@ -966,6 +980,7 @@ pub fn review_pass_with(
         session_id: None,
         model,
         effort: Some(effort),
+        taste_rule_ids: given,
         // Already on the pass's meter, with every earlier attempt.
         ..PassOutcome::default()
     })

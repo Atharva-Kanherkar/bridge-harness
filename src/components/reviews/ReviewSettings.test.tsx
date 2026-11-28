@@ -181,6 +181,17 @@ it("hides findings you keep dropping by default, and says so, until turned off",
   expect(host.textContent).toContain("Every finding shows in the draft.");
 });
 
+it("follows your taste rules by default, and says so, until turned off", async () => {
+  const save = mockJobSettings();
+  await act(async () => { root.render(<ReviewSettings adapters={[codex]} />); });
+  const toggle = () => host.querySelector<HTMLButtonElement>('[aria-label="Follow your taste rules"]')!;
+  expect(toggle().getAttribute("aria-checked")).toBe("true");
+  expect(host.textContent).toContain("says which shaped a finding");
+  await act(async () => toggle().click());
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ followTasteRules: false }));
+  expect(host.textContent).toContain("The reviewer works without your taste rules.");
+});
+
 it("turning Second opinion off keeps only the first default reviewer", async () => {
   const save = mockJobSettings({ ...JOB_DEFAULTS, secondOpinion: true, defaultHarnesses: ["codex", "claude"] });
   await act(async () => { root.render(<ReviewSettings adapters={[codex]} />); });

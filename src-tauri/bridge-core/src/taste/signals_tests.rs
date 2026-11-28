@@ -28,6 +28,7 @@ fn draft(path: &str, title: &str, body: &str) -> DraftFinding {
         fingerprint: format!("fp-{path}"),
         outside_diff: false,
         category: None,
+        rule_ids: Vec::new(),
     }
 }
 

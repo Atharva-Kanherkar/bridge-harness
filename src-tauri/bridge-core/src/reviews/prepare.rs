@@ -382,6 +382,7 @@ pub fn prepare(
         merge_base: &merge_base,
         incremental: &incremental,
         prior: &prior,
+        taste_for: &|changed: &[String]| taste_rules_for(core, job, changed),
     };
     write_context(&workspace, &context, config, &facts)?;
     Ok(Prepared { worktree: Some(checkout), context: Some(context), head_sha: head, incremental, fixable, guard: Some(guard) })
@@ -489,6 +490,26 @@ struct ContextFacts<'a> {
     merge_base: &'a str,
     incremental: &'a Incremental,
     prior: &'a [(store::PriorFinding, Relation)],
+    /// The person's taste rules for these changed paths (#1202).
+    taste_for: &'a dyn Fn(&[String]) -> Vec<bridge_protocol::messages::MemoryRecord>,
+}
+
+/// The repository's active taste rules for a review of these changed paths,
+/// when the setting is on. Best effort: a review never fails because its
+/// taste could not be read.
+fn taste_rules_for(core: &Arc<BridgeCore>, job: &JobRow, changed: &[String]) -> Vec<bridge_protocol::messages::MemoryRecord> {
+    let db = super::lock_db(core);
+    let rules = super::settings::load(&db).and_then(|settings| {
+        if !settings.follow_taste_rules {
+            return Ok(Vec::new());
+        }
+        let scope = crate::taste::signals::repository_scope(&job.repo_owner, &job.repo_name, &job.workspace_id);
+        crate::taste::review_rules::for_review(&db, &scope, changed)
+    });
+    rules.unwrap_or_else(|error| {
+        eprintln!("[reviews] could not read taste rules for job {}: {error}", job.id);
+        Vec::new()
+    })
 }
 
 fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), StepError> {
@@ -497,7 +518,7 @@ fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), StepError> {
 }
 
 fn write_context(workspace: &Path, context: &Path, config: &PrepareConfig, facts: &ContextFacts<'_>) -> Result<(), StepError> {
-    let ContextFacts { job, detail, threads, head, base_tip, merge_base, incremental, prior } = facts;
+    let ContextFacts { job, detail, threads, head, base_tip, merge_base, incremental, prior, taste_for } = facts;
     std::fs::create_dir_all(context).map_err(|error| StepError::fatal_logged(PREPARE_FAILED, error))?;
     let files = git::diff_files(workspace, merge_base, head).map_err(fatal)?;
     let (patch, omitted) = capped_patch(workspace, merge_base, head, &files, config.max_diff_bytes)?;
@@ -524,6 +545,11 @@ fn write_context(workspace: &Path, context: &Path, config: &PrepareConfig, facts
             }))
             .collect::<Vec<_>>()),
     )?;
+    let changed: Vec<String> = files.iter().map(|file| file.path.clone()).collect();
+    let taste = taste_for(&changed);
+    if !taste.is_empty() {
+        write_json(&context.join(crate::taste::review_rules::TASTE_FILE), &crate::taste::review_rules::context_json(&taste))?;
+    }
     write_json(
         &context.join("pr.json"),
         &json!({
@@ -546,6 +572,7 @@ fn write_context(workspace: &Path, context: &Path, config: &PrepareConfig, facts
             "diffTruncated": !omitted.is_empty(),
             "omittedFiles": omitted,
             "incremental": incremental_json(incremental, head, new_commits.as_ref().map(|(_, omitted)| omitted.as_slice())),
+            "tasteRules": taste.len(),
         }),
     )?;
     write_json(&context.join("threads.json"), &serde_json::to_value(threads).map_err(|error| StepError::fatal_logged(PREPARE_FAILED, error))?)?;

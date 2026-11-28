@@ -103,6 +103,7 @@ fn seed(data_dir: &Path, repo: &Path) -> String {
             fingerprint: "fp".into(),
             outside_diff: false,
             category: None,
+            rule_ids: Vec::new(),
         }],
         chrono::Utc::now(),
     )

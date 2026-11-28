@@ -83,6 +83,11 @@
           },
           "type": "array"
         },
+        "followTasteRules": {
+          "default": true,
+          "description": "Give the reviewer the person's active taste rules for the repository, and let it say which shaped a finding. On by default.",
+          "type": "boolean"
+        },
         "handoff": {
           "allOf": [
             {

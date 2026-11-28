@@ -78,6 +78,19 @@ pub struct RawFinding {
     /// in validation, so a model's own word never fails a pass.
     #[serde(default, deserialize_with = "loose_text")]
     pub category: Option<String>,
+    /// The taste rules that shaped the finding. Read leniently; only ids the
+    /// pass was given survive.
+    #[serde(default, deserialize_with = "loose_ids")]
+    pub rule_ids: Vec<String>,
+}
+
+fn loose_ids<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(deserializer)?
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| value.as_str().map(str::trim).filter(|id| !id.is_empty()).map(str::to_owned))
+        .collect())
 }
 
 fn loose_text<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
@@ -569,6 +582,7 @@ pub fn validate(review: RawReview, changed: &HashSet<String>, hunks: &BTreeMap<S
             confidence,
             outside_diff: hunk.is_none(),
             category: raw.category.as_deref().and_then(known_category).map(str::to_owned),
+            rule_ids: raw.rule_ids,
         });
     }
     kept.sort_by(|left, right| {

@@ -236,6 +236,7 @@ mod tests {
                 incremental: true,
                 handoff: wire::ReviewHandoff::Posted,
                 hide_repeat_drops: false,
+                follow_taste_rules: false,
             },
         )
         .unwrap();

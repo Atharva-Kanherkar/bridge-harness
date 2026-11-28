@@ -32,7 +32,7 @@ finding a rule shaped says which.
 4. **Ids.** The contract reads `ruleIds` leniently (anything not a list of
    strings is none). After validation, a finding keeps only ids its pass was
    given, once each. The pass records every rule it was given, cited or not.
-5. **Store and wire.** Schema 109 adds `review_findings.rule_ids` and
+5. **Store and wire.** Schema 110 adds `review_findings.rule_ids` and
    `review_passes.taste_rule_ids`; `ReviewFinding.ruleIds` and
    `ReviewPass.tasteRuleIds` (omitted when empty); `ReviewJobSettings
    .followTasteRules`.

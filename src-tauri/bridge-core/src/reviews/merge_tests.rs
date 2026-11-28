@@ -17,6 +17,7 @@ fn entry(id: &str, pass: &str, line: u32, title: &str) -> Entry {
             fingerprint: format!("fp-{id}"),
             outside_diff: false,
             category: None,
+            rule_ids: Vec::new(),
         },
     }
 }

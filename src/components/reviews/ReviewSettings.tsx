@@ -23,7 +23,7 @@ type FormSettings = ReviewerSettings & { harnesses: NonNullable<ReviewerSettings
 const normalize = (settings: ReviewerSettings): FormSettings => ({ ...settings, harnesses: settings.harnesses ?? {}, systemPrompt: settings.systemPrompt ?? "" });
 
 /** The job settings with every field the form edits filled in. */
-type JobForm = Required<Pick<ReviewJobSettings, "defaultHarnesses" | "fallbackHarnesses" | "maxConcurrentReviews" | "maxReviewWorktrees" | "postMode" | "secondOpinion" | "autoReview" | "skipDraftPrs" | "incremental" | "handoff" | "hideRepeatDrops">> & ReviewJobSettings;
+type JobForm = Required<Pick<ReviewJobSettings, "defaultHarnesses" | "fallbackHarnesses" | "maxConcurrentReviews" | "maxReviewWorktrees" | "postMode" | "secondOpinion" | "autoReview" | "skipDraftPrs" | "incremental" | "handoff" | "hideRepeatDrops" | "followTasteRules">> & ReviewJobSettings;
 const normalizeJobs = (settings: ReviewJobSettings): JobForm => ({
   ...settings,
   defaultHarnesses: settings.defaultHarnesses ?? [],
@@ -37,6 +37,7 @@ const normalizeJobs = (settings: ReviewJobSettings): JobForm => ({
   incremental: settings.incremental ?? false,
   handoff: settings.handoff ?? "off",
   hideRepeatDrops: settings.hideRepeatDrops ?? true,
+  followTasteRules: settings.followTasteRules ?? true,
 });
 
 const HANDOFF_TEXT: Record<JobForm["handoff"], string> = {
@@ -101,6 +102,9 @@ function ReviewJobSettingsGroup() {
     <SettingsRow label="Hide findings you keep dropping" saved={isFlashed("hideRepeatDrops")}
       description={stored.hideRepeatDrops ? "A finding like ones you dropped at least three times on two pull requests arrives hidden, with the reason, one click from coming back. It never posts unless you keep it, and critical or security findings are never hidden." : "Every finding shows in the draft."}
       control={<Switch label="Hide findings you keep dropping" disabled={busy} checked={stored.hideRepeatDrops} onChange={hideRepeatDrops => void save({ hideRepeatDrops }, "hideRepeatDrops")} />} />
+    <SettingsRow label="Follow your taste rules" saved={isFlashed("followTasteRules")}
+      description={stored.followTasteRules ? "The reviewer gets the rules you approved for the repository (Memory, Taste) and says which shaped a finding." : "The reviewer works without your taste rules."}
+      control={<Switch label="Follow your taste rules" disabled={busy} checked={stored.followTasteRules} onChange={followTasteRules => void save({ followTasteRules }, "followTasteRules")} />} />
     <SettingsRow label="Send to the chat that wrote it" saved={isFlashed("handoff")}
       description={`${HANDOFF_TEXT[stored.handoff]}${stored.handoff === "off" ? "" : " At most three reviews of a pull request go to its chat in a day."}`}
       control={<Segmented label="Send reviews to the chat that wrote the pull request" disabled={busy} value={stored.handoff} onChange={handoff => void save({ handoff }, "handoff")} options={[{ value: "off", label: "Off" }, { value: "drafted", label: "When drafted" }, { value: "posted", label: "When posted" }]} />} />
