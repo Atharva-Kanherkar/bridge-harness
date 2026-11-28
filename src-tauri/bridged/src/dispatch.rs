@@ -579,6 +579,18 @@ pub fn dispatch(
             reply(api::restore_memory_record(core, &p.record_id))
         }
         MethodName::StartDream => reply(api::start_dream(core)),
+        MethodName::ListTasteRules => {
+            let p: wire::ListTasteRulesParams = decode(method, params)?;
+            reply(api::list_taste_rules(core, p.status.as_deref()))
+        }
+        MethodName::GetTasteEvidence => {
+            let p: wire::GetTasteEvidenceParams = decode(method, params)?;
+            reply(api::get_taste_evidence(core, &p.record_id))
+        }
+        MethodName::AddTasteRule => {
+            let p: wire::AddTasteRuleParams = decode(method, params)?;
+            reply(api::add_taste_rule(core, &p))
+        }
         MethodName::GetDreamReport => {
             let p: wire::GetDreamReportParams = decode(method, params)?;
             reply(api::get_dream_report(core, &p.run_id))

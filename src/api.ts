@@ -4,6 +4,7 @@ import type { GetChatToolsParams, GetChatToolsResult, UpdateChatToolsParams, Upd
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
 import type { AppPreferences, AppPreferenceValues } from "./protocol/generated/protocol";
 import type { ReviewFindingDecisionInput, ReviewFindingList, ReviewJob, ReviewJobDetail, ReviewJobList, ReviewJobResult, ReviewJobSettings, ReviewOverview, ReviewTrigger, ReviewActivityEntry, ReviewActivityList } from "./protocol/generated/protocol";
+import type { AddTasteRuleParams, ListTasteRulesResult, TasteEvidence } from "./protocol/generated/protocol";
 import type { LimitRecoverySettings, LimitRecoveryStatus } from "./protocol/generated/protocol";
 import type { AlwaysAllowToolResult, RunWorkflowResult, WorkflowDraftResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowEventSample, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary, WorkflowTemplate, WorkflowTemplateList, WorkflowTrigger, WorkflowTriggerPreview } from "./protocol/generated/protocol";
 import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, MarkAttentionUnreadResult, ReportPresenceResult, UnreadSummary } from "./protocol/generated/protocol";
@@ -4053,6 +4054,16 @@ export const bridgeApi = {
   },
   // Without `refresh` this reads the stored report; running the model is always
   // an explicit action, because it sends memory text to the harness.
+  /** Taste rules in one status across every repository. The preview has
+   *  no reviews to learn from, so it has none. */
+  listTasteRules: (status?: "active" | "proposed" | "rejected" | "expired"): Promise<ListTasteRulesResult> =>
+    hasBackend() ? call("taste/list_taste_rules", { status: status ?? null }) : Promise.resolve({ rules: [] }),
+  /** The review decisions behind one taste rule, oldest first. */
+  getTasteEvidence: (recordId: string): Promise<TasteEvidence> =>
+    hasBackend() ? call("taste/get_taste_evidence", { recordId }) : Promise.resolve({ signals: [], swept: 0 }),
+  /** A rule the person writes, active at once. */
+  addTasteRule: (params: AddTasteRuleParams): Promise<MemoryRecord> =>
+    hasBackend() ? call("taste/add_taste_rule", params) : Promise.reject(new Error("Taste rules need the desktop app.")),
   memoryInsights: (refresh: boolean): Promise<MemoryInsightsResult> => {
     if (hasBackend()) return call("memory/get_insights", { refresh });
     return new Promise(resolve => setTimeout(() => {

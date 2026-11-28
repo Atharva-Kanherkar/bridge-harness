@@ -18,6 +18,7 @@ import { harnessLabel } from "../utils";
 import { relative } from "./UsageInsights";
 import { MemoryInsights } from "./MemoryInsights";
 import { DreamRun } from "./MemoryDreams";
+import { TasteRules } from "./TasteRules";
 import type {
   AdapterDescriptor,
   MemoryCapabilities,
@@ -131,7 +132,14 @@ export function MemoryDialog({
   onClose: () => void;
   onError: (message: string) => void;
 }) {
-  const [tab, setTab] = useState<"pins" | "queue" | "activity" | "insights">("pins");
+  const [tab, setTab] = useState<"pins" | "queue" | "taste" | "activity" | "insights">("pins");
+  // Learned taste rules waiting for the person, for the tab's count.
+  const [tasteWaiting, setTasteWaiting] = useState(0);
+  useEffect(() => {
+    let active = true;
+    void bridgeApi.listTasteRules("proposed").then(found => { if (active) setTasteWaiting(found.rules.length); }).catch(() => {});
+    return () => { active = false; };
+  }, []);
   const [activeList, setActiveList] = useState<MemoryList>();
   const [proposedList, setProposedList] = useState<MemoryList>();
   // Retired and expired memories a person can restore.
@@ -441,6 +449,9 @@ export function MemoryDialog({
         </SegmentedItem>
         <SegmentedItem active={tab === "queue"} onClick={() => setTab("queue")}>
           Review{queueCount > 0 && <span className="ml-1.5 tabular-nums text-faint">{queueCount}</span>}
+        </SegmentedItem>
+        <SegmentedItem active={tab === "taste"} onClick={() => setTab("taste")}>
+          Taste{tasteWaiting > 0 && <span className="ml-1.5 tabular-nums text-faint">{tasteWaiting}</span>}
         </SegmentedItem>
         <SegmentedItem active={tab === "activity"} onClick={() => setTab("activity")}>Activity</SegmentedItem>
         <SegmentedItem active={tab === "insights"} onClick={() => setTab("insights")}>Insights</SegmentedItem>
@@ -846,6 +857,7 @@ export function MemoryDialog({
         </section>
       </div>}
       {tab === "insights" && <MemoryInsights onError={onError} />}
+      {tab === "taste" && <TasteRules onError={onError} onCount={setTasteWaiting} />}
     </div>
   </div>;
 }

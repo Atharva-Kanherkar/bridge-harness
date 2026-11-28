@@ -954,6 +954,115 @@ pub(crate) fn inherit_from(db: &Connection, successor: &str, sources: &[&str]) -
     Ok(())
 }
 
+/// Every taste rule in `status`, in every repository, newest change first.
+pub fn list_taste(db: &Connection, status: Option<&str>) -> Result<Vec<MemoryRecord>, BridgeError> {
+    let status = match status.map(str::trim).filter(|value| !value.is_empty()) {
+        None => STATUS_ACTIVE,
+        Some(STATUS_ACTIVE) => STATUS_ACTIVE,
+        Some(STATUS_PROPOSED) => STATUS_PROPOSED,
+        Some(STATUS_REJECTED) => STATUS_REJECTED,
+        Some(STATUS_EXPIRED) => STATUS_EXPIRED,
+        Some(other) => {
+            return Err(BridgeError::Invalid(format!(
+                "Taste rules list as active, proposed, rejected or expired, not '{other}'."
+            )))
+        }
+    };
+    let mut statement = db.prepare(&format!(
+        "SELECT {RECORD_COLUMNS} FROM memory_records
+         WHERE layer='taste' AND status=?1
+         ORDER BY updated_at DESC, id DESC LIMIT 500"
+    ))?;
+    let rows = statement.query_map(params![status], map_row)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// A rule the person writes: a `taste` record, active at once, theirs.
+/// Writing the same rule again in the same scope answers with the one there.
+pub fn save_taste_rule(
+    db: &Connection,
+    scope_key: &str,
+    kind: &str,
+    body: &str,
+    path_globs: Option<&[String]>,
+) -> Result<MemoryRecord, BridgeError> {
+    let scope_key = parse_scope_key(scope_key)?;
+    if !(scope_key == ACCOUNT_MEMORY_SCOPE || scope_key.starts_with("project:")) {
+        return Err(BridgeError::Invalid("A taste rule belongs to one repository (project:<owner>/<repo>) or to every one (account:local).".into()));
+    }
+    if !bridge_protocol::messages::TASTE_RULE_KINDS.contains(&kind) {
+        return Err(BridgeError::Invalid(format!(
+            "A taste rule is one of {}, not '{kind}'.",
+            bridge_protocol::messages::TASTE_RULE_KINDS.join(", ")
+        )));
+    }
+    let body = require_body(body)?;
+    let globs: Option<Vec<String>> = path_globs
+        .map(|globs| globs.iter().map(|glob| glob.trim().to_string()).filter(|glob| !glob.is_empty()).collect::<Vec<_>>())
+        .filter(|globs| !globs.is_empty());
+    let same: Option<String> = db
+        .query_row(
+            "SELECT id FROM memory_records WHERE scope_key=?1 AND layer='taste' AND status='active'
+             AND lower(trim(body))=lower(trim(?2))",
+            params![scope_key, body],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(id) = same {
+        return load(db, &id)?.ok_or_else(|| BridgeError::Invalid("The rule vanished.".into()));
+    }
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    db.execute(
+        "INSERT INTO memory_records(
+            id, scope_key, kind, body, provenance, status, valid_from, created_at, updated_at,
+            layer, path_globs, last_confirmed_at
+         ) VALUES(?1,?2,?3,?4,?5,'active',?6,?6,?6,'taste',?7,?6)",
+        params![
+            id,
+            scope_key,
+            kind,
+            body,
+            PROVENANCE_USER_EXPLICIT,
+            now,
+            globs.map(|globs| serde_json::to_string(&globs).unwrap_or_else(|_| "[]".into())),
+        ],
+    )?;
+    load(db, &id)?.ok_or_else(|| BridgeError::Invalid("The rule was not written.".into()))
+}
+
+/// The decisions behind a record, oldest first, and how many links point at
+/// decisions the log has since swept.
+pub fn taste_evidence(db: &Connection, record_id: &str) -> Result<bridge_protocol::messages::TasteEvidence, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT s.id, s.at, s.source, s.verdict, s.title, s.path, s.severity, s.pr_number, s.harness, e.weight
+         FROM memory_evidence e JOIN taste_signals s ON s.id = e.signal_id
+         WHERE e.record_id = ?1
+         ORDER BY s.at, s.id",
+    )?;
+    let signals = statement
+        .query_map(params![record_id], |row| {
+            Ok(bridge_protocol::messages::TasteSignal {
+                id: row.get(0)?,
+                at: row.get(1)?,
+                source: row.get(2)?,
+                verdict: row.get(3)?,
+                title: row.get(4)?,
+                path: row.get(5)?,
+                severity: row.get(6)?,
+                pr_number: row.get::<_, Option<i64>>(7)?.map(|number| number.max(0) as u64),
+                harness: row.get(8)?,
+                weight: row.get(9)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let linked: i64 = db.query_row("SELECT COUNT(*) FROM memory_evidence WHERE record_id=?1", params![record_id], |row| row.get(0))?;
+    Ok(bridge_protocol::messages::TasteEvidence {
+        swept: (linked.max(0) as usize).saturating_sub(signals.len()) as u32,
+        signals,
+    })
+}
+
 /// A rule the taste learner drafted, waiting for the person: a `taste` record
 /// in `scope`, proposed, with an empty validity interval like every proposal,
 /// and its evidence linked. Returns its id.

@@ -2597,6 +2597,34 @@ pub fn list_memory_records(
     memory_ledger::list_layer_page(&db, scope_key, layer, status, cursor, limit)
 }
 
+pub fn list_taste_rules(
+    core: &Arc<BridgeCore>,
+    status: Option<&str>,
+) -> Result<bridge_protocol::messages::ListTasteRulesResult, BridgeError> {
+    let db = core.db.lock().unwrap();
+    Ok(bridge_protocol::messages::ListTasteRulesResult { rules: memory_ledger::list_taste(&db, status)? })
+}
+
+pub fn get_taste_evidence(
+    core: &Arc<BridgeCore>,
+    record_id: &str,
+) -> Result<bridge_protocol::messages::TasteEvidence, BridgeError> {
+    let db = core.db.lock().unwrap();
+    memory_ledger::taste_evidence(&db, record_id.trim())
+}
+
+pub fn add_taste_rule(
+    core: &Arc<BridgeCore>,
+    params: &bridge_protocol::messages::AddTasteRuleParams,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let record = {
+        let db = core.db.lock().unwrap();
+        memory_ledger::save_taste_rule(&db, &params.scope_key, &params.kind, &params.body, params.path_globs.as_deref())?
+    };
+    core.events.publish(CoreEvent::MemoryChanged { scope_key: record.scope_key.clone() });
+    Ok(record)
+}
+
 pub fn delete_memory_record(
     core: &Arc<BridgeCore>,
     record_id: &str,

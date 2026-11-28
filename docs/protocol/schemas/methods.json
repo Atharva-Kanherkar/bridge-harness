@@ -1045,6 +1045,27 @@
       "resultSchema": "memory-dream-undo-result.json"
     },
     {
+      "command": "list_taste_rules",
+      "domain": "taste",
+      "method": "taste/list_taste_rules",
+      "paramsSchema": "list-taste-rules-params.json",
+      "resultSchema": "list-taste-rules-result.json"
+    },
+    {
+      "command": "get_taste_evidence",
+      "domain": "taste",
+      "method": "taste/get_taste_evidence",
+      "paramsSchema": "get-taste-evidence-params.json",
+      "resultSchema": "taste-evidence.json"
+    },
+    {
+      "command": "add_taste_rule",
+      "domain": "taste",
+      "method": "taste/add_taste_rule",
+      "paramsSchema": "add-taste-rule-params.json",
+      "resultSchema": "memory-record.json"
+    },
+    {
       "command": "resolve_approval",
       "domain": "approvals",
       "method": "approvals/resolve_approval",
