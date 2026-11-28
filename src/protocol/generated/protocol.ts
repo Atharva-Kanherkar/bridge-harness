@@ -3355,6 +3355,7 @@ export type ReviewEvent = "approve" | "requestChanges" | "comment";
 export interface ReviewFinding {
   agreedBy: number;
   body: string;
+  category?: string | null;
   confidence: number;
   decidedAt?: string | null;
   decision: ReviewFindingDecision;
@@ -3362,6 +3363,7 @@ export interface ReviewFinding {
   fingerprint: string;
   fixedInSha?: string | null;
   githubCommentId?: string | null;
+  hiddenReason?: string | null;
   id: string;
   jobId: string;
   line: number;
@@ -3437,6 +3439,7 @@ export interface ReviewJobSettings {
   defaultHarnesses?: string[];
   fallbackHarnesses?: string[];
   handoff?: ReviewHandoff;
+  hideRepeatDrops?: boolean;
   incremental?: boolean;
   maxConcurrentReviews?: number;
   maxReviewWorktrees?: number;

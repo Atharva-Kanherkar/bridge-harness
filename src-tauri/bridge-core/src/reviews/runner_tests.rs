@@ -78,6 +78,7 @@ fn outcome() -> PassOutcome {
             confidence: 0.8,
             fingerprint: "fp-1".into(),
             outside_diff: false,
+            category: None,
         }],
         session_id: Some("hidden".into()),
         ..PassOutcome::default()

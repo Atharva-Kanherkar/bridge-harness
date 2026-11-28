@@ -47,7 +47,7 @@ struct HideAll;
 
 impl Judge for HideAll {
     fn judge(&self, _past: &[Signal], _candidate: &Candidate) -> Judgment {
-        Judgment::Hide { reason: "everything".into() }
+        Judgment::Hide { reason: "everything".into(), evidence: Vec::new() }
     }
 }
 

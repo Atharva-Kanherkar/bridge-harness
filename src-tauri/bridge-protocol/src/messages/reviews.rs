@@ -397,6 +397,17 @@ pub struct ReviewFinding {
     /// The head of a later re-review that found this fixed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixed_in_sha: Option<String>,
+    /// What the finding is about, as the reviewer tagged it: `security`,
+    /// `correctness`, `error-handling`, `tests`, `performance`, `naming`,
+    /// `docs`, `style` or `other`. Absent when it did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// Set when the taste layer hid the finding because the person kept
+    /// dropping ones like it, in their words ("You dropped 4 like this, last
+    /// on #212."). A hidden finding is still pending: it can be shown and
+    /// decided like any other, and it is never posted without a decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden_reason: Option<String>,
 }
 
 /// How review jobs run. One record for the account, separate from
@@ -437,6 +448,11 @@ pub struct ReviewJobSettings {
     /// Send finished reviews to the chat that wrote the pull request, which
     /// then works on them. Off by default.
     pub handoff: ReviewHandoff,
+    /// Hide a new finding that closely resembles ones the person dropped at
+    /// least three times across two pull requests. Hidden findings stay one
+    /// click away and are never posted without a decision; critical and
+    /// security findings are never hidden. On by default.
+    pub hide_repeat_drops: bool,
 }
 
 /// When a finished review goes to the chat that wrote the pull request.
@@ -472,6 +488,7 @@ impl Default for ReviewJobSettings {
             skip_draft_prs: true,
             incremental: false,
             handoff: ReviewHandoff::Off,
+            hide_repeat_drops: true,
         }
     }
 }

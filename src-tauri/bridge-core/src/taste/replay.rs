@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use serde::Serialize;
 
 use super::signals::{self, Signal};
@@ -66,7 +66,8 @@ impl Outcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Judgment {
     Show,
-    Hide { reason: String },
+    /// `evidence` names the signals that made the call.
+    Hide { reason: String, evidence: Vec<String> },
 }
 
 /// What the taste layer would do with a finding, given only the past.
@@ -127,6 +128,7 @@ impl Judge for RepeatedDrops {
                     drops.len(),
                     last_pr.map(|number| format!(", last on #{number}")).unwrap_or_default()
                 ),
+                evidence: drops.iter().map(|signal| signal.id.clone()).collect(),
             }
         } else {
             Judgment::Show
@@ -179,14 +181,24 @@ fn ratio(numerator: usize, denominator: usize) -> Option<f64> {
 
 /// Every reviewed finding, in the order its review started.
 pub fn candidates(db: &Connection) -> Result<Vec<Candidate>, BridgeError> {
-    let mut statement = db.prepare(
+    candidates_where(db, "1", params![])
+}
+
+/// One review's findings, as [`candidates`] reads them.
+pub fn candidates_of_job(db: &Connection, job_id: &str) -> Result<Vec<Candidate>, BridgeError> {
+    candidates_where(db, "f.job_id = ?1", params![job_id])
+}
+
+fn candidates_where(db: &Connection, filter: &str, values: &[&dyn rusqlite::ToSql]) -> Result<Vec<Candidate>, BridgeError> {
+    let mut statement = db.prepare(&format!(
         "SELECT f.id, f.job_id, j.workspace_id, j.repo_owner, j.repo_name, j.pr_number, j.created_at,
                 f.path, f.severity, f.title, f.body, f.fingerprint, f.decision, f.posted_at IS NOT NULL,
-                f.fixed_in_sha IS NOT NULL
+                f.fixed_in_sha IS NOT NULL, f.category
          FROM review_findings f JOIN review_jobs j ON j.id = f.job_id
-         ORDER BY j.created_at, j.id, f.created_at, f.id",
-    )?;
-    let rows = statement.query_map([], |row| {
+         WHERE {filter}
+         ORDER BY j.created_at, j.id, f.created_at, f.id"
+    ))?;
+    let rows = statement.query_map(values, |row| {
         let decision: String = row.get(12)?;
         let title: String = row.get(9)?;
         let body: String = row.get(10)?;
@@ -198,7 +210,7 @@ pub fn candidates(db: &Connection) -> Result<Vec<Candidate>, BridgeError> {
             reviewed_at: signals::instant(&row.get::<_, String>(6)?),
             path: row.get(7)?,
             severity: row.get(8)?,
-            category: signals::category_of(&title, &body).to_string(),
+            category: signals::category_or_guess(row.get::<_, Option<String>>(15)?.as_deref(), &title, &body).to_string(),
             title,
             body,
             fingerprint: row.get(11)?,
@@ -275,7 +287,7 @@ pub fn score(every: &[Signal], candidates: &[Candidate], judge: &dyn Judge) -> R
             report.posted += 1;
             fixed_posted += usize::from(outcome.fixed);
         }
-        if let Judgment::Hide { reason } = judgment {
+        if let Judgment::Hide { reason, .. } = judgment {
             report.hidden += 1;
             affected.insert(candidate.job_id.as_str());
             report.critical_hidden += usize::from(candidate.severity == "critical");
@@ -313,14 +325,16 @@ pub struct SweepRow {
     pub reviews_affected: usize,
 }
 
-/// Replay [`RepeatedDrops`] at every pair of thresholds in `grid`.
+/// Replay suppression ([`super::suppress::Suppressor`]) at every pair of
+/// thresholds in `grid`.
 pub fn sweep(db: &Connection, grid: &[(usize, usize)]) -> Result<Vec<SweepRow>, BridgeError> {
     let every = signals::all(db)?;
     let candidates = candidates(db)?;
     Ok(grid
         .iter()
         .map(|&(min_drops, min_prs)| {
-            let report = score(&every, &candidates, &RepeatedDrops { min_drops, min_prs });
+            let judge = super::suppress::Suppressor { min_drops: min_drops as f64, min_prs };
+            let report = score(&every, &candidates, &judge);
             SweepRow {
                 min_drops,
                 min_prs,

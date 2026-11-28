@@ -23,7 +23,7 @@ type FormSettings = ReviewerSettings & { harnesses: NonNullable<ReviewerSettings
 const normalize = (settings: ReviewerSettings): FormSettings => ({ ...settings, harnesses: settings.harnesses ?? {}, systemPrompt: settings.systemPrompt ?? "" });
 
 /** The job settings with every field the form edits filled in. */
-type JobForm = Required<Pick<ReviewJobSettings, "defaultHarnesses" | "fallbackHarnesses" | "maxConcurrentReviews" | "maxReviewWorktrees" | "postMode" | "secondOpinion" | "autoReview" | "skipDraftPrs" | "incremental" | "handoff">> & ReviewJobSettings;
+type JobForm = Required<Pick<ReviewJobSettings, "defaultHarnesses" | "fallbackHarnesses" | "maxConcurrentReviews" | "maxReviewWorktrees" | "postMode" | "secondOpinion" | "autoReview" | "skipDraftPrs" | "incremental" | "handoff" | "hideRepeatDrops">> & ReviewJobSettings;
 const normalizeJobs = (settings: ReviewJobSettings): JobForm => ({
   ...settings,
   defaultHarnesses: settings.defaultHarnesses ?? [],
@@ -36,6 +36,7 @@ const normalizeJobs = (settings: ReviewJobSettings): JobForm => ({
   skipDraftPrs: settings.skipDraftPrs ?? true,
   incremental: settings.incremental ?? false,
   handoff: settings.handoff ?? "off",
+  hideRepeatDrops: settings.hideRepeatDrops ?? true,
 });
 
 const HANDOFF_TEXT: Record<JobForm["handoff"], string> = {
@@ -97,6 +98,9 @@ function ReviewJobSettingsGroup() {
     <SettingsRow label="Incremental re-review" saved={isFlashed("incremental")}
       description={stored.incremental ? "A later review looks at the commits since the last posted review, remembers what was kept, dropped or resolved, and does not repeat it." : "Every review looks at the whole pull request."}
       control={<Switch label="Incremental re-review" disabled={busy} checked={stored.incremental} onChange={incremental => void save({ incremental }, "incremental")} />} />
+    <SettingsRow label="Hide findings you keep dropping" saved={isFlashed("hideRepeatDrops")}
+      description={stored.hideRepeatDrops ? "A finding like ones you dropped at least three times on two pull requests arrives hidden, with the reason, one click from coming back. It never posts unless you keep it, and critical or security findings are never hidden." : "Every finding shows in the draft."}
+      control={<Switch label="Hide findings you keep dropping" disabled={busy} checked={stored.hideRepeatDrops} onChange={hideRepeatDrops => void save({ hideRepeatDrops }, "hideRepeatDrops")} />} />
     <SettingsRow label="Send to the chat that wrote it" saved={isFlashed("handoff")}
       description={`${HANDOFF_TEXT[stored.handoff]}${stored.handoff === "off" ? "" : " At most three reviews of a pull request go to its chat in a day."}`}
       control={<Segmented label="Send reviews to the chat that wrote the pull request" disabled={busy} value={stored.handoff} onChange={handoff => void save({ handoff }, "handoff")} options={[{ value: "off", label: "Off" }, { value: "drafted", label: "When drafted" }, { value: "posted", label: "When posted" }]} />} />

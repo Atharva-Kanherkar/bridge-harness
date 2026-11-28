@@ -91,11 +91,15 @@ pub struct PostPlan {
 }
 
 /// The findings a job posts: kept and edited in draft mode, everything not
-/// dropped in auto mode.
+/// dropped in auto mode except what the taste layer hid, which posts only
+/// once someone keeps it.
 pub fn chosen(post_mode: ReviewPostMode, finding: &wire::ReviewFinding) -> bool {
+    let decided = matches!(finding.decision, ReviewFindingDecision::Kept | ReviewFindingDecision::Edited);
     match post_mode {
-        ReviewPostMode::Draft => matches!(finding.decision, ReviewFindingDecision::Kept | ReviewFindingDecision::Edited),
-        ReviewPostMode::Auto => finding.decision != ReviewFindingDecision::Dropped,
+        ReviewPostMode::Draft => decided,
+        ReviewPostMode::Auto => {
+            finding.decision != ReviewFindingDecision::Dropped && (decided || finding.hidden_reason.is_none())
+        }
     }
 }
 
